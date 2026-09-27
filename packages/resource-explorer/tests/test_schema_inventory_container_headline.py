@@ -175,3 +175,68 @@ class TestReturnsNoneWhenNothingToSay:
     def test_no_tables_at_all(self):
         registry = _FakeRegistry(tables=[])
         assert _schema_inventory_container_headline(registry, "mydb") is None
+
+
+class TestSlice21aFollowups:
+    """Owner's gate on 8812, 2026-09-27 — three defects in the per-schema
+    breakdown found live against `coco_pharma`."""
+
+    def test_a_zero_table_schema_the_probe_knows_about_still_appears(self):
+        """`public` (USAGE granted, zero tables) never has a `database_
+        tables` row to be grouped by, so it was silently missing from a list
+        the header's own schema_total says should have every schema."""
+        registry = _FakeRegistry(
+            tables=[_table("coco_ods", "a", row_count=5)],
+            survey_data=_cap({
+                "coco_ods": {"usage_granted": True, "table_total": 1, "table_select": 1},
+                "public": {"usage_granted": True, "table_total": 0, "table_select": 0},
+            }),
+        )
+        result = _schema_inventory_container_headline(registry, "mydb")
+        assert "public — empty (no tables)" in result["label"]
+
+    def test_structure_only_schema_still_names_its_estimated_row_total(self):
+        """A structure-only schema can still carry a real catalog-estimated
+        row total (the catalog-only fallback reads pg_class.reltuples
+        regardless of SELECT grants) — dropping it erased size information
+        "How big is this database" already counts."""
+        from resource_explorer.registry import STATE_CATALOG_ESTIMATE
+        registry = _FakeRegistry(
+            tables=[_table("coco_ods", "a", row_count=113, state=STATE_CATALOG_ESTIMATE)],
+            survey_data=_cap({
+                "coco_ods": {"usage_granted": True, "table_total": 1, "table_select": 0},
+            }),
+        )
+        result = _schema_inventory_container_headline(registry, "mydb")
+        assert "coco_ods 1 table(s) · ~113 row(s) (est.) — structure only" in result["label"]
+
+    def test_a_schema_whose_only_table_has_no_row_data_is_empty_not_data(self):
+        """`row_count IS NULL` (never measured, no catalog-estimate fallback
+        either) used to fall through to the "data" branch, where `row_total
+        or 0` silently displayed "not measured" as a measured "0 row(s)"
+        under the DATA classification rather than `empty`."""
+        registry = _FakeRegistry(
+            tables=[_table("eu_sales", "eu_sales_forecast", row_count=None)],
+        )
+        result = _schema_inventory_container_headline(registry, "mydb")
+        assert "eu_sales 1 table(s) · 0 row(s) — empty" in result["label"]
+
+    def test_ordering_is_data_then_empty_then_shortfall_then_system(self):
+        from resource_explorer.registry import STATE_CATALOG_ESTIMATE
+        registry = _FakeRegistry(
+            tables=[
+                _table("real_data", "a", row_count=500),
+                _table("eu_sales", "a", row_count=None),
+                _table("coco_ods", "a", row_count=113, state=STATE_CATALOG_ESTIMATE),
+                _table("pg_catalog", "a", row_count=1),
+            ],
+            survey_data=_cap({
+                "coco_ods": {"usage_granted": True, "table_total": 1, "table_select": 0},
+                "public": {"usage_granted": True, "table_total": 0, "table_select": 0},
+            }),
+        )
+        result = _schema_inventory_container_headline(registry, "mydb")
+        label = result["label"]
+        assert (label.index("real_data") < label.index("eu_sales")
+                < label.index("public") < label.index("coco_ods"))
+        assert label.rstrip(".").endswith("1 system schema(s) folded")

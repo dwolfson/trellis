@@ -946,9 +946,99 @@ def _db_derived_field_reader(field: str):
             return {}
         if isinstance(data, dict):
             _attach_container_credential_scope(registry, slug, data)
+            _attach_coverage_status(field, data)
         return data
 
     return _read
+
+
+#: Below this fraction of tables actually measured (not merely "some table
+#: somewhere had a key captured" — see keys_captured_for_table's own
+#: docstring), the WHOLE analysis reports `not_established` rather than a
+#: technically-true-but-misleading `measured` built almost entirely from
+#: unmeasured tables. Live-found, `coco_pharma`, 2026-09-27: with 3 of 58
+#: tables key-captured, `db_relationship_graph` read "state measured ·
+#: verdict bag_of_tables" — a confident verdict over a database that was 95%
+#: unmeasured. 0.5 (a plain majority) is a coordinator-approved starting
+#: point, not a tuned constant; see docs/Backlog.md for the open question of
+#: whether it should be uniform across all seven or tuned per analysis.
+_COVERAGE_NOT_ESTABLISHED_THRESHOLD = 0.5
+
+
+def _attach_coverage_status(field: str, data: dict) -> None:
+    """Slice 21b follow-up (2026-09-27, live gate on `coco_pharma`): flip
+    `_status.state` to NOT_ESTABLISHED, with a reason and the actual counts,
+    when too little of the database was measured for this analysis's
+    `STATE_MEASURED` verdict to mean much — the exact "correct number, wrong
+    label" defect the owner's gate caught (the explanation text already said
+    "insufficient signal"/named 55 of 58 tables excluded; `_status.state`
+    still said `measured`).
+
+    Mutates `data` in place, in the SAME `_status` slot
+    `_attach_container_credential_scope` uses — `facts.py`'s `_state_for`
+    already prefers `value["_status"]["state"]` over its own generic
+    MEASURED/NOTHING_FOUND inference (see that function's own docstring:
+    "the surveyor knew more about its own run than this layer can infer"),
+    so this is the existing seam, not a new one. Only overwrites an ALREADY
+    STATE_MEASURED payload's `_status` — a genuinely NOT_MEASURED payload
+    (empty `{}`, normalized by this reader's own caller) never reaches here
+    at all, and a `_status` a container-credential-scope check already set
+    is left alone (that check runs first and is the more specific of the
+    two when both would apply).
+    """
+    if "_status" in data:
+        return
+    from resource_explorer.surveyors.result_status import NOT_ESTABLISHED
+
+    if field == "db_relationship_graph":
+        measured = data.get("table_count")
+        unmeasured = data.get("unmeasured_table_count") or 0
+        if measured is None:
+            return
+        total = measured + unmeasured
+        if total and measured / total < _COVERAGE_NOT_ESTABLISHED_THRESHOLD:
+            data["_status"] = {
+                "state": NOT_ESTABLISHED,
+                "reason": "thin_key_coverage",
+                "detail": (f"only {measured} of {total} tables have their own keys "
+                           f"captured — too little of the database was measured for "
+                           f"a relationship verdict to mean much"),
+            }
+    elif field == "db_classification":
+        # `classify_database` already computes its own "undecided" verdict
+        # (`kind: None, confidence: 0`) whenever the winning and runner-up
+        # scores are too close to call at the available coverage — that IS
+        # this analysis's own signal for "not established," more precise
+        # than re-deriving a coverage-percentage cutoff (the live defect's
+        # own case was exactly 50% coverage, kind None: a coverage threshold
+        # tuned to catch it would have to sit AT the boundary rather than
+        # below it, which a stray fraction of a percent either way would
+        # then miss).
+        if "kind" in data and data.get("kind") is None:
+            coverage = data.get("coverage")
+            pct = f"{int(coverage * 100)}%" if coverage is not None else "unknown"
+            data["_status"] = {
+                "state": NOT_ESTABLISHED,
+                "reason": "undecided",
+                "detail": (f"the classification could not settle on a kind at "
+                           f"{pct} signal coverage — too close to call, or too "
+                           f"little signal to call at all"),
+            }
+    elif field == "grain_determination":
+        grains = data.get("grains") or []
+        if not grains:
+            return
+        from resource_explorer.registry import STATE_MEASURED
+        measured = sum(1 for g in grains if g.get("state") == STATE_MEASURED)
+        total = len(grains)
+        if total and measured / total < _COVERAGE_NOT_ESTABLISHED_THRESHOLD:
+            data["_status"] = {
+                "state": NOT_ESTABLISHED,
+                "reason": "thin_key_coverage",
+                "detail": (f"only {measured} of {total} tables were actually "
+                           f"measured for a grain — too little of the database "
+                           f"was covered for this analysis to mean much"),
+            }
 
 
 def _attach_container_credential_scope(registry, slug: str, data: dict) -> None:
@@ -1413,6 +1503,17 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
     if not by_schema:
         return None
 
+    # Slice 21a follow-up (owner's gate, 2026-09-27): a schema the credential
+    # probe knows about (USAGE granted) but that genuinely has zero tables —
+    # `public` on `coco_pharma` — never appears in `database_tables` at all,
+    # so it was silently missing from a list the header's own `schema_total`
+    # says should have N members. Every schema `by_<by_schema>()` names gets
+    # a row here too, with `table_count: 0`, rather than only the ones that
+    # happened to produce a table row.
+    for name in states:
+        if name not in by_schema:
+            by_schema[name] = []
+
     data_rows: list[dict] = []
     empty_rows: list[dict] = []
     staging_rows: list[dict] = []
@@ -1447,7 +1548,16 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
                 "classification": "staging",
             })
             continue
-        if table_count == 0 or scope_state == SCOPE_EMPTY or row_total == 0:
+        # `row_total is None` (Slice 21a follow-up, owner's gate, 2026-09-27):
+        # a schema whose only tables have `row_count IS NULL` — never
+        # measured at all, no catalog-estimate fallback either — used to
+        # fall through to the "data" branch below, where `row_total or 0`
+        # silently displayed a genuine "not measured" as "0 row(s)"
+        # indistinguishable from a real measured empty. The owner's own
+        # ruling: "a schema whose every readable table has zero rows [or, as
+        # here, no row data at all] is class `empty`" — every readable table
+        # reporting nothing is exactly as uninformative as reporting zero.
+        if table_count == 0 or scope_state == SCOPE_EMPTY or row_total == 0 or row_total is None:
             empty_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total or 0,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
@@ -1535,11 +1645,28 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
             est = " (est.)" if row["is_estimate"] else ""
             parts.append(f"{name} {count} table(s) · {row['row_total']:,} row(s){est}")
         elif row["classification"] == "empty":
-            parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
+            if count == 0:
+                parts.append(f"{name} — empty (no tables)")
+            else:
+                parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
         elif row["classification"] == "staging":
             parts.append(f"{name} {count} table(s) — staging (by name)")
         else:
-            parts.append(f"{name} {count} table(s) — {_SHORTFALL_LABELS[row['classification']]}")
+            # Owner's gate, 2026-09-27: a structure-only/no-access schema
+            # can still carry a real (catalog-estimated) row total — the
+            # catalog-only fallback reads `pg_class.reltuples` regardless of
+            # `SELECT` grants (see connection.py's own docstring) — and
+            # dropping it here erased size information "How big is this
+            # database" already counts (coco_ods/coco_sus's estimated rows
+            # are most of the database's total). Named only when present;
+            # a genuinely unmeasured shortfall schema still says nothing.
+            row_note = ""
+            if row["row_total"] is not None:
+                est = " (est.)" if row["is_estimate"] else ""
+                row_note = f" · ~{row['row_total']:,} row(s){est}"
+            parts.append(
+                f"{name} {count} table(s){row_note} — {_SHORTFALL_LABELS[row['classification']]}"
+            )
 
     label = "; ".join(parts)
     if system_count:
@@ -1796,6 +1923,231 @@ def _db_privilege_audit_headline(registry, slug: str) -> dict | None:
     return {"label": "; ".join(parts) + ".", "status": "info"}
 
 
+def _raw_derived_field(field: str, registry, slug: str) -> dict | None:
+    """The UN-normalized counterpart of `_db_derived_field_reader(field)`'s
+    reader: that reader turns a `STATE_NOT_MEASURED` payload into `{}` at
+    the results/has_data seam (see its own docstring) — correct for that
+    seam, wrong for a headline, which needs exactly the `reason`/
+    `explanation` text a not-measured payload carries in order to render an
+    honest sentence instead of no sentence at all. Returns the raw
+    `derived[field]` dict unchanged (which may itself be falsy/absent if
+    `run_db_derived` had nothing at all to compute from)."""
+    from resource_explorer.surveyors.database.db_derived import run_db_derived
+
+    return run_db_derived(registry, slug).get("derived", {}).get(field) or None
+
+
+def _db_derived_explanation_headline(field: str):
+    """Headline factory for the seven `db_derived` analyses that had NONE
+    before Slice 21b (`db_classification`, `db_relationship_graph`,
+    `grain_determination`, `schema_conventions`, `subject_signals`,
+    `coverage_signals`, `preliminary_fit`) — found live, `coco_pharma`,
+    2026-09-26: every one of these renders a ✓ via `_renders_text`'s
+    generic "ran; no summary reader" floor at best, or nothing at all when
+    the top-level payload is a mix of scalars and nested dicts
+    `scalarMeasures()` skips, the identical structural gap `db_resilience`/
+    `db_activity_signals` had before slice 17c gave them their own readers.
+
+    Each of these seven ALREADY writes a carefully composed `explanation`
+    sentence for every branch, including every `STATE_NOT_MEASURED` case
+    (`db_derived.py`'s own module docstring: this vocabulary exists
+    specifically so an absence renders as a stated reason, not silence) —
+    and, for six of the seven, `apply_container_grain()` already appends
+    that field's own per-container rollup sentence onto the same
+    `explanation` string (see its own comment: "the spread reaches the
+    surface without any consumer change"). So relaying `explanation`
+    verbatim, rather than re-deriving a shorter summary from the structured
+    fields, is deliberate: it never drifts out of sync with what
+    `db_derived.py` actually computed and explained, at either state.
+    """
+    def _headline(registry, slug: str) -> dict | None:
+        from resource_explorer.registry import STATE_MEASURED
+
+        value = _raw_derived_field(field, registry, slug)
+        if not value:
+            return None
+        explanation = (value.get("explanation") or "").strip()
+        if not explanation:
+            return None
+        status = "info" if value.get("state") == STATE_MEASURED else "warn"
+        return {"label": explanation, "status": status}
+
+    return _headline
+
+
+def _grain_determination_headline(registry, slug: str) -> dict | None:
+    """`grain_determination`'s resource-level headline — NOT built from
+    `_db_derived_explanation_headline`'s generic explanation-relay, because
+    (found live, `coco_pharma`, 2026-09-26, while wiring the other six)
+    `determine_grain()`'s `STATE_MEASURED` payload never sets a top-level
+    `explanation` field at all (only individual `grains[i]["explanation"]`,
+    and `aggregation["explanation"]`'s fixed "already finer than the grain"
+    marker — `apply_container_grain` does not fold that into this field's
+    `explanation` the way it does for the other six `targets`, since grain
+    has no rollup to report). The generic factory would therefore silently
+    return `None` for a fully-measured database, reproducing exactly the
+    "checkmark with nothing under it" gap this whole slice exists to close.
+    """
+    from resource_explorer.registry import STATE_MEASURED
+
+    value = _raw_derived_field("grain_determination", registry, slug)
+    if not value:
+        return None
+    if value.get("state") != STATE_MEASURED:
+        reason = value.get("reason") or "insufficient stored rows"
+        return {"label": f"Grain not established: {reason}.", "status": "warn"}
+
+    determined = value.get("determined_count") or 0
+    total = value.get("table_count") or 0
+    undetermined = value.get("undetermined_count") or 0
+    timed = value.get("timed_count") or 0
+    parts = [f"{determined} of {total} table(s) have a determined grain"]
+    if undetermined:
+        parts.append(f"{undetermined} do not")
+    if timed:
+        parts.append(f"{timed} carry a time interval")
+    return {"label": "; ".join(parts) + ".", "status": "info"}
+
+
+def _schema_conventions_headline(registry, slug: str) -> dict | None:
+    """`schema_conventions`'s resource-level headline — NOT built from
+    `_db_derived_explanation_headline`'s generic explanation-relay, because
+    (found live, `coco_pharma`, 2026-09-26, alongside the identical
+    `grain_determination` gap) `check_conventions()`'s `STATE_MEASURED`
+    payload never sets a top-level `explanation` field either — only each
+    individual `checks[name]["explanation"]`. Without this, the generic
+    factory would fall through to `apply_container_grain`'s rollup sentence
+    ALONE ("Across 8 schemas: ...", with no whole-database content ahead of
+    it) rather than actually failing outright — a real, if thin, gap:
+    every one of the four named checks has its own real sentence and none
+    of them was ever surfaced.
+    """
+    from resource_explorer.registry import STATE_MEASURED
+
+    value = _raw_derived_field("schema_conventions", registry, slug)
+    if not value:
+        return None
+    if value.get("state") != STATE_MEASURED:
+        return None
+    checks = value.get("checks") or {}
+    gaps = [
+        c["explanation"] for c in checks.values()
+        if c.get("label") == "gap" and c.get("explanation")
+    ]
+    if gaps:
+        return {"label": " ".join(gaps), "status": "info"}
+    passing = sum(1 for c in checks.values() if c.get("label") == "pass")
+    return {
+        "label": f"{passing} of {len(checks)} convention check(s) pass; no gap found.",
+        "status": "info",
+    }
+
+
+def _db_relationship_graph_container_headline(registry, slug: str) -> dict | None:
+    """Slice 21b — the container-level (per-schema) reading of
+    `db_relationship_graph`, for a container-level question about how
+    schemas relate to each other, mirroring Slice 21a's
+    `_schema_inventory_container_headline` pattern.
+
+    Built from `relationship_graph_by_container()`'s own `by_<grain>` dict
+    (already computed by `apply_container_grain()` on every run — no new
+    computation here), rather than the resource-level `explanation` (which,
+    per `_db_derived_explanation_headline`'s own docstring, already has the
+    ROLLUP sentence appended, not a per-schema breakdown) — the coordinator
+    named this analysis specifically as one that "naturally" has a
+    resource/container split, since each container's own
+    `derive_relationship_graph()` result is already computed independently
+    and stored under its own key.
+    """
+    from resource_explorer.registry import STATE_MEASURED
+
+    value = _raw_derived_field("db_relationship_graph", registry, slug)
+    if not value:
+        return None
+    by_container = next(
+        (v for k, v in value.items() if isinstance(k, str) and k.startswith("by_")),
+        None,
+    )
+    if not by_container:
+        return None
+
+    parts = []
+    for name in sorted(by_container):
+        r = by_container[name]
+        if r.get("state") != STATE_MEASURED:
+            parts.append(f"{name}: not established ({r.get('reason') or 'no keys captured'})")
+            continue
+        crossing = len(r.get("cross_container_references") or [])
+        cross_note = f", {crossing} leaving" if crossing else ""
+        parts.append(
+            f"{name}: {r.get('verdict')} ({r.get('table_count')} table(s), "
+            f"{r.get('edge_count')} edge(s){cross_note})"
+        )
+    label = "; ".join(parts)
+
+    aggregation = value.get("aggregation") or {}
+    cross_edge_count = aggregation.get("cross_container_edge_count")
+    if cross_edge_count is not None:
+        label += f" · {cross_edge_count} cross-schema reference(s)"
+
+    # Owner's own design rule, restated for the container reading: "never a
+    # rollup without its parts" also means never the parts without the
+    # rollup — a bare per-schema list with no lead-in sentence forced the
+    # reader to add up 8 lines themselves to learn what "Is there a data
+    # model here" actually measured across the whole database.
+    measured = value.get("table_count")
+    unmeasured = value.get("unmeasured_table_count") or 0
+    if measured is not None:
+        total = measured + unmeasured
+        label = f"Keys captured for {measured} of {total} tables — by schema: {label}"
+    return {"label": label, "status": "info"}
+
+
+def _grain_determination_container_headline(registry, slug: str) -> dict | None:
+    """Slice 21b — the container-level (per-schema) reading of
+    `grain_determination`. Unlike `db_relationship_graph`,
+    `apply_container_grain()` does NOT compute a `by_<grain>` breakdown for
+    this one — its own comment explains why: `determine_grain()`'s `grains`
+    list is already finer than any container grain (every entry already
+    names its own `schema_name`/`table_name`). So this reader groups that
+    existing per-table list by schema itself — no new computation in
+    `db_derived.py`, just a different reduction over data that already
+    carries the grouping key, which is exactly what the coordinator meant
+    by this analysis "naturally" having a resource/container split.
+    """
+    value = _raw_derived_field("grain_determination", registry, slug)
+    if not value:
+        return None
+    grains = value.get("grains") or []
+    if not grains:
+        return None
+
+    by_schema: dict[str, list[dict]] = {}
+    for g in grains:
+        by_schema.setdefault(g.get("schema_name") or "", []).append(g)
+
+    # "Determined" here matches `determine_grain()`'s OWN definition
+    # (`determined = [g for g in grains if g.get("grain_statement")]`), not
+    # `state == STATE_MEASURED` — a "gap" entry (a real finding: measured,
+    # and genuinely no candidate key) is `STATE_MEASURED` with an EMPTY
+    # `grain_statement`, so gating on state alone silently counted every
+    # gap as "determined" (found live, `coco_pharma`, 2026-09-26: this
+    # read "23 of 23 grain-determined" for a schema the resource-level
+    # headline's own `determined_count` put at 3 of 58 database-wide).
+    parts = []
+    for name in sorted(by_schema):
+        rows = by_schema[name]
+        determined = sum(1 for r in rows if r.get("grain_statement"))
+        parts.append(f"{name}: {determined} of {len(rows)} table(s) grain-determined")
+    label = "; ".join(parts)
+
+    determined_total = value.get("determined_count")
+    total = value.get("table_count")
+    if determined_total is not None and total is not None:
+        label = f"{determined_total} of {total} table(s) grain-determined — by schema: {label}"
+    return {"label": label, "status": "info"}
+
+
 def _format_bytes(n: int) -> str:
     """Same thresholds as every other byte-formatting spot in this codebase
     (KB/MB/GB, 1024-based) — kept local rather than imported to avoid a new
@@ -1861,6 +2213,10 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
 #: ("who can read and write what") with a known answer and no sentence is a
 #: visible gap, not an acceptable one, so it gets a headline in the same
 #: pass as the other three rather than deferred.
+#: Slice 21b (2026-09-26) added the seven `db_derived` analyses that had no
+#: headline reader at all — see `_db_derived_explanation_headline`'s own
+#: docstring for why relaying `explanation` verbatim is the right choice
+#: here rather than a bespoke per-field summary.
 DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "schema_inventory": _schema_inventory_headline,
     "row_count_snapshot": _row_count_snapshot_headline,
@@ -1868,6 +2224,13 @@ DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "db_activity_signals": _db_activity_signals_headline,
     "db_external_dependencies": _db_external_dependencies_headline,
     "privilege_audit": _db_privilege_audit_headline,
+    "db_classification": _db_derived_explanation_headline("db_classification"),
+    "db_relationship_graph": _db_derived_explanation_headline("db_relationship_graph"),
+    "grain_determination": _grain_determination_headline,
+    "schema_conventions": _schema_conventions_headline,
+    "subject_signals": _db_derived_explanation_headline("subject_signals"),
+    "coverage_signals": _db_derived_explanation_headline("coverage_signals"),
+    "preliminary_fit": _db_derived_explanation_headline("preliminary_fit"),
 }
 
 #: Slice 21a — level-aware headlines. A SEPARATE map, not a change to the
@@ -1880,8 +2243,17 @@ DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
 #: only for the analysis_ids that register one here — every other analysis
 #: falls back to its `DATABASE_ANALYSIS_HEADLINE_MAP` (resource) reading at
 #: any level, exactly the "no regression" default the coordinator asked for.
+#: Slice 21b added the two analyses the coordinator named as "naturally"
+#: having a resource/container split — see each reader's own docstring for
+#: why db_relationship_graph/grain_determination specifically, and not the
+#: other five `db_derived` analyses (their own per-container data is
+#: already folded into the resource-level `explanation` string by
+#: `apply_container_grain`, so a separate container reading would just
+#: repeat it).
 DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP: dict = {
     "schema_inventory": _schema_inventory_container_headline,
+    "db_relationship_graph": _db_relationship_graph_container_headline,
+    "grain_determination": _grain_determination_container_headline,
 }
 
 

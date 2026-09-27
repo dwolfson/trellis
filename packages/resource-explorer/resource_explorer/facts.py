@@ -822,8 +822,25 @@ class FactLayer:
                 log.debug("live read failed for %s/%s: %s", slug, analysis_id, exc)
                 value = {}
             if _has_content(value):
+                # Slice 21b follow-up (2026-09-27, live gate on coco_pharma):
+                # this used to hardcode state=MEASURED whenever there was any
+                # content at all, bypassing `_state_for`'s own `_status`
+                # override entirely -- a live-read analysis (every database
+                # analysis is one; see DATABASE_ANALYSIS_KINDS's own comment)
+                # that attaches `_status={"state": NOT_ESTABLISHED, ...}` for
+                # thin coverage (db_relationship_graph/db_classification/
+                # grain_determination's own coverage check) had that override
+                # silently ignored here, reporting a confident "measured"
+                # over data that was 95% unmeasured -- the exact "correct
+                # number, wrong label" defect the owner's gate caught: the
+                # headline text already said "insufficient signal", the state
+                # field the UI actually gates a checkmark on did not agree.
+                # `_state_for` falls back to MEASURED (given `_has_content`
+                # is already true here) when no `_status` override exists, so
+                # this is a strict widening, not a behavior change, for every
+                # other live-read analysis that has never set one.
                 return Fact(
-                    analysis_id=analysis_id, state=MEASURED, value=value,
+                    analysis_id=analysis_id, state=self._state_for(value, run), value=value,
                     headline=self._headline_for(analysis_id, slug, level),
                     provenance=self._provenance_for(value), can_run=can_run,
                     note="Read live from data refreshed at ingestion, not from a "

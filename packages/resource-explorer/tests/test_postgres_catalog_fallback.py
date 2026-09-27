@@ -67,7 +67,8 @@ class _FakeCursorConnection(PostgreSQLConnection):
     for real against canned SQL responses — no live Postgres, no psycopg2.
     """
 
-    def __init__(self, information_schema_tables, catalog_tables, catalog_columns):
+    def __init__(self, information_schema_tables, catalog_tables, catalog_columns,
+                 catalog_pk_rows=None, catalog_fk_rows=None, fail_catalog_keys=False):
         super().__init__(host="localhost", port=5432, database="x", user="u", password="p")
         #: {table_name: {"table_type": ..., "columns": [col_row, ...]}} — what
         #: information_schema.tables/columns would return for this schema.
@@ -78,6 +79,15 @@ class _FakeCursorConnection(PostgreSQLConnection):
         #: {table_name: [{"column_name", "ordinal_position", "data_type"}]}
         #: — what pg_attribute (unfiltered) says about a table's columns.
         self._catalog_columns = catalog_columns
+        #: Slice 21b — what `pg_constraint` (unfiltered) says a fallback
+        #: table's PK/FK constraints are. `[]` (the default) means the
+        #: catalog query succeeded and genuinely found no keys, distinct
+        #: from `fail_catalog_keys=True`, which simulates the query itself
+        #: failing (e.g. permission oddity) so `_catalog_keys_for_schema()`
+        #: falls back to `None` (unestablished, not a guessed `False`).
+        self._catalog_pk_rows = catalog_pk_rows or []
+        self._catalog_fk_rows = catalog_fk_rows or []
+        self._fail_catalog_keys = fail_catalog_keys
         self.executed: list[str] = []
 
     def execute_query(self, query, params=()):
@@ -86,6 +96,14 @@ class _FakeCursorConnection(PostgreSQLConnection):
             return []
         if "information_schema.table_constraints" in query and "FOREIGN KEY" in query:
             return []
+        if "FROM pg_constraint con" in query and "contype = 'p'" in query:
+            if self._fail_catalog_keys:
+                raise RuntimeError("pg_constraint (PK) unreachable in this test")
+            return list(self._catalog_pk_rows)
+        if "FROM pg_constraint con" in query and "contype = 'f'" in query:
+            if self._fail_catalog_keys:
+                raise RuntimeError("pg_constraint (FK) unreachable in this test")
+            return list(self._catalog_fk_rows)
         if "FROM information_schema.tables t" in query:
             rows = []
             for name, info in self._info_schema_tables.items():
@@ -176,10 +194,16 @@ class TestZeroAccessToASchema:
         assert [c["name"] for c in orders["columns"]] == ["id", "customer_id"]
         for col in orders["columns"]:
             assert col["source"] == "catalog_fallback"
-            # Never guessed — see connection.py's docstring on why these
-            # stay unestablished rather than a fabricated False.
+            # `nullable`/`default` have no catalog-only source at all — see
+            # connection.py's docstring on why they stay unestablished
+            # rather than a fabricated guess.
             assert col["nullable"] is None
-            assert col["is_primary_key"] is None
+            assert col["default"] is None
+            # `is_primary_key` DOES have a catalog-only source (`pg_
+            # constraint`, Slice 21b) — with no PK rows configured in this
+            # test, the catalog query genuinely ran and found none, so this
+            # is a real, established `False`, not a guess.
+            assert col["is_primary_key"] is False
             assert col["type"]  # a real Postgres type name, not blank
 
         assert by_name["line_items"]["row_count_estimate"] == 42000
@@ -214,6 +238,69 @@ class TestPartialAccess:
         assert "row_count_estimate" not in by_name["public_view_table"]
         assert by_name["hidden_table"]["source"] == "catalog_fallback"
         assert by_name["hidden_table"]["row_count_estimate"] == 999
+
+
+class TestCatalogFallbackRecoversPrimaryAndForeignKeys:
+    """Slice 21b: `pg_constraint` is catalog metadata like `pg_class`/
+    `pg_attribute` — not privilege-filtered — so a catalog-fallback table no
+    longer needs to report `is_primary_key`/`foreign_key` as `None`. Fixed
+    2026-09-26; before this, `_catalog_columns_for_table()` always wrote
+    `None` for both, unconditionally, even when the key data was exactly as
+    available as the column names it was already recovering."""
+
+    def test_a_recovered_table_gets_its_real_primary_key(self):
+        conn = _FakeCursorConnection(
+            information_schema_tables={},
+            catalog_tables={"orders": {"relkind": "r", "reltuples": 1500}},
+            catalog_columns={"orders": [
+                {"column_name": "id", "ordinal_position": 1, "data_type": "integer"},
+                {"column_name": "customer_id", "ordinal_position": 2, "data_type": "integer"},
+            ]},
+            catalog_pk_rows=[{"table_name": "orders", "column_name": "id"}],
+        )
+        tables = conn._get_tables_for_schema(_schema("coco_ods"))
+        by_name = {c["name"]: c for c in tables[0]["columns"]}
+        assert by_name["id"]["is_primary_key"] is True
+        assert by_name["customer_id"]["is_primary_key"] is False
+
+    def test_a_recovered_table_gets_its_real_foreign_key(self):
+        conn = _FakeCursorConnection(
+            information_schema_tables={},
+            catalog_tables={"orders": {"relkind": "r", "reltuples": 1500}},
+            catalog_columns={"orders": [
+                {"column_name": "customer_id", "ordinal_position": 1, "data_type": "integer"},
+            ]},
+            catalog_fk_rows=[{
+                "table_name": "orders", "column_name": "customer_id",
+                "foreign_schema": "coco_ods", "foreign_table": "customers",
+                "foreign_column": "id",
+            }],
+        )
+        tables = conn._get_tables_for_schema(_schema("coco_ods"))
+        col = tables[0]["columns"][0]
+        assert col["foreign_key"] == {
+            "foreign_schema": "coco_ods", "foreign_table": "customers", "foreign_column": "id",
+        }
+
+    def test_a_failed_catalog_key_query_stays_unestablished_not_a_guessed_false(self):
+        """The `pg_constraint` read itself can fail (an odd permission
+        setup, a connection hiccup) — that must NOT be read as "genuinely no
+        keys." `_catalog_keys_for_schema()` returns `None` (not `{}`) for a
+        failed half, and `_catalog_columns_for_table()` must propagate that
+        as `None`, not silently degrade a failure into a confident `False`
+        the exact way `nullable`/`default` already refuse to."""
+        conn = _FakeCursorConnection(
+            information_schema_tables={},
+            catalog_tables={"orders": {"relkind": "r", "reltuples": 1500}},
+            catalog_columns={"orders": [
+                {"column_name": "id", "ordinal_position": 1, "data_type": "integer"},
+            ]},
+            fail_catalog_keys=True,
+        )
+        tables = conn._get_tables_for_schema(_schema("coco_ods"))
+        col = tables[0]["columns"][0]
+        assert col["is_primary_key"] is None
+        assert col["foreign_key"] is None
 
 
 # ── database_rows_from_survey_data(): connection dict -> detail rows ───────

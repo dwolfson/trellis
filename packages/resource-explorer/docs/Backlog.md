@@ -8101,6 +8101,156 @@ the rendered text) from that block — that will show whether it's two
 sibling divs (a genuine double-render) or one div with doubled inner
 content (a string-building bug), which narrows where to look next.
 
+## `determine_grain`/`check_conventions` need the same per-table `keys_captured` fix as `derive_relationship_graph` (Slice 21b, 2026-09-26)
+
+Slice 21b fixed `derive_relationship_graph`'s mixed-access bug: a database
+with some tables live-surveyed and some only reachable via the catalog-only
+fallback used to have the database-wide `DerivedInputs.keys_were_captured`
+flag (`True` from ANY one captured column) let every uncaptured table's
+lack of a recorded key be treated as a VERIFIED "no primary key" finding,
+rather than "not established." The new `DerivedInputs.
+keys_captured_for_table(key)` fixes this for `derive_relationship_graph`
+and `_structure_evidence` (feeds `db_classification`), but was NOT applied
+to `determine_grain` or `check_conventions`, both of which also gate
+behavior on the same whole-database `keys_were_captured` flag
+(`db_derived.py`, `determine_grain` ~line 1069, `check_conventions` ~line
+1465-1466 at the time of writing). The fix pattern is the same: restrict
+whatever population `keys_were_captured` currently gates to only the
+tables whose OWN `keys_captured_for_table()` is `True`, and report the
+excluded count/tables explicitly rather than folding them into a "measured
+and negative" finding.
+
+## No coverage-percentage threshold exists across `db_derived`'s seven analyses (Slice 21b, 2026-09-26)
+
+Confirmed by reading all seven analysis functions in `db_derived.py`
+(`classify_database`, `derive_relationship_graph`, `determine_grain`,
+`check_conventions`, `derive_subject_signals`, `derive_coverage_signals`,
+`compute_preliminary_fit`): every one uses an all-or-nothing state gate —
+`STATE_MEASURED` as soon as ANY relevant row exists, `STATE_NOT_MEASURED`
+only when there are none at all. A database that is 95% catalog-fallback
+(structure-only, no keys, no comments, no profiles) but has even one fully
+live-surveyed table reports `STATE_MEASURED` across the board — the
+shortfall shows up only in `classify_database`'s own `coverage`-scaled
+confidence number (and several of the seven, e.g. `derive_relationship_
+graph`, `derive_coverage_signals`, `derive_subject_signals`, don't even
+surface a coverage number at their top level).
+
+Slice 21b's own fix (the item above) addresses the sharpest instance of
+this — a specific TABLE whose keys were never captured no longer gets
+folded into a verified negative finding — but a genuine coverage-percentage
+threshold (e.g. "below N% of tables/schemas measured, the whole analysis
+reports `not_established` rather than a low-confidence `measured`") was
+explicitly NOT built. Two design questions block it, both flagged rather
+than decided unilaterally: (1) what threshold, and whether it should be one
+constant shared across all seven or tuned per analysis; (2) whether it
+belongs inside `db_derived.py`'s own `registry.STATE_MEASURED`/`STATE_NOT_
+MEASURED` vocabulary, or should route through `result_status.py`'s
+`MEASURED`/`NOT_ESTABLISHED` vocabulary instead — the two are currently
+kept deliberately separate at the one seam `_db_derived_field_reader`
+already normalizes across (see that function's own docstring).
+
+## `db_fingerprint`/`db_change_rates`/`schema_diff`/`grant_change` still have no headline reader (Slice 21b, 2026-09-26)
+
+Slice 21b gave the seven analyses the coordinator named a headline reader
+(`db_classification`, `db_relationship_graph`, `grain_determination`,
+`schema_conventions`, `subject_signals`, `coverage_signals`,
+`preliminary_fit`), via the new `_db_derived_explanation_headline(field)`
+factory (`survey_definition_adapter.py`) which just relays each analysis's
+own `explanation` field. These four other `db_derived`-backed analyses
+were out of the named scope and still fall through to `facts.py`'s generic
+`_renders_text` floor. Given the factory already exists and each of these
+four also writes its own `explanation` field (confirm before reusing
+verbatim — not checked here), wiring them in should be a small follow-up:
+`DATABASE_ANALYSIS_HEADLINE_MAP["db_fingerprint"] =
+_db_derived_explanation_headline("db_fingerprint")`, etc.
+
+## A cluster of ~29 tests sleeps 30–60s each when Egeria is unreachable (found investigating a Slice 21a CI timeout, 2026-09-27)
+
+Slice 21a's CI run (36290350357, on tip `6e4ce6f7`) was cancelled at the
+30-minute job timeout — every setup step finished normally by 03:06:34, then
+the "Full suite" step ran until 03:34:48 with no per-test failure ever
+reported. Diffing 21a's full commit (`8fe62240..6e4ce6f7`) found no new
+network I/O anywhere in it, and none of the files below are touched by
+that diff at all — so this is NOT something Slice 21a's own code
+introduced, but it may be why that specific run tipped over the job
+timeout if Egeria happened to be slow-to-fail rather than fast-refused on
+that runner.
+
+Reproduced locally by pointing `EGERIA_PLATFORM_URL` at a blackholed
+address (`https://192.0.2.1:9443`, RFC 5737 — connections there hang/
+timeout rather than fast-refuse, unlike a normal "nothing listening"
+refusal) and running the full suite with `--durations=40`. Found two clean
+duration tiers, both suspiciously exact (not scaling with how fast the
+connection itself failed — a hardcoded sleep/backoff, not a real timeout
+being hit):
+
+- **60.0x seconds each** (8 tests, ~480s total): `tests/
+  test_curate_blueprints_route.py::TestAcceptRoundTripsThroughTheNewReader::
+  test_accepting_materialises_and_the_new_route_sees_it`; `tests/test_web.py`
+  ::`TestCurateBlueprintVerdictsRouter::test_accepting_with_every_member_
+  already_materialized_is_fully_materialized`/`test_two_level_cluster_
+  resolves_child_blueprint_by_name`/`test_partial_member_materialization_
+  reports_unmaterialized_members_and_still_enqueues`/`test_oversized_flag_
+  is_passed_through_to_the_materializer`; `tests/test_web.py::
+  TestCurateComponentVerdictsRouter::test_accepting_a_real_component_
+  materializes_it`; `tests/test_cli_workflow_commands.py::TestCurateCommand
+  ::test_a_component_id_routes_to_the_component_materializer`/
+  `test_a_double_colon_id_routes_to_the_blueprint_materializer`.
+- **~30.0–30.5 seconds each** (21 tests, ~630s total): the bulk of `tests/
+  test_investigation_routes.py` (e.g. `test_a_member_with_no_egeria_asset_
+  is_reported_not_invented`, `test_an_unrecognised_payload_is_could_not_
+  tell_not_a_dropped_classification`, `test_an_experiment_carries_its_
+  hypothesis_all_the_way_into_egeria`, `test_a_failed_membership_becomes_a_
+  retryable_row_not_a_forgotten_note`, `test_existing_investigations_
+  backfill_to_egeria_not_ad_hoc`, `test_a_successful_membership_still_links_
+  before_promote_returns`, `test_a_member_with_no_asset_is_never_queued`,
+  `test_the_chosen_classification_actually_reaches_egeria`,
+  `test_a_classification_egeria_drops_is_reported_not_assumed`,
+  `test_every_classification_in_the_vocabulary_maps_to_a_properties_class`,
+  `test_the_folio_is_anchored_to_the_project`, `test_promotion_replays_the_
+  local_shape_into_egeria`, `test_an_unverifiable_classification_is_not_
+  reported_as_missing`, `test_a_shared_investigations_project_is_not_zoned_
+  private`, `test_a_private_project_that_cannot_be_zoned_is_reported_not_
+  hidden`, `test_a_private_investigations_project_is_zoned`);
+  `tests/test_investigation_reclassification.py::test_an_unverifiable_move_
+  is_not_counted_as_moved`; `tests/test_dependency_support.py::
+  TestAgainstLiveEgeria::test_every_linked_type_exists`.
+
+480 + 630 = 1110s (~18.5 min) of pure accumulated slowness, on top of a
+~15 min baseline for the rest of the suite — enough on its own to push a
+run past a 30-minute job timeout if Egeria happens to be genuinely
+unreachable (not fast-refused) for that run. **Not yet fixed**: whatever
+mock/fixture backs these tests' Egeria calls should fail fast on an
+unreachable platform (mock the client, or a short explicit timeout),
+rather than a real or simulated 30/60-second sleep — the two round numbers
+strongly suggest a hardcoded retry-with-backoff in a shared test helper or
+fixture, not organic network timeout behavior.
+
+## `pytest-timeout` is declared but was not installed in the local dev venv (found alongside the above, 2026-09-27)
+
+`pyproject.toml`'s `dev` extra lists `pytest-timeout>=2.3.0`, and
+`[tool.pytest.ini_options]` sets `timeout = 120`/`timeout_method =
+"thread"` specifically so a hanging test fails with a name instead of
+stalling silently (see that config's own comment, added after an earlier
+CI hang). But `uv run pytest tests/ -q` (the command used throughout this
+session, and in several prior sessions' full-suite runs going back through
+Slice 12/18/21a) does NOT install the `dev` extra by default — only a bare
+`uv sync` runs automatically, and `pytest-timeout` was genuinely absent
+from `.venv` (confirmed: `uv run python -c "import pytest_timeout"` raised
+`ModuleNotFoundError` before this was noticed), silently producing the
+"Unknown config option: timeout"/"timeout_method" warnings every run had
+been showing and shrugging off. So every "full suite: N passed, 0 failed"
+report from this machine, across every slice mentioned in this file, ran
+WITHOUT the per-test timeout armed — a hang would have looked identical to
+a slow-but-passing run, and the 120s ceiling that exists specifically to
+catch that never fired once, locally, until this investigation installed
+it via `uv sync --extra dev`. CI's own workflow (`resource-explorer.yml`,
+`Install dependencies` step) DOES run `uv sync --extra dev` correctly, so
+this was a local-venv-only gap — but it means every local "tests pass"
+claim from this machine should be treated as unverified against a genuine
+hang until `uv sync --extra dev` (or `--all-packages --extra dev` per
+CLAUDE.md, for the whole workspace) is run once per fresh clone, not just
+a bare `uv sync`.
 ## `_store_results` clobbers a survey_data section a run didn't collect — three incidents, one root cause, not fixed yet
 
 Three separate incidents, same shape, found and patched one field at a
