@@ -135,6 +135,30 @@ class ResourceTypeAdapter:
     #: own `DATABASE_ANALYSIS_HEADLINE_MAP`/`FILESYSTEM_ANALYSIS_HEADLINE_MAP`
     #: constants being empty dicts.
     analysis_headline_map: Callable | None = None
+    #: () -> {analysis_id: container_level_headline_reader} — Slice 21a.
+    #: Consulted by `FactLayer._headline_for` only when the asking
+    #: question's level is a sub-resource one (container/member/field),
+    #: and only for the analysis_ids that register one here; every other
+    #: analysis, and every level-agnostic caller of `analysis_headline_map`
+    #: itself, is unaffected. None (undeclared, the default) means no
+    #: resource type currently offers a level-aware reading for anything —
+    #: the falls-back-to-resource behaviour is `_headline_for`'s own, not
+    #: this field's absence being treated as an error.
+    analysis_container_headline_map: Callable | None = None
+    #: () -> {analysis_id: container_level_results_reader} — Slice 21a point
+    #: 4. The "numbers behind this" evidence table's container-level
+    #: counterpart to `analysis_container_headline_map`: consulted by
+    #: `workflows/stage_page.py::build_measurements` only when the request's
+    #: `level` query param is a sub-resource one, and only for the
+    #: analysis_ids that register one here. Its reader returns a list of
+    #: `{name, value, opens, note}` rows already shaped for the frontend
+    #: table (one row per container — e.g. per schema — rather than one row
+    #: per resource-level scalar), not a raw results dict like
+    #: `analysis_results_map`'s readers return. None (undeclared, the
+    #: default) means no resource type offers a level-aware measurements
+    #: table for anything yet — `build_measurements` falls back to the
+    #: existing resource-level reader, unchanged.
+    analysis_container_results_map: Callable | None = None
     #: () -> {step_key: StepInfo} — what each of this type's steps COSTS,
     #: what stored data it REQUIRES, and what tables it PRODUCES (design
     #: §17.1/§17.2). A provider for the same import-cycle reason as the four

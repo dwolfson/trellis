@@ -193,7 +193,10 @@ def _last_run_info(registry, slug: str, analysis_id: str, entity_type: str = "re
     return {"last_run_at": "", "last_run_status": "", "last_run_via": ""}
 
 
-def build_measurements(registry, slug: str, analysis_id: str, entity_type: str = "repo") -> dict:
+def build_measurements(
+    registry, slug: str, analysis_id: str, entity_type: str = "repo",
+    level: str = "resource",
+) -> dict:
     """GET /api/projects/{slug}/analyses/{analysis_id}/measurements payload.
 
     Raises `LookupError` for an unknown slug or an analysis_id not in the
@@ -224,6 +227,21 @@ def build_measurements(registry, slug: str, analysis_id: str, entity_type: str =
     the exact live-data path "How big is this database" already uses for its
     headline sentence (`_row_count_snapshot_headline`), just flattened into
     rows here rather than summarized into one sentence.
+
+    `level` (Slice 21a point 4, defaults to "resource" — every pre-existing
+    caller): the ASKING question's own primary level (mirrors
+    `FactLayer._primary_level`'s "resource wins when declared" rule, computed
+    client-side in app.js from the question's own `levels` and passed as a
+    query param). When it names a sub-resource level (container/member/
+    field) AND the adapter registers a container-level reader for this
+    `analysis_id` (`ResourceTypeAdapter.analysis_container_results_map`),
+    that reader's own rows are returned instead of the resource-level ones —
+    e.g. a per-schema table instead of the flat table/column/row scalars,
+    for "Which schemas carry the data...?" found live, owner's question,
+    2026-09-26. Every analysis with no container-level reader registered,
+    and every repo `entity_type` (no container reader exists for repo
+    analyses yet), is unaffected — falls through to the existing
+    resource-level reading, same as `_headline_for`'s own fallback.
     """
     from resource_explorer.surveyors.survey_definition_executor import (
         SurveyDefinitionExecutorError,
@@ -254,7 +272,8 @@ def build_measurements(registry, slug: str, analysis_id: str, entity_type: str =
 
     if entity_type != "repo":
         return _build_measurements_via_results_reader(
-            registry, slug, analysis_id, kinds_map, run_at, source)
+            registry, slug, analysis_id, kinds_map, run_at, source,
+            adapter=adapter, level=level)
 
     kinds = _METRICS_KINDS.get(analysis_id)
 
@@ -309,6 +328,7 @@ def build_measurements(registry, slug: str, analysis_id: str, entity_type: str =
 
 def _build_measurements_via_results_reader(
     registry, slug: str, analysis_id: str, kinds_map: dict, run_at: str, source: str,
+    adapter=None, level: str = "resource",
 ) -> dict:
     """The non-repo counterpart of the `_METRICS_KINDS` branch above.
 
@@ -328,7 +348,35 @@ def _build_measurements_via_results_reader(
     members table exists for these analyses yet (repo's `_opens_for` reads
     `resource_explorer.members._READERS`, which is repo-only), so nothing
     is invented here; that stays a real, separate gap.
+
+    Slice 21a point 4: when `level` names a sub-resource level and
+    `adapter.analysis_container_results_map` registers a reader for this
+    `analysis_id`, that reader's own already-row-shaped list is returned
+    directly instead of the flattening below — it returns
+    `{name, value, opens, note}` rows itself (e.g. one row per schema), not
+    a raw dict to flatten. Falls through to the resource-level reader,
+    unchanged, when no container reader is registered for this analysis_id
+    or `adapter` doesn't declare the map at all.
     """
+    if level != "resource" and adapter is not None:
+        container_map_provider = adapter.analysis_container_results_map
+        container_map = container_map_provider() if container_map_provider else {}
+        container_reader = (container_map or {}).get(analysis_id)
+        if container_reader:
+            rows = container_reader(registry, slug) or []
+            if rows:
+                return {
+                    "analysis_id": analysis_id, "run_at": run_at, "source": source,
+                    "measurements": rows, "not_applicable": False, "reason": "",
+                    "footer": _footer(analysis_id, run_at, []),
+                }
+            return {
+                "analysis_id": analysis_id, "run_at": run_at, "source": source,
+                "measurements": [], "not_applicable": False,
+                "reason": f"{analysis_id} has not recorded measurements on this resource yet.",
+                "footer": _footer(analysis_id, run_at, []),
+            }
+
     kind = kinds_map.get(analysis_id)
     reader = kind.results.results_reader if kind and kind.results else None
     if not reader:

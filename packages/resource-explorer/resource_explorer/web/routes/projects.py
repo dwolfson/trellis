@@ -1425,7 +1425,8 @@ async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str)
 
 @router.get("/{slug}/analyses/{analysis_id}/measurements")
 async def get_analysis_measurements(slug: str, analysis_id: str,
-                                     entity_type: str = "repo") -> dict:
+                                     entity_type: str = "repo",
+                                     level: str = "resource") -> dict:
     """The numbers behind one analysis's answer — see
     resource_explorer/workflows/stage_page.py::build_measurements and the
     designer's round (STAGE-PAGE-ROUND.md point 10, "the fact opens under
@@ -1441,14 +1442,19 @@ async def get_analysis_measurements(slug: str, analysis_id: str,
     against repo's own `ANALYSIS_KINDS`, regardless of what kind of resource
     the caller actually asked about (see that function's docstring, fixed
     2026-09-23 — the fourth instance of PR #226/#233/#236's "resource-type
-    never threaded through" bug class)."""
+    never threaded through" bug class).
+
+    `level` (Slice 21a point 4) defaults to "resource" — every pre-existing
+    caller. app.js passes the asking question's own primary level; see
+    `build_measurements()`'s own docstring for what changes when it names a
+    sub-resource level."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.stage_page import build_measurements
 
     registry = ProjectRegistry()
     try:
         return await asyncio.to_thread(
-            build_measurements, registry, slug, analysis_id, entity_type)
+            build_measurements, registry, slug, analysis_id, entity_type, level)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

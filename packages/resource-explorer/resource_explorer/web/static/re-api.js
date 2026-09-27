@@ -852,9 +852,18 @@ export const getAnalysisTrend = (slug, analysisId, metric = '', entityType = 're
 // it used to mean this always 404'd for a database/filesystem slug (the
 // backend always did a repo-only lookup regardless of what was asked for);
 // see `build_measurements()`'s own docstring in stage_page.py.
-export const getMeasurements = (slug, analysisId, entityType = 'repo') =>
+// `level` (Slice 21a): the ASKING question's own primary level (see
+// app.js's `primaryQuestionLevel` — mirrors `FactLayer._primary_level`'s
+// "resource wins when declared" rule). Defaults to 'resource', the
+// pre-existing behaviour for every caller that doesn't pass one. A
+// container-level question whose analysis has a container-level reader
+// gets a per-container breakdown instead of the flat resource scalars —
+// found live, owner's question 2026-09-26: "Which schemas carry the
+// data...?"'s "numbers behind this" showed the same flat table/column/row
+// counts "How big is this database" does, un-broken-down by schema.
+export const getMeasurements = (slug, analysisId, entityType = 'repo', level = 'resource') =>
   get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
-    encodeURIComponent(analysisId)}/measurements?entity_type=${encodeURIComponent(entityType)}`);
+    encodeURIComponent(analysisId)}/measurements?entity_type=${encodeURIComponent(entityType)}&level=${encodeURIComponent(level)}`);
 
 /** Every analysis this repo could run — the row plus what feeds its popover
  *  (stage, declared run time, availability, perspectives, ruleset link, the

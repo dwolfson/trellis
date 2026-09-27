@@ -261,6 +261,62 @@ class TestBuildMeasurementsForADatabase:
         assert "has not recorded measurements" in m["reason"]
 
 
+class TestBuildMeasurementsIsLevelAwareForADatabase:
+    """Slice 21a point 4: "the numbers behind this" for a container-level
+    question ("Which schemas carry the data...?") must show the per-schema
+    breakdown, not the same flat table/column/row scalars "How big is this
+    database" (`level="resource"`) shows — found live, owner's question,
+    2026-09-26."""
+
+    def test_default_level_is_unchanged_resource_scalars(self, db_reg, db_slug):
+        db_reg.write_detail_rows(
+            "database_tables", db_slug, "2026-09-23T00:00:00+00:00",
+            rows=[{"schema_name": "public", "table_name": "orders",
+                   "table_type": "BASE TABLE", "row_count": 100}],
+        )
+        m = build_measurements(db_reg, db_slug, "schema_inventory", entity_type="database")
+        by_name = {row["name"]: row for row in m["measurements"]}
+        assert by_name["table_count"]["value"] == 1
+
+    def test_container_level_returns_a_per_schema_row_not_resource_scalars(self, db_reg, db_slug):
+        db_reg.write_detail_rows(
+            "database_tables", db_slug, "2026-09-23T00:00:00+00:00",
+            rows=[
+                {"schema_name": "coco_ods", "table_name": "orders",
+                 "table_type": "BASE TABLE", "row_count": 1000, "size_bytes": 500000},
+                {"schema_name": "eu_sales", "table_name": "leads",
+                 "table_type": "BASE TABLE", "row_count": 0},
+                {"schema_name": "pg_catalog", "table_name": "pg_class",
+                 "table_type": "BASE TABLE", "row_count": 5000},
+            ],
+        )
+        m = build_measurements(db_reg, db_slug, "schema_inventory",
+                                entity_type="database", level="container")
+        assert m["not_applicable"] is False
+        names = [row["name"] for row in m["measurements"]]
+        assert "coco_ods" in names
+        assert "eu_sales" in names
+        assert "table_count" not in names  # not the resource scalar shape
+        by_name = {row["name"]: row for row in m["measurements"]}
+        assert "1,000 row(s)" in by_name["coco_ods"]["value"]
+        assert by_name["eu_sales"]["note"] == "empty"
+        assert any("system schema" in row["name"] for row in m["measurements"])
+
+    def test_container_level_falls_back_when_no_container_reader_registered(self, db_reg, db_slug):
+        # row_count_snapshot has no container-level reader registered
+        # (only schema_inventory does) -- must fall back to its ordinary
+        # resource-level reading rather than erroring or returning nothing.
+        db_reg.write_detail_rows(
+            "database_tables", db_slug, "2026-09-23T00:00:00+00:00",
+            rows=[{"schema_name": "public", "table_name": "orders",
+                   "table_type": "BASE TABLE", "row_count": 100, "size_bytes": 1000}],
+        )
+        m = build_measurements(db_reg, db_slug, "row_count_snapshot",
+                                entity_type="database", level="container")
+        by_name = {row["name"]: row for row in m["measurements"]}
+        assert by_name["table_count"]["value"] == 1
+
+
 class TestRunnableAndReasonThreadsEntityType:
     """Live-reproduced 2026-09-25: `runnable_and_reason()` always resolved
     against repo's own catalog (`resolve_analysis_plan` defaulting to
