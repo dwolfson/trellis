@@ -9741,6 +9741,14 @@ class ProjectRegistry:
             if row["operation"] == "survey" and "last_run_at" not in entry:
                 entry["last_run_at"] = row["ts"]
                 entry["last_run_status"] = row["status"]
+                # The run's own step report — carried so the UI's "ran but
+                # something failed" indicator can open what actually failed
+                # instead of only flagging that something did (found live
+                # 2026-09-26: the ⚠ beside "ran Xm ago" on a Survey
+                # Definition card did nothing on click). Empty list on a
+                # clean run, never absent, so the frontend can tell
+                # "no errors" from "not fetched yet".
+                entry["last_run_errors"] = detail.get("errors") or []
                 # SurveyDefinitionExecutor.run() (added 2026-08-27) publishes
                 # BEFORE it logs the 'survey' row that records the run itself
                 # — adapter.publish() runs first, its own untagged 'catalog'

@@ -3688,16 +3688,33 @@ function onePurpose(text) {
   return first.length > 160 ? `${first.slice(0, 157)}…` : first;
 }
 
-/** Last run, with the matrix's own staleness treatment — a rule, not a colour. */
+/** Last run, with the matrix's own staleness treatment — a rule, not a colour.
+ *
+ *  The ⚠ used to be a bare, unclickable glyph — an indicator with no
+ *  explanation, found live 2026-09-26 clicking it on Database Scouting
+ *  Scan and getting nothing. When the run recorded step errors
+ *  (`last_run_errors`, from `get_survey_definition_last_activity`'s own
+ *  parse of the run's activity-log detail), it is now a button opening
+ *  that same "definition history"-style dialog with the failing step(s)
+ *  and their message(s) — the tooltip (this function's own `title`) already
+ *  named the bare status word, which stays as the fallback when there is
+ *  nothing more specific to show. */
 function lastRunHtml(c) {
   const when = c.last_run_at || '';
   if (!when) return '<span class="text-ink-muted">never run</span>';
   const days = (Date.now() - Date.parse(when)) / 86400000;
   const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
   const ok = (c.last_run_status || '') === 'ok';
+  const errors = c.last_run_errors || [];
+  const warn = !ok && c.last_run_status
+    ? (errors.length
+        ? `<button type="button" data-run-errors="${esc(c.qualified_name || '')}"
+             class="cursor-pointer bg-transparent text-state-warn underline decoration-dotted"
+             title="Click to see what failed">⚠</button> `
+        : `<span class="text-state-warn" title="${esc(c.last_run_status)}">⚠</span> `)
+    : '';
   return `<span title="${esc(when)}${c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''}">
-    ${ok ? '<span class="text-state-ok">✓</span> '
-         : c.last_run_status ? `<span class="text-state-warn">⚠</span> ` : ''}
+    ${ok ? '<span class="text-state-ok">✓</span> ' : warn}
     <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>`;
 }
 
@@ -3915,6 +3932,19 @@ async function loadSurveyPane() {
     d.querySelector('#wl-detail-body').innerHTML = `
       <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Definition history</div>
       <p class="max-w-[70ch] whitespace-pre-line">${esc(c.description || '')}</p>`;
+  }));
+  el.querySelectorAll('[data-run-errors]').forEach((b) => b.addEventListener('click', () => {
+    const c = all.find((x) => x.qualified_name === b.dataset.runErrors);
+    if (!c) return;
+    const d = openDialog(c.display_name || c.qualified_name, c.qualified_name);
+    const errors = c.last_run_errors || [];
+    d.querySelector('#wl-detail-body').innerHTML = `
+      <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Last run — ${
+        esc(c.last_run_status || 'error')}${c.last_run_at ? ` · ${esc(ago(c.last_run_at))}` : ''}</div>
+      ${errors.length
+        ? `<ul class="max-w-[70ch] list-disc pl-s4">${errors
+            .map((e) => `<li class="whitespace-pre-line text-state-warn">${esc(String(e))}</li>`).join('')}</ul>`
+        : '<p class="max-w-[70ch] text-ink-muted">No step-level error detail was recorded for this run.</p>'}`;
   }));
   el.querySelectorAll('[data-run-survey], [data-plan-survey]').forEach((b) =>
     b.addEventListener('click', () => {
@@ -6797,9 +6827,26 @@ function showEvidence(entry) {
   const out = $('rail-evidence');
   if (!out) return;
 
+  // A "mixed" question (e.g. "How big is this database") answers from
+  // MORE THAN ONE analysis_id, each with its own independently-written
+  // results reader — nothing stops two readers from returning the same
+  // field name for the same underlying number (schema_inventory's and
+  // row_count_snapshot's readers both read the same stored `database_
+  // tables` rows, and both happen to call their own fields "tables"/
+  // "table_count"). Each fact block used to render every key in its own
+  // `.value` with no awareness of the others, so the same number appeared
+  // once per fact that happened to carry it — found live, "How big is
+  // this database"'s evidence panel listing `tables`/`table_count` twice.
+  // Deduped by key, first fact in `env.facts` order wins — that ordering
+  // already follows the question catalog's own `analysis_ids` list, so an
+  // earlier entry is the one a reader would name first anyway.
+  const shownKeys = new Set();
   const facts = (env.facts || []).map((f) => {
-    const value = f.value && Object.keys(f.value).length
-      ? `<div class="mt-[4px] leading-[1.95]">${Object.entries(f.value)
+    const entries = f.value ? Object.entries(f.value) : [];
+    const fresh = entries.filter(([k]) => !shownKeys.has(k));
+    for (const [k] of fresh) shownKeys.add(k);
+    const value = fresh.length
+      ? `<div class="mt-[4px] leading-[1.95]">${fresh
           .map(([k, v]) => measureHtml(k, v)).join('')}</div>`
       : '';
     return `<div class="mb-s2 border-b border-chrome-line-soft pb-s2 last:border-0">
