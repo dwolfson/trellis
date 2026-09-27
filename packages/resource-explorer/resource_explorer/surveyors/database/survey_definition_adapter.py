@@ -649,6 +649,8 @@ _ADAPTER = ResourceTypeAdapter(
     analysis_source_steps=lambda: DATABASE_ANALYSIS_RE_STEP_MAP,
     analysis_kinds=lambda: DATABASE_ANALYSIS_KINDS,
     analysis_headline_map=lambda: DATABASE_ANALYSIS_HEADLINE_MAP,
+    analysis_container_headline_map=lambda: DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP,
+    analysis_container_results_map=lambda: DATABASE_ANALYSIS_CONTAINER_RESULTS_MAP,
     step_registry=lambda: DATABASE_STEP_REGISTRY,
     re_analysis_steps={
         "postgres_schema_and_stats": _run_postgres_schema_and_stats,
@@ -1339,6 +1341,194 @@ def _schema_inventory_headline(registry, slug: str) -> dict | None:
     return {"label": " · ".join(parts) + ".", "status": "info"}
 
 
+#: Name substrings that mark a schema as a staging/scratch area — a heuristic,
+#: never a measured fact, so its own rendering always says "by name" rather
+#: than stating it as flatly as `system` (which comes from the engine's own
+#: declared containment, not a guess).
+_STAGING_NAME_MARKERS = ("stg", "staging", "tmp", "temp", "scratch", "sandbox")
+
+
+def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
+    """The structured per-schema breakdown `_schema_inventory_container_headline`
+    renders into one sentence, and `_schema_inventory_container_measurements`
+    (Slice 21a point 4, the "numbers behind this" evidence table for the
+    container-level question) renders into a table row per schema — factored
+    out so both read the exact same classification rather than risking two
+    readers disagreeing about which schema is "empty" vs "data".
+
+    Returns `None` when there is nothing to say (no `database_tables` rows at
+    all). Otherwise a list of dicts, one per non-system schema, ordered data
+    (rows desc) → empty → staging → no-access/structure-only, with a single
+    trailing system-summary row (`"classification": "system"`, `"schema":
+    None`, `"system_count": N`) when any system schema was folded — `None`
+    entirely omitted when there is nothing non-system AND no system schemas
+    (mirrors the headline's own `if not parts and not system_names: return
+    None`).
+
+    `bytes_total` is new here (the headline sentence never rendered bytes —
+    design says the per-schema breakdown should carry table count, row
+    total, AND bytes; the sentence stayed row/table-focused since that was
+    already long, but the measurements TABLE has a column for it).
+    """
+    from resource_explorer.registry import STATE_CATALOG_ESTIMATE
+    from resource_explorer.surveyors.database.connection import POSTGRES_CONTAINMENT
+    from resource_explorer.surveyors.database.schema_scope import (
+        SCOPE_EMPTY,
+        SCOPE_NOT_VISIBLE,
+        SCOPE_STRUCTURE_ONLY,
+        container_scope_states,
+    )
+
+    tables = registry.query_detail_rows("database_tables", slug)
+    if not tables:
+        return None
+
+    cap = _credential_capability_results(registry, slug)
+    states = container_scope_states(cap)
+
+    by_schema: dict[str, list[dict]] = {}
+    for t in tables:
+        name = t.get("schema_name")
+        if name:
+            by_schema.setdefault(name, []).append(t)
+    if not by_schema:
+        return None
+
+    data_rows: list[dict] = []
+    empty_rows: list[dict] = []
+    staging_rows: list[dict] = []
+    shortfall_rows: list[dict] = []
+    system_names: list[str] = []
+
+    for name in sorted(by_schema):
+        if POSTGRES_CONTAINMENT.is_system_container(name):
+            system_names.append(name)
+            continue
+        ts = by_schema[name]
+        table_count = len(ts)
+        measured = [t for t in ts if t.get("row_count") is not None]
+        row_total = sum(t.get("row_count") or 0 for t in measured) if measured else None
+        sized = [t for t in ts if t.get("size_bytes") is not None]
+        bytes_total = sum(t.get("size_bytes") or 0 for t in sized) if sized else None
+        is_estimate = any(t.get("state") == STATE_CATALOG_ESTIMATE for t in measured)
+        scope_state = (states.get(name) or {}).get("state")
+
+        if scope_state in (SCOPE_NOT_VISIBLE, SCOPE_STRUCTURE_ONLY):
+            classification = "no_access" if scope_state == SCOPE_NOT_VISIBLE else "structure_only"
+            shortfall_rows.append({
+                "schema": name, "table_count": table_count, "row_total": row_total,
+                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "classification": classification,
+            })
+            continue
+        if any(marker in name.lower() for marker in _STAGING_NAME_MARKERS):
+            staging_rows.append({
+                "schema": name, "table_count": table_count, "row_total": row_total,
+                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "classification": "staging",
+            })
+            continue
+        if table_count == 0 or scope_state == SCOPE_EMPTY or row_total == 0:
+            empty_rows.append({
+                "schema": name, "table_count": table_count, "row_total": row_total or 0,
+                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "classification": "empty",
+            })
+            continue
+        data_rows.append({
+            "schema": name, "table_count": table_count, "row_total": row_total or 0,
+            "bytes_total": bytes_total, "is_estimate": is_estimate,
+            "classification": "data",
+        })
+
+    data_rows.sort(key=lambda r: r["row_total"], reverse=True)
+
+    rows = data_rows + empty_rows + staging_rows + shortfall_rows
+    if not rows and not system_names:
+        return None
+    if system_names:
+        rows.append({
+            "schema": None, "table_count": None, "row_total": None,
+            "bytes_total": None, "is_estimate": False,
+            "classification": "system", "system_count": len(system_names),
+        })
+    return rows
+
+
+def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
+    """Slice 21a — the container-level (per-schema) reading of
+    `schema_inventory`, for "Which schemas carry the data, and which are
+    system, empty or staging?" (`levels: [container]` alone — no resource
+    fallback, unlike "How big is this database").
+
+    Before this, `_headline_for` had no notion of level at all, so both
+    questions rendered the SAME resource-level sentence — "8 schema(s),
+    7 with tables (...), 6 visible to this credential · 61 table(s)
+    (58 base, 3 view) · 479 column(s)." ticked "Which schemas carry the
+    data" with a sentence that names schemas but classifies none (found
+    live, owner's question, 2026-09-26).
+
+    Classification per schema, in priority order (design §18.4's rule:
+    "always broken down by containment level — never a rollup without its
+    parts; system schemas folded away"):
+
+    1. **system** — `POSTGRES_CONTAINMENT.is_system_container(name)`, the
+       same declared list/prefixes `schema_scope.py`'s own container-
+       exclusion already uses (`pg_catalog`, `information_schema`,
+       `pg_toast*`, `pg_temp*`). Folded to a trailing count, never named
+       individually — these are the engine's own plumbing, not this
+       database's data.
+    2. **no access** / **structure only** — `schema_scope.
+       container_scope_states()`'s own `SCOPE_NOT_VISIBLE`/
+       `SCOPE_STRUCTURE_ONLY`, read from the SAME credential-capability
+       probe the header banner and `_schema_inventory_headline` already
+       use. Reused rather than reimplemented: this module already existed
+       (built ahead of its own wiring, slice 20's prep) with exactly this
+       per-schema classification.
+    3. **staging** — name-heuristic (`_STAGING_NAME_MARKERS`), explicitly
+       marked "by name" in the rendered text since it is a guess, not a
+       measurement, unlike every other category here.
+    4. **empty** — zero tables in the schema, or every table in it has a
+       measured row count of exactly zero (`schema_scope.SCOPE_EMPTY`
+       agrees when a probe is available; the table-count/row-total check
+       below is the fallback for when it isn't, so this category still
+       works without a credential-capability run).
+    5. **data** — everything else: has at least one table with rows.
+
+    Order: data schemas by total rows descending, then empty, then staging,
+    then no-access/structure-only (worst-first) — the reader sees where the
+    actual data lives before the caveats. System schemas are last,
+    collapsed to a count.
+    """
+    rows = _schema_inventory_container_rows(registry, slug)
+    if not rows:
+        return None
+
+    _SHORTFALL_LABELS = {"no_access": "no access", "structure_only": "structure only"}
+    parts = []
+    system_count = 0
+    for row in rows:
+        if row["classification"] == "system":
+            system_count = row["system_count"]
+            continue
+        name, count = row["schema"], row["table_count"]
+        if row["classification"] == "data":
+            est = " (est.)" if row["is_estimate"] else ""
+            parts.append(f"{name} {count} table(s) · {row['row_total']:,} row(s){est}")
+        elif row["classification"] == "empty":
+            parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
+        elif row["classification"] == "staging":
+            parts.append(f"{name} {count} table(s) — staging (by name)")
+        else:
+            parts.append(f"{name} {count} table(s) — {_SHORTFALL_LABELS[row['classification']]}")
+
+    label = "; ".join(parts)
+    if system_count:
+        tail = f"{system_count} system schema(s) folded"
+        label = f"{label} · {tail}" if label else tail.capitalize()
+    return {"label": label, "status": "info"}
+
+
 def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
     """The one-sentence summary `scalarMeasures()` on the frontend cannot
     produce on its own, since it skips the `tables` array entirely (by
@@ -1659,6 +1849,66 @@ DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "db_activity_signals": _db_activity_signals_headline,
     "db_external_dependencies": _db_external_dependencies_headline,
     "privilege_audit": _db_privilege_audit_headline,
+}
+
+#: Slice 21a — level-aware headlines. A SEPARATE map, not a change to the
+#: shape of `DATABASE_ANALYSIS_HEADLINE_MAP`'s own values: that map is called
+#: as a plain 2-arg `(registry, slug)` function at three existing call sites
+#: (`facts.py`'s `_headline_for`, `projects.py`'s dashboard tiles,
+#: `workflows/analysis.py`'s dashboard builder) that have no notion of
+#: "level" and must keep working unchanged. `FactLayer._headline_for` reads
+#: THIS map only when the asking question's level is not `resource`, and
+#: only for the analysis_ids that register one here — every other analysis
+#: falls back to its `DATABASE_ANALYSIS_HEADLINE_MAP` (resource) reading at
+#: any level, exactly the "no regression" default the coordinator asked for.
+DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP: dict = {
+    "schema_inventory": _schema_inventory_container_headline,
+}
+
+
+def _schema_inventory_container_measurements(registry, slug: str) -> list[dict] | None:
+    """Slice 21a point 4 — the "numbers behind this" evidence table for the
+    container-level question ("Which schemas carry the data...?"), reusing
+    `_schema_inventory_container_rows`'s classification so this table never
+    disagrees with the headline sentence above it. One row per schema
+    (`name`) with `value` carrying table count · row total (with the
+    estimate caveat) · bytes, and `note` carrying the classification —
+    folded system schemas collapse to a single trailing row instead of one
+    row apiece, matching the headline's own folding.
+    """
+    rows = _schema_inventory_container_rows(registry, slug)
+    if not rows:
+        return None
+
+    _NOTES = {"data": "", "empty": "empty", "staging": "staging (by name)",
+              "no_access": "no access", "structure_only": "structure only"}
+    out = []
+    for row in rows:
+        if row["classification"] == "system":
+            out.append({
+                "name": f"{row['system_count']} system schema(s)",
+                "value": "folded", "opens": None, "note": "system",
+            })
+            continue
+        parts = [f"{row['table_count']} table(s)"]
+        if row["row_total"] is not None:
+            est = " (est.)" if row["is_estimate"] else ""
+            parts.append(f"{row['row_total']:,} row(s){est}")
+        if row["bytes_total"] is not None:
+            parts.append(_format_bytes(row["bytes_total"]))
+        out.append({
+            "name": row["schema"], "value": " · ".join(parts),
+            "opens": None, "note": _NOTES[row["classification"]],
+        })
+    return out
+
+
+#: Slice 21a point 4 — the results-reader counterpart to
+#: DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP (see that map's own comment for
+#: why this is a separate map rather than a change to
+#: `analysis_results_map`'s value shape).
+DATABASE_ANALYSIS_CONTAINER_RESULTS_MAP: dict = {
+    "schema_inventory": _schema_inventory_container_measurements,
 }
 
 #: RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0 declared `analysis_results_map`

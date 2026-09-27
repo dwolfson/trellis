@@ -774,7 +774,7 @@ class FactLayer:
         )
 
     # ── one analysis ────────────────────────────────────────────────────────
-    def fact(self, slug: str, analysis_id: str) -> Fact:
+    def fact(self, slug: str, analysis_id: str, level: str = "resource") -> Fact:
         results_map = self._map("analysis_results_map")
         source_steps = self._map("analysis_source_steps") or {}
 
@@ -824,7 +824,7 @@ class FactLayer:
             if _has_content(value):
                 return Fact(
                     analysis_id=analysis_id, state=MEASURED, value=value,
-                    headline=self._headline_for(analysis_id, slug),
+                    headline=self._headline_for(analysis_id, slug, level),
                     provenance=self._provenance_for(value), can_run=can_run,
                     note="Read live from data refreshed at ingestion, not from a "
                          "recorded survey run — current regardless of when a survey "
@@ -870,18 +870,49 @@ class FactLayer:
         state = self._state_for(value, run)
         return Fact(
             analysis_id=analysis_id, state=state, value=value,
-            headline=self._headline_for(analysis_id, slug),
+            headline=self._headline_for(analysis_id, slug, level),
             provenance=self._provenance_for(value),
             last_run_at=run.get("last_run_at", ""), can_run=can_run,
             note=self._note_for(state, value, run),
         )
 
-    def _headline_for(self, analysis_id: str, slug: str) -> str:
-        """The analysis's own summary sentence, or "".
+    def _headline_for(self, analysis_id: str, slug: str, level: str = "resource") -> str:
+        """The analysis's own summary sentence, or "" — level-aware (slice
+        21a). Before this, the SAME resource-level sentence answered every
+        question an analysis backs regardless of the question's own
+        declared level — found live, owner's question 2026-09-26: "How big
+        is this database" (`levels: [resource, container]`) and "Which
+        schemas carry the data...?" (`levels: [container]` alone) both
+        rendered schema_inventory's identical resource-level headline, so
+        the second question ticked ✓ on a line that names schemas but
+        classifies none.
+
+        `level` at any value other than "resource" first tries the
+        resource type's `analysis_container_headline_map` (a SEPARATE
+        provider from `analysis_headline_map` — see that field's own
+        docstring in `survey_definition_executor.py` for why the shape of
+        the existing, level-agnostic map could not simply change). Only
+        `schema_inventory` registers one today; every other analysis, and
+        every level that isn't specifically registered, falls straight
+        through to the ordinary resource-level reading below — "readers
+        that don't declare level support return the resource headline for
+        any level," the coordinator's own no-regression rule.
 
         Best-effort by design: this layer must never fail to report a fact
         because the sentence describing it could not be built.
         """
+        if level != "resource":
+            container_map = self._map("analysis_container_headline_map") or {}
+            container_reader = container_map.get(analysis_id)
+            if container_reader is not None:
+                try:
+                    head = container_reader(self._registry, slug) or {}
+                except Exception as exc:
+                    log.debug("container headline read failed for %s/%s/%s: %s",
+                              slug, analysis_id, level, exc)
+                    return ""
+                return str(head.get("label") or "")
+
         kind = (self._map("analysis_kinds") or {}).get(analysis_id)
         reader = getattr(getattr(kind, "results", None), "headline_reader", None)
         if reader is None:
@@ -892,6 +923,21 @@ class FactLayer:
             log.debug("headline read failed for %s/%s: %s", slug, analysis_id, exc)
             return ""
         return str(head.get("label") or "")
+
+    def _level_specific_headline_exists(self, analysis_id: str, level: str) -> bool:
+        """Would `_headline_for(analysis_id, ..., level)` return a GENUINE
+        reading at `level`, rather than falling back to the resource
+        headline? "Resource" always counts (it IS the base reading); any
+        other level requires this exact analysis_id to have its own entry
+        in `analysis_container_headline_map` — used by `_check_level` to
+        tell "this fact's headline answers the question's own containment
+        claim" from "this fact's headline is the resource-fallback text,
+        rendered so something shows, but not an answer at this level."
+        """
+        if level == "resource":
+            return True
+        container_map = self._map("analysis_container_headline_map") or {}
+        return analysis_id in container_map
 
     def _read_results(self, slug: str, analysis_id: str, entry) -> dict | None:
         """The reader's own result, or `None` when no reader is registered at
@@ -994,8 +1040,8 @@ class FactLayer:
         return ""
 
     # ── many analyses ───────────────────────────────────────────────────────
-    def facts(self, slug: str, analysis_ids: list) -> list:
-        results = [self.fact(slug, a) for a in analysis_ids]
+    def facts(self, slug: str, analysis_ids: list, level: str = "resource") -> list:
+        results = [self.fact(slug, a, level) for a in analysis_ids]
         # The one choke point every consumer of "what is known about this
         # resource" already goes through (resource_facts, bulk_resource_facts,
         # the Questions tab's has_data checks) — so the gaps collection
@@ -1052,7 +1098,7 @@ class FactLayer:
                 "nothing to read."
             )
             return env
-        env.facts = self.facts(slug, ids)
+        env.facts = self.facts(slug, ids, self._primary_level(question))
         if not env.answerable:
             env.blocked_reason = (
                 "Nothing has been measured for this yet."
@@ -1068,6 +1114,30 @@ class FactLayer:
     #: every entry generated before the `Level` column existed) is exempt —
     #: a whole-resource rollup genuinely IS the answer at that level.
     _SUB_RESOURCE_LEVELS = frozenset({"container", "member", "field"})
+
+    def _primary_level(self, question: dict) -> str:
+        """The single level to build this question's facts/headlines at
+        (slice 21a). A question can declare MORE THAN ONE level — "How big
+        is this database" is `[resource, container]`, "Which schemas carry
+        the data...?" is `[container]` alone (design §18.3's CSV column).
+
+        `resource` wins when it is one of the declared levels: until the
+        scope model (slice 19) gives sub-resource levels their own
+        navigable screen, every question is asked from the whole-resource
+        page, so a question that declares BOTH is read as "the
+        whole-resource summary, which also happens to be answerable
+        per-container elsewhere" — "How big"'s own headline is unchanged by
+        this slice, per the coordinator's own gate. A question with NO
+        resource-level declaration has no resource reading to fall back to
+        at all, so it gets its own (first) sub-resource level instead.
+        """
+        levels = question.get("levels") or ["resource"]
+        if "resource" in levels:
+            return "resource"
+        for lv in levels:
+            if lv in self._SUB_RESOURCE_LEVELS:
+                return lv
+        return "resource"
 
     #: Mirrors `app.js`'s `scalarMeasures()` closely enough to answer one
     #: question — would rung 3 of `readEnvelope` find anything to say at
@@ -1179,8 +1249,32 @@ class FactLayer:
         sub_levels = [lv for lv in levels if lv in self._SUB_RESOURCE_LEVELS]
         if not sub_levels:
             return
-        if any((f.headline or "").strip() for f in known):
-            return
+        # Slice 21a: a question whose PRIMARY level (see `_primary_level`) is
+        # still "resource" — because it also declares `resource` alongside a
+        # sub-level, like "How big is this database" ([resource, container])
+        # — keeps the pre-existing rule: any non-empty headline clears it,
+        # since a whole-database rollup genuinely does answer that question.
+        # A question with NO resource fallback at all — "Which schemas carry
+        # the data...?" is `[container]` alone — has nothing to fall back to,
+        # so its headline must have come from a GENUINE level-specific
+        # reader, not `_headline_for`'s own resource-headline fallback (which
+        # exists so a reader with no level support keeps rendering
+        # something, not so that fallback text can satisfy a level-only
+        # question's own checkmark). Otherwise an analysis that ships a
+        # container reader for another question, but not this one's own
+        # analysis_id, would tick on text that never answered this
+        # question's own containment claim at all.
+        primary_level = self._primary_level(question)
+        if primary_level == "resource":
+            if any((f.headline or "").strip() for f in known):
+                return
+        else:
+            if any(
+                (f.headline or "").strip()
+                and self._level_specific_headline_exists(f.analysis_id, primary_level)
+                for f in known
+            ):
+                return
         known_ids = [f.analysis_id for f in known]
         shapes = _analysis_target_shapes(self.resource_type)
         capable_ids = [

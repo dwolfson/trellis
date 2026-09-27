@@ -49,13 +49,34 @@ def _clear_shape_cache():
     clear_target_shape_cache()
 
 
-def _fact_layer(monkeypatch, catalog: list[dict]) -> FactLayer:
+def _fact_layer(
+    monkeypatch, catalog: list[dict], container_headline_analyses: set[str] | None = None,
+) -> FactLayer:
     monkeypatch.setattr(
         "resource_explorer.surveyors.analysis_catalog_reader.get_analyses",
         lambda resource_type, **kwargs: catalog,
     )
     fl = FactLayer.__new__(FactLayer)  # skip __init__ -- no registry needed here
     fl.resource_type = "database"
+    # Slice 21a: `_check_level` now calls `self._map(...)` (via
+    # `_level_specific_headline_exists`) for a sub-resource-level question,
+    # which needs the cache `__init__` would normally set up.
+    fl._maps_cache = {}
+    if container_headline_analyses:
+        # These tests assert "a fact with a genuine per-level headline
+        # satisfies the gate" as a property of `_check_level` itself, for
+        # analysis_ids that don't necessarily have a REAL container reader
+        # registered today (only `schema_inventory` does, as of Slice 21a)
+        # — the scenario under test is "if one existed", not "this specific
+        # id happens to have one in production right now". Simulate that
+        # registration directly rather than reaching for the real
+        # database adapter's map.
+        real_map = fl._map
+        def _map(name, _real=real_map, _ids=container_headline_analyses):
+            if name == "analysis_container_headline_map":
+                return {aid: (lambda registry, slug: None) for aid in _ids}
+            return _real(name)
+        fl._map = _map
     return fl
 
 
@@ -151,7 +172,7 @@ class TestNotGatedWhenItShouldNotBe:
     def test_single_container_shape_with_a_headline_also_satisfies_the_level(self, monkeypatch):
         fl = _fact_layer(monkeypatch, [
             {"id": "grant_change", "target_shape": "single_container"},
-        ])
+        ], container_headline_analyses={"grant_change"})
         env = _measured_envelope(
             ["grant_change"], headlines={"grant_change": "2 grants changed on public.orders."}
         )
@@ -194,7 +215,7 @@ class TestCapableButUnrenderedStillGates:
         fl = _fact_layer(monkeypatch, [
             {"id": "schema_inventory", "target_shape": "single_container"},
             {"id": "row_count_snapshot", "target_shape": "corpus"},
-        ])
+        ], container_headline_analyses={"row_count_snapshot"})
         env = _measured_envelope(
             ["schema_inventory", "row_count_snapshot"],
             headlines={"row_count_snapshot": "1,204 rows, 3 tables measured."},

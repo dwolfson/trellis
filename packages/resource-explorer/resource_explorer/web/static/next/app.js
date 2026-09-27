@@ -6010,6 +6010,19 @@ function prerequisiteProposalHtml(entry, i, indent) {
     </div>`;
 }
 
+// Slice 21a point 4: mirrors `FactLayer._primary_level`'s own rule exactly
+// ("resource" wins when declared alongside a sub-level; otherwise the first
+// declared sub-level; otherwise "resource") so "the numbers behind this"
+// asks the backend for the same level the question's own headline was
+// rendered at, rather than always the flat resource scalars — found live,
+// owner's question 2026-09-26: "Which schemas carry the data...?" opened
+// the same table/column/row numbers "How big is this database" does.
+function primaryQuestionLevel(entry) {
+  const levels = entry.levels || [];
+  if (levels.includes('resource')) return 'resource';
+  return levels[0] || 'resource';
+}
+
 function provenanceLine(entry, i, lines, st) {
   const bits = [];
   const sources = lines.sources && lines.sources.length
@@ -6070,6 +6083,7 @@ function provenanceLine(entry, i, lines, st) {
   const primaryId = (entry.analysis_ids || [])[0];
   if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial')) {
     actions.push(`<button data-numbers="${i}" data-numbers-for="${esc(primaryId)}"
+      data-numbers-level="${esc(primaryQuestionLevel(entry))}"
       class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
   }
 
@@ -6152,7 +6166,7 @@ function bindRowActions(el, entry, i) {
     copyAsEvidence(rowAsMarkdown(entry, i), e.currentTarget));
   const numbersBtn = el.querySelector(`[data-numbers="${i}"]`);
   numbersBtn?.addEventListener('click', () =>
-    toggleMeasurementsInPlace(i, numbersBtn.dataset.numbersFor, numbersBtn));
+    toggleMeasurementsInPlace(i, numbersBtn.dataset.numbersFor, numbersBtn, numbersBtn.dataset.numbersLevel));
   el.querySelector(`[data-notify="${i}"]`)?.addEventListener('click', () => openNotifyDialog(entry));
   el.querySelector(`[data-prereq-accept="${i}"]`)?.addEventListener('click', () => acceptPrerequisiteProposal(entry, i));
   el.querySelector(`[data-prereq-decline="${i}"]`)?.addEventListener('click', () => declinePrerequisiteProposal(entry, i));
@@ -6347,7 +6361,7 @@ async function openNotifyDialog(entry) {
  * Toggle, not always-open: opened once, closed on a second click, and the
  * fetch happens only then -- the row does not pay for this until asked.
  */
-async function toggleMeasurementsInPlace(i, analysisId, btn) {
+async function toggleMeasurementsInPlace(i, analysisId, btn, level) {
   const slot = $(`qm-${i}`);
   if (!slot) return;
   if (!slot.hidden) { slot.hidden = true; slot.innerHTML = ''; return; }
@@ -6356,7 +6370,7 @@ async function toggleMeasurementsInPlace(i, analysisId, btn) {
   slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">Reading the measurements…</div>`;
   let data;
   try {
-    data = await getMeasurements(slug, analysisId, apiEntityType(state.resourceType));
+    data = await getMeasurements(slug, analysisId, apiEntityType(state.resourceType), level || 'resource');
   } catch (err) {
     slot.innerHTML = `<div class="ml-[22px] mt-s2 text-state-warn">The measurements could not be read: ${esc(err.message)}</div>`;
     return;

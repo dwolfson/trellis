@@ -360,3 +360,26 @@ class TestBuildQuestionChecklistIsGeneralized:
         from resource_explorer.workflows.scouting import build_question_checklist
         got = build_question_checklist(fs_reg, "filesystem", slug, phase="scouting")
         assert isinstance(got["questions"], list)
+
+    def test_levels_are_carried_through_to_each_question(self, db_reg, slug):
+        """Slice 21a point 4: `question_catalog_reader.get_questions()`
+        already carries `levels` on every entry, but this function builds
+        its own separate per-question dict and dropped it — found live
+        gating Slice 21a, 2026-09-26: app.js's `primaryQuestionLevel(entry)`
+        always saw `undefined` and silently fell back to "resource" for
+        every question, including "Which schemas carry the data, and which
+        are system, empty or staging?" (`levels: [container]` alone), so
+        the container-level evidence table never actually reached the
+        container reader through this route."""
+        from resource_explorer.workflows.scouting import build_question_checklist
+        got = build_question_checklist(db_reg, "database", slug, phase="scouting")
+        by_question = {q["question"]: q for q in got["questions"]}
+        container_only = by_question["Which schemas carry the data, and which are system, empty or staging?"]
+        assert container_only["levels"] == ["container"]
+        multi_level = by_question[
+            "How big is this database — schemas, tables, views, columns, rows and bytes?"]
+        assert "resource" in multi_level["levels"]
+        # Every question has a `levels` list, never a missing/None key --
+        # every entry authored before the Level column existed defaults to
+        # ["resource"] (question_catalog_reader's own default).
+        assert all(q["levels"] for q in got["questions"])

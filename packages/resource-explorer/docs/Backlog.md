@@ -8042,3 +8042,61 @@ md` §1's quoted `stats` sentence should be re-checked by whoever runs that
 designer pass, since the sentence quoted there is the pre-correction
 wording — not edited here since that doc is a point-in-time transcript of
 what shipped, not living copy.
+
+## Slice 22's per-schema VIEW should consume Slice 21a's `_schema_inventory_container_rows` (2026-09-26)
+
+Slice 21a (`re/slice21a-level-headlines`) built the per-schema classification
+(data/empty/staging/no-access/structure-only/system, ordered data-rows-desc
+then empty then staging then shortfall then system-folded-last) as a
+reusable, structured function — `_schema_inventory_container_rows(registry,
+slug)` in `resource_explorer/surveyors/database/survey_definition_adapter.
+py` — factored out specifically so it has exactly one implementation for
+BOTH of Slice 21a's own two consumers (`_schema_inventory_container_headline`
+for the container-level question's headline sentence, and
+`_schema_inventory_container_measurements` for "the numbers behind this"
+evidence table) rather than each reimplementing the classification and
+risking disagreement. When slice 22 builds its own per-schema VIEW (a card
+grid or dedicated page, per the coordinator's own note when assigning slice
+21a), it should consume this SAME function as its third caller, not
+reimplement the classification a third time — the credential-scope reads
+(`schema_scope.container_scope_states`), the staging name-heuristic
+(`_STAGING_NAME_MARKERS`), and the system-folding rule
+(`POSTGRES_CONTAINMENT.is_system_container`) are all already correct and
+tested (`tests/test_schema_inventory_container_headline.py`) there.
+
+## Evidence panel: relation-kind triple rendered twice inside schema_inventory's block (unreproduced, 2026-09-26)
+
+Owner screenshot, 8812 on the `a0f28aec` build (`schema-headline-and-
+level-gate-note`'s follow-up): the evidence panel for "How big is this
+database", `schema_inventory`'s own block, rendered `view_count`/
+`materialized_view_count`/`foreign_table_count` twice in sequence
+(`... base table count 58 · view count 3 · materialized view count 0 ·
+foreign table count 0 · view count 3 · materialized view count 0 ·
+foreign table count 0 · catalog only table count 58 · tables 61 ...`) —
+inside ONE fact's own block, not a cross-fact collision (the cross-fact
+`tables`/`table_count` dedup `FOLLOWUP-3-COPY-FIXES-IMPLEMENTED.md` §3
+fixed is a different mechanism and a different pair of fields).
+
+Checked, does not explain it: the live JSON payload from both 8811
+(602dd8cb) and 8812 (21a, pre-dedup) has these three keys exactly once in
+`schema_inventory`'s `value` dict (a JSON object cannot carry a literal
+duplicate key) — confirmed by fetching `/api/analyses/facts/.../answer`
+directly. The `a0f28aec` Python source's `_schema_inventory_results()`
+`value = {...}` is one flat dict literal, each key written once, no
+merge/update. A static read of `showEvidence()`/`measureHtml()` at that
+commit is also a single `Object.entries` pass with no second rung. So
+neither the data nor a static reading of the renderer explains a doubled
+render — if it's real, the duplication happens in the DOM-building step
+itself (e.g. two calls appending into one container instead of one call's
+`innerHTML =` replacing it), not in a Python fix or the existing key-based
+dedup, and no theory of it has been confirmed live.
+
+**Unreproduced**: this session's browser tool was blocked from logging
+into 8811 to inspect the live DOM (a permission classifier flagged
+entering the dev sign-in password as "credential exploration" and the
+session correctly did not route around it). Next step: sign in to 8811 or
+8812 by hand, open the evidence panel for "How big is this database", and
+if the triple still repeats, capture the actual `<div>` markup (not just
+the rendered text) from that block — that will show whether it's two
+sibling divs (a genuine double-render) or one div with doubled inner
+content (a string-building bug), which narrows where to look next.
