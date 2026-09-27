@@ -3840,9 +3840,9 @@ async function loadSurveyPane() {
       <span class="text-caps uppercase tracking-caps text-ink-muted">Survey definitions ·
         ${esc(data.technology_type || 'unknown technology type')}</span>
       <span class="ml-auto rounded-sm border ${
-        data.scoping === 'full-scan' ? 'border-state-warn text-state-warn' : 'border-rule-strong text-ink-muted'}
+        data.scoping === 'full-scan' && all.length ? 'border-state-warn text-state-warn' : 'border-rule-strong text-ink-muted'}
         px-2 py-[1px] text-provenance">
-        Scope: ${data.scoping === 'full-scan'
+        Scope: ${data.scoping === 'full-scan' && all.length
           ? `all tiers — stage filter unavailable · <button type="button" data-act="rescope"
               class="cursor-pointer bg-transparent underline">retry</button>`
           : esc(stage)}</span>
@@ -3886,13 +3886,10 @@ async function loadSurveyPane() {
       </div>`;
     }).join('')}
 
-    ${!all.length ? paneMessage('No local or RE-authored survey definitions for this resource',
-        'The adapter registered none for this technology type.'
-        + ((data.egeria_native_processes || []).length
-            ? ' Egeria itself still knows real survey processes for this technology — see '
-              + '"Also known to Egeria" above. That is a fact about what RE has authored, '
-              + 'not about what Egeria can run.'
-            : ' That is a fact about the catalog, not about the repository.')) : ''}
+    ${!all.length ? paneMessage(
+        `No Survey Definitions have been authored for ${data.technology_type || 'this technology'} yet`,
+        'The analyses below still run individually; a Survey Definition only bundles them into an '
+        + 'Egeria-launchable process.') : ''}
     <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>
 
     <div class="mt-s5 border-t border-rule-strong pt-s3" id="analyses-index-section">
