@@ -2833,7 +2833,18 @@ export function resourceHeaderHtml(slug) {
     published += ` <span class="tnum">${esc(ago(ov.last_published_at))}</span>`;
   }
   // A "published" badge is actively misleading while the link is broken: it
-  // reports a catalog entry RE can no longer reach.
+  // reports a catalog entry RE can no longer reach. `p?.egeria_publish_note`
+  // (on the summary row itself, every resource type) is the primary source —
+  // computed from `egeria_linkage.describe_publish_status` at the same time
+  // as `is_published`, so it needs no separate fetch and cannot silently be
+  // missing the way `state.overview` can (repo-only, best-effort, absent
+  // until it loads). `ov?.egeria_link_stale` (repo's own scouting-overview,
+  // kept for its extra `egeria_link_stale_guid` detail) is checked second
+  // and wins if both are somehow present, since it is the older, more
+  // specific signal for repos.
+  if (p?.egeria_publish_note) {
+    published = `<span class="text-accent-ink">${esc(p.egeria_publish_note)}</span>`;
+  }
   if (ov?.egeria_link_stale) {
     published = `<span class="text-accent-ink">published, but the Egeria link is stale —`
       + ` the catalog entry cannot be reached</span>`;

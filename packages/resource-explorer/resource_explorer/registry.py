@@ -2673,15 +2673,29 @@ class ProjectRegistry:
             # and should cost nothing to represent.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS egeria_linkage_status (
-                    entity_type  TEXT NOT NULL,
-                    entity_slug  TEXT NOT NULL,
-                    status       TEXT NOT NULL DEFAULT 'stale',
-                    stale_guid   TEXT DEFAULT '',
-                    detected_at  TEXT NOT NULL DEFAULT '',
-                    detail       TEXT DEFAULT '',
+                    entity_type    TEXT NOT NULL,
+                    entity_slug    TEXT NOT NULL,
+                    status         TEXT NOT NULL DEFAULT 'stale',
+                    stale_guid     TEXT DEFAULT '',
+                    detected_at    TEXT NOT NULL DEFAULT '',
+                    last_checked_at TEXT NOT NULL DEFAULT '',
+                    detail         TEXT DEFAULT '',
                     PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            # Migration: add last_checked_at to existing databases.
+            # `detected_at` is the FIRST detection and must never move while a
+            # row stays stale (mark_egeria_linkage_stale's ON CONFLICT below
+            # preserves it) — found live 2026-09-26: `recheck_all_linkages`
+            # re-confirming a still-stale link overwrote `detected_at` to
+            # today, so the header read "link stale since 2026-09-26" for a
+            # link that had actually been stale since 2026-09-22.
+            # `last_checked_at` is the new column that DOES move on every
+            # recheck, so "how long has this been broken" and "how fresh is
+            # this reading" are two separate, both-honest facts.
+            if "last_checked_at" not in self._get_table_columns(conn, "egeria_linkage_status"):
+                conn.execute(
+                    "ALTER TABLE egeria_linkage_status ADD COLUMN last_checked_at TEXT NOT NULL DEFAULT ''")
             # Pending Egeria writes, one row per ELEMENT (asset, report,
             # each annotation, each relationship) — docs/outbox-publishing-
             # design.md, D1, settled per-element 2026-08-31.
@@ -6161,18 +6175,32 @@ class ProjectRegistry:
         elements and silently discarding catalog history that may still matter.
         The GUIDs are kept so a human can see what RE had, and so "republish"
         can report exactly what it is replacing.
+
+        `detected_at` is the FIRST time this was found stale, and is preserved
+        across repeat calls (e.g. `recheck_all_linkages` re-confirming an
+        already-stale link) rather than overwritten — found live 2026-09-26:
+        a recheck bumped `detected_at` to the recheck's own timestamp, so a
+        link stale since 2026-09-22 read as "stale since <today>" on every
+        re-confirmation. `last_checked_at` is the one that always advances —
+        "how long has this been broken" and "how fresh is this reading" are
+        two separate facts, both honest.
         """
         from datetime import timezone
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO egeria_linkage_status
-                       (entity_type, entity_slug, status, stale_guid, detected_at, detail)
-                   VALUES (?, ?, 'stale', ?, ?, ?)
+                       (entity_type, entity_slug, status, stale_guid, detected_at,
+                        last_checked_at, detail)
+                   VALUES (?, ?, 'stale', ?, ?, ?, ?)
                    ON CONFLICT (entity_type, entity_slug) DO UPDATE SET
                        status='stale', stale_guid=excluded.stale_guid,
-                       detected_at=excluded.detected_at, detail=excluded.detail""",
-                (entity_type, entity_slug, stale_guid,
-                 datetime.now(timezone.utc).isoformat(), detail),
+                       detected_at=CASE WHEN egeria_linkage_status.status='stale'
+                                        THEN egeria_linkage_status.detected_at
+                                        ELSE excluded.detected_at END,
+                       last_checked_at=excluded.last_checked_at,
+                       detail=excluded.detail""",
+                (entity_type, entity_slug, stale_guid, now, now, detail),
             )
 
     def get_egeria_linkage(self, entity_type: str, entity_slug: str) -> dict | None:
