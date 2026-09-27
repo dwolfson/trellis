@@ -42,11 +42,20 @@ class DatabaseSummary(BaseModel):
     # once `repo_dispositions`' PK generalized to (entity_type, entity_slug)
     # (Backlog.md, "Disposition is NOT fixed here", 2026-09-22).
     disposition: str = "undecided"
-    # egeria_asset_guid set — boolean only, not the raw GUID, same convention
-    # as `ProjectSummary.is_published` (projects.py). Lets /next's shared
-    # `lifecycleMark()` render the same "published to Egeria" mark for a
-    # database row it already renders for a repo row.
+    # egeria_asset_guid set AND the linkage is not recorded stale — see
+    # `egeria_linkage.describe_publish_status`. Boolean only, not the raw
+    # GUID, same convention as `ProjectSummary.is_published` (projects.py).
+    # Lets /next's shared `lifecycleMark()` render the same "published to
+    # Egeria" mark for a database row it already renders for a repo row.
     is_published: bool = False
+    # Non-empty only when a GUID IS cached but the linkage is stale (the
+    # element no longer exists in Egeria, e.g. after a platform reset) — a
+    # ready-to-render sentence carrying the GUID history that a plain
+    # `is_published=False` would otherwise discard. See
+    # `egeria_linkage.describe_publish_status`'s own docstring for why this
+    # exists: found live 2026-09-26, `coco_pharma` had shown a plain
+    # "published to Egeria" for four days after its link went stale.
+    egeria_publish_note: str = ""
     # Personal view filter, separate axis from disposition — see
     # `ProjectSummary.working_set_hidden` (projects.py) and
     # `registry.py`'s `resource_working_set` table. Needed so /next's
@@ -176,6 +185,10 @@ def _to_summary(db) -> DatabaseSummary:
             credential_capability = cap
             break
 
+    from resource_explorer.egeria_linkage import describe_publish_status
+    publish_status = describe_publish_status(
+        registry, "database", db.slug, getattr(db, "egeria_asset_guid", "") or "")
+
     return DatabaseSummary(
         slug=db.slug,
         display_name=db.display_name,
@@ -199,9 +212,10 @@ def _to_summary(db) -> DatabaseSummary:
         egeria_user=db.egeria_user or "",
         group_slug=getattr(db, "group_slug", "") or "",
         disposition=disp.get("disposition", "undecided"),
-        is_published=bool(getattr(db, "egeria_asset_guid", "") or ""),
         working_set_hidden=registry.is_working_set_hidden("database", db.slug),
         credential_capability=credential_capability,
+        is_published=publish_status["is_published"],
+        egeria_publish_note=publish_status["note"],
     )
 
 
