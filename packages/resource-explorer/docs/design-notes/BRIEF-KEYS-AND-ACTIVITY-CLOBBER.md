@@ -194,3 +194,139 @@ coco_pharma; nothing regresses.
 A first (it changes what B reads), then B. Both are Opus-sized. Neither
 touches `app.js`. Expect two PRs; report each tip to the design session
 for CI polling and merge.
+
+---
+
+## C. The gap guard tests nothing (added 2026-09-27)
+
+### Evidence
+
+`resource_explorer/configdata/question_catalog.yaml` on main 3d7a8d2c: 201
+entries, 139 with `analysis_ids: []`, and not one entry whose gap text
+names a registered analysis id. Three CSV rows claimed gaps the code had
+closed (column profiling, nested-column profiling, filesystem
+reachability); the guard passed on all three. They were corrected by hand
+on 2026-09-27 (`re/questions-false-gaps-and-hygiene`), which is the point:
+a guard that is green while the rows are false is not a guard.
+
+Two blind spots:
+
+1. A prose `GAP:` that names no id cannot be checked against anything.
+2. Several capabilities are **steps**, not analyses (`postgres_column_profile`,
+   `postgres_nested_columns`, `resource_reachability`). A row naming a step
+   reads as a gap forever because the guard only consults
+   `analysis_catalog.yaml`.
+
+### Fix
+
+- The guard resolves every id-like token in an `Answering Analysis` note
+  (`[a-z][a-z0-9_]+` containing an underscore) against the union of:
+  analysis ids (`analysis_catalog.yaml`), step ids (the adapter's step
+  registry, `survey_definition_adapter.py` `StepInfo` map), and the
+  filesystem/repo step registries. A `GAP:` note that names a **registered**
+  id fails the build with the message "this gap names something that
+  exists: re-word as PARTIAL or name the missing piece".
+- A `PARTIAL:` note must name at least one registered id, or it fails.
+- Report, per resource type, how many rows are GAP / PARTIAL / answered, and
+  write the table into the IMPLEMENTED doc so the count is visible.
+
+### Tests
+
+The three corrected rows, restored to their old wording in a fixture, must
+fail the new guard; the current CSV must pass. Add one step-named gap and
+one prose-only gap to the fixture and assert the reported reason for each.
+
+---
+
+## D. `_renders_text` mirrors `readEnvelope` with no cross-implementation test
+
+### Evidence
+
+`facts.py` `_renders_text` is a Python mirror of the JavaScript envelope
+reader in `web/static/next/app.js`. Its own comment admits there is no
+shared source. It drifted on the day it was written and again in Slice 21a
+(the Level column shipped; `_headline_for` never read it; container-level
+questions ticked ✓ on resource-level sentences for two days, caught at a
+live gate, not by a test). Every existing test asserts the Python side
+alone.
+
+### Fix
+
+The repo already runs `node` from pytest in
+`tests/test_next_enrichment_persistence.py` and
+`tests/test_next_journal_fidelity.py`. Reuse that pattern: a test that
+feeds the same corpus of fact envelopes (measured, nothing-found,
+not-established, no-reader, credential-scoped, each with and without a
+headline, at each Level) to both `_renders_text` and `readEnvelope`, and
+asserts the two agree on renders-or-not and on the level verdict. Export
+`readEnvelope` from app.js in the same way the journal test exports its
+target, or split it into a small module both import.
+
+### Gate
+
+None on screen; this is tests-first. The IMPLEMENTED doc lists the corpus
+and the count of cases.
+
+---
+
+## E. The Database Analysis Survey fails on the default engine (added 2026-09-27)
+
+### Evidence
+
+Enqueued `survey_definition_run` for `GovActionProcess::DatabaseAnalysisSurvey`
+on `laz_local_adventureworks` (run 997e93b3, 2026-09-27 21:19 UTC) with no
+engine override. It failed in under two seconds:
+
+> step 'postgres_column_profile' needs 'has_schema_inventory', produced by
+> 'postgres_schema_and_stats', but 'postgres_schema_and_stats' is not one of
+> this definition's own steps. Prefect can only schedule steps this
+> definition authored — add 'postgres_schema_and_stats' to the definition,
+> or run this definition through the local execution loop, which can
+> auto-run or propose an out-of-definition producer.
+
+**Same definition, `engine_override: "resource-explorer"`** (run 7a98803a,
+21:24 UTC): succeeded in 8 seconds, wrote three survey rows and the first
+Analysis-tier `step_runs` rows on any database (`postgres_column_profile`,
+`postgres_nested_columns`, `db_derived`, `postgres_operations`, executor
+`local`, `demanded_by` empty because the run was enqueued directly, not
+from a question card). So the local loop's auto-run of out-of-definition
+producers works; the Prefect path, which is the default when
+`engine_override` is None, does not. A person clicking Run on the Analysis
+definition gets the failure.
+
+Observation for whoever takes this: `database_column_profiles` shows the
+same shape before and after the profile step ran (1,236 rows per run, 468
+with `null_fraction`/`distinct_count` and state `measured`, 768 with
+`stats_basis` `not_collected`, at 19:24, 20:59 and both 21:24 runs). The
+468 come from `pg_stats` read by `postgres_schema_and_stats`; whether the
+profile step added sampling for anything, or wrote at all, is not visible
+in the rows. Check before assuming the step's output is stored.
+
+The Scouting definition had run on that database twenty minutes earlier and
+its schema inventory was in the registry. The prerequisite resolver did not
+look. Design §19.5 ("a fresh Egeria answer satisfies the prerequisite
+resolver", slice 25) is the principle; this is its local form: **a fresh
+stored answer satisfies the prerequisite**.
+
+### Fix
+
+- Default the definition run to the engine that can satisfy it, or make the
+  Prefect path do what the local loop does.
+- The resolver checks the registry for a prior result of the producing step
+  on this slug within a freshness window (§5.1a) before declaring the
+  prerequisite unmet; a hit satisfies it and is recorded as the input's
+  provenance ("schema inventory from 20:59:29").
+- If no fresh result exists, the Prefect path proposes running the
+  producing definition first (a named next step in the run's error and in
+  the pane), never a bare failure.
+- The definition documents declare `requires:` alongside `produces:` so the
+  generator can list unmet-by-design prerequisites at authoring time.
+
+### Gate
+
+On `laz_local_adventureworks`: run Scouting, then Analysis from the pane,
+default engine. Analysis succeeds, the Analysis-tier `step_runs` rows
+appear (`postgres_column_profile`, `postgres_nested_columns`,
+`db_derived`), and the column-profile questions answer. Then run Analysis
+alone on a never-scouted database and read the proposed next step instead
+of the error above.
