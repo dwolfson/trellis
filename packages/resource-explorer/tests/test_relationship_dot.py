@@ -15,6 +15,7 @@ from resource_explorer.surveyors.database.db_derived import run_db_derived
 from resource_explorer.surveyors.database.relationship_dot import (
     FULL_GRAPH_TABLE_LIMIT,
     HUB_MIN_IN_DEGREE,
+    WRAP_LINE_CHARS,
     build_relationship_diagrams,
     full_database_dot,
     schema_detail_dot,
@@ -266,6 +267,152 @@ class TestBuildRelationshipDiagrams:
         )
         assert "keys not captured" in result["full"]
         assert "keys not captured" in result["by_schema"]["sales"]
+
+
+# ── label overflow: a long single-word identifier must WRAP, never be cut ──
+#
+# Reported live by the project owner: table-name labels overflowing their
+# rounded node boxes in the rendered SVG (e.g. "salesorderheadersalesreason",
+# "specialofferproduct", "countryregioncurrency"). Root cause, confirmed by
+# rendering this module's own output through the real `egeria-shared-kroki`
+# container (localhost:6002) and inspecting both the SVG text-node geometry
+# and a browser's own `canvas.measureText()`: every `node [...]` default
+# already sets an explicit `fontname="DejaVu Serif"` (so a missing/
+# inconsistent fontname was NOT the bug); "DejaVu Serif" is simply not a
+# real, distinctly-metriced font in the environment that displays the SVG
+# afterward (canvas measured the SAME width for "DejaVu Serif" as for a
+# font name that does not exist at all), so Graphviz's server-side box
+# sizing and the box's actual displayed width are computed from two
+# different font metric tables, and the tight per-node margins (tuned
+# against whichever metrics Graphviz itself resolved) leave no slack to
+# absorb the difference on a long, unbroken identifier. The fix wraps such
+# a name across multiple lines within its box (`WRAP_LINE_CHARS`) instead
+# of trusting a margin or shortening the name — every character survives.
+
+_LONGEST_REAL_ADVENTUREWORKS_NAME = "salesorderheadersalesreason"  # 28 chars
+_SIXTY_CHAR_SYNTHETIC_NAME = "a" * 60
+
+
+class TestLabelWrapping:
+    def test_wrap_helper_keeps_every_character_short_name_passes_through(self):
+        from resource_explorer.surveyors.database.relationship_dot import (
+            _wrap_identifier_lines,
+        )
+
+        assert _wrap_identifier_lines("customer") == ["customer"]
+
+    def test_wrap_helper_keeps_every_character_long_name_wraps(self):
+        from resource_explorer.surveyors.database.relationship_dot import (
+            _wrap_identifier_lines,
+        )
+
+        lines = _wrap_identifier_lines(_LONGEST_REAL_ADVENTUREWORKS_NAME)
+        assert len(lines) > 1
+        assert all(len(line) <= WRAP_LINE_CHARS for line in lines)
+        # No character lost or reordered.
+        assert "".join(lines) == _LONGEST_REAL_ADVENTUREWORKS_NAME
+
+    def test_wrap_helper_handles_a_sixty_character_synthetic_name(self):
+        from resource_explorer.surveyors.database.relationship_dot import (
+            _wrap_identifier_lines,
+        )
+
+        lines = _wrap_identifier_lines(_SIXTY_CHAR_SYNTHETIC_NAME)
+        assert all(len(line) <= WRAP_LINE_CHARS for line in lines)
+        assert "".join(lines) == _SIXTY_CHAR_SYNTHETIC_NAME
+
+    def test_wrap_helper_prefers_underscore_breaks_when_present(self):
+        from resource_explorer.surveyors.database.relationship_dot import (
+            _wrap_identifier_lines,
+        )
+
+        lines = _wrap_identifier_lines("special_offer_product_category_name")
+        assert "".join(lines) == "special_offer_product_category_name"
+        # Every break happens at a retained underscore, not mid-word, since
+        # this name has separators to break on.
+        assert all(len(line) <= WRAP_LINE_CHARS for line in lines)
+
+    def test_longest_real_adventureworks_name_is_never_cut_in_schema_detail_dot(self):
+        dot = schema_detail_dot(
+            "sales",
+            internal_edges=[],
+            outgoing_edges=[
+                {"from_schema": "sales", "from_table": _LONGEST_REAL_ADVENTUREWORKS_NAME,
+                 "from_column": "x", "to_schema": "sales", "to_table": "salesreason",
+                 "to_column": "id"},
+            ],
+            all_schema_tables=[_LONGEST_REAL_ADVENTUREWORKS_NAME, "customer"],
+        )
+        # The full identifier is reconstructable from the label's `<br/>`
+        # -joined lines -- every character present, none dropped.
+        node_line = next(
+            l for l in dot.split("\n")
+            if f'"sales.{_LONGEST_REAL_ADVENTUREWORKS_NAME}"' in l and "label=" in l
+        )
+        # Every line the wrap helper would produce is present verbatim in
+        # the node's label text -- nothing truncated with an ellipsis or
+        # otherwise shortened.
+        from resource_explorer.surveyors.database.relationship_dot import (
+            _wrap_identifier_lines,
+        )
+        for line in _wrap_identifier_lines(_LONGEST_REAL_ADVENTUREWORKS_NAME):
+            assert line in node_line
+        assert "…" not in node_line
+        assert "..." not in node_line
+
+    def test_sixty_char_synthetic_name_is_never_cut_in_full_database_dot(self):
+        tables = {"sales": [_SIXTY_CHAR_SYNTHETIC_NAME, "customer"]}
+        edges = [
+            {"from_schema": "sales", "from_table": _SIXTY_CHAR_SYNTHETIC_NAME,
+             "from_column": "x", "to_schema": "sales", "to_table": "customer",
+             "to_column": "id"},
+        ]
+        dot, reason = full_database_dot(tables, edges)
+        assert reason is None
+        node_line = next(
+            l for l in dot.split("\n")
+            if f'"sales.{_SIXTY_CHAR_SYNTHETIC_NAME}"' in l and "label=" in l
+        )
+        from resource_explorer.surveyors.database.relationship_dot import (
+            _wrap_identifier_lines,
+        )
+        for line in _wrap_identifier_lines(_SIXTY_CHAR_SYNTHETIC_NAME):
+            assert line in node_line
+        assert "…" not in node_line
+        assert "..." not in node_line
+        # This is a plain node (no note, below the hub threshold) -- a
+        # QUOTED-STRING label, not an HTML one, so wrapping onto multiple
+        # lines shows up as Graphviz's own `\n` line-break escape rather
+        # than `<br/>` (see `_wrapped_plain_label_text`'s docstring).
+        assert '\\n' in node_line
+        wrap_count = len(_wrap_identifier_lines(_SIXTY_CHAR_SYNTHETIC_NAME))
+        assert node_line.count("\\n") >= wrap_count - 1
+
+    def test_long_ghost_node_table_name_is_never_cut_in_schema_detail_dot(self):
+        outgoing = [
+            {"from_schema": "sales", "from_table": "customer", "from_column": "x",
+             "to_schema": "person", "to_table": _LONGEST_REAL_ADVENTUREWORKS_NAME,
+             "to_column": "id"},
+        ]
+        dot = schema_detail_dot(
+            "sales", internal_edges=[], outgoing_edges=outgoing,
+            all_schema_tables=["customer"],
+        )
+        ghost_line = next(
+            l for l in dot.split("\n")
+            if f'"person.{_LONGEST_REAL_ADVENTUREWORKS_NAME}"' in l and "shape=plaintext" in l
+        )
+        from resource_explorer.surveyors.database.relationship_dot import (
+            _wrap_identifier_lines,
+        )
+        for line in _wrap_identifier_lines(_LONGEST_REAL_ADVENTUREWORKS_NAME):
+            assert line in ghost_line
+
+    def test_is_deterministic_with_a_long_wrapped_name(self):
+        tables = [_LONGEST_REAL_ADVENTUREWORKS_NAME, "customer", _SIXTY_CHAR_SYNTHETIC_NAME]
+        a = schema_detail_dot("sales", [], [], tables)
+        b = schema_detail_dot("sales", [], [], tables)
+        assert a == b
 
 
 # ── escaping: a quoted Postgres identifier can carry &, <, >, " ────────────
