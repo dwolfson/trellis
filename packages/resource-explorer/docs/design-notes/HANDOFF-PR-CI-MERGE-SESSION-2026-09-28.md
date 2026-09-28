@@ -77,8 +77,8 @@ Merged this morning, in order: #323 cache fix → #319 B → #320 D → #321 C �
 
 | # | branch | head | CI | what to do |
 |---|---|---|---|---|
-| 327 | re/prefect-prerequisite-resolution | 3f746393 | in progress | Section E. Merge on green; no gate (in-process live run recorded in its IMPLEMENTED doc). |
-| 328 | re/table-count-rename | 36a5964f | queued | Rename 157 → relation_count with old keys read as fallback. Merge on green; no gate. Independent of E. |
+| 327 | re/prefect-prerequisite-resolution | 3f746393 | **red again** (run 36420724638, 08:19) although this head contains the cache fix, so the flaky trio no longer explains it. The E agent (ad8f5b0a) is running `-rf` on this tip; suspect a semantic interaction with B/F/C merged this morning, or a test that needs the live Prefect server. Do not merge until green on a head that contains main. | Section E. No gate (in-process live run recorded in its IMPLEMENTED doc). |
+| 328 | re/table-count-rename | 36a5964f | **green** (08:21) | Rename 157 → relation_count with old keys read as fallback. **Ready to merge now**: head 36a5964f, no conflicts vs bf1c2f33 as of 08:05 (re-check with merge-tree), no gate. Independent of E. The design session's Bash was blocked by a transient classifier error at 08:25, so it did not merge this; it is the new session's first merge. |
 | 330 | re/g2-questions-headline-slot | 3979bbd7 | in progress | G2. **Do not merge yet**: Dan's gate found the answer line shows the lead analysis's whole paragraph. The G2 agent (a5c353d5) is adding a first-sentence rule in envelope.js with cross-check cases; it will push a new tip. Then: verify, re-poll, restart 8813 on it, ask Dan for a one-row re-check ("the fit row on adventureworks reads exactly one sentence starting NO REQUIREMENT DECLARED, marked ⚠; 'How big is this database' still reads its full single sentence"), merge on pass + green. |
 
 ### Branches without a PR yet
