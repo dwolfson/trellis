@@ -282,6 +282,81 @@ class TestCatalogFallbackRecoversPrimaryAndForeignKeys:
             "foreign_schema": "coco_ods", "foreign_table": "customers", "foreign_column": "id",
         }
 
+    def test_information_schema_visible_table_still_gets_catalog_keys(self):
+        """BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §A (2026-09-27): PK/FK are no
+        longer read from `information_schema.table_constraints`/
+        `key_column_usage`/`constraint_column_usage` at all, even for a
+        table `information_schema` can see fully — that query joined
+        `constraint_column_usage`, which is not keyed per column and
+        multiplied/collapsed rows when the REFERENCED table (e.g.
+        `person.businessentity`, referenced by five different tables on
+        AdventureWorks) carried several referencing constraints. `pg_
+        constraint`/`pg_attribute`, keyed by the REFERENCING side, has no
+        such collapse. This reproduces the shape: three tables' worth of FK
+        columns pointing at the same referenced table, a two-column
+        composite-style FK, and one column carrying two distinct FK
+        constraints (rare, legal) — all of it must survive."""
+        conn = _FakeCursorConnection(
+            information_schema_tables={
+                "orderdetail": {
+                    "table_type": "BASE TABLE",
+                    "columns": [
+                        {"column_name": "order_id", "data_type": "integer",
+                         "ordinal_position": 1, "nullable": False},
+                        {"column_name": "line_no", "data_type": "integer",
+                         "ordinal_position": 2, "nullable": False},
+                        {"column_name": "vendor_id", "data_type": "integer",
+                         "ordinal_position": 3, "nullable": True},
+                    ],
+                },
+            },
+            catalog_tables={"orderdetail": {"relkind": "r", "reltuples": 100}},
+            catalog_columns={},
+            catalog_fk_rows=[
+                # Two columns of the same local table referencing the same
+                # target table on two different columns — the composite
+                # shape (each local column contributes its own entry).
+                {"table_name": "orderdetail", "column_name": "order_id",
+                 "foreign_schema": "sales", "foreign_table": "orders",
+                 "foreign_column": "id"},
+                {"table_name": "orderdetail", "column_name": "line_no",
+                 "foreign_schema": "sales", "foreign_table": "orders",
+                 "foreign_column": "line_no"},
+                # One column, two distinct FK constraints (legal).
+                {"table_name": "orderdetail", "column_name": "vendor_id",
+                 "foreign_schema": "purchasing", "foreign_table": "vendor",
+                 "foreign_column": "id"},
+                {"table_name": "orderdetail", "column_name": "vendor_id",
+                 "foreign_schema": "purchasing", "foreign_table": "temp_vendor",
+                 "foreign_column": "id"},
+            ],
+        )
+        tables = conn._get_tables_for_schema(_schema("sales"))
+        assert tables[0]["source"] == "information_schema"
+        by_name = {c["name"]: c for c in tables[0]["columns"]}
+
+        # All three FK-bearing columns are captured — nothing collapsed by
+        # a referenced-table-side collision the way `constraint_column_
+        # usage` used to collapse them.
+        assert by_name["order_id"]["foreign_key"] == {
+            "foreign_schema": "sales", "foreign_table": "orders", "foreign_column": "id",
+        }
+        assert by_name["line_no"]["foreign_key"] == {
+            "foreign_schema": "sales", "foreign_table": "orders", "foreign_column": "line_no",
+        }
+        assert by_name["vendor_id"]["foreign_key"] == {
+            "foreign_schema": "purchasing", "foreign_table": "vendor", "foreign_column": "id",
+        }
+        # The rare column-carries-two-FKs case keeps both, not just the one
+        # that happened to be inserted last.
+        assert by_name["vendor_id"]["foreign_keys"] == [
+            {"foreign_schema": "purchasing", "foreign_table": "vendor", "foreign_column": "id"},
+            {"foreign_schema": "purchasing", "foreign_table": "temp_vendor", "foreign_column": "id"},
+        ]
+        # And no information_schema PK/FK query was ever issued — the
+        # retired queries are gone, not merely unused.
+        assert not any("information_schema.table_constraints" in q for q in conn.executed)
+
     def test_a_failed_catalog_key_query_stays_unestablished_not_a_guessed_false(self):
         """The `pg_constraint` read itself can fail (an odd permission
         setup, a connection hiccup) — that must NOT be read as "genuinely no

@@ -27,7 +27,14 @@ Truth from `pg_constraint` on `adventureworks` versus rows stored in
 | | truth | stored |
 |---|---|---|
 | FK columns `(table, column)` | 91 | 71 |
-| PK columns | 181 | 99 |
+| PK columns | 99 (see correction) | 99 |
+
+**Correction 2026-09-28 (design session):** the PK figure of 181 was wrong.
+That count came from `pg_constraint` across *all* schemas, and since
+PostgreSQL 14 the system catalogs carry primary keys: 82 of the 181 were
+`pg_catalog` tables. Restricted to user schemas the truth is 99, which the
+old path already captured. PK capture was never broken; only FK capture
+was. The rest of this section stands.
 
 Every one of the 20 missing FK columns points at a heavily referenced
 table (`person.businessentity` ×5, `production.product` ×4,
@@ -110,7 +117,10 @@ loss.
 /Applications/Postgres.app/Contents/Versions/16/bin/psql -p 5432 -U dwolfson -d adventureworks -Atc "select count(distinct (conrelid, k)) from pg_constraint, unnest(conkey) k where contype='f'; select count(*) from pg_constraint, unnest(conkey) where contype='p';"
 ```
 
-must equal the stored `database_columns` counts for the new run.
+must equal the stored `database_columns` counts for the new run (add
+`n.nspname not in ('pg_catalog','information_schema')` via a join to
+`pg_class`/`pg_namespace`; without it the PK count includes the system
+catalogs).
 
 ### Gate
 
