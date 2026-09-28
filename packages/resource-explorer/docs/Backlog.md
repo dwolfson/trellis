@@ -8488,3 +8488,45 @@ against one resource type and never gated for the others.
 `resourceType === 'repo'` before issuing it, the same way other repo-only
 probes are already gated elsewhere in `app.js`. No design question here —
 purely "don't call an endpoint that doesn't apply to this resource type."
+
+## `postgres_column_profile` silently samples nothing on `laz_local_adventureworks` — an aborted-transaction cascade masked as `status: "ok"` (Section E agent, 2026-09-28)
+
+The unchanged 468/768 `measured`/`not_collected` split in `database_column_profiles`
+across every run today (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md's original evidence, and
+still true after Section E's Prefect fix) has a concrete cause, not just an unclear
+one: the 468 `measured` rows come entirely from `pg_stats`, read by
+`postgres_schema_and_stats`; `postgres_column_profile`'s own per-value sampling has
+not added anything observable in any run today, on either the Prefect or local
+execution path (pre-dates Section E's fix, identical on both).
+
+**Mechanism**: a sampling query hits `TABLESAMPLE clause can only be applied to
+tables and materialized views` on a *view* in the schema. Postgres then aborts the
+surrounding transaction, and every subsequent sampling attempt in that same
+transaction fails with `current transaction is aborted, commands ignored until end
+of transaction block` — cascading silently across the rest of the profile run. The
+step still reports `status: "ok"`, so nothing surfaces the failure; it reads as "ran,
+nothing more to add" rather than "one view broke the whole batch."
+
+**Fix direction, not attempted here** (flagged as background task `task_3ce22015`
+for a dedicated session): either skip/guard views before issuing `TABLESAMPLE`
+against them, or give each table/view its own transaction (or savepoint) so one
+view's failure doesn't abort sampling for every table that follows it in the same
+run. Whichever fix lands, `status: "ok"` must stop being possible when a sampling
+attempt failed — that's the same silent-success shape `test_no_silent_success.py`
+already guards other steps against.
+
+## Three order-dependent flaky tests in `test_survey_definitions_routes.py` (found by Section E agent, 2026-09-28)
+
+Pre-existing, unrelated to any of the BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md fixes.
+Confirmed to fail only under a specific run order and to pass individually — not
+touched by any of Sections A–E:
+
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_returns_step_detail_for_valid_candidate`
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_step_enriched_with_produced_annotation_types`
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_native_processes_excludes_delete_kind`
+
+**Not investigated further here** — likely shared mutable state (a module-level
+cache, a monkeypatched fixture not torn down, or ordering-sensitive test data) inside
+`TestListCandidates`, but the actual shared state was not identified. Whoever picks
+this up should start by running the full-suite order that reproduces the failure
+and bisecting which sibling test leaves state behind.
