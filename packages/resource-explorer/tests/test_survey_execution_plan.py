@@ -141,7 +141,8 @@ def test_serialise_carries_exactly_what_the_flow_needs():
     assert rows[1] == {"step_key": "deep", "qualified_name": "QN::deep",
                        "executes_at": "resource-explorer",
                        "depends_on": ["triage"],
-                       "guarded_by": {"triage": "needs_deep"}}
+                       "guarded_by": {"triage": "needs_deep"},
+                       "satisfied_by_stored": {}}
 
 
 # ── PRODUCES edges (design §17.1's Prefect-side gap) ────────────────────────
@@ -291,6 +292,144 @@ def test_no_step_registry_keeps_the_old_behaviour(produces_world):
     plan = build_plan(FakeDefinition(steps=steps, links=links))
     assert plan.by_key["producer"].depends_on == ["consumer"]
     assert [s.step_key for s in plan.steps] == ["consumer", "producer"]
+
+
+# ── §E: a fresh stored answer satisfies the prerequisite, even on Prefect ──
+#
+# BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §E: Scouting had already run 20 minutes
+# earlier and left a schema inventory in the registry; the runtime resolver
+# (`_any_step_needs_prerequisites`) correctly saw that and routed the run to
+# Prefect, but `build_plan`'s purely structural check knew nothing about
+# stored data and raised `MissingPrerequisiteError` anyway because the
+# producer step (Scouting's own) isn't part of the Analysis definition. These
+# pin the fix: passing `registry`/`entity` lets the same freshness check the
+# resolver already trusts short-circuit the structural requirement.
+
+
+class _TimedRegistry:
+    """A registry double answering MAX(surveyed_at) for one table, the query
+    `step_preconditions._latest_surveyed_at` issues."""
+    def __init__(self, surveyed_at):
+        self._surveyed_at = surveyed_at
+
+    def _conn(self):
+        surveyed_at = self._surveyed_at
+
+        class _Conn:
+            def execute(self, sql, params):
+                from types import SimpleNamespace
+                return SimpleNamespace(fetchone=lambda: {"ts": surveyed_at})
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        return _Conn()
+
+
+def _iso_hours_ago(hours: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def test_a_fresh_stored_answer_needs_no_producer_edge_even_outside_the_definition(
+    produces_world,
+):
+    """`producer` is not authored into this definition at all — same shape as
+    `test_a_producer_outside_the_definition_is_a_build_time_error` — but the
+    entity already has a fresh row for the precondition `producer` would
+    fill. That must satisfy it without requiring `producer` to be one of
+    this definition's own steps."""
+    steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
+    entity = SimpleFakeEntity(slug="db1")
+    registry = _TimedRegistry(_iso_hours_ago(0.33))  # 20 minutes ago
+    plan = build_plan(FakeDefinition(steps=steps, links=[]),
+                      step_registry=produces_world,
+                      registry=registry, entity=entity)
+    consumer = plan.by_key["consumer"]
+    assert consumer.depends_on == [], "a fresh stored answer must not add an edge"
+    assert consumer.satisfied_by_stored.get("needs_thing"), (
+        "provenance for the satisfied-by-stored precondition was not recorded"
+    )
+
+
+def test_a_stale_stored_answer_still_raises_the_build_time_error(produces_world):
+    """A row exists but is well outside the freshness window — this must NOT
+    be treated as satisfied; the producer is still required."""
+    steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
+    entity = SimpleFakeEntity(slug="db1")
+    registry = _TimedRegistry(_iso_hours_ago(500))
+    with pytest.raises(MissingPrerequisiteError) as excinfo:
+        build_plan(FakeDefinition(steps=steps, links=[]),
+                  step_registry=produces_world, registry=registry, entity=entity)
+    assert excinfo.value.producer_key == "producer"
+    assert excinfo.value.precondition_name == "needs_thing"
+
+
+def test_no_stored_answer_at_all_still_raises_the_build_time_error(produces_world):
+    steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
+    entity = SimpleFakeEntity(slug="db1")
+    registry = _TimedRegistry(None)
+    with pytest.raises(MissingPrerequisiteError):
+        build_plan(FakeDefinition(steps=steps, links=[]),
+                  step_registry=produces_world, registry=registry, entity=entity)
+
+
+def test_omitting_registry_and_entity_keeps_the_old_structural_only_behaviour(
+    produces_world,
+):
+    """Every call site that does not (yet) pass registry/entity must see
+    exactly the old error — no freshness check silently applied."""
+    steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
+    with pytest.raises(MissingPrerequisiteError, match="producer"):
+        build_plan(FakeDefinition(steps=steps, links=[]),
+                  step_registry=produces_world)
+
+
+class SimpleFakeEntity:
+    def __init__(self, slug):
+        self.slug = slug
+
+
+def test_serialise_carries_satisfied_by_stored():
+    steps = [FakeStep(guid="a", re_analysis_step="a")]
+    plan = build_plan(FakeDefinition(steps=steps, links=[]))
+    plan.steps[0].satisfied_by_stored["has_schema_inventory"] = "2026-09-27T20:59:29+00:00"
+    rows = serialise(plan)
+    assert rows[0]["satisfied_by_stored"] == {
+        "has_schema_inventory": "2026-09-27T20:59:29+00:00"}
+
+
+# ── §E item 4: `requires` alongside `produces`, and the authoring-time lint ──
+
+
+def test_step_info_requires_derives_from_requires_context(produces_world):
+    consumer = produces_world["consumer"]
+    assert consumer.requires == ("producer",), (
+        "StepInfo.requires must derive the producer from requires_context, "
+        "not require a second hand-typed declaration"
+    )
+    assert produces_world["producer"].requires == ()
+
+
+def test_authoring_gaps_names_a_precondition_whose_producer_is_missing(
+    produces_world,
+):
+    from resource_explorer.surveyors.survey_execution_plan import authoring_gaps
+
+    steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
+    gaps = authoring_gaps(FakeDefinition(steps=steps, links=[]), produces_world)
+    assert gaps == [{"step_key": "consumer", "requires": "producer",
+                     "in_definition": False}]
+
+
+def test_authoring_gaps_is_empty_when_the_producer_is_also_authored(
+    produces_world,
+):
+    from resource_explorer.surveyors.survey_execution_plan import authoring_gaps
+
+    steps = [FakeStep(guid="producer", re_analysis_step="producer"),
+             FakeStep(guid="consumer", re_analysis_step="consumer")]
+    links = [FakeLink("producer", "consumer")]
+    assert authoring_gaps(FakeDefinition(steps=steps, links=links), produces_world) == []
 
 
 def test_every_live_definition_plans_to_its_existing_order():

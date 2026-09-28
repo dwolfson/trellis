@@ -994,3 +994,106 @@ class TestCredentialFallbackToStoredEntity:
         _, kwargs = runner.call_args
         assert "db_user" not in kwargs
         assert "db_pwd" not in kwargs
+
+
+# ── §E item 3: a named next step, not a bare MissingPrerequisiteError ───────
+
+
+class _MissingPrereq(Exception):
+    """Stand-in for survey_execution_plan.MissingPrerequisiteError — carries
+    the same two attributes the real exception does, without importing the
+    real class into this fake-heavy corner of the test module."""
+    def __init__(self, message, producer_key):
+        super().__init__(message)
+        self.producer_key = producer_key
+        self.precondition_name = "has_schema_inventory"
+
+
+class TestProposeProducerDefinition:
+    """`SurveyDefinitionExecutor._propose_producer_definition` — the Egeria
+    lookup that turns 'producer is not one of this definition's own steps'
+    into 'run Scouting first'."""
+
+    def _executor(self, candidates, survey_def):
+        reader = MagicMock()
+        reader.find_candidate_process_guids.return_value = candidates
+        reader.fetch.return_value = survey_def
+        registry = _fake_registry()
+        adapter = ResourceTypeAdapter(
+            entity_type="database", technology_type="PostgreSQL Database",
+            re_analysis_steps={}, get_entity=lambda registry, slug: object(),
+            publish=MagicMock(),
+        )
+        register_adapter(adapter)
+        return SurveyDefinitionExecutor(registry, reader=reader)
+
+    def test_names_the_definition_that_authors_the_missing_producer(self):
+        scouting_step = SurveyStep(guid="g1", display_name="Schema and Stats",
+                                   qualified_name="QN::schema",
+                                   re_analysis_step="postgres_schema_and_stats")
+        scouting_def = SurveyDefinition(
+            process_guid="g-scout", display_name="Scouting Survey",
+            qualified_name="GovActionProcess::Scouting",
+            supported_technology_type="PostgreSQL Database",
+            steps=[scouting_step])
+        executor = self._executor(
+            candidates=[{"guid": "g-scout", "display_name": "Scouting Survey",
+                        "qualified_name": "GovActionProcess::Scouting"}],
+            survey_def=scouting_def)
+
+        exc = _MissingPrereq(
+            "GovActionProcess::DatabaseAnalysisSurvey: step "
+            "'postgres_column_profile' needs 'has_schema_inventory', produced "
+            "by 'postgres_schema_and_stats', but 'postgres_schema_and_stats' "
+            "is not one of this definition's own steps.",
+            producer_key="postgres_schema_and_stats")
+
+        message = executor._propose_producer_definition("database", exc)
+        assert "Scouting Survey" in message
+        assert "postgres_column_profile" in message  # the original message survives
+        assert "run" in message.lower()
+
+    def test_falls_back_to_the_plain_message_when_no_candidate_has_the_producer(self):
+        other_step = SurveyStep(guid="g2", display_name="Other",
+                                qualified_name="QN::other",
+                                re_analysis_step="some_other_step")
+        other_def = SurveyDefinition(
+            process_guid="g-other", display_name="Other Survey",
+            qualified_name="GovActionProcess::Other",
+            supported_technology_type="PostgreSQL Database",
+            steps=[other_step])
+        executor = self._executor(
+            candidates=[{"guid": "g-other", "display_name": "Other Survey",
+                        "qualified_name": "GovActionProcess::Other"}],
+            survey_def=other_def)
+
+        exc = _MissingPrereq("bare message naming postgres_schema_and_stats",
+                             producer_key="postgres_schema_and_stats")
+        message = executor._propose_producer_definition("database", exc)
+        assert message == "bare message naming postgres_schema_and_stats"
+
+    def test_a_reader_failure_falls_back_to_the_plain_message_rather_than_raising(self):
+        reader = MagicMock()
+        reader.find_candidate_process_guids.side_effect = RuntimeError("unreachable")
+        registry = _fake_registry()
+        adapter = ResourceTypeAdapter(
+            entity_type="database", technology_type="PostgreSQL Database",
+            re_analysis_steps={}, get_entity=lambda registry, slug: object(),
+            publish=MagicMock(),
+        )
+        register_adapter(adapter)
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        exc = _MissingPrereq("bare message", producer_key="postgres_schema_and_stats")
+        assert executor._propose_producer_definition("database", exc) == "bare message"
+
+    def test_no_producer_key_at_all_returns_the_message_unchanged(self):
+        """Defensive: an exception without the new attribute (shouldn't
+        happen from the real class, but this function must not crash on
+        one) is treated as having nothing to look up."""
+        reader = MagicMock()
+        registry = _fake_registry()
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+        exc = _MissingPrereq("bare message", producer_key="")
+        assert executor._propose_producer_definition("database", exc) == "bare message"
+        reader.find_candidate_process_guids.assert_not_called()

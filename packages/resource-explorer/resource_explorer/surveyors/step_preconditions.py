@@ -67,6 +67,66 @@ def _row_count(registry, table: str, slug: str, where: str = "",
         return -1
 
 
+#: How long a producer's stored result stands in for a fresh run of it, when
+#: the resolver is asked whether a precondition is satisfied — brief
+#: BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §E, "the resolver checks the registry
+#: for a prior result ... within a freshness window (see design §5.1a for the
+#: window definition)". §5.1a itself (multi-resource-questions-design.md)
+#: defines freshness for *catalog statistics* (pg_stats: fresh/stale/
+#: never_collected/not_visible, judged by modification count and age), not a
+#: single numeric window for "does a structural inventory still count" — this
+#: is a different question (a table/column *inventory* row, not a stats
+#: estimate) that the design does not give a number for. 24 hours is this
+#: change's own judgement call, chosen so a same-day Scouting → Analysis
+#: sequence (the brief's own worked example: 20 minutes apart) is always
+#: satisfied, while a schema inventory from last week is treated as stale
+#: enough to be worth refreshing rather than silently reused forever — the
+#: `_row_count`-only check this replaces had no upper bound at all. Recorded
+#: here, explicitly, rather than left as an unstated constant, so a later
+#: reader can find and revisit it with one grep.
+DEFAULT_FRESHNESS_WINDOW_HOURS = 24
+
+
+def _latest_surveyed_at(registry, table: str, slug: str,
+                        slug_column: str = "project_slug") -> str | None:
+    """The newest `surveyed_at` for `table`/`slug`, or None if there is none
+    or the table cannot be read. Used for provenance ("schema inventory from
+    20:59:29") and for the freshness-window check below — the *same* query
+    `_row_count` already trusts to answer "does this table exist for this
+    resource", just asking for the timestamp instead of the count.
+    """
+    try:
+        with registry._conn() as conn:
+            row = conn.execute(
+                f"SELECT MAX(surveyed_at) AS ts FROM {table} WHERE {slug_column} = ?",
+                (slug,),
+            ).fetchone()
+        ts = row["ts"] if row else None
+        return str(ts) if ts else None
+    except Exception as exc:
+        log.debug("precondition: cannot read surveyed_at from %s for %s: %s",
+                  table, slug, exc)
+        return None
+
+
+def _hours_since(surveyed_at: str) -> float | None:
+    """Hours between `surveyed_at` (an ISO-ish timestamp as stored by this
+    registry) and now, or None if it cannot be parsed — treated as "can't
+    tell freshness" by the caller, not as "definitely stale"."""
+    from datetime import datetime, timezone
+
+    for candidate in (surveyed_at, surveyed_at.replace(" ", "T")):
+        try:
+            ts = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+    log.debug("precondition: could not parse surveyed_at %r", surveyed_at)
+    return None
+
+
 def _needs_rows(table: str, what: str, where: str = "",
                 slug_column: str = "project_slug") -> Callable:
     def check(registry, project) -> tuple[bool, str]:
@@ -90,6 +150,11 @@ class Precondition:
     `step_produces.producer_of()` inverts to a step key. The producer is
     therefore never written down twice.
 
+    `slug_column` is carried separately from `check` (whose closure already
+    knows it) so `freshness()` below can run the same "which table, keyed by
+    what" lookup `_needs_rows` uses, without re-deriving it or asking the
+    check to expose its own closure.
+
     `caveat` carries the part of a remedy that is NOT "run this step" — the
     Gradle/BOM case below is the whole reason the field exists: running
     `repo_manifest_parse` is necessary and, on that repository, not
@@ -97,6 +162,7 @@ class Precondition:
     """
     check: Callable
     table: str
+    slug_column: str = "project_slug"
     caveat: str = ""
 
     def produced_by(self) -> str:
@@ -116,6 +182,30 @@ class Precondition:
                 "no step can be named to satisfy this."
             )
         return f"Run {step}{f' ({self.caveat})' if self.caveat else ''} first."
+
+    def freshness(self, registry, project,
+                 window_hours: float = DEFAULT_FRESHNESS_WINDOW_HOURS
+                 ) -> tuple[bool, str | None]:
+        """(within_window, surveyed_at).
+
+        `surveyed_at` is the newest timestamp found for this table/slug (or
+        None if there is none) — the provenance stamp design §17.1/§E asks
+        for ("schema inventory from 20:59:29"), returned whether or not it
+        falls inside the window so a caller can still report what it found.
+        `within_window` is False when there is no row at all, or its age
+        cannot be determined (the conservative reading — see
+        `_hours_since`'s docstring: unparseable is "can't tell", handled by
+        the caller as "not fresh enough to skip a producer" rather than
+        assumed fresh).
+        """
+        surveyed_at = _latest_surveyed_at(registry, self.table, project.slug,
+                                          self.slug_column)
+        if not surveyed_at:
+            return False, None
+        age_hours = _hours_since(surveyed_at)
+        if age_hours is None:
+            return False, surveyed_at
+        return age_hours <= window_hours, surveyed_at
 
 
 #: name → the condition. No producer string: see this module's docstring and
@@ -152,8 +242,28 @@ PRECONDITIONS: dict[str, Precondition] = {
     "has_schema_inventory": Precondition(
         _needs_rows("database_tables", "schema inventory",
                     slug_column="database_slug"),
-        table="database_tables"),
+        table="database_tables",
+        slug_column="database_slug"),
 }
+
+
+def fresh_hit(registry, project, name: str,
+             window_hours: float = DEFAULT_FRESHNESS_WINDOW_HOURS
+             ) -> tuple[bool, str | None]:
+    """(within_window, surveyed_at) for a named precondition, or (False, None)
+    for a name this module does not know.
+
+    Shared by `prerequisite_resolver` (the runtime, per-entity check) and
+    `survey_execution_plan._add_produces_edges` (the Prefect plan builder,
+    §E) so "does this precondition already have a fresh stored answer" has
+    exactly one implementation — design §19.5's principle ("a fresh answer
+    satisfies the prerequisite") applied consistently rather than
+    re-derived once per engine.
+    """
+    entry = PRECONDITIONS.get(name)
+    if entry is None:
+        return False, None
+    return entry.freshness(registry, project, window_hours)
 
 
 def evaluate(registry, project, requires_context: dict[str, str]) -> tuple[bool, str, str]:

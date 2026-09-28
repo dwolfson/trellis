@@ -50,6 +50,26 @@ that the plan asked for something outside its own budget. See
 the resolver's "propose to the user" (Prefect has no such surface at build
 time — this is a documented judgement call for this change, not something
 §17.1 itself specifies).
+
+**`registry`/`entity` are now optional exceptions to the paragraph above
+(BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §E, 2026-09-27).** The "no entity here"
+argument was true for `build_plan`'s ONLY caller when this module was
+written, but `SurveyDefinitionExecutor._run_via_prefect` calls it once PER
+ENTITY (it already has `entity.slug` in scope to pass to the flow) — so for
+that caller the plan is not actually reused across entities, and the
+purity argument does not hold. The bug this closes: `_any_step_needs_
+prerequisites` already asks `prerequisite_resolver.resolve()` whether an
+entity's STORED DATA satisfies a step's precondition, and correctly says
+SATISFIED when e.g. Scouting ran 20 minutes ago and left a schema inventory
+behind — but that answer never reached this function, so `build_plan` still
+raised `MissingPrerequisiteError` for a precondition that was, in fact,
+already met. When `registry`/`entity` are passed, `_add_produces_edges`
+checks `step_preconditions.fresh_hit()` for each unmet-by-definition
+precondition BEFORE treating its producer as required: a fresh stored
+answer needs no edge and no error, only a provenance note; only a missing
+or stale one still requires the producer to be part of this definition.
+Omitted (every other caller), the function behaves exactly as it did before
+this change.
 """
 from __future__ import annotations
 
@@ -74,6 +94,13 @@ class PlannedStep:
     #: {upstream step_key: guard} for edges that are conditional. An entry here
     #: means this step runs only if that upstream emitted that guard.
     guarded_by: dict = field(default_factory=dict)
+    #: {precondition name: surveyed_at} for every precondition this step
+    #: declares that was found already satisfied by FRESH stored data (§E,
+    #: `step_preconditions.fresh_hit`) rather than by an edge in this plan —
+    #: only populated when `build_plan` was given `registry`/`entity`. This is
+    #: the provenance a report/UI can show ("schema inventory from
+    #: 20:59:29") for an input this run never (re-)produced itself.
+    satisfied_by_stored: dict = field(default_factory=dict)
 
     @property
     def conditional(self) -> bool:
@@ -117,7 +144,9 @@ class CyclicPlanError(ValueError):
 
 class MissingPrerequisiteError(ValueError):
     """A step's declared precondition is produced by a step that is not one
-    of this definition's own steps.
+    of this definition's own steps, AND is not already satisfied by fresh
+    stored data (`step_preconditions.fresh_hit` — only checked when the
+    caller passed `registry`/`entity`; see `build_plan`'s docstring).
 
     The local resolver (`prerequisite_resolver.resolve`) can run a producer
     from outside the current definition's step list, because it dispatches
@@ -127,7 +156,19 @@ class MissingPrerequisiteError(ValueError):
     metadata to build a task for a producer the definition never authored.
     Raised at build time, naming the missing producer, rather than silently
     planning a definition that will still dispatch a step with absent input.
+
+    Carries `precondition_name`/`producer_key` (beyond the message string) so
+    a caller with access to Egeria (`SurveyDefinitionExecutor._run_via_prefect`,
+    which this module deliberately does not import) can look up which Survey
+    Definition authors `producer_key` and turn this into a named "run X
+    first" proposal (§E item 3) instead of surfacing the bare message.
     """
+
+    def __init__(self, message: str, *, precondition_name: str = "",
+                producer_key: str = "") -> None:
+        super().__init__(message)
+        self.precondition_name = precondition_name
+        self.producer_key = producer_key
 
 
 class PrerequisiteTierError(ValueError):
@@ -157,6 +198,8 @@ def build_plan(
     step_registry: Mapping[str, Any] | None = None,
     max_fetch_cost: str | None = None,
     max_compute_cost: str | None = None,
+    registry: Any = None,
+    entity: Any = None,
 ) -> ExecutionPlan:
     """An ExecutionPlan from a SurveyDefinition.
 
@@ -176,6 +219,15 @@ def build_plan(
     `prerequisite_resolver.Budget.for_step` accepts — a caller that already
     knows the run's budget can pass it; omitted, the budget check falls back
     to each demanding step's own declared tier, exactly as the resolver does.
+
+    `registry`/`entity` (§E, 2026-09-27): optional, and ONLY meaningful
+    together with `step_registry`. When both are given, a precondition whose
+    producer is not one of this definition's own steps is checked against
+    `step_preconditions.fresh_hit()` before `_add_produces_edges` raises
+    `MissingPrerequisiteError` — see that function and the module docstring's
+    "registry/entity are now optional exceptions" note for why this caller
+    can safely do what the module-level docstring says a plan-once-per-
+    definition build cannot. Omitted, behaviour is unchanged.
     """
     steps = list(getattr(survey_def, "steps", []) or [])
     by_guid = {getattr(s, "guid", None): s for s in steps}
@@ -229,7 +281,7 @@ def build_plan(
 
     if step_registry:
         _add_produces_edges(planned, step_registry, plan.process_qualified_name,
-                            max_fetch_cost, max_compute_cost)
+                            max_fetch_cost, max_compute_cost, registry, entity)
 
     # Recomputed after PRODUCES folding, not from `incoming`: a step with no
     # AUTHORED predecessor can still gain one here, and a plan that still
@@ -242,6 +294,7 @@ def build_plan(
 def _add_produces_edges(
     planned: dict, step_registry: Mapping[str, Any], process_name: str,
     max_fetch_cost: str | None, max_compute_cost: str | None,
+    registry: Any = None, entity: Any = None,
 ) -> None:
     """Fold `PRODUCES`/precondition edges into the authored graph, in place.
 
@@ -255,6 +308,21 @@ def _add_produces_edges(
     definition's steps, and does its declared cost fit the tier the demanding
     step was authored at — is exactly what this adds, with the two
     corresponding build-time errors instead of the resolver's proposal.
+
+    **§E, 2026-09-27: `registry`/`entity`, when given, add a third answer
+    ahead of both of those** — is the precondition already met by a FRESH
+    stored result, regardless of whether its producer is even in this
+    definition? This is design §19.5's principle ("a fresh answer satisfies
+    the prerequisite") applied on the Prefect path, which previously had no
+    way to apply it at all: `_any_step_needs_prerequisites` (the runtime,
+    per-entity resolver call in `survey_definition_executor.py`) already
+    computes this correctly and routes a definition with anything unmet to
+    the local loop — but a precondition the runtime resolver found SATISFIED
+    (fresh data already there) still reached this purely structural check,
+    which knew nothing about stored data and raised `MissingPrerequisiteError`
+    regardless. Checking freshness here too closes that gap: whichever
+    engine runs the definition, "the data is already there and current"
+    means the same thing.
 
     One flat pass over every step, not a recursive walk: `PRODUCES` and
     `PRECONDITIONS` are static declarations, so a producer's OWN precondition
@@ -303,15 +371,29 @@ def _add_produces_edges(
                 # honestly), or a step gating on the table it writes itself —
                 # neither is an edge this plan can add.
                 continue
+
+            if registry is not None and entity is not None:
+                fresh, surveyed_at = step_preconditions.fresh_hit(registry, entity, name)
+                if fresh:
+                    # Already satisfied by stored data — no edge needed at
+                    # all, whether or not `producer` is even one of this
+                    # definition's steps. The demanding step reads the
+                    # existing rows when it runs; provenance travels with the
+                    # plan so a report/UI can say where they came from.
+                    planned[key].satisfied_by_stored[name] = surveyed_at
+                    continue
+
             if producer not in planned:
                 raise MissingPrerequisiteError(
                     f"{process_name or 'this definition'}: step {key!r} needs "
                     f"{name!r}, produced by {producer!r}, but {producer!r} is "
-                    "not one of this definition's own steps. Prefect can only "
-                    "schedule steps this definition authored — add "
-                    f"{producer!r} to the definition, or run this definition "
-                    "through the local execution loop, which can auto-run or "
-                    "propose an out-of-definition producer."
+                    "not one of this definition's own steps, and no fresh "
+                    f"stored result for {name!r} was found. Prefect can only "
+                    "schedule steps this definition authored — run "
+                    f"{producer!r} first, add it to the definition, or run "
+                    "this definition through the local execution loop, which "
+                    "can auto-run or propose an out-of-definition producer.",
+                    precondition_name=name, producer_key=producer,
                 )
             if producer in ancestors(key):
                 continue  # already runs first, via an authored or folded edge
@@ -358,6 +440,42 @@ def _topological(planned: dict, process_name: str) -> list:
     return out
 
 
+def authoring_gaps(survey_def, step_registry: Mapping[str, Any]) -> list[dict]:
+    """Every unmet-by-design prerequisite in `survey_def`, at authoring time.
+
+    §E item 4: "definition documents declare `requires:` alongside
+    `produces:` so the generator can list unmet-by-design prerequisites at
+    authoring time." `StepInfo.requires` is that declaration (derived from
+    `requires_context`, see its own docstring for why it's a property and
+    not a second hand-typed field); this is the generator-side reader of it
+    — no registry, no entity, no Prefect: just "for each of this
+    definition's own steps, is every step it `requires` ALSO one of this
+    definition's own steps?" Exactly `_add_produces_edges`'s structural
+    question, asked without the side effect of raising, so a definition
+    author (or a lint step in whatever composes/validates Survey Definition
+    YAML) can list every gap in one pass instead of hitting them one at a
+    time as `MissingPrerequisiteError`.
+
+    Returns one entry per gap: `{step_key, requires, in_definition}` — a step
+    declaring no `requires` produces no entries, and a `requires` fully
+    covered by the definition's own steps produces no entries either.
+    """
+    own_keys = {
+        (getattr(s, "re_analysis_step", None) or getattr(s, "qualified_name", ""))
+        for s in getattr(survey_def, "steps", []) or []
+    }
+    gaps: list[dict] = []
+    for key in sorted(own_keys):
+        info = step_registry.get(key)
+        if info is None:
+            continue
+        for producer in getattr(info, "requires", ()) or ():
+            if producer not in own_keys:
+                gaps.append({"step_key": key, "requires": producer,
+                            "in_definition": False})
+    return gaps
+
+
 def serialise(plan: ExecutionPlan) -> list:
     """The plan as plain dicts, for handing to a Prefect flow.
 
@@ -367,5 +485,6 @@ def serialise(plan: ExecutionPlan) -> list:
     """
     return [{"step_key": s.step_key, "qualified_name": s.qualified_name,
              "executes_at": s.executes_at, "depends_on": list(s.depends_on),
-             "guarded_by": dict(s.guarded_by)}
+             "guarded_by": dict(s.guarded_by),
+             "satisfied_by_stored": dict(s.satisfied_by_stored)}
             for s in plan.steps]
