@@ -89,6 +89,15 @@ loss.
 2. Delete the `information_schema` PK/FK queries once nothing calls them.
 3. Re-survey both databases; store nothing new for coco_pharma beyond the
    run itself.
+4. Decide and document `_catalog_keys_for_schema()`'s failure path. Its
+   signature is `tuple[dict | None, dict | None]` — it can fail. Once it is
+   the primary path, a `(None, None)` return must not silently collapse to
+   zero keys (a regression from today's `information_schema`-first
+   behavior). Either the primary path falls back to the old
+   `information_schema` queries on `None` before they're deleted (drop step
+   2), or the caller surfaces the failure (e.g. keys reported
+   "not_established" for that schema) rather than reporting zero keys as if
+   they were measured. Pick one and say which in the IMPLEMENTED doc.
 
 ### Tests
 
@@ -195,6 +204,12 @@ A first (it changes what B reads), then B. Both are Opus-sized. Neither
 touches `app.js`. Expect two PRs; report each tip to the design session
 for CI polling and merge.
 
+**This section predates C, D, and E** (added below the same day, after this
+section was written) and says nothing about where they fit. They are
+independent of A/B and of each other — no ordering constraint connects
+them — so they can be picked up in any order, by any session, in parallel
+with the A→B work. Treat "two PRs" above as scoped to A/B only.
+
 ---
 
 ## C. The gap guard tests nothing (added 2026-09-27)
@@ -227,6 +242,19 @@ Two blind spots:
   id fails the build with the message "this gap names something that
   exists: re-word as PARTIAL or name the missing piece".
 - A `PARTIAL:` note must name at least one registered id, or it fails.
+- **The naive regex is a false-positive risk, not a detail to skip.**
+  Matching *any* underscored lowercase token in the note's prose means an
+  incidental word choice (e.g. a future `GAP:` note that happens to say
+  `not_collected` or `primary_key` in passing, not as an id reference)
+  can coincidentally collide with a real analysis/step id and fail the
+  build for the wrong reason — a guard that cries wolf gets routed around,
+  which is the same failure this brief opened by describing. Require some
+  marking that distinguishes a real id reference from incidental prose
+  (e.g. backticks: `` `postgres_column_profile` ``) before checking it
+  against the registry, rather than scanning free text for anything
+  underscore-shaped. If backtick-marking is judged not worth the churn on
+  existing rows, say so explicitly and accept the tradeoff in the
+  IMPLEMENTED doc rather than leaving it unconsidered.
 - Report, per resource type, how many rows are GAP / PARTIAL / answered, and
   write the table into the IMPLEMENTED doc so the count is visible.
 
