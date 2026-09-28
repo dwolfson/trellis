@@ -234,6 +234,16 @@ class DerivedInputs:
     columns: list[dict] = field(default_factory=list)
     profiles: list[dict] = field(default_factory=list)
     activity: list[dict] = field(default_factory=list)
+    #: BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B — per-structured-table
+    #: provenance. `surveyed_at` above is a single "as of" summary (the
+    #: newest of the values below); this dict is what actually answers "which
+    #: run did THIS table's rows come from" when two structured tables were
+    #: last measured by different runs (e.g. "activity from 19:24:00,
+    #: structure from 19:24:03"). Keyed by table name
+    #: (`database_schemas`/`database_tables`/`database_columns`/
+    #: `database_column_profiles`/`database_table_activity`); a table this
+    #: slug has never had rows for is simply absent, not mapped to `None`.
+    table_surveyed_at: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_schema_rows(self) -> bool:
@@ -287,29 +297,156 @@ class DerivedInputs:
         )
 
 
+#: Counters `_activity_evidence` and `_has_measured_counter` both treat as
+#: "this row carries a real measurement" — kept as one list so the write-time
+#: shape (`_survey_extended_statistics`, `database_surveyor.py`) and this
+#: read-time check agree on what "measured" means.
+_ACTIVITY_COUNTER_FIELDS = (
+    "rows_inserted", "rows_updated", "rows_deleted", "seq_scan", "idx_scan",
+)
+
+
+def _has_measured_counter(rows: list[dict]) -> bool:
+    """Does any row in this `database_table_activity` snapshot carry a real
+    tuple counter, rather than every row being `state=not_collected`/
+    `not_supported` with every counter NULL?
+
+    A run that requests `"statistics"` still writes one activity row per
+    table even when `pg_stat_user_tables` has nothing for that table (or the
+    engine capability is absent) — see `_survey_extended_statistics`'s
+    `STATE_NOT_COLLECTED`/`STATE_NOT_SUPPORTED` branches. That is a real,
+    honest "ran, found nothing" answer for THAT run, but it must not shadow
+    an earlier run that genuinely measured activity — BRIEF-KEYS-AND-
+    ACTIVITY-CLOBBER.md §B's exact finding on `laz_local_adventureworks`.
+    """
+    return any(
+        any(row.get(field) is not None for field in _ACTIVITY_COUNTER_FIELDS)
+        for row in rows
+    )
+
+
+def _resolve_table_surveyed_at(
+    registry,
+    slug: str,
+    table: str,
+    source: str | None,
+    *,
+    require_measured_counter: bool = False,
+) -> tuple[str | None, list[dict]]:
+    """The newest `(surveyed_at, rows)` for `table` that actually has rows.
+
+    Walks survey history newest-first (`_snapshot_keys`) rather than trusting
+    a single "latest overall" surveyed_at, because a later run's OWN steps can
+    genuinely never touch a structured table at all (a `schema_inventory`-only
+    run writes no `database_table_activity` rows for its `surveyed_at`) while
+    an earlier run in the same history did — see BRIEF-KEYS-AND-ACTIVITY-
+    CLOBBER.md §B. `require_measured_counter` (activity only) additionally
+    skips a run whose rows exist but carry no real counter at all (every row
+    `not_collected`/`not_supported`) — present-but-unmeasured must not count
+    as "this run has the answer" either.
+    """
+    for at, src in _snapshot_keys(registry, slug):
+        if source is not None and src != source:
+            continue
+        try:
+            rows = registry.query_detail_rows(table, slug, at, src)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(
+                "db_derived: could not read %s for %s at %s: %s", table, slug, at, exc
+            )
+            continue
+        if not rows:
+            continue
+        if require_measured_counter and not _has_measured_counter(rows):
+            continue
+        return at, rows
+    return None, []
+
+
 def load_inputs(
     registry,
     slug: str,
     surveyed_at: str | None = None,
     source: str | None = None,
 ) -> DerivedInputs:
-    """Read one snapshot's stored rows. No fetch, no connection."""
-    def _rows(table: str) -> list[dict]:
-        try:
-            return registry.query_detail_rows(table, slug, surveyed_at, source)
-        except Exception as exc:  # pragma: no cover - defensive
-            log.warning("db_derived: could not read %s for %s: %s", table, slug, exc)
-            return []
+    """Read stored rows for every structured table `db_derived` uses.
+
+    With an explicit `surveyed_at`, this is exactly one snapshot — every table
+    read at that same run, as before (a caller asking for a specific historical
+    run wants that run's own picture, clobbered sections and all).
+
+    With `surveyed_at=None` (the common "what do we currently know" case, and
+    what `run_db_derived`'s default caller uses), each structured table
+    resolves its OWN newest non-empty `surveyed_at` independently rather than
+    all sharing one global "latest" pick — BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md
+    §B: a run whose own steps never touched `database_table_activity` (or
+    touched it and found nothing) must not make an earlier run's real
+    activity unreadable just because it is a newer row for `database_tables`.
+    See `DerivedInputs.table_surveyed_at` for the per-table provenance this
+    produces, and `_resolve_table_surveyed_at` for the resolution rule.
+    """
+    if surveyed_at is not None:
+        def _rows(table: str) -> list[dict]:
+            try:
+                return registry.query_detail_rows(table, slug, surveyed_at, source)
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("db_derived: could not read %s for %s: %s", table, slug, exc)
+                return []
+
+        rows_by_table = {
+            "database_schemas": _rows("database_schemas"),
+            "database_tables": _rows("database_tables"),
+            "database_columns": _rows("database_columns"),
+            "database_column_profiles": _rows("database_column_profiles"),
+            "database_table_activity": _rows("database_table_activity"),
+        }
+        return DerivedInputs(
+            slug=slug,
+            surveyed_at=surveyed_at,
+            source=source,
+            schemas=rows_by_table["database_schemas"],
+            tables=rows_by_table["database_tables"],
+            columns=rows_by_table["database_columns"],
+            profiles=rows_by_table["database_column_profiles"],
+            activity=rows_by_table["database_table_activity"],
+            table_surveyed_at={
+                table: surveyed_at for table, rows in rows_by_table.items() if rows
+            },
+        )
+
+    schemas_at, schemas = _resolve_table_surveyed_at(registry, slug, "database_schemas", source)
+    tables_at, tables = _resolve_table_surveyed_at(registry, slug, "database_tables", source)
+    columns_at, columns = _resolve_table_surveyed_at(registry, slug, "database_columns", source)
+    profiles_at, profiles = _resolve_table_surveyed_at(
+        registry, slug, "database_column_profiles", source
+    )
+    activity_at, activity = _resolve_table_surveyed_at(
+        registry, slug, "database_table_activity", source, require_measured_counter=True
+    )
+
+    table_surveyed_at = {
+        table: at
+        for table, at in (
+            ("database_schemas", schemas_at),
+            ("database_tables", tables_at),
+            ("database_columns", columns_at),
+            ("database_column_profiles", profiles_at),
+            ("database_table_activity", activity_at),
+        )
+        if at is not None
+    }
+    latest_at = max(table_surveyed_at.values(), default=None)
 
     return DerivedInputs(
         slug=slug,
-        surveyed_at=surveyed_at,
+        surveyed_at=latest_at,
         source=source,
-        schemas=_rows("database_schemas"),
-        tables=_rows("database_tables"),
-        columns=_rows("database_columns"),
-        profiles=_rows("database_column_profiles"),
-        activity=_rows("database_table_activity"),
+        schemas=schemas,
+        tables=tables,
+        columns=columns,
+        profiles=profiles,
+        activity=activity,
+        table_surveyed_at=table_surveyed_at,
     )
 
 
@@ -624,6 +761,23 @@ def _fingerprint_evidence(fingerprint: dict) -> dict[str, float] | None:
     return evidence
 
 
+#: Which structured table each classification family's evidence is actually
+#: read from — BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B's "the evidence panel
+#: must show which run each family came from". `structure`/`naming` both read
+#: `inputs.tables`/`inputs.columns` (see `_structure_evidence`/
+#: `_naming_evidence`); `database_tables` is used as the representative
+#: surveyed_at since a schema/table/column catalog is always written together
+#: by the same run. `fingerprint` has no structured-table source of its own —
+#: it also reads `inputs.tables`/`inputs.columns` (via `_signature`), so it
+#: shares the same provenance.
+_FAMILY_SOURCE_TABLE = {
+    "structure": "database_tables",
+    "naming": "database_tables",
+    "activity": "database_table_activity",
+    "fingerprint": "database_tables",
+}
+
+
 def classify_database(inputs: DerivedInputs, fingerprint: dict) -> dict:
     """Derive what kind of database this is, with a confidence that reflects
     how much signal was available (design §5.3, §5.1's `not_established`).
@@ -636,6 +790,13 @@ def classify_database(inputs: DerivedInputs, fingerprint: dict) -> dict:
     }
     available = {name: ev for name, ev in families.items() if ev is not None}
     missing = sorted(name for name, ev in families.items() if ev is None)
+    # Per-family provenance: which run's rows this family's evidence actually
+    # came from, so a caller/UI can say "activity from 19:24:00, structure
+    # from 19:24:03" instead of one blended "as of" timestamp.
+    signal_provenance = {
+        name: inputs.table_surveyed_at.get(_FAMILY_SOURCE_TABLE[name])
+        for name in available
+    }
 
     if not available:
         return {
@@ -645,6 +806,7 @@ def classify_database(inputs: DerivedInputs, fingerprint: dict) -> dict:
             "scores": {},
             "signals_used": [],
             "signals_missing": missing,
+            "signal_provenance": {},
             "explanation": (
                 "No stored rows carry a classification signal for this "
                 "database: no table/column catalog, no tuple counters, and "
@@ -680,9 +842,13 @@ def classify_database(inputs: DerivedInputs, fingerprint: dict) -> dict:
     confidence = max(0, min(_MAX_INFERRED_CONFIDENCE, confidence))
 
     undecided = best_score <= 0 or confidence < _MIN_CLASSIFICATION_CONFIDENCE
+    provenance_bits = ", ".join(
+        f"{name} from {signal_provenance[name]}" if signal_provenance.get(name) else name
+        for name in sorted(available)
+    )
     explanation_parts = [
         (f"Derived from {len(available)} of {len(families)} signal families "
-         f"({', '.join(sorted(available))})."),
+         f"({provenance_bits})."),
     ]
     if missing:
         explanation_parts.append(
@@ -711,6 +877,7 @@ def classify_database(inputs: DerivedInputs, fingerprint: dict) -> dict:
         "ranked": [k for k, _ in ranked],
         "signals_used": sorted(available),
         "signals_missing": missing,
+        "signal_provenance": signal_provenance,
         "coverage": round(coverage, 3),
         "explanation": " ".join(explanation_parts),
     }
@@ -3587,6 +3754,9 @@ def scope_inputs(inputs: DerivedInputs, container: str) -> DerivedInputs:
         columns=schema_scope.rows_in_container(inputs.columns, container),
         profiles=schema_scope.rows_in_container(inputs.profiles, container),
         activity=schema_scope.rows_in_container(inputs.activity, container),
+        # Same underlying survey rows, just row-filtered — the provenance
+        # per table is unchanged by scoping to one container.
+        table_surveyed_at=dict(inputs.table_surveyed_at),
     )
 
 
@@ -3955,6 +4125,7 @@ def relationship_graph_by_container(inputs: DerivedInputs, containment) -> dict:
                 source=scoped.source, schemas=scoped.schemas,
                 tables=scoped.tables, columns=internal_columns,
                 profiles=scoped.profiles, activity=scoped.activity,
+                table_surveyed_at=dict(scoped.table_surveyed_at),
             )
         )
         result["cross_container_references"] = crossing
@@ -4454,6 +4625,11 @@ def _classification_annotations(result: dict) -> list:
             "coverage": result.get("coverage"),
             "signals_used": result.get("signals_used"),
             "signals_missing": result.get("signals_missing"),
+            #: BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B — which run each
+            #: signal family's evidence actually came from, so the evidence
+            #: panel can show "activity from 19:24:00, structure from
+            #: 19:24:03" rather than one blended timestamp.
+            "signal_provenance": result.get("signal_provenance") or {},
         },
     )]
 

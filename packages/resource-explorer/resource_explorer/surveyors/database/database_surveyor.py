@@ -1648,9 +1648,33 @@ class DatabaseSurveyor:
                     # zero this run never looked at.
                     prior = prior_by_key.get(key)
                     table["row_count"] = prior.get("row_count") if prior else None
-                table["last_analyzed"]  = rs.get("last_analyzed", "")
-                table["last_vacuumed"]  = rs.get("last_vacuumed", "")
-                table["pending_changes"] = rs.get("pending_changes", 0)
+                # BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B: only stamp these
+                # fields when `rs` is a REAL pg_stat_user_tables row for this
+                # table. The old unconditional `rs.get(..., "")`/`rs.get(...,
+                # 0)` defaults made every table look "measured, and idle"
+                # (`pending_changes: 0` is a genuine int, not an absence) even
+                # on a run that never requested "statistics" at all — and
+                # `record_database_survey`'s own internal `backfill_database_
+                # survey()` call (registry.py) reads exactly these three
+                # fields off `schema_info` to decide whether to write a
+                # `database_table_activity` row via `database_rows_from_
+                # survey_data()`'s `if last_analyzed or last_vacuumed or
+                # pending is not None:` check — a fabricated `0` made that
+                # check true on EVERY run, writing a full table of NULL-
+                # counter activity rows that then shadowed the real ones a
+                # genuine "statistics" run had written moments earlier
+                # (`db_derived.load_inputs()` picked whichever `surveyed_at`
+                # was newest). Leaving these three keys entirely UNSET when
+                # `rs` is empty makes that check correctly read "nothing to
+                # report" for this table, this run — no placeholder row, no
+                # clobber; `_survey_extended_statistics`'s own
+                # `table_activity_rows` (written by the explicit
+                # `write_detail_rows` call below, when "statistics" ran) is
+                # what real activity rows for this run come from.
+                if rs:
+                    table["last_analyzed"] = rs.get("last_analyzed", "")
+                    table["last_vacuumed"] = rs.get("last_vacuumed", "")
+                    table["pending_changes"] = rs.get("pending_changes", 0)
 
         # Also enrich size data from table_stats
         size_lookup: dict[tuple, dict] = {
@@ -1699,12 +1723,16 @@ class DatabaseSurveyor:
         # "did this run cover it" flag, so we fall back to a permissive
         # "keep the value if THIS run's own value is empty" rule.
         import json
+        prior_statistics: dict = {}
+        prior_views: list = []
         prior_operations: dict = {}
         prior_credential_capability: dict = {}
         try:
             prior_survey = self.registry.get_latest_database_survey(self.db_entity.slug)
             if prior_survey:
                 prior_data = json.loads(prior_survey.get("survey_data") or "{}")
+                prior_statistics = prior_data.get("statistics") or {}
+                prior_views = prior_data.get("views") or []
                 prior_operations = prior_data.get("operations") or {}
                 prior_credential_capability = prior_data.get("credential_capability") or {}
         except Exception:
@@ -1722,9 +1750,25 @@ class DatabaseSurveyor:
             column_count=schema_info.get("total_columns", 0),
             survey_data={
                 "schema_info": schema_info,
-                "statistics": statistics,
+                #: `statistics` — BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B's
+                #: generic rule ("write only what was collected... merge-in
+                #: this run's sections over the prior row's, never replace
+                #: with empties"), applied here the same way row_count/
+                #: size_bytes already are: a run whose own requested steps
+                #: never included "statistics" leaves `statistics` as `{}` at
+                #: the top of this method — fall back to whatever the last
+                #: run that DID collect it stored, rather than writing that
+                #: emptiness as this run's own answer. `annotation_count`
+                #: below still counts only THIS run's own annotations — that
+                #: is a fact about this run, not a stored section to preserve.
+                "statistics": statistics or prior_statistics,
                 "annotation_count": len(results["annotations"]),
-                "views": results.get("views", []),
+                #: `views` — same rule: a run that did not request "views"
+                #: (results.get("views") defaults to `[]` from the initial
+                #: `results` dict) preserves the prior run's view list rather
+                #: than reporting "no views" for a database this run never
+                #: looked at.
+                "views": results.get("views") or prior_views,
                 #: postgres_operations (Phase 1 slice 8) — falls back to the
                 #: prior stored value when THIS run's own results have none,
                 #: same "don't manufacture an empty answer" rule row_count/
