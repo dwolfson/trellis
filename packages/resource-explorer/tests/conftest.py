@@ -496,3 +496,35 @@ def ephemeral_prefect(monkeypatch):
         PREFECT_SERVER_EPHEMERAL_ENABLED: True,
     }):
         yield
+
+
+@pytest.fixture(autouse=True)
+def clear_survey_definition_reader_caches():
+    """Clear survey_definition_reader's module-level caches before every test.
+
+    `survey_definition_reader.py` keeps four process-lifetime caches
+    (`_question_guid_cache`, `_candidates_cache`, `_fetch_cache`,
+    `_process_guid_cache`) behind a single `clear_caches()` testing hook. That
+    hook already existed and was already called by hand at the top of
+    `test_survey_definition_reader.py`'s own tests — but three tests in
+    `test_survey_definitions_routes.py::TestListCandidates`
+    (`test_returns_step_detail_for_valid_candidate`,
+    `test_egeria_step_enriched_with_produced_annotation_types`,
+    `test_egeria_native_processes_excludes_delete_kind`) never called it, and
+    `patch()` on the reader's own method cannot see a hit that was already
+    served from `_candidates_cache` — a real call earlier in the suite
+    populates it keyed by `(full_scan, technology_type, survey_kind)`, and
+    whichever of these three tests runs after that call in the same process
+    gets the stale cached candidates instead of exercising its own patched
+    behavior. Order-dependent, passes every one of the three in isolation.
+
+    Autouse removes the opt-in step (the same reasoning `ephemeral_prefect`
+    above gives for its own autouse switch) rather than trusting every test
+    module that touches this reader to remember to call `clear_caches()`
+    itself.
+    """
+    from resource_explorer.surveyors.survey_definition_reader import clear_caches
+
+    clear_caches()
+    yield
+    clear_caches()
