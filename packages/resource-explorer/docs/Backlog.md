@@ -8659,3 +8659,24 @@ test file (or the full suite) on a machine with a real cached CLI login produces
 nothing to do with whatever change is actually being tested — worth a `logout` before a full-suite
 run becomes a documented gotcha, the same way `ephemeral_prefect`/`clear_survey_definition_reader_caches`
 document theirs in `conftest.py`.
+
+## RFA delivery to Egeria ignores publish state and links to nothing (design intent, project owner, 2026-09-28)
+
+Found while fixing the notify-me subscription entity-type bug: a subscription's RFA becomes a bare
+personal ToDo via `MyProfile.create_my_todo`, with no action target — it reaches Egeria (via the
+scheduler's background loop) whatever the resource's publish state is, and it is never attached to
+anything. This is not what the subscription dialog's copy should have promised, and it is not what
+the project owner wants this to do.
+
+**Design intent (project owner, 2026-09-28)**: when the resource is published, the RFA should reach
+Egeria attached to the asset — action target = the asset GUID, or a `RequestForAction` annotation on
+the latest survey report — so it appears where the asset's stewards actually look, not as an
+unlinked personal ToDo. When the resource is not published, delivery stays local only, and the
+dialog says so plainly.
+
+**Not fixed here** — this needs design work, not a copy change: it needs the asset GUID/linkage
+(from `egeria_linkage`) and the publish state (from `describe_publish_status`) threaded into
+whichever code path currently calls `MyProfile.create_my_todo` unconditionally, plus a decision on
+which of the two attachment shapes (asset GUID action target vs. a `RequestForAction` annotation on
+the survey report) is the right one. Flagged rather than attempted alongside the notify-me entity-type
+fix, which only fixed the copy describing current (unlinked) behavior honestly.
