@@ -8475,3 +8475,16 @@ matches exactly one table still opens it — the existing single-match
 tests (`test_a_self_match_opens_its_own_details`) must keep passing
 alongside the new one, since the rule only changes behavior when there
 is more than one table-level match.
+
+## `/next` probes `scouting-overview` for database slugs and always gets a 404 (Section D agent's live-render check, 2026-09-28)
+
+Every `/next` page load calls `GET /api/projects/{slug}/scouting-overview`
+regardless of resource type. For a database slug this 404s every time —
+`scouting-overview` is a repo-only endpoint. Same class of bug as the
+earlier `'db'` vs `'database'` resourceType mismatch: a call written
+against one resource type and never gated for the others.
+
+**Fix direction, not attempted here**: gate the call on
+`resourceType === 'repo'` before issuing it, the same way other repo-only
+probes are already gated elsewhere in `app.js`. No design question here —
+purely "don't call an endpoint that doesn't apply to this resource type."
