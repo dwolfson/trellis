@@ -7213,12 +7213,15 @@ function showEvidence(entry) {
         : gv.fallbackReason
           ? `<div class="mb-[6px] text-chip text-state-warn">${esc(gv.fallbackReason)}</div>`
           : ''}
-      ${schemaNames.length ? `<select data-act="evidence-graphviz-schema"
-             class="w-full cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[8px] py-[4px]
-                    text-chip text-ink">
-          <option value="">Open a schema…</option>
-          ${schemaNames.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
-        </select>` : ''}
+      ${schemaNames.length ? `<div class="relative">
+          <select data-act="evidence-graphviz-schema"
+               class="w-full cursor-pointer appearance-none rounded-sm border border-accent bg-transparent px-[10px] py-[4px] pr-[26px]
+                      text-chip text-accent-on-dark hover:bg-accent-tint focus:outline-none focus:ring-1 focus:ring-accent">
+            <option value="">Open a schema…</option>
+            ${schemaNames.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+          </select>
+          <span class="pointer-events-none absolute right-[8px] top-1/2 -translate-y-1/2 text-accent-on-dark">${icon('chevron-down', { size: 13 })}</span>
+        </div>` : ''}
     </div>` : '';
 
   const body = railFrame('Evidence', forWhat, '', { sub: esc(String(entry.question).slice(0, 48)) });
