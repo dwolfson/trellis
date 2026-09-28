@@ -8588,3 +8588,53 @@ night (F 6615/0, G3 6612/0, G2 6621/0, the cache fix itself 6605/0) — only Sec
 failed the trio after merging `main`, which narrowed the polluter to that branch's own diff in
 minutes. Two hours of infrastructure hypotheses (Prefect server reachability, shared-registry
 state, a genuine semantic merge conflict) had been chased first without success.
+
+## A Prefect-routed `survey_definition_run` silently falls back to local execution when its work pool has no live worker (found re-taking the Database Analysis Survey on `laz_local_adventureworks`, 2026-09-28)
+
+Enqueued `GovActionProcess::DatabaseAnalysisSurvey` with no `engine_override` (the default,
+Prefect, path — Section E's fix, `#327`) via `resource-explorer runs enqueue`. It succeeded and
+wrote 4 real `step_runs` rows (`db_derived`, `postgres_column_profile`, `postgres_nested_columns`,
+`postgres_operations`, run `c3738802-c8c7-4f46-957e-c8ce1dcbdc7a`) — but every row carries
+`executor='local'`, `source='local'`, and Prefect's own `flow_runs` list shows no new flow run at
+all for this run. `executor='local'` is the ONLY signal that the intended Prefect path was not
+taken; nothing on the run itself, in its error field, or in the UI says so.
+
+**Root cause**: the bare-host Prefect worker for the `resource-explorer-pool` work pool was
+offline (see the companion entry below) — no live worker to claim the scheduled work, so whatever
+silently degrades to the local execution loop did so, without erroring and without recording that
+degradation anywhere visible.
+
+**Not fixed here** — this project's own stated purpose is to make absence and silent fallback
+visible rather than indistinguishable from the intended path (see `docs/survey-model.md` — "why
+absence is a first-class result"), so a silent Prefect→local fallback is exactly the class of bug
+this codebase exists to remove elsewhere. Fix direction: the run (or its `step_runs` rows) must
+carry an explicit warning field when this fallback occurs, and the Admin "⚡ Prefect" panel or the
+run's own detail pane should say so in words — e.g. "ran locally: Prefect pool
+`resource-explorer-pool` has no worker" — rather than requiring someone to notice `executor='local'`
+where `'prefect'` was expected and go chasing why, the way this entry's own discovery did.
+
+## `make prefect-up` starts a worker on the wrong work pool; the intended pool's worker has been offline since 2026-09-26 with nothing to restart it (found alongside the entry above, 2026-09-28)
+
+`.env` sets `PREFECT_WORK_POOL=resource-explorer-pool`, and the Prefect API confirms a real worker
+was once registered for that pool (`ProcessWorker 7069edda-...`, last heartbeat 2026-09-26 —
+matching this repo's own documented risk that the bare-host worker does not survive a reboot and
+nothing auto-starts it). Running `make prefect-up` (`packages/resource-explorer/scripts/
+prefect_up.sh`) reported success (`✓ Deployed`, `✓ Worker up`) but started a NEW worker registered
+against `default-agent-pool` instead — a different pool than the one `.env` configures and the one
+the deployment (`re-survey-step-deployment`) actually targets. `resource-explorer-pool` is still
+without a live worker after running the documented recovery command.
+
+**Not fixed here** — flagged rather than debugged live against shared infrastructure. Fix
+direction: `prefect_up.sh` should read `PREFECT_WORK_POOL` from the same `.env` the rest of the app
+reads (or from `resource_explorer.config`) instead of whatever default it currently falls back to,
+so the script's own idempotent-recovery promise actually recovers the pool the app is configured to
+use. Separately, `resource_explorer.bootstrap`'s existing monitor (already reports draft-zone and
+private-zone bootstrap status on a schedule, per its own log lines) is a natural place to also
+report `resource-explorer-pool` worker liveness, so an offline worker surfaces as a monitored
+condition rather than something a person discovers only by chasing an unexpected `executor='local'`
+on a run, as happened here.
+
+**The Prefect-vs-local parity measurement this was meant to unblock still needs this fixed and a
+fresh run before it can be trusted** — the companion entry's `step_runs` data is genuine and usable
+for the local-execution numbers, but there is no comparably genuine Prefect-execution run to
+compare it against yet.
