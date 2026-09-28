@@ -39,25 +39,33 @@ import {
   setDisposition,
 } from '/static/re-api.js';
 import { ago, daysSince, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
+import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 
 /* ── Cell state ─────────────────────────────────────────────────────────
  *
- * The same six-state vocabulary the question rows use, derived per cell.
+ * The same state vocabulary the question rows use, derived per cell.
  * Deliberately NOT a boolean "has data": a grid of ticks and blanks would
  * collapse "never ran", "ran and found nothing" and "nothing can answer
  * this" into one mark, which is the failure this whole UI argues against —
  * and at grid density it would be far harder to notice.
+ *
+ * `CELL` is now a thin view over the one glyph table (glyphs.js) --
+ * REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1: before this, `CELL` and
+ * app.js's `GLYPH` each declared their own glyph, and disagreed -- `◐` meant
+ * "partial" here and "ran, not at this level" there, and `no-surveyor` and
+ * `unrun` shared ○ here, told apart ONLY by `tone` (colour), which breaks
+ * the "colour is never the only channel" rule this same file's own header
+ * comment states. `no-surveyor` now reads ◌, its own glyph.
+ *
+ * `tone` stays a value declared HERE, not derived from glyphs.js -- that
+ * module unifies glyph MEANING (the symbol + its word), not colour role.
+ * These tones are unchanged from before this pass; see glyphs.js's module
+ * docstring for why a colour pass isn't part of this consolidation.
  */
-export const CELL = {
-  answered:      { glyph: '✓', tone: 'text-state-ok',   label: 'answered' },
-  nothing:       { glyph: '∅', tone: 'text-state-ok',   label: 'ran, found nothing' },
-  partial:       { glyph: '◐', tone: 'text-state-warn', label: 'partial' },
-  unrun:         { glyph: '○', tone: 'text-state-warn', label: 'not run' },
-  human:         { glyph: '⚠', tone: 'text-accent-ink', label: 'needs you' },
-  'no-surveyor': { glyph: '○', tone: 'text-state-gap',  label: 'no surveyor' },
-  unclassified:  { glyph: '·', tone: 'text-ink-muted',  label: 'unclassified' },
-  running:       { glyph: '◔', tone: 'text-accent-ink', label: 'running' },
-  unknown:       { glyph: '?', tone: 'text-ink-muted',  label: 'could not read' },
+const CELL_TONE = {
+  answered: 'text-state-ok', nothing: 'text-state-ok', partial: 'text-state-warn',
+  unrun: 'text-state-warn', human: 'text-accent-ink', 'no-surveyor': 'text-state-gap',
+  unclassified: 'text-ink-muted', running: 'text-accent-ink', unknown: 'text-ink-muted',
   // Stored output exists; which of measured/partial it is has NOT been
   // established, because establishing it costs 47s for one analysis. Its own
   // glyph rather than a tick: a tick would claim `answered`, which is
@@ -70,8 +78,12 @@ export const CELL = {
   // is exactly what it is: opening the cell resolves it, and so does the
   // background pass. It also sits correctly beside `○` (nothing here) and
   // the filled glyphs (something definite).
-  stored:        { glyph: '□', tone: 'text-ink-muted',  label: 'has results · not read yet' },
+  stored: 'text-ink-muted',
 };
+
+export const CELL = Object.fromEntries(Object.keys(CELL_TONE).map((k) => [
+  k, { glyph: GLYPH_STATES[k].glyph, tone: CELL_TONE[k], label: GLYPH_STATES[k].word },
+]));
 
 /**
  * One cell's state, from a question and a resource's facts.
@@ -295,7 +307,8 @@ function renderLegend() {
   host.innerHTML = '<span class="text-caps uppercase tracking-caps text-ink-muted">Key</span>'
     + Object.entries(CELL).filter(([k]) => k !== 'unknown').map(([, c]) =>
       `<span class="inline-flex items-baseline gap-[5px]">
-        <span class="${c.tone}">${c.glyph}</span><span>${esc(c.label)}</span></span>`).join('');
+        <span class="${c.tone} font-glyph" title="${esc(c.label)}" aria-label="${esc(c.label)}"
+          >${c.glyph}</span><span>${esc(c.label)}</span></span>`).join('');
 }
 
 function note(html) {
@@ -555,7 +568,7 @@ function renderNarrow(host, wl, qs) {
         return `<li class="border-b border-rule">
           <button type="button" data-cell="${esc(slug)}" data-q="${i}"
             class="flex w-full items-baseline gap-s2 border-0 bg-transparent px-0 py-s2 text-left">
-            <span class="w-[16px] shrink-0 ${c.tone}">${c.glyph}</span>
+            <span class="w-[16px] shrink-0 ${c.tone} font-glyph">${c.glyph}</span>
             <span class="min-w-0 flex-1">
               <span class="text-answer text-ink">${esc(q.question)}</span>
               <span class="block text-provenance text-ink-muted">${esc(c.label)}</span>
@@ -1008,7 +1021,7 @@ function rowHtml(member, shown, qs) {
     const kindState = { gap: 'no-surveyor', human: 'human', unknown: 'unclassified' }[q.kind];
     if (kindState || !(q.analysis_ids || []).length) {
       const c = CELL[kindState] || CELL.unclassified;
-      return `<td class="wl-cell p-[6px] ${c.tone}" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;
+      return `<td class="wl-cell p-[6px] ${c.tone} font-glyph" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;
     }
     if (row?.error) {
       // A resource whose facts could not be read is NOT a resource with no
@@ -1016,20 +1029,20 @@ function rowHtml(member, shown, qs) {
       // WHY, because "could not read" found a real defect this round only
       // because somebody happened to be looking at it. A `?` that names its
       // own cause turns that accident into a routine catch.
-      return `<td class="wl-cell p-[6px] ${CELL.unknown.tone}"
+      return `<td class="wl-cell p-[6px] ${CELL.unknown.tone} font-glyph"
         title="${esc(q.question)} — ${esc(whyUnreadable(row.error))}\n${esc(row.error)}"
         >${CELL.unknown.glyph}</td>`;
     }
     const running = !!grid.batch?.runs?.find(
       (r) => r.entity_slug === slug && ['queued', 'claimed', 'running'].includes(r.state));
     if (running) {
-      return `<td class="wl-cell p-[6px] ${CELL.running.tone}" title="${esc(q.question)} — ${esc(CELL.running.label)}">${CELL.running.glyph}</td>`;
+      return `<td class="wl-cell p-[6px] ${CELL.running.tone} font-glyph" title="${esc(q.question)} — ${esc(CELL.running.label)}">${CELL.running.glyph}</td>`;
     }
     // Full facts, when they have been read.
     const haveFacts = row && (q.analysis_ids || []).some((a) => row.factsById.has(a));
     if (haveFacts) {
       const c = CELL[cellState(q, row.factsById)] || CELL.unclassified;
-      return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
+      return `<td class="wl-cell p-[6px] ${c.tone} font-glyph"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
 click for the latest results">${c.glyph}</button></td>`;
     }
     // Otherwise the CHEAP PROJECTION answers, and only as far as it honestly
@@ -1042,18 +1055,18 @@ click for the latest results">${c.glyph}</button></td>`;
       const readErr = grid.bgErrors.get(slug);
       if (readErr && proj.some((v) => v.has_results)) {
         const c = CELL.unknown;
-        return `<td class="wl-cell p-[6px] ${c.tone}"
+        return `<td class="wl-cell p-[6px] ${c.tone} font-glyph"
           title="${esc(q.question)} — ${esc(whyUnreadable(readErr))}\n${esc(readErr)}"
           >${c.glyph}</td>`;
       }
       if (proj.some((v) => v.has_results)) {
         const c = CELL.stored;
-        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
+        return `<td class="wl-cell p-[6px] ${c.tone} font-glyph"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}${esc(stampNote(q))}
 click for the latest results">${c.glyph}</button></td>`;
       }
       if (proj.every((v) => v.certain_never_run)) {
         const c = CELL.unrun;
-        return `<td class="wl-cell p-[6px] ${c.tone}"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}
+        return `<td class="wl-cell p-[6px] ${c.tone} font-glyph"><button type="button" class="wl-cellbtn ${ageClass}" data-cell="${esc(slug)}" data-q="${qi}" title="${esc(q.question)} — ${esc(c.label)}
 click for the latest results">${c.glyph}</button></td>`;
       }
     }

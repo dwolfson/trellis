@@ -26,6 +26,10 @@
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
 import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
+// The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
+// and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
+// declares no glyph-to-meaning mapping of its own any more.
+import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 // `readEnvelope` and its own private helpers used to live here directly;
 // split into their own module (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §D,
 // 2026-09-27) so a node-run test can import `readEnvelope` and check it
@@ -600,22 +604,19 @@ function isFullyAnswered(env) {
   return !!(env && env.answerable && !env.level_mismatch);
 }
 
-const GLYPH = {
-  answered: '✓',
-  automatic: '✓',
-  unrun: '○',
-  partial: '◐',
-  human: '⚠',
-  'no-surveyor': '○',
-  unclassified: '·',
-  running: '◔',
-  error: '✕',
-  // §17.1 -- "this needs something else first, and it costs enough that it
-  // needs your yes." Same glyph classic uses (⏵) for the same reason: a
-  // proposal is a decision point, not a state of the world, so it earns its
-  // own mark rather than borrowing unrun's ○ or human's ⚠.
-  proposal: '⏵',
-};
+// The row states this screen distinguishes -- keys into `GLYPH_STATES`
+// (glyphs.js), which is where the glyph for each one is actually declared.
+// `no-surveyor` reads ◌ here now, not ○ -- REPLY-DESIGNER-ROUND2-DATABASE-
+// SCREENS.md §1: it used to share ○ with `unrun`, which the work-list grid
+// could only tell apart by colour, breaking the "colour is never the only
+// channel" rule. Any key missing from `GLYPH_STATES` would throw here on
+// module load, by design -- see `test_one_glyph_table.py`'s "no independent
+// literal glyph-to-meaning mapping" bar.
+const GLYPH_KEYS = [
+  'answered', 'automatic', 'unrun', 'partial', 'human', 'no-surveyor',
+  'unclassified', 'running', 'error', 'proposal',
+];
+const GLYPH = Object.fromEntries(GLYPH_KEYS.map((k) => [k, GLYPH_STATES[k].glyph]));
 
 /**
  * State colour, per ground.
@@ -4683,14 +4684,22 @@ async function openRunsList(slug) {
           <span class="text-state-ok">${ok} ran</span>${
           bad.length ? ` · <span class="text-state-warn">${bad.length} did not</span>` : ''}</div>
         <ul class="m-0 mt-s1 list-none p-0 text-caveat">
-          ${steps.map((s) => `<li class="flex gap-s2">
-            <span class="${s.status === 'ok' ? 'text-state-ok' : 'text-state-warn'}">${
-              s.status === 'ok' ? '✓' : '⚠'}</span>
+          ${steps.map((s) => {
+            // A step that did not complete `ok` FAILED -- that is `✕`
+            // (GLYPH_STATES.error), not `⚠`. Before this pass this used ⚠
+            // for a non-ok step, but per REPLY-DESIGNER-ROUND2-DATABASE-
+            // SCREENS.md §1, ⚠ now means ONLY "needs a person"; an error
+            // uses ✕, so it does not collide with the human-attention glyph.
+            const ok = s.status === 'ok';
+            const g = ok ? GLYPH_STATES.measured : GLYPH_STATES.error;
+            return `<li class="flex gap-s2">
+            <span class="${g.tone} font-glyph" title="${esc(g.word)}" aria-label="${esc(g.word)}">${g.glyph}</span>
             <span class="min-w-0 font-mono text-provenance">${
               esc(String(s.step || '').split('::').pop())}</span>
-            ${s.status !== 'ok' && s.detail
+            ${!ok && s.detail
               ? `<span class="text-ink-muted">— ${esc(String(s.detail).slice(0, 120))}</span>` : ''}
-          </li>`).join('')}
+          </li>`;
+          }).join('')}
         </ul>`
         : '<p class="mt-s1 text-caveat text-ink-muted">This run recorded no step list.</p>'}
       <div data-dvr="${esc(r.id)}"></div>
@@ -4751,6 +4760,10 @@ const UNRESOLVED_LABELS = new Set([
  * `— PERIODIC` — as machine tokens welded to a title. They are the same kind
  * of fact the matrix encodes as glyphs, and someone who has learned the grid
  * should not have to learn a second language one click away.
+ *
+ * Reads `CELL` (worklist.js), itself now a thin view over the one glyph
+ * table in glyphs.js -- see that module's docstring
+ * (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1).
  */
 function findingGlyph(label) {
   const l = String(label || '').toLowerCase();
@@ -4771,15 +4784,22 @@ const humanLabel = (l) => String(l || '').replace(/_/g, ' ').toLowerCase();
  * yet; `by_analysis` (loadByAnalysisPane) still carries those. */
 
 /** A measured/error/unrun/unknown analysis state as one glyph, for the
- *  members rail and the run-history list -- the same vocabulary the matrix
- *  and the questions row use, spelled out here since state-as-glyph is a
- *  cross-cutting need, not a "by analysis" or "by question" one. */
+ *  members rail, the run-history list, and Curate's task/step rows -- the
+ *  same vocabulary the matrix and the questions row use, spelled out here
+ *  since state-as-glyph is a cross-cutting need, not a "by analysis" or "by
+ *  question" one.
+ *
+ *  The glyph for each case now comes from `GLYPH_STATES` (glyphs.js) --
+ *  this function declares no glyph of its own any more, only which of the
+ *  canonical states each of ITS OWN four input states maps to. Tones are
+ *  unchanged from before this pass (see glyphs.js's docstring on why a
+ *  colour pass is a separate, unreviewed change this one does not make). */
 export function factGlyph(state) {
   switch (state) {
-    case 'measured': return { glyph: '✓', tone: 'text-state-ok' };
-    case 'error': return { glyph: '✕', tone: 'text-state-warn' };
-    case 'unrun': return { glyph: '○', tone: 'text-ink-muted' };
-    default: return { glyph: '·', tone: 'text-ink-muted' };
+    case 'measured': return { glyph: GLYPH_STATES.measured.glyph, tone: 'text-state-ok' };
+    case 'error': return { glyph: GLYPH_STATES.error.glyph, tone: 'text-state-warn' };
+    case 'unrun': return { glyph: GLYPH_STATES.unrun.glyph, tone: 'text-ink-muted' };
+    default: return { glyph: GLYPH_STATES.unclassified.glyph, tone: 'text-ink-muted' };
   }
 }
 
@@ -5402,18 +5422,21 @@ function deferredPaneHtml(tab) {
  * fixed key does not — and only states actually present are listed, since a
  * key to a glyph that is not on screen is noise. Rows arriving is what moves
  * these numbers, so it re-renders with them.
+ *
+ * Words come from `GLYPH_STATES` (glyphs.js), not a second copy declared
+ * here -- REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1: "the count line at
+ * the top of each surface is the legend", and every surface's legend reads
+ * the same table. Before this pass `partial` read "ran, but not at this
+ * level" here (◐'s OLD, Questions-only meaning) while the work-list grid's
+ * own legend called the very same glyph "partial" -- exactly the
+ * disagreement the reply names. Only the ORDER is declared here; it is a
+ * reading order, not a second vocabulary.
  */
-const LEGEND = [
-  ['answered',     'answered'],
-  ['automatic',    'automatic'],
-  ['partial',      'ran, but not at this level'],
-  ['unrun',        'not run'],
-  ['human',        'needs you'],
-  ['no-surveyor',  'no surveyor'],
-  ['unclassified', 'unclassified'],
-  ['running',      'running'],
-  ['error',        'could not load'],
+const LEGEND_ORDER = [
+  'answered', 'automatic', 'partial', 'unrun', 'human', 'no-surveyor',
+  'unclassified', 'running', 'error',
 ];
+const LEGEND = LEGEND_ORDER.map((k) => [k, GLYPH_STATES[k].word]);
 
 function renderLegend() {
   const el = $('state-legend');
@@ -5432,7 +5455,8 @@ function renderLegend() {
 
   const items = LEGEND.filter(([k]) => counts[k]).map(([k, label]) => `
     <span class="inline-flex items-baseline gap-[5px]">
-      <span class="${tone(k, 'paper')}">${GLYPH[k]}</span>
+      <span class="${tone(k, 'paper')} font-glyph" title="${esc(label)}" aria-label="${esc(label)}"
+        >${GLYPH[k]}</span>
       <span class="text-ink">${esc(label)}</span>
       <span class="tnum text-ink">${counts[k]}</span>
     </span>`);
@@ -5913,8 +5937,11 @@ function rowInner(entry, i, env) {
       </span>`
     : perspectiveTags;
 
+  const glyphWord = (GLYPH_STATES[st] || {}).word || '';
   const head = `<div class="flex flex-wrap items-baseline gap-[9px]">
-      <span class="w-[13px] ${glyphColor} text-question">${st === 'loading' ? '' : glyph}</span>
+      <span class="w-[13px] ${glyphColor} font-glyph text-question"${
+        st === 'loading' ? '' : ` title="${esc(glyphWord)}" aria-label="${esc(glyphWord)}"`
+      }>${st === 'loading' ? '' : glyph}</span>
       <span class="font-heading text-question font-semibold text-ink">${esc(entry.question)}</span>
       ${tag}
     </div>`;

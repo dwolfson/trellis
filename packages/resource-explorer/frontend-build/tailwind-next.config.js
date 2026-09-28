@@ -137,6 +137,21 @@ module.exports = {
         // mono stack instead. Exposed to JS as `--font-diagram` too, since
         // Plotly and Mermaid are configured in script, not in CSS.
         diagram: ['ui-monospace', '"SF Mono"', 'Menlo', 'monospace'],
+        // The one glyph table's state marks (✓ ∅ ◐ ○ ◌ ? ⚠ ◔ ✕ ⏵ · □ --
+        // glyphs.js, REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). Several
+        // of these (◐ ◌ ∅ ◔) are not reliably present in default system
+        // fonts off macOS -- the reply: "In a headless Linux browser, ◐
+        // came out as a sliver until I set the font explicitly." The whole
+        // vocabulary is pinned to this stack, not only the four named ones,
+        // so a reader never sees one glyph in the body serif and its
+        // neighbour in a fallback -- a state vocabulary should read as one
+        // alphabet. `sans-serif` is the final, browser-default fallback if
+        // every named symbol font is absent; the glyph and its word (via
+        // `title`/`aria-label`) still carry the meaning even then.
+        glyph: [
+          '"Noto Sans Symbols 2"', '"Noto Sans Symbols"', '"DejaVu Sans"',
+          '"Segoe UI Symbol"', '"Apple Symbols"', 'sans-serif',
+        ],
       },
 
       // The sizes as used on the Questions screen, named by their role so a

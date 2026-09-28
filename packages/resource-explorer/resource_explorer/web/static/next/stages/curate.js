@@ -148,17 +148,28 @@ function curateWritesHtml(plan, picks, subCount) {
   return lines.map((l) => `<div class="text-caveat text-ink">${l}</div>`).join('');
 }
 
+// Curate's own task/step states (done/failed/running/skipped/pending) are
+// the same underlying vocabulary `factGlyph` already reads
+// (measured/error/running/unrun) -- this used to declare a SECOND,
+// independent glyph map, and its own '◐' for "running" disagreed with the
+// canonical table's '◔' (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1: no
+// glyph may carry two meanings). Routed through `factGlyph` (app.js) rather
+// than importing glyphs.js directly, so there is exactly one place curate.js
+// reaches for a state glyph.
+const CURATE_TASK_TO_FACT_STATE = {
+  done: 'measured', failed: 'error', running: 'running', skipped: 'unrun', pending: 'unrun',
+};
+
 function curateRecordHtml(rec) {
   if (!rec) return '';
-  const tone = { done: 'text-state-ok', failed: 'text-state-warn', running: 'text-accent-ink', skipped: 'text-ink-muted', pending: 'text-ink-muted' };
-  const glyph = { done: '✓', failed: '✗', running: '◐', skipped: '○', pending: '○' };
+  const g = (taskState) => factGlyph(CURATE_TASK_TO_FACT_STATE[taskState] || 'unclassified');
   return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
     <div class="text-provenance text-ink-muted">catalogued by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
       · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
-    ${rec.state === 'running' && (rec.steps || []).some((st) => st.state === 'running') ? `<div class="text-caveat text-accent-ink">◐ ${
+    ${rec.state === 'running' && (rec.steps || []).some((st) => st.state === 'running') ? `<div class="text-caveat text-accent-ink">${g('running').glyph} ${
       esc((rec.steps.find((st) => st.state === 'running') || {}).name)} is running — the survey step takes minutes; this line updates as steps land.</div>` : ''}
     ${(rec.steps || []).map((st) => `<div class="flex items-baseline gap-s2 text-caveat">
-      <span class="${tone[st.state] || ''}">${glyph[st.state] || '·'}</span>
+      <span class="${g(st.state).tone} font-glyph">${g(st.state).glyph}</span>
       <span class="font-mono text-ink">${esc(st.name)}</span>
       <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></div>`).join('')}
   </div>`;
