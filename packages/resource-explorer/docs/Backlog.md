@@ -8515,18 +8515,32 @@ run. Whichever fix lands, `status: "ok"` must stop being possible when a samplin
 attempt failed — that's the same silent-success shape `test_no_silent_success.py`
 already guards other steps against.
 
-## Three order-dependent flaky tests in `test_survey_definitions_routes.py` (found by Section E agent, 2026-09-28)
+## Three order-dependent flaky tests in `test_survey_definitions_routes.py` — root cause identified, fix on `re/tests-clear-candidates-cache` (found by Section E agent, bisected 2026-09-28)
 
 Pre-existing, unrelated to any of the BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md fixes.
 Confirmed to fail only under a specific run order and to pass individually — not
 touched by any of Sections A–E:
 
-- `tests/test_survey_definitions_routes.py::TestListCandidates::test_returns_step_detail_for_valid_candidate`
-- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_step_enriched_with_produced_annotation_types`
-- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_native_processes_excludes_delete_kind`
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_returns_step_detail_for_valid_candidate` —
+  `assert 'SchemaAnalysisAnnotation' in step_out["annotation_types"]` →
+  `AssertionError: assert 'SchemaAnalysisAnnotation' in []` (candidate returned but its step detail is empty).
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_step_enriched_with_produced_annotation_types` —
+  `assert step_out["egeria_produced_annotation_types"] == fake_produced` →
+  `KeyError: 'egeria_produced_annotation_types'` (the key does not exist on the response; the enrichment branch never ran).
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_native_processes_excludes_delete_kind` —
+  `assert "survey_existing" in kinds` → `AssertionError: assert 'survey_existing' in set()` (native-processes kind set empty).
 
-**Not investigated further here** — likely shared mutable state (a module-level
-cache, a monkeypatched fixture not torn down, or ordering-sensitive test data) inside
-`TestListCandidates`, but the actual shared state was not identified. Whoever picks
-this up should start by running the full-suite order that reproduces the failure
-and bisecting which sibling test leaves state behind.
+**Root cause, bisected**: all three patch `SurveyDefinitionReader.find_candidate_process_guids` /
+`find_candidate_process_guids_by_questions` and hit `GET /api/survey-definitions/database/mydb/candidates`;
+the route behaves as if the patched method returned nothing in every failure. `survey_definition_reader.py`'s
+module-level `_candidates_cache` (keyed `(full_scan, technology_type, survey_kind)`, TTL-bounded) is populated
+by an earlier real call elsewhere in the suite with `technology_type="PostgreSQL Database"`, and that cached
+result wins over the patch — `patch()` on the reader's own method cannot see a hit already served from the
+cache. Not bisected to the specific populating test, but not needed: the mechanism is general (any prior real
+call with matching cache-key fields poisons any later patched test).
+
+**Fixed** on `re/tests-clear-candidates-cache`: an autouse fixture in `tests/conftest.py`
+(`clear_survey_definition_reader_caches`) calls the reader's existing `clear_caches()` testing hook (already
+used by hand in `test_survey_definition_reader.py`'s own tests, but never applied suite-wide) before and after
+every test — same pattern as the existing `ephemeral_prefect` autouse fixture just above it. Verified by a full
+suite run confirming all three pass in-suite (run details in that branch's commit).
