@@ -179,7 +179,13 @@ class TestOrdering:
         label = result["label"]
         assert label.index("big") < label.index("medium") < label.index("small")
 
-    def test_data_then_empty_then_staging_then_shortfall_then_system(self):
+    def test_data_then_staging_then_empty_then_no_access_then_system(self):
+        """Dan's gate, `coco_pharma`, 2026-09-27: staging now sorts ahead of
+        empty (both are "has tables, not blocked" categories; staging just
+        carries a naming caveat), and no-access — nothing knowable about the
+        schema at all, not even its table count — is worst, right before
+        the system fold. See structure-only/views-only's own dedicated
+        ordering test below for why THOSE now beat empty specifically."""
         registry = _FakeRegistry(
             tables=[
                 _table("real_data", "a", row_count=5),
@@ -194,9 +200,61 @@ class TestOrdering:
         )
         result = _schema_inventory_container_headline(registry, "mydb")
         label = result["label"]
-        assert (label.index("real_data") < label.index("nothing_here")
-                < label.index("tmp_stuff") < label.index("locked"))
+        assert (label.index("real_data") < label.index("tmp_stuff")
+                < label.index("nothing_here") < label.index("locked"))
         assert label.rstrip(".").endswith("1 system schema(s) folded")
+
+
+class TestStructureOnlyOutranksEmptyRegardlessOfSize:
+    """The exact live scenario, `coco_pharma`, 2026-09-27: `eu_sales`,
+    `public`, `target_sales`, `us_sales` (all genuinely empty, 0-1 tables
+    each) listed ABOVE `coco_ods` (23 tables) and `coco_sus` (30 tables),
+    both structure-only. For a credential that cannot read rows, a
+    structure-only schema with many tables is almost certainly where the
+    real data lives, so it must outrank an empty one regardless of size —
+    the four empty schemas' per-schema states were themselves correct (the
+    surveyor's own 3 SELECT-able tables really are empty); only the ORDER
+    was wrong."""
+
+    def test_large_structure_only_schemas_beat_small_empty_ones(self):
+        registry = _FakeRegistry(
+            tables=(
+                [_table("eu_sales", "eu_sales_forecast", row_count=0)]
+                + [_table("public", f"t{i}", row_count=0) for i in range(1)]
+                + [_table("target_sales", "consolidated_forecast", row_count=0)]
+                + [_table("us_sales", "us_sales_forecast", row_count=0)]
+                + [_table("coco_ods", f"t{i}") for i in range(23)]
+                + [_table("coco_sus", f"t{i}") for i in range(30)]
+            ),
+            survey_data=_cap({
+                "coco_ods": {"usage_granted": True, "table_total": 23, "table_select": 0},
+                "coco_sus": {"usage_granted": True, "table_total": 30, "table_select": 0},
+            }),
+        )
+        result = _schema_inventory_container_headline(registry, "mydb")
+        label = result["label"]
+        # Both structure-only schemas beat every empty one...
+        for structure_only in ("coco_ods", "coco_sus"):
+            for empty in ("eu_sales", "public", "target_sales", "us_sales"):
+                assert label.index(structure_only) < label.index(empty), \
+                    f"{structure_only} should outrank {empty}"
+        # ...and within the structure-only group, the larger one comes first.
+        assert label.index("coco_sus") < label.index("coco_ods")
+
+    def test_within_structure_only_sorts_by_table_count_descending(self):
+        registry = _FakeRegistry(
+            tables=(
+                [_table("small_locked", "a", row_count=None)]
+                + [_table("big_locked", f"t{i}", row_count=None) for i in range(5)]
+            ),
+            survey_data=_cap({
+                "small_locked": {"usage_granted": True, "table_total": 1, "table_select": 0},
+                "big_locked": {"usage_granted": True, "table_total": 5, "table_select": 0},
+            }),
+        )
+        result = _schema_inventory_container_headline(registry, "mydb")
+        label = result["label"]
+        assert label.index("big_locked") < label.index("small_locked")
 
 
 class TestReturnsNoneWhenNothingToSay:
@@ -249,7 +307,13 @@ class TestSlice21aFollowups:
         result = _schema_inventory_container_headline(registry, "mydb")
         assert "eu_sales 1 table(s) · 0 row(s) — empty" in result["label"]
 
-    def test_ordering_is_data_then_empty_then_shortfall_then_system(self):
+    def test_ordering_is_data_then_structure_only_then_empty_then_system(self):
+        """Dan's gate, `coco_pharma`, 2026-09-27: `coco_ods` here is
+        structure-only (USAGE granted, no SELECT) — before this fix it sank
+        below every empty schema regardless of size, the exact defect the
+        gate named ("`coco_ods` (23 tables) listed below `eu_sales`/`public`
+        (0-1 tables, genuinely empty)"). Structure-only now sorts right
+        after data."""
         from resource_explorer.registry import STATE_CATALOG_ESTIMATE
         registry = _FakeRegistry(
             tables=[
@@ -265,6 +329,6 @@ class TestSlice21aFollowups:
         )
         result = _schema_inventory_container_headline(registry, "mydb")
         label = result["label"]
-        assert (label.index("real_data") < label.index("eu_sales")
-                < label.index("public") < label.index("coco_ods"))
+        assert (label.index("real_data") < label.index("coco_ods")
+                < label.index("eu_sales") < label.index("public"))
         assert label.rstrip(".").endswith("1 system schema(s) folded")
