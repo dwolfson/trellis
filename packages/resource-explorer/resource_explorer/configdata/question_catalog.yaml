@@ -304,8 +304,14 @@ repo_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
-      over RAG can describe how two resources differ once candidates exist'
+    note: 'GAP: similarity over resource DESCRIPTIONS, never content — for repositories the README/doc
+      embeddings the RAG ingestion step already produces plus the structural signature (language, dependency
+      set, interface surface); for databases and filesystems the catalog-as-text (names, comments, types,
+      keys) plus per-column profile summaries plus the schema fingerprint. Two resources are similar when
+      their descriptions are near; the evidence names which parts were near, never a retrieved chunk,
+      and a description built under a scoped credential says so. An agent then describes how they differ
+      from those parts. Not built; see DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §3. Reworded
+      2026-09-28 (was: content similarity over pgvector embeddings).'
   answering_mechanism: RAG Queries + Agent-Based Analysis
   rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
     scope similarity (which needs declared or measured scope) and structural similarity (which needs a
@@ -1633,8 +1639,14 @@ database_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
-      over RAG can describe how two resources differ once candidates exist'
+    note: 'GAP: similarity over resource DESCRIPTIONS, never content — for repositories the README/doc
+      embeddings the RAG ingestion step already produces plus the structural signature (language, dependency
+      set, interface surface); for databases and filesystems the catalog-as-text (names, comments, types,
+      keys) plus per-column profile summaries plus the schema fingerprint. Two resources are similar when
+      their descriptions are near; the evidence names which parts were near, never a retrieved chunk,
+      and a description built under a scoped credential says so. An agent then describes how they differ
+      from those parts. Not built; see DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §3. Reworded
+      2026-09-28 (was: content similarity over pgvector embeddings).'
   answering_mechanism: RAG Queries + Agent-Based Analysis
   rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
     scope similarity (which needs declared or measured scope) and structural similarity (which needs a
@@ -2849,8 +2861,12 @@ database_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: semantic_suggestions (proposed) — SemanticAnnotation exists as a type and nothing produces
-      one.'
+    note: 'GAP: semantic_suggestions (proposed) — the vocabulary layer: match column names and the stored
+      column-profile evidence (distinct ratio, patterns, top values, sampled under the credential''s budget)
+      against Egeria glossary terms and data classes, proposing SemanticAnnotations for a person to confirm
+      in Enrichment; no row is read beyond the profile''s sample. SemanticAnnotation exists as a type
+      and nothing produces one yet. See DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §2. Reworded
+      2026-09-28.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
   rationale: Suggestions rather than assignments, drawn from column names, any matched Data Classes and
     any matched reference-data sets, and published as Egeria SemanticAnnotations for a steward to accept
@@ -3161,8 +3177,14 @@ filesystem_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
-      over RAG can describe how two resources differ once candidates exist'
+    note: 'GAP: similarity over resource DESCRIPTIONS, never content — for repositories the README/doc
+      embeddings the RAG ingestion step already produces plus the structural signature (language, dependency
+      set, interface surface); for databases and filesystems the catalog-as-text (names, comments, types,
+      keys) plus per-column profile summaries plus the schema fingerprint. Two resources are similar when
+      their descriptions are near; the evidence names which parts were near, never a retrieved chunk,
+      and a description built under a scoped credential says so. An agent then describes how they differ
+      from those parts. Not built; see DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §3. Reworded
+      2026-09-28 (was: content similarity over pgvector embeddings).'
   answering_mechanism: RAG Queries + Agent-Based Analysis
   rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
     scope similarity (which needs declared or measured scope) and structural similarity (which needs a
@@ -3811,8 +3833,12 @@ filesystem_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: semantic_suggestions (proposed) — SemanticAnnotation exists as a type and nothing produces
-      one.'
+    note: 'GAP: semantic_suggestions (proposed) — the vocabulary layer: match column names and the stored
+      column-profile evidence (distinct ratio, patterns, top values, sampled under the credential''s budget)
+      against Egeria glossary terms and data classes, proposing SemanticAnnotations for a person to confirm
+      in Enrichment; no row is read beyond the profile''s sample. SemanticAnnotation exists as a type
+      and nothing produces one yet. See DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §2. Reworded
+      2026-09-28.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
   rationale: Suggestions rather than assignments, drawn from column names, any matched Data Classes and
     any matched reference-data sets, and published as Egeria SemanticAnnotations for a steward to accept
@@ -4024,8 +4050,14 @@ dataset_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
-      over RAG can describe how two resources differ once candidates exist'
+    note: 'GAP: similarity over resource DESCRIPTIONS, never content — for repositories the README/doc
+      embeddings the RAG ingestion step already produces plus the structural signature (language, dependency
+      set, interface surface); for databases and filesystems the catalog-as-text (names, comments, types,
+      keys) plus per-column profile summaries plus the schema fingerprint. Two resources are similar when
+      their descriptions are near; the evidence names which parts were near, never a retrieved chunk,
+      and a description built under a scoped credential says so. An agent then describes how they differ
+      from those parts. Not built; see DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §3. Reworded
+      2026-09-28 (was: content similarity over pgvector embeddings).'
   answering_mechanism: RAG Queries + Agent-Based Analysis
   rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
     scope similarity (which needs declared or measured scope) and structural similarity (which needs a
@@ -4695,8 +4727,14 @@ model_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: similarity search over pgvector embeddings (not built) — content similarity; an Agent
-      over RAG can describe how two resources differ once candidates exist'
+    note: 'GAP: similarity over resource DESCRIPTIONS, never content — for repositories the README/doc
+      embeddings the RAG ingestion step already produces plus the structural signature (language, dependency
+      set, interface surface); for databases and filesystems the catalog-as-text (names, comments, types,
+      keys) plus per-column profile summaries plus the schema fingerprint. Two resources are similar when
+      their descriptions are near; the evidence names which parts were near, never a retrieved chunk,
+      and a description built under a scoped credential says so. An agent then describes how they differ
+      from those parts. Not built; see DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §3. Reworded
+      2026-09-28 (was: content similarity over pgvector embeddings).'
   answering_mechanism: RAG Queries + Agent-Based Analysis
   rationale: 'Content similarity over embeddings of code, documents and sampled data (pgvector). Complements
     scope similarity (which needs declared or measured scope) and structural similarity (which needs a
