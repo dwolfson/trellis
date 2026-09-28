@@ -213,3 +213,21 @@ session to live-verify and poll CI, per the brief's own hand-off instructions
   the root cause and fix summary; marked the generic `_store_results`
   survey_data-clobber entry as partially closed (statistics/views now
   covered; the single generic mechanism it asks for remains open).
+
+## Live gate (design session, 2026-09-28 02:29 UTC)
+
+Direct `DatabaseSurveyor.survey(steps=["schema"], read_egeria_catalog=False)`
+from this branch, then `db_derived.load_inputs()` + `fingerprint_database()`
++ `classify_database()` on the same registry — a shared dev-registry write,
+disclosed per the dev-writes ruling.
+
+| database | activity rows written by the schema-only run | classification after | families | activity provenance |
+|---|---|---|---|---|
+| laz_local_adventureworks | 0 (was 157 NULL-counter rows per run) | transactional · measured · confidence 67 | 4 of 4 | 2026-09-27T21:24:11 (the last real activity run) |
+| localhost_docker_coco_pharma | 0 | reference_data · measured · confidence 60 | 4 of 4 | 2026-09-27T21:49:15 |
+
+Per-table provenance carried on `DerivedInputs.table_surveyed_at`: schemas,
+tables and columns from the new run; column profiles and activity from the
+newest run that actually holds them. Before this branch, adventureworks
+classified as "not established, 2 of 4 families" after any non-statistics
+run. Gate passes.
