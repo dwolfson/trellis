@@ -657,18 +657,54 @@ class SurveyDefinitionExecutor:
                     # vector — a known gap, of a piece with the one
                     # `_any_step_needs_prerequisites` documents, and the same
                     # fix closes both.
+                    #
+                    # Dispatch honesty (2026-09-28,
+                    # docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md):
+                    # `executor` used to be baked in as `"prefect"` HERE, before
+                    # `run_prefect_step` even attempted dispatch — so a silent
+                    # fallback (see `re_prefect_client`'s docstring for the
+                    # 2026-09-28 bug) still wrote `step_runs.executor='prefect'`
+                    # for a step that had in fact run locally. `observe()` now
+                    # opens with the honest default (`"local"`), and
+                    # `_pf_observed`/`_pf_dispatch` are corrected to the REAL
+                    # outcome after `run_prefect_step` returns, before
+                    # `_record_cost` persists the row.
                     _pf_info = self._step_info(adapter, step.re_analysis_step)
+                    _pf_dispatch: dict = {}
                     with step_cost_observer.observe(
                         step.re_analysis_step,
                         getattr(_pf_info, "fetch_cost", ""),
                         getattr(_pf_info, "compute_cost", ""),
-                        executor="prefect", source="prefect",
+                        executor="local", source="local",
                     ) as _pf_observed:
-                        output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
+                        output = run_prefect_step(
+                            entity_type, entity.slug, step.re_analysis_step,
+                            runner_kwargs, dispatch_info=_pf_dispatch,
+                        )
+                    _pf_engine = _pf_dispatch.get("engine", "local")
+                    _pf_dispatch_failed = _pf_dispatch.get("dispatch_failed", "")
+                    if _pf_observed:
+                        _pf_observed[0].executor = _pf_engine
+                        _pf_observed[0].source = _pf_engine
+                        _pf_observed[0].executor_ref = _pf_dispatch.get("flow_run_id", "")
+                        _pf_observed[0].flow_run_id = _pf_dispatch.get("flow_run_id", "")
+                        _pf_observed[0].dispatch_failed = _pf_dispatch_failed
                     self._record_cost(_pf_observed, entity_type, slug, output, surveyed_at)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
-                    steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "ok", "engine": "prefect"})
+                    _pf_report_entry = {
+                        "step": step.qualified_name, "re_analysis_step": _step_key(step),
+                        "status": "ok", "engine": _pf_engine,
+                    }
+                    if _pf_dispatch_failed:
+                        # The pane-line contract (app.js's survey launch/status
+                        # code): a run that fell back reads "ran locally:
+                        # Prefect dispatch failed — <reason>", not "ok" with no
+                        # trace that Prefect was even asked.
+                        _pf_report_entry["detail"] = (
+                            f"ran locally: Prefect dispatch failed — {_pf_dispatch_failed}"
+                        )
+                    steps_report.append(_pf_report_entry)
                     produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except PrefectFlowRunCancelled as exc:
                     # Distinct from a generic failure — this is the user

@@ -291,6 +291,22 @@ def run_planned_step_task(
                 "engine": "prefect", "guard": None, "detail": str(exc)}
 
     if observed:
+        # Dispatch honesty completeness (2026-09-28,
+        # docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md): this
+        # function only ever reaches this line by genuinely executing as a
+        # Prefect task inside a running flow (no REST-dispatch-then-fallback
+        # branch like run_prefect_step has), so `executor="prefect"` above is
+        # always trustworthy here — this just fills in the id for the same
+        # "checkable against Prefect's own API" reason the per-step path's
+        # flow_run_id carries one.
+        try:
+            from prefect.runtime import flow_run as _flow_run_ctx
+
+            fr_id = _flow_run_ctx.id
+        except Exception:  # pragma: no cover - defensive, never fatal
+            fr_id = None
+        if fr_id:
+            observed[0].flow_run_id = str(fr_id)
         _record_step_cost(entity_type, slug, observed[0], output, surveyed_at)
 
     result = {"step_key": step_key, "step": qualified_name, "status": "ok",
