@@ -382,6 +382,10 @@ def run_worker(
         embedded, len(loop_specs()),
     )
 
+    from resource_explorer.surveyors.prefect_adapter import log_prefect_reachability_at_startup
+
+    log_prefect_reachability_at_startup()
+
     _reconcile_orphaned_runs()
     _warm_survey_definition_cache()
     _ensure_draft_zone()

@@ -4436,14 +4436,38 @@ async function launchSurvey(slug, ref) {
     // everything else `getSurveyCandidates` returns, reflects what
     // actually happened rather than the stale pre-run snapshot.
     if (res && res.activity_id) {
+      let finishedEntry = null;
       try {
-        await pollActivity(res.activity_id, {});
+        finishedEntry = await pollActivity(res.activity_id, {});
       } catch (err) {
         if (err.name !== 'PollTimeout') throw err;
         // Not a failure — this browser stopped watching; the run itself
         // may still be in flight. Reload anyway: it shows whatever state
         // the run has reached by now, which is still more current than a
         // note that never changes.
+      }
+      // Prefect dispatch honesty (2026-09-28,
+      // docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md): a step
+      // that silently fell back to local execution still reports
+      // status "ok" (the work genuinely got done) — so it would otherwise
+      // look identical to a step that was always local-by-design. Its
+      // steps_report entry carries a "ran locally: Prefect dispatch
+      // failed — <reason>" detail specifically to make that distinguishable
+      // here, on the same line a person is already watching.
+      if (note && finishedEntry) {
+        let steps = [];
+        try {
+          const d = typeof finishedEntry.detail === 'string'
+            ? JSON.parse(finishedEntry.detail) : (finishedEntry.detail || {});
+          steps = d.steps || [];
+        } catch (_) { /* a detail we cannot parse has nothing to report here */ }
+        const fellBack = steps.filter((s) =>
+          typeof s.detail === 'string' && s.detail.startsWith('ran locally: Prefect dispatch failed'));
+        if (fellBack.length) {
+          note.innerHTML += `<div class="mt-s1 text-state-warn">${
+            fellBack.map((s) => esc(`${String(s.step || '').split('::').pop()} — ${s.detail}`)).join('<br>')
+          }</div>`;
+        }
       }
       if (slug === state.selectedSlug && state.subTab === 'survey') {
         await loadSurveyPane();

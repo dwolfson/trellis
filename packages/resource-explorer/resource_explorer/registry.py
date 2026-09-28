@@ -2153,7 +2153,9 @@ class ProjectRegistry:
                     metrics       TEXT DEFAULT '{}',
                     declared      TEXT DEFAULT '{}',
                     disagreement  TEXT DEFAULT '',
-                    surveyed_as   TEXT DEFAULT ''
+                    surveyed_as   TEXT DEFAULT '',
+                    flow_run_id   TEXT DEFAULT '',
+                    dispatch_failed TEXT DEFAULT ''
                 )
             """)
             # `entity_type` and `executor_ref` post-date the first shape this
@@ -2170,6 +2172,22 @@ class ProjectRegistry:
                 # §4 — which credential identity this run executed as;
                 # `source`/`executor` already say WHO ran it.
                 ("surveyed_as", "TEXT DEFAULT ''"),
+                # Prefect dispatch honesty (2026-09-28,
+                # docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md).
+                # ADD-only, existing rows untouched: `executor`/`executor_ref`
+                # keep their exact prior meaning ('local'/'prefect' strings).
+                # `flow_run_id` is the real Prefect flow-run id, populated
+                # only when `executor='prefect'` genuinely dispatched —
+                # checkable against Prefect's own `POST /api/flow_runs/filter`
+                # rather than merely asserted. `dispatch_failed` is the
+                # exception text when a Prefect dispatch was ATTEMPTED and
+                # fell back to local execution, so a row can distinguish
+                # "never tried Prefect" (both empty, `executor='local'` by
+                # design) from "tried Prefect and it failed" (`dispatch_failed`
+                # non-empty, `executor='local'` because the work still ran,
+                # just not through Prefect).
+                ("flow_run_id", "TEXT DEFAULT ''"),
+                ("dispatch_failed", "TEXT DEFAULT ''"),
             ):
                 if _step_run_cols and _col not in _step_run_cols:
                     conn.execute(f"ALTER TABLE step_runs ADD COLUMN {_col} {_ddl}")
@@ -5847,6 +5865,7 @@ class ProjectRegistry:
         executor_ref: str = "", demanded_by: str = "",
         metrics: dict | None = None, declared: dict | None = None,
         disagreement: str = "", surveyed_as: str = "",
+        flow_run_id: str = "", dispatch_failed: str = "",
     ) -> None:
         """One row per step EXECUTION. Append-only: a step run twice in one
         snapshot (once as a prerequisite, once on its own request) is two
@@ -5856,16 +5875,28 @@ class ProjectRegistry:
         `demanded_by` is empty for a directly-requested step and carries the
         requesting step's key for an auto-run prerequisite — the field that
         answers "why did Scouting take three minutes".
+
+        `flow_run_id`/`dispatch_failed` (2026-09-28, Prefect dispatch
+        honesty — docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md):
+        `executor` must only ever be `'prefect'` when a real flow-run exists
+        — `flow_run_id` then carries its id, checkable against Prefect's own
+        `POST /api/flow_runs/filter`. A dispatch that was attempted and fell
+        back to local execution records `executor='local'` and a non-empty
+        `dispatch_failed` naming why, rather than the two being
+        indistinguishable from a step that was never routed to Prefect at
+        all.
         """
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, demanded_by, metrics, declared, "
-                "disagreement, surveyed_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "disagreement, surveyed_as, flow_run_id, dispatch_failed) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (slug, entity_type, step_key, surveyed_at, source, executor,
                  executor_ref or "", demanded_by or "",
                  json.dumps(metrics or {}), json.dumps(declared or {}),
-                 disagreement or "", surveyed_as or ""),
+                 disagreement or "", surveyed_as or "",
+                 flow_run_id or "", dispatch_failed or ""),
             )
 
     def query_step_runs(
