@@ -119,3 +119,28 @@ start.)
 Per the brief: A before B, since B's `load_inputs()` reads what A's fix
 changes to `database_columns`. B, C, D, E are unblocked and can proceed in
 parallel per the brief's own ordering note.
+
+
+## Live verification (design session, 2026-09-28 01:24 UTC)
+
+Direct `DatabaseSurveyor.survey(steps=["schema"], read_egeria_catalog=False)`
+from this branch's code against both registered databases, using each
+database's stored credential — a write to the shared dev registry,
+disclosed here per the dev-writes ruling. Counts are over the latest
+`database_columns` rows before and after:
+
+| database | PK columns before → after | FK columns before → after | truth (pg_constraint, user schemas) |
+|---|---|---|---|
+| laz_local_adventureworks | 99 → 99 | 71 → **91** | PK 99, FK 91 |
+| localhost_docker_coco_pharma | 24 → 24 | 13 → 13 | unchanged, no regression |
+
+The brief's PK target of 181 was the design session's own error: it
+counted `pg_catalog`'s primary keys (82 columns) alongside the user
+schemas. PK capture was already complete; FK capture is now complete.
+
+Relationship Graph derived from the new adventureworks rows with
+`db_derived.derive_relationship_graph(load_inputs(...))`: 91 edges,
+2 components, largest component 67 of 68 tables, one isolated table
+(`production.transactionhistoryarchive`, which has no foreign keys in
+AdventureWorks). Before: 71 edges, 8 components, largest 24. Gate
+(edges ≥ 86, components < 8) passes on the data itself.
