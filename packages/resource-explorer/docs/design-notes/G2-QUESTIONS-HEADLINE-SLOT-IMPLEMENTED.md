@@ -205,6 +205,76 @@ this be in scope for what I am looking for — worth the full pass?":
   numbers behind this" present and collapsed by default (no table rendered
   until clicked).
 
+## Follow-up: one sentence means one sentence (live gate on 8813, 2026-09-28)
+
+The served-page verification above was wrong about scope: picking the right
+ANALYSIS (§1) was necessary but not sufficient. `lines.answer` still showed
+that analysis's ENTIRE multi-sentence explanation — on `laz_local_adventureworks`
+the fit row and "Which resources cover similar subjects, grain and period or
+places…" (both backed by the same four analyses, both landing on
+`preliminary_fit` as lead) each rendered a ~120-word paragraph. The
+architecture session's gate on port 8813 caught this; this coordinator picked
+it up directly (the G2 subagent had been stopped by an unrelated
+infrastructure failure — a safety-verdict service outage, not a task
+problem — and retrying immediately would have hit the same wall per its own
+error message).
+
+### Fix: `firstSentence()` (`envelope.js`)
+
+New exported helper, applied to `f.headline` and `prose(f)`'s text BEFORE
+either is escaped/marked up (so `answerHtml`'s own `VERDICT` regex, matched
+at the string's start, is unaffected by where the truncation cuts later in
+the string):
+
+- Splits at the first ". " / "! " / "? " followed by a capital letter (an
+  ordinary sentence boundary), or at the first " · " rollup separator
+  (design's own "lead · N schemas ›" convention), whichever comes first.
+- Never cuts inside a parenthetical — paren depth is tracked as the string
+  is scanned once.
+- Does NOT special-case a numbered/bulleted list's own periods — not needed
+  by either row this was built for, both plain prose paragraphs. Documented
+  as a known gap in the function's own docstring rather than silently
+  handled.
+- The full, untruncated text is never lost: `sentenceByAnalysis` (unchanged)
+  is the only place a truncated sentence is used (`lines.answer`); "the
+  numbers behind this" reads straight from `env`/the By-analysis tab's own
+  row, not from this copy.
+
+### Verification
+
+- `tests/test_next_renders_text_cross_check.py`'s new `TestFirstSentenceTruncation`:
+  a 5-case corpus (plain two-sentence paragraph, the reported fit-row shape,
+  a rollup with a `·` separator, a period inside a parenthetical that must
+  NOT split, and a text with no boundary at all that must come back
+  byte-for-byte unchanged — the peer's own gate check, "How big is this
+  database" has no ". " in it) cross-checked between a Python-only mirror
+  (`_first_sentence`, same reasoning as `_lead_analysis_id`'s docstring for
+  why there is no production Python equivalent to check against) and the
+  real JS via node. Plus `test_the_fit_row_headline_slot_now_shows_one_sentence`,
+  an end-to-end case using the reply's own fit-question corpus fixture with
+  a multi-sentence headline substituted in, asserting `lines.answer` no
+  longer carries the second/third sentences.
+- Targeted: `uv run pytest tests/test_next_renders_text_cross_check.py -q -rf`
+  — 8 passed (the pre-existing tests plus the new class).
+- Broader: `uv run pytest tests/ -k "next or envelope or questions_tab or
+  slice17" -q` — 707 passed, 1 skipped.
+- Full suite (no `-k`, `-rf`): see commit message for the exact count from
+  this run.
+- **Live-verified on 8815** (this coordinator's own port — 8813 belongs to
+  the architecture session's separate `wt-g1` worktree checkout, not this
+  one, so it was left untouched rather than modified out from under that
+  session's gate setup): reloaded `/next` → DBs → `laz_local_adventureworks`
+  → Discovery → Questions. Both affected rows now read exactly:
+  `NO REQUIREMENT DECLARED — no lens was supplied, so fit is not a question
+  that has an answer here.` — one sentence, nothing after it. Confirmed via
+  `get_page_text` (not a screenshot alone) that no second sentence from
+  `preliminary_fit`'s own explanation follows on either row. Also confirmed
+  via a standalone node check that the docling-style em-dash example the
+  peer named ("9 components recovered — 9 of 107 component paths reviewed by
+  hand…") passes through `firstSentence` completely unchanged, since it has
+  no ". " boundary — matching the requirement that "How big is this
+  database" and similar em-dash rows stay exactly as they were.
+
 ## Files touched
 
 - `resource_explorer/web/static/next/glyphs.js`

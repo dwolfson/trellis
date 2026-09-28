@@ -41,6 +41,42 @@ export function answerHtml(headline, esc, tnum) {
   return `<strong class="font-semibold">${esc(m[1])}</strong>${esc(m[2])}${tnum(esc(rest))}`;
 }
 
+/**
+ * Truncate a multi-sentence analysis explanation to its first sentence, for
+ * the headline slot's one-sentence rule (REPLY-DESIGNER-ROUND2-DATABASE-
+ * SCREENS.md §2.4/§2.2: a row holds one sentence, or a rollup's lead plus
+ * "· N schemas ›" -- the rest belongs behind "the numbers behind this", not
+ * duplicated here). Applied to RAW text before it is escaped/marked up, so
+ * a verdict prefix's own regex (`VERDICT`, matched at the string's start) is
+ * unaffected by where this cuts later in the string.
+ *
+ * Splits at the first ". " / "! " / "? " followed by a capital letter (an
+ * ordinary sentence boundary), or at the first " · " rollup separator,
+ * whichever comes first -- never inside a parenthetical, tracked by depth
+ * as the string is scanned once. Does not special-case a numbered/bulleted
+ * list's own periods (e.g. "1. First. 2. Second.") -- not needed by either
+ * row this was built for (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.2's
+ * "Which resources cover similar subjects…" and §2.4's fit question), both
+ * plain prose paragraphs.
+ */
+export function firstSentence(text) {
+  if (!text) return text;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '(') { depth++; continue; }
+    if (c === ')') { depth = Math.max(0, depth - 1); continue; }
+    if (depth > 0) continue;
+    if ((c === '.' || c === '!' || c === '?') && text[i + 1] === ' ' && /[A-Z]/.test(text[i + 2] || '')) {
+      return text.slice(0, i + 1);
+    }
+    if (text.startsWith(' · ', i)) {
+      return text.slice(0, i);
+    }
+  }
+  return text;
+}
+
 /** The analysis's own prose, if it wrote any. Never assembled here. */
 export function prose(f) {
   const v = f.value || {};
@@ -186,7 +222,7 @@ export function readEnvelope(entry, env, esc, tnum) {
       // "we didn't look".
       sentence = tnum(esc(`${f.analysis_id} ran and found nothing.`));
     } else if (f.headline) {
-      sentence = answerHtml(f.headline, esc, tnum);
+      sentence = answerHtml(firstSentence(f.headline), esc, tnum);
     } else {
       const p = prose(f);
       if (p) {
@@ -196,9 +232,10 @@ export function readEnvelope(entry, env, esc, tnum) {
         // from a `verdict` field rather than from the first word of a
         // sentence.
         const verdict = f.value && f.value.verdict;
+        const pOne = firstSentence(p);
         sentence = verdict
-          ? `<strong class="font-semibold">${esc(cap(String(verdict)))}</strong> — ${tnum(esc(p))}`
-          : tnum(esc(p));
+          ? `<strong class="font-semibold">${esc(cap(String(verdict)))}</strong> — ${tnum(esc(pOne))}`
+          : tnum(esc(pOne));
       } else {
         const scalars = scalarMeasures(f.value);
         if (scalars) {

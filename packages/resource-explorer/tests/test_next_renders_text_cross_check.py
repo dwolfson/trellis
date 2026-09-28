@@ -534,3 +534,153 @@ console.log(JSON.stringify(out));
                 f"{j['name']}: lines.answer did not carry "
                 f"{case['expected_answer_analysis']}'s own headline -- "
                 f"answer={j['answer']!r}")
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Live gate follow-up (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.2/§2.4,
+# re-checked on 8813 against adventureworks 2026-09-28): `leadAnalysisId`
+# picking the right analysis was necessary but not sufficient -- the
+# headline slot still showed that analysis's ENTIRE multi-sentence
+# explanation (a ~120-word paragraph on the fit row and on the "Which
+# resources cover similar subjects…" row), not the one sentence the reply
+# asks for. `envelope.js`'s `firstSentence()` is the fix; this cross-checks
+# it the same way `leadAnalysisId` is cross-checked above -- there is no
+# production Python equivalent (same reasoning `_lead_analysis_id`'s own
+# docstring gives), so this is a test-only mirror kept in sync by hand.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _first_sentence(text: str | None) -> str | None:
+    """Test-only Python mirror of `envelope.js`'s `firstSentence()`."""
+    if not text:
+        return text
+    depth = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0:
+            if c in ".!?" and i + 1 < n and text[i + 1] == " " and i + 2 < n and text[i + 2].isupper():
+                return text[: i + 1]
+            if text.startswith(" · ", i):
+                return text[:i]
+        i += 1
+    return text
+
+
+def _first_sentence_corpus() -> list[dict]:
+    return [
+        {
+            "name": "plain_two_sentence_paragraph",
+            "text": "9 components recovered. Nine of 107 component paths were reviewed by hand.",
+            "expected": "9 components recovered.",
+        },
+        {
+            "name": "the_reported_fit_row_paragraph",
+            # Shortened from the real ~120-word adventureworks paragraph,
+            # same shape: a lead sentence, then supporting sentences.
+            "text": (
+                "NO REQUIREMENT DECLARED — no lens was supplied, so fit is not a "
+                "question that has an answer here. A lens names the tables, columns "
+                "and time window a caller cares about. Without one, coverage_signals "
+                "and subject_signals have nothing to compare against."
+            ),
+            "expected": (
+                "NO REQUIREMENT DECLARED — no lens was supplied, so fit is not a "
+                "question that has an answer here."
+            ),
+        },
+        {
+            "name": "rollup_lead_then_middot_separator",
+            "text": "68 of 68 tables grain-determined · by schema: sales 12, production 27, person 18, ...",
+            "expected": "68 of 68 tables grain-determined",
+        },
+        {
+            "name": "period_inside_parenthetical_is_not_a_boundary",
+            "text": "Reads as measured (e.g. see pg_stats. Confirmed live). Second real sentence follows.",
+            "expected": "Reads as measured (e.g. see pg_stats. Confirmed live).",
+        },
+        {
+            "name": "no_boundary_at_all_returns_the_whole_text_unchanged",
+            # The peer's own gate check: "How big is this database" contains
+            # no ". " at all, so must come back byte-for-byte unchanged.
+            "text": "1,048,576 rows across 68 tables and 91 keys",
+            "expected": "1,048,576 rows across 68 tables and 91 keys",
+        },
+    ]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestFirstSentenceTruncation:
+    def _js_side(self, cases: list[dict], tmp_path: Path) -> list[dict]:
+        format_mjs = tmp_path / "format3.mjs"
+        format_mjs.write_text(FORMAT_JS.read_text(encoding="utf-8"), encoding="utf-8")
+        envelope_src = ENVELOPE_JS.read_text(encoding="utf-8")
+        envelope_src = envelope_src.replace("/static/next/format.js", "./format3.mjs")
+        envelope_mjs = tmp_path / "envelope3.mjs"
+        envelope_mjs.write_text(envelope_src, encoding="utf-8")
+        cases_json = json.dumps([{"name": c["name"], "text": c["text"]} for c in cases])
+        script = f"""
+import {{ firstSentence }} from './envelope3.mjs';
+const cases = {cases_json};
+const out = cases.map((c) => ({{ name: c.name, result: firstSentence(c.text) }}));
+console.log(JSON.stringify(out));
+"""
+        script_path = tmp_path / "run_first_sentence.mjs"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(["node", str(script_path)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_corpus_size_is_the_documented_5(self):
+        assert len(_first_sentence_corpus()) == 5
+
+    def test_python_mirror_and_js_agree(self, tmp_path):
+        cases = _first_sentence_corpus()
+        js_side = self._js_side(cases, tmp_path)
+        assert len(js_side) == len(cases)
+        failures = []
+        for case, j in zip(cases, js_side):
+            assert j["name"] == case["name"]
+            py_result = _first_sentence(case["text"])
+            if py_result != case["expected"]:
+                failures.append(
+                    f"{case['name']}: python mirror disagrees with the corpus's own "
+                    f"expectation -- python={py_result!r} expected={case['expected']!r}")
+            if j["result"] != case["expected"]:
+                failures.append(
+                    f"{case['name']}: js firstSentence disagrees with the corpus's own "
+                    f"expectation -- js={j['result']!r} expected={case['expected']!r}")
+        assert not failures, "\n".join(failures)
+
+    def test_the_fit_row_headline_slot_now_shows_one_sentence(self, tmp_path):
+        """End-to-end, not just the helper in isolation: `readEnvelope`'s
+        `lines.answer` for the reply's own fit-question corpus case must now
+        equal exactly ONE sentence, where before this fix it carried the
+        analysis's entire multi-sentence explanation verbatim (the live bug
+        the architecture session's gate found on 8813, 2026-09-28)."""
+        case = dict(_lead_selection_corpus()[0])
+        case["facts"] = [dict(f) for f in case["facts"]]
+        multi_sentence = (
+            "NO REQUIREMENT DECLARED — no lens was supplied, so fit is not a "
+            "question that has an answer here. A lens names the tables, columns "
+            "and time window a caller cares about. Without one, coverage_signals "
+            "and subject_signals have nothing to compare against."
+        )
+        for f in case["facts"]:
+            if f["analysis_id"] == "preliminary_fit":
+                f["headline"] = multi_sentence
+        js_side = TestLeadAnalysisSelection()._js_side([case], tmp_path)
+        answer = js_side[0]["answer"]
+        plain = re.sub(r"<[^>]+>", "", answer)
+        assert "A lens names the tables" not in plain, (
+            f"lines.answer still carries more than the first sentence: {answer!r}")
+        assert "no lens was supplied, so fit is not a question that has an answer here." in plain
