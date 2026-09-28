@@ -355,6 +355,25 @@ class DatabaseConnection(ABC):
     def execute_query(self, query: str, params: tuple = ()) -> list[dict]:
         """Execute a query and return results as list of dicts."""
 
+    def execute_query_isolated(self, query: str, params: tuple = ()) -> list[dict]:
+        """Like `execute_query`, but where the engine supports it, a failure
+        here cannot abort every later statement on the same connection.
+
+        Default implementation: just `execute_query` — right for an engine
+        with no such cascading-abort behaviour, or one this base class has
+        not been taught about yet. `PostgreSQLConnection` overrides this with
+        a real per-call SAVEPOINT (see its own docstring for the incident
+        this exists to prevent): once one statement in a Postgres transaction
+        raises, the WHOLE transaction is aborted and every subsequent
+        statement fails too — "current transaction is aborted, commands
+        ignored until end of transaction block" — regardless of what that
+        next statement is about. A caller issuing several independent,
+        speculative queries in a loop (`column_profile_step.py`'s per-column
+        sampling is the case that found this) needs each one isolated from
+        the others' failures, which plain `execute_query` cannot give it.
+        """
+        return self.execute_query(query, params)
+
     @abstractmethod
     def get_schema_info(self) -> dict:
         """Get database schema information (schemas, tables, columns)."""
@@ -438,6 +457,59 @@ class PostgreSQLConnection(DatabaseConnection):
                 columns = [desc[0] for desc in cur.description]
                 return [dict(zip(columns, row)) for row in cur.fetchall()]
             return []
+
+    #: Name of the SAVEPOINT `execute_query_isolated` uses. Fixed rather than
+    #: generated per call — Postgres scopes a SAVEPOINT name to the current
+    #: transaction, and this method never nests (it releases or rolls back
+    #: before returning), so there is never more than one live at a time.
+    _ISOLATION_SAVEPOINT = "re_isolated_query"
+
+    def execute_query_isolated(self, query: str, params: tuple = ()) -> list[dict]:
+        """`execute_query`, wrapped in its own SAVEPOINT.
+
+        **The incident this exists to prevent (2026-09-27/28,
+        `laz_local_adventureworks`).** `column_profile_step.py` samples
+        columns table by table, issuing one `execute_query` per column in a
+        loop, all on the same connection and the same (implicit,
+        autocommit=False) transaction. One column happened to be on a VIEW —
+        `TABLESAMPLE` is only valid against a plain table or a materialized
+        view, and Postgres rejected it with a real SQL error. `execute_query`
+        propagated that as an exception, which the caller caught and logged —
+        correct so far. But Postgres does not merely fail the ONE statement
+        that errored: it aborts the WHOLE transaction, and every subsequent
+        statement fails too, with "current transaction is aborted, commands
+        ignored until end of transaction block", until something issues a
+        ROLLBACK. Nothing did. Every column sampled after the view — ~40 of
+        them, unrelated tables included — failed the identical way, silently
+        (each one individually caught and logged as "sampling failed"), and
+        `postgres_column_profile` still reported `status: "ok"`.
+
+        A SAVEPOINT scopes the abort to just the one statement it wraps:
+        `RELEASE SAVEPOINT` on success keeps its work; `ROLLBACK TO
+        SAVEPOINT` on failure undoes only what happened since the savepoint
+        was taken and returns the SURROUNDING transaction to a working state
+        — the connection is usable again for the very next call, which is
+        exactly what `execute_query` alone cannot offer a caller that issues
+        several independent, speculative queries in sequence.
+        """
+        if not self._conn:
+            raise RuntimeError("Not connected to database")
+
+        with self._conn.cursor() as cur:
+            cur.execute(f"SAVEPOINT {self._ISOLATION_SAVEPOINT}")
+            try:
+                cur.execute(query, params)
+                if cur.description:
+                    columns = [desc[0] for desc in cur.description]
+                    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+                else:
+                    rows = []
+            except Exception:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {self._ISOLATION_SAVEPOINT}")
+                raise
+            else:
+                cur.execute(f"RELEASE SAVEPOINT {self._ISOLATION_SAVEPOINT}")
+                return rows
 
     def get_schema_info(self) -> dict:
         """Get PostgreSQL schema information.

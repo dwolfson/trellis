@@ -430,6 +430,23 @@ STATE_NOT_COLLECTED = "not_collected"
 #: The engine cannot provide this at all (design §5.1's capability
 #: declaration): a DuckDB connection asked for `pg_stat_replication`.
 STATE_NOT_SUPPORTED = "not_supported"
+#: This measurement does not apply to what this row IS, regardless of engine
+#: or capability — a view or foreign table's column, asked for a
+#: `postgres_column_profile` sample. `TABLESAMPLE` is only valid against a
+#: plain table or a materialized view (Postgres rejects it outright on a
+#: view or foreign table), so there is no version of this engine, this
+#: capability set, or this budget under which the measurement could ever be
+#: taken. Distinct from `STATE_NOT_COLLECTED` on purpose: that state says
+#: "nothing has read this yet, but could" (run ANALYZE, raise the budget);
+#: this one says the underlying question has no answer for this kind of
+#: relation, so re-running the same step again would not help. Found live
+#: 2026-09-27/28 on `laz_local_adventureworks`: `postgres_column_profile`
+#: attempted `TABLESAMPLE` on a view, Postgres rejected it, and — before
+#: this state existed — the resulting SQL error aborted the connection's
+#: transaction and silently failed every column sampled after it in the
+#: same run (see `column_profile_step.py` and
+#: `connection.py::execute_query_isolated`).
+STATE_NOT_APPLICABLE = "not_applicable"
 #: The step that would have measured this did not run in this survey — the
 #: commonest case for a back-filled row, where the old blob simply never
 #: carried the field.
@@ -461,6 +478,7 @@ STATES_WITHOUT_A_MEASUREMENT = frozenset({
     STATE_NOT_COLLECTED,
     STATE_NOT_SUPPORTED,
     STATE_NOT_MEASURED,
+    STATE_NOT_APPLICABLE,
 })
 
 # ── whose statistics, and as of when ───────────────────────────────────────
