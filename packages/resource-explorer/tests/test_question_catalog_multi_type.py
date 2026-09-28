@@ -238,7 +238,10 @@ class TestAHypotheticalDatabaseRow:
             "Question": "What is the grain of each table (hypothetical)?",
             "Funnel Stage": "Discovery",
             "Resource Types": "database;filesystem",
-            "Answering Analysis": "GAP: grain_determination not built",
+            # Not a registered analysis/step id (gap guard, §C): a real one
+            # here would now fail generation as a false gap. This fixture's
+            # own point is cross-type row placement, not the answering note.
+            "Answering Analysis": "GAP: grain_ranking_hypothetical not built",
         })
         target = "What is the grain of each table (hypothetical)?"
         assert any(e["question"] == target for e in raw["database_questions"])
