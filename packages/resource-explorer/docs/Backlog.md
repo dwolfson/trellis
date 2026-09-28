@@ -8281,6 +8281,20 @@ already in place are each individually correct and this is a design
 change to the writer's contract, not a live-visible bug in its own right
 right now.
 
+**Partially closed** (`re/structured-table-clobber`, BRIEF-KEYS-AND-
+ACTIVITY-CLOBBER.md §B, 2026-09-28): the two remaining un-patched
+`survey_data` sections, `statistics` and `views`, now use the identical
+preserve-prior fallback `operations`/`credential_capability` already had —
+`"statistics": statistics or prior_statistics` / `"views": results.get
+("views") or prior_views` in `_store_results`. `schema_info` needs no such
+fallback ("schema" always runs — see `_ALL_STEPS`'s own comment). This still
+is not the single generic mechanism the note above asks for (a per-field
+`or prior_X` fallback each time a field is added, not `results.get(key,
+_SENTINEL)` skipped from the write) — a future field still needs the same
+manual treatment — but every currently-known `survey_data` section is now
+covered, and `tests/test_store_results_preserves_prior_survey_data_sections.py`
+pins `statistics`/`views` the same way the operations test pins those two.
+
 ## The Scouting Survey Definition's own "Run"/"Re-run" button does not follow the analyses-list rule (found live, Slice 22 gate, `laz_local_adventureworks`, 2026-09-27)
 
 After the Database Scouting Scan has run at least once, the analyses list
@@ -8340,7 +8354,46 @@ exactly the chart's inputs — no new backend read needed, just a small bar
 (or two, rows and columns) per schema rendered above the existing tree,
 sorted the same data-first order the tree itself already uses.
 
-## `database_table_activity` rows are clobbered at the STRUCTURED-TABLE layer by a multi-step survey run's later steps — not fixed here, deferred for a fresh session (found live, `adventureworks`, 2026-09-27)
+## `database_table_activity` rows are clobbered at the STRUCTURED-TABLE layer by a multi-step survey run's later steps — FIXED (`re/structured-table-clobber`, BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B, 2026-09-28)
+
+**Root cause found**, more specific than "deferred, fix direction below" left
+it: `_store_results` (`database_surveyor.py`) stamped
+`table["last_analyzed"] = rs.get("last_analyzed", "")` /
+`table["pending_changes"] = rs.get("pending_changes", 0)` on EVERY table in
+`schema_info` unconditionally, even when `rs` (that table's
+`pg_stat_user_tables` row) was empty because the run never requested
+`"statistics"` at all. `record_database_survey()`'s own internal
+`backfill_database_survey()` call (`registry.py`, runs on every survey
+regardless of what the caller requested) reads exactly those three fields off
+`schema_info` via `database_rows_from_survey_data()`'s
+`if last_analyzed or last_vacuumed or pending is not None:` check to decide
+whether to write a placeholder `database_table_activity` row — and a
+fabricated `pending_changes: 0` (a real int, not an absence) made that check
+true on every single run, writing a full table of NULL-counter rows that then
+shadowed whichever earlier run's `write_detail_rows` call had the real
+counters, because `db_derived.load_inputs()` picked one global latest
+`surveyed_at` for the whole snapshot.
+
+**Fix, both halves the direction below asked for:**
+1. **Write side** (`database_surveyor.py::_store_results`): those three
+   fields are now left entirely unset when `rs` is empty, instead of
+   defaulted to `""`/`0` — so a statistics-free run's schema_info blob
+   correctly reads as "nothing to report" and the auto-backfill writes no
+   placeholder row for that `surveyed_at`.
+2. **Read side** (`db_derived.py::load_inputs`): with no explicit
+   `surveyed_at` (the "what do we currently know" call every consumer here
+   uses), each structured table now resolves its OWN newest non-empty
+   `surveyed_at` independently via `_resolve_table_surveyed_at` — activity
+   additionally requires at least one row with a real (non-NULL) counter, not
+   just a non-empty row set. Per-table provenance is carried on the new
+   `DerivedInputs.table_surveyed_at` and surfaced in `db_classification`'s
+   `signal_provenance`/explanation text ("activity from ..., structure from
+   ...").
+
+See `docs/design-notes/STRUCTURED-TABLE-CLOBBER-IMPLEMENTED.md` for the
+before/after numbers and what was/wasn't live-verified.
+
+Original finding, kept for the record:
 
 The same class of bug as `_store_results`'s survey_data-blob clobber
 (above), but discovered one layer down, in the structured tables
