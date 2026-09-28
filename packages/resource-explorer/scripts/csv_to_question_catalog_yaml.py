@@ -24,6 +24,46 @@ Usage:
         python packages/resource-explorer/scripts/csv_to_question_catalog_yaml.py \\
         docs/dr-egeria/resource_questions.csv \\
         [--output resource_explorer/configdata/question_catalog.yaml]
+
+Gap-guard note (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §C, 2026-09-27): a
+`GAP:`/`PARTIAL:` note is now checked against KNOWN_REGISTERED_IDS (analysis
+ids + step ids) at generation time -- see `_referenced_registered_ids()` and
+its call sites in `_parse_answering()` below. This resolves id-shaped TOKENS
+in the note's FREE TEXT, unmarked (no backtick convention required), against
+the live registry. That is a deliberate choice, not an oversight:
+
+  - The alternative (require a marking, e.g. backticks, before a token
+    counts) would need every one of the CSV's existing 21 GAP:/PARTIAL: rows
+    retrofitted with backticks to keep passing -- including the two rows
+    corrected on 2026-09-27 whose PARTIAL: notes already name a real id in
+    plain prose ("the postgres_column_profile step reads pg_stats...",
+    "PARTIAL: nested_column_profile (design §5.4...) classifies..."). That
+    churn was weighed and rejected: retrofitting unrelated rows' wording to
+    satisfy a new lint rule is exactly the kind of edit `docs/dr-egeria/
+    resource_questions.csv`'s own reviewers (and the multi-session
+    coordination this repo runs under) would rather not see bundled into a
+    guard-hardening change.
+  - The false-positive risk a marking convention would guard against is an
+    incidental snake_case word in a note coincidentally colliding with a
+    REGISTERED id. KNOWN_REGISTERED_IDS is a small (~70), curated, domain-
+    specific vocabulary of compound identifiers (`postgres_column_profile`,
+    `db_fingerprint`, `grain_determination`, ...) engineered to be
+    unambiguous -- not the kind of phrase a human writes by accident in
+    descriptive prose. A collision requires BOTH an underscore-joined token
+    (already a strong signal on its own -- ordinary English prose does not
+    write "not_collected" for "not collected") AND that exact string being a
+    real, currently-registered id. `TestFalsePositiveRegression` in
+    tests/test_question_catalog_gap_guard.py checks two plausible near-miss
+    candidates (`not_collected`, `primary_key`) against the live registry
+    and confirms neither is registered today.
+  - A false positive here is cheap to notice and cheap to fix: it fails this
+    generator's own regeneration step, at CSV-authoring time, with the exact
+    offending token named in the error -- not a silent, user-facing wrong
+    answer. That is a different risk class from the runtime "confident wrong
+    answer" bugs this codebase is otherwise careful about (see
+    docs/design-notes/*-IMPLEMENTED.md and the `find-absence-as-answer`
+    skill); a noisy, immediately-actionable build failure is the acceptable
+    side of that tradeoff.
 """
 from __future__ import annotations
 
@@ -161,6 +201,81 @@ def _load_known_analysis_ids_by_type() -> dict[str, set[str]]:
 
 KNOWN_ANALYSIS_IDS = _load_known_analysis_ids()
 KNOWN_ANALYSIS_IDS_BY_TYPE = _load_known_analysis_ids_by_type()
+
+
+def _load_known_step_ids() -> set[str]:
+    """Every `re_analysis_step` key registered across the three resource-type
+    adapters -- the ids `survey_definition_executor.py`'s `StepInfo` maps
+    declare, read live the same way `_load_known_analysis_ids()` reads
+    `analysis_catalog.yaml` above.
+
+    A step is not the same thing as an analysis: `postgres_column_profile`
+    and `postgres_nested_columns` are real, executable steps (Phase 1 slices
+    10/11) that run and write rows today, but only `nested_column_profile`
+    has an `analysis_catalog.yaml` entry wrapping its output as a
+    standalone answer -- column profiling itself is consumed by
+    `data_class_match`/`reference_data_match` rather than surfaced under its
+    own id. `_load_known_analysis_ids()` alone is blind to this: a `GAP:`
+    note naming `postgres_column_profile` read as a permanent gap because
+    the id genuinely is not in `analysis_catalog.yaml`, even after the step
+    existed and ran for weeks. BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §C is
+    exactly this -- three CSV rows claimed gaps the code had already closed,
+    and the guard that should have caught it only ever consulted the
+    analysis catalog.
+
+    Imports the adapter modules directly rather than re-declaring their step
+    keys here, for the same reason `_load_known_analysis_ids()` reads the
+    YAML live instead of keeping a hand-synced list: a copy silently drops a
+    newly-added step, where importing the real registry fails loudly if the
+    module itself breaks. This does pull in the full `resource_explorer`
+    dependency set (this script is only ever run via
+    `uv run --package resource-explorer`, same as `_load_known_checks()`'s
+    sibling functions and every test that imports these adapters already
+    does)."""
+    import resource_explorer.surveyors.filesystem.survey_definition_adapter  # noqa: F401
+    from resource_explorer.surveyors.database.survey_definition_adapter import (
+        DATABASE_STEP_REGISTRY as _DATABASE_STEPS,
+    )
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        STEP_REGISTRY as _REPO_STEPS,
+    )
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+    ids: set[str] = set(_REPO_STEPS) | set(_DATABASE_STEPS)
+    filesystem_adapter = get_adapter("filesystem")
+    if filesystem_adapter is not None:
+        ids |= set(filesystem_adapter.re_analysis_step_info or {})
+    return ids
+
+
+KNOWN_STEP_IDS = _load_known_step_ids()
+
+# The union a GAP:/PARTIAL: note is checked against -- everything that is
+# REGISTERED and REAL today, whether or not it is surfaced through the
+# question layer as its own analysis. Kept separate from KNOWN_ANALYSIS_IDS
+# (which still drives `kind: analysis` classification via
+# `_is_pure_analysis_list` below): naming a step id is not the same claim as
+# naming an analysis id that fully answers a question on its own, but it is
+# just as real a thing to claim does not exist.
+KNOWN_REGISTERED_IDS = set(KNOWN_ANALYSIS_IDS) | KNOWN_STEP_IDS
+
+# Matches an id-shaped token: lowercase, snake_case, at least one underscore
+# -- e.g. `postgres_column_profile`, `db_derived`. Deliberately free-text
+# (unmarked, no backtick requirement) rather than restricted to a marked
+# convention -- see the module docstring addendum and
+# BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §C / the ...-GAP-GUARD-IMPLEMENTED.md
+# doc's "Free-text matching, not backticks" section for the false-positive
+# analysis this decision rests on.
+_ID_TOKEN_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
+
+def _referenced_registered_ids(note: str) -> list[str]:
+    """Id-shaped tokens in `note` that match a real, currently-registered
+    analysis or step id -- sorted, deduped. Empty if the note names nothing
+    the registry recognizes (a prose-only gap, or a gap naming something
+    genuinely unbuilt, e.g. `db_hub_tables (proposed)`)."""
+    tokens = set(_ID_TOKEN_RE.findall(note))
+    return sorted(tokens & KNOWN_REGISTERED_IDS)
 
 
 # Purpose vocabulary — the controlled kinds from
@@ -372,6 +487,35 @@ def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
         aid = ref.split(":", 1)[0]
         if aid not in analysis_ids:
             analysis_ids.append(aid)
+
+    # The gap guard (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §C): a GAP: note is a
+    # claim that NOTHING answers this, and a PARTIAL: note is a claim that
+    # SOMETHING named does. Both are checkable against KNOWN_REGISTERED_IDS
+    # (analysis ids + step ids), and both failed silently before this --
+    # three rows claimed gaps for postgres_column_profile/nested_column_
+    # profile/the filesystem reachability probe, all of which existed, and
+    # the old guard (analysis_catalog.yaml only, and only for `kind: gap`
+    # rows whose `analysis_ids` happened to be populated) could not see any
+    # of the three.
+    if kind == "gap":
+        named = _referenced_registered_ids(note)
+        if named:
+            plural = "is" if len(named) == 1 else "are"
+            raise ValueError(
+                f"this gap names something that exists: {named} {plural} a "
+                f"registered analysis or step id today, in a GAP: note: {note!r}\n"
+                "Re-word as PARTIAL: (if it answers part of the question) or "
+                "name the missing piece instead of something already built."
+            )
+    elif kind == "partial":
+        named = _referenced_registered_ids(note)
+        if not named:
+            raise ValueError(
+                f"PARTIAL: note names no registered analysis or step id, so "
+                f"there is nothing to check its claim against: {note!r}\n"
+                "Name the analysis or step id that answers part of the "
+                "question (or re-word as GAP: if nothing does)."
+            )
 
     return {"kind": kind, "analysis_ids": analysis_ids, "checks": checks, "note": note}
 
