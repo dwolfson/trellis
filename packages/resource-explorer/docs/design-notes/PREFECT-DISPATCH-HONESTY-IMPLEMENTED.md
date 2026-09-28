@@ -74,6 +74,26 @@ before any of them"). This makes Prefect's own ambient settings agree with RE's 
 `@flow`/`@task` invocations Prefect's own engine handles internally see the same server RE's
 explicit client does. `setdefault()` — an operator's own `PREFECT_API_URL` is never overridden.
 
+**Why this has to be at import time, specifically, and not just "early":** Prefect 3.8.1 freezes
+its settings at first import — `prefect.context` builds a `GLOBAL_SETTINGS_CONTEXT` once, reading
+the environment as it stands at that moment, and nothing set afterward reaches that frozen field
+(this repo's own `tests/conftest.py`, the `ephemeral_prefect` fixture's docstring, already
+documents the same mechanism for the exact same reason). `resource_explorer/__init__.py` is the
+one place in this package guaranteed to run before *any* other module's `import prefect` —
+`web/routes/prefect_status.py` imports `prefect.client.orchestration` directly, independent of
+`prefect_adapter.py`'s own import order, so a guard placed anywhere else could lose the race
+depending on which module happens to import `prefect` first. Anywhere later — a function body, a
+lazy import inside `re_prefect_client()` itself — would be "early" in wall-clock terms but wrong in
+the one sense that matters: Prefect may have already read (and frozen) the empty value by the time
+that code ran. This is also why the fix is accepted specifically for living next to the existing
+`PREFECT_SERVER_EPHEMERAL_ENABLED` guard (the same freezing behavior, the same fix location, the
+same reasoning already reviewed and trusted here) rather than as a new, independent mechanism, and
+why the ratchet test in part (2) matters beyond just `get_client()` itself: it is what keeps this
+guard's precondition true going forward — a future `get_client()` call site anywhere in the package
+would still read the correct, agreed-upon `PREFECT_API_URL` because of this fix, but the ratchet is
+what stops a new call site from silently reintroducing a path that doesn't go through
+`re_prefect_client()` and could drift from it.
+
 ## (2) Ratchet test
 
 `tests/test_no_ambient_prefect_client.py` — an `ast` walk over `resource_explorer/`, following
