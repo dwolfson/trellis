@@ -256,13 +256,32 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     return build_analysis_last_activity(registry, "filesystem", slug)
 
 
+@router.get("/{slug}/survey-results/boards")
+async def get_filesystem_survey_results_boards(slug: str, stage: str = "") -> dict:
+    """The By-analysis contents board's cheap half for filesystems — see
+    `projects.py`'s identically-shaped route and `workflows.analysis.
+    list_survey_result_boards`'s docstring."""
+    from resource_explorer.workflows.analysis import list_survey_result_boards
+
+    registry = ProjectRegistry()
+    if not registry.get_filesystem(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    return await asyncio.to_thread(list_survey_result_boards, registry, "filesystem", slug, stage)
+
+
 @router.get("/{slug}/survey-results")
-async def get_filesystem_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+async def get_filesystem_survey_results(
+    slug: str, stage: str = "", include_empty: bool = False, board_id: str = "",
+) -> dict:
     """The filesystem equivalent of `projects.py`'s `GET /{slug}/survey-
     results` ("By analysis" in /next) and `databases.py`'s identically-shaped
     route. See `workflows.analysis.build_survey_results`'s docstring — a
     filesystem gets one synthesized dashboard, since `FILESYSTEM_ANALYSIS_
-    RESULTS_MAP` has exactly the one entry filesystem has an analysis for."""
+    RESULTS_MAP` has exactly the one entry filesystem has an analysis for.
+
+    `board_id` (optional): one board only, for the /next By-analysis pane's
+    progressive fetch — see `projects.py`'s `get_survey_results` docstring."""
     from resource_explorer.workflows.analysis import build_survey_results
 
     registry = ProjectRegistry()
@@ -270,7 +289,7 @@ async def get_filesystem_survey_results(slug: str, stage: str = "", include_empt
         raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
 
     return await asyncio.to_thread(
-        build_survey_results, registry, "filesystem", slug, stage, include_empty,
+        build_survey_results, registry, "filesystem", slug, stage, include_empty, board_id,
     )
 
 
@@ -283,7 +302,10 @@ async def get_filesystem_questions(
 ) -> dict:
     """The filesystem equivalent of `projects.py`'s `GET /{slug}/scouting-
     questions` and `databases.py`'s identically-shaped route — see that
-    route's docstring."""
+    route's docstring, including why this is now off the event loop
+    (BY-ANALYSIS-PROGRESSIVE-AND-GRAPH, 2026-09-28: `question_has_data`
+    reaches the same expensive readers `/survey-results` already
+    off-loads)."""
     from resource_explorer.workflows.scouting import build_question_checklist
 
     registry = ProjectRegistry()
@@ -292,7 +314,9 @@ async def get_filesystem_questions(
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
     purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
-    return build_question_checklist(registry, "filesystem", slug, phase, persp_list, purp_list)
+    return await asyncio.to_thread(
+        build_question_checklist, registry, "filesystem", slug, phase, persp_list, purp_list,
+    )
 
 
 @router.delete("/{slug}/")
