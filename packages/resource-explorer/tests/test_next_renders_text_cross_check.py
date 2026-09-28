@@ -62,6 +62,7 @@ coverage.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -298,3 +299,238 @@ console.log(JSON.stringify(out));
                     f"{case['name']}: level-verdict disagreement -- "
                     f"python={p['fully_answered']!r} js={j['fullyAnswered']!r}")
         assert not failures, "\n".join(failures)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# G2 (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.4): the Questions
+# headline slot now holds exactly ONE sentence for a question backed by
+# SEVERAL analyses, chosen by `envelope.js`'s `leadAnalysisId()` -- the
+# first `analysis_ids` entry actually named in the catalog's own `note`
+# ("Answering Analysis" column) text, not `analysis_ids[0]` itself.
+# `question_catalog.yaml`'s own `preliminary_fit` question is the reply's
+# worked example: `analysis_ids` lists it LAST (after the three signals it
+# consumes), but its `note` names it FIRST -- "preliminary_fit (design
+# §16.3, §16.5 -- zero-fetch comparison of ...)". Reading index 0 there
+# would lead the headline with `grain_determination`'s sentence (an input),
+# not `preliminary_fit`'s own verdict (the reply's own quoted "actual
+# answer") -- exactly the bug this corpus pins.
+#
+# This is a SEPARATE corpus/class from the 44-case grid above rather than a
+# growth of it: that grid's own shape is one Fact per case (`_python_side`
+# builds exactly one `Fact`), and `test_corpus_size_is_the_documented_44`
+# guards that shape not shrinking silently. A lead-selection case needs
+# SEVERAL facts and a `note`/`analysis_ids` pair the existing schema has no
+# room for, so it gets its own corpus/fixture pair here rather than being
+# forced into the single-fact one.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _lead_analysis_id(analysis_ids: list[str], note: str) -> str | None:
+    """Test-only Python mirror of `envelope.js`'s `leadAnalysisId()` -- there
+    is no production Python equivalent to cross-check against: `facts.py`
+    builds one `Fact` per analysis and leaves picking a single headline
+    among several entirely to the JS rendering layer (see `FactLayer.facts`/
+    `_headline_for`, neither of which combines more than one analysis's
+    reading). Kept in sync by hand with the JS implementation, same
+    reasoning `facts.py`'s own `_renders_text` docstring gives for why IT
+    has no shared source with `readEnvelope` either -- this is the same
+    kind of pair, one level up.
+    """
+    best: str | None = None
+    best_pos: int | None = None
+    for analysis_id in analysis_ids:
+        m = re.search(rf"\b{re.escape(analysis_id)}\b", note or "")
+        if m and (best_pos is None or m.start() < best_pos):
+            best, best_pos = analysis_id, m.start()
+    return best
+
+
+#: The reply's own worked example, verbatim from `question_catalog.yaml`'s
+#: "Could this be in scope for what I am looking for — worth the full
+#: pass?" entry (`analysis_ids` order and `note` text both copied, not
+#: paraphrased, so a future edit to either drifts this test rather than
+#: silently stops covering the real shape).
+_FIT_ANALYSIS_IDS = [
+    "grain_determination", "subject_signals", "coverage_signals", "preliminary_fit",
+]
+_FIT_NOTE = (
+    "preliminary_fit (design §16.3, §16.5 — zero-fetch comparison of subject_signals, "
+    "coverage_signals and grain_determination's time grain against a supplied data "
+    "requirement, with per-input confidence."
+)
+
+
+def _lead_selection_corpus() -> list[dict]:
+    """Each case carries TWO different expectations, deliberately kept apart:
+
+    `expected_note_lead` -- what `leadAnalysisId()`/its Python mirror return
+    from `(analysis_ids, note)` ALONE, ignoring which facts the envelope
+    actually carries. `None` is a real, correct answer here (the note names
+    none of the ids), not a failure.
+
+    `expected_answer_analysis` -- which analysis's own headline actually
+    ends up in `readEnvelope(...).answer`, after `leadAnalysisId`'s result
+    (if any) falls through `analysis_ids`' own order and then fact-arrival
+    order for an analysis that actually produced a sentence. The two agree
+    when the note names an id AND that id's own fact renders (case 1); they
+    diverge exactly in the two fallback cases (2 and 3), which is the point
+    of keeping them separate rather than one shared field.
+    """
+    return [
+        {
+            "name": "fit_question/consuming_order/preliminary_fit_leads",
+            "analysis_ids": _FIT_ANALYSIS_IDS,
+            "note": _FIT_NOTE,
+            "facts": [
+                {"analysis_id": "grain_determination", "state": MEASURED,
+                 "headline": "68 of 87 table(s) have a determined grain."},
+                {"analysis_id": "subject_signals", "state": MEASURED,
+                 "headline": "Subject terms: customer, sales, product."},
+                {"analysis_id": "coverage_signals", "state": MEASURED,
+                 "headline": "Coverage: 2011-05 through 2014-06."},
+                {"analysis_id": "preliminary_fit", "state": MEASURED,
+                 "headline": "NO REQUIREMENT DECLARED — no lens was supplied, "
+                              "so fit is not a question that has an answer here.",
+                 "value": {"lens_declared": False, "verdict": "no_requirement_declared"}},
+            ],
+            "expected_note_lead": "preliminary_fit",
+            "expected_answer_analysis": "preliminary_fit",
+        },
+        {
+            # No id from `analysis_ids` appears in the note at all --
+            # `leadAnalysisId` correctly returns nothing, and the slot falls
+            # back to `analysis_ids`' own order (index 0) -- the same
+            # behaviour this question would have had before this change.
+            "name": "note_names_no_id/falls_back_to_analysis_ids_order",
+            "analysis_ids": ["repository_health", "foss_scorecard"],
+            "note": "Read from the survey's own community metrics.",
+            "facts": [
+                {"analysis_id": "repository_health", "state": MEASURED,
+                 "headline": "Actively maintained."},
+                {"analysis_id": "foss_scorecard", "state": MEASURED,
+                 "headline": "Scorecard: 7.2 of 10."},
+            ],
+            "expected_note_lead": None,
+            "expected_answer_analysis": "repository_health",
+        },
+        {
+            # The note names `preliminary_fit` first (`leadAnalysisId` is
+            # right to say so -- that is what the text says), but the
+            # envelope carries no fact for it at all (never run / not known).
+            # The slot must still show something: it falls through to the
+            # next analysis that actually produced a sentence.
+            "name": "leads_own_fact_missing/falls_through_to_next_producing_fact",
+            "analysis_ids": ["preliminary_fit", "grain_determination"],
+            "note": "preliminary_fit + grain_determination",
+            "facts": [
+                {"analysis_id": "grain_determination", "state": MEASURED,
+                 "headline": "12 of 40 table(s) have a determined grain."},
+            ],
+            "expected_note_lead": "preliminary_fit",
+            "expected_answer_analysis": "grain_determination",
+        },
+    ]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestLeadAnalysisSelection:
+    def _js_side(self, cases: list[dict], tmp_path: Path) -> list[dict]:
+        format_mjs = tmp_path / "format2.mjs"
+        format_mjs.write_text(FORMAT_JS.read_text(encoding="utf-8"), encoding="utf-8")
+        envelope_src = ENVELOPE_JS.read_text(encoding="utf-8")
+        envelope_src = envelope_src.replace("/static/next/format.js", "./format2.mjs")
+        envelope_mjs = tmp_path / "envelope2.mjs"
+        envelope_mjs.write_text(envelope_src, encoding="utf-8")
+
+        app_src = APP_JS.read_text(encoding="utf-8")
+        esc_fn = _extract(app_src, "export function esc(s) {")
+        tnum_fn = _extract(app_src, "export function tnum(html) {")
+
+        cases_json = json.dumps([
+            {
+                "name": c["name"],
+                "entry": {"question": c["name"], "analysis_ids": c["analysis_ids"], "note": c["note"]},
+                "facts": [
+                    {**{"value": {}, "note": "", "can_run": [], "evidence_only": False,
+                        "last_run_at": "", "provenance": "measured"}, **f, "is_known": True}
+                    for f in c["facts"]
+                ],
+            }
+            for c in cases
+        ])
+
+        script = f"""
+import {{ readEnvelope, leadAnalysisId }} from './envelope2.mjs';
+{esc_fn.replace('export function esc', 'function esc')}
+{tnum_fn.replace('export function tnum', 'function tnum')}
+
+const cases = {cases_json};
+const out = cases.map((c) => {{
+  const lead = leadAnalysisId(c.entry);
+  const env = {{ facts: c.facts }};
+  const lines = readEnvelope(c.entry, env, esc, tnum);
+  return {{ name: c.name, lead, answer: lines.answer }};
+}});
+console.log(JSON.stringify(out));
+"""
+        script_path = tmp_path / "run_lead.mjs"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(["node", str(script_path)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_corpus_covers_lead_present_and_lead_absent(self):
+        """Named cases, not a bare count -- each one documents a distinct
+        shape `leadAnalysisId` has to get right (see the corpus's own
+        per-case comments)."""
+        names = {c["name"] for c in _lead_selection_corpus()}
+        assert names == {
+            "fit_question/consuming_order/preliminary_fit_leads",
+            "note_names_no_id/falls_back_to_analysis_ids_order",
+            "leads_own_fact_missing/falls_through_to_next_producing_fact",
+        }
+
+    def test_python_mirror_and_js_agree_on_the_lead(self, tmp_path):
+        """Both implementations must agree on what the NOTE ALONE says --
+        `expected_note_lead`, which is `None` in the two fallback cases
+        (see `_lead_selection_corpus`'s own docstring for why that is a
+        correct answer, not a gap)."""
+        cases = _lead_selection_corpus()
+        js_side = self._js_side(cases, tmp_path)
+        assert len(js_side) == len(cases)
+
+        failures = []
+        for case, j in zip(cases, js_side):
+            assert j["name"] == case["name"]
+            py_lead = _lead_analysis_id(case["analysis_ids"], case["note"])
+            expected = case["expected_note_lead"]
+            if py_lead != expected:
+                failures.append(
+                    f"{case['name']}: python mirror disagrees with the corpus's own "
+                    f"expectation -- python={py_lead!r} expected={expected!r}")
+            if j["lead"] != expected:
+                failures.append(
+                    f"{case['name']}: js leadAnalysisId disagrees with the corpus's own "
+                    f"expectation -- js={j['lead']!r} expected={expected!r}")
+        assert not failures, "\n".join(failures)
+
+    def test_the_headline_slot_actually_uses_the_chosen_lead(self, tmp_path):
+        """`leadAnalysisId` picking the right id is necessary but not
+        sufficient -- this checks `readEnvelope` actually RENDERS the
+        EXPECTED analysis's own headline as `lines.answer` (`
+        expected_answer_analysis`, which already accounts for both
+        fallbacks), not merely that `leadAnalysisId` agrees with itself.
+        `lines.answer` is HTML (`tnum()` wraps numbers in spans), so the
+        comparison strips tags rather than doing a raw substring match."""
+        cases = _lead_selection_corpus()
+        js_side = self._js_side(cases, tmp_path)
+        by_name = {c["name"]: c for c in cases}
+        for j in js_side:
+            case = by_name[j["name"]]
+            lead_fact = next(
+                f for f in case["facts"] if f["analysis_id"] == case["expected_answer_analysis"])
+            plain_answer = re.sub(r"<[^>]+>", "", j["answer"])
+            assert lead_fact["headline"] in plain_answer, (
+                f"{j['name']}: lines.answer did not carry "
+                f"{case['expected_answer_analysis']}'s own headline -- "
+                f"answer={j['answer']!r}")

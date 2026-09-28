@@ -145,6 +145,15 @@ export const STATES = {
 
   // ── ⚠ needs a person -- ONLY this meaning now ───────────────────────
   human: { glyph: '⚠', family: 'needs-person', word: 'needs you', tone: 'text-accent-ink' },
+  // G2 (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.4): `preliminary_fit`'s
+  // `no_requirement_declared` verdict is a real, measured answer -- no lens
+  // was supplied, so fit is not a question this credential can settle -- but
+  // it is a statement ABOUT THE LENS, not about the resource
+  // (`compute_preliminary_fit`'s own docstring). A tick reads as "this was
+  // answered"; the honest state says a person still needs to supply the
+  // missing lens. Same family/glyph as `human` (still "needs a person"),
+  // its own word because "needs you" alone does not say what is needed.
+  'needs-lens': { glyph: '⚠', family: 'needs-person', word: 'needs a person: declare a lens', tone: 'text-accent-ink' },
 
   // ── as today ─────────────────────────────────────────────────────────
   running:      { glyph: '◔', family: 'running',      word: 'running',      tone: 'text-accent-ink' },

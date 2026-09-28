@@ -590,18 +590,47 @@ function rowState(entry, env) {
   if (kind === 'unknown') return 'unclassified';
   if (env && env.answerable) {
     if (env.level_mismatch) return 'partial';
+    if (needsLensDeclaration(env)) return 'needs-lens';
     return ['direct', 'registry', 'chart'].includes(kind) ? 'automatic' : 'answered';
   }
   return 'unrun';
+}
+
+/** REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.4: `preliminary_fit`'s
+ *  `no_requirement_declared` verdict (`lens_declared: false`) is a real,
+ *  measured answer -- no lens was supplied, so fit is not a question this
+ *  credential can settle -- but it is a statement ABOUT THE LENS, not about
+ *  the resource (`compute_preliminary_fit`'s own docstring). Before this, a
+ *  question backed by `preliminary_fit` ticked ✓ on exactly this case: a
+ *  known fact with a real headline, `env.answerable` true, no level
+ *  mismatch -- indistinguishable from a genuine answer to `rowState`'s
+ *  existing checks. Checked directly against the fact's own value rather
+ *  than against `verdict === 'no_requirement_declared'` (a string this
+ *  module would otherwise have to keep in sync with db_derived.py's own
+ *  constant) -- `lens_declared` is the one field `compute_preliminary_fit`
+ *  sets specifically to answer "was there a lens to check against at all". */
+function needsLensDeclaration(env) {
+  return (env && env.facts ? env.facts : []).some(
+    (f) => f.analysis_id === 'preliminary_fit' && f.value && f.value.lens_declared === false,
+  );
 }
 
 /** Fully answered = a checkmark's worth of answer, not merely "something ran".
  *  A `level_mismatch` envelope has `answerable === true` (a real analysis DID
  *  run) but withholds the tick (design §18.3) -- callers that count or gate
  *  on "answered" must use this, not `env.answerable` alone, or the counter
- *  and the row glyph would disagree about the same envelope. */
+ *  and the row glyph would disagree about the same envelope.
+ *
+ *  The `preliminary_fit`/`lens_declared` check below is `needsLensDeclaration`'s
+ *  own predicate, inlined rather than called: `test_next_renders_text_cross_
+ *  check.py` extracts this function's source verbatim and runs it standalone
+ *  in node, so a call to a sibling helper defined elsewhere in this file
+ *  would be a dangling reference there. Keep both in sync by hand (same
+ *  reasoning `_renders_text`'s own docstring gives for its Python/JS pair). */
 function isFullyAnswered(env) {
-  return !!(env && env.answerable && !env.level_mismatch);
+  return !!(env && env.answerable && !env.level_mismatch && !(env.facts || []).some(
+    (f) => f.analysis_id === 'preliminary_fit' && f.value && f.value.lens_declared === false,
+  ));
 }
 
 // The row states this screen distinguishes -- keys into `GLYPH_STATES`
@@ -611,9 +640,10 @@ function isFullyAnswered(env) {
 // could only tell apart by colour, breaking the "colour is never the only
 // channel" rule. Any key missing from `GLYPH_STATES` would throw here on
 // module load, by design -- see `test_one_glyph_table.py`'s "no independent
-// literal glyph-to-meaning mapping" bar.
+// literal glyph-to-meaning mapping" bar. `needs-lens` (§2.4) is the fit row's
+// own honest state -- same ⚠ family as `human`, its own word.
 const GLYPH_KEYS = [
-  'answered', 'automatic', 'unrun', 'partial', 'human', 'no-surveyor',
+  'answered', 'automatic', 'unrun', 'partial', 'human', 'needs-lens', 'no-surveyor',
   'unclassified', 'running', 'error', 'proposal',
 ];
 const GLYPH = Object.fromEntries(GLYPH_KEYS.map((k) => [k, GLYPH_STATES[k].glyph]));
@@ -635,6 +665,8 @@ const STATE_TONE = {
   automatic:     { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
   unrun:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   human:         { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
+  // Same role as `human` -- "needs your attention" -- §2.4's fit row.
+  'needs-lens':  { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
   'no-surveyor': { paper: 'text-state-gap',   chrome: 'text-state-gap-on-dark' },
   unclassified:  { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
   running:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
@@ -5433,7 +5465,7 @@ function deferredPaneHtml(tab) {
  * reading order, not a second vocabulary.
  */
 const LEGEND_ORDER = [
-  'answered', 'automatic', 'partial', 'unrun', 'human', 'no-surveyor',
+  'answered', 'automatic', 'partial', 'unrun', 'human', 'needs-lens', 'no-surveyor',
   'unclassified', 'running', 'error',
 ];
 const LEGEND = LEGEND_ORDER.map((k) => [k, GLYPH_STATES[k].word]);
@@ -6183,7 +6215,7 @@ function provenanceLine(entry, i, lines, st) {
   }
 
   const actions = [];
-  if (st === 'answered' || st === 'automatic' || st === 'partial') {
+  if (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens') {
     actions.push(`<button data-evidence="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">evidence</button>`);
   }
   // A relationship answer has a diagram behind it. It cannot be read in a
@@ -6208,7 +6240,7 @@ function provenanceLine(entry, i, lines, st) {
   // "sources" names first) -- a question naming several analyses gets the
   // rest via that analysis's own row on `by_analysis`, not duplicated here.
   const primaryId = (entry.analysis_ids || [])[0];
-  if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial')) {
+  if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens')) {
     actions.push(`<button data-numbers="${i}" data-numbers-for="${esc(primaryId)}"
       data-numbers-level="${esc(primaryQuestionLevel(entry))}"
       class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
@@ -6874,7 +6906,8 @@ function rowAsMarkdown(entry, i) {
 const STATE_LABEL = {
   answered: 'answered', automatic: 'automatic', unrun: 'not run',
   partial: 'ran, but not at this level',
-  human: 'needs human input', 'no-surveyor': 'no surveyor exists yet',
+  human: 'needs human input', 'needs-lens': 'needs a person: declare a lens',
+  'no-surveyor': 'no surveyor exists yet',
   unclassified: 'unclassified',
 };
 const STATE_SENTENCE = {

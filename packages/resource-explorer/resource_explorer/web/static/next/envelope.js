@@ -87,6 +87,45 @@ export function factMermaid(env) {
 }
 
 /**
+ * The lead analysis for a multi-analysis question: the first of
+ * `entry.analysis_ids` actually NAMED (as a whole word) in `entry.note` --
+ * the catalog's own "Answering Analysis" column text, which is written to
+ * say which analysis IS the answer and which are its inputs. E.g.
+ * `preliminary_fit`'s own note starts "preliminary_fit (design §16.3,
+ * §16.5 — zero-fetch comparison of subject_signals, coverage_signals and
+ * grain_determination's time grain against a supplied data requirement …",
+ * naming itself first even though question_catalog.yaml's own
+ * `analysis_ids` lists it LAST, after the three signals it consumes.
+ *
+ * REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.4: reading `analysis_ids[0]`
+ * for this exact question would have led the headline with
+ * `grain_determination`'s sentence -- an input, not the fit verdict -- which
+ * is not what the reply's own quoted example calls "the actual answer".
+ * Several other MIXED questions have a note that names an id OTHER than
+ * `analysis_ids[0]` first too (`security_scan`/`cii_badge`,
+ * `security_scan`/`repo_conventions`, `ci_quality`/`repo_conventions`), so
+ * this is not special-cased to `preliminary_fit` — it reads the note the
+ * same way for every question.
+ *
+ * Returns `null` when there is nothing to prefer (no `analysis_ids`, or a
+ * note that names none of them) -- callers fall back to `analysis_ids`'
+ * own order and then to fact-arrival order, never to nothing.
+ */
+export function leadAnalysisId(entry) {
+  const ids = (entry && entry.analysis_ids) || [];
+  if (!ids.length) return null;
+  const note = (entry && entry.note) || '';
+  let best = null;
+  let bestPos = Infinity;
+  for (const id of ids) {
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`\\b${escaped}\\b`).exec(note);
+    if (m && m.index < bestPos) { bestPos = m.index; best = id; }
+  }
+  return best;
+}
+
+/**
  * Turn an envelope into the lines a row shows.
  *
  * The rule this function exists to keep: a fact's state decides the SENTENCE,
@@ -135,41 +174,74 @@ export function readEnvelope(entry, env, esc, tnum) {
   // up yet, and a row that shows a tick with nothing beside it is the exact
   // shape this screen was built to stop: a claim of "answered" with no
   // answer under it.
-  const sentences = [];
+  // One sentence PER analysis (each fact still contributes at most one),
+  // tagged by analysis_id -- `order` keeps the order facts were walked in,
+  // for the fallback below.
+  const sentenceByAnalysis = new Map();
+  const order = [];
   for (const f of known) {
+    let sentence = null;
     if (f.state === NOTHING_FOUND && !f.headline && !prose(f)) {
       // A measured zero. Said in words, because the bare number reads as
       // "we didn't look".
-      sentences.push(tnum(esc(`${f.analysis_id} ran and found nothing.`)));
-      continue;
+      sentence = tnum(esc(`${f.analysis_id} ran and found nothing.`));
+    } else if (f.headline) {
+      sentence = answerHtml(f.headline, esc, tnum);
+    } else {
+      const p = prose(f);
+      if (p) {
+        // The analysis's own verdict word, set at weight 600 like the design's
+        // "Yes". Marked up here rather than re-detected from the joined
+        // string downstream: this is the one place that knows the word came
+        // from a `verdict` field rather than from the first word of a
+        // sentence.
+        const verdict = f.value && f.value.verdict;
+        sentence = verdict
+          ? `<strong class="font-semibold">${esc(cap(String(verdict)))}</strong> — ${tnum(esc(p))}`
+          : tnum(esc(p));
+      } else {
+        const scalars = scalarMeasures(f.value);
+        if (scalars) {
+          sentence = tnum(esc(scalars));
+          lines.unwritten.push(f.analysis_id);
+        }
+      }
     }
-    if (f.headline) { sentences.push(answerHtml(f.headline, esc, tnum)); continue; }
-    const p = prose(f);
-    if (p) {
-      // The analysis's own verdict word, set at weight 600 like the design's
-      // "Yes". Marked up here rather than re-detected from the joined string
-      // downstream: this is the one place that knows the word came from a
-      // `verdict` field rather than from the first word of a sentence.
-      const verdict = f.value && f.value.verdict;
-      sentences.push(verdict
-        ? `<strong class="font-semibold">${esc(cap(String(verdict)))}</strong> — ${tnum(esc(p))}`
-        : tnum(esc(p)));
-      continue;
-    }
-    const scalars = scalarMeasures(f.value);
-    if (scalars) {
-      sentences.push(tnum(esc(scalars)));
-      lines.unwritten.push(f.analysis_id);
+    if (sentence != null) {
+      sentenceByAnalysis.set(f.analysis_id, sentence);
+      order.push(f.analysis_id);
     }
   }
+
+  // The headline slot holds exactly ONE sentence (REPLY-DESIGNER-ROUND2-
+  // DATABASE-SCREENS.md §2.4). Before this, a question backed by several
+  // analyses joined every one of their sentences with ' · ' into the same
+  // slot -- ~200 words on AdventureWorks' "Could this be in scope..."
+  // question, with the actual answer (`preliminary_fit`'s own explanation)
+  // roughly two-thirds of the way in.
+  //
+  // `leadAnalysisId()` (this module) reads `entry.note` -- the catalog's own
+  // "Answering Analysis" text -- for which analysis the question is asking
+  // FOR, not merely which ones it lists: `analysis_ids`' own order is NOT
+  // that ordering (it lists `preliminary_fit` LAST, after the three inputs
+  // it consumes). Falls back to `analysis_ids`' own order, then to
+  // fact-arrival order, so the slot is never emptied just because a
+  // preference list didn't match what the envelope actually carries.
   // NOTE: `lines.answer` is HTML, already escaped by each branch above.
   // Do not run it through esc() or answerHtml() again downstream.
-  // Joined on ' · ', not ' '. Six analyses' sentences run together read as
-  // one broken sentence — "all 3 checks pass one contributor writes most of
-  // the code" — and a reader cannot tell where one claim ends. The separator
-  // makes the boundaries visible without deciding how the claims combine,
-  // which is the judgement still owed (Dashboard Round Three).
-  lines.answer = sentences.join(' · ');
+  const lead = leadAnalysisId(entry);
+  const preferredOrder = [
+    ...(lead ? [lead] : []),
+    ...((entry && entry.analysis_ids) || []),
+    ...order,
+  ];
+  const primaryId = preferredOrder.find((id) => sentenceByAnalysis.has(id));
+  lines.answer = primaryId ? (sentenceByAnalysis.get(primaryId) || '') : '';
+  // The OTHER analyses' own sentences are not duplicated into a second block
+  // here -- `provenanceLine`'s own comment on "the numbers behind this"
+  // already covers a multi-analysis row this way: "the rest via that
+  // analysis's own row on `by_analysis`, not duplicated here." Recede, don't
+  // re-render -- the By-analysis tab is where the other readings live.
 
   // The caveat — the most important content on the screen. These sentences
   // already exist in the survey output; they used to sit three panes away in
