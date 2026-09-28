@@ -5702,7 +5702,12 @@ async function loadPane() {
   // The overview carries `homepage`, `last_published_at` and the stale-link
   // flag, none of which are on the summary row. Fetched per selection, and
   // its absence is survivable — the header renders without it.
-  if (state.overview?.slug !== slug) {
+  // `/api/projects/{slug}/scouting-overview` is a repo-only endpoint (docs/
+  // Backlog.md, "/next probes scouting-overview for database slugs and
+  // always gets a 404") -- same class of bug as the earlier 'db'/'database'
+  // resourceType mismatch: gate the call so it is never issued for a
+  // resource type it doesn't apply to.
+  if (state.resourceType === 'repo' && state.overview?.slug !== slug) {
     state.overview = null;
     getScoutingOverview(slug)
       .then((ov) => {
