@@ -1476,12 +1476,31 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
 
     Returns `None` when there is nothing to say (no `database_tables` rows at
     all). Otherwise a list of dicts, one per non-system schema, ordered data
-    (rows desc) → empty → staging → no-access/structure-only, with a single
-    trailing system-summary row (`"classification": "system"`, `"schema":
-    None`, `"system_count": N`) when any system schema was folded — `None`
-    entirely omitted when there is nothing non-system AND no system schemas
-    (mirrors the headline's own `if not parts and not system_names: return
-    None`).
+    (rows desc) → structure-only → views-only → staging → empty → no-access,
+    with a single trailing system-summary row (`"classification": "system"`,
+    `"schema": None`, `"system_count": N`) when any system schema was folded
+    — `None` entirely omitted when there is nothing non-system AND no system
+    schemas (mirrors the headline's own `if not parts and not system_names:
+    return None`).
+
+    Found live, `coco_pharma`, 2026-09-27 (Dan's Slice 22 gate, task 3):
+    the previous order put every EMPTY schema ahead of every STRUCTURE-ONLY
+    one, regardless of size — `eu_sales`/`public`/`target_sales`/`us_sales`
+    (all genuinely empty, 0-1 tables each) listed above `coco_ods` (23
+    tables) and `coco_sus` (30 tables), both structure-only. For a
+    credential that cannot read rows, a structure-only schema with MANY
+    tables is where the real data almost certainly lives — it is the
+    opposite of a schema nobody bothered to populate, and ranking it below
+    four empty ones defeated the task itself ("see which schema holds the
+    data at a glance"). Structure-only now sorts right after data (its
+    per-schema classification was already correct — `db_classification`
+    would still call out the real defect for the row-blind case if there
+    were one — only the ORDER was wrong); no-access (nothing about the
+    schema is knowable at all, not even its table count) drops to the
+    worst position, just ahead of the system fold. Every non-data group
+    orders by `table_count` descending — table count is the only signal a
+    credential-limited group has, whereas the data group keeps its own,
+    strictly more informative, measured-row-total sort untouched.
 
     `bytes_total` is new here (the headline sentence never rendered bytes —
     design says the per-schema breakdown should carry table count, row
@@ -1524,9 +1543,11 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
             by_schema[name] = []
 
     data_rows: list[dict] = []
-    empty_rows: list[dict] = []
+    structure_only_rows: list[dict] = []
+    views_only_rows: list[dict] = []
     staging_rows: list[dict] = []
-    shortfall_rows: list[dict] = []
+    empty_rows: list[dict] = []
+    no_access_rows: list[dict] = []
     system_names: list[str] = []
 
     for name in sorted(by_schema):
@@ -1542,19 +1563,27 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         is_estimate = any(t.get("state") == STATE_CATALOG_ESTIMATE for t in measured)
         scope_state = (states.get(name) or {}).get("state")
 
-        if scope_state in (SCOPE_NOT_VISIBLE, SCOPE_STRUCTURE_ONLY):
-            classification = "no_access" if scope_state == SCOPE_NOT_VISIBLE else "structure_only"
-            shortfall_rows.append({
+        reason = (states.get(name) or {}).get("explanation") or ""
+
+        if scope_state == SCOPE_STRUCTURE_ONLY:
+            structure_only_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
-                "classification": classification,
+                "classification": "structure_only", "reason": reason,
+            })
+            continue
+        if scope_state == SCOPE_NOT_VISIBLE:
+            no_access_rows.append({
+                "schema": name, "table_count": table_count, "row_total": row_total,
+                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "classification": "no_access", "reason": reason,
             })
             continue
         if any(marker in name.lower() for marker in _STAGING_NAME_MARKERS):
             staging_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
-                "classification": "staging",
+                "classification": "staging", "reason": reason,
             })
             continue
         # Found live, `adventureworks`, 2026-09-27: AdventureWorks's five
@@ -1570,7 +1599,7 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         # owner's Slice 22 usability gate ("see which schema holds the
         # data at a glance") that this conflation defeats.
         if table_count > 0 and all(t.get("table_type") != "BASE TABLE" for t in ts):
-            shortfall_rows.append({
+            views_only_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
                 "classification": "views_only",
@@ -1589,27 +1618,124 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
             empty_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total or 0,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
-                "classification": "empty",
+                "classification": "empty", "reason": reason,
             })
             continue
         data_rows.append({
             "schema": name, "table_count": table_count, "row_total": row_total or 0,
             "bytes_total": bytes_total, "is_estimate": is_estimate,
-            "classification": "data",
+            "classification": "data", "reason": reason,
         })
 
     data_rows.sort(key=lambda r: r["row_total"], reverse=True)
+    for group in (structure_only_rows, views_only_rows, staging_rows, empty_rows, no_access_rows):
+        group.sort(key=lambda r: r["table_count"], reverse=True)
 
-    rows = data_rows + empty_rows + staging_rows + shortfall_rows
+    rows = (data_rows + structure_only_rows + views_only_rows + staging_rows
+            + empty_rows + no_access_rows)
     if not rows and not system_names:
         return None
     if system_names:
         rows.append({
             "schema": None, "table_count": None, "row_total": None,
-            "bytes_total": None, "is_estimate": False,
+            "bytes_total": None, "is_estimate": False, "reason": "",
             "classification": "system", "system_count": len(system_names),
         })
     return rows
+
+
+def schema_inventory_tree(registry, slug: str) -> dict | None:
+    """Slice 22 — the full Schemas → Tables → Columns tree for the /next
+    Schema Inventory view.
+
+    Built entirely from the structured `database_tables`/`database_columns`
+    detail rows plus `_schema_inventory_container_rows`'s own per-schema
+    classification (never from the `survey_data` blob the classic UI's
+    `renderDbSurveyReport` reads — that path is a different, older one this
+    view deliberately does not depend on, so it keeps working however the
+    classic page evolves).
+
+    Returns `None` when `_schema_inventory_container_rows` has nothing to
+    say (no `database_tables` rows at all — same "nothing to say" contract).
+    Otherwise `{"schemas": [...]}`, one entry per `_schema_inventory_
+    container_rows` row IN THE SAME ORDER (data by rows desc →
+    structure-only → views-only → staging → empty → no-access, each of the
+    latter five by table count desc, → system folded last) — the tree
+    view's schema ordering is this function's ordering, not re-derived.
+    A non-system schema row gains a `"tables"` list; the trailing system
+    row is passed through unchanged (folded, never expanded to tables).
+
+    Each table entry carries `row_count`/`row_count_state` (the raw stored
+    `state` — `catalog_estimate` marks an estimate, `measured` a real scan,
+    anything else "not measured" territory) and `size_bytes` (`None` when
+    never measured, rendered "not measured" by the frontend rather than a
+    false zero — the same discipline `_schema_inventory_container_rows`
+    itself already applies at the schema level).
+
+    Each column entry carries `key_role` ("PK", "FK", or "") computed from
+    the catalog-floor keys (Slice 21b's `pg_constraint` read, or the live
+    `information_schema` path — both write to the same `is_primary_key`/
+    `foreign_key_json` fields), `nullable` (`True`/`False`/`None` for
+    genuinely unknown — a catalog-only-fallback column has no source for
+    this at all, see `connection.py`'s own docstring), and `comment` (empty
+    string when none was captured — the frontend renders "comments not
+    captured" for that case, not a blank cell indistinguishable from "no
+    comment written").
+    """
+    rows = _schema_inventory_container_rows(registry, slug)
+    if rows is None:
+        return None
+
+    tables = registry.query_detail_rows("database_tables", slug)
+    columns = registry.query_detail_rows("database_columns", slug)
+
+    tables_by_schema: dict[str, list[dict]] = {}
+    for t in tables:
+        name = t.get("schema_name")
+        if name:
+            tables_by_schema.setdefault(name, []).append(t)
+
+    columns_by_table: dict[tuple, list[dict]] = {}
+    for c in columns:
+        key = (c.get("schema_name"), c.get("table_name"))
+        columns_by_table.setdefault(key, []).append(c)
+    for cols in columns_by_table.values():
+        cols.sort(key=lambda c: c.get("ordinal_position") or 0)
+
+    schema_nodes = []
+    for row in rows:
+        if row["classification"] == "system":
+            schema_nodes.append(dict(row))
+            continue
+        name = row["schema"]
+        table_nodes = []
+        for t in sorted(tables_by_schema.get(name, []), key=lambda t: t.get("table_name") or ""):
+            table_name = t.get("table_name")
+            col_nodes = []
+            for c in columns_by_table.get((name, table_name), []):
+                is_pk = bool(c.get("is_primary_key"))
+                fk = c.get("foreign_key_json")
+                is_nullable = c.get("is_nullable")
+                col_nodes.append({
+                    "name": c.get("column_name"),
+                    "type": c.get("base_type") or c.get("data_type") or "",
+                    "nullable": None if is_nullable is None else bool(is_nullable),
+                    "key_role": "PK" if is_pk else ("FK" if fk else ""),
+                    "foreign_key": fk if isinstance(fk, dict) else None,
+                    "comment": c.get("description") or "",
+                })
+            table_nodes.append({
+                "name": table_name,
+                "table_type": t.get("table_type") or "",
+                "row_count": t.get("row_count"),
+                "row_count_state": t.get("state") or "",
+                "size_bytes": t.get("size_bytes"),
+                "column_count": t.get("column_count") if t.get("column_count") is not None else len(col_nodes),
+                "columns": col_nodes,
+            })
+        schema_nodes.append({**row, "tables": table_nodes})
+
+    return {"schemas": schema_nodes}
 
 
 def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
@@ -1625,36 +1751,45 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
     data" with a sentence that names schemas but classifies none (found
     live, owner's question, 2026-09-26).
 
-    Classification per schema, in priority order (design §18.4's rule:
-    "always broken down by containment level — never a rollup without its
-    parts; system schemas folded away"):
+    Classification per schema (design §18.4's rule: "always broken down by
+    containment level — never a rollup without its parts; system schemas
+    folded away"):
 
-    1. **system** — `POSTGRES_CONTAINMENT.is_system_container(name)`, the
-       same declared list/prefixes `schema_scope.py`'s own container-
-       exclusion already uses (`pg_catalog`, `information_schema`,
-       `pg_toast*`, `pg_temp*`). Folded to a trailing count, never named
-       individually — these are the engine's own plumbing, not this
-       database's data.
-    2. **no access** / **structure only** — `schema_scope.
-       container_scope_states()`'s own `SCOPE_NOT_VISIBLE`/
-       `SCOPE_STRUCTURE_ONLY`, read from the SAME credential-capability
-       probe the header banner and `_schema_inventory_headline` already
-       use. Reused rather than reimplemented: this module already existed
-       (built ahead of its own wiring, slice 20's prep) with exactly this
-       per-schema classification.
-    3. **staging** — name-heuristic (`_STAGING_NAME_MARKERS`), explicitly
-       marked "by name" in the rendered text since it is a guess, not a
-       measurement, unlike every other category here.
-    4. **empty** — zero tables in the schema, or every table in it has a
-       measured row count of exactly zero (`schema_scope.SCOPE_EMPTY`
-       agrees when a probe is available; the table-count/row-total check
-       below is the fallback for when it isn't, so this category still
-       works without a credential-capability run).
-    5. **data** — everything else: has at least one table with rows.
+    - **system** — `POSTGRES_CONTAINMENT.is_system_container(name)`, the
+      same declared list/prefixes `schema_scope.py`'s own container-
+      exclusion already uses (`pg_catalog`, `information_schema`,
+      `pg_toast*`, `pg_temp*`). Folded to a trailing count, never named
+      individually — these are the engine's own plumbing, not this
+      database's data.
+    - **structure only** / **no access** — `schema_scope.
+      container_scope_states()`'s own `SCOPE_STRUCTURE_ONLY`/
+      `SCOPE_NOT_VISIBLE`, read from the SAME credential-capability probe
+      the header banner and `_schema_inventory_headline` already use.
+      Reused rather than reimplemented: this module already existed (built
+      ahead of its own wiring, slice 20's prep) with exactly this
+      per-schema classification.
+    - **views only** — has tables, but every one of them is a view or
+      materialized view, never a base table (Slice `re/adventureworks-
+      correctness`, 2026-09-27).
+    - **staging** — name-heuristic (`_STAGING_NAME_MARKERS`), explicitly
+      marked "by name" in the rendered text since it is a guess, not a
+      measurement, unlike every other category here.
+    - **empty** — zero tables in the schema, or every table in it has a
+      measured row count of exactly zero (`schema_scope.SCOPE_EMPTY`
+      agrees when a probe is available; the table-count/row-total check
+      below is the fallback for when it isn't, so this category still
+      works without a credential-capability run).
+    - **data** — everything else: has at least one table with rows.
 
-    Order: data schemas by total rows descending, then empty, then staging,
-    then no-access/structure-only (worst-first) — the reader sees where the
-    actual data lives before the caveats. System schemas are last,
+    Order (Dan's gate, `coco_pharma`, 2026-09-27 — this REPLACES the
+    original "data, empty, staging, then no-access/structure-only" order):
+    data (by total rows descending) → structure-only → views-only →
+    staging → empty → no-access, each of the latter five by TABLE COUNT
+    descending — the only signal a credential-limited or genuinely-empty
+    group has, and the reason a structure-only schema with many tables
+    (almost certainly where the real data lives, for a credential that
+    cannot read rows) now outranks even a large empty one, and every
+    empty/no-access schema regardless of size. System schemas are last,
     collapsed to a count.
     """
     rows = _schema_inventory_container_rows(registry, slug)

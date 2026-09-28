@@ -30,7 +30,30 @@ export class ApiError extends Error {
 }
 
 async function request(path, options = {}) {
-  const res = await fetch(path, options);
+  let res;
+  try {
+    res = await fetch(path, options);
+  } catch (err) {
+    // A network-level failure (the fetch() call itself threw — a plain
+    // TypeError, "Failed to fetch"/"NetworkError", never an ApiError) means
+    // window.location.origin never answered at all: the RE server is
+    // stopped, or this tab points at a port nothing serves any more.
+    // Left as the raw TypeError, every caller's own catch block reads
+    // `err.message` and shows the literal string "Failed to fetch" —
+    // found live, 2026-09-27: the "Register Database Server" dialog showed
+    // it three times over ("Could not load registered servers: Failed to
+    // fetch", "Failed to fetch", "✗ Request failed: Failed to fetch"),
+    // which reads as three different failures, and as a DATABASE or Egeria
+    // problem rather than what it actually is — this tab's own server is
+    // unreachable. One clear message here fixes every caller at once.
+    throw new ApiError(
+      0,
+      `Resource Explorer at ${window.location.origin} is not responding — `
+        + 'the server may be stopped, or this tab may point at a port that '
+        + 'is no longer served.',
+      path,
+    );
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -117,6 +140,12 @@ export const getScoutingOverview = (slug) =>
   get(`/api/projects/${encodeURIComponent(slug)}/scouting-overview`);
 export const getProject = (slug) => get(`/api/projects/${encodeURIComponent(slug)}`);
 export const listDatabases = () => get('/api/databases/');
+
+/** Slice 22 — the whole Schemas → Tables → Columns tree for one database's
+ *  Schema Inventory view, one call. See `schema_inventory_tree()`'s own
+ *  docstring (survey_definition_adapter.py) for the shape. */
+export const getSchemaInventoryTree = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/schema-inventory-tree`);
 export const listFilesystems = () => get('/api/filesystems/');
 
 /* ── Database servers (web/routes/db_servers.py) ────────────────────────

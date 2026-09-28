@@ -294,6 +294,30 @@ async def get_database_survey_results(slug: str, stage: str = "", include_empty:
     )
 
 
+@router.get("/{slug}/schema-inventory-tree")
+async def get_database_schema_inventory_tree(slug: str) -> dict:
+    """Slice 22's Schemas → Tables → Columns tree for /next's Schema
+    Inventory view — one call, the whole tree, built from the structured
+    `database_tables`/`database_columns` detail rows (never the classic
+    UI's `survey_data` blob path). See `schema_inventory_tree()`'s own
+    docstring for the shape.
+
+    404s the same way `get_database_survey_results` does; `to_thread`
+    since this walks every stored table/column row plus the credential
+    probe, same reasoning as that route."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.survey_definition_adapter import (
+        schema_inventory_tree,
+    )
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    tree = await asyncio.to_thread(schema_inventory_tree, registry, slug)
+    return tree or {"schemas": []}
+
+
 @router.get("/{slug}/questions")
 async def get_database_questions(
     slug: str,
