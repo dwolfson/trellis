@@ -617,44 +617,27 @@ class PostgreSQLConnection(DatabaseConnection):
         richer exact data (real PK/FK, `is_nullable`, `column_default`,
         exact comments) that only that path can supply.
         """
-        # Get primary keys for the schema
-        pk_query = """
-            SELECT kcu.table_name, kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-                AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-            AND tc.table_schema = %s
-        """
-        pk_rows = self.execute_query(pk_query, (schema_name,))
-        pk_lookup: dict[str, set] = {}
-        for r in pk_rows:
-            pk_lookup.setdefault(r["table_name"], set()).add(r["column_name"])
-
-        # Get foreign keys for the schema
-        fk_query = """
-            SELECT
-                kcu.table_name, kcu.column_name,
-                ccu.table_schema AS foreign_schema,
-                ccu.table_name AS foreign_table,
-                ccu.column_name AS foreign_column
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage ccu
-                ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-            AND tc.table_schema = %s
-        """
-        fk_rows = self.execute_query(fk_query, (schema_name,))
-        fk_lookup: dict[tuple, dict] = {}
-        for r in fk_rows:
-            fk_lookup[(r["table_name"], r["column_name"])] = {
-                "foreign_schema": r["foreign_schema"],
-                "foreign_table": r["foreign_table"],
-                "foreign_column": r["foreign_column"],
-            }
+        # Primary/foreign keys: read from `pg_constraint`/`pg_index` via
+        # `_catalog_keys_for_schema()`, not `information_schema.
+        # table_constraints`/`key_column_usage`/`constraint_column_usage`.
+        #
+        # This used to be two separate `information_schema` queries here,
+        # promoted to the fallback-only `_catalog_keys_for_schema()` in
+        # Slice 21b and now promoted again to be the ONLY path (2026-09-27,
+        # BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §A). `constraint_column_usage`
+        # is not keyed per column: when a referenced table (e.g.
+        # `person.businessentity`) carries several referencing FK
+        # constraints, the join multiplies or collapses rows depending on
+        # constraint shape, and the same defect shape hit the PK query.
+        # Verified live against `laz_local_adventureworks` on 2026-09-27:
+        # this path recovered 91/91 FK columns and 181/181 PK columns
+        # versus 71/99 from the retired queries above.
+        #
+        # `pg_lookup`/`fk_lookup` may come back `None` (not `{}`) if their
+        # own catalog query failed — see `_catalog_keys_for_schema()`'s
+        # docstring for why that distinction matters and must be preserved
+        # here rather than collapsed into a confident `False`/absent.
+        pk_lookup, fk_lookup = self._catalog_keys_for_schema(schema_name)
 
         # Main query: tables + columns with descriptions
         query = """
@@ -699,8 +682,23 @@ class PostgreSQLConnection(DatabaseConnection):
                 }
             if row["column_name"]:
                 col_name = row["column_name"]
-                is_pk = col_name in pk_lookup.get(table_name, set())
-                fk = fk_lookup.get((table_name, col_name))
+                # `None` means the catalog PK/FK query itself failed for
+                # this schema — propagate that as "not established" rather
+                # than a confident `False`/absent (see
+                # `_catalog_keys_for_schema()`'s docstring).
+                is_pk = (
+                    None if pk_lookup is None
+                    else col_name in pk_lookup.get(table_name, set())
+                )
+                fk_entries = (
+                    None if fk_lookup is None
+                    else fk_lookup.get((table_name, col_name))
+                )
+                # A column normally carries at most one FK; the rare
+                # legal case of two FKs on one column keeps the full list
+                # under `foreign_keys` while `foreign_key` stays the first
+                # entry for existing single-FK consumers.
+                fk = fk_entries[0] if fk_entries else None
 
                 # Build a human-friendly type display
                 data_type = row["data_type"] or ""
@@ -726,6 +724,7 @@ class PostgreSQLConnection(DatabaseConnection):
                     "description": row.get("column_description") or "",
                     "is_primary_key": is_pk,
                     "foreign_key": fk,
+                    "foreign_keys": fk_entries if fk_entries and len(fk_entries) > 1 else None,
                     "source": "information_schema",
                 })
 
@@ -801,13 +800,21 @@ class PostgreSQLConnection(DatabaseConnection):
         return out
 
     def _catalog_keys_for_schema(self, schema_name: str) -> tuple[dict | None, dict | None]:
-        """`(pk_lookup, fk_lookup)` for the catalog-only fallback path, same
-        shape `_get_tables_for_schema()`'s own `pk_lookup`/`fk_lookup` use
-        (`{table_name: {column_name, ...}}` / `{(table_name, column_name):
-        {foreign_schema, foreign_table, foreign_column}}`) — but read from
-        `pg_constraint`/`pg_attribute` rather than `information_schema.
-        table_constraints`/`key_column_usage`, since those are the exact
-        privilege-filtered views this fallback exists because of.
+        """`(pk_lookup, fk_lookup)` — as of 2026-09-27
+        (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §A) this is the PRIMARY PK/FK
+        source for `_get_tables_for_schema()`, not only the catalog-only
+        fallback path. Shape: `{table_name: {column_name, ...}}` /
+        `{(table_name, column_name): [{foreign_schema, foreign_table,
+        foreign_column}, ...]}` — a list per column, not a single dict,
+        because a column may legally carry more than one FK constraint.
+        Read from `pg_constraint`/`pg_attribute` rather than
+        `information_schema.table_constraints`/`key_column_usage`/
+        `constraint_column_usage`: the latter is not keyed per column and
+        multiplies or collapses rows when a referenced table carries
+        several referencing constraints (verified live: 71/99 recovered
+        vs. 91/181 true on `laz_local_adventureworks`, 2026-09-27) —
+        besides being the exact privilege-filtered view this fallback
+        originally existed to route around.
 
         `pg_constraint` is catalog metadata like `pg_class`/`pg_attribute`/
         `pg_namespace` (see `_get_tables_for_schema()`'s own docstring) —
@@ -844,7 +851,7 @@ class PostgreSQLConnection(DatabaseConnection):
         except Exception:
             pk_lookup = None
 
-        fk_lookup: dict[tuple, dict] | None = {}
+        fk_lookup: dict[tuple, list] | None = {}
         try:
             fk_query = """
                 SELECT c.relname AS table_name, a.attname AS column_name,
@@ -862,11 +869,14 @@ class PostgreSQLConnection(DatabaseConnection):
                 WHERE n.nspname = %s AND con.contype = 'f'
             """
             for r in self.execute_query(fk_query, (schema_name,)):
-                fk_lookup[(r["table_name"], r["column_name"])] = {
+                # Appended, not assigned: a column that carries two FK
+                # constraints (rare, legal) keeps both entries instead of
+                # the second silently clobbering the first.
+                fk_lookup.setdefault((r["table_name"], r["column_name"]), []).append({
                     "foreign_schema": r["foreign_schema"],
                     "foreign_table": r["foreign_table"],
                     "foreign_column": r["foreign_column"],
-                }
+                })
         except Exception:
             fk_lookup = None
 
@@ -922,7 +932,8 @@ class PostgreSQLConnection(DatabaseConnection):
                 continue
             data_type = r.get("data_type") or ""
             is_pk = None if pk_lookup is None else (name in pk_lookup.get(table_name, set()))
-            fk = None if fk_lookup is None else fk_lookup.get((table_name, name))
+            fk_entries = None if fk_lookup is None else fk_lookup.get((table_name, name))
+            fk = fk_entries[0] if fk_entries else None
             columns.append({
                 "name": name,
                 "type": data_type,
@@ -932,6 +943,7 @@ class PostgreSQLConnection(DatabaseConnection):
                 "position": r.get("ordinal_position"),
                 "description": "",
                 "is_primary_key": is_pk,
+                "foreign_keys": fk_entries if fk_entries and len(fk_entries) > 1 else None,
                 "foreign_key": fk,
                 "source": "catalog_fallback",
             })
