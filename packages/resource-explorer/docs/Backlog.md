@@ -8638,3 +8638,24 @@ on a run, as happened here.
 fresh run before it can be trusted** — the companion entry's `step_runs` data is genuine and usable
 for the local-execution numbers, but there is no comparably genuine Prefect-execution run to
 compare it against yet.
+
+## `resource-explorer login`'s cached session pollutes `test_cli_workflow_commands.py` when run for real (found running the full suite after a live `login`, 2026-09-28)
+
+`resource-explorer login` caches a real session at the fixed, non-test path
+`~/.config/trellis/resource-explorer/session.json`. `test_cli_workflow_commands.py` calls
+`cli_session.save_login("dan", egeria_token)` directly, against that SAME real path — not an
+isolated tmp one — so a genuinely cached session from an earlier `resource-explorer login`
+(signed in as `erinoverview` to trigger a live survey run, in this case) collides with the test's
+own writes, producing `InvalidSignatureError('Signature verification failed')` and 9 failures in
+`TestAnalysisCommands`/`TestScoutCommand`/`TestDiscoveryCommands`/`TestRunsCommands`. Resolved for
+this session by `resource-explorer logout` before re-running; the failures disappeared completely
+(27/27 passed) with no code change.
+
+**Not fixed here** — flagged rather than fixed live. Fix direction: `cli_session`'s test-facing
+functions should accept (or the test fixture should inject) an override path, the same way other
+tests in this repo isolate registry/filesystem state, rather than writing through to the one real
+session file every developer's own `resource-explorer login` also uses. Until then, running this
+test file (or the full suite) on a machine with a real cached CLI login produces failures that have
+nothing to do with whatever change is actually being tested — worth a `logout` before a full-suite
+run becomes a documented gotcha, the same way `ephemeral_prefect`/`clear_survey_definition_reader_caches`
+document theirs in `conftest.py`.
