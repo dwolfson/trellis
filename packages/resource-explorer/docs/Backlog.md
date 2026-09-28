@@ -8680,3 +8680,36 @@ whichever code path currently calls `MyProfile.create_my_todo` unconditionally, 
 which of the two attachment shapes (asset GUID action target vs. a `RequestForAction` annotation on
 the survey report) is the right one. Flagged rather than attempted alongside the notify-me entity-type
 fix, which only fixed the copy describing current (unlinked) behavior honestly.
+
+## Relationship graph node labels are mitigated (wrapped), not durably fixed — the real fix is font-metric parity between Kroki and the browser (2026-09-28)
+
+Fixed live tonight: table names in the Relationship Graph rendering (`relationship_dot.py`) were
+overflowing their node boxes. Root cause, confirmed empirically (not guessed): Graphviz sizes each
+box server-side against whatever "DejaVu Serif" metrics its own fontconfig resolves inside the
+`egeria-shared-kroki` container, but the returned SVG only NAMES that font on `<text>` elements — it
+neither embeds it nor outlines the glyphs. The viewer's browser silently substitutes a different font
+if "DejaVu Serif" isn't actually installed there (confirmed via `canvas.measureText()` returning
+identical widths for `"DejaVu Serif"` and a font name that doesn't exist at all — no real DejaVu Serif
+is present client-side), and the tight per-node margins left no slack to absorb the substitution.
+
+**What shipped tonight (`re/relationship-graph-label-overflow`) is a mitigation, not the fix**:
+long identifiers wrap across multiple lines within their node rather than being truncated
+(`_wrap_identifier_lines`, guaranteed no character loss). This works at any zoom, but it is
+compensating for the metrics mismatch, not closing it — a design review the same night called this
+out explicitly and asked for the durable fix to be logged rather than letting the mitigation become
+the permanent design.
+
+**Durable fix, not attempted here**: metric parity between what Graphviz measures with and what the
+browser actually renders. Two candidate approaches: (1) serve the same DejaVu Serif Graphviz/Kroki
+measures with as a webfont from `/static` — an `@font-face` the `/next` page loads — so the browser
+renders with the exact font the server-side layout was computed against; or (2) switch Graphviz's
+`fontname` to a font `/next` already ships (already in the page's own webfont set), so no new asset
+is needed and the two sides are trivially in sync. Either way, node boxes should fit without wrapping
+at any zoom once this lands; wrapping then stays only for identifiers that genuinely exceed a
+reasonable width budget regardless of font, not as compensation for a metrics mismatch.
+
+**Sequencing**: a small slice, queued after the By-analysis branch merges (both touch adjacent
+rendering-review territory tonight). Verify against the same three longest names
+(`salesorderheadersalesreason`, the two other AdventureWorks names, plus the 60-character synthetic
+name) `test_relationship_dot.py`'s `TestLabelWrapping` already uses as its check, to confirm wrapping
+genuinely becomes unnecessary for those cases post-fix rather than just assuming it.
