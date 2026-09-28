@@ -243,7 +243,7 @@ class TestTheDatabaseAdapterDeclaresLiveRead:
         f = FactLayer(registry_with_tables, resource_type="database").fact(
             "coco_ods", "schema_inventory")
         assert f.state == MEASURED
-        assert f.value["table_count"] == 1
+        assert f.value["relation_count"] == 1
 
 
 class TestAnUnknownResourceType:
