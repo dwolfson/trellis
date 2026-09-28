@@ -99,6 +99,24 @@ Cards in the order the stage's questions ask for them (the questions CSV's
 order, first question that names the analysis), so By-analysis and
 Questions agree on sequence. Never-run analyses last within the stage.
 
+### Progressive render — never a blank pane for a minute
+
+Added 2026-09-28, from the Section D agent's live-render check during the
+`renders-text-cross-check` work: `loadByAnalysisPane`'s "Reading the
+dashboards…" state can sit with no progress for up to ~109s on
+`laz_local_adventureworks` before anything appears.
+
+The contents board (glyph + headline + run time per analysis) is cheap —
+it reads only the per-analysis state already resolved for the Questions
+tab, no dashboard fetch required — and must render immediately, before any
+card body. Card bodies fill in as their dashboard reads complete, each
+row's glyph flipping from a loading state to its real one as it lands.
+While any read is outstanding, show a visible "still reading N of M" line
+near the top, not a fixed spinner with no count. The gate below (task 1,
+"under ten seconds, without scrolling") must be met from the contents
+board alone, independent of how long the slowest card's dashboard read
+takes.
+
 ## Out of scope here
 
 Charts (the per-schema bar chart is its own Backlog entry), the legacy `/`

@@ -8528,3 +8528,72 @@ matches exactly one table still opens it — the existing single-match
 tests (`test_a_self_match_opens_its_own_details`) must keep passing
 alongside the new one, since the rule only changes behavior when there
 is more than one table-level match.
+
+## `/next` probes `scouting-overview` for database slugs and always gets a 404 (Section D agent's live-render check, 2026-09-28)
+
+Every `/next` page load calls `GET /api/projects/{slug}/scouting-overview`
+regardless of resource type. For a database slug this 404s every time —
+`scouting-overview` is a repo-only endpoint. Same class of bug as the
+earlier `'db'` vs `'database'` resourceType mismatch: a call written
+against one resource type and never gated for the others.
+
+**Fix direction, not attempted here**: gate the call on
+`resourceType === 'repo'` before issuing it, the same way other repo-only
+probes are already gated elsewhere in `app.js`. No design question here —
+purely "don't call an endpoint that doesn't apply to this resource type."
+
+## `postgres_column_profile` silently samples nothing on `laz_local_adventureworks` — an aborted-transaction cascade masked as `status: "ok"` (Section E agent, 2026-09-28)
+
+The unchanged 468/768 `measured`/`not_collected` split in `database_column_profiles`
+across every run today (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md's original evidence, and
+still true after Section E's Prefect fix) has a concrete cause, not just an unclear
+one: the 468 `measured` rows come entirely from `pg_stats`, read by
+`postgres_schema_and_stats`; `postgres_column_profile`'s own per-value sampling has
+not added anything observable in any run today, on either the Prefect or local
+execution path (pre-dates Section E's fix, identical on both).
+
+**Mechanism**: a sampling query hits `TABLESAMPLE clause can only be applied to
+tables and materialized views` on a *view* in the schema. Postgres then aborts the
+surrounding transaction, and every subsequent sampling attempt in that same
+transaction fails with `current transaction is aborted, commands ignored until end
+of transaction block` — cascading silently across the rest of the profile run. The
+step still reports `status: "ok"`, so nothing surfaces the failure; it reads as "ran,
+nothing more to add" rather than "one view broke the whole batch."
+
+**Fix direction, not attempted here** (flagged as background task `task_3ce22015`
+for a dedicated session): either skip/guard views before issuing `TABLESAMPLE`
+against them, or give each table/view its own transaction (or savepoint) so one
+view's failure doesn't abort sampling for every table that follows it in the same
+run. Whichever fix lands, `status: "ok"` must stop being possible when a sampling
+attempt failed — that's the same silent-success shape `test_no_silent_success.py`
+already guards other steps against.
+
+## Three order-dependent flaky tests in `test_survey_definitions_routes.py` — root cause identified, fix on `re/tests-clear-candidates-cache` (found by Section E agent, bisected 2026-09-28)
+
+Pre-existing, unrelated to any of the BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md fixes.
+Confirmed to fail only under a specific run order and to pass individually — not
+touched by any of Sections A–E:
+
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_returns_step_detail_for_valid_candidate` —
+  `assert 'SchemaAnalysisAnnotation' in step_out["annotation_types"]` →
+  `AssertionError: assert 'SchemaAnalysisAnnotation' in []` (candidate returned but its step detail is empty).
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_step_enriched_with_produced_annotation_types` —
+  `assert step_out["egeria_produced_annotation_types"] == fake_produced` →
+  `KeyError: 'egeria_produced_annotation_types'` (the key does not exist on the response; the enrichment branch never ran).
+- `tests/test_survey_definitions_routes.py::TestListCandidates::test_egeria_native_processes_excludes_delete_kind` —
+  `assert "survey_existing" in kinds` → `AssertionError: assert 'survey_existing' in set()` (native-processes kind set empty).
+
+**Root cause, bisected**: all three patch `SurveyDefinitionReader.find_candidate_process_guids` /
+`find_candidate_process_guids_by_questions` and hit `GET /api/survey-definitions/database/mydb/candidates`;
+the route behaves as if the patched method returned nothing in every failure. `survey_definition_reader.py`'s
+module-level `_candidates_cache` (keyed `(full_scan, technology_type, survey_kind)`, TTL-bounded) is populated
+by an earlier real call elsewhere in the suite with `technology_type="PostgreSQL Database"`, and that cached
+result wins over the patch — `patch()` on the reader's own method cannot see a hit already served from the
+cache. Not bisected to the specific populating test, but not needed: the mechanism is general (any prior real
+call with matching cache-key fields poisons any later patched test).
+
+**Fixed** on `re/tests-clear-candidates-cache`: an autouse fixture in `tests/conftest.py`
+(`clear_survey_definition_reader_caches`) calls the reader's existing `clear_caches()` testing hook (already
+used by hand in `test_survey_definition_reader.py`'s own tests, but never applied suite-wide) before and after
+every test — same pattern as the existing `ephemeral_prefect` autouse fixture just above it. Verified by a full
+suite run confirming all three pass in-suite (run details in that branch's commit).
