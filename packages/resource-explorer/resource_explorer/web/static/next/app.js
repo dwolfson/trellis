@@ -2885,14 +2885,23 @@ export function resourceHeaderHtml(slug) {
   // answer among many.
   let credentialBanner = '';
   const cap = p?.credential_capability;
-  if (cap && (cap.table_total || cap.schema_total)) {
-    const thin = (cap.table_select ?? 0) < (cap.table_total ?? 0)
+  // `relation_total`/`relation_select` (renamed from `table_total`/
+  // `table_select`, REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.3): the
+  // whole-database figure counts base tables + views + matviews, never
+  // tables alone. `cap` is a stored probe blob that can predate this
+  // rename, so the old key is read as a fallback -- without it every
+  // database surveyed before this rename would show "SELECT on 0 of 0
+  // table(s)" until re-surveyed.
+  const relTotal = cap?.relation_total ?? cap?.table_total;
+  const relSelect = cap?.relation_select ?? cap?.table_select;
+  if (cap && (relTotal || cap.schema_total)) {
+    const thin = (relSelect ?? 0) < (relTotal ?? 0)
       || (cap.schema_visible ?? 0) < (cap.schema_total ?? 0);
     credentialBanner = `
       <div class="mt-s1 text-provenance ${thin ? 'text-accent-ink' : 'text-ink-muted'}">
         connected as <span class="font-mono">${esc(cap.connected_as || '(unknown)')}</span> —
         sees ${esc(String(cap.schema_visible ?? 0))} of ${esc(String(cap.schema_total ?? 0))} schema(s),
-        SELECT on ${esc(String(cap.table_select ?? 0))} of ${esc(String(cap.table_total ?? 0))} table(s)
+        SELECT on ${esc(String(relSelect ?? 0))} of ${esc(String(relTotal ?? 0))} relation(s)
         ${thin ? '· every count on this page is scoped to this credential, not the whole database' : ''}
       </div>`;
   }
@@ -7093,10 +7102,16 @@ function showEvidence(entry) {
   // field name for the same underlying number (schema_inventory's and
   // row_count_snapshot's readers both read the same stored `database_
   // tables` rows, and both happen to call their own fields "tables"/
-  // "table_count"). Each fact block used to render every key in its own
-  // `.value` with no awareness of the others, so the same number appeared
-  // once per fact that happened to carry it — found live, "How big is
-  // this database"'s evidence panel listing `tables`/`table_count` twice.
+  // "relation_count" -- was "table_count" on both until REPLY-DESIGNER-
+  // ROUND2-DATABASE-SCREENS.md §2.3: an all-relation-kinds count named
+  // "table_count" is a different population from a base-tables-only count
+  // of the same name elsewhere on screen, e.g. the Relationship Graph
+  // card's own "68" -- renamed at the source in both readers so the name
+  // states what it counts). Each fact block used to render every key in
+  // its own `.value` with no awareness of the others, so the same number
+  // appeared once per fact that happened to carry it — found live, "How
+  // big is this database"'s evidence panel listing `tables`/`relation_
+  // count` twice.
   // Deduped by key, first fact in `env.facts` order wins — that ordering
   // already follows the question catalog's own `analysis_ids` list, so an
   // earlier entry is the one a reader would name first anyway.
@@ -7109,9 +7124,19 @@ function showEvidence(entry) {
       ? `<div class="mt-[4px] leading-[1.95]">${fresh
           .map(([k, v]) => measureHtml(k, v)).join('')}</div>`
       : '';
+    // REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.3: `f.provenance`
+    // defaults to the SAME string as `f.state` ("measured" -- `Fact.
+    // provenance`'s own default is `PROVENANCE_MEASURED = "measured"`,
+    // identical to `result_status.MEASURED`), so this line printed the
+    // state twice -- "measured · measured · run 2m ago" -- for the common
+    // case of a plain local measurement. Provenance only earns its own
+    // word when it says something `state` doesn't (☁ Egeria vs. 🏠 local
+    // vs. ⏳ pending, per this file's own "Survey source display" table).
+    const stateWord = esc(f.state);
+    const provenanceWord = f.provenance && f.provenance !== f.state ? ` · ${esc(f.provenance)}` : '';
     return `<div class="mb-s2 border-b border-chrome-line-soft pb-s2 last:border-0">
       <div class="text-chip text-accent-on-dark">${esc(f.analysis_id)}</div>
-      <div class="text-caps text-chrome-muted">${esc(f.state)} · ${esc(f.provenance)} · ${
+      <div class="text-caps text-chrome-muted">${stateWord}${provenanceWord} · ${
         f.last_run_at ? `run ${esc(ago(f.last_run_at))}`
           : f.is_known ? 'run time not recorded' : 'never run'}</div>
       ${f.headline ? `<div class="mt-[4px] text-subtab">${tnum(esc(f.headline))}</div>` : ''}

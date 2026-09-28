@@ -1115,7 +1115,12 @@ class FactLayer:
             # (REPLY-COPY-REVIEW-CREDENTIAL-AND-FIT-LANGUAGE.md §3) — the
             # reader had to work out that meant "the ones it can't read".
             catalog_only = (value or {}).get("catalog_only_table_count") or 0
-            table_count = (value or {}).get("table_count")
+            # `relation_count` (renamed from `table_count`, REPLY-DESIGNER-
+            # ROUND2-DATABASE-SCREENS.md §2.3) -- `_schema_inventory_
+            # results` builds `value` fresh every call, so the old key is
+            # read as a fallback only for defense in depth, not because a
+            # stale stored blob is expected here.
+            table_count = (value or {}).get("relation_count", (value or {}).get("table_count"))
             if catalog_only and table_count:
                 select_count = table_count - catalog_only
                 who_name = f"`{connected_as}`" if connected_as else "this credential"

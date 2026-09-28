@@ -1166,8 +1166,13 @@ def _credential_scope_status(registry, slug: str) -> dict | None:
         return None
     schema_total = cap.get("schema_total", 0)
     schema_visible = cap.get("schema_visible", 0)
-    table_total = cap.get("table_total", 0)
-    table_select = cap.get("table_select", 0)
+    # `relation_total`/`relation_select` (renamed from `table_total`/
+    # `table_select`, REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.3): the
+    # whole-database figure counts base tables + views + matviews, never
+    # tables alone. `cap` can be a `credential_capability` blob stored
+    # before this rename, so the old key is a fallback.
+    table_total = cap.get("relation_total", cap.get("table_total", 0))
+    table_select = cap.get("relation_select", cap.get("table_select", 0))
     if not table_total:
         return None
     if table_select >= table_total and schema_visible >= schema_total:
@@ -1180,7 +1185,7 @@ def _credential_scope_status(registry, slug: str) -> dict | None:
         "state": MEASURED_WITHIN_CREDENTIAL_SCOPE,
         "connected_as": cap.get("connected_as", ""),
         "fraction": (
-            f"{table_select} of {table_total} tables in "
+            f"{table_select} of {table_total} relation(s) in "
             f"{schema_visible} of {schema_total} schemas"
         ),
     }
@@ -1230,10 +1235,24 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     # always one of these four for the relkinds `get_schema_info`/
     # `_enumerate_relations` select (`r`/`p` -> BASE TABLE, `v` -> VIEW,
     # `m` -> MATERIALIZED VIEW, `f` -> FOREIGN). `base_table_count` is kept
-    # as the stable field existing comparators already diff `table_count`
-    # as if it meant; `table_count` itself is unchanged (every relation
-    # kind combined), so neither meaning silently changes under a caller
-    # that hasn't been updated to read the new fields.
+    # as the stable field existing comparators already diff.
+    #
+    # RENAMED 2026-09-28 (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.3):
+    # the field below WAS `table_count`, and the paragraph above used to end
+    # "`table_count` itself is unchanged (every relation kind combined), so
+    # neither meaning silently changes." That was exactly backwards for a
+    # reader: `table_count` naming an all-kinds figure (a real database
+    # showed 157 here — 68 base tables, 87 views, 2 materialized views) sits
+    # on the same screen as the Relationship Graph card's own "68", which
+    # counts base tables only, and nothing distinguishes the two numbers by
+    # name. `table_count` is now `relation_count` here; `base_table_count`,
+    # unchanged, is the one that means base tables only. This function
+    # always builds `value` fresh from the current `database_tables` rows
+    # (never reads a stored `survey_data` field named `table_count` back),
+    # so no old-key fallback is needed for this one field specifically —
+    # unlike the `credential_capability` probe's `table_total`/
+    # `table_select`, which ARE read back from old stored blobs elsewhere in
+    # this module.
     base_table_count = sum(1 for t in tables if t.get("table_type") == "BASE TABLE")
     view_count = sum(1 for t in tables if t.get("table_type") == "VIEW")
     materialized_view_count = sum(1 for t in tables if t.get("table_type") == "MATERIALIZED VIEW")
@@ -1268,7 +1287,7 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     })
     cap = _credential_capability_results(registry, slug)
     value = {
-        "table_count": len(tables),
+        "relation_count": len(tables),
         "column_count": len(columns),
         "schemas_with_tables": schemas_with_tables,
         # From the credential-capability probe (same source the header's
@@ -1349,7 +1368,22 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
              "row_count_is_estimate": t.get("state") == STATE_CATALOG_ESTIMATE}
             for t in tables
         ],
-        "table_count": len(tables),
+        # `relation_count`, not `table_count` -- `tables` above is every
+        # stored `database_tables` row for this database, same all-relation-
+        # kinds population `_schema_inventory_results`'s own `relation_count`
+        # counts (both read the identical unfiltered query). Renamed
+        # alongside that field (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md
+        # §2.3) rather than left as a second `table_count` under a different
+        # analysis id: the evidence rail's own fact-dedup (`showEvidence` in
+        # app.js) drops a later fact's field when an earlier fact already
+        # showed the same KEY NAME, so two all-kinds counts sharing the name
+        # `table_count` were silently merged into one row -- correct by
+        # accident, not by contract, and the first accident this rename
+        # closes rather than relocates. Built fresh from `database_tables`
+        # every call, never read back from an old stored blob, so no old-key
+        # fallback is needed here (unlike the credential_capability probe's
+        # `table_total`/`table_select`).
+        "relation_count": len(tables),
         "measured_count": len(measured),
         "total_row_count": sum(t.get("row_count") or 0 for t in measured) if measured else None,
         "total_size_bytes": sum(t.get("size_bytes") or 0 for t in sized) if sized else None,
@@ -1409,7 +1443,7 @@ def _schema_inventory_headline(registry, slug: str) -> dict | None:
     picking one.
     """
     value = _schema_inventory_results(registry, slug)
-    if not value or not value.get("table_count"):
+    if not value or not value.get("relation_count"):
         return None
     cap = _credential_capability_results(registry, slug)
     schema_total = cap.get("schema_total")
@@ -1453,7 +1487,13 @@ def _schema_inventory_headline(registry, slug: str) -> dict | None:
 
     parts = [
         schema_part,
-        f"{value['table_count']} table(s){kind_str}",
+        # "relation(s)", not "table(s)" (REPLY-DESIGNER-ROUND2-DATABASE-
+        # SCREENS.md §2.3): this is the all-kinds figure the breakdown right
+        # after it names in full (base/view/materialized view/foreign) --
+        # calling the sum "table(s)" is what let it collide, unnamed, with
+        # the Relationship Graph card's own "68", which means base tables
+        # only.
+        f"{value['relation_count']} relation(s){kind_str}",
         f"{value.get('column_count', 0)} column(s)",
     ]
     return {"label": " · ".join(parts) + ".", "status": "info"}
@@ -1844,22 +1884,22 @@ def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
     """The one-sentence summary `scalarMeasures()` on the frontend cannot
     produce on its own, since it skips the `tables` array entirely (by
     design — a per-table breakdown is not a scalar) and so has nothing to
-    say beyond the bare `measured_count`/`table_count` numbers."""
+    say beyond the bare `measured_count`/`relation_count` numbers."""
     value = _row_count_snapshot_results(registry, slug)
-    if not value or not value.get("table_count"):
+    if not value or not value.get("relation_count"):
         return None
     total_rows = value.get("total_row_count")
     total_bytes = value.get("total_size_bytes")
-    measured, total = value["measured_count"], value["table_count"]
+    measured, total = value["measured_count"], value["relation_count"]
     parts = []
     if total_rows is not None:
         parts.append(f"{total_rows:,} row(s)")
     if total_bytes is not None:
         parts.append(_format_bytes(total_bytes))
     if not parts:
-        return {"label": f"No row counts recorded for any of {total} table(s).",
+        return {"label": f"No row counts recorded for any of {total} relation(s).",
                 "status": "info"}
-    coverage = "" if measured == total else f" ({measured} of {total} tables measured)"
+    coverage = "" if measured == total else f" ({measured} of {total} relations measured)"
     estimated = value.get("estimated_count") or 0
     caveat = (
         f" {estimated} of {measured} row count(s) are catalog estimates, not exact."

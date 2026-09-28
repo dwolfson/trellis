@@ -1325,8 +1325,16 @@ class DatabaseSurveyor:
         connected_as = info.get("connected_as") or "(unknown)"
         schema_total = info.get("schema_total", 0)
         schema_visible = info.get("schema_visible", 0)
-        table_total = info.get("table_total", 0)
-        table_select = info.get("table_select", 0)
+        # `relation_total`/`relation_select` (renamed from `table_total`/
+        # `table_select`, REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.3):
+        # the whole-database figure counts base tables + views + matviews
+        # + foreign tables, never tables alone. `info` is normally this
+        # run's own fresh probe result, but `publish_step_annotations` can
+        # also call this on a Survey-Definition step's own stored output —
+        # the old key is read as a fallback so a pre-rename blob still
+        # produces a real annotation instead of "0 of 0".
+        table_total = info.get("relation_total", info.get("table_total", 0))
+        table_select = info.get("relation_select", info.get("table_select", 0))
         by_schema = info.get("by_schema") or {}
         stats_role = bool(info.get("stats_role"))
         write_capable = bool(info.get("write_capable"))
@@ -1336,7 +1344,7 @@ class DatabaseSurveyor:
                 summary=(
                     f"Connected as {connected_as}: visible {schema_visible} of "
                     f"{schema_total} schema(s), SELECT on {table_select} of "
-                    f"{table_total} table(s)"
+                    f"{table_total} relation(s)"
                 ),
                 analysis_step="DatabaseCredentialCapability",
                 confidence=100,
@@ -1344,8 +1352,8 @@ class DatabaseSurveyor:
                     "connected_as": connected_as,
                     "schema_total": schema_total,
                     "schema_visible": schema_visible,
-                    "table_total": table_total,
-                    "table_select": table_select,
+                    "relation_total": table_total,
+                    "relation_select": table_select,
                     "by_schema": by_schema,
                     "stats_role": stats_role,
                     "write_probed": True,
@@ -1407,7 +1415,7 @@ class DatabaseSurveyor:
             )
             fraction_phrase = (
                 shortfall["phrase"] if shortfall
-                else f"SELECT on {table_select} of {table_total} table(s)"
+                else f"SELECT on {table_select} of {table_total} relation(s)"
             )
             short_clause = (
                 f" Short on: " + ", ".join(
