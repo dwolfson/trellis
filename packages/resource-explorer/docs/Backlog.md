@@ -8434,3 +8434,44 @@ place. The fix is to promote the existing, already-correct, already-
 tested fallback implementation to be the ONE implementation, called from
 both paths, keyed by `(schema, table, column)` — not to write a second,
 parallel query.
+
+## A matched table's own `<details>` should auto-open only when it is the SOLE table match, not every time (Dan's re-gate, Slice 22, 2026-09-27)
+
+`filterTreeNode`'s own-match branch (`app.js`) currently opens every
+matched table's `<details>` unconditionally — the fix for the original
+"filtering opens a table but shows no columns" defect (see the Backlog
+entry logged the same night, now closed by the Slice 22 fix round). Dan's
+re-gate found the unconditional version too eager: when a filter matches
+TWO OR MORE tables at once, every one of them auto-expands its full
+column list at once, which is a wall of columns rather than a scannable
+list of matches.
+
+**Not fixed here — deferred, not tonight, not part of Slice 22's own
+scope** (queued per the coordinator's own words: "the only thing worth
+doing now is writing the Backlog entry").
+
+**Rule for the fix**: a matched node is visible and stays COLLAPSED; every
+ancestor on the path to a match is forced open (unchanged — this is what
+makes a match inside a collapsed schema reachable at all); a matched
+TABLE auto-opens its own `<details>` (revealing its columns) only when it
+is the SOLE table match across the whole filtered tree — i.e. count the
+matching table nodes first, and only auto-expand when that count is
+exactly 1. With two or more table matches, each stays collapsed (visible,
+reachable, but not force-expanded), leaving the user to open the one they
+want.
+
+**Fix direction**: `filterSchemaTree` already computes the full match set
+via `filterTreeNode`'s recursion; the cheapest place to add the count is
+a first pass that finds how many table-level `[data-tree-node]` elements
+matched (or a small change to `filterTreeNode` to return match COUNTS,
+not just a boolean, so the top-level caller can decide whether to open a
+given table's own `<details>` after the fact, rather than each node
+deciding for itself during the single recursive pass it does today).
+
+**Add a test for the two-match case**: a table-name-level filter (or a
+column-name filter that matches columns in two different tables) should
+leave both matched tables collapsed, not auto-opened, while a filter that
+matches exactly one table still opens it — the existing single-match
+tests (`test_a_self_match_opens_its_own_details`) must keep passing
+alongside the new one, since the rule only changes behavior when there
+is more than one table-level match.
