@@ -225,7 +225,7 @@ class TestBuildMeasurementsForADatabase:
         m = build_measurements(db_reg, db_slug, "row_count_snapshot", entity_type="database")
         assert m["not_applicable"] is False
         by_name = {row["name"]: row for row in m["measurements"]}
-        assert by_name["table_count"]["value"] == 2
+        assert by_name["relation_count"]["value"] == 2
         assert by_name["measured_count"]["value"] == 2
         assert by_name["total_row_count"]["value"] == 150
         assert by_name["total_size_bytes"]["value"] == 352320
@@ -249,7 +249,7 @@ class TestBuildMeasurementsForADatabase:
         m = build_measurements(db_reg, db_slug, "schema_inventory", entity_type="database")
         assert m["not_applicable"] is False
         by_name = {row["name"]: row for row in m["measurements"]}
-        assert by_name["table_count"]["value"] == 1
+        assert by_name["relation_count"]["value"] == 1
         assert by_name["column_count"]["value"] == 2
 
     def test_no_data_yet_is_not_applicable_false_with_a_reason(self, db_reg, db_slug):
@@ -276,7 +276,7 @@ class TestBuildMeasurementsIsLevelAwareForADatabase:
         )
         m = build_measurements(db_reg, db_slug, "schema_inventory", entity_type="database")
         by_name = {row["name"]: row for row in m["measurements"]}
-        assert by_name["table_count"]["value"] == 1
+        assert by_name["relation_count"]["value"] == 1
 
     def test_container_level_returns_a_per_schema_row_not_resource_scalars(self, db_reg, db_slug):
         db_reg.write_detail_rows(
@@ -296,7 +296,7 @@ class TestBuildMeasurementsIsLevelAwareForADatabase:
         names = [row["name"] for row in m["measurements"]]
         assert "coco_ods" in names
         assert "eu_sales" in names
-        assert "table_count" not in names  # not the resource scalar shape
+        assert "relation_count" not in names  # not the resource scalar shape
         by_name = {row["name"]: row for row in m["measurements"]}
         assert "1,000 row(s)" in by_name["coco_ods"]["value"]
         assert by_name["eu_sales"]["note"] == "empty"
@@ -314,7 +314,7 @@ class TestBuildMeasurementsIsLevelAwareForADatabase:
         m = build_measurements(db_reg, db_slug, "row_count_snapshot",
                                 entity_type="database", level="container")
         by_name = {row["name"]: row for row in m["measurements"]}
-        assert by_name["table_count"]["value"] == 1
+        assert by_name["relation_count"]["value"] == 1
 
 
 class TestRunnableAndReasonThreadsEntityType:

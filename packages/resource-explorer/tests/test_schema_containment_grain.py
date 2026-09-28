@@ -526,7 +526,7 @@ class TestAnUndeclaredEngineIsAnAbsenceNotAFlatNamespace:
 _CAP_COCO_PHARMA = {
     "connected_as": "egeria_user",
     "schema_total": 4, "schema_visible": 3,
-    "table_total": 26, "table_select": 3,
+    "relation_total": 26, "relation_select": 3,
     "by_schema": {
         # USAGE, no SELECT — the incident. "Structure only", for this schema.
         "coco_ods": {"usage_granted": True, "table_total": 23, "table_select": 0},
@@ -559,7 +559,7 @@ class TestPerSchemaCredentialScope:
 
     def test_full_coverage_stays_silent(self):
         assert schema_scope.credential_shortfall({
-            "table_total": 2, "table_select": 2,
+            "relation_total": 2, "relation_select": 2,
             "by_schema": {"public": {"usage_granted": True, "table_total": 2,
                                      "table_select": 2}},
         }, POSTGRES_CONTAINMENT) is None
@@ -570,7 +570,7 @@ class TestPerSchemaCredentialScope:
         shortfall = schema_scope.credential_shortfall(
             _CAP_COCO_PHARMA, POSTGRES_CONTAINMENT,
         )
-        assert shortfall["phrase"] == "2 of 4 schemas readable; 3 of 26 tables"
+        assert shortfall["phrase"] == "2 of 4 schemas readable; 3 of 26 relation(s)"
         # Worst first: no visibility, then structure-only.
         assert shortfall["short_containers"] == ["demo", "coco_ods"]
 
@@ -594,7 +594,7 @@ class TestPerSchemaCredentialScope:
         # The existing database-wide fraction is untouched...
         assert "3 of 26" in status["fraction"]
         # ...and the per-schema reading is what §2 adds.
-        assert status["schema_fraction"] == "2 of 4 schemas readable; 3 of 26 tables"
+        assert status["schema_fraction"] == "2 of 4 schemas readable; 3 of 26 relation(s)"
         assert status["by_container"]["coco_ods"]["state"] == (
             schema_scope.SCOPE_STRUCTURE_ONLY
         )
@@ -637,7 +637,7 @@ class TestTheCapabilityShortfallMessageNamesSchemas:
         rfa = [a for a in annotations if hasattr(a, "action_requested")]
         assert rfa, "thin coverage must still raise the RFA"
         assert rfa[0].summary == (
-            "connected as egeria_user: 2 of 4 schemas readable; 3 of 26 tables"
+            "connected as egeria_user: 2 of 4 schemas readable; 3 of 26 relation(s)"
         )
         assert "coco_ods (structure_only)" in rfa[0].explanation
         assert "demo (not_visible)" in rfa[0].explanation

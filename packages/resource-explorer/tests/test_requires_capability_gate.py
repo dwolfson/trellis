@@ -239,7 +239,7 @@ def test_a_step_whose_capability_is_not_satisfied_proposes_partially(world):
 
     sentence = res.proposal.sentence()
     assert "can run, but not completely" in sentence
-    assert "3 of 26 table(s)" in sentence
+    assert "3 of 26 relation(s)" in sentence
     assert "egeria_user" in sentence
     assert sentence.endswith("."), (
         "sentence() ends with a full stop, not the decision -- see question()")
@@ -283,7 +283,7 @@ def test_both_axes_insufficient_produce_ONE_combined_message(world):
     assert sentence.count(".") == 1, (
         "one sentence, not two run together -- exactly one full stop", sentence)
     assert "download" in sentence, "the cost axis vanished from the combined ask"
-    assert "3 of 26 table(s)" in sentence, "the capability axis vanished"
+    assert "3 of 26 relation(s)" in sentence, "the capability axis vanished"
     # The combined template never otherwise names the demanding step, so
     # `asker`'s own capability reason keeps its step-name prefix here (unlike
     # the capability-only case above) -- REPLY-COPY-REVIEW-CREDENTIAL-AND-

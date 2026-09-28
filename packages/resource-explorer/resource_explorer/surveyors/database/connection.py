@@ -1409,8 +1409,19 @@ class PostgreSQLConnection(DatabaseConnection):
             "connected_as": connected_as,
             "schema_total": len(schemas),
             "schema_visible": sum(1 for s in schemas if s.get("usage_granted")),
-            "table_total": len(tables),
-            "table_select": sum(1 for t in tables if t.get("can_select")),
+            # Renamed from `table_total`/`table_select` (REPLY-DESIGNER-
+            # ROUND2-DATABASE-SCREENS.md §2.3's "table count means two
+            # populations on one screen" -- `tables` here is every relation
+            # `_enumerate_relations()` selects, `relkind IN ('r','v','m',
+            # 'f','p')`: base tables, views, matviews, foreign and
+            # partitioned tables combined, the same all-kinds figure
+            # `_schema_inventory_results`'s own `relation_count` reports.
+            # `by_schema[...]`'s own `table_total`/`table_select` are left
+            # named as they were -- this rename is for the WHOLE-DATABASE
+            # figure the reply's example (schema_inventory's 157 vs.
+            # relationship-graph's 68) was about, not the per-schema one.
+            "relation_total": len(tables),
+            "relation_select": sum(1 for t in tables if t.get("can_select")),
             "by_schema": by_schema,
             "stats_role": stats_role,
             #: Always True: this method never skips the write probe, it only

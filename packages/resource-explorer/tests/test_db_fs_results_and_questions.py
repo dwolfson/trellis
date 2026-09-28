@@ -163,7 +163,7 @@ class TestDatabaseResultsReadersReadStoredRows:
         ])
         reader, _ = DATABASE_ANALYSIS_RESULTS_MAP["schema_inventory"]
         result = reader(db_reg, slug)
-        assert result["table_count"] == 1
+        assert result["relation_count"] == 1
         assert result["column_count"] == 1
         assert result["tables"][0]["table_name"] == "orders"
         assert result["tables"][0]["row_count"] == 42
@@ -179,7 +179,7 @@ class TestDatabaseResultsReadersReadStoredRows:
         ])
         reader, _ = DATABASE_ANALYSIS_RESULTS_MAP["row_count_snapshot"]
         result = reader(db_reg, slug)
-        assert result["table_count"] == 2
+        assert result["relation_count"] == 2
         assert result["measured_count"] == 1  # the NULL row_count is not "measured as 0"
 
     def test_operations_sections_read_the_latest_survey_blob(self, db_reg, slug):
