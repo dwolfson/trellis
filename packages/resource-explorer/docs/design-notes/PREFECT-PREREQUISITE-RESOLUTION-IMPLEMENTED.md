@@ -295,15 +295,82 @@ New/changed:
   entry, `_propose_producer_definition` (Egeria lookup failure falls back to
   the plain message, which is itself informative).
 
-Full suite: `uv run pytest tests/ -q` — 6619 passed, 103 skipped (excluding
-the 3 pre-existing flaky tests below), 0 failed, before and after this
-change (only the count of new tests differs). Ran twice to confirm the
-following three failures are pre-existing, order-dependent flakiness
-unrelated to this change (they pass individually and are not touched by
-this diff):
-`tests/test_survey_definitions_routes.py::TestListCandidates::test_returns_step_detail_for_valid_candidate`,
-`::test_egeria_step_enriched_with_produced_annotation_types`,
-`::test_egeria_native_processes_excludes_delete_kind`.
+## CI red — root cause was this branch's own tests, not shared infrastructure
+
+**Correction, 2026-09-28.** The three `TestListCandidates` failures above
+were first diagnosed as pre-existing, order-dependent flakiness unrelated
+to this change (confirmed passing in isolation, and CI was already red on
+other branches at the time). That diagnosis was **wrong** — or at least
+incomplete. After `re/tests-clear-candidates-cache` (#323) landed on main
+fixing the ACTUAL pre-existing flakiness (a `_candidates_cache`/
+`_fetch_cache` staleness issue in `survey_definition_reader.py`, confirmed
+by that branch's own clean 6605/0 run), every other branch merged the same
+day ran clean (F 6615/0, G3/empty-state-split 6612/0, G2 6621/0) — but
+`-rf` on this branch, merged up to the same point, still showed the exact
+same three failures. That ruled out shared test infrastructure: the
+polluter had to be in this branch's own diff.
+
+**Root cause, found by bisection** (`pytest tests/test_survey_definition_executor.py
+tests/test_survey_definitions_routes.py -q` reproduced it in ~12s; narrowed
+from there): `TestProposeProducerDefinition`'s test helper `_executor()`
+called `register_adapter(ResourceTypeAdapter(entity_type="database", ...,
+re_analysis_steps={}))` — registering a **zero-step stub** under the REAL
+`"database"` key in `survey_definition_executor._ADAPTERS`, a module-level,
+process-lifetime dict with no test-scoped reset (`register_adapter`'s own
+docstring: "called once at import time by each resource type's ... module" —
+a production assumption, not a test-safe one). Three of these four new
+tests called it, permanently replacing the real database adapter (imported
+once at process start, with its real `step_registry`) for every test that
+ran afterward in the same pytest process — including
+`test_survey_definitions_routes.py::TestListCandidates`, whose `/candidates`
+route calls `get_adapter("database")` and got this stub back: zero steps,
+so an empty `annotation_types` list, a missing
+`egeria_produced_annotation_types` key (never reached, nothing to
+enrich), and an empty `kinds` set. Every other pre-existing test in
+`test_survey_definition_executor.py` already avoids this by registering
+under `entity_type="fake"` — these four were the only ones in the whole
+file to use the real `"database"` key, which is exactly why nothing broke
+until they were added.
+
+**Fix:** `TestProposeProducerDefinition._ENTITY_TYPE = "fake"`, used
+everywhere the class previously hardcoded `"database"` (both in the
+`ResourceTypeAdapter` it registers and in the `_propose_producer_definition`
+calls under test — the method only reads `technology_type` off whatever
+adapter comes back, so the entity_type string itself carries no test
+semantics). Verified: `pytest tests/test_survey_definition_executor.py
+tests/test_survey_definitions_routes.py -q` — 59 passed, 0 failed (was 3
+failed, 56 passed) — with the fix alone, `tests/conftest.py`'s tech-type-
+catalog reset (below) REMOVED. The adapter fix is what makes the trio pass;
+the singleton reset is a separate, independently-justified hardening, not
+required for this.
+
+**A second, independently-justified fix, found while investigating (kept,
+not required for the trio):** `web/routes/survey_definitions.py` keeps its
+own module-level `_tech_type_catalog` — a lazily-constructed
+`EgeriaTechTypeCatalog`, built once and reused ("callers should share one
+instance rather than refetch per request", per its own comment). Right for
+production; a process-lifetime singleton with instance-level caches
+(`_all_types_cache`/`_detail_cache`) that no test resets is a latent risk
+for any FUTURE test that patches `EgeriaTechTypeCatalog`'s methods after an
+earlier test has already warmed the real singleton. Added a second autouse
+fixture in `tests/conftest.py`, `clear_tech_type_catalog_singleton`,
+resetting it to `None` before and after every test — same shape as
+`clear_survey_definition_reader_caches` just above it, same file, same
+reasoning, but confirmed NOT the cause of the trio's failure (verified by
+toggling it on/off against the reproduction above).
+
+**No test on this branch reaches a live Egeria platform.** Every reader
+interaction in this branch's new tests goes through `MagicMock()` or the
+existing `_fake_reader()` test helper — confirmed by grep
+(`SurveyDefinitionReader(`/`EGERIA_PLATFORM_URL`/the real platform URL/view
+server name do not appear in any of `test_step_preconditions.py`,
+`test_survey_execution_plan.py`, or `test_survey_definition_executor.py`
+outside mock construction). The three live-verification runs described
+earlier in this doc (`laz_local_adventureworks`) were ad hoc `python3 -c`
+scripts run directly, never part of the pytest suite CI runs.
+
+Full suite (`uv run pytest tests/ -rf`), with both fixes applied: **6665
+passed, 103 skipped, 0 failed** in 828.38s — clean, including the trio.
 
 ## Files touched
 

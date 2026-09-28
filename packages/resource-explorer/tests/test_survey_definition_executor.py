@@ -1014,13 +1014,28 @@ class TestProposeProducerDefinition:
     lookup that turns 'producer is not one of this definition's own steps'
     into 'run Scouting first'."""
 
+    #: A fake entity_type, deliberately NOT "database" — `register_adapter`
+    #: writes into `survey_definition_executor._ADAPTERS`, a **module-level,
+    #: process-lifetime dict** with no test-scoped reset. Registering a stub
+    #: under the real "database" key would permanently replace the real
+    #: database adapter (imported at process start, with its real
+    #: `step_registry`/`technology_type`) for every test that runs
+    #: afterward in the same process — found live 2026-09-28:
+    #: `tests/test_survey_definitions_routes.py::TestListCandidates`
+    #: started failing only when combined with this class before this fix,
+    #: because the route's own `get_adapter("database")` was returning
+    #: THIS class's zero-step stub instead of the real adapter. Every other
+    #: test in this file already avoids this by registering under
+    #: `entity_type="fake"`; this class now does the same.
+    _ENTITY_TYPE = "fake"
+
     def _executor(self, candidates, survey_def):
         reader = MagicMock()
         reader.find_candidate_process_guids.return_value = candidates
         reader.fetch.return_value = survey_def
         registry = _fake_registry()
         adapter = ResourceTypeAdapter(
-            entity_type="database", technology_type="PostgreSQL Database",
+            entity_type=self._ENTITY_TYPE, technology_type="PostgreSQL Database",
             re_analysis_steps={}, get_entity=lambda registry, slug: object(),
             publish=MagicMock(),
         )
@@ -1048,7 +1063,7 @@ class TestProposeProducerDefinition:
             "is not one of this definition's own steps.",
             producer_key="postgres_schema_and_stats")
 
-        message = executor._propose_producer_definition("database", exc)
+        message = executor._propose_producer_definition(self._ENTITY_TYPE, exc)
         assert "Scouting Survey" in message
         assert "postgres_column_profile" in message  # the original message survives
         assert "run" in message.lower()
@@ -1069,7 +1084,7 @@ class TestProposeProducerDefinition:
 
         exc = _MissingPrereq("bare message naming postgres_schema_and_stats",
                              producer_key="postgres_schema_and_stats")
-        message = executor._propose_producer_definition("database", exc)
+        message = executor._propose_producer_definition(self._ENTITY_TYPE, exc)
         assert message == "bare message naming postgres_schema_and_stats"
 
     def test_a_reader_failure_falls_back_to_the_plain_message_rather_than_raising(self):
@@ -1077,7 +1092,7 @@ class TestProposeProducerDefinition:
         reader.find_candidate_process_guids.side_effect = RuntimeError("unreachable")
         registry = _fake_registry()
         adapter = ResourceTypeAdapter(
-            entity_type="database", technology_type="PostgreSQL Database",
+            entity_type=self._ENTITY_TYPE, technology_type="PostgreSQL Database",
             re_analysis_steps={}, get_entity=lambda registry, slug: object(),
             publish=MagicMock(),
         )
@@ -1085,7 +1100,7 @@ class TestProposeProducerDefinition:
         executor = SurveyDefinitionExecutor(registry, reader=reader)
 
         exc = _MissingPrereq("bare message", producer_key="postgres_schema_and_stats")
-        assert executor._propose_producer_definition("database", exc) == "bare message"
+        assert executor._propose_producer_definition(self._ENTITY_TYPE, exc) == "bare message"
 
     def test_no_producer_key_at_all_returns_the_message_unchanged(self):
         """Defensive: an exception without the new attribute (shouldn't
@@ -1095,5 +1110,5 @@ class TestProposeProducerDefinition:
         registry = _fake_registry()
         executor = SurveyDefinitionExecutor(registry, reader=reader)
         exc = _MissingPrereq("bare message", producer_key="")
-        assert executor._propose_producer_definition("database", exc) == "bare message"
+        assert executor._propose_producer_definition(self._ENTITY_TYPE, exc) == "bare message"
         reader.find_candidate_process_guids.assert_not_called()
