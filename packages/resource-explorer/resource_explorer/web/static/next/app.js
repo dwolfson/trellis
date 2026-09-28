@@ -3226,7 +3226,7 @@ function bindSchemaTreeFilter() {
 
 const _SCHEMA_SHORTFALL_LABELS = {
   no_access: 'no access', structure_only: 'structure only', staging: 'staging (by name)',
-  empty: 'empty',
+  empty: 'empty', no_tables: 'no tables', not_measured: 'rows not measured',
 };
 
 //: Table-kind labels -- quiet, muted words distinguishing a base table from

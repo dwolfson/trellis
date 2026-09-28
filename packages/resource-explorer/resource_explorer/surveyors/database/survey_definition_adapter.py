@@ -1605,18 +1605,52 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
                 "classification": "views_only",
             })
             continue
-        # `row_total is None` (Slice 21a follow-up, owner's gate, 2026-09-27):
-        # a schema whose only tables have `row_count IS NULL` — never
-        # measured at all, no catalog-estimate fallback either — used to
-        # fall through to the "data" branch below, where `row_total or 0`
-        # silently displayed a genuine "not measured" as "0 row(s)"
-        # indistinguishable from a real measured empty. The owner's own
-        # ruling: "a schema whose every readable table has zero rows [or, as
-        # here, no row data at all] is class `empty`" — every readable table
-        # reporting nothing is exactly as uninformative as reporting zero.
-        if table_count == 0 or scope_state == SCOPE_EMPTY or row_total == 0 or row_total is None:
+        # Split three ways (designer round-2 reply, REPLY-DESIGNER-ROUND2-
+        # DATABASE-SCREENS.md §3.3, 2026-09-28): this used to be one
+        # `"empty"` classification covering `table_count == 0`,
+        # `scope_state == SCOPE_EMPTY`, `row_total == 0` AND `row_total is
+        # None` all together, with `row_total or 0` silently storing a
+        # genuine "never measured" as a stored zero. The comment that used
+        # to justify this quoted the owner's ruling with "[or, as here, no
+        # row data at all]" ADDED inside the quote marks — the owner ruled
+        # on schemas with zero rows, not on schemas with no measurement at
+        # all, and the bracketed addition is exactly what blurred the three
+        # conditions below into one. A row-count bar (or any other reader)
+        # built on the old single field could not tell "never measured" from
+        # "counted, and zero" — they are different findings and need
+        # different words:
+        #
+        # - `table_count == 0` (or the credential probe's own `SCOPE_EMPTY`,
+        #   which means the same thing: USAGE is granted and the catalog
+        #   shows no tables — see `schema_scope.py`'s own docstring, "Measured,
+        #   and empty — not a visibility gap") is a schema that structurally
+        #   HAS no tables. `"no_tables"` / "no tables".
+        # - `row_total is None` is a schema whose every table has
+        #   `row_count IS NULL` — never measured, no catalog-estimate
+        #   fallback either. Genuinely unknown, not zero. `"not_measured"` /
+        #   "?" "rows not measured".
+        # - `row_total == 0` is a schema that WAS measured and every table
+        #   in it counted zero rows — a real, confirmed zero. `"empty"` /
+        #   "∅" "0". This is the only one of the three that is `STATE_
+        #   MEASURED` with a real reading, and the only one the owner's
+        #   original ruling actually covers.
+        if table_count == 0 or scope_state == SCOPE_EMPTY:
             empty_rows.append({
-                "schema": name, "table_count": table_count, "row_total": row_total or 0,
+                "schema": name, "table_count": table_count, "row_total": None,
+                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "classification": "no_tables", "reason": reason,
+            })
+            continue
+        if row_total is None:
+            empty_rows.append({
+                "schema": name, "table_count": table_count, "row_total": None,
+                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "classification": "not_measured", "reason": reason,
+            })
+            continue
+        if row_total == 0:
+            empty_rows.append({
+                "schema": name, "table_count": table_count, "row_total": 0,
                 "bytes_total": bytes_total, "is_estimate": is_estimate,
                 "classification": "empty", "reason": reason,
             })
@@ -1774,17 +1808,25 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
     - **staging** — name-heuristic (`_STAGING_NAME_MARKERS`), explicitly
       marked "by name" in the rendered text since it is a guess, not a
       measurement, unlike every other category here.
-    - **empty** — zero tables in the schema, or every table in it has a
-      measured row count of exactly zero (`schema_scope.SCOPE_EMPTY`
-      agrees when a probe is available; the table-count/row-total check
-      below is the fallback for when it isn't, so this category still
-      works without a credential-capability run).
+    - **no tables** — zero tables in the schema (`schema_scope.SCOPE_EMPTY`
+      agrees when a probe is available; the table-count check below is the
+      fallback for when it isn't, so this category still works without a
+      credential-capability run). A structural fact about the schema, not a
+      measurement.
+    - **rows not measured** — has tables, but every one of them has
+      `row_count IS NULL` — never measured, no catalog-estimate fallback
+      either. Genuinely unknown, distinct from a confirmed zero (designer
+      round-2 reply, REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §3.3,
+      2026-09-28 — see `_schema_inventory_container_rows`'s own docstring).
+    - **empty** — every table in the schema has a *measured* row count of
+      exactly zero: a real, confirmed zero, not an absence of measurement.
     - **data** — everything else: has at least one table with rows.
 
     Order (Dan's gate, `coco_pharma`, 2026-09-27 — this REPLACES the
     original "data, empty, staging, then no-access/structure-only" order):
     data (by total rows descending) → structure-only → views-only →
-    staging → empty → no-access, each of the latter five by TABLE COUNT
+    staging → no tables / rows not measured / empty (sorted together as one
+    group) → no-access, each of the latter groups by TABLE COUNT
     descending — the only signal a credential-limited or genuinely-empty
     group has, and the reason a structure-only schema with many tables
     (almost certainly where the real data lives, for a credential that
@@ -1807,11 +1849,12 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
         if row["classification"] == "data":
             est = " (est.)" if row["is_estimate"] else ""
             parts.append(f"{name} {count} table(s) · {row['row_total']:,} row(s){est}")
+        elif row["classification"] == "no_tables":
+            parts.append(f"{name} — no tables")
+        elif row["classification"] == "not_measured":
+            parts.append(f"{name} {count} table(s) — rows not measured")
         elif row["classification"] == "empty":
-            if count == 0:
-                parts.append(f"{name} — empty (no tables)")
-            else:
-                parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
+            parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
         elif row["classification"] == "staging":
             parts.append(f"{name} {count} table(s) — staging (by name)")
         elif row["classification"] == "views_only":
@@ -2473,7 +2516,8 @@ def _schema_inventory_container_measurements(registry, slug: str) -> list[dict] 
     if not rows:
         return None
 
-    _NOTES = {"data": "", "empty": "empty", "staging": "staging (by name)",
+    _NOTES = {"data": "", "empty": "empty", "no_tables": "no tables",
+              "not_measured": "rows not measured", "staging": "staging (by name)",
               "no_access": "no access", "structure_only": "structure only",
               "views_only": "views only, no base tables"}
     out = []
