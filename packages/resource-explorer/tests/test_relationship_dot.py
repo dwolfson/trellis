@@ -268,6 +268,94 @@ class TestBuildRelationshipDiagrams:
         assert "keys not captured" in result["by_schema"]["sales"]
 
 
+# ── escaping: a quoted Postgres identifier can carry &, <, >, " ────────────
+#
+# Found in review (PR/CI session, before this branch merged): node IDs were
+# emitted unescaped, and HTML-like labels (`label=<...>`) used `_dot_escape`
+# (backslash/quote escaping, correct for a quoted DOT string) rather than
+# HTML-entity escaping. A quoted identifier containing any of these four
+# characters would make Graphviz reject the WHOLE graph -- "renderer
+# unavailable" instead of a diagram, for a database that happens to have an
+# oddly-named table. AdventureWorks itself never exercises this path, which
+# is exactly why it needs its own test rather than relying on the live
+# fixture to catch it.
+
+_HOSTILE_TABLE = 'a&b<c>"d'
+
+
+class TestEscaping:
+    def test_schema_map_dot_with_a_hostile_schema_name(self):
+        dot = schema_map_dot({_HOSTILE_TABLE: 3}, {_HOSTILE_TABLE: 1}, {})
+        # The raw, unescaped identifier must never appear verbatim inside a
+        # quoted DOT string or an HTML label.
+        assert f'"{_HOSTILE_TABLE}"' not in dot
+        assert f'<b>{_HOSTILE_TABLE}</b>' not in dot
+        # The HTML label carries entity-escaped text.
+        assert "a&amp;b&lt;c&gt;&quot;d" in dot
+        # The quoted node ID carries backslash-escaped quotes, not raw ones.
+        assert '\\"' in dot
+
+    def test_full_database_dot_with_a_hostile_table_name(self):
+        # A plain node (no note, below the hub threshold) gets a plain
+        # quoted label (`label="..."`) rather than an HTML one -- only
+        # quote/backslash escaping applies there, and that is correct DOT
+        # (an unescaped `&`/`<`/`>` inside an ordinary quoted string is
+        # not a syntax error the way it would be inside `label=<...>`).
+        # What must never happen, in either label form, is the raw
+        # identifier appearing as an UNESCAPED quoted ID or ending the
+        # quoted string early.
+        tables = {"sales": [_HOSTILE_TABLE, "customer"]}
+        edges = [{"from_schema": "sales", "from_table": _HOSTILE_TABLE, "from_column": "x",
+                   "to_schema": "sales", "to_table": "customer", "to_column": "id"}]
+        dot, reason = full_database_dot(tables, edges)
+        assert reason is None
+        # The raw identifier must never appear as an unescaped quoted ID
+        # (that would be a bare `"` ending the string early, right before
+        # the `d`).
+        assert f'"sales.{_HOSTILE_TABLE}"' not in dot
+        # The node ID itself is correctly quote-escaped.
+        assert '"sales.a&b<c>\\"d"' in dot
+        # A table whose label carries an in-degree badge (HTML label) must
+        # use HTML entities -- covered by the hub/dashed/outgoing-key cases
+        # in the other tests below, which all go through that branch.
+
+    def test_schema_detail_dot_with_a_hostile_table_name_isolated(self):
+        dot = schema_detail_dot(
+            "sales", internal_edges=[], outgoing_edges=[],
+            all_schema_tables=[_HOSTILE_TABLE],
+        )
+        assert f'"sales.{_HOSTILE_TABLE}"' not in dot
+        assert "a&amp;b&lt;c&gt;&quot;d" in dot
+
+    def test_schema_detail_dot_with_a_hostile_table_name_with_outgoing_key(self):
+        outgoing = [{"from_schema": "sales", "from_table": _HOSTILE_TABLE, "from_column": "x",
+                     "to_schema": "person", "to_table": "person", "to_column": "id"}]
+        dot = schema_detail_dot(
+            "sales", internal_edges=[], outgoing_edges=outgoing,
+            all_schema_tables=[_HOSTILE_TABLE],
+        )
+        assert f'"sales.{_HOSTILE_TABLE}"' not in dot
+        assert "no keys inside sales" in dot
+        # The edge to the ghost node must use the escaped source ID.
+        assert f'"sales.{_HOSTILE_TABLE}" ->' not in dot
+
+    def test_hostile_schema_name_in_schema_detail_title(self):
+        dot = schema_detail_dot(
+            _HOSTILE_TABLE, internal_edges=[], outgoing_edges=[],
+            all_schema_tables=["customer"],
+        )
+        assert "a&amp;b&lt;c&gt;&quot;d" in dot
+        assert f'<b>{_HOSTILE_TABLE}</b>' not in dot
+
+    def test_hostile_connected_as_in_credential_scope_title(self):
+        dot, _ = full_database_dot(
+            {"sales": ["customer"]}, [],
+            credential_scope={"connected_as": _HOSTILE_TABLE, "measured": 1, "total": 1},
+        )
+        assert "a&amp;b&lt;c&gt;&quot;d" in dot
+        assert f'<b>{_HOSTILE_TABLE}</b>' not in dot
+
+
 # ── wiring: db_relationship_graph's own result dict carries `graphviz` ─────
 #
 # Integration-shaped, same fixture pattern test_schema_containment_grain.py
@@ -359,3 +447,94 @@ class TestWiredIntoDbRelationshipGraph:
         derived = run_db_derived(registry, "coco_pharma")["derived"]
         graph = derived["db_relationship_graph"]
         assert "keys not captured" in graph["graphviz"]["by_schema"]["sales"]
+
+    def test_credential_scoped_survey_titles_the_graph_and_captions_structure_only(
+        self, registry,
+    ):
+        """The coco_pharma case, verbatim from the coordination session:
+        surveyor has SELECT on 3 of 26 relations (`coco_ods` is USAGE-granted
+        but SELECT on NONE of its tables — `SCOPE_STRUCTURE_ONLY`), and the
+        graph must say so in its title, in the SAME words the header banner
+        and the 21b coverage headline already use, and caption `coco_ods`'s
+        not-captured tables "structure only" rather than the generic "keys
+        not captured" -- the reason is known and uniform for that whole
+        schema, not a table-by-table guess.
+        """
+        cap = {
+            "connected_as": "egeria_user",
+            "schema_total": 2, "schema_visible": 2,
+            "relation_total": 26, "relation_select": 3,
+            "by_schema": {
+                "coco_ods": {"usage_granted": True, "table_total": 23, "table_select": 0},
+                "eu_sales": {"usage_granted": True, "table_total": 1, "table_select": 1},
+            },
+        }
+        tables = [
+            _table("customer", schema="coco_ods"),
+            _table("orders", schema="coco_ods"),
+            _table("region", schema="eu_sales"),
+        ]
+        columns = [
+            # coco_ods: USAGE but no SELECT -- structure only, and in this
+            # fixture its columns were genuinely never key-captured either
+            # (the realistic case: a credential that cannot SELECT cannot
+            # have its constraints read via a live introspection path that
+            # needs SELECT -- catalog-only paths that don't are a separate,
+            # already-tested case in TestWiredIntoDbRelationshipGraph).
+            _column("customer", "customer_id", schema="coco_ods", pk=True, captured=False),
+            _column("orders", "order_id", schema="coco_ods", pk=True, captured=False),
+            # eu_sales: fully readable, keys genuinely captured.
+            _column("region", "region_id", schema="eu_sales", pk=True, captured=True),
+        ]
+        registry.record_database_survey(
+            slug="coco_pharma", schema_count=2, table_count=len(tables),
+            column_count=len(columns), survey_data={"credential_capability": cap},
+            surveyed_at=NOW,
+        )
+        registry.write_detail_rows("database_tables", "coco_pharma", NOW, rows=tables)
+        registry.write_detail_rows("database_columns", "coco_pharma", NOW, rows=columns)
+
+        derived = run_db_derived(registry, "coco_pharma")["derived"]
+        graphviz = derived["db_relationship_graph"]["graphviz"]
+
+        # The title, in the header banner's own vocabulary: connected_as,
+        # and the same relation_select/relation_total pair.
+        assert "egeria_user" in graphviz["full"]
+        assert "3 of 26 tables" in graphviz["full"]
+
+        # coco_ods's not-captured tables are captioned by their real,
+        # known reason -- not the generic caption.
+        coco_ods_dot = graphviz["by_schema"]["coco_ods"]
+        assert "structure only" in coco_ods_dot
+        assert "no SELECT" in coco_ods_dot
+        assert "keys not captured" not in coco_ods_dot
+
+        # eu_sales is fully readable and captured -- no caption of any kind,
+        # and definitely not "structure only" bleeding across schemas.
+        eu_sales_dot = graphviz["by_schema"]["eu_sales"]
+        assert "structure only" not in eu_sales_dot
+        assert "keys not captured" not in eu_sales_dot
+
+    def test_fully_visible_credential_adds_no_title_stays_silent(self, registry):
+        """A credential with full schema/table visibility has nothing to
+        caveat -- same 'stay silent' contract `_credential_scope_status`
+        follows. No title, no per-schema reason captions."""
+        cap = {
+            "connected_as": "erinoverview",
+            "schema_total": 1, "schema_visible": 1,
+            "relation_total": 1, "relation_select": 1,
+            "by_schema": {"sales": {"usage_granted": True, "table_total": 1, "table_select": 1}},
+        }
+        tables = [_table("customer", schema="sales")]
+        columns = [_column("customer", "customer_id", schema="sales", pk=True, captured=True)]
+        registry.record_database_survey(
+            slug="coco_pharma", schema_count=1, table_count=1, column_count=1,
+            survey_data={"credential_capability": cap}, surveyed_at=NOW,
+        )
+        registry.write_detail_rows("database_tables", "coco_pharma", NOW, rows=tables)
+        registry.write_detail_rows("database_columns", "coco_pharma", NOW, rows=columns)
+
+        derived = run_db_derived(registry, "coco_pharma")["derived"]
+        graphviz = derived["db_relationship_graph"]["graphviz"]
+        assert "erinoverview" not in graphviz["full"]
+        assert "labelloc=t" not in graphviz["full"]

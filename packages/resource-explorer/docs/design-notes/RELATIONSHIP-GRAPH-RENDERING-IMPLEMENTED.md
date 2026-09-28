@@ -1,5 +1,60 @@
 # Relationship graph rendering — implemented
 
+## Update: escaping fix + credential-scope title (same branch, before merge)
+
+Two items raised in review before this branch merged, both addressed in the same push:
+
+**1. DOT/HTML escaping bug (PR/CI session review).** Node IDs were emitted unescaped, and
+HTML-like labels (`label=<...>`) used `_dot_escape` (backslash/quote escaping — correct for a
+*quoted DOT string*, wrong for HTML content) instead of HTML-entity escaping. A quoted Postgres
+identifier containing `&`, `<`, `>` or `"` would have made Graphviz reject the WHOLE graph —
+"renderer unavailable" instead of a diagram. Fixed by adding `_html_escape` (entity escaping, used
+for every HTML-label's visible text) alongside `_dot_escape` (kept for quoted-string content) and a
+`_id` helper (quote-escaping for every node/edge/cluster ID). `TestEscaping` (6 new cases) in
+`tests/test_relationship_dot.py` pins this with a table named `a&b<c>"d` across all three zoom
+levels, the schema-map box, the credential-scope title, and both label forms (`label="..."` and
+`label=<...>`). AdventureWorks itself never exercised this path (no table name that hostile in
+practice), which is exactly why it needed its own test rather than relying on the live fixture.
+
+**2. Credential-scope title + per-schema "why" captions**, wired rather than left as a follow-up.
+`db_derived.py` gained `_read_credential_capability` (a self-contained stored-blob read — cannot
+import `survey_definition_adapter.py`'s existing `_credential_capability_results` without a
+circular import, since that module already imports FROM `db_derived`) and
+`_credential_scope_for_graph`, which reads the SAME stored `credential_capability` probe result the
+header banner and the 21b coverage headline (`_credential_scope_status`) already read, and produces:
+
+- `credential_scope` — `{connected_as, measured, total}` from the probe's own
+  `relation_select`/`relation_total`, `None` when the credential has full visibility (same "stay
+  silent" contract `_credential_scope_status` follows). Threaded into `full_database_dot`'s
+  `credential_scope` parameter (already built and unit-tested in the first pass), producing a graph
+  title reading "within `<connected_as>`'s access, N of M tables" — the same numbers the header
+  banner shows, never a second count that could disagree with it.
+- `not_captured_reason_by_schema` — for a schema whose credential grant is uniformly
+  `SCOPE_STRUCTURE_ONLY` ("structure only — no SELECT") or `SCOPE_NOT_VISIBLE` ("not visible — no
+  USAGE"), its not-captured tables get that specific caption instead of the generic "keys not
+  captured". **Scoped honestly to what is actually stored**: `credential_capability`'s `by_schema`
+  entries carry only a per-schema `table_select` COUNT (`connection.py`'s
+  `get_credential_capability`), never a per-table boolean, so a `SCOPE_PARTIALLY_READABLE` schema
+  (some tables selectable, others not, with no record of *which*) cannot be captioned more
+  precisely than the existing generic caption — and that generic caption is still exact per table
+  (it already comes straight from whether THAT table's own columns carry key information via
+  `DerivedInputs.keys_captured_for_table`), it just cannot say *why* for a partially-granted schema.
+  This is stated as a real, checked limit, not silently approximated as more precise than it is.
+
+`TestWiredIntoDbRelationshipGraph` gained two integration tests: one reproducing the coordination
+session's own coco_pharma shape (a `coco_ods`-equivalent schema with USAGE but SELECT on none of
+its 23 tables, `relation_select: 3` of `relation_total: 26`) and asserting the title carries
+`connected_as`/"3 of 26 tables" and `coco_ods`'s tables read "structure only — no SELECT" (never the
+generic caption, never bleeding into the fully-readable `eu_sales`-equivalent schema); the other
+confirming a fully-visible credential adds no title at all. Not live-verified against the real
+`coco_pharma` database in this pass (the fixture reproduces its exact shape from
+`tests/test_schema_containment_grain.py`'s own `_CAP_COCO_PHARMA`, so the numbers are the project's
+own recorded ones, not invented) — see "Follow-ups" below.
+
+Full suite after both fixes: see the updated "Full test suite" section below.
+
+---
+
 Wires the wireframe-only design note "Design: the relationship graph, drawn from the real
 AdventureWorks edges" (`1051e4d4`, merged into `main` 2026-09-28 as part of
 `re/design-batch-0928`) into the running `/next` app. Before this change,
@@ -76,16 +131,14 @@ graph image anywhere. It now does.
    live database could not exercise the fallback itself)
 3. Per-schema — outgoing keys drawn, "no keys inside X" never "isolated" for a table with only
    outgoing keys. ✅ (live-verified — see below)
-4. Absence honesty (not-captured tables drawn dashed, credential-scope title) — built and
-   unit/integration-tested; not live-exercised on `coco_pharma` in this pass (time-boxed; the code
-   path threading `not_captured_by_schema` through from real `DerivedInputs` is exercised by
-   `TestWiredIntoDbRelationshipGraph::test_never_key_captured_table_is_dashed_not_measured_absent`,
-   an integration test through `run_db_derived` itself, not just the pure DOT function). Real
-   credential-scope threading from `survey_definition_adapter.py`'s `_attach_container_credential_
-   scope` into the drawing's title is NOT wired — `build_relationship_diagrams`/`full_database_dot`
-   accept `credential_scope` and use it correctly (unit-tested), but nothing yet calls them with a
-   real scoped value; that attachment happens in a different module/layer (post-hoc, after
-   `run_db_derived` returns) and connecting it is left as a follow-up (see below).
+4. Absence honesty (not-captured tables drawn dashed, credential-scope title) — ✅, now fully wired
+   (see "Update" section above). `db_derived.py`'s `_credential_scope_for_graph` reads the stored
+   `credential_capability` probe (same source as the header banner and `_credential_scope_status`)
+   and threads both a whole-database title and per-schema "structure only"/"not visible" captions
+   through to `build_relationship_diagrams`. Integration-tested against the project's own recorded
+   coco_pharma shape (`TestWiredIntoDbRelationshipGraph::test_credential_scoped_survey_titles_the_
+   graph_and_captions_structure_only`); not live-verified in a browser against the real
+   `coco_pharma` database in this pass — see "Follow-ups".
 5. Named fallback state, not a blank panel. ✅ (`full_fallback_reason` string, unit-tested with the
    exact wording; rail renders it as text when `full` is absent).
 6. Kroki-down reporting with "copy as evidence" text fallback. ✅ (built; not live-exercised against
@@ -184,18 +237,42 @@ content-type.
 
 ## Full test suite
 
+First pass (schema map / whole database / per-schema zoom levels, Kroki route, absence honesty):
+
 ```
 uv run pytest tests/ -q -rf
 6710 passed, 103 skipped, 0 failed, 4898 warnings in 697.95s (0:11:37)
 ```
 
-No `-k`, no deselects, full run. Zero failures.
+Second pass, after the escaping fix and the credential-scope title/caption wiring (8 new tests —
+6 escaping cases, 2 credential-scope integration cases):
+
+```
+uv run pytest tests/ -q -rf
+6718 passed, 103 skipped, 0 failed, 4902 warnings in 662.28s (0:11:02)
+```
+
+No `-k`, no deselects, full run both times. Zero failures.
 
 ## Follow-ups (not done in this pass)
 
-- Real `credential_scope` threading from `survey_definition_adapter.py`'s post-hoc credential-scope
-  attachment into the drawing's title — the DOT-generation side is built and tested, but nothing
-  calls it with a live scoped value yet. `coco_pharma`'s scoped/not-captured rendering was verified
-  only through the `run_db_derived`-level integration test, not live in the browser.
+- **Credential-scope title/captions are wired (see "Update" section) but not live-verified against
+  the real `coco_pharma` database** — verified only through an integration test built from the
+  project's own recorded `_CAP_COCO_PHARMA` shape (`tests/test_schema_containment_grain.py`), not
+  by opening the app against the live database. If a live check later shows a discrepancy, check
+  first whether `coco_pharma`'s actual `credential_capability` blob differs from that fixture shape
+  (e.g. a different schema being the structure-only one, or a `SCOPE_PARTIALLY_READABLE` schema
+  where this change's own documented limit applies — see the "Update" section's note on why
+  per-table precision isn't available there).
+- **Per-table (not per-schema) structure-only/not-visible captions are not possible without new
+  storage.** `credential_capability`'s stored blob (`connection.py`'s `get_credential_capability`)
+  aggregates SELECT capability to one `table_select` COUNT per schema; it never persists which
+  SPECIFIC tables were/weren't selectable. A `SCOPE_PARTIALLY_READABLE` schema's not-captured
+  tables therefore keep the generic "keys not captured" caption (still accurate per table — it
+  reflects a real, measured fact about each one — just silent on *why* for that schema). Making
+  this precise would mean persisting per-table `can_select` from `_enumerate_relations()` through
+  `get_credential_capability`'s stored result, a change to the credential-capability probe itself
+  and its stored shape, not to this rendering layer — out of scope for a graph-rendering change and
+  flagged here rather than attempted.
 - No PR opened, per instructions — this is a pushed branch only; the "Resource-explorer PR/CI
   merge" session batches PRs and was sent the tip.

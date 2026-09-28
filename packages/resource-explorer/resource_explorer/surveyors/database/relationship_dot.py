@@ -65,7 +65,40 @@ def _qname(schema: str, table: str) -> str:
 
 
 def _dot_escape(text: str) -> str:
+    """Escapes text for use inside a DOUBLE-QUOTED DOT string — a node ID
+    (`"..."`) or a plain quoted label (`label="..."`). Backslash and quote
+    only; this is NOT for HTML-like labels (`label=<...>`), which use
+    `_html_escape` below instead — a quoted-identifier-safe string is not
+    automatically a well-formed HTML fragment (`&`, `<`, `>` need entities
+    there, not backslash-escaping).
+    """
     return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _html_escape(text: str) -> str:
+    """Escapes text for use inside a Graphviz HTML-like label (`label=<...>`).
+    Every node label in this module that carries a `<b>`/`<br/>`/`<font>`
+    wrapper is HTML-like, not a quoted string — a table or schema name that
+    happens to contain `&`, `<`, `>` or `"` (a quoted Postgres identifier can
+    contain any of them) would otherwise break the surrounding markup and
+    Kroki would reject the WHOLE graph, not just mis-render that one label.
+    Order matters: `&` must be escaped first, or the entities this function
+    itself inserts would be double-escaped.
+    """
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _id(text: str) -> str:
+    """A value safe to place inside a double-quoted DOT node/edge ID —
+    `_dot_escape` under a name that reads correctly at every call site that
+    is escaping an ID rather than an HTML label's visible text."""
+    return _dot_escape(text)
 
 
 def _in_degrees(edges: list[dict], node_ids: set[str]) -> dict[str, int]:
@@ -86,34 +119,31 @@ def _node_style(qname: str, bare_name: str, in_degree: int, note: str = "") -> s
     0.12×in-degree, fontsize = 9 + 0.25×in-degree) — see this module's
     docstring for how those constants were read back off `full_dot.dot`.
     """
+    node_id = _id(qname)
     if in_degree >= HUB_MIN_IN_DEGREE:
         penwidth = round(0.8 + 0.12 * in_degree, 2)
         fontsize = round(9 + 0.25 * in_degree, 1)
         if note:
             label = (
-                f'<<b>{_dot_escape(bare_name)}</b>'
-                f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_dot_escape(note)}</font>>'
+                f'<<b>{_html_escape(bare_name)}</b>'
+                f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_html_escape(note)}</font>>'
             )
         else:
             label = (
-                f'<<b>{_dot_escape(bare_name)}</b> '
-                f'<font color="{_DARK_ACCENT}">←5</font>>'  # placeholder replaced below
-            )
-            label = (
-                f'<<b>{_dot_escape(bare_name)}</b> '
+                f'<<b>{_html_escape(bare_name)}</b> '
                 f'<font color="{_DARK_ACCENT}">←{in_degree}</font>>'
             )
         return (
-            f'"{qname}" [label={label},color="{_INK}",'
+            f'"{node_id}" [label={label},color="{_INK}",'
             f'penwidth={penwidth},fontsize={fontsize}];'
         )
     if note:
         label = (
-            f'<{_dot_escape(bare_name)}'
-            f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_dot_escape(note)}</font>>'
+            f'<{_html_escape(bare_name)}'
+            f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_html_escape(note)}</font>>'
         )
-        return f'"{qname}" [label={label},color="{_INK}",penwidth=1.1];'
-    return f'"{qname}" [label="{_dot_escape(bare_name)}"];'
+        return f'"{node_id}" [label={label},color="{_INK}",penwidth=1.1];'
+    return f'"{node_id}" [label="{_dot_escape(bare_name)}"];'
 
 
 def _isolated_note(qname: str, has_in: bool, has_out: bool) -> str:
@@ -152,7 +182,7 @@ def schema_map_dot(
         tables_word = "table" if table_count == 1 else "tables"
         keys_word = "key" if key_count == 1 else "keys"
         lines.append(
-            f'"{_dot_escape(schema)}" [label=<<b>{_dot_escape(schema)}</b>'
+            f'"{_id(schema)}" [label=<<b>{_html_escape(schema)}</b>'
             f'<br/><font point-size="10" color="{_DARK_ACCENT}">{table_count} '
             f'{tables_word} · {key_count} {keys_word} inside</font>>,'
             f'width={width},penwidth={penwidth}];'
@@ -163,7 +193,7 @@ def schema_map_dot(
         src, dst = pair.split(" → ", 1)
         penwidth = round(0.8 + 0.45 * count, 2)
         lines.append(
-            f'"{_dot_escape(src)}" -> "{_dot_escape(dst)}" '
+            f'"{_id(src)}" -> "{_id(dst)}" '
             f'[label="{count}",penwidth={penwidth}];'
         )
     lines.append("}")
@@ -188,7 +218,7 @@ def _graph_title(credential_scope: dict | None) -> str:
     if measured is None or total is None:
         return ""
     return (
-        f'label=<within <b>{_dot_escape(who)}</b>’s access, '
+        f'label=<within <b>{_html_escape(who)}</b>’s access, '
         f'{measured} of {total} tables>; labelloc=t; fontsize=11; '
         f'fontcolor="{_DARK_ACCENT}";'
     )
@@ -201,6 +231,7 @@ def full_database_dot(
     table_count: int | None = None,
     not_captured_by_schema: dict[str, list[str]] | None = None,
     credential_scope: dict | None = None,
+    not_captured_reason_by_schema: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Zoom level 2: the whole database, schema clusters, hub weighting,
     darker cross-schema edges, `dot` layout.
@@ -215,10 +246,25 @@ def full_database_dot(
     `not_captured_by_schema` — tables whose OWN keys were never captured
     (`DerivedInputs.keys_captured_for_table` is False for them; a native
     Egeria-survey read-back, or a catalog-only-fallback table). These are
-    drawn dashed and labelled "keys not captured" — never as "no
+    drawn dashed and labelled "keys not captured" by default — never as "no
     relationships", which would assert a measurement that was never taken.
     Same absence discipline `db_derived.py`'s own module docstring states:
     "not established is not a negative."
+
+    `not_captured_reason_by_schema` — an optional, more specific caption for
+    an ENTIRE schema's not-captured tables, keyed by schema name (e.g.
+    `"structure only — no SELECT"`, `"not visible — no USAGE"`). This is a
+    per-SCHEMA override, not per-table: `credential_capability`'s stored
+    blob only records SELECT/USAGE grants aggregated per schema
+    (`connection.py`'s `get_credential_capability`), not per individual
+    table, so a schema whose grant is uniform (SCOPE_STRUCTURE_ONLY,
+    SCOPE_NOT_VISIBLE — see `schema_scope.container_scope_states`) can be
+    captioned precisely, while a SCOPE_PARTIALLY_READABLE schema (some
+    tables selectable, others not, with no stored record of WHICH) keeps
+    the generic "keys not captured" caption — that generic caption is still
+    exact per table (it comes straight from whether THAT table's own
+    columns carry key information), it just cannot say why for a partially
+    granted schema. Never applied to a table that IS captured.
     """
     total = table_count if table_count is not None else sum(
         len(ts) for ts in tables_by_schema.values()
@@ -233,6 +279,7 @@ def full_database_dot(
         )
 
     not_captured_by_schema = not_captured_by_schema or {}
+    not_captured_reason_by_schema = not_captured_reason_by_schema or {}
     node_ids = {
         _qname(schema, table)
         for schema, tables in tables_by_schema.items()
@@ -257,19 +304,20 @@ def full_database_dot(
     ]
     for schema in sorted(tables_by_schema):
         lines.append(
-            f'subgraph "cluster_{_dot_escape(schema)}" {{ '
-            f'label=<<b>{_dot_escape(schema)}</b>>; fontsize=12; '
+            f'subgraph "cluster_{_id(schema)}" {{ '
+            f'label=<<b>{_html_escape(schema)}</b>>; fontsize=12; '
             f'fontcolor="{_INK}"; color="{_RULE_LIGHT}"; style="rounded"; '
             "penwidth=1;"
         )
         not_captured = set(not_captured_by_schema.get(schema) or [])
+        caption = not_captured_reason_by_schema.get(schema) or "keys not captured"
         for table in sorted(tables_by_schema[schema]):
             qname = _qname(schema, table)
             if table in not_captured:
                 lines.append(
-                    f'"{qname}" [label=<{_dot_escape(table)}'
-                    f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">keys not '
-                    f'captured</font>>,style="rounded,dashed",color="{_RULE}"];'
+                    f'"{_id(qname)}" [label=<{_html_escape(table)}'
+                    f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_html_escape(caption)}'
+                    f'</font>>,style="rounded,dashed",color="{_RULE}"];'
                 )
                 continue
             note = "" if (qname in out_nodes or qname in in_nodes) else \
@@ -284,7 +332,7 @@ def full_database_dot(
             continue
         cross = edge["from_schema"] != edge["to_schema"]
         style = f' [color="{_DARK_ACCENT}",penwidth=1.0]' if cross else ""
-        lines.append(f'"{src}" -> "{dst}"{style};')
+        lines.append(f'"{_id(src)}" -> "{_id(dst)}"{style};')
 
     lines.append("}")
     return "\n".join(lines), None
@@ -296,6 +344,7 @@ def schema_detail_dot(
     outgoing_edges: list[dict],
     all_schema_tables: list[str],
     not_captured: list[str] | None = None,
+    not_captured_reason: str | None = None,
 ) -> str:
     """Zoom level 3: one schema opened, with its OUTGOING keys drawn too.
 
@@ -321,6 +370,7 @@ def schema_detail_dot(
     has_internal_edge = {t for pair in internal_targets for t in pair}
     has_outgoing = {e["from_table"] for e in outgoing_edges}
     not_captured_set = set(not_captured or [])
+    not_captured_caption = not_captured_reason or "keys not captured"
 
     lines = [
         'digraph G { graph [rankdir=LR,bgcolor="transparent",pad=0.2,'
@@ -329,34 +379,36 @@ def schema_detail_dot(
         f'color="{_RULE}",fontname="DejaVu Serif",fontcolor="{_INK}",'
         'fontsize=10,height=0.26,margin="0.07,0.03",penwidth=0.8];',
         f'edge [color="{_RULE}",arrowsize=0.5,penwidth=0.8];',
-        f'subgraph cluster_s {{ label=<<b>{_dot_escape(schema)}</b> '
+        f'subgraph cluster_s {{ label=<<b>{_html_escape(schema)}</b> '
         f'<font color="{_DARK_ACCENT}">· {len(all_schema_tables)} tables</font>>; '
         f'fontsize=13; color="{_INK}"; style="rounded"; penwidth=1.2;',
     ]
     for table in sorted(all_schema_tables):
+        node_id = _id(_qname(schema, table))
         if table in not_captured_set:
             lines.append(
-                f'"{schema}.{_dot_escape(table)}" [label=<{_dot_escape(table)}'
-                f'<br/><font point-size="8" color="{_DARK_ACCENT}">keys not '
-                f'captured</font>>,style="rounded,dashed",color="{_RULE}"];'
+                f'"{node_id}" [label=<{_html_escape(table)}'
+                f'<br/><font point-size="8" color="{_DARK_ACCENT}">'
+                f'{_html_escape(not_captured_caption)}</font>>,'
+                f'style="rounded,dashed",color="{_RULE}"];'
             )
         elif table in has_internal_edge:
-            lines.append(f'"{schema}.{_dot_escape(table)}" [label="{_dot_escape(table)}"];')
+            lines.append(f'"{node_id}" [label="{_dot_escape(table)}"];')
         elif table in has_outgoing:
             # The fix in picture form: a table with ONLY outgoing keys is
             # captioned "no keys inside <schema>", never "isolated" — it has
             # a real edge drawn below, to a table in another schema.
             lines.append(
-                f'"{schema}.{_dot_escape(table)}" [label=<{_dot_escape(table)}'
+                f'"{node_id}" [label=<{_html_escape(table)}'
                 f'<br/><font point-size="8" color="{_DARK_ACCENT}">no keys '
-                f'inside {_dot_escape(schema)} — joined across</font>>,'
+                f'inside {_html_escape(schema)} — joined across</font>>,'
                 f'color="{_INK}",penwidth=1.1];'
             )
         else:
             # Genuinely isolated even counting outgoing keys — this IS
             # "isolated", and only this case is allowed to say so.
             lines.append(
-                f'"{schema}.{_dot_escape(table)}" [label=<{_dot_escape(table)}'
+                f'"{node_id}" [label=<{_html_escape(table)}'
                 f'<br/><font point-size="8" color="{_DARK_ACCENT}">isolated '
                 f'— no keys in or out</font>>,color="{_INK}",penwidth=1.1];'
             )
@@ -364,26 +416,26 @@ def schema_detail_dot(
 
     ghost_nodes: dict[str, str] = {}
     for edge in outgoing_edges:
-        target = f'{edge["to_schema"]}.{edge["to_table"]}'
+        target = _qname(edge["to_schema"], edge["to_table"])
         if target not in ghost_nodes:
             ghost_nodes[target] = (
-                f'"{_dot_escape(target)}" [label=<'
-                f'<font color="{_DARK_ACCENT}">{_dot_escape(edge["to_schema"])}.'
-                f'</font>{_dot_escape(edge["to_table"])}>,shape=plaintext,'
+                f'"{_id(target)}" [label=<'
+                f'<font color="{_DARK_ACCENT}">{_html_escape(edge["to_schema"])}.'
+                f'</font>{_html_escape(edge["to_table"])}>,shape=plaintext,'
                 'style="",fontsize=9.5];'
             )
     for decl in ghost_nodes.values():
         lines.append(decl)
 
     for edge in internal_edges:
-        src = f'{schema}.{edge["from_table"]}'
-        dst = f'{schema}.{edge["to_table"]}'
-        lines.append(f'"{_dot_escape(src)}" -> "{_dot_escape(dst)}";')
+        src = _qname(schema, edge["from_table"])
+        dst = _qname(schema, edge["to_table"])
+        lines.append(f'"{_id(src)}" -> "{_id(dst)}";')
     for edge in outgoing_edges:
-        src = f'{schema}.{edge["from_table"]}'
-        dst = f'{edge["to_schema"]}.{edge["to_table"]}'
+        src = _qname(schema, edge["from_table"])
+        dst = _qname(edge["to_schema"], edge["to_table"])
         lines.append(
-            f'"{_dot_escape(src)}" -> "{_dot_escape(dst)}" '
+            f'"{_id(src)}" -> "{_id(dst)}" '
             f'[color="{_DARK_ACCENT}",style="solid",penwidth=0.9,arrowhead=vee];'
         )
 
@@ -401,6 +453,7 @@ def build_relationship_diagrams(
     table_count: int | None = None,
     not_captured_by_schema: dict[str, list[str]] | None = None,
     credential_scope: dict | None = None,
+    not_captured_reason_by_schema: dict[str, str] | None = None,
 ) -> dict:
     """Assemble all three zoom levels from data `db_derived` already
     computed — the single entry point `db_derived.py` calls, so the DOT
@@ -435,6 +488,7 @@ def build_relationship_diagrams(
         tables_by_schema, edges, table_count=table_count,
         not_captured_by_schema=not_captured_by_schema,
         credential_scope=credential_scope,
+        not_captured_reason_by_schema=not_captured_reason_by_schema,
     )
 
     by_schema_dot: dict[str, str] = {}
@@ -443,8 +497,9 @@ def build_relationship_diagrams(
         internal_edges = result.get("edges") or []
         outgoing = result.get("cross_container_references") or []
         not_captured = (not_captured_by_schema or {}).get(schema) or []
+        reason = (not_captured_reason_by_schema or {}).get(schema)
         by_schema_dot[schema] = schema_detail_dot(
-            schema, internal_edges, outgoing, tables, not_captured,
+            schema, internal_edges, outgoing, tables, not_captured, reason,
         )
 
     return {

@@ -4074,7 +4074,90 @@ def classify_by_container(
 
 # ── db_relationship_graph, per container ────────────────────────────────────
 
-def relationship_graph_by_container(inputs: DerivedInputs, containment) -> dict:
+def _read_credential_capability(registry, slug: str) -> dict:
+    """The stored `credential_capability` probe result for `slug`, read
+    straight from the survey_data blob — the same stored-row read every
+    other `db_derived` check does, never a live connection (this module's
+    own "opens no connection" rule). A self-contained copy of
+    `survey_definition_adapter.py`'s `_credential_capability_results`
+    rather than an import of it: that module already imports FROM
+    `db_derived` (`run_db_derived`, `load_inputs`, `scope_inputs`), so the
+    reverse import would be circular, and the read itself is a few lines —
+    searches every stored survey newest-first for one that carries the
+    probe, same as the adapter's own reader, so a plain schema-only run
+    after the probe ran does not silently hide it. Returns `{}` when there
+    is no probe yet (nothing to say), the same "stay silent" contract every
+    caller of this data follows.
+    """
+    import json as _json
+
+    get_surveys = getattr(registry, "get_database_surveys", None)
+    if not callable(get_surveys):
+        return {}
+    for survey in get_surveys(slug) or []:
+        try:
+            survey_data = _json.loads(survey.get("survey_data") or "{}")
+        except (ValueError, TypeError):
+            continue
+        cap = survey_data.get("credential_capability")
+        if cap:
+            return cap
+    return {}
+
+
+#: Caption for a schema whose credential grant is uniformly SCOPE_STRUCTURE_
+#: ONLY/SCOPE_NOT_VISIBLE (schema_scope.py) — every not-captured table in it
+#: gets this instead of the generic "keys not captured", since the reason is
+#: known and uniform across the whole schema. Not attempted for
+#: SCOPE_PARTIALLY_READABLE: which SPECIFIC tables within it lack SELECT is
+#: not stored anywhere (`credential_capability`'s `by_schema` entries carry
+#: only a per-schema `table_select` COUNT, not per-table booleans) — see
+#: `full_database_dot`'s own docstring on `not_captured_reason_by_schema`.
+_SCOPE_CAPTION = {
+    "structure_only": "structure only — no SELECT",
+    "not_visible": "not visible — no USAGE",
+}
+
+
+def _credential_scope_for_graph(registry, slug: str) -> tuple[dict | None, dict[str, str]]:
+    """`(credential_scope, not_captured_reason_by_schema)` for the
+    relationship-graph drawing, from the SAME stored source the header
+    banner and the 21b coverage headline already read
+    (`survey_definition_adapter.py`'s `_credential_scope_status`) — no new
+    vocabulary, no second probe.
+
+    `credential_scope` is `None` when there is no probe, or the probe found
+    full visibility — nothing to caveat, same "stay silent" contract
+    `_credential_scope_status` follows. Otherwise `{"connected_as",
+    "measured", "total"}`, the exact relation-select/relation-total pair the
+    header's "sees N of M schema(s), SELECT on X of Y relation(s)" banner
+    already shows, so the graph's title never disagrees with the banner
+    sitting right above it.
+    """
+    cap = _read_credential_capability(registry, slug)
+    if not cap:
+        return None, {}
+    relation_total = cap.get("relation_total", cap.get("table_total", 0))
+    relation_select = cap.get("relation_select", cap.get("table_select", 0))
+    schema_total = cap.get("schema_total", 0)
+    schema_visible = cap.get("schema_visible", 0)
+    if not relation_total:
+        return None, {}
+    fully_visible = relation_select >= relation_total and schema_visible >= schema_total
+    scope = None if fully_visible else {
+        "connected_as": cap.get("connected_as", ""),
+        "measured": relation_select,
+        "total": relation_total,
+    }
+    reasons = {
+        name: _SCOPE_CAPTION[state["state"]]
+        for name, state in schema_scope.container_scope_states(cap).items()
+        if state["state"] in _SCOPE_CAPTION
+    }
+    return scope, reasons
+
+
+def relationship_graph_by_container(inputs: DerivedInputs, containment, registry=None) -> dict:
     """Components and FK density WITHIN each container, plus cross-container FK
     edges as a database-level fact in their own right.
 
@@ -4222,10 +4305,24 @@ def relationship_graph_by_container(inputs: DerivedInputs, containment) -> dict:
         e for e in _foreign_key_edges(inputs.columns)
         if e["from_schema"] in containers and e["to_schema"] in containers
     ]
+    # Credential-scope title + per-schema "why" captions (structure only /
+    # not visible), from the SAME stored `credential_capability` probe the
+    # header banner and the 21b coverage headline already read — a scoped
+    # survey's graph must say so, in that same vocabulary, rather than
+    # lumping every not-captured table under one generic caption regardless
+    # of why. `registry` is optional (defaults to None) purely so this
+    # function stays callable the old way for any direct caller that has no
+    # registry handy; without one there is simply nothing to attach.
+    credential_scope, not_captured_reasons = (
+        _credential_scope_for_graph(registry, inputs.slug) if registry is not None
+        else (None, {})
+    )
     diagrams = build_relationship_diagrams(
         tables_by_schema, all_edges, summaries, per_container, pairs,
         table_count=sum(len(ts) for ts in tables_by_schema.values()),
         not_captured_by_schema=not_captured_by_schema or None,
+        credential_scope=credential_scope,
+        not_captured_reason_by_schema=not_captured_reasons or None,
     )
 
     return {
@@ -4479,7 +4576,7 @@ def apply_container_grain(registry, inputs: DerivedInputs, derived: dict) -> dic
         classify_by_container(inputs, containment, per_container_fingerprints)
     )
     derived["db_relationship_graph"].update(
-        relationship_graph_by_container(inputs, containment)
+        relationship_graph_by_container(inputs, containment, registry)
     )
     derived["schema_conventions"].update(
         conventions_by_container(inputs, containment)
