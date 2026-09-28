@@ -125,6 +125,38 @@ async def alog_prefect_reachability_at_startup() -> None:
         )
 
 
+def check_prefect_reachable_sync() -> tuple[bool, str]:
+    """Synchronous (reachable, detail) wrapper around
+    `_check_prefect_reachable_async`, for the per-run whole-definition
+    default gate (2026-09-28, PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md):
+    `SurveyDefinitionExecutor._execute` calls this once, before deciding
+    whether to attempt `_run_via_prefect`, so a default (`engine_override is
+    None`) run that has no Prefect server to reach skips straight to the
+    local loop with an honest reason recorded — never a silent whole-
+    definition fallback like the one `run_prefect_step`'s own per-step
+    fallback already avoids (see PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md).
+
+    Same nested-event-loop handling as `run_prefect_step`: hands the
+    coroutine to the shared bounded pool (`concurrency.run_sync`) when
+    already inside a running loop (a FastAPI request thread), otherwise
+    calls `asyncio.run` directly. Never raises — an exception here answers
+    "not reachable", same as `_check_prefect_reachable_async` itself.
+    """
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            from resource_explorer.concurrency import run_sync
+
+            return run_sync(lambda: asyncio.run(_check_prefect_reachable_async()))
+        return asyncio.run(_check_prefect_reachable_async())
+    except Exception as exc:  # pragma: no cover - defensive, see docstring
+        return False, str(exc)
+
+
 def log_prefect_reachability_at_startup() -> None:
     """A startup check for the web/worker roles: log, on the first page of
     the process's own log, whether the Prefect server RE is actually

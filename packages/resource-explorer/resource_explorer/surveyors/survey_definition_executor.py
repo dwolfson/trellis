@@ -411,11 +411,43 @@ class SurveyDefinitionExecutor:
         # the activity entry, the assembled result — is shared, so the two
         # paths differ only in who sequenced the steps.
         pending_steps = survey_def.steps
-        if (
+        #: Whole-definition Prefect default (2026-09-28, project owner
+        #: decision — see docs/design-notes/
+        #: PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md): tonight's
+        #: dispatch-honesty fix proved real end-to-end Prefect dispatch
+        #: works, so Prefect is now what a default (`engine_override is
+        #: None`) run attempts first for a whole definition — the +24-27%
+        #: overhead buys real run history, retries and UI visibility. This
+        #: is deliberately narrower than `_prefect_orchestration_enabled`
+        #: reading `prefect.enabled`: for the DEFAULT case specifically, a
+        #: live reachability check runs first, so an unreachable server
+        #: never gets a silent whole-definition fallback — the run stays
+        #: local and `engine_note` says why, on the same pane line
+        #: dispatch-honesty already wired for per-step fallbacks.
+        #: `engine_override="prefect"` is unaffected: it still always
+        #: attempts (its own try/except in `_run_via_prefect` already
+        #: degrades to local on failure, unchanged) — this gate only
+        #: applies to the unforced default.
+        #: `PREFECT_ROUTE_LOCAL_STEPS` (per-step REST dispatch for
+        #: `executes_at: resource-explorer` steps) is untouched — stays
+        #: opt-in, a separate, deliberately-deferred cost tradeoff.
+        engine_note = ""
+        _attempt_prefect = (
             _prefect_orchestration_enabled(engine_override)
             and _all_steps_prefect_runnable(survey_def)
             and not self._any_step_needs_prerequisites(adapter, entity, survey_def, surveyed_at)
-        ):
+        )
+        if _attempt_prefect and engine_override is None:
+            from resource_explorer.surveyors.prefect_adapter import (
+                check_prefect_reachable_sync,
+            )
+
+            _reachable, _detail = check_prefect_reachable_sync()
+            if not _reachable:
+                _attempt_prefect = False
+                engine_note = f"Prefect API unreachable at {_detail}: ran locally"
+
+        if _attempt_prefect:
             planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs,
                                             surveyed_at)
             if planned is not None:
@@ -423,6 +455,15 @@ class SurveyDefinitionExecutor:
                 for _output in step_outputs:
                     _stamp_definition_provenance(_output)
                 pending_steps = []
+                _flow_run_id = next(
+                    (r.get("flow_run_id") for r in steps_report if r.get("flow_run_id")), ""
+                )
+                engine_note = (
+                    f"running via Prefect (flow-run {_flow_run_id})" if _flow_run_id
+                    else "running via Prefect"
+                )
+            elif engine_override is None:
+                engine_note = "Prefect dispatch failed: ran locally"
 
         # Order + guard information for the local loop below. Only built when
         # the local loop is actually going to run something — Prefect having
@@ -966,6 +1007,11 @@ class SurveyDefinitionExecutor:
                     "errors": errors,
                     "published": published,
                     "egeria_report_guid": report_guid,
+                    # Whole-definition Prefect default (2026-09-28) — the
+                    # /next pane's launchSurvey() status line names this
+                    # directly, success or fallback, so a default run's
+                    # engine choice is never invisible.
+                    "engine_note": engine_note,
                 }),
             )
             run_recorded = True
@@ -994,6 +1040,7 @@ class SurveyDefinitionExecutor:
             "proposals": proposals,
             "auto_ran_steps": sorted(auto_ran),
             "egeria_report_guid": report_guid,
+            "engine_note": engine_note,
             "published": published,
             # False when the run happened but could not be written to the
             # activity log — the card will say "Never run" and be wrong.

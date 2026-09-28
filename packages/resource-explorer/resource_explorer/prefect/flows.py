@@ -290,6 +290,7 @@ def run_planned_step_task(
         return {"step_key": step_key, "step": qualified_name, "status": "error",
                 "engine": "prefect", "guard": None, "detail": str(exc)}
 
+    fr_id = None
     if observed:
         # Dispatch honesty completeness (2026-09-28,
         # docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md): this
@@ -309,8 +310,17 @@ def run_planned_step_task(
             observed[0].flow_run_id = str(fr_id)
         _record_step_cost(entity_type, slug, observed[0], output, surveyed_at)
 
+    # Whole-definition Prefect default (2026-09-28,
+    # PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md): carry the flow_run_id
+    # into the step's own report entry too, not just onto the step_runs row —
+    # `SurveyDefinitionExecutor._run_via_prefect` strips "output" but keeps
+    # every other key, so this is how the whole-definition caller (and, via
+    # steps_report, the /next pane's status line) learns which real Prefect
+    # flow_run this run created, checkable against Prefect's own API rather
+    # than merely asserted.
     result = {"step_key": step_key, "step": qualified_name, "status": "ok",
               "engine": "prefect", "guard": (output or {}).get("guard"),
+              "flow_run_id": str(fr_id) if fr_id else "",
               "output": output}
     if satisfied_by_stored:
         result["satisfied_by_stored"] = dict(satisfied_by_stored)

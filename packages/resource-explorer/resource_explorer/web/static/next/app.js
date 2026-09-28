@@ -4456,11 +4456,23 @@ async function launchSurvey(slug, ref) {
       // here, on the same line a person is already watching.
       if (note && finishedEntry) {
         let steps = [];
+        let engineNote = '';
         try {
           const d = typeof finishedEntry.detail === 'string'
             ? JSON.parse(finishedEntry.detail) : (finishedEntry.detail || {});
           steps = d.steps || [];
+          engineNote = d.engine_note || '';
         } catch (_) { /* a detail we cannot parse has nothing to report here */ }
+        // Whole-definition Prefect default (2026-09-28,
+        // docs/design-notes/PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md):
+        // name which engine actually ran this whole definition — success
+        // ("running via Prefect (flow-run …)") as well as the fallback
+        // case, on the same line, so a default run's engine choice is never
+        // silent.
+        if (engineNote) {
+          const warn = /unreachable|dispatch failed/i.test(engineNote);
+          note.innerHTML += `<div class="mt-s1 ${warn ? 'text-state-warn' : 'text-state-ok'}">${esc(engineNote)}</div>`;
+        }
         const fellBack = steps.filter((s) =>
           typeof s.detail === 'string' && s.detail.startsWith('ran locally: Prefect dispatch failed'));
         if (fellBack.length) {
