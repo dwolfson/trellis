@@ -37,7 +37,7 @@ import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 // top-level DOM/auth side effects. `esc`/`tnum` stay defined here and are
 // passed into `readEnvelope`/`answerHtml` as parameters, not imported back
 // (that would be circular) — see envelope.js's header comment.
-import { readEnvelope, factMermaid, prose, scalarMeasures, cap } from '/static/next/envelope.js';
+import { readEnvelope, factMermaid, factGraphviz, prose, scalarMeasures, cap } from '/static/next/envelope.js';
 // One module per stage (PLAN-FINISH-REPOS.md, Part 2 §1) — each exports its
 // own pane renderer(s); app.js keeps routing, shared state and the chrome.
 // Enrichment, Understanding, Curate, Automate, Investigation and (item 11)
@@ -1134,7 +1134,7 @@ function loadScript(src) {
  * graph there is unreadable. So the rail shows a marker and promotes.
  */
 export function answerForm(turn) {
-  if (turn.mermaid) return 'diagram';
+  if (turn.mermaid || turn.graphviz) return 'diagram';
   if (turn.chart) return 'chart';
   if (turn.listSources && turn.listSources.length) return 'list';
   return 'inline';
@@ -1353,6 +1353,46 @@ function chartLayout(layout = {}) {
   });
 }
 
+/** Kroki (egeria-shared-kroki, port 6002) is an optional dependency for
+ *  every diagram this app renders — never assumed up. When it cannot be
+ *  reached, or answers with anything but 200, the diagram SOURCE (DOT or
+ *  Mermaid) is still real evidence and is offered as copyable text rather
+ *  than leaving a broken image or a bare error where a picture should be.
+ */
+function renderRendererUnavailable(source, detail) {
+  const id = `diagram-src-${Math.random().toString(36).slice(2, 8)}`;
+  return `<div class="rounded-sm border border-rule-strong p-s3">
+      <div class="text-answer text-state-warn">renderer unavailable
+        — Kroki could not be reached${detail ? `: ${esc(String(detail))}` : ''}</div>
+      <div class="mt-s2 text-provenance text-ink-muted">The diagram source below is
+        unchanged and can still be read, or pasted into any Graphviz/Mermaid viewer.</div>
+      <button data-copy-target="${id}"
+        class="mt-s2 cursor-pointer rounded-sm border border-rule-strong bg-transparent
+               px-[10px] py-[4px] text-chip text-ink">copy as evidence</button>
+      <pre id="${id}" class="mt-s2 max-h-[40vh] overflow-auto whitespace-pre-wrap
+        text-provenance text-ink-muted">${esc(source)}</pre>
+    </div>`;
+}
+
+/** Wires up every `[data-copy-target]` button rendered by
+ *  `renderRendererUnavailable` inside `root` — copies the named element's
+ *  text to the clipboard, falling back silently (the text is already
+ *  visible and selectable) if the Clipboard API is unavailable. */
+function bindCopyTargets(root) {
+  root.querySelectorAll('[data-copy-target]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const pre = root.querySelector(`#${btn.dataset.copyTarget}`);
+      if (!pre) return;
+      try {
+        await navigator.clipboard.writeText(pre.textContent || '');
+        const original = btn.textContent;
+        btn.textContent = 'copied';
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      } catch { /* clipboard unavailable — text is still visible/selectable */ }
+    });
+  });
+}
+
 /** Render a promoted artefact in the content pane, at full width. */
 export async function promoteToPane(turn) {
   const el = $('content');
@@ -1386,17 +1426,42 @@ export async function promoteToPane(turn) {
                                   { displaylogo: false, responsive: true });
     } else if (form === 'diagram') {
       const t = tokens();
-      const prepped = mermaidForKroki(turn.mermaid);
-      // Server-side render via Kroki — the browser never loads mermaid.js.
-      const res = await fetch('/api/diagrams/mermaid', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: prepped.source }),
-      });
+      // A Graphviz DOT source (the relationship graph) skips mermaidForKroki
+      // entirely — those transforms are Mermaid-specific escaping/cap rules
+      // that do not apply to DOT — and hits the sibling /graphviz endpoint.
+      const isGraphviz = !!turn.graphviz;
+      const endpoint = isGraphviz ? '/api/diagrams/graphviz' : '/api/diagrams/mermaid';
+      const source = isGraphviz ? turn.graphviz : mermaidForKroki(turn.mermaid).source;
+      const prepped = isGraphviz ? { source, droppedStyles: 0 } : mermaidForKroki(turn.mermaid);
+      // Server-side render via Kroki — the browser never loads mermaid.js
+      // (or a graphviz.js equivalent).
+      let res;
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source }),
+        });
+      } catch (networkErr) {
+        // Kroki (or the network path to it) is down — not a bad diagram.
+        // The DOT/Mermaid source itself is still real evidence, so offer it
+        // as text rather than showing a blank/broken image.
+        body.innerHTML = renderRendererUnavailable(source, networkErr.message);
+        bindCopyTargets(body);
+        return;
+      }
       if (!res.ok) {
         let detail = res.statusText;
         try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
-        throw new ApiError(res.status, detail, '/api/diagrams/mermaid');
+        if (res.status === 502) {
+          // The backend's own "could not reach Kroki" / non-200-from-Kroki
+          // signal — same "renderer unavailable, not a broken diagram"
+          // treatment as a network-level failure above.
+          body.innerHTML = renderRendererUnavailable(source, detail);
+          bindCopyTargets(body);
+          return;
+        }
+        throw new ApiError(res.status, detail, endpoint);
       }
       // The endpoint returns the RAW SVG body as image/svg+xml, not JSON —
       // it is a thin proxy to Kroki and hands back exactly what Kroki sent.
@@ -6941,6 +7006,41 @@ function showDiagram(entry) {
   });
 }
 
+/** Promote one zoom level of a question's relationship graph into the
+ *  content pane. `level` is 'schema_map', 'full', or a schema name (looked
+ *  up in `bySchema`). Mirrors `showDiagram` above but for the Graphviz path
+ *  (three views instead of one, a possible fallback state instead of an
+ *  always-available diagram). */
+function showGraphvizPane(entry, level) {
+  const env = state.answers.get(entry.question);
+  if (!env || env === 'loading' || env.__error) return;
+  const found = factGraphviz(env);
+  if (!found) return;
+
+  let source;
+  let levelLabel;
+  if (level === 'schema_map') {
+    source = found.schemaMap;
+    levelLabel = 'schema map';
+  } else if (level === 'full') {
+    if (!found.full) return;  // fallback state — the button is hidden for this case
+    source = found.full;
+    levelLabel = 'whole database';
+  } else {
+    source = found.bySchema[level];
+    levelLabel = `schema: ${level}`;
+    if (!source) return;
+  }
+
+  promoteToPane({
+    question: entry.question,
+    graphviz: source,
+    source: `${found.analysisId} · ${levelLabel}`
+      + (found.lastRun ? ` · run ${ago(found.lastRun)}` : ' · run time not recorded')
+      + ' · rendered by Kroki, no retrieval',
+  });
+}
+
 /** The full measurement behind a claim, in the rail. The row states the
  *  answer; this is where the numbers it came from live. */
 function showEvidence(entry) {
@@ -7015,11 +7115,41 @@ function showEvidence(entry) {
     </div>`;
   }).join('');
 
+  const gv = factGraphviz(env);
+  // Three zoom levels, per the relationship-graph design note: the schema
+  // map always renders (any database size); "whole database" is either a
+  // button or, above the ~100-table threshold, a named state rather than a
+  // blank panel (`gv.fallbackReason`, `db_derived.py`'s `full_database_dot`);
+  // "open a schema" is a select over every schema this question covers.
+  const schemaNames = gv ? Object.keys(gv.bySchema).sort() : [];
+  const graphvizBlock = gv ? `
+    <div class="mb-s2 rounded-sm border border-rule-strong p-s2">
+      <div class="mb-[6px] text-chip text-ink-muted">Relationship graph
+        ${gv.tableCount != null ? `· <span class="tnum">${gv.tableCount}</span> tables` : ''}</div>
+      <button data-act="evidence-graphviz" data-level="schema_map"
+        class="mb-[6px] w-full cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
+               text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })} Schema map</button>
+      ${gv.full
+        ? `<button data-act="evidence-graphviz" data-level="full"
+             class="mb-[6px] w-full cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
+                    text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })} Whole database</button>`
+        : gv.fallbackReason
+          ? `<div class="mb-[6px] text-chip text-state-warn">${esc(gv.fallbackReason)}</div>`
+          : ''}
+      ${schemaNames.length ? `<select data-act="evidence-graphviz-schema"
+             class="w-full cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[8px] py-[4px]
+                    text-chip text-ink">
+          <option value="">Open a schema…</option>
+          ${schemaNames.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+        </select>` : ''}
+    </div>` : '';
+
   const body = railFrame('Evidence', forWhat, '', { sub: esc(String(entry.question).slice(0, 48)) });
   body.innerHTML = `
     <div class="rounded-sm border border-chrome-line p-s3">
       <div class="mb-s3 text-subtab">${esc(entry.question)}</div>
       ${facts || '<div class="text-chip text-chrome-muted">No facts on this envelope — the answer names no measurements.</div>'}
+      ${graphvizBlock}
       ${factMermaid(env) ? `<button data-act="evidence-diagram"
         class="mb-s2 w-full cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
                text-chip text-accent-on-dark">${icon('maximize-2', { size: 13 })} Open diagram in pane</button>` : ''}
@@ -7031,6 +7161,12 @@ function showEvidence(entry) {
     </div>`;
   out.querySelector('[data-act="evidence-diagram"]')
     ?.addEventListener('click', () => showDiagram(entry));
+  out.querySelectorAll('[data-act="evidence-graphviz"]').forEach((btn) => {
+    btn.addEventListener('click', () => showGraphvizPane(entry, btn.dataset.level));
+  });
+  out.querySelector('[data-act="evidence-graphviz-schema"]')?.addEventListener('change', (e) => {
+    if (e.target.value) showGraphvizPane(entry, e.target.value);
+  });
 }
 
 /* ════════════════════════════════════════════════════════════════════════

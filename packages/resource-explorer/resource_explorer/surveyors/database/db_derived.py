@@ -52,6 +52,9 @@ from resource_explorer.registry import (
     STATE_NOT_MEASURED,
 )
 from resource_explorer.surveyors.database import schema_scope
+from resource_explorer.surveyors.database.relationship_dot import (
+    build_relationship_diagrams,
+)
 from resource_explorer.surveyors.survey_report import (
     ClassificationAnnotation,
     DataGrainAnnotation,
@@ -4193,8 +4196,41 @@ def relationship_graph_by_container(inputs: DerivedInputs, containment) -> dict:
         )
     )
 
+    # ── Graphviz DOT for the three zoom levels ──────────────────────────
+    #
+    # Built from exactly the rows already computed above — `per_container`
+    # (internal edges + the withheld outgoing/`cross_container_references`
+    # per schema), `summaries` and `pairs` — no second query path, per the
+    # design note's own instruction ("emit Graphviz ... through the existing
+    # Kroki path"). `relationship_dot.py` renders it; this just gathers the
+    # inputs it needs, including which tables were never key-captured, so a
+    # table nobody looked at is drawn dashed rather than as a measured
+    # negative it never was (this module's own absence-discipline rule).
+    all_base_tables = [t for t in inputs.tables if _is_base_table(t)]
+    tables_by_schema: dict[str, list[str]] = {}
+    not_captured_by_schema: dict[str, list[str]] = {}
+    for table in all_base_tables:
+        schema = table.get("schema_name") or ""
+        if schema not in containers:
+            continue
+        name = table.get("table_name") or ""
+        tables_by_schema.setdefault(schema, []).append(name)
+        if not inputs.keys_captured_for_table((schema, name)):
+            not_captured_by_schema.setdefault(schema, []).append(name)
+
+    all_edges = [
+        e for e in _foreign_key_edges(inputs.columns)
+        if e["from_schema"] in containers and e["to_schema"] in containers
+    ]
+    diagrams = build_relationship_diagrams(
+        tables_by_schema, all_edges, summaries, per_container, pairs,
+        table_count=sum(len(ts) for ts in tables_by_schema.values()),
+        not_captured_by_schema=not_captured_by_schema or None,
+    )
+
     return {
         f"by_{grain_name}": per_container,
+        "graphviz": diagrams,
         "aggregation": schema_scope.rollup_envelope(
             containment,
             rollup_kind="per_container_summaries_plus_cross_edges",

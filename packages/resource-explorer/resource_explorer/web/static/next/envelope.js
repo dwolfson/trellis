@@ -122,6 +122,36 @@ export function factMermaid(env) {
   return null;
 }
 
+/** The Graphviz relationship-graph diagrams a fact carries, if any.
+ *
+ *  `db_relationship_graph` (`db_derived.py`'s `relationship_graph_by_
+ *  container`) writes a `graphviz` object into the fact value — three zoom
+ *  levels (`schema_map`, `full` or a `full_fallback_reason` naming why not,
+ *  and `by_schema`, one DOT source per schema) built from the exact same
+ *  rows the text answer already reads, per the design note ("Design: the
+ *  relationship graph, drawn from the real AdventureWorks edges"). Same
+ *  shape/spirit as `factMermaid` above, kept separate because a Graphviz
+ *  source renders through a different Kroki endpoint and offers three
+ *  distinct views rather than one.
+ */
+export function factGraphviz(env) {
+  for (const f of (env && env.facts) || []) {
+    const gv = f.value && f.value.graphviz;
+    if (gv && typeof gv === 'object' && (gv.schema_map || gv.full)) {
+      return {
+        schemaMap: gv.schema_map || '',
+        full: gv.full || null,
+        fallbackReason: gv.full_fallback_reason || '',
+        bySchema: gv.by_schema || {},
+        tableCount: gv.table_count ?? null,
+        analysisId: f.analysis_id,
+        lastRun: f.last_run_at || '',
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * The lead analysis for a multi-analysis question: the first of
  * `entry.analysis_ids` actually NAMED (as a whole word) in `entry.note` --
