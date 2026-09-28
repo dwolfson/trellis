@@ -100,10 +100,22 @@ export const STATES = {
   // RESERVED for G3's tree overview (§3.2/§3.3 of the reply): a schema
   // counted and genuinely empty, as distinct from `not_measured` below.
   measured_zero:  { glyph: '∅', family: 'measured-nothing', word: '0', tone: 'text-state-ok' },
+  // G3 (re/empty-state-split, landed 2026-09-27/28): `_SCHEMA_SHORTFALL_
+  // LABELS`' own two classification strings for this family -- `empty` is
+  // the counted-zero case (same family as `measured_zero` above, its own
+  // word because G3's own label text is exactly "empty", not "0"); `no_tables`
+  // is a schema with no tables at all, which is also a genuine, counted
+  // absence rather than an unmeasured one.
+  empty:      { glyph: '∅', family: 'measured-nothing', word: 'empty', tone: 'text-state-ok' },
+  no_tables:  { glyph: '∅', family: 'measured-nothing', word: 'no tables', tone: 'text-state-ok' },
 
   // ── ◐ measured, within a limit ──────────────────────────────────────
   partial:         { glyph: '◐', family: 'limited', word: 'partial', tone: 'text-state-warn' },
   // RESERVED for G2/G3: the reply's own new cases for this family.
+  // `structure_only`'s key and word already matched G3's own
+  // `_SCHEMA_SHORTFALL_LABELS` entry (`structure_only: 'structure only'`)
+  // when this was first written -- confirmed, not just assumed, against
+  // G3's landed branch (re/empty-state-split).
   scoped:          { glyph: '◐', family: 'limited', word: 'within credential scope', tone: 'text-state-warn' },
   structure_only:  { glyph: '◐', family: 'limited', word: 'structure only', tone: 'text-state-warn' },
   partly_readable: { glyph: '◐', family: 'limited', word: 'partly readable', tone: 'text-state-warn' },
@@ -123,9 +135,12 @@ export const STATES = {
   // ── ? tried, couldn't establish (distinct from ∅ -- genuinely unknown,
   //    not counted-and-empty) ──────────────────────────────────────────
   unknown: { glyph: '?', family: 'not-established', word: 'could not read', tone: 'text-ink-muted' },
-  // RESERVED for G2/G3.
+  // RESERVED for G2/G3. `not_measured` and `no_access` use G3's own exact
+  // label text (`_SCHEMA_SHORTFALL_LABELS`, re/empty-state-split) rather
+  // than a paraphrase, so a schema row's title/aria-label matches its
+  // visible word one-for-one.
   not_established: { glyph: '?', family: 'not-established', word: 'not established', tone: 'text-ink-muted' },
-  not_measured:    { glyph: '?', family: 'not-established', word: 'not measured', tone: 'text-ink-muted' },
+  not_measured:    { glyph: '?', family: 'not-established', word: 'rows not measured', tone: 'text-ink-muted' },
   no_access:       { glyph: '?', family: 'not-established', word: 'no access', tone: 'text-ink-muted' },
 
   // ── ⚠ needs a person -- ONLY this meaning now ───────────────────────
@@ -147,6 +162,17 @@ export const STATES = {
   stored: { glyph: '□', family: 'stored', word: 'has results · not read yet', tone: 'text-ink-muted' },
 };
 
+// G3's `_SCHEMA_SHORTFALL_LABELS` (re/empty-state-split) declares TWO more
+// classification strings this module deliberately does NOT give a glyph:
+// `staging` ("staging (by name)") and `views_only`. Both are structural
+// descriptors of a schema's CONTENTS (its tables are named like staging
+// tables; it holds only views), not a claim about whether that content was
+// successfully measured -- the axis every state above is about. Giving them
+// a glyph from this table would either reuse one of the above (misdescribing
+// them as "limited" or "not established" when nothing failed to measure) or
+// invent a sixth family the reply's own table never asked for. They render
+// as plain text in the tree, same as the table-kind words (`table`/`view`/
+// `matview`) already do.
 const FALLBACK = STATES.unclassified;
 
 /** The full entry for a state, or the `unclassified` fallback for an
