@@ -128,6 +128,8 @@ import {
   promoteMembers,
   getQuestions,
   createSubscription,
+  saveSchedule,
+  getSchedules,
   getScoutingOverview,
   listActivity,
   listAnalyses,
@@ -1983,6 +1985,13 @@ async function switchResourceType(type) {
   renderSidebar();
   writeUrl();
   await ensureResourceListLoaded(type);
+  // state.analyses is otherwise only ever fetched once, in start() -- for the
+  // type it happened to be at boot. Same bug class as boot's own
+  // listAnalyses('repo') hardcode just above: without this, switching from
+  // repo to database/filesystem (or back) leaves trendSupport()/openWorkList()
+  // reading the WRONG entity type's analysis catalog after the very first
+  // switch, silently, since analysis ids can collide across catalogs.
+  state.analyses = await listAnalyses(apiEntityType(type)).catch(() => state.analyses);
   const rows = currentResourceRows();
   if (!rows.some((r) => r.slug === state.selectedSlug)) {
     state.selectedSlug = rows[0]?.slug || null;
@@ -5841,7 +5850,11 @@ function wireHumanAnswers(host, slug) {
     btn.disabled = true;
     btn.textContent = 'Saving…';
     try {
-      await saveQuestionAnswer('repo', slug, question, next.trim());
+      // Same bug class as openNotifyDialog's 'repo' hardcode (found live
+      // 2026-09-28): this handler is wired inside the same Questions-engine
+      // pane, reachable for database/filesystem resources since the repo-only
+      // gate lifted, and must send the real entity_type.
+      await saveQuestionAnswer(apiEntityType(state.resourceType), slug, question, next.trim());
       state.contextAnswers = {
         ...(state.contextAnswers || {}),
         [key]: { question, answer: next.trim(), answered_at: new Date().toISOString() },
@@ -6446,6 +6459,17 @@ async function openNotifyDialog(entry) {
   const slug = state.selectedSlug;
   if (!ids.length || !slug) return;
 
+  // The Questions engine this dialog hangs off used to be gated to
+  // `state.resourceType === 'repo'` — that gate is gone (loadPane()'s "Repos
+  // only, in /next" branch was lifted by the database/filesystem
+  // generalization), so a question row can now legitimately be open on a
+  // database or filesystem resource. `apiEntityType()` is the same
+  // translation every other /next boundary crossing already uses; the
+  // literal 'repo' this used to send unconditionally is what produced
+  // "Repo 'laz_local_adventureworks' not found" for a database's own notify
+  // dialog (found live 2026-09-28).
+  const entityType = apiEntityType(state.resourceType);
+
   // Friendly names when available, same source `openAnalysisPopover` and the
   // "By analysis" section use (`getAnalysesIndex`) — falls back to the raw
   // id for any id that index doesn't carry (e.g. a not-yet-run analysis),
@@ -6478,9 +6502,28 @@ async function openNotifyDialog(entry) {
     <label class="mb-[3px] block text-caveat text-ink-muted">Label</label>
     <input id="notify-label" type="text" value="${esc(`${nameOf(ids[0])} changed`)}"
       class="mb-s2 w-full rounded-sm border border-rule bg-paper px-2 py-1 text-answer text-ink">
-    <p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">Delivered as an RFA the next time a
-      <em>scheduled</em> run of that analysis detects a change — set ⏱ Schedule for it on this
-      resource in Automate, or this never fires.</p>
+
+    <div class="mb-s2 flex flex-wrap items-center gap-s2">
+      <span class="text-caveat text-ink-muted">Schedule this analysis:</span>
+      <select id="notify-schedule-cadence"
+        class="rounded-sm border border-rule bg-paper px-2 py-[2px] text-caveat text-ink">
+        <option value="daily">daily</option>
+        <option value="weekly">weekly</option>
+      </select>
+      <button id="notify-schedule-save" type="button"
+        class="cursor-pointer rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">Set</button>
+      <span id="notify-schedule-status" class="text-caveat text-ink-muted"></span>
+    </div>
+
+    <p class="mb-s2 max-w-[60ch] text-caveat text-ink-muted">
+      Detection runs locally, against this app's own registry — the next time a
+      <em>scheduled</em> run of that analysis detects a change, it writes an
+      RFA straight into this app's drawer. No schedule above means this never
+      fires. Separately, the scheduler's own background loop also creates a
+      personal Egeria ToDo for each RFA it delivers — unlinked to
+      <span class="font-mono">${esc(slug)}</span> itself, whatever this
+      resource's publish state — so that half happens whether or not it has
+      ever been published to Egeria.</p>
     <div id="notify-error" class="mb-s2 text-caveat text-state-warn"></div>
     <div class="flex gap-s2">
       <button id="notify-submit" type="button"
@@ -6494,10 +6537,43 @@ async function openNotifyDialog(entry) {
     }));
   }
 
+  const currentAnalysisId = () => (ids.length > 1
+    ? body.querySelector('input[name="notify-analysis"]:checked')?.value
+    : body.querySelector('#notify-analysis-only').value);
+
+  // Inline scheduling (§4's copy above literally says "no schedule above" —
+  // this is that "above"). Reuses the exact same backend call the per-card
+  // "⏱ Schedule" action and chat's inline scheduling form both make
+  // (saveSchedule(), POST /api/schedules/{entityType}/{slug} — see
+  // `_chatSubmitSchedule()` in index.html for the identical pattern this
+  // follows), rather than sending the reader to Automate to do it there.
+  // Reads back what was actually stored (cadence + next_run) via
+  // getSchedules() rather than trusting the POST body it just sent, so the
+  // confirmation shows what the server did, not what the client asked for.
+  body.querySelector('#notify-schedule-save').addEventListener('click', async () => {
+    const analysisId = currentAnalysisId();
+    const statusEl = body.querySelector('#notify-schedule-status');
+    if (!analysisId) { statusEl.textContent = 'Pick an analysis first.'; return; }
+    const cadence = body.querySelector('#notify-schedule-cadence').value;
+    const btn = body.querySelector('#notify-schedule-save');
+    btn.disabled = true;
+    statusEl.textContent = 'saving…';
+    try {
+      await saveSchedule(entityType, slug, analysisId, cadence, true);
+      const rows = await getSchedules(entityType, slug);
+      const saved = rows.find((r) => r.analysis_id === analysisId);
+      statusEl.textContent = saved?.next_run
+        ? `✓ ${esc(saved.schedule || cadence)} — next run ${esc(ago(saved.next_run))}`
+        : `✓ ${esc(cadence)} scheduled`;
+    } catch (err) {
+      statusEl.textContent = `could not schedule: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   body.querySelector('#notify-submit').addEventListener('click', async () => {
-    const chosen = ids.length > 1
-      ? body.querySelector('input[name="notify-analysis"]:checked')?.value
-      : body.querySelector('#notify-analysis-only').value;
+    const chosen = currentAnalysisId();
     const errEl = body.querySelector('#notify-error');
     if (!chosen) { errEl.textContent = 'Pick an analysis to watch.'; return; }
     const label = body.querySelector('#notify-label').value.trim();
@@ -6505,11 +6581,7 @@ async function openNotifyDialog(entry) {
     btn.disabled = true;
     btn.textContent = 'Subscribing…';
     try {
-      // entity_type is 'repo' unconditionally: the Questions engine this
-      // dialog is attached to is itself gated to `state.resourceType ===
-      // 'repo'` a few lines up in loadPane() — there is no other value this
-      // row could carry today. See createSubscription's own doc comment.
-      await createSubscription('repo', slug, chosen, label);
+      await createSubscription(entityType, slug, chosen, label);
       closeCellDetail();
     } catch (err) {
       btn.disabled = false;
@@ -7071,7 +7143,15 @@ async function start() {
       // make the `ignored`, `abandoned` and hidden facets permanently empty.
       listProjects({ includeIgnored: true, includeHidden: true }),
       listPerspectives(), listActivity(ACTIVITY_LIMIT), listRfas(),
-      listGroups(), listInvestigations(), listWorkLists(), listAnalyses('repo'),
+      listGroups(), listInvestigations(), listWorkLists(),
+      // Same bug class as openNotifyDialog's 'repo' hardcode (found live
+      // 2026-09-28): `readUrl()` above may already have set
+      // `state.resourceType` to 'db'/'filesystem' from a `?type=` URL param,
+      // and analysis_catalog.yaml's `resource_types` genuinely differs per
+      // entity type -- a repo-only fetch here leaves `state.analyses`
+      // (read by trendSupport() and passed into openWorkList()) permanently
+      // wrong for a session that starts on a non-repo resource.
+      listAnalyses(apiEntityType(state.resourceType)),
       listAllPerspectives(),
     ]);
 

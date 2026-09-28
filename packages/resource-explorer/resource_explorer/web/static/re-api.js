@@ -1382,12 +1382,16 @@ export const listSubscriptions = ({ entityType = '', entitySlug = '', analysisId
 export const setSubscriptionActive = (id, active) =>
   post(`/api/automate/subscriptions/${encodeURIComponent(id)}/${active ? 'activate' : 'deactivate'}`);
 
-/** Create one. `entityType` is always 'repo' from every caller today — the
- *  Questions-checklist engine (app.js) that calls this is itself gated to
- *  `state.resourceType === 'repo'` (DEFECT-UNBUILT... no, see app.js's own
- *  "Repos only, in /next" branch) — but the parameter stays real rather than
- *  hardcoded in the request body, so this doesn't need to change the day
- *  that gate is lifted. */
+/** Create one. `entityType` must be the real `apiEntityType(state.resourceType)`-
+ *  translated value ('repo' | 'database' | 'filesystem') — the repo-only
+ *  Questions-engine gate this used to sit behind (app.js's old "Repos only,
+ *  in /next" branch) was lifted by the database/filesystem generalization,
+ *  so a question row can now legitimately be open on any of the three. A
+ *  caller that still hardcodes 'repo' here sends a database/filesystem
+ *  slug to the server tagged as a repo, which 404s against the wrong
+ *  registry lookup (`web/routes/automate.py`'s `create_subscription`) —
+ *  found live 2026-09-28 as "Repo 'laz_local_adventureworks' not found"
+ *  from a database resource's own notify dialog. */
 export const createSubscription = (entityType, entitySlug, analysisId, label = '') =>
   post('/api/automate/subscriptions',
        { entity_type: entityType, entity_slug: entitySlug, analysis_id: analysisId, label });
@@ -1398,9 +1402,25 @@ export const createSubscription = (entityType, entitySlug, analysisId, label = '
  *  client-side, same as the current UI's Schedules overview. */
 export const listAllSchedules = () => get('/api/schedules/');
 
+/** Schedules for exactly one resource — `GET /api/schedules/{entityType}/{slug}`,
+ *  same route classic's Schedules editor and `saveSchedule` below both read
+ *  back from after a save, so a caller can show what was actually stored
+ *  (cadence, `next_run`) rather than assuming the POST body it sent. */
+export const getSchedules = (entityType, entitySlug) =>
+  get(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`);
+
 export const deleteSchedule = (entityType, entitySlug, analysisId) =>
   request(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}/${encodeURIComponent(analysisId)}`,
           { method: 'DELETE' });
+
+/** Create/update a cadence for one (entity, analysis_id) — the same
+ *  `POST /api/schedules/{entityType}/{slug}` route the per-card "⏱ Schedule"
+ *  action posts to (classic's `saveSchedule()`, index.html) and chat's inline
+ *  scheduling form reuses (`_chatSubmitSchedule()`) — one scheduling code
+ *  path, not a new one for every place that offers to set a cadence. */
+export const saveSchedule = (entityType, entitySlug, analysisId, schedule, enabled = true) =>
+  post(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
+       { analysis_id: analysisId, schedule, enabled });
 
 /** Runs THE SCHEDULE, through the same dispatch its timer uses — so what
  *  this does is exactly what the cadence would do, not a separate code
