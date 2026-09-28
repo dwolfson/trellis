@@ -273,6 +273,40 @@ class StepInfo:
     #: the inverse map cannot answer "run which one?" and
     #: `step_produces.validate()` raises rather than picking.
     produces: tuple[str, ...] = ()
+
+    @property
+    def requires(self) -> tuple[str, ...]:
+        """The step keys this step's `requires_context` preconditions are
+        produced by — the symmetric declaration to `produces`
+        (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §E item 4).
+
+        A **property**, not a second hand-typed field: it is derived from
+        `requires_context` via `step_preconditions.PRECONDITIONS[name].
+        produced_by()`, the same inversion `produces`'s own docstring
+        describes for the opposite direction. A separately-maintained
+        `requires` tuple would drift from `requires_context` exactly the way
+        this module's docstring warns a hardcoded producer string drifts
+        from `produces` — two names for the same fact, edited in only one
+        place when the step changes. Empty for a precondition naming no
+        known producer (a genuine dead end — `step_preconditions.Precondition.
+        remedy()` already says so honestly) or no `requires_context` at all.
+
+        This is what a generator walks to list a Survey Definition's
+        unmet-by-design prerequisites at authoring time: for each of the
+        definition's own steps, is every one of its `requires` also one of
+        the definition's own steps? See `survey_execution_plan.
+        authoring_gaps()`, which asks exactly that question without needing
+        a registry or an entity.
+        """
+        from resource_explorer.surveyors import step_preconditions
+
+        keys: list[str] = []
+        for name in self.requires_context:
+            entry = step_preconditions.PRECONDITIONS.get(name)
+            producer = entry.produced_by() if entry else ""
+            if producer and producer not in keys:
+                keys.append(producer)
+        return tuple(keys)
     requires_resources: dict[str, str] = field(default_factory=dict)
     # {resource_name: view} — what this step actually READS from that
     # resource. Checked against the provider's `provides` at import by

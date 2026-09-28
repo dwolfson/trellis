@@ -189,3 +189,81 @@ def test_a_skip_actually_executes_end_to_end_through_the_orchestrator(monkeypatc
         "a skipped step was recorded as an error"
     )
 
+
+# ── freshness window (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §E) ────────────────
+#
+# `_needs_rows` (the checks above) treats any row, of any age, as satisfying a
+# precondition — right for "does anything exist", the wrong question for
+# "is this stored answer current enough to stand in for a fresh run of its
+# producer". `fresh_hit`/`Precondition.freshness` answer the second question,
+# used by the Prefect plan builder (`survey_execution_plan._add_produces_edges`)
+# to decide whether an out-of-definition producer's output can be trusted
+# without running it — design §19.5's principle applied on the Prefect path.
+
+
+class _TimedReg:
+    """Like `_Reg` above, but answers MAX(surveyed_at) instead of COUNT(*) —
+    the query `_latest_surveyed_at` issues."""
+    def __init__(self, timestamps: dict[str, str | None]):
+        self._timestamps = timestamps
+
+    def _conn(self):
+        timestamps = self._timestamps
+
+        class _Conn:
+            def execute(self, sql, params):
+                import re
+                t = re.search(r"FROM (\w+)", sql).group(1)
+                return SimpleNamespace(fetchone=lambda: {"ts": timestamps.get(t)})
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        return _Conn()
+
+
+def _iso_hours_ago(hours: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def test_a_recent_row_is_a_fresh_hit():
+    reg = _TimedReg({"database_tables": _iso_hours_ago(0.33)})  # 20 minutes ago
+    within, surveyed_at = sp.fresh_hit(reg, _P, "has_schema_inventory")
+    assert within is True
+    assert surveyed_at is not None
+
+
+def test_a_row_older_than_the_window_is_not_a_fresh_hit_but_still_reports_when():
+    reg = _TimedReg({"database_tables": _iso_hours_ago(48)})
+    within, surveyed_at = sp.fresh_hit(reg, _P, "has_schema_inventory",
+                                       window_hours=24)
+    assert within is False
+    assert surveyed_at is not None, (
+        "a stale row still has a timestamp worth reporting as provenance, "
+        "even though it does not satisfy the window"
+    )
+
+
+def test_no_row_at_all_is_not_a_fresh_hit_and_reports_no_timestamp():
+    reg = _TimedReg({})
+    within, surveyed_at = sp.fresh_hit(reg, _P, "has_schema_inventory")
+    assert within is False
+    assert surveyed_at is None
+
+
+def test_an_unparseable_timestamp_is_treated_as_not_fresh_not_as_fresh():
+    """`_hours_since` returning None (can't tell) must not be read as
+    'therefore fresh' — the conservative direction is the one that still
+    asks a producer to run rather than trusting an unreadable stamp."""
+    reg = _TimedReg({"database_tables": "not-a-timestamp"})
+    within, surveyed_at = sp.fresh_hit(reg, _P, "has_schema_inventory")
+    assert within is False
+    assert surveyed_at == "not-a-timestamp"
+
+
+def test_an_unknown_precondition_name_is_not_a_fresh_hit():
+    reg = _TimedReg({"database_tables": _iso_hours_ago(0.1)})
+    within, surveyed_at = sp.fresh_hit(reg, _P, "no_such_precondition")
+    assert within is False
+    assert surveyed_at is None
+

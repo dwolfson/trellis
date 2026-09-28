@@ -416,7 +416,8 @@ class SurveyDefinitionExecutor:
             and _all_steps_prefect_runnable(survey_def)
             and not self._any_step_needs_prerequisites(adapter, entity, survey_def, surveyed_at)
         ):
-            planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs)
+            planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs,
+                                            surveyed_at)
             if planned is not None:
                 steps_report, step_outputs, errors = planned
                 for _output in step_outputs:
@@ -1249,7 +1250,8 @@ class SurveyDefinitionExecutor:
             capability_consented=capability_consented,
         )
 
-    def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):
+    def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs,
+                         surveyed_at: str = ""):
         """(steps_report, step_outputs, errors) from one Prefect flow, or None.
 
         Returns None rather than raising when the plan cannot be built or
@@ -1273,6 +1275,19 @@ class SurveyDefinitionExecutor:
         instead of here, so what reaches this function is: definitions with
         no unmet precondition today, plus whatever this folding now corrects
         structurally at build time.
+
+        `surveyed_at` (§E, 2026-09-27): the SAME per-run timestamp `run()`
+        already stamps across the local loop's own steps — passed through so
+        `step_cost_observer.record` (see `prefect/flows.py::run_planned_step_
+        task`) writes this run's `step_runs` rows under it too. Before this,
+        a whole-definition Prefect run wrote NO `step_runs` rows at all —
+        `step_cost_observer.observe`/`record` were only ever called from this
+        module's own local dispatch loop (lines ~660/732/1112), never from
+        the Prefect flow — so the brief's own gate ("the Analysis-tier
+        `step_runs` rows must appear") would have failed on a successful
+        Prefect run exactly as it would have on the bare error this section
+        otherwise fixes. Optional/blank for the handful of tests that call
+        this directly without a real timestamp; those never read `step_runs`.
         """
         from resource_explorer.surveyors.survey_execution_plan import (
             CyclicPlanError,
@@ -1300,20 +1315,30 @@ class SurveyDefinitionExecutor:
                 step_registry = None
 
         try:
-            plan = build_plan(survey_def, step_registry=step_registry)
+            plan = build_plan(survey_def, step_registry=step_registry,
+                              registry=self.registry, entity=entity)
         except CyclicPlanError as exc:
             # Not a fallback case: the local loop would run a cyclic definition
             # in list order and report success for a survey that cannot be
             # ordered at all.
             raise SurveyDefinitionExecutorError(str(exc)) from exc
-        except (MissingPrerequisiteError, PrerequisiteTierError) as exc:
-            # Also not a fallback case, and deliberately so (see
-            # `PrerequisiteTierError`'s docstring): silently falling back to
-            # the local loop here would hide a build-time-detectable problem
-            # behind "Prefect just wasn't reachable", which is exactly the
-            # ambiguity this function's own docstring says a silent fallback
-            # must not create.
+        except PrerequisiteTierError as exc:
+            # Not a fallback case, and deliberately so (see that class's own
+            # docstring): silently falling back to the local loop here would
+            # hide a build-time-detectable problem behind "Prefect just
+            # wasn't reachable", which is exactly the ambiguity this
+            # function's own docstring says a silent fallback must not
+            # create.
             raise SurveyDefinitionExecutorError(str(exc)) from exc
+        except MissingPrerequisiteError as exc:
+            # §E, 2026-09-27: never surface the bare build-time message —
+            # look up which Survey Definition, if any, authors the missing
+            # producer and propose running it first, so the failure a person
+            # (or the launcher pane) sees names a next step rather than
+            # stopping at "not one of this definition's own steps".
+            raise SurveyDefinitionExecutorError(
+                self._propose_producer_definition(entity_type, exc)
+            ) from exc
 
         if not plan.steps:
             return None
@@ -1323,6 +1348,7 @@ class SurveyDefinitionExecutor:
             report = re_survey_definition_flow(
                 entity_type=entity_type, slug=entity.slug,
                 plan=serialise(plan), runner_kwargs=runner_kwargs or {},
+                surveyed_at=surveyed_at,
             )
         except Exception as exc:
             log.warning(
@@ -1337,6 +1363,48 @@ class SurveyDefinitionExecutor:
             [f"{e['step_key']}: {e.get('detail', 'failed')}"
              for e in report if e.get("status") == "error"],
         )
+
+    def _propose_producer_definition(self, entity_type: str, exc) -> str:
+        """§E item 3: turn a build-time `MissingPrerequisiteError` into a
+        named next step instead of a bare failure.
+
+        Looks for a Survey Definition (GovernanceActionProcess) for this
+        entity type whose own steps include `exc.producer_key` — the
+        producer this definition is missing — via the same
+        `find_candidate_process_guids` + `fetch` the rest of this module uses
+        to resolve definitions by technology type. Best-effort: any failure
+        reaching Egeria (unreachable, no candidates, the producer not found
+        in any of them) falls back to the plain message `build_plan` already
+        raised with, which still names the missing producer — never worse
+        than today, only better when the lookup succeeds.
+        """
+        base = str(exc)
+        producer = getattr(exc, "producer_key", "") or ""
+        if not producer:
+            return base
+        try:
+            adapter = get_adapter(entity_type)
+            technology_type = getattr(adapter, "technology_type", "") or ""
+            candidates = self.reader.find_candidate_process_guids(technology_type) if technology_type else []
+            for candidate in candidates:
+                guid = candidate.get("guid")
+                if not guid:
+                    continue
+                survey_def = self.reader.fetch(guid)
+                step_keys = {
+                    (getattr(s, "re_analysis_step", None) or getattr(s, "qualified_name", ""))
+                    for s in getattr(survey_def, "steps", []) or []
+                }
+                if producer in step_keys:
+                    name = candidate.get("display_name") or candidate.get("qualified_name") or guid
+                    return (
+                        f"{base} Proposed next step: run {name!r} first — it "
+                        f"includes {producer!r} — then re-run this definition."
+                    )
+        except Exception as lookup_exc:  # pragma: no cover - best-effort only
+            log.debug("could not look up a Survey Definition producing %r: %s",
+                      producer, lookup_exc)
+        return base
 
     def _resolve_process_guid(
         self,

@@ -1,12 +1,16 @@
 """Prefect Flow and Task definitions for Resource Explorer distributed surveying."""
 from __future__ import annotations
 
+import logging
 import os
 import json
 from typing import Any
 from prefect import flow, task
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.surveyors import step_cost_observer
 from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+log = logging.getLogger(__name__)
 
 
 @task(name="Run Surveyor Step")
@@ -175,6 +179,52 @@ def re_survey_flow(
 # delegate workflow execution, not perform it.
 
 
+def _step_info_for(entity_type: str, step_key: str):
+    """This step's declared cost tiers, from the SAME step registry the local
+    loop reads (`SurveyDefinitionExecutor._step_info`) — looked up fresh here
+    rather than threaded through Prefect's task graph, since `StepInfo` isn't
+    JSON-serialisable and the plan already carries only plain dicts
+    (`serialise()`). None on any failure — `step_cost_observer.observe`
+    already treats a blank declared tier as nothing to disagree with."""
+    try:
+        from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+        adapter = get_adapter(entity_type)
+        provider = getattr(adapter, "step_registry", None)
+        return (provider() or {}).get(step_key) if provider else None
+    except Exception as exc:  # pragma: no cover - registry-provider guard
+        log.debug("could not read step registry for %s/%s: %s", entity_type, step_key, exc)
+        return None
+
+
+def _record_step_cost(entity_type: str, slug: str, obs, output, surveyed_at: str) -> None:
+    """§E, 2026-09-27: give a Prefect-orchestrated step the same `step_runs`
+    row the local dispatch loop has always written for it
+    (`SurveyDefinitionExecutor._record_cost`). Before this,
+    `step_cost_observer.record` was only ever called from that module's own
+    local dispatch loop, so a WHOLE definition run via `_run_via_prefect`
+    produced no `step_runs` rows at all, silently — the brief's own gate
+    ("the Analysis-tier `step_runs` rows must appear") would have failed on
+    a SUCCESSFUL Prefect run exactly as it failed on the bare error §E
+    otherwise fixes. Best-effort and never fatal: the step's real output has
+    already been returned by the time this runs, so losing the cost row is
+    strictly better than losing the step's actual result over an
+    observability side-channel.
+    """
+    if not surveyed_at:
+        return
+    try:
+        from resource_explorer.registry import ProjectRegistry
+
+        annotations = (output or {}).get("annotations") if isinstance(output, dict) else None
+        obs.annotations, obs.outcomes = step_cost_observer.describe_work(annotations)
+        obs.disagreement = step_cost_observer._disagreement(obs)
+        step_cost_observer.record(ProjectRegistry(), slug, obs, surveyed_at,
+                                  entity_type=entity_type)
+    except Exception as exc:  # pragma: no cover - best-effort observability only
+        log.debug("could not record step cost for %s/%s: %s", slug, obs.step_key, exc)
+
+
 @task(name="Run Planned Step")
 def run_planned_step_task(
     entity_type: str,
@@ -184,6 +234,8 @@ def run_planned_step_task(
     runner_kwargs: dict[str, Any],
     upstream: list[dict[str, Any]],
     guarded_by: dict[str, str],
+    satisfied_by_stored: dict[str, Any] | None = None,
+    surveyed_at: str = "",
 ) -> dict[str, Any]:
     """One planned step, plus the guard decision for its incoming edges.
 
@@ -195,6 +247,17 @@ def run_planned_step_task(
     planner is pure and cannot know what guard a step emitted. A step whose
     guards are not satisfied is reported "skipped" — never "ok", which would
     make a branch not taken indistinguishable from one that ran.
+
+    `satisfied_by_stored` (§E, 2026-09-27) is `survey_execution_plan.
+    PlannedStep.satisfied_by_stored` — the preconditions this step needed
+    that the planner found already met by a fresh stored result rather than
+    by a producer in this run. Carried through to the report entry unchanged
+    so the provenance ("schema inventory from 20:59:29") reaches the same
+    place a person or the UI pane reads the rest of the step's outcome.
+
+    `surveyed_at`, when given, is this run's shared timestamp — see
+    `_record_step_cost` for why an ACTUAL step run through here otherwise
+    left no `step_runs` row at all.
     """
     by_key = {u.get("step_key"): u for u in upstream if isinstance(u, dict)}
     for upstream_key, required in (guarded_by or {}).items():
@@ -213,18 +276,29 @@ def run_planned_step_task(
                 "engine": "prefect", "guard": None,
                 "detail": f"upstream step(s) failed: {', '.join(sorted(failed))}"}
 
+    info = _step_info_for(entity_type, step_key)
     try:
-        output = run_surveyor_step_task.fn(
-            entity_type=entity_type, slug=slug, step_name=step_key,
-            runner_kwargs=runner_kwargs,
-        )
+        with step_cost_observer.observe(
+            step_key, getattr(info, "fetch_cost", ""), getattr(info, "compute_cost", ""),
+            executor="prefect", source="prefect",
+        ) as observed:
+            output = run_surveyor_step_task.fn(
+                entity_type=entity_type, slug=slug, step_name=step_key,
+                runner_kwargs=runner_kwargs,
+            )
     except Exception as exc:
         return {"step_key": step_key, "step": qualified_name, "status": "error",
                 "engine": "prefect", "guard": None, "detail": str(exc)}
 
-    return {"step_key": step_key, "step": qualified_name, "status": "ok",
-            "engine": "prefect", "guard": (output or {}).get("guard"),
-            "output": output}
+    if observed:
+        _record_step_cost(entity_type, slug, observed[0], output, surveyed_at)
+
+    result = {"step_key": step_key, "step": qualified_name, "status": "ok",
+              "engine": "prefect", "guard": (output or {}).get("guard"),
+              "output": output}
+    if satisfied_by_stored:
+        result["satisfied_by_stored"] = dict(satisfied_by_stored)
+    return result
 
 
 @flow(name="RE Survey Definition Flow")
@@ -233,12 +307,19 @@ def re_survey_definition_flow(
     slug: str,
     plan: list[dict[str, Any]],
     runner_kwargs: dict[str, Any] | None = None,
+    surveyed_at: str = "",
 ) -> list[dict[str, Any]]:
     """Run a whole Survey Definition, ordered by Prefect.
 
     `plan` is the serialised ExecutionPlan — a list of
     {step_key, qualified_name, depends_on, guarded_by} in topological order, so
     every dependency has already been submitted when its dependents are.
+
+    `surveyed_at` (§E, 2026-09-27): this run's shared timestamp, the same one
+    `SurveyDefinitionExecutor.run()`'s local loop stamps across its own
+    steps — passed through to every planned step so `step_cost_observer.
+    record` (`run_planned_step_task`) writes this run's `step_runs` rows
+    under it, exactly as the local loop already does for its own steps.
     """
     runner_kwargs = runner_kwargs or {}
     futures: dict[str, Any] = {}
@@ -251,6 +332,8 @@ def re_survey_definition_flow(
             runner_kwargs=runner_kwargs,
             upstream=upstream,
             guarded_by=entry.get("guarded_by", {}) or {},
+            satisfied_by_stored=entry.get("satisfied_by_stored", {}) or {},
+            surveyed_at=surveyed_at,
         )
     # Resolved in plan order so the report reads in the order authored, not the
     # order Prefect happened to finish them in.

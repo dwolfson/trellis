@@ -522,9 +522,40 @@ def clear_survey_definition_reader_caches():
     above gives for its own autouse switch) rather than trusting every test
     module that touches this reader to remember to call `clear_caches()`
     itself.
+
+    **A second, separate process-lifetime singleton, found 2026-09-28 while
+    investigating why the SAME three tests were still red in CI after this
+    fixture landed.** `web/routes/survey_definitions.py` keeps its own
+    module-level `_tech_type_catalog` (a lazily-constructed
+    `EgeriaTechTypeCatalog`, built once and reused — see that module's own
+    comment on why: "callers should share one instance rather than refetch
+    per request"). Right for production, wrong for a test process: once any
+    test's route call constructs it for real, every LATER test — including
+    one that patches `EgeriaTechTypeCatalog.get_produced_annotation_types`
+    on the class — still calls through the SAME pre-existing instance, whose
+    own internal `_all_types_cache`/`_detail_cache` (instance attributes,
+    not module globals, so `clear_caches()` above never touched them) may
+    already hold a real-or-empty answer from before the patch was ever
+    applied. Reset here too, by the same reasoning as the reader's caches:
+    a process-lifetime singleton is a production optimisation, not a test
+    contract, and every test should see a fresh one.
     """
     from resource_explorer.surveyors.survey_definition_reader import clear_caches
 
     clear_caches()
     yield
     clear_caches()
+
+
+@pytest.fixture(autouse=True)
+def clear_tech_type_catalog_singleton():
+    """Reset `web.routes.survey_definitions`'s module-level `EgeriaTechTypeCatalog`
+    singleton before and after every test — see
+    `clear_survey_definition_reader_caches`'s docstring above for why this is
+    a second instance of the exact same problem in a different module.
+    """
+    import resource_explorer.web.routes.survey_definitions as survey_definitions_route
+
+    survey_definitions_route._tech_type_catalog = None
+    yield
+    survey_definitions_route._tech_type_catalog = None
