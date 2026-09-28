@@ -8544,3 +8544,17 @@ call with matching cache-key fields poisons any later patched test).
 used by hand in `test_survey_definition_reader.py`'s own tests, but never applied suite-wide) before and after
 every test — same pattern as the existing `ephemeral_prefect` autouse fixture just above it. Verified by a full
 suite run confirming all three pass in-suite (run details in that branch's commit).
+
+## Curate stage on a repo "takes a very long time to load" and shows no tasks (project owner, 2026-09-28)
+
+The project owner reports opening the Curate stage on a repo resource takes a very long time to
+load and, once it does, shows no tasks. On a database resource, the page instead says Curate isn't
+available yet — a separate, and apparently honest, state (no capability declared for that resource
+type) rather than the same slow-then-empty behavior.
+
+**Not investigated or fixed here** — logged as a usability item per the project owner's own
+instruction, pending a timing capture rather than a guessed fix. Whoever picks this up should
+first capture which request is actually slow (browser network tab or server-side timing on the
+Curate-stage endpoint for a repo resource) before changing anything — "slow" and "shows nothing"
+could be the same root cause (a request that times out or errors silently, rendering as empty) or
+two unrelated ones (a genuinely slow query, and a separate reason the task list comes back empty).
