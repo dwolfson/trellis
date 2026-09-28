@@ -8558,3 +8558,33 @@ first capture which request is actually slow (browser network tab or server-side
 Curate-stage endpoint for a repo resource) before changing anything — "slow" and "shows nothing"
 could be the same root cause (a request that times out or errors silently, rendering as empty) or
 two unrelated ones (a genuinely slow query, and a separate reason the task list comes back empty).
+
+## `survey_definition_executor._ADAPTERS` has no test reset — a real-key registration in one test clobbers the real adapter for every test after it in the same process (found bisecting Section E's CI-red, 2026-09-28)
+
+`_ADAPTERS` is a module-level, process-lifetime registry mapping `entity_type` → adapter. Every
+existing test in this area registers its fixtures under `entity_type="fake"`, by convention, never
+under a real key — but nothing enforces that convention, and Section E's own
+`TestProposeProducerDefinition` broke it: it registered a zero-step stub adapter under the REAL
+`entity_type="database"` key, permanently overwriting the real database adapter for the rest of
+that pytest process. Three unrelated `/candidates` route tests two files away then failed with
+symptoms (`TestListCandidates`'s trio, already fixed once for a different reason on
+`re/tests-clear-candidates-cache`) that looked exactly like the earlier `_candidates_cache`
+staleness bug, costing real time before the two were told apart. The actual fix on Section E's own
+branch was a one-line change — using `entity_type="fake"` like every other test in that file — not
+a shared-infrastructure problem.
+
+**Fix direction, not attempted here**: an autouse fixture that snapshots and restores `_ADAPTERS`
+around every test (the same shape as `survey_definition_reader.py`'s own `clear_caches()` autouse
+fixture on `re/tests-clear-candidates-cache`), plus a `register_adapter()` guard that refuses to
+overwrite an existing REAL key unless explicitly forced (`force=True` or similar) — so registering
+under a real key by mistake fails loudly at registration time instead of silently corrupting every
+test that runs afterward. With that guard in place, the existing "always use `entity_type=\"fake\"`"
+convention becomes a safety net other tests can rely on, rather than the only defence against this
+exact failure mode.
+
+**Worth noting as a debugging technique, not just a bug**: what actually found this was
+correlating one branch's red CI against sibling branches' clean full-suite runs pushed the same
+night (F 6615/0, G3 6612/0, G2 6621/0, the cache fix itself 6605/0) — only Section E's branch still
+failed the trio after merging `main`, which narrowed the polluter to that branch's own diff in
+minutes. Two hours of infrastructure hypotheses (Prefect server reachability, shared-registry
+state, a genuine semantic merge conflict) had been chased first without success.
