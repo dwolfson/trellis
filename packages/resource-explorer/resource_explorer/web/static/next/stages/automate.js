@@ -45,10 +45,15 @@
  *     nothing here to push into.
  *
  *     `oldUiHref` below is therefore no longer the only way to create one --
- *     kept as a fallback link for `state.resourceType !== 'repo'` (database/
- *     filesystem resources), since the Questions engine `openNotifyDialog()`
- *     hangs off is itself still gated to repos only in app.js's `loadPane()`
- *     as of this writing.
+ *     kept as a fallback link regardless, for when the Questions engine
+ *     itself can't be reached. The repo-only gate this comment used to cite
+ *     (`state.resourceType !== 'repo'` on the Questions engine's own
+ *     `loadPane()`) is gone as of the database/filesystem generalization --
+ *     `openNotifyDialog()` now sends `apiEntityType(state.resourceType)`
+ *     rather than a hardcoded 'repo', so a database/filesystem question row
+ *     subscribes correctly too (found broken live 2026-09-28: it was still
+ *     hardcoding 'repo' after the gate lifted, which 404'd on the server's
+ *     repo-only lookup for a database slug).
  *
  * Like Understanding (next/stages/understanding.js), Automate bypasses the
  * generic Questions-checklist engine entirely -- `loadPane()` in app.js
