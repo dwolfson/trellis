@@ -383,21 +383,26 @@ export function questionKey(text) {
     .replace(/^-+|-+$/g, '').slice(0, 80);
 }
 
-/** Read-modify-write one answer. See the caution above: the POST replaces
- *  the document, so everything read must be sent back. */
-export async function saveQuestionAnswer(entityType, slug, question, answer) {
-  const current = await getContext(entityType, slug).catch(() => ({}));
-  const answers = { ...(current.question_answers || {}) };
-  const key = questionKey(question);
-  answers[key] = {
-    question,
-    answer,
-    answered_at: new Date().toISOString(),
-  };
-  const next = { ...current, question_answers: answers };
-  delete next.updated_at;   // server-stamped; sending it back is meaningless
-  return saveContext(entityType, slug, next);
-}
+/** Save ONE human-question answer, author-stamped by the server.
+ *
+ * ENRICHMENT-E0-ROW-ANATOMY (docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
+ * STAGE-IA.md §0.3): this used to be a client-side read-modify-write
+ * against the whole context document (`getContext` then `saveContext`),
+ * and the answer it built carried only `answered_at` — no author, because
+ * nothing on the client can be trusted as one, and nothing asked the
+ * server for it either. It now calls the same PATCH-one-field shape as
+ * `saveEnrichmentField` above (`context.py`'s `save_answer`, mirroring
+ * `save_field`): the server does its own read-modify-write on
+ * `question_answers` and stamps `answered_by`/`answered_at` from the
+ * signed-in identity, the same way `save_field` stamps `author`/`set_at`
+ * on an enrichment field. 401 when anonymous, same reasoning as an
+ * enrichment judgement: an answer with no author is not an answer.
+ *
+ * Returns `{ key, answer }` — `answer` is the server's stored
+ * `QuestionAnswer`, for the caller to put straight into
+ * `state.contextAnswers` rather than reconstructing it client-side. */
+export const saveQuestionAnswer = (entityType, slug, question, answer) =>
+  patch(`/api/context/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/answer`, { question, answer });
 
 export const getDispositionHistory = (githubUrl) =>
   get(`/api/discovery/disposition-history?github_url=${encodeURIComponent(githubUrl)}`);

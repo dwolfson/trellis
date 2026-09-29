@@ -14,6 +14,12 @@
 import { ago, whenMs } from '/static/next/format.js';
 import { getBulkFacts, saveEnrichmentField, getDocSources, addDocSource, recheckDocSource, removeDocSource } from '/static/re-api.js';
 import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntityType } from '/static/next/app.js';
+// The row anatomy (who + when + "⚠ review — evidence moved: X") shared with
+// the Questions tab's human-question answer rows — see row-anatomy.js's own
+// header comment (ENRICHMENT-E0-ROW-ANATOMY). This is the row anatomy's
+// ORIGINAL home: it used to be built inline below, and now calls out to the
+// shared function instead so the Questions tab can call the exact same one.
+import { personRowLineHtml } from '/static/next/row-anatomy.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
  *
@@ -93,18 +99,22 @@ function fieldControlHtml(def, field, kind = 'judgement') {
     class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">`;
 }
 
-function fieldRowHtml(def, kind) {
+export function fieldRowHtml(def, kind) {
   const field = (state.enrichment || {})[def.key];
   const moved = field && kind === 'judgement' ? movedSince(field) : [];
   // Judgements carry an author; observations carry a source. The server
   // stamps `author` on every field, so a source-only branch was dead code
   // and a confirmed licence read as "alice · 2d ago" with its source stored
-  // and invisible. Both halves render now, in that order.
-  const when = field?.set_at ? `<span class="tnum">${esc(ago(field.set_at))}</span>` : '';
-  const who = field?.author
-    ? [kind === 'observation' && field.source ? `from ${esc(field.source)}` : '',
-       `${esc(field.author)}${field.interim ? ' · interim' : ''}`, when].filter(Boolean).join(' · ')
-    : '';
+  // and invisible. Both halves render now, in that order. Built through the
+  // shared row anatomy (row-anatomy.js) — the same function the Questions
+  // tab's human-answer rows call.
+  const who = personRowLineHtml({
+    author: field?.author,
+    whenIso: field?.set_at,
+    moved,
+    sourceLine: kind === 'observation' && field?.source ? `from ${esc(field.source)}` : '',
+    suffix: field?.interim ? ' · interim' : '',
+  });
   const proposed = def.fromAnalysis && !field?.value ? proposedFrom(def.fromAnalysis) : null;
   // "What we judge" is the larger of the two sets -- the split's whole
   // argument -- so its labels are body size in ink, not caption size muted.
@@ -116,7 +126,6 @@ function fieldRowHtml(def, kind) {
         <button type="button" data-save="${def.key}" data-kind="${kind}"
           class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button></div>
       <div class="text-provenance text-ink-muted">
-        ${moved.length ? `<span class="text-state-warn">⚠ review — evidence moved: ${esc(moved.join(', '))}</span> · ` : ''}
         ${who}
         ${proposed ? `<span>from survey: <span class="text-ink">${esc(proposed.value)}</span> ·
           <button type="button" data-confirm="${def.key}" data-source="${esc(def.fromAnalysis)}" data-value="${esc(proposed.value)}"
