@@ -338,32 +338,45 @@ def _resolve_table_surveyed_at(
 ) -> tuple[str | None, list[dict]]:
     """The newest `(surveyed_at, rows)` for `table` that actually has rows.
 
-    Walks survey history newest-first (`_snapshot_keys`) rather than trusting
-    a single "latest overall" surveyed_at, because a later run's OWN steps can
-    genuinely never touch a structured table at all (a `schema_inventory`-only
-    run writes no `database_table_activity` rows for its `surveyed_at`) while
-    an earlier run in the same history did — see BRIEF-KEYS-AND-ACTIVITY-
-    CLOBBER.md §B. `require_measured_counter` (activity only) additionally
-    skips a run whose rows exist but carry no real counter at all (every row
+    Answers the same question a later run's OWN steps can genuinely never
+    touch a structured table at all (a `schema_inventory`-only run writes no
+    `database_table_activity` rows for its `surveyed_at`) while an earlier
+    run in the same history did — see BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B.
+    `require_measured_counter` (activity only) additionally skips a run
+    whose rows exist but carry no real counter at all (every row
     `not_collected`/`not_supported`) — present-but-unmeasured must not count
     as "this run has the answer" either.
+
+    Set-based as of 2026-09-29 round 3 (docs/design-notes/PER-REQUEST-
+    SERVER-LATENCY-ROUND-3-IMPLEMENTED.md) — `registry.
+    find_latest_detail_surveyed_at` answers this in ONE query
+    (`MAX(surveyed_at)` on `table` itself, optionally requiring a non-NULL
+    counter), then one more to fetch the winning row(s). This used to walk
+    survey history newest-first (`_snapshot_keys`, itself a
+    `get_database_surveys` call) and issue a SEPARATE `query_detail_rows`
+    call per candidate `surveyed_at` until one came back non-empty — for a
+    table whose data lives in an old snapshot, that walk visited dozens of
+    candidates. Measured on `laz_local_adventureworks`
+    (`db_classification`, which calls `load_inputs` — 5 of these calls,
+    one per structured table): 398 total `cursor.execute()` calls, ~2.4s,
+    down to a handful of queries and well under 300ms after this change.
+    See `find_latest_detail_surveyed_at`'s own docstring for why this is
+    PROVABLY equivalent to the walk, not just faster in practice.
     """
-    for at, src in _snapshot_keys(registry, slug):
-        if source is not None and src != source:
-            continue
-        try:
-            rows = registry.query_detail_rows(table, slug, at, src)
-        except Exception as exc:  # pragma: no cover - defensive
-            log.warning(
-                "db_derived: could not read %s for %s at %s: %s", table, slug, at, exc
-            )
-            continue
-        if not rows:
-            continue
-        if require_measured_counter and not _has_measured_counter(rows):
-            continue
-        return at, rows
-    return None, []
+    at = registry.find_latest_detail_surveyed_at(
+        table, slug, source=source,
+        require_any_non_null=_ACTIVITY_COUNTER_FIELDS if require_measured_counter else None,
+    )
+    if at is None:
+        return None, []
+    try:
+        rows = registry.query_detail_rows(table, slug, at, source)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning(
+            "db_derived: could not read %s for %s at %s: %s", table, slug, at, exc
+        )
+        return None, []
+    return at, rows
 
 
 def load_inputs(
