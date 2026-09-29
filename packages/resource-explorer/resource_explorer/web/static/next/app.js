@@ -57,6 +57,11 @@ import {
 // next-steps, purposes, classification, Egeria bind/promote/sync/
 // reclassify) into /next; see that file's own header comment.
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
+// The row anatomy shared with Enrichment's judgements/observations rows
+// (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
+// STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
+// function, called from both stores' rows rather than reimplemented here.
+import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import { renderInvestigation, openInvestigationDetail } from '/static/next/stages/investigation.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
@@ -228,6 +233,14 @@ export const state = {
   workListSlug: null,          // the open one; the pane takes over when set
   lastWorkListSlug: null,      // the one you were last in, for the way back
   workListIndex: false,        // showing the list OF work lists
+  // The question (its full text, the same key `wireHumanAnswers` already
+  // uses to look up `contextAnswers`) currently open for inline editing on
+  // the Questions tab -- '' means none. Replaces `window.prompt()`
+  // (ENRICHMENT-E0-ROW-ANATOMY): "Answer this ->"/"change" now open an
+  // inline control on the row itself, the same input+save pattern
+  // `stages/enrichment.js`'s judgement/observation fields already use,
+  // rather than a blocking popup with no author.
+  editingAnswer: '',
 };
 
 /** Three classes of nav item — RULING-NAV-GROUPING.md, answering a peer
@@ -6713,41 +6726,67 @@ async function loadPane() {
  * perspective toggle and a second listener would save twice per click — the
  * same stacked-listener bug the sidebar toggle had.
  */
+/** Redraw one question's row in place, the way an arriving answer already
+ *  does elsewhere in this file. A whole-pane reload would refetch every
+ *  other answer to show one that is already in hand. */
+function redrawQuestionRow(question) {
+  const i = state.questions.findIndex((q) => q.question === question);
+  if (i >= 0) replaceRow(state.questions[i], i, state.answers.get(question));
+}
+
 function wireHumanAnswers(host, slug) {
   if (host.dataset.humanWired === '1') return;
   host.dataset.humanWired = '1';
   host.addEventListener('click', async (ev) => {
-    const btn = ev.target.closest('[data-human-edit]');
-    if (!btn) return;
-    const question = btn.getAttribute('data-human-edit');
-    const key = questionKey(question);
-    const prior = (state.contextAnswers || {})[key]?.answer || '';
-    const next = window.prompt(question, prior);
-    if (next === null) return;              // cancelled — not an empty answer
-    const label = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Saving…';
-    try {
-      // Same bug class as openNotifyDialog's 'repo' hardcode (found live
-      // 2026-09-28): this handler is wired inside the same Questions-engine
-      // pane, reachable for database/filesystem resources since the repo-only
-      // gate lifted, and must send the real entity_type.
-      await saveQuestionAnswer(apiEntityType(state.resourceType), slug, question, next.trim());
-      state.contextAnswers = {
-        ...(state.contextAnswers || {}),
-        [key]: { question, answer: next.trim(), answered_at: new Date().toISOString() },
-      };
-      // Redraw just this row, the way an arriving answer does. A whole-pane
-      // reload would refetch every other answer to show one that is already
-      // in hand.
-      const i = state.questions.findIndex((q) => q.question === question);
-      if (i >= 0) replaceRow(state.questions[i], i, state.answers.get(question));
-    } catch (err) {
-      // Left on the button rather than raised as a page error: the failure is
-      // this one save, and the rest of the checklist is unaffected.
-      btn.disabled = false;
-      btn.textContent = err.status === 401 ? 'Not signed in' : `Not saved: ${err.message}`;
-      setTimeout(() => { btn.textContent = label; }, 4000);
+    // Open the inline editor. No `window.prompt()` — see `bodyLines`'s
+    // `st === 'human'` branch: the "Answer this →"/"change" button now
+    // toggles `state.editingAnswer` and re-renders this row with an
+    // input+save control on it, the same shape `stages/enrichment.js`
+    // already uses for judgements/observations.
+    const editBtn = ev.target.closest('[data-human-edit]');
+    if (editBtn) {
+      state.editingAnswer = editBtn.getAttribute('data-human-edit');
+      redrawQuestionRow(state.editingAnswer);
+      const row = host.querySelector('[data-answer-input]');
+      row?.focus();
+      return;
+    }
+    if (ev.target.closest('[data-answer-cancel]')) {
+      const q = state.editingAnswer;
+      state.editingAnswer = '';
+      if (q) redrawQuestionRow(q);
+      return;
+    }
+    const saveBtn = ev.target.closest('[data-answer-save]');
+    if (saveBtn) {
+      const question = saveBtn.getAttribute('data-answer-save');
+      const row = saveBtn.closest('[id^="qrow-"]') || host;
+      const input = row.querySelector('[data-answer-input]');
+      const answer = (input?.value || '').trim();
+      const label = saveBtn.textContent;
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'saving…';
+      try {
+        // Same bug class as openNotifyDialog's 'repo' hardcode (found live
+        // 2026-09-28): this handler is wired inside the same Questions-engine
+        // pane, reachable for database/filesystem resources since the repo-only
+        // gate lifted, and must send the real entity_type.
+        const out = await saveQuestionAnswer(apiEntityType(state.resourceType), slug, question, answer);
+        const key = questionKey(question);
+        // The server stamps `answered_by`/`answered_at` from the signed-in
+        // identity (context.py's new PATCH .../answer, mirroring
+        // save_field's author-stamping for enrichment fields) — the field
+        // is never taken from the client, same reasoning as `saveEnrichmentField`.
+        state.contextAnswers = { ...(state.contextAnswers || {}), [key]: out.answer };
+        state.editingAnswer = '';
+        redrawQuestionRow(question);
+      } catch (err) {
+        // Left on the button rather than raised as a page error: the failure
+        // is this one save, and the rest of the checklist is unaffected.
+        saveBtn.disabled = false;
+        saveBtn.textContent = err.status === 401 ? 'sign in to answer' : `not saved: ${err.message}`;
+        setTimeout(() => { saveBtn.textContent = label; saveBtn.disabled = false; }, 4000);
+      }
     }
   });
 }
@@ -6830,7 +6869,12 @@ function rowShell(entry, i) {
 
 /** One question row. The layout is fixed across states so a column of rows
  *  scans: glyph at 22px, everything below indented to match. */
-function rowInner(entry, i, env) {
+// Exported for the render harness (frontend-build/test-harness/) — same
+// pattern as `surveyRowHtml`/`schemaTreeHtml`/`tableHtml`/`filterSchemaTree`
+// above: only the `export` keyword changed, no logic. Used by
+// human-question-answer-row-anatomy.test.mjs to render a real question row
+// through the exact function `loadPane()` uses.
+export function rowInner(entry, i, env) {
   // ALL of them, wrapping — not just the first. Seeing that a question
   // carries four perspectives is how you learn the axis barely filters, and
   // the first-only version hid exactly that.
@@ -6925,17 +6969,49 @@ function bodyLines(entry, i, st, env) {
     // says what it looked in, per this round's own rule. Claiming a query
     // ran, or silently offering only the text box, would both misdescribe it.
     const wanted = /egeria quer/i.test(declared) && !(entry.analysis_ids || []).length;
+    // Row anatomy shared with Enrichment's judgements/observations
+    // (ENRICHMENT-E0-ROW-ANATOMY, row-anatomy.js): who + when, through the
+    // SAME function that file's rows call. `held.answered_by` is absent on
+    // an answer recorded before this change (no author was ever stored) --
+    // that degrades to the old "answered <when>" wording rather than a
+    // blank "· 2d ago", since `personRowLineHtml` returns '' with no author.
+    const provenance = held?.answer
+      ? (held.answered_by
+          ? personRowLineHtml({ author: held.answered_by, whenIso: held.answered_at, verb: 'answered by' })
+          : `answered ${esc(ago(held.answered_at))}`)
+      : '';
+    // Inline control, not a popup (ENRICHMENT-E0-ROW-ANATOMY §0.3/§6 item 1
+    // of the designer's reply): `window.prompt()` blocked the whole page,
+    // took one line, and recorded no author. This is the same input+save
+    // shape `stages/enrichment.js`'s `fieldControlHtml` already uses for
+    // judgements/observations, reused here rather than invented fresh —
+    // there is no general Context tab yet (that's slice E1, a separate,
+    // larger IA restructure), so the control opens on this row itself,
+    // which is the narrower, in-scope place for it today.
+    const editing = state.editingAnswer === entry.question;
+    const editorHtml = editing ? `<div class="${indent} mt-s1 flex items-start gap-s2">
+         <textarea data-answer-input rows="2"
+           class="w-full max-w-[60ch] rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink"
+           placeholder="${esc(why)}">${esc(held?.answer || '')}</textarea>
+         <div class="flex shrink-0 flex-col gap-[2px]">
+           <button type="button" data-answer-save="${esc(entry.question)}"
+             class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button>
+           <button type="button" data-answer-cancel="1"
+             class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">cancel</button>
+         </div>
+       </div>` : '';
     return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>
       ${held?.answer
         ? `<div class="${indent} mt-s1 text-answer text-ink">${tnum(esc(held.answer))}</div>
-           <div class="${indent} text-provenance text-ink-muted">answered ${esc(ago(held.answered_at))}
+           <div class="${indent} text-provenance text-ink-muted">${provenance}
              · <button type="button" data-human-edit="${esc(entry.question)}"
                  class="cursor-pointer bg-transparent text-accent-ink underline">change</button></div>`
-        : `<div class="${indent} mt-s1">
+        : (editing ? '' : `<div class="${indent} mt-s1">
              <button type="button" data-human-edit="${esc(entry.question)}"
                class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
                >Answer this →</button>
-           </div>`}
+           </div>`)}
+      ${editorHtml}
       ${wanted
         ? `<div class="${indent} text-provenance text-ink-muted">The catalog says
              ${esc(declared)}, but no analysis is attached to this question, so

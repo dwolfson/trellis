@@ -1,6 +1,7 @@
 """Resource context API — store and retrieve human-provided metadata."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
@@ -39,6 +40,17 @@ class QuestionAnswer(BaseModel):
     question: str = ""
     answer: str = ""
     answered_at: str = ""
+    # ENRICHMENT-E0-ROW-ANATOMY (REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §0.3):
+    # this used to be the one store in the resource-context "three stores,
+    # three rules" table with no author field at all — the Questions tab
+    # showed "answered 2d ago", breaking the reply's own stated rule that
+    # "a human-supplied answer carries who and when." Server-stamped from
+    # the signed-in identity in `save_answer` below, never taken from the
+    # client, same reasoning as `EnrichmentField.author` below. Blank on any
+    # answer recorded before this field existed — that is a real, honest
+    # gap (nobody was ever asked who), not something to backfill with a
+    # guess.
+    answered_by: str = ""
 
 
 class EnrichmentField(BaseModel):
@@ -74,6 +86,23 @@ class FieldWrite(BaseModel):
     source: str = ""
     evidence: dict[str, str] = Field(default_factory=dict)
     interim: bool = False
+
+
+class AnswerWrite(BaseModel):
+    question: str
+    answer: str = ""
+
+
+def question_key(text: str) -> str:
+    """Slug for one catalog question — the SAME rule as the client's
+    `questionKey()` in `re-api.js` (lowercase, non-alphanumerics collapsed
+    to `-`, trimmed, capped at 80 chars), so a key computed here for a
+    server-stamped write matches a key the client already computed for a
+    read. Duplicated rather than shared because the two run in different
+    languages; see `QuestionAnswer`'s own docstring for why the key is a
+    slug of the wording rather than a stable catalog id."""
+    key = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return key[:80]
 
 
 # The flat keys `/`'s form reads, mirrored from the enrichment record so the
@@ -203,3 +232,48 @@ def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request)
     context["updated_at"] = datetime.now(timezone.utc).isoformat()
     registry.save_context(entity_type, slug, context)
     return {"key": key, "field": fields[key]}
+
+
+@router.patch("/{entity_type}/{slug}/answer")
+def save_answer(entity_type: str, slug: str, write: AnswerWrite, request: Request) -> dict:
+    """Save ONE answer to a catalog human question, author-stamped.
+
+    Mirrors `save_field` above (ENRICHMENT-E0-ROW-ANATOMY, REPLY-DESIGNER-
+    ENRICHMENT-STAGE-IA.md §0.3/§6 item 1): before this route existed, the
+    client did its own read-modify-write of the whole context document
+    (`getContext` then `saveContext` with the answer spliced in) and
+    recorded only a timestamp — nothing established the answerer's
+    identity, so none was stored. That broke the reply's own stated rule
+    that "a human-supplied answer carries who and when," the same rule
+    `save_field` already enforces for enrichment judgements/observations.
+
+    The author is the signed-in user, stamped here — never taken from the
+    client, same reasoning as `save_field`'s `author`. Anonymous writes are
+    refused with 401: an answer with no author is not an answer, the same
+    standard applied to a judgement.
+
+    Read-modify-write on the server (not the whole document — just
+    `question_answers`), so two people answering two different questions on
+    the same resource do not clobber each other's answers, the same
+    protection `save_field` gives independent enrichment fields.
+    """
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to answer — an answer needs an author.")
+    question = write.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="question is required")
+
+    registry = ProjectRegistry()
+    context = registry.get_context(entity_type, slug) or {}
+    answers = dict(context.get("question_answers") or {})
+    key = question_key(question)
+    answers[key] = QuestionAnswer(
+        question=question, answer=write.answer.strip(),
+        answered_at=datetime.now(timezone.utc).isoformat(), answered_by=author,
+    ).model_dump()
+    context["question_answers"] = answers
+    context["updated_at"] = datetime.now(timezone.utc).isoformat()
+    registry.save_context(entity_type, slug, context)
+    return {"key": key, "answer": answers[key]}
