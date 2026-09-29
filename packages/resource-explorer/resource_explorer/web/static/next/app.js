@@ -5463,7 +5463,7 @@ function neverRunLast(boards, boardState) {
  *  (`needs-lens`, via `preliminary_fit`'s own `lens_declared` marker,
  *  same check `needsLensDeclaration` above makes on the Questions
  *  envelope) rather than collapsing every "ran" case to a flat tick. */
-function boardStateKey(entry) {
+export function boardStateKey(entry) {
   if (entry.status === 'loading') return null;   // rendered separately -- no STATES entry fits "still fetching"
   if (entry.status === 'error') return 'error';
   const board = entry.board;
@@ -5471,6 +5471,20 @@ function boardStateKey(entry) {
   const needsLens = (board.analyses || []).some(
     (a) => a.analysis_id === 'preliminary_fit' && a.results && a.results.lens_declared === false);
   if (needsLens) return 'needs-lens';
+  // `result_status.py`'s NOT_ESTABLISHED, surfaced here for the first time
+  // (BRIEF-BY-ANALYSIS-PANEL-USABILITY.md gate task 4: "the not-established
+  // cards must read as such in the table of contents"). Before this, a
+  // board whose analysis measured something but could not settle a result
+  // -- `has_results: true`, `results.state === 'not_established'` -- fell
+  // straight through to `measured` below and showed a plain ✓, the exact
+  // "confident wrong answer" shape: a real read, but not a settled one.
+  // Neither gate database (laz_local_adventureworks,
+  // localhost_docker_coco_pharma) has a not-established analysis today, so
+  // this is covered by a harness fixture test instead of a live screenshot
+  // -- see frontend-build/test-harness's by-analysis-not-established test.
+  const notEstablished = (board.analyses || []).some(
+    (a) => a.results && a.results.state === 'not_established');
+  if (notEstablished) return 'not_established';
   if (!board.has_results) return 'unrun';
   return 'measured';
 }
@@ -5496,18 +5510,100 @@ function boardHeadlineText(board) {
   return lead ? firstSentence(lead.headline.label) : '';
 }
 
+/**
+ * Match each board to the question that names it, the same "lead analysis,
+ * then any analysis_id" preference `orderBoardsByQuestions` already applies
+ * -- pulled out so the headline fallback below can use the identical
+ * matching rule rather than a second guess at it.
+ */
+export function boardQuestionMap(boards, questions) {
+  const boardIds = new Set(boards.map((b) => b.id));
+  const map = new Map();
+  for (const q of questions || []) {
+    const ids = q.analysis_ids || [];
+    const lead = leadAnalysisId(q);
+    const preferred = [...(lead ? [lead] : []), ...ids];
+    for (const id of preferred) {
+      if (boardIds.has(id) && !map.has(id)) map.set(id, q);
+    }
+  }
+  return map;
+}
+
+/**
+ * The row's headline BEFORE the board's own (slow) read has landed --
+ * BRIEF-BY-ANALYSIS-PANEL-USABILITY.md's "Progressive render" addendum:
+ * "the contents board... reads only the per-analysis state already resolved
+ * for the Questions tab, no dashboard fetch required."
+ *
+ * Genuinely free: this makes NO new network call. `answers` is `state.
+ * answers` -- the Questions tab's own per-question envelope cache
+ * (`loadAnswer`, `getAnswer`) -- so this only has something to show when the
+ * Questions tab has already resolved the matching question's envelope for
+ * this slug/stage, in this browser session. When it hasn't (a cold load
+ * that goes straight to By-analysis without visiting Questions first), this
+ * returns '' and the row shows the same "reading…" placeholder it always
+ * did -- an honest floor, not a manufactured line. (`getQuestions()` itself,
+ * fetched for board ordering just above this function's one call site, was
+ * checked and does NOT carry a resolved headline of its own -- its
+ * `has_data` field is a boolean, and the headline readers
+ * `DATABASE_ANALYSIS_HEADLINE_MAP`/etc. name are each their own registry
+ * read, not free -- see this branch's IMPLEMENTED doc for the full trace.)
+ *
+ * Reuses `leadAnalysisId`/`firstSentence` -- the same pair `boardHeadlineText`
+ * and `readEnvelope` (envelope.js) both already use -- rather than a third,
+ * bespoke extraction of "the one sentence this row shows".
+ */
+export function envelopeHeadlineText(question, answers) {
+  if (!question) return '';
+  const env = answers.get(question.question);
+  if (!env || typeof env !== 'object' || env.__error) return '';
+  const facts = (env.facts || []).filter((f) => f.is_known);
+  if (!facts.length) return '';
+  const lead = leadAnalysisId(question);
+  const preferred = [
+    ...(lead ? [lead] : []),
+    ...(question.analysis_ids || []),
+    ...facts.map((f) => f.analysis_id),
+  ];
+  const seen = new Set();
+  for (const id of preferred) {
+    if (seen.has(id) || !id) continue;
+    seen.add(id);
+    const f = facts.find((x) => x.analysis_id === id);
+    if (!f) continue;
+    if (f.headline) return firstSentence(f.headline);
+    const p = prose(f);
+    if (p) return firstSentence(p);
+  }
+  return '';
+}
+
 /** Every numeric measure across every SETTLED board, grouped by name --
- *  same "a name reported twice with different values" detection the old
- *  per-card COUNTS table did, now computed once for the whole pane so the
- *  Shared Names block (REPLY §2.3) can render each disagreement ONCE
- *  instead of inside every card that carries it.
+ *  same "a name reported twice" detection the old per-card COUNTS table
+ *  did, now computed once for the whole pane so the Shared Names block
+ *  (REPLY §2.3, reworded per the owner's 2026-09-28 gate feedback -- see
+ *  `sharedNamesHtml`'s own doc) can render each shared name ONCE instead of
+ *  inside every card that carries it.
+ *
+ *  Two derived sets, kept separate on purpose:
+ *   - `shared` -- every name carried by more than one analysis, whether or
+ *     not their values agree. This, not "disagree", is the Shared Names
+ *     block's own inclusion criterion (the owner: "I don't know what '1
+ *     DISAGREE' means" -- a count that conflated "shared" with "shared and
+ *     different" was the confusion).
+ *   - `disagreeing` -- the subset of `shared` whose comparable values
+ *     actually differ. Still the right (and only) set for the per-card `≠`
+ *     mark (`boardCountsHtml`), whose own title text says "reported with
+ *     different values elsewhere" -- broadening ITS set to plain "shared"
+ *     would make the mark lie for a name two analyses happen to agree on.
  *
  *  `preliminary_fit`'s `confidence: 0` is marked `noLens` and excluded from
  *  the VALUES compared for disagreement (REPLY §2.3: "no lens was supplied,
  *  so there was nothing to be confident about... leave it out of the
  *  comparison") but still carried in the row for display, rendered as
  *  "— (no lens declared)" rather than a bare, misleading zero. */
-function collectMeasures(boards, boardState) {
+export function collectMeasures(boards, boardState) {
   const seen = new Map();
   for (const b of boards) {
     const entry = boardState.get(b.id);
@@ -5522,17 +5618,25 @@ function collectMeasures(boards, boardState) {
       }
     }
   }
-  const disputed = new Map();
+  const shared = new Map();
+  const disagreeing = new Set();
   for (const [k, rec] of seen) {
+    if (rec.length > 1) shared.set(k, rec);
     const comparable = rec.filter((x) => !x.noLens);
-    if (comparable.length > 1 && new Set(comparable.map((x) => x.value)).size > 1) disputed.set(k, rec);
+    if (comparable.length > 1 && new Set(comparable.map((x) => x.value)).size > 1) disagreeing.add(k);
   }
-  return { seen, disputed };
+  return { seen, shared, disagreeing };
 }
 
-/** A disputed value's display text -- the no-lens placeholder, or the
- *  ordinary formatted number. */
-function measureDisplay(x, key) {
+/** A shared measure's display text -- the no-lens placeholder, or the
+ *  ordinary formatted number. Used both by the Shared Names block and by
+ *  `boardCountsHtml`'s own per-card row for the exact same value, so the
+ *  two never disagree about how `preliminary_fit`'s no-lens 0 reads (the
+ *  owner's 2026-09-28 coco_pharma finding: the Shared Names block already
+ *  said "— (no lens declared)" while the card's own COUNTS table, computing
+ *  its display text separately, still showed a bare "0" for the identical
+ *  value). */
+export function measureDisplay(x, key) {
   return x.noLens ? '— (no lens declared)' : fmtScalar(x.value, key);
 }
 
@@ -5554,13 +5658,27 @@ function countGroupFor(key) {
 const COUNT_GROUP_LABELS = { result: 'Result', coverage: 'Coverage', diagnostics: 'Diagnostics' };
 const COUNT_GROUP_ORDER = ['result', 'coverage', 'diagnostics'];
 
-/** Grouped COUNTS table for one board -- the non-headline, non-disputed
- *  scalar/boolean fields across its analyses, three groups instead of one
- *  flat list. Disputed names are still shown HERE too (a reader looking at
- *  one card should not have to leave it to see the number this card itself
- *  measured), with a `≠` mark linking to the Shared Names block, per REPLY
- *  §2's "each card's COUNTS keeps its own value with a small ≠ mark". */
-function boardCountsHtml(board, disputed) {
+/** Grouped COUNTS table for one board -- the non-headline scalar/boolean
+ *  fields across its analyses, three groups instead of one flat list.
+ *  Shared names are still shown HERE too (a reader looking at one card
+ *  should not have to leave it to see the number this card itself
+ *  measured), with a `≠` mark linking to the Shared Names block for the
+ *  ones that actually disagree, per REPLY §2's "each card's COUNTS keeps
+ *  its own value with a small ≠ mark".
+ *
+ *  `disagreeing` is `collectMeasures`'s disagreeing SET (names whose
+ *  comparable values actually differ) -- not its `shared` map, which would
+ *  mark every merely-shared name with `≠` even when they agree.
+ *
+ *  `noLens` is tracked per row exactly the way `collectMeasures` tracks it
+ *  for the Shared Names block, and rendered through the same `measureDisplay`
+ *  helper -- found 2026-09-28 on coco_pharma: this table used to format
+ *  every value with a bare `fmtScalar`, so `preliminary_fit`'s no-lens
+ *  `confidence: 0` showed as a plain "0" here while the Shared Names block,
+ *  right next to it on the same screen, correctly said "— (no lens
+ *  declared)" for the identical value -- two renderings of one number,
+ *  disagreeing with each other. */
+export function boardCountsHtml(board, disagreeing) {
   if (!board) return '';
   const groups = { result: [], coverage: [], diagnostics: [] };
   for (const a of board.analyses || []) {
@@ -5568,7 +5686,10 @@ function boardCountsHtml(board, disputed) {
     for (const [k, v] of Object.entries(res)) {
       if (k === 'graphviz' || k === 'headline' || typeof v === 'object') continue;
       if (typeof v !== 'number' && typeof v !== 'boolean') continue;
-      groups[countGroupFor(k)].push({ key: k, value: v, analysisId: a.analysis_id, when: a.last_surveyed_at });
+      const noLens = a.analysis_id === 'preliminary_fit' && k === 'confidence' && v === 0;
+      groups[countGroupFor(k)].push({
+        key: k, value: v, analysisId: a.analysis_id, when: a.last_surveyed_at, noLens,
+      });
     }
   }
   const anyRows = COUNT_GROUP_ORDER.some((g) => groups[g].length);
@@ -5577,14 +5698,13 @@ function boardCountsHtml(board, disputed) {
     <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(COUNT_GROUP_LABELS[g])}</div>
     <table class="w-full border-collapse text-caveat">
       ${groups[g].map((c) => {
-        const rec = disputed.get(c.key);
-        const disagree = rec && rec.length > 1;
+        const disagree = disagreeing.has(c.key);
         return `<tr class="wl-countrow cursor-pointer border-b border-rule ${disagree ? 'bg-[rgba(168,113,42,.07)]' : ''}"
           data-measure="${esc(c.analysisId)}" data-metric="${esc(c.key)}"
           data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(c.when || '')}">
           <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}${
             disagree ? ' <span class="text-state-warn" title="reported with different values elsewhere -- see Shared names above">≠</span>' : ''}</td>
-          <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
+          <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(measureDisplay(c, c.key))}</td>
           <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${esc(c.analysisId)}${
             c.when ? ` · ${esc(ago(c.when))}` : ''}</td>
         </tr>`;
@@ -5742,7 +5862,7 @@ function bindGraphvizCard(root, boardId, gv) {
 /** One card's body -- headline first, description collapsed, findings,
  *  grouped COUNTS, and (REPLY §2's card-anatomy) a band boundary rather
  *  than a box: space above, a strong top rule, name-size heading. */
-function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, entry, disputed, defaultOpen) {
+function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, entry, disagreeing, defaultOpen) {
   const board = entry.status === 'done' ? entry.board : null;
   const open = byAnalysisCardOpen(slug, boardId, defaultOpen);
   const glyphKey = boardStateKey(entry);
@@ -5772,25 +5892,38 @@ function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, ent
         </details>` : ''}
       ${overall ? headlineHtml(overall) : ''}
       ${board ? boardFindingsHtml(board) : ''}
-      ${board ? boardCountsHtml(board, disputed) : ''}
+      ${board ? boardCountsHtml(board, disagreeing) : ''}
       ${diagramHtml}
     </details>`;
 }
 
 /** The Shared Names block (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.3):
- *  every disputed name, once, not per card. */
-function sharedNamesHtml(disputed) {
-  if (!disputed.size) return '';
+ *  every shared name, once, not per card.
+ *
+ *  Reworded 2026-09-28 per the owner's live coco_pharma gate feedback ("I
+ *  don't know what '1 DISAGREE' means"): the header used to read "N
+ *  DISAGREE", a count that read as a verdict on its own. The inclusion
+ *  criterion was always "carried by more than one analysis" (`shared`,
+ *  `collectMeasures`) -- whether those analyses' values actually differ is
+ *  now said in words, per row, not folded into a header count. No "DISAGREE"
+ *  string appears anywhere in this block any more. */
+export function sharedNamesHtml(shared, disagreeing) {
+  if (!shared.size) return '';
   return `
     <div class="mb-s5 rounded-sm border border-rule-strong p-s3" data-shared-names>
       <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Shared names ·
-        <span class="tnum">${disputed.size}</span> disagree</div>
-      ${[...disputed.entries()].map(([key, rec]) => `
+        <span class="tnum">${shared.size}</span> names carried by more than one analysis</div>
+      ${[...shared.entries()].map(([key, rec]) => {
+        const differs = disagreeing.has(key);
+        return `
         <div class="mb-s1 text-caveat text-ink">
-          <span class="text-state-warn">⚠</span> <strong class="font-semibold">${esc(key.replace(/_/g, ' '))}</strong>
+          <span class="${differs ? 'text-state-warn' : 'text-ink-muted'}">${differs ? '⚠' : '·'}</span> <strong class="font-semibold">${esc(key.replace(/_/g, ' '))}</strong>
           · ${rec.map((x) => `${esc(x.analysis)} <span class="tnum">${esc(measureDisplay(x, key))}</span>`).join(' · ')}
-          <span class="block text-provenance text-ink-muted">different measures share this name -- not necessarily wrong, likely worth a rename</span>
-        </div>`).join('')}
+          <span class="block text-provenance text-ink-muted">${differs
+            ? 'different measures share a name -- not necessarily wrong, likely worth a rename'
+            : 'these measures share a name and agree'}</span>
+        </div>`;
+      }).join('')}
     </div>`;
 }
 
@@ -5798,7 +5931,7 @@ function sharedNamesHtml(disputed) {
  *  (BRIEF's "Progressive render") the ONE line that says how much is still
  *  outstanding. Re-rendered on every board settling, so the "still reading
  *  N of M" count and each row's glyph/headline stay live. */
-function renderByAnalysisContents(slug, boards, boardState, settled, total) {
+export function renderByAnalysisContents(slug, boards, boardState, settled, total, boardQuestions) {
   const contentsEl = $('by-analysis-contents');
   if (!contentsEl) return;
   const ran = boards.filter((b) => (boardState.get(b.id) || {}).board && boardState.get(b.id).board.has_results).length;
@@ -5811,7 +5944,13 @@ function renderByAnalysisContents(slug, boards, boardState, settled, total) {
     const entry = boardState.get(b.id) || { status: 'loading' };
     const glyphKey = boardStateKey(entry);
     const glyph = glyphKey ? stateEntry(glyphKey) : { glyph: '◔', tone: 'text-ink-muted', word: 'reading' };
-    const headlineText = entry.status === 'done' ? boardHeadlineText(entry.board) : '';
+    // The board's own headline once its read has landed; before that, the
+    // matching question's ALREADY-RESOLVED envelope, if one is sitting in
+    // state.answers -- see envelopeHeadlineText's own doc for exactly when
+    // that is (and isn't) the case. Never a fresh fetch either way.
+    const headlineText = entry.status === 'done'
+      ? boardHeadlineText(entry.board)
+      : envelopeHeadlineText(boardQuestions.get(b.id), state.answers);
     const board = entry.status === 'done' ? entry.board : null;
     const runWhen = board && board.last_surveyed_at ? `run ${esc(ago(board.last_surveyed_at))}`
       : entry.status === 'loading' ? 'reading…'
@@ -5903,15 +6042,20 @@ async function loadByAnalysisPane() {
   // a single board's own data has been requested.
   const boardState = new Map(catalogBoards.map((b) => [b.id, { status: 'loading', board: null }]));
   let orderedBoards = catalogBoards;
+  // Which question names each board -- filled in once getQuestions() (below)
+  // resolves. Empty until then, which is fine: envelopeHeadlineText just has
+  // nothing to look up yet, same as any other board with no matching
+  // question.
+  let boardQuestions = new Map();
   const paintAll = (final = false) => {
     if (!live()) return;
-    const { disputed } = collectMeasures(orderedBoards, boardState);
+    const { shared, disagreeing } = collectMeasures(orderedBoards, boardState);
     const settled = [...boardState.values()].filter((e) => e.status !== 'loading').length;
-    renderByAnalysisContents(slug, orderedBoards, boardState, settled, orderedBoards.length);
-    $('by-analysis-shared').innerHTML = sharedNamesHtml(disputed);
+    renderByAnalysisContents(slug, orderedBoards, boardState, settled, orderedBoards.length, boardQuestions);
+    $('by-analysis-shared').innerHTML = sharedNamesHtml(shared, disagreeing);
     const cardsEl = $('by-analysis-cards');
     cardsEl.innerHTML = orderedBoards.map((b, i) => byAnalysisCardHtml(
-      slug, b.id, b.title, b.description, boardState.get(b.id), disputed,
+      slug, b.id, b.title, b.description, boardState.get(b.id), disagreeing,
       i === 0 || orderedBoards.length <= 3,
     )).join('');
     cardsEl.querySelectorAll('[data-by-analysis-card]').forEach((card) => {
@@ -5950,7 +6094,12 @@ async function loadByAnalysisPane() {
   // the reader already sees, but nothing above depended on waiting for it.
   getQuestions(slug, { phase: stage, entityType }).then((checklist) => {
     if (!live()) return;
-    orderedBoards = orderBoardsByQuestions(orderedBoards, checklist.questions || []);
+    const questions = checklist.questions || [];
+    orderedBoards = orderBoardsByQuestions(orderedBoards, questions);
+    // Same board/question matching `orderBoardsByQuestions` just used, kept
+    // around so the contents row's headline fallback (envelopeHeadlineText)
+    // can look up each board's question too -- see renderByAnalysisContents.
+    boardQuestions = boardQuestionMap(orderedBoards, questions);
     paintAll();
   }).catch(() => { /* ordering is a nicety -- catalog order stands without it */ });
 
