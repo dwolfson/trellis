@@ -7,6 +7,8 @@ package's existing test styles (Python, or JS source-text assertions)
 could have caught: the engine-note-persistence bug and the Schema
 Inventory filter-then-expand bug (Slice 22).
 
+**Decision (design session, 2026-09-28):** every /next fix from here on adds its regression to the harness, not only a source-text test.
+
 ## Why this had no coverage before
 
 Every JS-related test in this package before this branch (`grep tests/
