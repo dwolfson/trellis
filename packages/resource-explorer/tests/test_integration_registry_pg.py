@@ -291,6 +291,13 @@ class TestDatabaseSurveysCacheIsInstanceScopedAndWriteInvalidated:
         pg_registry.remove_database(slug)
 
     def test_repeat_reads_within_one_instance_do_not_requery(self, pg_registry, pg_surveyed_database, monkeypatch):
+        """The FULL fetch (every historical `survey_data` blob) happens once;
+        the cheap freshness check (`_database_surveys_freshness`) is expected
+        to run on every call, cache hit or miss — that is the point of the
+        2026-09-29 self-invalidating-key hardening, not something to
+        suppress. So this counts the full-fetch query specifically (its
+        `ORDER BY surveyed_at DESC` clause, which the freshness query does
+        not have), not every statement that mentions `database_surveys`."""
         from resource_explorer.registry import ConnectionWrapper
 
         pg_registry.record_database_survey(
@@ -298,12 +305,16 @@ class TestDatabaseSurveysCacheIsInstanceScopedAndWriteInvalidated:
             survey_data={"credential_capability": {"visible": True}},
         )
 
-        calls = []
+        full_fetch_calls = []
+        freshness_calls = []
         real_execute = ConnectionWrapper.execute
 
         def _counting_execute(self, sql, params=None):
             if "FROM database_surveys" in sql:
-                calls.append(1)
+                if "ORDER BY surveyed_at DESC" in sql:
+                    full_fetch_calls.append(1)
+                elif "max(surveyed_at)" in sql:
+                    freshness_calls.append(1)
             return real_execute(self, sql, params)
 
         monkeypatch.setattr(ConnectionWrapper, "execute", _counting_execute)
@@ -311,7 +322,13 @@ class TestDatabaseSurveysCacheIsInstanceScopedAndWriteInvalidated:
         first = pg_registry.get_database_surveys(pg_surveyed_database)
         second = pg_registry.get_database_surveys(pg_surveyed_database)
 
-        assert len(calls) == 1, "second get_database_surveys() call re-queried Postgres"
+        assert len(full_fetch_calls) == 1, (
+            "second get_database_surveys() call re-ran the full blob fetch"
+        )
+        assert len(freshness_calls) == 2, (
+            "the cheap freshness check should run on every call, cache hit "
+            "or miss — that's what makes the cache self-invalidating"
+        )
         assert first == second
 
     def test_write_through_the_same_instance_is_not_served_stale(self, pg_registry, pg_surveyed_database):
@@ -341,6 +358,123 @@ class TestDatabaseSurveysCacheIsInstanceScopedAndWriteInvalidated:
         )
         latest = pg_registry.get_latest_database_survey(pg_surveyed_database)
         assert latest["surveyed_at"] == "2026-01-02T00:00:00"
+
+
+class TestGetDatabaseSurveysCacheSurvivesTheRunQueueWorkerPattern:
+    """2026-09-29 hardening: the "Resource-explorer PR/CI merge" session's
+    review of this branch found that the original per-instance survey cache
+    (write-invalidated only through THAT SAME instance) is safe for web
+    routes — every route constructs `ProjectRegistry()` fresh per request —
+    but was a real staleness risk for any LONG-LIVED holder that constructs
+    ONE `ProjectRegistry` and reuses it across many iterations, the shape
+    `run_queue.py`'s `QueueRunner._loop` is written in: one
+    `registry = ProjectRegistry()` before `while not self._stop.is_set():`,
+    intended to be threaded through `claim_and_execute_once(registry) ->
+    execute_run(row, registry=registry)` for every iteration. A survey
+    written by a DIFFERENT process (the web server, or a different worker)
+    in between two iterations would never invalidate that one instance's
+    cached copy under the old scheme.
+
+    This drives the REAL `run_queue.claim_and_execute_once` /
+    `run_queue.execute_run` call chain — not two bare `ProjectRegistry`
+    instances calling `get_database_surveys` directly in isolation — with
+    ONE `ProjectRegistry` constructed once and threaded through multiple
+    simulated run-queue iterations, exactly the way `QueueRunner._loop`
+    does, so this proves the specific bug class (a long-lived worker
+    registry serving a stale survey list after another process's write) is
+    closed, not just the underlying cache mechanism in the abstract.
+
+    Honesty note, found while building this test: `QueueRunner._loop`'s own
+    `registry` local is currently DEAD — its call site
+    (`claim_and_execute_once(kinds=self.kinds)`) does not pass `registry=`,
+    so today's worker actually builds a fresh `ProjectRegistry` per
+    iteration via `claim_and_execute_once`'s `registry or ProjectRegistry()`
+    default, and even a future fix to pass it through would not, by itself,
+    reach `get_database_surveys` — `execute_run` calls
+    `HANDLERS[kind](target, result_ref)` with no `registry` argument at all,
+    so every handler (`_handle_database_analysis_run` included) constructs
+    its own fresh registry regardless. Neither of those is this fix's to
+    make — they are separate, out-of-scope findings, logged in
+    `docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md`'s
+    staleness-hardening addendum. This test still exercises the call chain
+    `claim_and_execute_once`/`execute_run` genuinely support (both accept an
+    explicit `registry=`) with one instance reused across iterations, which
+    is the pattern the cache must be safe under whether today's wiring
+    happens to reach it or a future fix completes that wiring.
+    """
+
+    def test_worker_registry_sees_a_survey_written_by_a_different_instance_between_runs(
+        self, pg_test_schema, monkeypatch
+    ):
+        from resource_explorer.config import get_config
+        from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+        from resource_explorer import run_queue as rq
+
+        cfg = get_config().pgvector
+        url = (f"postgresql://{cfg.db_user}:{cfg.password}@{cfg.host}:{cfg.port}"
+               f"/{cfg.dbname}?options=-csearch_path%3D{pg_test_schema}")
+
+        # ONE ProjectRegistry, constructed once — exactly QueueRunner._loop's
+        # `registry = ProjectRegistry()` before its `while` loop — reused
+        # across multiple simulated iterations below, instead of letting
+        # each call build its own.
+        worker_registry = ProjectRegistry(database_url=url)
+
+        slug = "pg_itest_worker_loop_survey_cache"
+        worker_registry.register_database(DatabaseEntity(
+            slug=slug, display_name="Worker Loop Test DB", db_type="postgresql",
+            host="localhost", port=5432, database_name=slug,
+        ))
+        try:
+            # Iteration 1: a read against the slug through the long-lived
+            # instance — the same shape db_derived.py's _snapshot_keys uses
+            # (registry.get_database_surveys(slug)) when an analysis run
+            # reaches it via this same worker registry.
+            first_reads = worker_registry.get_database_surveys(slug)
+            assert first_reads == []
+
+            # Iteration 1's actual unit of work: an unrelated row claimed
+            # and executed through the REAL run_queue call chain
+            # (claim_and_execute_once -> execute_run), on the SAME threaded
+            # registry instance — not a direct get_database_surveys() call
+            # standing in for it.
+            monkeypatch.setitem(
+                rq.HANDLERS, "curate_commit",
+                lambda target, result_ref: rq.RunOutcome(state="succeeded"),
+            )
+            run_id = worker_registry.enqueue_run("curate_commit", {"curation_id": "noop"})
+            claimed = rq.claim_and_execute_once(worker_registry)
+            assert claimed is not None and claimed["id"] == run_id
+            assert worker_registry.get_run(run_id)["state"] == "succeeded"
+
+            # A DIFFERENT process — the web server, or a different worker —
+            # writes a new survey for the SAME slug in between iterations,
+            # through its OWN ProjectRegistry instance.
+            other_process_registry = ProjectRegistry(database_url=url)
+            other_process_registry.record_database_survey(
+                slug, schema_count=1, table_count=2, column_count=3,
+                survey_data={"credential_capability": {"visible": True}},
+            )
+
+            # Iteration 2, same long-lived worker registry: another
+            # unrelated row runs through the same call chain first (to keep
+            # exercising claim_and_execute_once/execute_run across
+            # iterations, matching QueueRunner._loop's repeated-call shape)...
+            run_id_2 = worker_registry.enqueue_run("curate_commit", {"curation_id": "noop-2"})
+            claimed_2 = rq.claim_and_execute_once(worker_registry)
+            assert claimed_2 is not None and claimed_2["id"] == run_id_2
+
+            # ...and THEN the very next read for the original slug, through
+            # the SAME instance used in iteration 1, must see the newer
+            # survey — not the empty list it cached back in iteration 1.
+            second_reads = worker_registry.get_database_surveys(slug)
+            assert len(second_reads) == 1, (
+                "the long-lived run-queue worker registry served a stale "
+                "cached survey list after a DIFFERENT process's write — "
+                "exactly the 2026-09-29 staleness bug this hardening closes"
+            )
+        finally:
+            worker_registry.remove_database(slug)
 
 
 class TestFindLatestDatabaseSurveyWithKey:

@@ -1271,15 +1271,20 @@ class ProjectRegistry:
                 "registry_init path=%s ran_schema_init=%s elapsed_ms=%.1f",
                 self.database_url, ran_schema_init, _elapsed_ms,
             )
-        # Per-INSTANCE cache for `get_database_surveys` — see that method's
-        # docstring. Instance-scoped, not class/process-scoped: a
-        # `ProjectRegistry` is typically constructed fresh per request (the
-        # same pattern the engine/schema cache above exists to make cheap),
-        # so this dies with the request and can never serve another
-        # request's caller a stale answer. `record_database_survey` clears
-        # the entry it writes, so even a longer-lived instance (a worker
-        # loop reusing one `ProjectRegistry`) sees its own writes.
-        self._database_surveys_cache: dict[str, list[dict]] = {}
+        # Per-INSTANCE, self-invalidating cache for `get_database_surveys` —
+        # see that method's docstring
+        # (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md's
+        # "Registry cache staleness" addendum). Each entry is keyed on a
+        # cheap freshness signature (`(max(surveyed_at), count(*))` for the
+        # slug), not just the slug — so a stale entry is detected and
+        # refetched automatically, regardless of WHICH `ProjectRegistry`
+        # instance or process wrote the newer survey. This protects every
+        # holder, including the three long-lived ones found 2026-09-29
+        # (`run_queue.py`'s worker loop, `egeria_resync.EgeriaResync`) that
+        # construct one instance and reuse it beyond a single request —
+        # the original write-through-this-instance-only invalidation could
+        # never see a survey a DIFFERENT instance or process wrote.
+        self._database_surveys_cache: dict[str, tuple[tuple, list[dict]]] = {}
 
     @contextmanager
     def _conn(self):
@@ -9093,12 +9098,12 @@ class ProjectRegistry:
     def remove_database(self, slug: str) -> None:
         """Remove a database entity and all its survey records."""
         normalized = self._normalize_slug(slug)
-        # Invalidated up front, not after the transaction commits below —
-        # see `get_database_surveys`'s cache docstring. This method's own
-        # `with self._conn()` block stays a single transaction (unchanged
-        # from before this cache existed); popping here only affects this
-        # Python-level dict, never the DB commit/rollback boundary.
-        self._database_surveys_cache.pop(normalized, None)
+        # No manual cache pop needed here (2026-09-29 hardening) —
+        # `get_database_surveys`'s freshness-keyed cache detects this
+        # delete on its own next read, from any instance, via
+        # `_database_surveys_freshness`'s `count(*)` half. See that
+        # method's docstring for why a single self-invalidating mechanism
+        # replaced the old same-instance-only manual pop.
         with self._conn() as conn:
             # Child before parent — database_surveys has a real FK to
             # databases.slug; SQLite silently allows the reverse order
@@ -9171,7 +9176,10 @@ class ProjectRegistry:
                    WHERE slug=?""",
                 (schema_count, table_count, column_count, surveyed_at, slug),
             )
-        self._database_surveys_cache.pop(slug, None)
+        # No manual cache pop needed here (2026-09-29 hardening) — see
+        # `remove_database`'s comment and `get_database_surveys`'s
+        # docstring: the freshness-keyed cache detects this insert on its
+        # own, from any instance.
         # Materialise the structured detail rows from the same blob, so a
         # survey run today is queryable without waiting for a back-fill
         # (design §5.7). Done here rather than in each surveyor because every
@@ -9198,29 +9206,72 @@ class ProjectRegistry:
                 slug, surveyed_at, source, exc,
             )
 
+    def _database_surveys_freshness(self, slug: str) -> tuple:
+        """A cheap freshness signature for `slug`'s stored surveys.
+
+        `(max(surveyed_at), count(*))` rather than just a row count: a
+        row count alone cannot distinguish "the newest survey got replaced"
+        from "nothing changed" when the total stays the same (it can't —
+        `record_database_survey` only ever inserts, never updates or
+        deletes, but `remove_database` deletes and a future write path
+        could too), and `max(surveyed_at)` alone cannot distinguish
+        "unchanged" from "a row was added/removed elsewhere with an older
+        timestamp" (backfills, imports). The pair is the smallest signature
+        that is wrong only if two writes land with an identical
+        `(max(surveyed_at), count)` pair, which `record_database_survey`'s
+        own `datetime.utcnow().isoformat()` (microsecond precision) makes
+        vanishingly unlikely for two real writes.
+
+        Measured directly against Postgres on a 57-row/61MB survey history
+        (the same fixture `PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md`
+        profiled): 0.4-1.2ms — negligible next to the ~500-600ms full fetch
+        it guards, so paying it on every `get_database_surveys` call (cache
+        hit or miss) does not reintroduce the latency problem this cache
+        exists to fix.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT max(surveyed_at), count(*) FROM database_surveys "
+                "WHERE database_slug = ?",
+                (slug,),
+            ).fetchone()
+        return (row[0], row[1]) if row else (None, 0)
+
     def get_database_surveys(self, slug: str) -> list[dict]:
         """Return all survey records for a database, newest first.
 
-        Cached per-instance (2026-09-29,
-        docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md): this
-        fetches every historical survey's full `survey_data` blob — for
-        `laz_local_adventureworks`, 57 rows totalling ~61MB — and several
-        callers (`_credential_capability_results` deliberately, per its own
-        docstring, plus others) call it more than once for the same slug
-        within a single board read. Profiled directly: one board request
-        called this 5 times, 1.85-2.86s of a ~2-3s total. The query and its
-        "search every stored survey" semantics are unchanged — this only
-        stops paying for the identical fetch twice within one instance's
-        lifetime. See `__init__`'s `_database_surveys_cache` docstring for
-        why instance-scoping (not class/process-level) is what keeps this
-        safe: a `ProjectRegistry` is normally built fresh per request, and
-        `record_database_survey` clears the slug's entry on write for the
-        instances that outlive one.
+        Cached per-instance, keyed on a freshness signature (2026-09-29,
+        docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md; hardened
+        2026-09-29 against cross-instance/cross-process staleness — see that
+        doc's "Registry cache staleness" addendum): this fetches every
+        historical survey's full `survey_data` blob — for
+        `laz_local_adventureworks`, 57 rows totalling ~61MB — and callers
+        that legitimately re-read the same slug more than once within one
+        `ProjectRegistry` instance's lifetime (e.g.
+        `prerequisite_resolver.resolve()`'s per-step loop, via
+        `credential_capability.stored_probe`, re-checking a database's
+        `credential_capability` probe for each of a survey run's
+        `requires_context` steps) would otherwise pay the full ~500-600ms
+        fetch again on every repeat read — measured directly: 6 back-to-back
+        uncached reads of the same slug cost ~3.4s versus ~0ms for cached
+        repeats.
+
+        The cache entry is `(freshness_signature, result)`, not just
+        `result` — see `_database_surveys_freshness`'s docstring for why a
+        `(max(surveyed_at), count(*))` pair, and why that check (0.4-1.2ms)
+        is cheap enough to pay unconditionally. This is what makes the
+        cache self-invalidating rather than only correct for writes that
+        happen to go through THIS SAME instance: a stale entry is detected
+        and refetched the moment its freshness signature no longer matches
+        the table, no matter which `ProjectRegistry` instance or process
+        wrote the newer row. The query and its "search every stored survey"
+        semantics are otherwise unchanged.
         """
         slug = self._normalize_slug(slug)
+        freshness = self._database_surveys_freshness(slug)
         cached = self._database_surveys_cache.get(slug)
-        if cached is not None:
-            return cached
+        if cached is not None and cached[0] == freshness:
+            return cached[1]
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT database_slug, surveyed_at, egeria_report_guid,
@@ -9232,7 +9283,7 @@ class ProjectRegistry:
                 (slug,),
             ).fetchall()
         result = [dict(r) for r in rows]
-        self._database_surveys_cache[slug] = result
+        self._database_surveys_cache[slug] = (freshness, result)
         return result
 
     def get_latest_database_survey(self, slug: str) -> dict | None:

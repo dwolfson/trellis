@@ -294,3 +294,95 @@ second improvement.
 `uv run pytest tests/ -q -rf`, against the same quiet shared Postgres registry checked
 above: **6828 passed, 103 skipped, 0 failed** (15m37s). Skips are the usual optional-service
 integration tiers (Ollama/Phoenix/MLflow/etc. not running in this environment), not new.
+
+## Registry cache staleness — hardened, 2026-09-29 (post-merge follow-up)
+
+The "Resource-explorer PR/CI merge" session's review of this branch before merge flagged a
+real gap in the `get_database_surveys` per-instance cache above (item 2): it invalidates only
+through writes made by the SAME `ProjectRegistry` instance. That is exactly right for a
+web route (fresh instance per request) but was named as a possible risk for any **long-lived**
+holder — one that constructs a single `ProjectRegistry` and reuses it across many iterations —
+since a survey written by a *different* instance or process in between would never be seen.
+
+**Three specific holders were named and checked directly, and two are not what they looked
+like.** `run_queue.py`'s `QueueRunner._loop` does construct `registry = ProjectRegistry()`
+once before its `while` loop (line ~518) — but that local variable is **dead code**: its
+only call site, `claim_and_execute_once(kinds=self.kinds)`, does not pass `registry=`, so
+`claim_and_execute_once`'s own `registry or ProjectRegistry()` default builds a **fresh**
+instance on every iteration in the code as it exists today. Worse for the premise: even a
+future fix that threads `_loop`'s `registry` through would not, by itself, reach
+`get_database_surveys` — `execute_run` dispatches `HANDLERS[kind](target, result_ref)` with
+no `registry` argument at all, so every handler (`_handle_database_analysis_run` included)
+builds its own fresh `ProjectRegistry` regardless of what `execute_run` was given. Similarly,
+`egeria_resync.EgeriaResync` (`self._registry = registry or ProjectRegistry()`) is constructed
+fresh per HTTP request at both its call sites (`web/routes/egeria.py`) — not held across
+requests — and its scan methods never call `get_database_surveys` at all. `scheduler.py` was
+already confirmed clean in the original investigation (fresh `ProjectRegistry()` per function
+call).
+
+**A genuine repeat-read caller does exist, though, and it's request/run-scoped exactly like
+the cache was designed for:** `SurveyOrchestrator.run()`'s per-step loop calls
+`prerequisite_resolver.resolve()` for every step declaring `requires_context` (up to twice,
+before and after an auto-run), and `resolve()` calls `credential_capability.stored_probe()`
+→ `registry.get_database_surveys(slug)` — uncached at that layer, not yet routed through
+round 2's `find_latest_database_survey_with_key` fast path — every single time, with no
+memoization across the loop's iterations. Three database steps
+(`survey_definition_adapter.py`) declare `requires_context`, so one survey run can call this
+up to 6 times for the same slug, all against one `SurveyOrchestrator`/`ProjectRegistry`
+instance whose lifetime is bounded to that one run (every call site constructs it fresh —
+`bulk_ops.py`, `scheduler.py`, `egeria_resync.py`, the web routes, the CLI — verified by
+reading each one).
+
+**Measured directly (throwaway Postgres schema, 57-row/61MB survey history — the same shape
+profiled for the original fix):**
+
+| scenario | time |
+|---|---|
+| `get_database_surveys()`, uncached, single call | 498-613ms |
+| `get_database_surveys()`, cached repeat call (old per-instance scheme) | 0.00-0.01ms |
+| 6 back-to-back uncached calls (the `resolve()`-loop shape, cache removed) | **3.4s total** |
+| `SELECT max(surveyed_at), count(*)` freshness-check query | 0.4-1.2ms |
+
+That rules out simply dropping the cache (Option B): a real, currently-live caller
+(`SurveyOrchestrator`'s prerequisite-resolution loop) can lose **seconds** on a heavily
+surveyed database if every read goes uncached, comfortably over the ≥100ms bar for keeping a
+cache. It also shows the freshness-check query costs ~1000x less than the fetch it guards, so
+paying it on every call — hit or miss — does not reintroduce a latency problem.
+
+**Fix chosen: Option A, a self-invalidating cache key.** `get_database_surveys`'s cache entry
+is now `(freshness_signature, result)` rather than just `result`, where
+`_database_surveys_freshness(slug)` is `(max(surveyed_at), count(*))` for that slug — cheap
+(measured above), and the smallest signature that's wrong only if two real writes land with
+an identical pair, which `record_database_survey`'s microsecond-precision timestamp makes
+vanishingly unlikely. A cache hit now requires the stored signature to match the current one,
+checked on every call; a stale entry (from ANY instance or process's write, not just this
+one's) is detected and refetched automatically. The old same-instance-only invalidation
+(`.pop()` calls in `record_database_survey` and `remove_database`) is removed — it's now
+strictly subsumed by the freshness check, and keeping both would have been two mechanisms
+that could drift out of sync for no benefit.
+
+This protects the pattern actually measured above (`SurveyOrchestrator`'s repeat reads) with
+no staleness exposure, AND closes the bug class the three named holders raised even though two
+of them turned out not to reach this cache today — a future fix to either dead-code gap
+(`QueueRunner._loop` threading its registry through, or `execute_run` passing `registry` to
+handlers) would otherwise have silently reintroduced exactly this staleness risk with nothing
+to catch it.
+
+**Regression test:** `tests/test_integration_registry_pg.py`,
+`TestGetDatabaseSurveysCacheSurvivesTheRunQueueWorkerPattern`. Per the coordinator's explicit
+request, this does not test the cache mechanism in the abstract with two bare `ProjectRegistry`
+instances — it drives the REAL `run_queue.claim_and_execute_once` / `run_queue.execute_run`
+call chain with ONE `ProjectRegistry` constructed once and threaded through multiple simulated
+run-queue iterations, the exact shape `QueueRunner._loop` is written in (even though, per the
+honesty note above, today's `_loop` doesn't actually wire it up that way). Between two
+iterations, a *different* `ProjectRegistry` instance (standing in for a different process)
+records a new survey for the same slug; the test asserts the long-lived worker registry's very
+next read sees it. Verified failing against the pre-fix code (git-stashed the `registry.py`
+change, reran — fails on `assert len(second_reads) == 1`, actual `0`) and passing with the fix.
+The existing `TestDatabaseSurveysCacheIsInstanceScopedAndWriteInvalidated` tests were updated
+to match the new shape: the freshness-check query now legitimately runs on every call (that's
+the point), so the "does it requery" test now counts the full-fetch query specifically (by its
+`ORDER BY surveyed_at DESC` clause) rather than any statement mentioning `database_surveys`.
+
+**Full suite:** `uv run pytest tests/ -q -rf` — see the run recorded alongside this addendum's
+commit; no new failures, same skip set as above.
