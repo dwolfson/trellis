@@ -140,6 +140,124 @@ test('the gate scenario: a freshly-answered question renders "answered by <user>
   assert.match(html.replace(/<[^>]+>/g, ''), /answered by dan\s*·\s*just now/, 'plain-text reading must also say it');
 });
 
+/** A minimal `Response`-shaped object -- everything `re-api.js`'s
+ *  `request()` reads off a fetch response (`.ok`, `.status`, `.json()`).
+ *  Same helper as `by-analysis-board-timeout.test.mjs` -- duplicated here
+ *  rather than shared, matching this directory's existing convention of
+ *  each `*.test.mjs` carrying its own small fetch-stubbing helpers. */
+function fakeJsonResponse(data, { ok = true, status = 200 } = {}) {
+  return { ok, status, json: async () => data };
+}
+
+/** Flushes the microtask queue so an unawaited async click handler's chain
+ *  (fetch -> .json() -> re-api.js's request()/patch() -> the handler's own
+ *  `await` -> its `redrawQuestionRow` re-render) has a chance to run before
+ *  assertions. Same helper and reasoning as `by-analysis-board-timeout.test.mjs`. */
+function flushTasks(times = 5) {
+  return new Promise((resolve) => {
+    let n = 0;
+    const step = () => { if (++n >= times) resolve(); else setImmediate(step); };
+    setImmediate(step);
+  });
+}
+
+test('clicking "Answer this ->" renders a real textarea; saving PATCHes the answer route and the row re-renders "answered by <user> · just now"', async () => {
+  // THE GAP THIS CLOSES (PR #358 review): the tests above prove the shared
+  // row-anatomy component renders the right text from FIXTURE state, and
+  // `tests/test_no_window_prompt_for_answering_questions.py` proves
+  // `window.prompt()` is gone from the source text -- but nothing actually
+  // drove the real interaction: render -> click "Answer this ->" -> see a
+  // textarea -> type -> save -> confirm the PATCH fires -> confirm the row
+  // re-renders. This test does exactly that, through the REAL
+  // `rowInner`/`wireHumanAnswers` functions app.js itself uses (the same
+  // `wireHumanAnswers` `loadPane()` calls at app.js:6704), not a parallel
+  // reimplementation of the click/save wiring.
+  const { document } = makeDomEnvironment();
+
+  const patchCalls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const u = String(url);
+    if (u.includes('/api/context/') && u.endsWith('/answer') && options.method === 'PATCH') {
+      const body = JSON.parse(options.body);
+      patchCalls.push(body);
+      // The server stamps author/date from the signed-in identity
+      // (context.py's save_answer) -- the client never sends these, and
+      // this stub reflects that: it returns a server-shaped QuestionAnswer
+      // with an author the request body did not carry.
+      return fakeJsonResponse({
+        answer: {
+          question: body.question,
+          answer: body.answer,
+          answered_at: new Date().toISOString(),
+          answered_by: 'dan',
+        },
+      });
+    }
+    throw new Error(`_UNSTUBBED_FETCH in test: ${options.method || 'GET'} ${u}`);
+  };
+
+  const app = await loadAppModule();
+  const question = 'Do we already support these dependencies?';
+  const entry = { question, kind: 'human', note: '', answering_mechanism: '', analysis_ids: [], perspectives: [] };
+
+  app.state.questions = [entry];
+  app.state.resourceType = 'repo';
+  app.state.selectedSlug = 'test-repo';
+  app.state.contextAnswers = {};
+  app.state.answers = new Map();
+  app.state.runsInFlight = new Map();
+  app.state.pendingProposals = new Map();
+  app.state.editingAnswer = '';
+
+  const rowsHost = document.createElement('div');
+  rowsHost.id = 'question-rows';
+  document.body.appendChild(rowsHost);
+  // Wrapper id matches app.js's own `rowKey(i)` convention (`qrow-${i}`) --
+  // `replaceRow`/`redrawQuestionRow` (both internal to `wireHumanAnswers`'s
+  // closure) look up the row by that id to re-render it in place. `rowInner`
+  // itself is the exported render function the row-anatomy tests above
+  // already use; passed env `{}` (not `'loading'`, no `__error`) so
+  // `rowState()` reaches its real, unrun 'human' branch -- the state the
+  // Questions tab renders a not-yet-answered human question in.
+  rowsHost.innerHTML = `<div id="qrow-0">${app.rowInner(entry, 0, {})}</div>`;
+  app.wireHumanAnswers(rowsHost, app.state.selectedSlug);
+
+  assert.doesNotMatch(rowsHost.innerHTML, /<textarea/, 'no editor should be open before any click');
+  const answerBtn = rowsHost.querySelector('[data-human-edit]');
+  assert.ok(answerBtn, 'the "Answer this ->" control must be present');
+  assert.match(answerBtn.textContent, /Answer this/);
+
+  // Click "Answer this ->" -- a real DOM click through the real listener
+  // wireHumanAnswers() attached, not a direct call into private state.
+  answerBtn.click();
+
+  const textarea = rowsHost.querySelector('[data-answer-input]');
+  assert.ok(textarea, 'a textarea must appear in the DOM after clicking "Answer this ->"');
+  assert.equal(textarea.tagName, 'TEXTAREA');
+
+  // Type into it and save -- the real save control, a button click (this
+  // row's save path is a click, not an Enter-to-submit form).
+  textarea.value = 'Yes, two teams already do.';
+  const saveBtn = rowsHost.querySelector('[data-answer-save]');
+  assert.ok(saveBtn, 'a save control must be present once the editor is open');
+
+  saveBtn.click();
+  await flushTasks();
+
+  assert.equal(patchCalls.length, 1, 'saving must PATCH the answer route exactly once');
+  assert.equal(patchCalls[0].question, question);
+  assert.equal(patchCalls[0].answer, 'Yes, two teams already do.', 'the PATCH body must carry the text that was typed');
+
+  // The row must re-render afterward -- same gate wording the fixture-driven
+  // tests above assert, now reached through the real save flow rather than
+  // fixture state.
+  const settledHtml = rowsHost.innerHTML;
+  assert.doesNotMatch(settledHtml, /<textarea/, 'the editor must close after a successful save');
+  assert.match(settledHtml, /answered by dan\s*·\s*<span class="tnum">just now<\/span>/, `gate wording not found after save in: ${settledHtml}`);
+  assert.match(settledHtml.replace(/<[^>]+>/g, ''), /answered by dan\s*·\s*just now/);
+  assert.match(settledHtml, /Yes, two teams already do\./, 'the saved answer text itself must also render');
+});
+
 test('a legacy answer with no recorded author degrades gracefully (no blank "· 2d ago" author slot)', async () => {
   makeDomEnvironment();
   const app = await loadAppModule();

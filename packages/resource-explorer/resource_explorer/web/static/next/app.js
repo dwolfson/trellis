@@ -6734,7 +6734,13 @@ function redrawQuestionRow(question) {
   if (i >= 0) replaceRow(state.questions[i], i, state.answers.get(question));
 }
 
-function wireHumanAnswers(host, slug) {
+// Exported for the render harness (frontend-build/test-harness/) -- same
+// minimal-change pattern as `rowInner`'s own export above: only the
+// `export` keyword changed, no logic. Used by
+// human-question-answer-row-anatomy.test.mjs to drive the REAL click ->
+// textarea -> save -> PATCH -> re-render flow, not a parallel simulation
+// of it.
+export function wireHumanAnswers(host, slug) {
   if (host.dataset.humanWired === '1') return;
   host.dataset.humanWired = '1';
   host.addEventListener('click', async (ev) => {

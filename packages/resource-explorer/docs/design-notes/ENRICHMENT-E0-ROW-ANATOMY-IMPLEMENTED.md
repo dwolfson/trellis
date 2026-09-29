@@ -168,6 +168,37 @@ answer a human question from the Questions tab on
 `laz_local_adventureworks` and confirm *"answered by `<user>` · just now"*
 appears with no popup, exactly as the harness test asserts.
 
+## Addendum: the rendered-editor interaction test (PR/CI gap, closed)
+
+PR/CI review of PR #358, before merge, flagged a real coverage gap: the
+three tests listed under "Gate verification" above render fixture state and
+assert the resulting text, and `tests/test_no_window_prompt_for_answering_
+questions.py` proves `window.prompt()` is gone from the source text — but
+nothing actually drove the interaction end to end: render a row → click
+"Answer this →" → see a textarea appear → type into it → save → confirm the
+PATCH fires with the entered text → confirm the row re-renders showing
+"answered by `<user>` · just now". A fixture-only test cannot catch a wiring
+break in `wireHumanAnswers()` itself (a bad selector, an unattached
+listener, a request body missing a field) the way it can catch a wording
+regression.
+
+Closed by a fourth test added to `human-question-answer-row-anatomy.test.mjs`
+(design's "no exceptions on day two" ruling on the harness rule — every
+`/next` fix gets its regression in the render harness, not just its own
+fixture-level check). It renders the real `rowInner()` (same exported
+function the fixture tests above already use) for an unanswered human
+question, attaches the real `wireHumanAnswers()` (newly given the `export`
+keyword — same minimal, logic-unchanged pattern this branch's other
+exports already use), and drives the full path through real DOM events: a
+real `.click()` on the "Answer this →" button, asserting a real `<textarea>`
+appears; typing into it and a real `.click()` on the save button; a stubbed
+`fetch` asserting the PATCH to `/api/context/repo/<slug>/answer` fires
+exactly once with the typed text in its body; and, using a stubbed response
+shaped like the server's real author-stamped reply, asserting the row
+re-renders with "answered by dan · just now" and the editor closes. No bug
+was found while writing it — the editor already worked; this fills the
+coverage gap PR/CI named, not a red/green fix.
+
 ## Judgment calls, for review
 
 1. **Inline editor placed on the question row itself**, not inside a
