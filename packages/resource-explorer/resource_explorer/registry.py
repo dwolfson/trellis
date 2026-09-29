@@ -9798,6 +9798,18 @@ class ProjectRegistry:
                 # clean run, never absent, so the frontend can tell
                 # "no errors" from "not fetched yet".
                 entry["last_run_errors"] = detail.get("errors") or []
+                # Engine-note persistence (2026-09-28, docs/design-notes/
+                # ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): SurveyDefinitionExecutor
+                # already writes `engine_note` into this same `detail` JSON
+                # (which engine actually ran the definition — Prefect, or a
+                # local fallback and why). The /next pane used to render it as
+                # a transient DOM write appended after the run and then
+                # immediately wipe it by reloading the pane. Carrying it here,
+                # on the same row this function already reconstructs from the
+                # activity log, means the engine line is derived from
+                # persisted data — it survives any re-render and shows up for
+                # historical runs too, not only the one just launched.
+                entry["last_run_engine_note"] = detail.get("engine_note") or ""
                 # SurveyDefinitionExecutor.run() (added 2026-08-27) publishes
                 # BEFORE it logs the 'survey' row that records the run itself
                 # — adapter.publish() runs first, its own untagged 'catalog'
