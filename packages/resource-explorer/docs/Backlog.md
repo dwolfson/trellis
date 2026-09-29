@@ -8650,3 +8650,24 @@ an Enrichment sub-tab, or should Enrichment's sub-tabs be organized around what 
 Written up for the designer as `ASK-DESIGNER-ENRICHMENT-STAGE-IA.md` (PR #350). #348 ships its
 Documentation sources block under the current sub-tabs regardless — the re-seating, if any, comes
 with the designer's reply, not before.
+
+## Work list vs. investigation — the mechanism already unifies them, the UI doesn't say so (owner question, 2026-09-29, tagged for design)
+
+Owner's question while adding a database to an investigation from the left sidebar: "what is
+the difference, really, between a work list and an investigation? Should an investigation use a
+work list for its resources?"
+
+Design's answer: in the registry they are already one mechanism — `working_sets` +
+`working_set_members` — and an investigation owns exactly one working set
+(`investigation_working_set_slug`, `get_or_create_working_set`). A sidebar "work list" is a
+working set with no investigation attached. So an investigation already USES a work list for its
+resources; what's actually missing is the UI saying so, plus two actions that follow from taking
+that unification seriously:
+
+- "Start an investigation from this work list" — the list becomes the new investigation's scope.
+- "Add this work list's members to investigation X" — merge an existing list's members into an
+  investigation's working set.
+
+Small slice. Sent to the designer as `ASK-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md` (PR #354),
+same shape as the Enrichment IA ask (`ASK-DESIGNER-ENRICHMENT-STAGE-IA.md`, PR #350) — scheduled
+after that reply, same sidebar/IA territory, no need to design it twice in two passes.
