@@ -215,7 +215,9 @@ class TestSharedNamesRenderedOnce:
         # a bare "DISAGREE" count, and no row uses the word "DISAGREE" either.
         body = _fn("function sharedNamesHtml(shared, disagreeing)")
         assert "DISAGREE" not in body
-        assert "names carried by more than one analysis" in body
+        assert "carried by more than one analysis" in body
+        # Singular/plural handled -- a lone shared name reads "1 name", not "1 names".
+        assert "shared.size === 1 ? '' : 's'" in body
 
     def test_shared_set_is_every_name_carried_by_more_than_one_analysis(self):
         # The Shared Names block's inclusion criterion is "shared" --
@@ -360,3 +362,87 @@ class TestGraphvizCardBodyReusesTheEvidenceRailRenderer:
         body = _fn("function boardDiagramHtml(board)")
         assert "db_relationship_graph" not in body
         assert "factMermaid(envelope)" in body
+
+
+class TestGiveUpAfter30SecondsSafetyNet:
+    """Design requirement added 2026-09-28 (owner gate check on
+    laz_local_adventureworks, settle time 5+ minutes deemed unacceptable):
+    a card that has not settled after BY_ANALYSIS_BOARD_TIMEOUT_MS must stop
+    spinning and show a manual "open to load" trigger instead -- a safety
+    net independent of whether the board_summary fast path is effective for
+    that particular board (it also covers "summary missing/stale AND the
+    fallback recompute is still slow")."""
+
+    def test_timeout_constant_is_thirty_seconds(self):
+        app = _app()
+        assert "const BY_ANALYSIS_BOARD_TIMEOUT_MS = 30000;" in app
+
+    def test_worker_arms_a_give_up_timer_per_board(self):
+        body = _fn("async function loadByAnalysisPane()")
+        worker_body = body[body.index("const worker = async () => {"):body.index("await Promise.all(")]
+        assert "setTimeout(" in worker_body
+        assert "BY_ANALYSIS_BOARD_TIMEOUT_MS" in worker_body
+        assert "status: 'timeout'" in worker_body
+
+    def test_worker_clears_the_timer_once_the_fetch_settles(self):
+        # A late timer firing after the real result already landed must not
+        # overwrite it back to 'timeout' -- clearTimeout (or the `already`
+        # guard) must run before boardState is set to its real outcome.
+        body = _fn("async function loadByAnalysisPane()")
+        worker_body = body[body.index("const worker = async () => {"):body.index("await Promise.all(")]
+        assert "clearTimeout(giveUpTimer)" in worker_body
+        # clearTimeout happens before the 'done'/'error' state is written,
+        # in BOTH the success and failure branches.
+        try_idx = worker_body.index("try {")
+        done_idx = worker_body.index("status: 'done'")
+        catch_idx = worker_body.index("} catch (err) {")
+        error_idx = worker_body.index("status: 'error'", catch_idx)
+        first_clear = worker_body.index("clearTimeout(giveUpTimer)", try_idx)
+        second_clear = worker_body.index("clearTimeout(giveUpTimer)", first_clear + 1)
+        assert first_clear < done_idx
+        assert second_clear < error_idx
+
+    def test_timeout_does_not_stop_a_late_result_from_still_being_shown(self):
+        # The fetch itself is not aborted -- only the UI's wait for it gives
+        # up. A guard variable (not a cancelled promise) is what prevents
+        # the timer from clobbering a real result that arrives just after.
+        body = _fn("async function loadByAnalysisPane()")
+        worker_body = body[body.index("const worker = async () => {"):body.index("await Promise.all(")]
+        assert "AbortController" not in worker_body
+        assert "let already = false;" in worker_body
+        assert "already = true;" in worker_body
+
+    def test_board_state_key_treats_timeout_like_loading_not_error(self):
+        body = _fn("function boardStateKey(entry)")
+        idx_timeout = body.index("entry.status === 'timeout'")
+        idx_error = body.index("entry.status === 'error'")
+        assert idx_timeout < idx_error
+        assert "return null;" in body.split("entry.status === 'timeout'")[1].split("\n")[0]
+
+    def test_card_shows_open_to_load_copy_and_a_retry_trigger(self):
+        body = _fn("function byAnalysisCardHtml(")
+        assert "still reading" in body
+        assert "open to load" in body
+        assert "data-retry-board=" in body
+
+    def test_contents_row_also_shows_open_to_load_for_a_timed_out_board(self):
+        body = _fn("function renderByAnalysisContents(")
+        assert "still reading — open to load" in body
+
+    def test_a_manual_retry_function_exists_and_is_bound_to_the_trigger(self):
+        app = _app()
+        assert "const retryBoard = async (boardId) => {" in app
+        assert "n.addEventListener('click', () => retryBoard(n.dataset.retryBoard));" in app
+
+    def test_retry_also_arms_its_own_give_up_timer(self):
+        body = _fn("async function loadByAnalysisPane()")
+        retry_body = body[body.index("const retryBoard = async (boardId) => {"):body.index("const worker = async () => {")]
+        assert "BY_ANALYSIS_BOARD_TIMEOUT_MS" in retry_body
+        assert "status: 'timeout'" in retry_body
+
+    def test_still_reading_count_does_not_include_timed_out_cards_as_loading(self):
+        # `settled` (paintAll) is anything whose status is not 'loading' --
+        # a timed-out card must count as settled so "still reading N of M"
+        # stops incrementing for it once it has given up.
+        body = _fn("async function loadByAnalysisPane()")
+        assert "e.status !== 'loading'" in body

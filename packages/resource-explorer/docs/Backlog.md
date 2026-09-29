@@ -8661,3 +8661,12 @@ this rule, replacing any that were guessed rather than captured. Whoever picks t
 by grepping test files for mocked pyegeria method return values (`get_related_metadata_elements`,
 `get_guid_for_name`, and similar) and checking each mock's shape against a real captured response
 before trusting it.
+
+## Enrichment stage IA — designer ask #350 pending
+
+Owner feedback during the #348 doc-sources gate (2026-09-29): does "Survey & analyses" belong as
+an Enrichment sub-tab, or should Enrichment's sub-tabs be organized around what a person supplies
+(lens, cost, ownership, documentation sources, confirmed glossary terms) and what consumes it?
+Written up for the designer as `ASK-DESIGNER-ENRICHMENT-STAGE-IA.md` (PR #350). #348 ships its
+Documentation sources block under the current sub-tabs regardless — the re-seating, if any, comes
+with the designer's reply, not before.
