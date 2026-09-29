@@ -431,6 +431,17 @@ is the fallback/retry cadence for when that immediate attempt fails (Egeria unre
 timeout, or any other transient error) — not the expected happy-path latency it read as
 after round 2.
 
+**Restart safety (design's caution, confirmed 2026-09-29):** the daemon thread that makes
+the immediate attempt dies with the process — an add made seconds before a server restart
+loses that in-flight attempt and relies on the normal 15-minute scheduler retry to catch it
+instead. This is acceptable because the row's state is not held in the thread or in memory
+at all: `egeria_outbox` is a real Postgres/SQLite table (`CREATE TABLE IF NOT EXISTS
+egeria_outbox`, `registry.py`) with a persisted `status` column (`pending`/`running`/
+`failed`/`dead`). A source's row correctly continues to read `local — publishing…` across
+a restart, and the scheduler's own drain loop picks the row back up exactly as it would for
+any other pending element — no special-casing needed, and nothing is lost or silently
+stuck.
+
 ### The four states — never empty
 
 `DocSourceOut.egeria_state` (one of `catalogued` / `publishing` / `publish_failed` /
