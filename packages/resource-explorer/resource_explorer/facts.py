@@ -784,6 +784,377 @@ _RESOURCE_STATE_HEADLINES: dict[str, "Callable[[dict, str], str]"] = {
     "change_since_last_survey": _h_change_since_last_survey,
 }
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The DATABASE resource-state table — porting #309's repository pattern
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# docs/design-notes/HEADLINE-GAPS-FINGERPRINT-AND-REPO-CARDS-IMPLEMENTED.md
+# (#309) built this mechanism for repositories: a question answered from a
+# field ALREADY STORED on the resource, never from a survey step, read via
+# `RESOURCE_STATE_SOURCES` and given a one-sentence headline by
+# `_RESOURCE_STATE_HEADLINES`. Owner found live 2026-09-29 (checking
+# `laz_local_adventureworks`, #8810): 11 database questions with this exact
+# shape — no analysis backs them at all — were rendering `○ not run`, because
+# `database`'s `ResourceTypeAdapter` never declared a `state_sources` table
+# (`survey_definition_adapter.py`'s own comment: "`state_sources` stays
+# undeclared for now — no database question is answered directly off a
+# state-source table the way repo's 'actively maintained?' is."). `○ not
+# run` is a promise a real analysis exists and has not been triggered yet —
+# false for all 11, since none of them has a surveyor at all. The vocabulary
+# fix (glyphs.js's `no_reader` / app.js's `rowState`) makes an UNDECLARED
+# direct-field row read `◌ no reader` instead; this table is what turns 10 of
+# the 11 into real answers, moving them out of that state entirely.
+#
+# One row of the 11 is NOT implemented here — see the note on licence below.
+#
+# Resolvers take `(registry, DatabaseEntity)`, matching the repo resolvers'
+# `(registry, Project)` shape exactly, so `_resource_state_fact` needs only
+# one change to serve both: it now fetches the entity through the adapter's
+# own `get_entity` (`get_adapter(resource_type).get_entity`) instead of the
+# hardcoded `self._registry.get(slug)`, which only ever read the `projects`
+# table — every one of these resolvers would have received `project=None`
+# and reported "No resource named ... is registered" otherwise, for every
+# database, every time. Same "repo hardcode" shape `_last_run`'s own
+# docstring already names (its sixth instance, found by a test rather than
+# read).
+def _db_r_description(reg, db) -> tuple:
+    d = (getattr(db, "description", "") or "").strip()
+    return ({"description": d}, MEASURED if d else NOTHING_FOUND)
+
+
+def _db_r_catalogued(reg, db) -> tuple:
+    """Reuses `egeria_linkage.describe_publish_status` — the same
+    is_published-plus-staleness check `databases.py`'s summary row and
+    `curate_plan.py` already use, rather than the old bare
+    `bool(egeria_asset_guid)` claim REPLY-DATABASE-CREDENTIAL... found stale.
+
+    "When" comes from `activity_log`'s own `publish` operation for this
+    entity — the repo reader's "when" (`project_published_annotation_types`)
+    is written only by the repo publish path (`repo_survey_definition_
+    adapter._publish`); the database publish path
+    (`survey_definition_adapter._publish` -> `EgeriaDatabaseSurveyor.
+    publish_step_annotations`) never writes that table, so reading it for a
+    database would silently report "never published" for one that plainly
+    has been. `activity_log` is written for every operation, on every
+    resource type (CLAUDE.md rule 16), including publish, so its own
+    timestamp is the honest source here.
+    """
+    from resource_explorer.egeria_linkage import describe_publish_status
+
+    guid = getattr(db, "egeria_asset_guid", "") or ""
+    status = describe_publish_status(reg, "database", db.slug, guid)
+    when = ""
+    if guid:
+        recent = reg.list_activity(
+            entity_type="database", entity_slug=db.slug,
+            operation="publish", limit=1,
+        )
+        if recent:
+            when = recent[0].get("ts", "") or ""
+    return (
+        {"catalogued": bool(status.get("is_published")), "egeria_asset_guid": guid,
+         "last_published_at": when, "note": status.get("note", "")},
+        MEASURED if status.get("is_published") else NOTHING_FOUND,
+    )
+
+
+def _db_r_existing_use(reg, db) -> tuple:
+    """Registry membership: group siblings AND investigation/work-list
+    membership (`find_entity_investigations` — the reverse index
+    `list_investigation_members` already backs, used here for "which
+    investigations is THIS database in", same generalized `working_set_
+    members` table repo's own version does not yet read)."""
+    group = getattr(db, "group_slug", "") or ""
+    siblings = []
+    if group:
+        siblings = [
+            x.slug for x in (reg.list_databases_in_group(group) or [])
+            if x.slug != db.slug
+        ]
+    investigations = reg.find_entity_investigations("database", db.slug) or []
+    value = {
+        "registered": True,
+        "group": group,
+        "siblings_in_group": len(siblings),
+        "sibling_slugs": siblings[:20],
+        "investigation_count": len(investigations),
+        "investigation_names": [i.get("display_name", "") for i in investigations[:10]],
+        "surveyed": bool(getattr(db, "last_surveyed_at", "")),
+    }
+    return value, MEASURED
+
+
+def _db_r_feedback(reg, db) -> tuple:
+    rows = reg.list_resource_feedback("database", db.slug) or []
+    return ({"feedback_count": len(rows)}, MEASURED if rows else NOTHING_FOUND)
+
+
+def _db_r_related(reg, db) -> tuple:
+    """Candidates only, same contract as the repo reader's own `_r_related`
+    docstring: a direct lookup over registered databases sharing this one's
+    server or name pattern, NOT a similarity score — `db_fingerprint`
+    (`db_derived.py::fingerprint_database`) already does full structural
+    similarity as an ANALYSIS, and duplicating that logic here would be a
+    second, cheaper opinion the fingerprint card could disagree with."""
+    same_server, same_name = [], []
+    server_slug = getattr(db, "server_slug", "") or ""
+    name = (getattr(db, "database_name", "") or "").strip().lower()
+    for other in reg.list_databases():
+        if other.slug == db.slug:
+            continue
+        if server_slug and getattr(other, "server_slug", "") == server_slug:
+            same_server.append(other.slug)
+        other_name = (getattr(other, "database_name", "") or "").strip().lower()
+        if name and other_name == name:
+            same_name.append(other.slug)
+    value = {
+        "server_slug": server_slug,
+        "same_server_count": len(same_server),
+        "same_server": same_server[:15],
+        "database_name": getattr(db, "database_name", "") or "",
+        "same_name_count": len(same_name),
+        "same_name": same_name[:15],
+    }
+    return value, MEASURED if (same_server or same_name) else NOTHING_FOUND
+
+
+def _db_r_surveyed(reg, db) -> tuple:
+    when = getattr(db, "last_surveyed_at", "") or ""
+    return ({"last_surveyed_at": when, "surveyed": bool(when)},
+            MEASURED if when else NOTHING_FOUND)
+
+
+def _db_r_disposition(reg, db) -> tuple:
+    d = reg.get_disposition_for_entity("database", db.slug) or {}
+    verdict = d.get("disposition") or ""
+    known = verdict and verdict != "undecided"
+    return ({"disposition": verdict, "reason": d.get("reason", ""),
+             "decided_at": d.get("decided_at", "")},
+            MEASURED if known else NOTHING_FOUND)
+
+
+def _db_survey_candidates(p) -> tuple:
+    """(candidates, reachable) for "PostgreSQL Database" — the database
+    adapter's own `technology_type` (`survey_definition_adapter.py`'s
+    `_ADAPTER`), mirroring `_survey_candidates` above exactly."""
+    try:
+        from resource_explorer.surveyors.survey_definition_reader import (
+            SurveyDefinitionReader,
+        )
+        reader = SurveyDefinitionReader()
+        return (reader.find_candidate_process_guids("PostgreSQL Database"), True)
+    except Exception as exc:
+        log.debug("survey definition candidates unavailable: %s", exc)
+        return ([], False)
+
+
+def _db_r_which_survey(reg, db) -> tuple:
+    candidates, reachable = _db_survey_candidates(db)
+    if not reachable:
+        return ({"detail": "Egeria could not be reached, so what is authored "
+                           "for this technology type is unknown."},
+                NOT_ESTABLISHED)
+    if not candidates:
+        return ({"candidates": []}, NOTHING_FOUND)
+    names = [c.get("qualified_name", "").split("::")[-1] for c in candidates]
+    return ({"count": len(candidates), "candidates": names,
+             "note": "Cheapest first is the usual order; the Survey tab shows "
+                     "each one's step count and speed tag."},
+            MEASURED)
+
+
+def _db_r_survey_definition_exists(reg, db) -> tuple:
+    candidates, reachable = _db_survey_candidates(db)
+    if not reachable:
+        return ({"detail": "Egeria could not be reached, so whether anything "
+                           "is authored is unknown — this is not a finding "
+                           "that nothing is."}, NOT_ESTABLISHED)
+    return ({"authored": bool(candidates), "count": len(candidates),
+             "technology_type": "PostgreSQL Database"},
+            MEASURED if candidates else NOTHING_FOUND)
+
+
+def _db_r_changed_since_survey(reg, db) -> tuple:
+    """Same comparison as the repo reader (`notification_detector.
+    detect_change`, generic over slug/analysis_id — no entity-type
+    hardcode), run across every id `DATABASE_ANALYSIS_RESULTS_MAP` declares
+    instead of the repo map."""
+    from resource_explorer.notification_detector import detect_change
+    from resource_explorer.surveyors.database.survey_definition_adapter import (
+        DATABASE_ANALYSIS_RESULTS_MAP,
+    )
+
+    changed, unchanged = [], 0
+    for analysis_id in sorted(DATABASE_ANALYSIS_RESULTS_MAP):
+        try:
+            res = detect_change(reg, db.slug, analysis_id)
+        except Exception:
+            continue
+        if res.changed:
+            changed.append({"analysis_id": analysis_id, "summary": res.summary})
+        else:
+            unchanged += 1
+    value = {"changed_count": len(changed), "changed": changed[:15],
+             "unchanged_count": unchanged,
+             "last_surveyed_at": getattr(db, "last_surveyed_at", "") or ""}
+    comparable = bool(changed) or unchanged
+    return value, (MEASURED if changed else NOTHING_FOUND) if comparable else NOT_ESTABLISHED
+
+
+def _h_db_description(value: dict, state: str) -> str:
+    d = value.get("description") or ""
+    return d if d else "No description recorded for this database yet."
+
+
+def _h_db_catalogued(value: dict, state: str) -> str:
+    if not value.get("catalogued"):
+        note = value.get("note") or ""
+        return note if note else "Not yet catalogued in Egeria."
+    when = value.get("last_published_at") or ""
+    return f"Catalogued in Egeria, published {when}." if when else "Catalogued in Egeria."
+
+
+def _h_db_existing_use(value: dict, state: str) -> str:
+    group = value.get("group") or ""
+    siblings = value.get("siblings_in_group") or 0
+    inv = value.get("investigation_count") or 0
+    parts = []
+    if group:
+        parts.append(f"registered in group {group!r} alongside {siblings} other resource(s)"
+                     if siblings else f"registered in group {group!r}, no siblings yet")
+    else:
+        parts.append("registered, but not assigned to a group")
+    if inv:
+        names = ", ".join(value.get("investigation_names") or [])
+        parts.append(f"in scope for {inv} investigation(s): {names}")
+    else:
+        parts.append("not in scope for any investigation")
+    return "; ".join(parts).capitalize() + "."
+
+
+def _h_db_feedback(value: dict, state: str) -> str:
+    count = value.get("feedback_count") or 0
+    if not count:
+        return "No feedback recorded yet."
+    return f"{count} feedback item(s) recorded."
+
+
+def _h_db_related(value: dict, state: str) -> str:
+    if state == NOTHING_FOUND:
+        return "No candidate overlap found — no other registered database shares its server or name."
+    parts = []
+    same_server = value.get("same_server_count") or 0
+    same_name = value.get("same_name_count") or 0
+    if same_server:
+        parts.append(f"{same_server} on the same server")
+    if same_name:
+        parts.append(f"{same_name} sharing its name {value.get('database_name', '')!r}")
+    return ("Candidate overlap only, not a judgement of replacement: "
+            + "; ".join(parts) + ".")
+
+
+def _h_db_surveyed(value: dict, state: str) -> str:
+    if state == NOTHING_FOUND:
+        return "Never surveyed at any tier."
+    return f"Last surveyed {value.get('last_surveyed_at', '')}."
+
+
+def _h_db_survey_definitions(value: dict, state: str) -> str:
+    if state == NOT_ESTABLISHED:
+        return value.get("detail") or "Egeria could not be reached, so this is not established."
+    if "candidates" in value:
+        count = value.get("count") or 0
+        if not count:
+            return "No Survey Definition is authored for this technology type."
+        names = ", ".join(value.get("candidates") or [])
+        return f"{count} Survey Definition(s) authored: {names}."
+    authored = value.get("authored")
+    count = value.get("count") or 0
+    tech = value.get("technology_type") or "this technology type"
+    return (f"{count} Survey Definition(s) authored for {tech}." if authored
+            else f"No Survey Definition is authored for {tech} — a catalog gap.")
+
+
+def _h_db_disposition(value: dict, state: str) -> str:
+    if state == NOTHING_FOUND:
+        return "No disposition recorded yet — undecided."
+    verdict = value.get("disposition") or ""
+    reason = value.get("reason") or ""
+    return f"{verdict.capitalize()}" + (f" — {reason}" if reason else ".")
+
+
+def _h_db_change_since_last_survey(value: dict, state: str) -> str:
+    if state == NOT_ESTABLISHED:
+        return "Nothing comparable yet — no prior survey to measure change against."
+    changed = value.get("changed_count") or 0
+    unchanged = value.get("unchanged_count") or 0
+    if not changed:
+        return f"Nothing has changed since the last survey ({unchanged} analysis(es) compared)."
+    names = ", ".join(c["analysis_id"] for c in (value.get("changed") or [])[:5])
+    return f"{changed} of {changed + unchanged} analysis(es) changed since the last survey: {names}."
+
+
+#: subject namespace is `db_*`, disjoint from the repo table's subjects
+#: above — merged into `_RESOURCE_STATE_HEADLINES` below rather than kept
+#: separate, so `_resource_state_headline`'s single lookup keeps working
+#: unchanged for both resource types.
+_DATABASE_RESOURCE_STATE_HEADLINES: dict[str, "Callable[[dict, str], str]"] = {
+    "db_description": _h_db_description,
+    "db_catalogued": _h_db_catalogued,
+    "db_existing_use": _h_db_existing_use,
+    "db_feedback": _h_db_feedback,
+    "db_related": _h_db_related,
+    "db_surveyed": _h_db_surveyed,
+    "db_survey_definitions": _h_db_survey_definitions,
+    "db_disposition": _h_db_disposition,
+    "db_change_since_last_survey": _h_db_change_since_last_survey,
+}
+_RESOURCE_STATE_HEADLINES.update(_DATABASE_RESOURCE_STATE_HEADLINES)
+
+
+#: question text -> (resolver, subject), the DATABASE table — registered on
+#: the database `ResourceTypeAdapter` (`state_sources=lambda: ...
+#: DATABASE_RESOURCE_STATE_SOURCES`, survey_definition_adapter.py), read
+#: through `get_adapter("database").state_sources()` exactly like the repo
+#: table is read through the repo adapter. A separate dict from `RESOURCE_
+#: STATE_SOURCES`, not a merge — the two are looked up per resource type
+#: (`FactLayer._map`), so identical question text in both catalogs (e.g.
+#: "What is this resource, and what is it for?") resolves to each type's own
+#: resolver with no collision.
+#:
+#: **Only 10 of the 11 direct-field database rows found live 2026-09-29 are
+#: here.** "Under what licence or agreement may this resource be used?"
+#: is NOT implemented: its catalog `note` is a stale, copy-pasted "direct
+#: field (GitHub license field)" — `DatabaseEntity` (registry.py) has no
+#: license field, GitHub has no opinion about a PostgreSQL database, and no
+#: other stored field answers it. This is the "the mechanism you find
+#: doesn't match what's described" case the brief for this table names
+#: explicitly: reported rather than guessed at, and the row is left to
+#: render `◌ no reader` (the vocabulary fix), which is the honest state —
+#: not `○ not run` (a promise of a survey step that does not exist for the
+#: field this catalog note claims), and not a fabricated reader either.
+DATABASE_RESOURCE_STATE_SOURCES = {
+    "What is this resource, and what is it for?": (_db_r_description, "db_description"),
+    "Has this resource already been catalogued in Egeria, and when?":
+        (_db_r_catalogued, "db_catalogued"),
+    "Is there any existing use within our organization?":
+        (_db_r_existing_use, "db_existing_use"),
+    "Any known feedback?": (_db_r_feedback, "db_feedback"),
+    "Does it replace or extend something we already have?":
+        (_db_r_related, "db_related"),
+    "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":
+        (_db_r_surveyed, "db_surveyed"),
+    "Which Survey Definition should I run — a quick coarse check or the full deep survey?":
+        (_db_r_which_survey, "db_survey_definitions"),
+    "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
+        (_db_r_disposition, "db_disposition"),
+    "How much has changed since the last time this was surveyed — is it worth re-running now?":
+        (_db_r_changed_since_survey, "db_change_since_last_survey"),
+    "Is there a Survey Definition authored for this resource's technology type at all, or is that a catalog gap?":
+        (_db_r_survey_definition_exists, "db_survey_definitions"),
+}
+
 #: Kinds that ARE answerable, but not from analysis results — and not yet
 #: readable here. `direct` questions come from a field on the resource
 #: (Project.description and the like) and `chart` from a trend series. The
@@ -1414,8 +1785,19 @@ class FactLayer:
         `can_run` is empty on purpose: no survey step establishes these. Saying
         "run X to find out" when nothing would change the answer is the same
         false offer the envelope exists to prevent, one step further on.
+
+        The entity is fetched through the adapter's own `get_entity`
+        (`get_adapter(self.resource_type).get_entity`), not the hardcoded
+        `self._registry.get(slug)` this used before — that method only ever
+        reads the `projects` table, so every database resolver added for the
+        11-row database direct-field fix would have received `project=None`
+        here and reported "No resource named ... is registered" for every
+        database, every time. Repo's own `_get_project_entity` is exactly
+        `registry.get(slug)`, so this is a no-op change for repo callers.
         """
-        project = self._registry.get(slug)
+        from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+        project = get_adapter(self.resource_type).get_entity(self._registry, slug)
         if not project:
             return Fact(subject, NOT_ESTABLISHED,
                         note=f"No resource named {slug!r} is registered.")

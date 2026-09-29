@@ -642,9 +642,21 @@ _ADAPTER = ResourceTypeAdapter(
     # step, not a fresh fetch, so none of them should gate on per-STEP run
     # attribution (see DATABASE_ANALYSIS_KINDS's own comment for why, and
     # the api_structure precedent facts.py already documents this pattern
-    # for). `state_sources` stays undeclared for now — no database question
-    # is answered directly off a state-source table the way repo's
-    # "actively maintained?" is.
+    # for).
+    #
+    # `state_sources` NOW declared (DATABASE-DIRECT-FIELD-ROWS-IMPLEMENTED.md,
+    # porting #309's repo pattern): 10 of the 11 database questions the owner
+    # found rendering `○ not run` live on `laz_local_adventureworks`
+    # (2026-09-29, #8810) are answered directly off a stored field, the same
+    # way repo's "actively maintained?" is — this comment used to say that
+    # mechanism did not exist for databases yet; it now does, in facts.py's
+    # `DATABASE_RESOURCE_STATE_SOURCES`. Resolved lazily, same reasoning as
+    # the repo adapter's own `state_sources` lambda: avoids an import cycle
+    # with facts.py, which imports this module back for `DATABASE_ANALYSIS_
+    # RESULTS_MAP` (see `_db_r_changed_since_survey`).
+    state_sources=lambda: __import__(
+        "resource_explorer.facts", fromlist=["DATABASE_RESOURCE_STATE_SOURCES"],
+    ).DATABASE_RESOURCE_STATE_SOURCES,
     analysis_results_map=lambda: DATABASE_ANALYSIS_RESULTS_MAP,
     analysis_source_steps=lambda: DATABASE_ANALYSIS_RE_STEP_MAP,
     analysis_kinds=lambda: DATABASE_ANALYSIS_KINDS,
