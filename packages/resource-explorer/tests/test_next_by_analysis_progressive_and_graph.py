@@ -126,17 +126,105 @@ class TestContentsBoardStructure:
         assert "never run" in body
 
 
+class TestRowHeadlineFallsBackToTheQuestionsEnvelope:
+    """The owner's 8813 live finding, 2026-09-28: every board row stayed
+    mark + name + "reading…" with NO headline for 60s+, even though
+    `getQuestions()` was already being fetched (for board ordering) and a
+    matching question's envelope may already sit resolved in `state.
+    answers` (the Questions tab's own cache) with no new fetch required.
+    DOM-level proof this actually renders lives in frontend-build/
+    test-harness/by-analysis-headline-and-glyphs.test.mjs; these are the
+    accompanying source-shape assertions, same pattern this file's other
+    classes use."""
+
+    def test_envelope_headline_helper_exists_and_reuses_lead_analysis_id_and_first_sentence(self):
+        # Reuses the exact same pair `boardHeadlineText`/`readEnvelope`
+        # already use for "the one sentence this row shows" -- not a third,
+        # bespoke extraction.
+        app = _app()
+        assert "function envelopeHeadlineText(question, answers)" in app
+        body = _fn("function envelopeHeadlineText(question, answers)")
+        assert "leadAnalysisId(question)" in body
+        assert "firstSentence(f.headline)" in body
+        assert "firstSentence(p)" in body
+
+    def test_envelope_headline_reads_state_answers_not_a_new_fetch(self):
+        # Genuinely free: no getAnswer()/await appears in this function --
+        # it only reads a Map already populated by loadAnswer() elsewhere.
+        body = _fn("function envelopeHeadlineText(question, answers)")
+        assert "answers.get(question.question)" in body
+        assert "await" not in body
+        assert "getAnswer(" not in body
+
+    def test_board_question_map_reuses_the_same_matching_rule_order_boards_by_questions_uses(self):
+        app = _app()
+        assert "function boardQuestionMap(boards, questions)" in app
+        body = _fn("function boardQuestionMap(boards, questions)")
+        assert "leadAnalysisId(q)" in body
+
+    def test_contents_row_falls_back_to_the_envelope_only_while_the_board_is_not_done(self):
+        body = _fn("function renderByAnalysisContents(")
+        assert "entry.status === 'done'\n      ? boardHeadlineText(entry.board)\n      : envelopeHeadlineText(boardQuestions.get(b.id), state.answers);" in body
+
+    def test_load_by_analysis_pane_builds_the_board_question_map_from_the_same_getquestions_call(self):
+        # No SECOND network call -- boardQuestionMap is built from the exact
+        # checklist getQuestions() already returned for ordering, not a new
+        # fetch of its own.
+        body = _fn("async function loadByAnalysisPane()")
+        getq_idx = body.index("getQuestions(slug, { phase: stage, entityType })")
+        after = body[getq_idx:]
+        assert "boardQuestions = boardQuestionMap(orderedBoards, questions);" in after
+
+
+class TestNotEstablishedBoardsReadAsSuch:
+    """BRIEF-BY-ANALYSIS-PANEL-USABILITY.md gate task 4: "the not-established
+    cards must read as such in the table of contents (◐)". Neither live gate
+    database has a not-established analysis today (design's own call, this
+    fix round) -- covered by a harness fixture
+    (frontend-build/test-harness/by-analysis-headline-and-glyphs.test.mjs)
+    instead of a live screenshot; these pin the source shape."""
+
+    def test_board_state_key_recognizes_not_established_results(self):
+        body = _fn("function boardStateKey(entry)")
+        assert "a.results && a.results.state === 'not_established'" in body
+        assert "return 'not_established';" in body
+
+    def test_not_established_check_runs_before_the_plain_measured_fallthrough(self):
+        body = _fn("function boardStateKey(entry)")
+        not_established_idx = body.index("notEstablished")
+        measured_idx = body.index("return 'measured';")
+        assert not_established_idx < measured_idx
+
+
 class TestSharedNamesRenderedOnce:
     def test_shared_names_block_is_a_single_function_called_from_one_mount_point(self):
         app = _app()
         # sharedNamesHtml is assigned into exactly one element's innerHTML per
         # paint -- the Shared Names block is a pane-level singleton, not
         # rendered inside each card.
-        assert app.count("$('by-analysis-shared').innerHTML = sharedNamesHtml(disputed);") == 1
+        assert app.count("$('by-analysis-shared').innerHTML = sharedNamesHtml(shared, disagreeing);") == 1
         # And boardCountsHtml (the per-card COUNTS table) never renders the
         # cross-analysis sentence itself -- only a `≠` mark referring back.
-        counts_body = _fn("function boardCountsHtml(board, disputed)")
+        counts_body = _fn("function boardCountsHtml(board, disagreeing)")
         assert "analyses report this name with different values" not in counts_body
+
+    def test_shared_names_header_names_the_criterion_never_disagree(self):
+        # Owner's live coco_pharma gate feedback, 2026-09-28: "I don't know
+        # what '1 DISAGREE' means" -- the header now names the actual
+        # inclusion criterion (shared by more than one analysis) instead of
+        # a bare "DISAGREE" count, and no row uses the word "DISAGREE" either.
+        body = _fn("function sharedNamesHtml(shared, disagreeing)")
+        assert "DISAGREE" not in body
+        assert "names carried by more than one analysis" in body
+
+    def test_shared_set_is_every_name_carried_by_more_than_one_analysis(self):
+        # The Shared Names block's inclusion criterion is "shared" --
+        # `rec.length > 1` -- not "disagrees". `disagreeing` is a SEPARATE,
+        # narrower set, still used to decide the per-card `≠` mark so that
+        # mark keeps meaning "actually different values elsewhere".
+        body = _fn("function collectMeasures(boards, boardState)")
+        assert "if (rec.length > 1) shared.set(k, rec);" in body
+        assert "disagreeing.add(k)" in body
 
     def test_preliminary_fit_zero_confidence_renders_as_no_lens_declared_not_a_bare_number(self):
         collect_body = _fn("function collectMeasures(boards, boardState)")
@@ -148,9 +236,19 @@ class TestSharedNamesRenderedOnce:
 
     def test_no_lens_placeholder_is_excluded_from_the_disagreement_comparison(self):
         # REPLY §2.3: "leave it out of the comparison" -- the comparable set
-        # used to decide whether a name IS disputed filters noLens out.
+        # used to decide whether a name IS disagreeing filters noLens out.
         body = _fn("function collectMeasures(boards, boardState)")
         assert "rec.filter((x) => !x.noLens)" in body
+
+    def test_board_counts_table_reuses_measure_display_not_a_bare_fmt_scalar(self):
+        # Owner's live coco_pharma finding, 2026-09-28: the Shared Names
+        # block said "— (no lens declared)" for preliminary_fit's confidence
+        # while the card's own COUNTS table, formatting the identical value
+        # with a bare fmtScalar, showed "0" right next to it. Fixed by
+        # routing both through the same measureDisplay helper.
+        body = _fn("function boardCountsHtml(board, disagreeing)")
+        assert "measureDisplay(c, c.key)" in body
+        assert "noLens" in body
 
 
 class TestCardAnatomyHeadlineFirstDescriptionCollapsed:

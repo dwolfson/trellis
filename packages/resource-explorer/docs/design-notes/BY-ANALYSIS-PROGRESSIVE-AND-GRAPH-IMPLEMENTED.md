@@ -358,3 +358,163 @@ same pattern, same-session verification:
 - Not opening a PR — per dispatch, the "Resource-explorer PR/CI merge"
   session batches PRs. Reporting the pushed tip there, noting explicitly:
   "merges after `re/relationship-graph-dropdown-affordance`".
+
+## Follow-up fix round (2026-09-28, PR #344 held pending this): four bugs found on the owner's timed gate
+
+Four real bugs found on `laz_local_adventureworks`/`localhost_docker_coco_pharma`
+after the slice above shipped, all fixed on this same branch before the PR
+was allowed to proceed.
+
+### 1. Contents-row headline came only from the board's own slow read
+
+The contents board painted immediately (the slice above's own fix), but each
+row's HEADLINE stayed `entry.status === 'done' ? boardHeadlineText(...) :
+''` — blank while a board's read (10-26s each, several in parallel) was
+still outstanding. Live evidence: the owner's screenshot at ~60s showed
+every row, including Relationship Graph, still "reading…" with no headline.
+
+**What was actually available, and what wasn't.** The obvious fix reads as
+"use the data `getQuestions()` already resolves" — but `getQuestions()`
+(`build_question_checklist`) does **not** carry a resolved headline sentence
+per question; its `has_data` field is a boolean, and the headline readers
+(`DATABASE_ANALYSIS_HEADLINE_MAP` etc.) are each their OWN independent
+registry read, not derived from data `question_has_data` already fetched.
+Measured directly (see "getQuestions() timing" below): `build_question_
+checklist` itself takes 48-52s on these two databases, so treating it as a
+cheap, ready-made headline source would have been wrong on its own terms.
+
+**What this fix actually does**: `envelopeHeadlineText(question, answers)`
+(app.js) reads `state.answers` — the Questions tab's own per-question
+envelope cache, populated by `getAnswer()`/`loadAnswer()` when the Questions
+tab has been visited for this slug/stage, in this browser session. This
+makes NO new network call. `boardQuestionMap(boards, questions)` matches
+each board to its question with the exact same `leadAnalysisId`-then-
+`analysis_ids` preference `orderBoardsByQuestions` already used (pulled out
+so both share one matching rule). The contents row now reads: `entry.status
+=== 'done' ? boardHeadlineText(entry.board) : envelopeHeadlineText(
+boardQuestions.get(b.id), state.answers)`.
+
+**Honest limit, stated plainly**: this only has something to show when the
+Questions tab was already visited for this slug/stage in the same session —
+a cold load that goes straight to By-analysis with no prior Questions visit
+still shows a blank headline while boards load, same as before this fix.
+That is the accurate reading of "the row is never blank while loading IF the
+envelope already has an answer" — not a claim that every row is now
+populated on every load. `leadAnalysisId`/`firstSentence` (envelope.js) are
+reused, not reimplemented, per the dispatch's own instruction.
+
+Reuses `firstSentence`'s one-sentence truncation exactly the same way
+`boardHeadlineText` does, so a multi-sentence envelope answer still shows
+only its first sentence in this row.
+
+### 2. Shared Names block: "N DISAGREE" was not interpretable
+
+Owner's live coco_pharma feedback: "I don't know what '1 DISAGREE' means."
+`collectMeasures` now returns two sets instead of one: `shared` (every name
+carried by more than one analysis — the block's actual inclusion criterion)
+and `disagreeing` (the narrower subset whose comparable values genuinely
+differ — still the right, and only, set for the per-card `≠` mark, whose own
+title text says "reported with different values elsewhere"). The header now
+reads "Shared names · N names carried by more than one analysis", and each
+row states in words whether its values differ ("different measures share a
+name -- not necessarily wrong, likely worth a rename") or agree ("these
+measures share a name and agree"). No "DISAGREE" string appears anywhere in
+the block any more.
+
+### 3. Preliminary Fit's card COUNTS table disagreed with the Shared Names block
+
+The Shared Names block correctly rendered `preliminary_fit`'s no-lens
+`confidence: 0` as "— (no lens declared)" (`measureDisplay`). The
+Preliminary Fit CARD's own COUNTS table (`boardCountsHtml`) computed its
+display text separately with a bare `fmtScalar`, so the identical value
+showed as a plain "0" right next to the block that said otherwise — two
+renderings of one number, disagreeing with each other on the same screen.
+Fixed by tracking `noLens` per COUNTS row the same way `collectMeasures`
+does, and rendering through the same `measureDisplay` helper both places
+now share.
+
+### 4. Not-established boards never showed the not-established glyph
+
+`boardStateKey` recognized `needs-lens` (preliminary_fit's own marker) and
+`unrun`/`measured`, but never `result_status.py`'s `not_established` state —
+a board that measured something but could not settle a result (`has_
+results: true`, an analysis's `results.state === 'not_established'`) fell
+straight through to the plain `measured` case and showed a ✓, the exact
+"confident wrong answer" shape gate task 4 exists to catch. Fixed: `board
+StateKey` now checks `(board.analyses || []).some((a) => a.results &&
+a.results.state === 'not_established')` before the `unrun`/`measured`
+fallthrough, returning glyphs.js's own `not_established` state (`?`).
+
+**Not verifiable live**: neither gate database has a not-established
+analysis today, so this is verified with a harness fixture instead of a
+live screenshot — design's own call for this fix round.
+
+## getQuestions() timing — a separate, NOT-yet-fixed problem, flagged not fixed
+
+Since fix #1 above makes the row headline depend on `state.answers`, which
+in turn depends on the Questions tab's `getAnswer()` calls (and ordering
+depends on `getQuestions()` itself), `getQuestions()`'s own speed matters
+for "readable within 10s" in a way it didn't before. Measured directly
+against the server-side function (`build_question_checklist`, `workflows/
+scouting.py`) — not through the HTTP route, so this is the number with
+network/ASGI overhead subtracted, i.e. a floor, not a ceiling:
+
+```
+laz_local_adventureworks database/discovery:      48.16s, 22 questions
+localhost_docker_coco_pharma database/discovery:  52.07s, 22 questions
+```
+
+**This is slow — 48-52s for a single checklist call — and confirms PR/CI's
+"observed at 30s+ under load" note.** Root cause: `question_has_data`
+(`workflows/scouting.py`) calls a `results_reader(registry, slug)` for every
+`analysis_id` on every question with `kind in (analysis, partial, mixed)` —
+the same `db_derived`-backed, recompute-from-stored-rows-on-every-call cost
+the board reads themselves pay, just paid once per (question × analysis_id)
+pair instead of once per board. The `asyncio.to_thread` fix this branch
+already shipped (§2a above) keeps this off the event loop so it no longer
+blocks OTHER requests while it runs, but does nothing about its own
+wall-clock cost.
+
+**This is flagged, not fixed, per the dispatch's explicit instruction**
+("do not silently try to fix it too... scope creep here risks missing the
+actual ask"). A real fix would need either caching `question_has_data`'s
+per-analysis result across the checklist's own questions (several questions
+share the same `analysis_ids`, so the current loop very likely re-reads the
+same analysis's results multiple times per call — unconfirmed, not measured
+separately in this pass) or a cheaper existence check than a full
+`results_reader` call. Left for a follow-up.
+
+## Tests, this round
+
+- `frontend-build/test-harness/by-analysis-headline-and-glyphs.test.mjs` —
+  real jsdom/DOM tests (PR #346's harness, merged to `main` during this
+  round — merged into this branch before writing these): the contents row
+  shows the envelope headline while the board's own fetch is stubbed to
+  never resolve (status stays `'loading'`); the row stays genuinely blank
+  (not a fabricated line) when no envelope has resolved; a `not_established`
+  board fixture renders the `?` glyph and names the reason in its headline.
+- `frontend-build/test-harness/by-analysis-shared-names.test.mjs` — real DOM
+  tests: the Shared Names header never says "DISAGREE" and names the actual
+  criterion; a name reported by only one analysis is excluded from the
+  block; the Preliminary Fit card's own COUNTS table renders the identical
+  "— (no lens declared)" text the Shared Names block uses for the same
+  value (not a bare "0").
+- `tests/test_next_by_analysis_progressive_and_graph.py` — new classes
+  `TestRowHeadlineFallsBackToTheQuestionsEnvelope`,
+  `TestNotEstablishedBoardsReadAsSuch`, plus new/updated cases in
+  `TestSharedNamesRenderedOnce` — static-source assertions matching the
+  DOM-level proof above, same pattern this file already used.
+
+**Full suite**: `uv run pytest tests/ -q -rf` and `npm run test:harness`
+(Node 20 via `nvm use 20`) both run clean — see this branch's push report
+for the exact counts.
+
+## Coordination, this round
+
+- Design (via the coordinating session) added items 2, 3 and 4 above mid-task,
+  each confirmed as a genuine bug found on the owner's own live gate check,
+  not a scope guess — folded into this same fix round on the same branch/PR
+  rather than opened separately, per the coordinator's explicit instruction.
+- PR #346 (`re/next-render-harness`) was not yet merged to `main` when this
+  round started; confirmed merged (`a90ce17c`) partway through, and `origin/
+  main` was merged into this branch before writing the harness tests above.
