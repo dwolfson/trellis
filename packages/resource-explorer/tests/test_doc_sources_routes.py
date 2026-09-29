@@ -320,3 +320,124 @@ class TestPublishHook:
         assert calls == ["https://x"]  # only the unpublished one was published
         skipped = next(r for r in results if r["id"] == row2["id"])
         assert skipped.get("skipped") == "already published"
+
+
+class _SyncThread:
+    """Stand-in for `threading.Thread` that runs its target synchronously on
+    `.start()`, so a test can observe the immediate-drain attempt
+    deterministically instead of racing a real background thread."""
+
+    def __init__(self, target=None, name=None, daemon=None):
+        self._target = target
+
+    def start(self):
+        if self._target is not None:
+            self._target()
+
+
+class TestImmediateOutboxAttempt:
+    """Egeria publish-state fix round 3 (2026-09-29): design's spec is
+    "attempt the publish at once, falling back to the existing 15-minute
+    retry loop only if that immediate attempt fails" — round 2 only ever
+    enqueued and left the row for the scheduler's next pass, up to 15
+    minutes later. These pin that add/remove now trigger a SCOPED drain of
+    just the row they enqueued, off the request thread, and that a failed
+    immediate attempt does not fail the add/remove request itself."""
+
+    def test_add_on_an_already_published_resource_attempts_a_scoped_drain_of_exactly_that_row(
+        self, client, monkeypatch, registry,
+    ):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.threading.Thread", _SyncThread)
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+
+        drained_ids = []
+
+        def fake_drain_outbox_row(reg, element_id, clients=None, find_element_guid=None):
+            drained_ids.append(element_id)
+            return {"claimed": 1, "done": 1, "failed": 0, "dead": 0, "skipped": 0}
+
+        monkeypatch.setattr(
+            "resource_explorer.web.routes.doc_sources.drain_outbox_row", fake_drain_outbox_row)
+
+        resp = client.post("/api/doc-sources/database/adventureworks",
+                            json={"url": "https://docs.example/dict"})
+
+        assert resp.status_code == 200
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_rows = [r for r in rows if r["element_kind"] == "doc_source_publish"]
+        assert len(publish_rows) == 1
+        # The scoped drain ran (synchronously, via the thread stand-in) for
+        # exactly the row this request enqueued — not a full, unscoped drain
+        # of the whole outbox, and not left for the 15-minute scheduler loop.
+        assert drained_ids == [publish_rows[0]["id"]]
+
+    def test_remove_of_a_catalogued_source_attempts_a_scoped_drain_of_the_unpublish_row(
+        self, client, monkeypatch, registry,
+    ):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.threading.Thread", _SyncThread)
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+        added = client.post("/api/doc-sources/database/adventureworks",
+                             json={"url": "https://x"}).json()
+        registry.set_doc_source_egeria_ref("database", "adventureworks", added["id"], "ref-guid-9")
+
+        drained_ids = []
+
+        def fake_drain_outbox_row(reg, element_id, clients=None, find_element_guid=None):
+            drained_ids.append(element_id)
+            return {"claimed": 1, "done": 1, "failed": 0, "dead": 0, "skipped": 0}
+
+        monkeypatch.setattr(
+            "resource_explorer.web.routes.doc_sources.drain_outbox_row", fake_drain_outbox_row)
+
+        resp = client.delete(f"/api/doc-sources/database/adventureworks/{added['id']}")
+
+        assert resp.status_code == 200
+        assert resp.json()["egeria_unpublish"] == "queued"
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        unpublish_rows = [r for r in rows if r["element_kind"] == "doc_source_unpublish"]
+        assert len(unpublish_rows) == 1
+        assert drained_ids == [unpublish_rows[0]["id"]]
+
+    def test_a_failed_immediate_attempt_does_not_fail_the_add_request_and_leaves_the_row_for_retry(
+        self, client, monkeypatch, registry,
+    ):
+        # The fallback contract: if the immediate, off-thread attempt fails
+        # for any reason, the add request must still succeed (the row was
+        # already enqueued before the attempt ran), and the row must be left
+        # exactly where the normal 15-minute scheduler drain would find and
+        # retry it — not surfaced as an error on this request.
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.threading.Thread", _SyncThread)
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+
+        def failing_drain_outbox_row(reg, element_id, clients=None, find_element_guid=None):
+            raise RuntimeError("Egeria unreachable: connection refused")
+
+        monkeypatch.setattr(
+            "resource_explorer.web.routes.doc_sources.drain_outbox_row", failing_drain_outbox_row)
+
+        resp = client.post("/api/doc-sources/database/adventureworks",
+                            json={"url": "https://docs.example/dict"})
+
+        # The add itself is unaffected by the immediate attempt's failure.
+        assert resp.status_code == 200
+        assert resp.json()["egeria_state"] == "publishing"
+        # The row is still there, untouched by drain_outbox_row's own
+        # failure bookkeeping (this test's fake never calls
+        # mark_outbox_failed) — exactly the row the normal 15-minute
+        # scheduler drain will pick up and actually attempt next.
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_rows = [r for r in rows if r["element_kind"] == "doc_source_publish"]
+        assert len(publish_rows) == 1
+        assert publish_rows[0]["status"] in ("pending", "running")

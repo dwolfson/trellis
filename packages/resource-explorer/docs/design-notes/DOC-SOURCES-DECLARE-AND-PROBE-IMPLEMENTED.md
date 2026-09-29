@@ -388,6 +388,49 @@ declared before this fix landed, exactly the adventureworks row found live — i
 missing publish right there rather than leaving the row unexplained forever. Idempotent:
 once queued, the next call finds the row and stops re-queuing.
 
+### Immediate attempt on enqueue, 15 minutes is the retry fallback, not the happy path (round 3, 2026-09-29)
+
+The first version of this fix (above) only ever ENQUEUED a `doc_source_publish`/
+`doc_source_unpublish` row and left it for `scheduler.py`'s existing drain loop
+(`_CHECK_INTERVAL_SECONDS = 900`) to pick up — so a source declared on an
+already-published resource could sit `local — publishing…` for up to 15 minutes even
+when Egeria was perfectly reachable at the moment of the add. Design's original spec
+was "publish at once (best effort), through the existing outbox so a transient failure
+retries" — attempt immediately, fall back to the 15-minute loop only if that immediate
+attempt fails. Round 2 shipped only the fallback half.
+
+**The fix.** `registry.claim_due_outbox_elements()` gained an `element_id` parameter that
+scopes a claim to exactly one row (in addition to the existing `run_id` scoping, which
+isn't precise enough here — doc-source publish/unpublish rows carry no `run_id`, so a
+`run_id`-scoped claim could still sweep in unrelated rows). `drain_outbox()` threads
+`element_id` straight through to it; `drain_outbox_row(registry, element_id)` is a thin,
+named wrapper over `drain_outbox(..., element_id=...)` for callers that want "attempt this
+one row now" without spelling out `limit`/`run_id`. **This is the same drain the
+scheduler's own unscoped loop calls** — apply, retry bookkeeping, backoff, dead-lettering,
+and `record_drain_outcome` are all identical; `element_id` only narrows which row
+`claim_due_outbox_elements` is willing to claim, so a scoped call behaves exactly like the
+full drain would have behaved on that one row, including leaving a failed attempt for the
+normal 15-minute retry with its own backoff — nothing about this path is a separate
+mechanism to keep in sync.
+
+`web/routes/doc_sources.py`'s `add_doc_source` (via `_compute_egeria_state`'s self-heal
+branch, which is also what `add_doc_source` itself goes through) and the DELETE handler
+now call `_attempt_outbox_row_immediately(element_id)` right after enqueueing — a plain
+`threading.Thread(daemon=True)` (the same fire-and-forget shape `worker.py`/`rag_system.py`
+already use elsewhere in this codebase) that builds its own `ProjectRegistry()` and calls
+`drain_outbox_row`, off the request thread so the HTTP response is never blocked on an
+Egeria round trip. `drain_outbox`/`drain_outbox_row` never raise (every failure already
+routes through `mark_outbox_failed`/dead-lettering), so the background thread cannot crash
+the process, and a failure inside it never reaches the add/remove request — the row is
+simply left exactly where the normal 15-minute scheduler drain would find and retry it.
+
+**Updated timing language:** on success, a source declared on an already-published
+resource reads `catalogued in Egeria` within a few seconds of the add — the time for one
+outbox apply against a reachable platform, not a scheduler cycle. The 15-minute interval
+is the fallback/retry cadence for when that immediate attempt fails (Egeria unreachable,
+timeout, or any other transient error) — not the expected happy-path latency it read as
+after round 2.
+
 ### The four states — never empty
 
 `DocSourceOut.egeria_state` (one of `catalogued` / `publishing` / `publish_failed` /
@@ -441,6 +484,24 @@ fact about the resource's own Egeria asset link, not about any one source.
   tests/ -q -rf` against the shared Postgres registry, same as slice 1's own baseline of
   6822 passed / 102 skipped / 0 failed).
 
+**Round 3 (2026-09-29) — immediate attempt on enqueue:**
+
+- `tests/test_egeria_outbox.py::TestElementScopedDrain` (4 new) — `claim_due_outbox_
+  elements(element_id=...)` takes only that row, leaving a sibling row untouched;
+  `element_id` still respects the ordinary due-gate (a row whose backoff hasn't elapsed
+  stays out of scope even when named explicitly); `drain_outbox(..., element_id=...)`
+  applies only the named row and leaves the rest of the outbox alone; `drain_outbox_row`
+  is confirmed to be the exact same mechanism as the scheduler's own unscoped drain (a
+  failure inside it goes through the identical `mark_outbox_failed` bookkeeping, leaving
+  the row for the normal retry rather than a special-cased failure path).
+- `tests/test_doc_sources_routes.py::TestImmediateOutboxAttempt` (3 new) — add on an
+  already-published resource triggers a scoped drain of EXACTLY the row it just enqueued
+  (proven via a `threading.Thread` test double that runs the target synchronously, so the
+  assertion isn't racing a real background thread); remove of a catalogued source triggers
+  the same for its unpublish row; and — the fallback contract — a failing immediate attempt
+  does not fail the add request itself and leaves the row `pending`/`running`, exactly
+  where the normal 15-minute scheduler drain will find and retry it.
+
 **JS render harness (`frontend-build/test-harness/doc-sources-enrichment.test.mjs`):**
 
 - `test('each of the four Egeria publish-state rows renders its own required wording
@@ -483,15 +544,33 @@ All six steps passed on the first run, no cleanup residue left behind (the local
 already deleted by step 4; the outbox rows are `done` and will clear on the existing
 14-day retention like every other outbox row).
 
-**What was NOT verified live:** the `local_only` state's live equivalent — declaring a
-source on a genuinely UNPUBLISHED shared resource. Every database currently registered in
-the shared registry (`laz_local_adventureworks`, `localhost_docker_coco_pharma`,
-`egeria_optional_prefect_db`) is already published; deliberately unpublishing one to
-exercise this path would be a real, and needlessly risky, mutation of shared infrastructure
-for a state that makes no Egeria call at all (it is the early-return BEFORE any outbox
-interaction). Covered instead by `test_add_on_an_unpublished_resource_stays_local_and_
-queues_nothing` and the pre-existing `test_local_only_when_not_published`, both of which
-pass.
+**What was NOT verified live (round 2 claim, corrected round 3, 2026-09-29):** this
+section originally said all three shared databases were already published, so
+`local_only`'s live equivalent could only be exercised by deliberately unpublishing one —
+"a real, and needlessly risky, mutation of shared infrastructure." That premise was wrong.
+It came from reading a cached/raw Egeria GUID as "published" rather than routing through
+`egeria_linkage.describe_publish_status` (the staleness-aware check `_compute_egeria_state`
+above actually uses, and always did — `_compute_egeria_state`'s `is_published` parameter is
+supplied by `_publish_status()`, which calls `describe_publish_status` directly; there was
+no raw-GUID bug in the row logic itself, only in this doc's own live-verification claim
+about the registry's state).
+
+A fresh `describe_publish_status` check (2026-09-29, PR/CI review of this round) against
+the real shared registry and the real Egeria platform found:
+
+- `laz_local_adventureworks` — GUID present, `is_published: True`.
+- `localhost_docker_coco_pharma` — GUID present, `is_published: **False**` —
+  `"published to Egeria · link stale since 2026-09-26 · last checked 2026-09-29 — element
+  not found"`.
+
+So `coco_pharma` genuinely IS the live `local_only` case design's gate intended, and has
+been since 2026-09-26 — the doc's own claim that "every database is already published" was
+stale (or wrong) at the time it was written, not something that changed since. This is a
+live-demonstrable case, not harness-only: declaring a documentation source against
+`coco_pharma` today exercises the real `local_only` path end to end, no manufactured
+unpublish needed. Covered at the unit level regardless by `test_add_on_an_unpublished_
+resource_stays_local_and_queues_nothing` and the pre-existing `test_local_only_when_not_
+published`, both of which still pass.
 
 **`publish_failed`/`dead`** were verified only via the mocked route test
 (`test_list_reports_publish_failed_with_the_real_reason`) and the outbox's own existing

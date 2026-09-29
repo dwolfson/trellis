@@ -1296,3 +1296,74 @@ class TestDocSourceOutbox:
 
         with pytest.raises(OutboxApplyError, match="network down"):
             apply_element(self._unpublish_row("ref-1"), OutboxClients(), lambda qn: "")
+
+
+class TestElementScopedDrain:
+    """Egeria publish-state fix round 3 (2026-09-29): `add_doc_source`/the
+    DELETE handler must attempt the row they just enqueued immediately, not
+    only rely on the scheduler's next 15-minute pass. `element_id` is the
+    mechanism `drain_outbox`/`drain_outbox_row` use to do that — pinned here
+    at the outbox layer (route-level behavior is
+    `tests/test_doc_sources_routes.py::TestImmediateOutboxAttempt`).
+    """
+
+    def test_claim_due_outbox_elements_with_element_id_takes_only_that_row(self, db, project):
+        first = _enqueue(db, project, qn="Annotation::p::2026-01-01T00:00:00::0")
+        second = _enqueue(db, project, qn="Annotation::p::2026-01-01T00:00:00::1")
+
+        claimed = db.claim_due_outbox_elements(element_id=second)
+
+        assert [r["id"] for r in claimed] == [second]
+        # The other row is untouched — still pending, still claimable on its
+        # own, exactly as an unscoped drain would still find it.
+        assert [r["id"] for r in db.peek_due_outbox_elements()] == [first]
+
+    def test_element_id_scoping_respects_the_ordinary_due_gate(self, db, project):
+        # A row not yet due (backoff not elapsed) must stay off-limits even
+        # when named explicitly by id — element_id narrows WHICH rows are
+        # eligible, it does not bypass the ordinary claim rules.
+        row_id = _enqueue(db, project)
+        db.mark_outbox_failed(row_id, "transient")  # sets a future next_attempt_at
+
+        claimed = db.claim_due_outbox_elements(element_id=row_id)
+
+        assert claimed == []
+
+    def test_drain_outbox_with_element_id_applies_only_that_row(self, db, project):
+        untouched = _enqueue(db, project, qn="Annotation::p::2026-01-01T00:00:00::0")
+        target = _enqueue(db, project, qn="Annotation::p::2026-01-01T00:00:00::1")
+
+        discovery = type("D", (), {"create_annotation": lambda self, body: {"guid": "g"}})()
+        summary = drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "",
+                               element_id=target)
+
+        assert summary["claimed"] == 1
+        assert summary["done"] == 1
+        counts = db.outbox_counts()
+        assert counts == {"done": 1, "pending": 1}
+        assert [r["id"] for r in db.peek_due_outbox_elements()] == [untouched]
+
+    def test_drain_outbox_row_is_the_same_mechanism_as_drain_outbox(self, db, project):
+        # drain_outbox_row is a thin, named wrapper — not a second
+        # implementation — so a failure there is reported and retried
+        # exactly like any other outbox row, via the SAME mark_outbox_failed
+        # bookkeeping the scheduler's own unscoped drain uses.
+        from resource_explorer.egeria_outbox import drain_outbox_row
+
+        row_id = _enqueue(db, project)
+
+        class _RaisingDiscovery:
+            def create_annotation(self, body):
+                raise RuntimeError("Egeria unreachable")
+
+        summary = drain_outbox_row(db, row_id, OutboxClients(discovery=_RaisingDiscovery()),
+                                   lambda qn: "")
+
+        assert summary["claimed"] == 1
+        assert summary["failed"] == 1
+        row = db.peek_due_outbox_elements(now=(datetime.utcnow() + timedelta(hours=1)).isoformat())
+        assert row and row[0]["id"] == row_id
+        assert row[0]["status"] == "failed"
+        # Left exactly where the normal 15-minute scheduler drain would find
+        # and retry it — not dead-lettered on a single failed attempt.
+        assert row[0]["attempts"] == 1

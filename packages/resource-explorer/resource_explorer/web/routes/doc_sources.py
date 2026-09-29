@@ -24,6 +24,7 @@ attach rather than inventing UI from scratch.
 from __future__ import annotations
 
 import logging
+import threading
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -36,6 +37,7 @@ from resource_explorer.doc_source_egeria import (
 from resource_explorer.doc_source_probe import probe as run_probe
 from resource_explorer.egeria_linkage import describe_publish_status
 from resource_explorer.egeria_outbox import (
+    drain_outbox_row,
     enqueue_doc_source_publish,
     enqueue_doc_source_unpublish,
 )
@@ -49,6 +51,40 @@ _ENTITY_TABLES = ("database", "filesystem")
 
 def _registry() -> ProjectRegistry:
     return ProjectRegistry()
+
+
+def _attempt_outbox_row_immediately(element_id: int) -> None:
+    """Fire a scoped `drain_outbox_row` for one just-enqueued row, off the
+    request thread — Egeria publish-state fix round 3 (2026-09-29). Design's
+    spec is "publish at once (best effort), falling back to the existing
+    15-minute retry loop only if that immediate attempt fails" — not "queue
+    it and wait up to 15 minutes for the scheduler's next pass", which is
+    what round 2 actually shipped.
+
+    Runs on its own daemon thread (same fire-and-forget shape
+    `worker.py`/`rag_system.py` already use elsewhere in this codebase) so
+    the HTTP response to the add/remove request is never blocked on an
+    Egeria round trip. Builds its OWN `ProjectRegistry()` rather than
+    capturing the caller's — connections are not shared across threads
+    anywhere else in this codebase either. `drain_outbox` itself never
+    raises (it converts every failure into `mark_outbox_failed`/dead-letter
+    bookkeeping on the row), so this thread cannot crash the process; a
+    failure here just leaves the row exactly where the normal 15-minute
+    scheduler drain (`scheduler.py`) would find it and retry it, which is
+    the intended fallback, not a bug in this path.
+    """
+    def _run() -> None:
+        try:
+            drain_outbox_row(_registry(), element_id)
+        except Exception:
+            # Defense in depth only — drain_outbox_row/drain_outbox already
+            # catch everything and route failures onto the row itself via
+            # mark_outbox_failed, so reaching this is not expected. Logged,
+            # not swallowed silently, and never propagated: this thread has
+            # no caller left to propagate to by the time it runs.
+            log.exception("doc sources: immediate outbox attempt failed for row %s", element_id)
+
+    threading.Thread(target=_run, name=f"doc-source-outbox-{element_id}", daemon=True).start()
 
 
 def _resolve_entity(registry: ProjectRegistry, entity_type: str, slug: str):
@@ -177,7 +213,8 @@ def _compute_egeria_state(registry: ProjectRegistry, entity_type: str, slug: str
         return "local_only", ""
     outbox_row = registry.get_doc_source_outbox_row(entity_type, slug, row["id"])
     if outbox_row is None:
-        enqueue_doc_source_publish(registry, entity_type, slug, row["id"], row["url"])
+        element_id = enqueue_doc_source_publish(registry, entity_type, slug, row["id"], row["url"])
+        _attempt_outbox_row_immediately(element_id)
         return "publishing", ""
     status = outbox_row.get("status")
     if status in ("failed", "dead"):
@@ -293,7 +330,9 @@ def remove_doc_source(entity_type: str, slug: str, source_id: str) -> dict:
     # side fails or is slow — that's what the outbox's retry is for.
     egeria_unpublish = "not_applicable"
     if row.get("egeria_external_ref_guid"):
-        enqueue_doc_source_unpublish(registry, entity_type, slug, row["egeria_external_ref_guid"])
+        element_id = enqueue_doc_source_unpublish(
+            registry, entity_type, slug, row["egeria_external_ref_guid"])
+        _attempt_outbox_row_immediately(element_id)
         egeria_unpublish = "queued"
     return {"removed": True, "id": source_id, "egeria_unpublish": egeria_unpublish}
 

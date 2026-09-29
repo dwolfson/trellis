@@ -489,7 +489,8 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
 
 
 def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
-                 limit: int = DRAIN_BATCH, run_id: str | None = None) -> dict:
+                 limit: int = DRAIN_BATCH, run_id: str | None = None,
+                 element_id: int | None = None) -> dict:
     """One drain pass. Returns a summary dict; never raises.
 
     Called from `scheduler.py`'s existing loop, once per iteration — the same
@@ -502,11 +503,25 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
     without a live platform, and are resolved lazily from the repo publisher
     when not supplied — that publisher already owns a connected client and a
     proven `_find_element_guid`.
+
+    `element_id` scopes this pass to exactly one outbox row — the "attempt
+    this write right now" case (`doc_sources.py`'s add/remove routes, Egeria
+    publish-state fix round 3, 2026-09-29): enqueue, then attempt that one
+    row immediately, off the request thread, rather than only relying on the
+    15-minute scheduler loop. This is deliberately the SAME function the
+    scheduler calls for its full drain, not a second copy — `element_id`
+    only narrows which rows `claim_due_outbox_elements` claims; every other
+    step (apply, retry bookkeeping, dead-lettering, `record_drain_outcome`,
+    publish-run completion) is unchanged, so a scoped call behaves exactly
+    like the full drain would have behaved on that one row, including
+    leaving it for the normal 15-minute retry loop on failure (see
+    `mark_outbox_failed` below — nothing about a scoped call skips backoff
+    or dead-lettering).
     """
     summary = {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
               "publish_run_check_failed": 0}
     try:
-        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id)
+        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary
@@ -602,6 +617,20 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             log.exception("Could not check publish-run completion for run_id %s", base_run_id)
 
     return summary
+
+
+def drain_outbox_row(registry, element_id: int, clients: "OutboxClients | None" = None,
+                      find_element_guid=None) -> dict:
+    """Attempt exactly one outbox row right now. A thin, named convenience
+    over `drain_outbox(..., element_id=...)` — same function, same apply/
+    retry/dead-letter logic, nothing duplicated — for callers (`doc_sources.
+    py`'s add/remove routes) that want "attempt this one write immediately"
+    without spelling out `limit`/`run_id` at every call site. Never raises
+    (drain_outbox itself never does); on failure the row is left exactly as
+    `mark_outbox_failed` leaves any row, so it falls back to the normal
+    15-minute scheduler drain like every other outbox row.
+    """
+    return drain_outbox(registry, clients, find_element_guid, element_id=element_id)
 
 
 def _default_clients():

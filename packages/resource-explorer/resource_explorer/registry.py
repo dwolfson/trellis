@@ -6607,6 +6607,7 @@ class ProjectRegistry:
 
     def claim_due_outbox_elements(
         self, limit: int = 200, now: str | None = None, run_id: str | None = None,
+        element_id: int | None = None,
     ) -> list[dict]:
         """Rows ready to attempt, oldest first.
 
@@ -6615,6 +6616,17 @@ class ProjectRegistry:
         of depends_on_id: annotations cannot be attempted before the report
         they hang off, so a partial drain leaves a coherent prefix rather than
         orphans.
+
+        `element_id` scopes the claim to exactly one row — the "attempt this
+        one write immediately" case (`doc_sources.py`'s add/remove routes,
+        Egeria publish-state fix round 3, 2026-09-29): `run_id` scoping isn't
+        precise enough there, since doc-source publish/unpublish rows are
+        enqueued with no `run_id` at all (there is no "publish run" they
+        belong to the way an annotation batch has one), so an unscoped or
+        run_id-scoped claim could take a batch of unrelated pending rows
+        instead of just the one just enqueued. Still due-gated (backoff,
+        dependency) same as any other claim — this is a precise scope, not a
+        bypass of the ordinary claim rules.
 
         **This is a real claim.** Select and status transition happen in ONE
         transaction (`self._conn()` below), so two drainers cannot both take
@@ -6671,6 +6683,9 @@ class ProjectRegistry:
         if run_id is not None:
             sql += "  AND o.run_id = ? "
             params.append(run_id)
+        if element_id is not None:
+            sql += "  AND o.id = ? "
+            params.append(element_id)
         sql += "ORDER BY o.id ASC LIMIT ?"
         params.append(limit)
 
