@@ -638,3 +638,106 @@ class TestFindLatestDatabaseSurveyWithKey:
 
         assert len(calls) == 1, "second find_latest_database_survey_with_key() call re-queried Postgres"
         assert first == second
+
+
+class TestFindLatestDetailSurveyedAt:
+    """2026-09-29 round 3 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+    ROUND-3-IMPLEMENTED.md): `find_latest_detail_surveyed_at` replaces
+    `db_derived.py`'s `_resolve_table_surveyed_at` walk (one `query_detail_
+    rows` call per candidate `surveyed_at`, newest first, until one is
+    non-empty) with a single `MAX(surveyed_at)` query — provably
+    equivalent per that method's own docstring, pinned here directly
+    against real Postgres."""
+
+    @pytest.fixture
+    def pg_database(self, pg_registry):
+        from resource_explorer.registry import DatabaseEntity
+
+        slug = "pg_itest_find_latest_detail_db"
+        if pg_registry.get_database(slug) is None:
+            pg_registry.register_database(DatabaseEntity(
+                slug=slug, display_name="Find Latest Detail Test DB", db_type="postgresql",
+                host="localhost", port=5432, database_name=slug,
+            ))
+        yield slug
+        pg_registry.remove_database(slug)
+
+    def test_returns_none_when_the_table_has_no_rows_for_this_slug(self, pg_registry, pg_database):
+        assert pg_registry.find_latest_detail_surveyed_at("database_tables", pg_database) is None
+
+    def test_finds_the_only_surveyed_at(self, pg_registry, pg_database):
+        pg_registry.write_detail_rows(
+            "database_tables", pg_database, "2026-09-29T00:00:00", "local",
+            [{"schema_name": "public", "table_name": "t1"}],
+        )
+        at = pg_registry.find_latest_detail_surveyed_at("database_tables", pg_database)
+        assert at == "2026-09-29T00:00:00"
+
+    def test_finds_the_newest_of_several_surveyed_ats(self, pg_registry, pg_database):
+        for at in ("2026-09-27T00:00:00", "2026-09-29T00:00:00", "2026-09-28T00:00:00"):
+            pg_registry.write_detail_rows(
+                "database_tables", pg_database, at, "local",
+                [{"schema_name": "public", "table_name": "t1"}],
+            )
+        found = pg_registry.find_latest_detail_surveyed_at("database_tables", pg_database)
+        assert found == "2026-09-29T00:00:00"
+
+    def test_a_run_that_never_touched_this_table_is_correctly_skipped(self, pg_registry, pg_database):
+        """The exact property `_resolve_table_surveyed_at`'s walk existed
+        for: a later run's own steps can genuinely never touch a structured
+        table at all (a schema-only run writes no `database_table_activity`
+        rows), and that must not shadow an earlier run that DID."""
+        pg_registry.write_detail_rows(
+            "database_table_activity", pg_database, "2026-09-27T00:00:00", "local",
+            [{"schema_name": "public", "table_name": "t1", "rows_inserted": 5}],
+        )
+        # A later survey ran, but this particular table was never touched by
+        # it — no row exists for "2026-09-29" in database_table_activity at all.
+        found = pg_registry.find_latest_detail_surveyed_at("database_table_activity", pg_database)
+        assert found == "2026-09-27T00:00:00"
+
+    def test_require_any_non_null_skips_a_row_with_every_counter_null(self, pg_registry, pg_database):
+        """The `database_table_activity`-specific case `require_measured_
+        counter` exists for: a row can be written (the step ran) with every
+        counter NULL (nothing was actually measured). That must not count
+        as "this run has the answer" — the newer, unmeasured row must be
+        skipped in favour of the older, real one."""
+        pg_registry.write_detail_rows(
+            "database_table_activity", pg_database, "2026-09-27T00:00:00", "local",
+            [{"schema_name": "public", "table_name": "t1", "rows_inserted": 5}],
+        )
+        pg_registry.write_detail_rows(
+            "database_table_activity", pg_database, "2026-09-29T00:00:00", "local",
+            [{"schema_name": "public", "table_name": "t1"}],  # every counter NULL
+        )
+        found = pg_registry.find_latest_detail_surveyed_at(
+            "database_table_activity", pg_database,
+            require_any_non_null=("rows_inserted", "rows_updated", "rows_deleted",
+                                   "seq_scan", "idx_scan"),
+        )
+        assert found == "2026-09-27T00:00:00", (
+            "the newer, all-NULL-counter row was accepted as measured"
+        )
+
+    def test_resolve_table_surveyed_at_gives_identical_answers_to_the_old_walk(
+        self, pg_registry, pg_database,
+    ):
+        """End to end through `db_derived._resolve_table_surveyed_at` itself
+        (not just the registry method it now calls) — the exact bug shape
+        the walk existed for, reproduced: an older run wrote
+        `database_table_activity` rows with real counters; a newer run
+        wrote NONE for this table at all (a schema-only run). The newer
+        run's absence here must not shadow the older run's real answer."""
+        from resource_explorer.surveyors.database.db_derived import _resolve_table_surveyed_at
+
+        pg_registry.write_detail_rows(
+            "database_table_activity", pg_database, "2026-09-27T00:00:00", "local",
+            [{"schema_name": "public", "table_name": "t1", "rows_inserted": 5}],
+        )
+        at, rows = _resolve_table_surveyed_at(
+            pg_registry, pg_database, "database_table_activity", None,
+            require_measured_counter=True,
+        )
+        assert at == "2026-09-27T00:00:00"
+        assert len(rows) == 1
+        assert rows[0]["rows_inserted"] == 5

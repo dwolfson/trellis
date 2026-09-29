@@ -51,6 +51,10 @@
   {
    "id": "page-13",
    "name": "Relationship graph (real edges)"
+  },
+  {
+   "id": "page-14",
+   "name": "Enrichment: the Context tab"
   }
  ],
  "artboards": [
@@ -238,6 +242,14 @@
    "w": 1460,
    "h": 3060,
    "page": "page-13"
+  },
+  {
+   "file": "EnrichmentContext.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1400,
+   "h": 2460,
+   "page": "page-14"
   }
  ],
  "annotations": [
@@ -360,10 +372,18 @@
    "w": 300,
    "page": "page-13",
    "text": "Drawn from the 91 real AdventureWorks edges, fetched 2026-09-28 from the running /next through the owner's session. Laid out with Graphviz dot; nothing illustrative.\n\nThree zoom levels: the schema map (always legible), the whole database (reads at 68 tables thanks to clusters, hub weight and darker cross-schema keys; falls back to map + hubs above ~100), and one schema opened with its outgoing keys drawn.\n\nFinding: the analysis's by_schema result calls sales.salestaxrate and sales.shoppingcartitem isolated and sales '3 components'. Both have keys that leave the schema; only production.transactionhistoryarchive is isolated in the database. A per-schema sentence must say 'no keys inside sales', never 'isolated'.\n\nIn /next: emit Graphviz rather than Mermaid (Kroki renders both; Mermaid has no cluster layout comparable to dot)."
+  },
+  {
+   "id": "enrichment-brief",
+   "x": 1500,
+   "y": 0,
+   "w": 300,
+   "page": "page-14",
+   "text": "Reply to ASK-DESIGNER-ENRICHMENT-STAGE-IA, read against main at 3d078072 and PR #348.\n\nEnrichment opens on a new Context tab: everything a person supplied, signed and dated, each row saying what it feeds. No separate 'What it changed' tab \u2014 cause and effect on one line.\n\nNo analysis in the catalog has intent: enrichment, so Survey & analyses is empty by construction; it stays, and becomes the map of which analyses elsewhere read what is supplied here.\n\nA survey may propose only an observation, and only when it measured the same fact the field asks for. Licence yes; last backup no (archiving isn't a tested restore). Judgements are never proposed.\n\nThe lens belongs to the investigation, not the resource.\n\nPrerequisite: answers to the human questions carry no author and are entered via window.prompt()."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-13"
+  "page": "page-14"
  }
 }

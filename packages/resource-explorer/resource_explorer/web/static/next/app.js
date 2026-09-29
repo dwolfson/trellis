@@ -701,17 +701,20 @@ const GLYPH = Object.fromEntries(GLYPH_KEYS.map((k) => [k, GLYPH_STATES[k].glyph
  * Two variants per role because one value cannot hold 4.5:1 against both a
  * paper and a chrome ground — see the measurement in tailwind-next.config.js.
  */
-const STATE_TONE = {
+// GLYPH-STATE-TONE-COLOR-FIX-IMPLEMENTED.md: the accent color means "you can
+// click this" (a control), and must never be used for a STATE. `partial`,
+// `human`/`needs-lens`, and `running` used to violate that here.
+export const STATE_TONE = {
   answered:      { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
-  partial:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
+  partial:       { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   automatic:     { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
   unrun:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
-  human:         { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
+  human:         { paper: 'text-ink',         chrome: 'text-chrome-ink' },
   // Same role as `human` -- "needs your attention" -- §2.4's fit row.
-  'needs-lens':  { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
+  'needs-lens':  { paper: 'text-ink',         chrome: 'text-chrome-ink' },
   'no-surveyor': { paper: 'text-state-gap',   chrome: 'text-state-gap-on-dark' },
   unclassified:  { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
-  running:       { paper: 'text-accent-ink',  chrome: 'text-accent-on-dark' },
+  running:       { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
   error:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   // Same role as `unrun`/`error` -- "needs your attention" -- because a
   // proposal IS an attention-needing decision, not a different flavour of

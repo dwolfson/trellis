@@ -9631,6 +9631,57 @@ class ProjectRegistry:
             ).fetchall()
         return [_decode_detail_row(dict(r)) for r in rows]
 
+    def find_latest_detail_surveyed_at(
+        self, table: str, slug: str, *, source: str | None = None,
+        require_any_non_null: tuple[str, ...] | None = None,
+    ) -> str | None:
+        """`MAX(surveyed_at)` for `table`/`slug` [/`source`], one query —
+        the set-based replacement for "walk survey history newest-first,
+        calling `query_detail_rows` for each candidate until one comes back
+        non-empty" (`db_derived.py`'s `_resolve_table_surveyed_at`, before
+        2026-09-29 round 3, docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+        ROUND-3-IMPLEMENTED.md).
+
+        Provably equivalent to that walk, not just usually faster: the only
+        `surveyed_at` values that can ever appear as a row in `table` are
+        ones some run actually wrote there, so `MAX(surveyed_at)` computed
+        directly on `table` can never return a value the walk would have
+        skipped for being absent — the walk's entire purpose (skip a run
+        that touched a DIFFERENT table but not this one) is already what
+        aggregating over `table`'s own rows does, for free, by construction.
+
+        `require_any_non_null`, when given, additionally requires at least
+        one of the named columns be non-NULL on the winning row — the
+        `database_table_activity`-specific case where a row can exist for a
+        `surveyed_at` (the step ran) with every counter NULL (nothing was
+        actually measured, e.g. `pg_stat_user_tables` had nothing), which
+        must not count as "this run has the answer" either
+        (`_has_measured_counter`'s own docstring). This is the one piece
+        the walk needed real per-row inspection for, still expressed as one
+        query (an `OR ... IS NOT NULL` predicate) rather than N.
+        """
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(
+                f"{table!r} is not a structured detail table — expected one of "
+                f"{sorted(_DETAIL_TABLE_SPECS)}"
+            )
+        spec = _DETAIL_TABLE_SPECS[table]
+        slug = self._normalize_slug(slug)
+        where = [f"{spec.slug_column} = ?"]
+        params: list = [slug]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        if require_any_non_null:
+            clause = " OR ".join(f"{col} IS NOT NULL" for col in require_any_non_null)
+            where.append(f"({clause})")
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT MAX(surveyed_at) AS latest FROM {table} WHERE {' AND '.join(where)}",
+                tuple(params),
+            ).fetchone()
+        return (dict(row).get("latest") if row else None) or None
+
     def record_section_coverage(
         self,
         resource_type: str,
