@@ -266,8 +266,25 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     return build_analysis_last_activity(registry, "database", slug)
 
 
+@router.get("/{slug}/survey-results/boards")
+async def get_database_survey_results_boards(slug: str, stage: str = "") -> dict:
+    """The By-analysis contents board's cheap half for databases — see
+    `projects.py`'s identically-shaped route and `workflows.analysis.
+    list_survey_result_boards`'s docstring."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.analysis import list_survey_result_boards
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    return await asyncio.to_thread(list_survey_result_boards, registry, "database", slug, stage)
+
+
 @router.get("/{slug}/survey-results")
-async def get_database_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+async def get_database_survey_results(
+    slug: str, stage: str = "", include_empty: bool = False, board_id: str = "",
+) -> dict:
     """The database equivalent of `projects.py`'s `GET /{slug}/survey-results`
     ("By analysis" in /next) — added because that pane was gated to
     `resourceType === 'repo'` on the honest grounds that the repo route reads
@@ -278,6 +295,9 @@ async def get_database_survey_results(slug: str, stage: str = "", include_empty:
     analysis_id in `DATABASE_ANALYSIS_RESULTS_MAP` (14 of 18 database
     analyses have one; see that map's own docstring for the three that don't
     yet and why), not repo's curated multi-analysis groupings.
+
+    `board_id` (optional): one board only, for the /next By-analysis pane's
+    progressive fetch — see `projects.py`'s `get_survey_results` docstring.
 
     Off the event loop for the same reason as the repo route: the
     `db_derived`-backed readers recompute on every call and a slow one must
@@ -290,7 +310,7 @@ async def get_database_survey_results(slug: str, stage: str = "", include_empty:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     return await asyncio.to_thread(
-        build_survey_results, registry, "database", slug, stage, include_empty,
+        build_survey_results, registry, "database", slug, stage, include_empty, board_id,
     )
 
 
@@ -331,7 +351,21 @@ async def get_database_questions(
     hardcoded to the repo registry (docs/Backlog.md's "scouting-questions was
     repo-only" entry). Delegates to `workflows.scouting.
     build_question_checklist` — same has_data scoring machinery the repo
-    route uses, keyed to `DATABASE_ANALYSIS_RESULTS_MAP` instead."""
+    route uses, keyed to `DATABASE_ANALYSIS_RESULTS_MAP` instead.
+
+    Off the event loop (BY-ANALYSIS-PROGRESSIVE-AND-GRAPH, 2026-09-28): a
+    live thread dump (`kill -USR1`, this file's own module docstring on the
+    dump handler) caught this route's `build_question_checklist` call
+    running SYNCHRONOUSLY on the main/event-loop thread, blocking every
+    other in-flight request -- including this same process's own
+    `to_thread`-wrapped `/survey-results` board reads, which cannot even
+    have their results delivered while the loop itself is stuck inside a
+    blocking DB call. `question_has_data` (`workflows/scouting.py`) reaches
+    the identical `db_derived`-backed readers `/survey-results` already
+    off-loads (`_db_derived_field_reader`'s `run_db_derived()`), so this had
+    the exact same "recomputes from stored rows on every call" cost as that
+    route -- it was just never wrapped. Same fix as `get_database_survey_
+    results`/`get_database_schema_inventory_tree` above, same reason."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.scouting import build_question_checklist
 
@@ -341,7 +375,9 @@ async def get_database_questions(
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
     purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
-    return build_question_checklist(registry, "database", slug, phase, persp_list, purp_list)
+    return await asyncio.to_thread(
+        build_question_checklist, registry, "database", slug, phase, persp_list, purp_list,
+    )
 
 
 @router.post("/register", response_model=DatabaseSummary)
