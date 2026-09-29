@@ -7,6 +7,7 @@ with no network and no real Egeria platform.
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -153,9 +154,14 @@ class TestRemoval:
         assert resp.json()["removed"] is True
         assert client.get("/api/doc-sources/database/adventureworks").json()["sources"] == []
 
-    def test_remove_detaches_and_deletes_only_its_own_external_reference(
+    def test_remove_of_a_catalogued_source_queues_an_outbox_unpublish(
         self, client, monkeypatch, registry,
     ):
+        # Egeria publish-state fix (2026-09-29): removal no longer calls
+        # unpublish_doc_source synchronously (a one-shot best-effort attempt
+        # with no retry if Egeria happened to be unreachable at that exact
+        # moment) — it queues a doc_source_unpublish row through the SAME
+        # outbox the publish side uses, so a transient failure gets retried.
         monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
                              lambda url: _fake_probe())
         registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
@@ -163,20 +169,136 @@ class TestRemoval:
                              json={"url": "https://x"}).json()
         registry.set_doc_source_egeria_ref("database", "adventureworks", added["id"], "ref-guid-1")
 
-        calls = []
-        monkeypatch.setattr(
-            "resource_explorer.web.routes.doc_sources.unpublish_doc_source",
-            lambda ref_guid, asset_guid, **kw: calls.append((ref_guid, asset_guid)) or {"ok": True, "error": ""},
-        )
+        resp = client.delete(f"/api/doc-sources/database/adventureworks/{added['id']}")
+
+        assert resp.status_code == 200
+        assert resp.json()["egeria_unpublish"] == "queued"
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        unpublish_rows = [r for r in rows if r["element_kind"] == "doc_source_unpublish"]
+        assert len(unpublish_rows) == 1
+        payload = json.loads(unpublish_rows[0]["payload_json"])
+        assert payload["ref_guid"] == "ref-guid-1"
+        assert payload["entity_type"] == "database"
+        assert payload["entity_slug"] == "adventureworks"
+
+    def test_remove_of_a_local_only_source_queues_nothing(self, client, monkeypatch, registry):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        added = client.post("/api/doc-sources/database/adventureworks",
+                             json={"url": "https://x"}).json()
 
         resp = client.delete(f"/api/doc-sources/database/adventureworks/{added['id']}")
 
         assert resp.status_code == 200
-        assert calls == [("ref-guid-1", "asset-guid-1")]
+        assert resp.json()["egeria_unpublish"] == "not_applicable"
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        assert [r for r in rows if r["element_kind"] == "doc_source_unpublish"] == []
 
     def test_remove_unknown_source_is_404(self, client):
         resp = client.delete("/api/doc-sources/database/adventureworks/nope")
         assert resp.status_code == 404
+
+
+class TestEgeriaPublishStateFix:
+    """Egeria publish-state fix (2026-09-29) — the bug found live on 8813:
+    `add_doc_source` only ever saved locally, so a source added to an
+    ALREADY-published resource stayed local-only until the next full
+    re-publish, with nothing on the row saying so. Covers both required
+    route behaviors plus the four-state vocabulary this fix introduces."""
+
+    def test_add_on_an_already_published_resource_queues_an_outbox_publish(
+        self, client, monkeypatch, registry,
+    ):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+
+        resp = client.post("/api/doc-sources/database/adventureworks",
+                            json={"url": "https://docs.example/dict"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["egeria_state"] == "publishing"
+        assert body["egeria_external_ref_guid"] == ""
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_rows = [r for r in rows if r["element_kind"] == "doc_source_publish"]
+        assert len(publish_rows) == 1
+        payload = json.loads(publish_rows[0]["payload_json"])
+        assert payload["source_id"] == body["id"]
+        assert publish_rows[0]["qualified_name"] == "ExternalReference::https://docs.example/dict"
+
+    def test_add_on_an_unpublished_resource_stays_local_and_queues_nothing(
+        self, client, monkeypatch, registry,
+    ):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+
+        resp = client.post("/api/doc-sources/database/adventureworks",
+                            json={"url": "https://docs.example/dict"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["egeria_state"] == "local_only"
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        assert [r for r in rows if r["element_kind"] == "doc_source_publish"] == []
+
+    def test_list_reports_catalogued_when_the_ref_guid_is_set(self, client, monkeypatch, registry):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+        added = client.post("/api/doc-sources/database/adventureworks",
+                             json={"url": "https://x"}).json()
+        registry.set_doc_source_egeria_ref("database", "adventureworks", added["id"], "ref-guid-9")
+
+        resp = client.get("/api/doc-sources/database/adventureworks")
+
+        body = resp.json()
+        row = next(s for s in body["sources"] if s["id"] == added["id"])
+        assert row["egeria_state"] == "catalogued"
+        assert row["egeria_state_detail"] == "ref-guid-9"
+        assert body["in_egeria_count"] == 1
+        assert body["local_count"] == 0
+
+    def test_list_reports_publish_failed_with_the_real_reason(self, client, monkeypatch, registry):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+        added = client.post("/api/doc-sources/database/adventureworks",
+                             json={"url": "https://x"}).json()
+        outbox_rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        row_id = next(r["id"] for r in outbox_rows if r["element_kind"] == "doc_source_publish")
+        registry.mark_outbox_failed(row_id, "Egeria unreachable: connection refused")
+
+        resp = client.get("/api/doc-sources/database/adventureworks")
+
+        row = next(s for s in resp.json()["sources"] if s["id"] == added["id"])
+        assert row["egeria_state"] == "publish_failed"
+        assert "connection refused" in row["egeria_state_detail"]
+
+    def test_list_self_heals_a_source_stranded_by_the_pre_fix_bug(self, client, monkeypatch, registry):
+        # The exact bug found live on 8813: a doc_sources row added while the
+        # resource was already published, with no egeria_external_ref_guid
+        # AND no outbox row ever queued for it (this fix didn't exist yet).
+        # A read must not render it as an unexplained gap forever — it
+        # queues the missing publish right here.
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+        stranded = registry.add_doc_source("database", "adventureworks", "https://stranded.example")
+
+        resp = client.get("/api/doc-sources/database/adventureworks")
+
+        row = next(s for s in resp.json()["sources"] if s["id"] == stranded["id"])
+        assert row["egeria_state"] == "publishing"
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_rows = [r for r in rows if r["element_kind"] == "doc_source_publish"]
+        assert len(publish_rows) == 1
 
 
 class TestPublishHook:

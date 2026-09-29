@@ -41,6 +41,26 @@ _SOURCE_TYPE_LABEL = {
 }
 
 
+def resolve_entity_for_doc_source(registry, entity_type: str, entity_slug: str):
+    """The two entity tables this feature supports, resolved the same way
+    everywhere it's needed — `web/routes/doc_sources.py`'s `_resolve_entity`
+    (which additionally turns a miss into an HTTP 404) and
+    `egeria_outbox.py`'s `doc_source_publish`/`doc_source_unpublish`
+    creators, which resolve the entity fresh at APPLY time rather than
+    carrying its Egeria credentials in the outbox payload — a payload
+    snapshot would go stale if the entity's credentials were edited between
+    enqueue and a later retry, and this codebase already stores these
+    credentials in the entity row itself (`registry.py`'s `DatabaseEntity`/
+    `FileSystemEntity`), so re-reading them is one lookup, not a new store.
+    Returns `None` for an entity_type this feature doesn't support or a slug
+    that no longer resolves."""
+    if entity_type == "database":
+        return registry.get_database(entity_slug)
+    if entity_type == "filesystem":
+        return registry.get_filesystem(entity_slug)
+    return None
+
+
 def _client(view_server: str, platform_url: str, user_id: str, user_password: str):
     from pyegeria import ExternalReferences
 

@@ -112,15 +112,23 @@ test('needs_sign_in and not_found states render their own glyph/label, not "reac
   assert.match(host.textContent, /HTTP 404/);
 });
 
-test('a published resource shows no "local only" note, and an unpublished one always does', async () => {
+test('a published, catalogued source shows no "local only" note, and an unpublished one always does', async () => {
   const { enrichment, host } = await setUpEnrichmentDom();
   stubFetchJson({
-    '/api/doc-sources/database/adventureworks': docSourcesFixture({ published: true }),
+    '/api/doc-sources/database/adventureworks': docSourcesFixture({
+      published: true,
+      sources: [{
+        ...docSourcesFixture().sources[0],
+        egeria_external_ref_guid: 'ref-guid-1', egeria_state: 'catalogued',
+        egeria_state_detail: 'ref-guid-1',
+      }],
+    }),
   });
 
   await enrichment.renderDocSources('adventureworks');
 
   assert.doesNotMatch(host.textContent, /local only/);
+  assert.match(host.textContent, /catalogued in Egeria/);
 });
 
 test('a stale-linkage publish note is shown verbatim instead of the generic "local only" copy', async () => {
@@ -225,4 +233,55 @@ test('the ingest action is present but disabled ("coming soon") -- slice 2 is no
   const ingestBtn = buttons.find((b) => /ingest/i.test(b.textContent));
   assert.ok(ingestBtn, 'expected an ingest affordance, even if disabled');
   assert.equal(ingestBtn.disabled, true);
+});
+
+test('each of the four Egeria publish-state rows renders its own required wording (2026-09-29 fix)', async () => {
+  // The bug this pins against: previously EVERY published resource rendered
+  // an empty publishNote regardless of whether a given source had actually
+  // reached Egeria -- "1 declared ·" followed by nothing, with no way to
+  // tell a catalogued source from a stuck one. Each state below must render
+  // distinguishable, non-empty text.
+  const base = docSourcesFixture().sources[0];
+  const fixture = docSourcesFixture({
+    published: true,
+    in_egeria_count: 1,
+    local_count: 3,
+    sources: [
+      { ...base, id: 'catalogued-1', label: 'Catalogued source',
+        egeria_external_ref_guid: 'ref-guid-42', egeria_state: 'catalogued',
+        egeria_state_detail: 'ref-guid-42' },
+      { ...base, id: 'publishing-1', label: 'Publishing source',
+        egeria_external_ref_guid: '', egeria_state: 'publishing', egeria_state_detail: '' },
+      { ...base, id: 'failed-1', label: 'Failed source',
+        egeria_external_ref_guid: '', egeria_state: 'publish_failed',
+        egeria_state_detail: 'Egeria unreachable: connection refused' },
+      { ...base, id: 'localonly-1', label: 'Local-only source',
+        egeria_external_ref_guid: '', egeria_state: 'local_only', egeria_state_detail: '' },
+    ],
+  });
+  const { enrichment, host } = await setUpEnrichmentDom();
+  stubFetchJson({ '/api/doc-sources/database/adventureworks': fixture });
+
+  await enrichment.renderDocSources('adventureworks');
+
+  assert.match(host.textContent, /catalogued in Egeria/, 'state 1: catalogued');
+  assert.match(host.textContent, /local — publishing…/, 'state 2: publishing');
+  assert.match(
+    host.textContent,
+    /local — publish failed: Egeria unreachable: connection refused, retrying/,
+    'state 3: publish_failed must surface the REAL reason, not a generic message',
+  );
+  assert.match(host.textContent, /local only — resource not published/, 'state 4: local_only');
+
+  // The ref GUID is surfaced but not cluttering the row's own text -- the
+  // catalogued row carries it in a title attribute instead.
+  const catalogRow = host.querySelector('[data-source-row="catalogued-1"]');
+  assert.ok(catalogRow, 'expected the catalogued row in the DOM');
+  const titled = catalogRow.querySelector('[title*="ref-guid-42"]');
+  assert.ok(titled, 'expected the ref guid surfaced via a title attribute near the catalogued row');
+
+  // Header counts the real per-row states, not a single published boolean.
+  assert.match(host.textContent, /4.*declared/s);
+  assert.match(host.textContent, /1.*in Egeria/s);
+  assert.match(host.textContent, /3.*local/s);
 });

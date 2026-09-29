@@ -285,6 +285,23 @@ const PROBE_LABEL = {
   reachable: 'reachable', needs_sign_in: 'needs sign-in', not_found: 'not found', blocked: 'blocked',
 };
 
+// Egeria publish-state fix (2026-09-29) — every row carries exactly one of
+// these four states, never blank. Previously `publishNote` rendered '' for
+// ANY published resource regardless of whether THIS source actually made it
+// to Egeria — the find-absence-as-answer bug this replaces (confirmed live:
+// an adventureworks source sat local-only, origin='local', on an already-
+// published resource, with nothing on the row saying so).
+const EGERIA_STATE_TEXT = {
+  catalogued: () => 'catalogued in Egeria',
+  publishing: () => 'local — publishing…',
+  publish_failed: (src) => `local — publish failed: ${src.egeria_state_detail || 'unknown error'}, retrying`,
+  local_only: () => 'local only — resource not published',
+};
+const EGERIA_STATE_TONE = {
+  catalogued: 'text-state-ok', publishing: 'text-ink-muted',
+  publish_failed: 'text-state-warn', local_only: 'text-ink-muted',
+};
+
 function docSourceRowHtml(src) {
   const g = PROBE_GLYPH[src.probe_state] || { glyph: '?', tone: 'text-ink-muted' };
   const statusBit = src.probe_status_code ? ` · HTTP ${src.probe_status_code}` : '';
@@ -292,6 +309,15 @@ function docSourceRowHtml(src) {
   const whenBit = src.probed_at ? ` · probed ${esc(ago(src.probed_at))}` : ' · not yet probed';
   const typeLabel = (DOC_SOURCE_TYPES.find((t) => t.value === src.source_type) || {}).label || src.source_type;
   const originBit = src.origin === 'egeria' ? ' · <span class="text-ink-muted">declared in Egeria</span>' : '';
+  const egeriaState = src.egeria_state || 'local_only';
+  const egeriaText = (EGERIA_STATE_TEXT[egeriaState] || EGERIA_STATE_TEXT.local_only)(src);
+  const egeriaTone = EGERIA_STATE_TONE[egeriaState] || 'text-ink-muted';
+  // The ref GUID is surfaced via `title` rather than in the row's own text —
+  // the brief's "behind/near the evidence link" convention (same idea as the
+  // provenance-glyph tooltips elsewhere in this stage), not clutter on the
+  // line itself.
+  const egeriaTitle = egeriaState === 'catalogued' && src.egeria_state_detail
+    ? ` title="ExternalReference ${esc(src.egeria_state_detail)}"` : '';
   return `<div class="border-b border-rule py-s2" data-source-row="${esc(src.id)}">
     <div class="flex items-baseline gap-s2">
       <span class="${g.tone}">${g.glyph}</span>
@@ -301,6 +327,9 @@ function docSourceRowHtml(src) {
     <div class="pl-[20px] text-provenance text-ink-muted">
       ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit}
       ${src.probe_error ? ` · <span class="text-state-warn">${esc(src.probe_error)}</span>` : ''}
+    </div>
+    <div class="pl-[20px] text-provenance"${egeriaTitle}>
+      <span class="${egeriaTone}" data-doc-egeria-state="${esc(src.id)}">${esc(egeriaText)}</span>
     </div>
     <div class="pl-[20px] mt-[2px] flex items-baseline gap-s3 text-provenance">
       <button type="button" data-doc-recheck="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button>
@@ -328,16 +357,30 @@ export async function renderDocSources(slug) {
   }
   if (slug !== state.selectedSlug) return;
   const sources = data.sources || [];
-  const publishNote = data.published
-    ? ''
-    : (data.publish_note
-      ? `<span class="text-state-warn">${esc(data.publish_note)}</span>`
-      : `<span>local only — publish this resource to Egeria to catalog these sources there too</span>`);
+  // Egeria publish-state fix (2026-09-29): the header used to say nothing
+  // once `data.published` was true, regardless of whether any given source
+  // had actually made it to Egeria — this counts the real per-row states
+  // instead of a single resource-level boolean. `in_egeria_count`/
+  // `local_count` come from the same server-side count as each row's own
+  // `egeria_state` (server response), so the two can never disagree; a
+  // client-side recount from `sources` would be a second copy of that logic
+  // to keep in sync.
+  const inEgeria = data.in_egeria_count || 0;
+  const local = data.local_count != null ? data.local_count : sources.length - inEgeria;
+  const countsLine = `<span class="tnum">${sources.length}</span> declared`
+    + (sources.length ? ` · <span class="tnum">${inEgeria}</span> in Egeria · <span class="tnum">${local}</span> local` : '');
+  // A stale-linkage warning (or any other publish_note the resource-level
+  // egeria_linkage check hands back) is a fact about the RESOURCE's own
+  // Egeria asset link, distinct from any one source's state — kept as a
+  // second line whenever present, never folded into a row's state text.
+  const staleNote = data.publish_note
+    ? `<div class="text-provenance text-state-warn">${esc(data.publish_note)}</div>` : '';
   host.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading text-question text-ink">Documentation sources</span>
-      <span class="text-provenance text-ink-muted"><span class="tnum">${sources.length}</span> declared · ${publishNote}</span>
+      <span class="text-provenance text-ink-muted">${countsLine}</span>
     </div>
+    ${staleNote}
     ${sources.length ? sources.map(docSourceRowHtml).join('') : `<div class="text-provenance text-ink-muted">No documentation sources declared yet.</div>`}
     <div class="mt-s2 grid grid-cols-[1fr_140px_150px_auto] items-baseline gap-s2">
       <input id="doc-source-url" type="text" placeholder="https://…" class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink placeholder:text-ink-muted">

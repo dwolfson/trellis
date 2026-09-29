@@ -320,6 +320,186 @@ down, per this session's coordination posture on shared infrastructure.
 created and nothing else, verified independently rather than trusted from the removal call's own
 return value.
 
+## Egeria publish-state fix (2026-09-29)
+
+Found live by the project owner's gate check on database 8813: adding a documentation
+source to an ALREADY-published resource never reached Egeria at all — the row stayed
+`origin: local`, `egeria_external_ref_guid: ''`, and the Enrichment header rendered
+`"1 declared ·"` with nothing after it, regardless of whether the source had actually
+been catalogued. Two separate bugs, both real:
+
+**(a) Semantic gap.** `add_doc_source` (`web/routes/doc_sources.py`) only ever probed
+and saved a source LOCALLY. The only path that ever created an `ExternalReference` was
+`publish_local_doc_sources`, called exclusively from the database/filesystem `/publish`
+routes right after a successful publish — so a source declared AFTER the resource's own
+publish had no path to Egeria until the resource's NEXT full re-publish, which may never
+happen.
+
+**(b) Silent absence.** `enrichment.js` rendered `publishNote = ''` whenever `data.
+published` was true, with no per-row signal at all — a textbook find-absence-as-answer
+bug (this project has a standing convention against exactly this shape; see
+`credential_capability.py`'s "connected as X — visible N of M schemas" and
+`db_resilience`'s explicit "not machine-observable, stays explicitly pending" states,
+both cited as the reference examples in the fix brief).
+
+### The fix
+
+**Backend — reuse the existing outbox, not a new retry queue.** Grepped for `outbox`
+across `resource_explorer/` per the brief's own instruction; `egeria_outbox.py` (design:
+`docs/outbox-publishing-design.md` §5) already implements exactly the local-authoritative-
+write / best-effort-remote-sync / periodic-reconcile shape this needed — the same layer
+this project's memory notes as the one whose `collection_manager` client went missing in
+the 2026-09-04 RE server-stuck incident. Two new `element_kind`s were added to it:
+
+- `doc_source_publish` — resolves the entity and the local `doc_sources` row FRESH at
+  apply time (never carries Egeria credentials in the payload, which would go stale if
+  the entity's credentials were edited between enqueue and a retry), calls
+  `doc_source_egeria.publish_doc_source`, and writes the resulting ref/link GUIDs straight
+  back onto the local row. This creator is the ONLY thing that runs for this kind — see
+  below for why.
+- `doc_source_unpublish` — same shape, calls `unpublish_doc_source` for exactly the one
+  GUID a removed row carried, same "and only that one" rule the brief already established.
+
+**A real correctness trap found while wiring this in, before it shipped:** the outbox's
+existing `apply_element` has a generic step 2 — search by `qualified_name` before
+creating, so a crash-after-Egeria-write-before-recording converges on the existing element
+rather than duplicating it. `doc_source_publish`/`doc_source_unpublish` use the exact same
+`ExternalReference::<url>` qualifiedName convention `egeria_publisher._publish_homepage_
+reference` already uses for a project's homepage — meaning the generic search could find
+a homepage reference (or a leftover row from an unrelated retry) with the SAME
+qualifiedName and adopt its GUID as `done`, without EVER calling `publish_doc_source`'s own
+link step. The row would report catalogued while never actually being linked to THIS
+resource's asset — invisible until someone went looking for the link in Egeria itself.
+Fixed by adding a `_SELF_RESOLVING_KINDS` set (`{"doc_source_publish",
+"doc_source_unpublish"}`) that `apply_element` now skips the generic step-2 search for —
+these creators already do their own correct lookup-then-create-then-link (mirroring
+`_publish_homepage_reference`'s own local pattern exactly), so the generic shortcut would
+only ever be a liability for them. Pinned by
+`test_generic_lookup_is_never_consulted_for_doc_source_publish`, which passes a
+`find_element_guid` that raises `AssertionError` if it is ever called.
+
+**Routes.** `add_doc_source` and the DELETE handler no longer call `publish_doc_source`/
+`unpublish_doc_source` synchronously — the DELETE handler used to (a one-shot best-effort
+attempt with no retry if Egeria happened to be unreachable at that exact moment); both now
+enqueue through the outbox. `_compute_egeria_state` (new, `web/routes/doc_sources.py`) is
+the one place that decides a row's state and self-heals a gap: if the resource is
+published, the row has no ref guid, and NO outbox row is tracking it at all — a source
+declared before this fix landed, exactly the adventureworks row found live — it queues the
+missing publish right there rather than leaving the row unexplained forever. Idempotent:
+once queued, the next call finds the row and stops re-queuing.
+
+### The four states — never empty
+
+`DocSourceOut.egeria_state` (one of `catalogued` / `publishing` / `publish_failed` /
+`local_only`) plus `egeria_state_detail` (the ref GUID, or the real failure reason) ride on
+every source row from `GET`/`POST add`/`POST recheck`:
+
+1. **`catalogued in Egeria`** — `egeria_external_ref_guid` is set; the GUID is surfaced via
+   a `title` attribute on the row rather than cluttering its own text line.
+2. **`local — publishing…`** — resource published, no ref guid, an outbox row is
+   `pending`/`running`.
+3. **`local — publish failed: <reason>, retrying`** — the outbox row is `failed` (still
+   retrying) or `dead` (retries exhausted); `<reason>` is the outbox row's own
+   `last_error`, never a generic message. A `dead` row gets the same wording rather than a
+   fifth state of its own — it is also reported to a human via the outbox's existing
+   `record_drain_outcome` → RFA path, which this fix gets for free by reusing the same
+   drain.
+4. **`local only — resource not published`** — the original design, unchanged: a source
+   declared before the resource's first publish stays local until that publish, same as
+   before this fix.
+
+`DocSourcesResponse` also carries `in_egeria_count`/`local_count`, computed server-side
+(the one place that knows what the four states mean is also the one place that counts
+them) — the header now reads `"N declared · X in Egeria · Y local"` instead of the old
+blank-when-published `publishNote`. A resource-level stale-linkage warning (from
+`egeria_linkage.describe_publish_status`) is kept as a separate second line, since it is a
+fact about the resource's own Egeria asset link, not about any one source.
+
+### Tests
+
+**Python (all passing, run via `uv run pytest tests/ -q -rf`):**
+
+- `tests/test_egeria_outbox.py::TestDocSourceOutbox` (6 new) — the publish creator writes
+  the ref guid back onto the local row; the generic step-2 lookup is never consulted for
+  this kind (poisoned-lookup test); a publish failure raises `OutboxApplyError` so the
+  drain retries; a source removed before its queued publish drains is a no-op (never calls
+  Egeria); the unpublish creator detaches+deletes exactly the one GUID; an unpublish
+  failure raises so the drain retries.
+- `tests/test_doc_sources_routes.py::TestEgeriaPublishStateFix` (5 new) — add on an
+  ALREADY-published resource queues an outbox publish and returns `egeria_state:
+  "publishing"`; add on an UNPUBLISHED resource stays local and queues nothing; `GET`
+  reports `catalogued` with the guid once set; `GET` reports `publish_failed` with the
+  REAL `last_error` text; `GET` self-heals a row stranded by the pre-fix bug (published,
+  no ref guid, no outbox row — exactly the adventureworks shape found live) by queuing the
+  missing publish.
+- `tests/test_doc_sources_routes.py::TestRemoval` — the one existing test that asserted a
+  synchronous `unpublish_doc_source` call was rewritten (`test_remove_of_a_catalogued_
+  source_queues_an_outbox_unpublish`) to assert the outbox row instead, since that
+  synchronous call no longer exists; a paired `test_remove_of_a_local_only_source_queues_
+  nothing` covers the other branch.
+- Full suite: **see the run this session reports directly** (ran via `uv run pytest
+  tests/ -q -rf` against the shared Postgres registry, same as slice 1's own baseline of
+  6822 passed / 102 skipped / 0 failed).
+
+**JS render harness (`frontend-build/test-harness/doc-sources-enrichment.test.mjs`):**
+
+- `test('each of the four Egeria publish-state rows renders its own required wording
+  (2026-09-29 fix)')` — fixture rows in all four states, asserts each one's exact rendered
+  text (including the real failure reason interpolated into state 3, not a placeholder),
+  the ref-guid `title` attribute on the catalogued row, and the header's three counts.
+- The pre-existing `'a published resource shows no "local only" note'` test was updated
+  (renamed `'a published, catalogued source shows no "local only" note...'`) to set an
+  explicit `egeria_state: 'catalogued'` on its fixture row — under the old code a
+  published-but-stateless fixture row rendered nothing either way, so the old assertion
+  was accidentally passing for the wrong reason; the new fixture makes the row's own state
+  the thing under test.
+- Full harness run (`node --test test-harness/*.test.mjs`, Node 20 — the environment's
+  default `node` on `PATH` is v14.21.3 via nvm and lacks `--test`, so this needs
+  `/usr/local/bin/node` explicitly): **21 passed, 0 failed**, no regressions.
+
+### Live verification
+
+Ran a scratch script (not the shared 8810/8813 web process — calling the same registry/
+outbox/egeria functions the routes and the scheduler call, same posture slice 1's own gate
+check used) against the REAL shared Postgres registry (`localhost:5442`) and the REAL
+Egeria platform (`localhost:9443`, `qs-view-server`), on `laz_local_adventureworks` — the
+same resource slice 1's gate check used, confirmed still published
+(`fc4e0478-4efe-4a29-bd1a-01b5bcb4a61b`):
+
+1. Declared a source as if the resource were already published (`add_doc_source`, no
+   outbox row yet) — `_compute_egeria_state` (the exact function the routes call)
+   self-healed by queuing a `doc_source_publish` row; state read `publishing`.
+2. Ran `drain_outbox(registry)` for real — hit the live Egeria platform. The outbox row
+   completed; the local row's `egeria_external_ref_guid` and `egeria_link_relationship_
+   guid` were written back; `_compute_egeria_state` now read `catalogued`.
+3. Confirmed via Egeria's OWN API (`read_back_doc_sources` → `get_related_metadata_
+   elements`), not RE's cached copy — the declared URL was present.
+4. Removed the source (`remove_doc_source`) and queued a `doc_source_unpublish` row
+   (`enqueue_doc_source_unpublish`) — the same outbox mechanism, not a synchronous call.
+5. Ran `drain_outbox(registry)` again for real — the unpublish completed.
+6. Confirmed via Egeria's OWN API again — the URL was gone.
+
+All six steps passed on the first run, no cleanup residue left behind (the local row was
+already deleted by step 4; the outbox rows are `done` and will clear on the existing
+14-day retention like every other outbox row).
+
+**What was NOT verified live:** the `local_only` state's live equivalent — declaring a
+source on a genuinely UNPUBLISHED shared resource. Every database currently registered in
+the shared registry (`laz_local_adventureworks`, `localhost_docker_coco_pharma`,
+`egeria_optional_prefect_db`) is already published; deliberately unpublishing one to
+exercise this path would be a real, and needlessly risky, mutation of shared infrastructure
+for a state that makes no Egeria call at all (it is the early-return BEFORE any outbox
+interaction). Covered instead by `test_add_on_an_unpublished_resource_stays_local_and_
+queues_nothing` and the pre-existing `test_local_only_when_not_published`, both of which
+pass.
+
+**`publish_failed`/`dead`** were verified only via the mocked route test
+(`test_list_reports_publish_failed_with_the_real_reason`) and the outbox's own existing
+backoff/dead-letter tests (`TestBackoffAndDeadLettering`, unchanged by this fix, still
+passing) — reproducing a real Egeria failure live would need either breaking the platform
+or forging bad credentials against a shared resource, neither of which seemed like a
+reasonable price for this fix's own test to pay.
+
 ## Judgment calls and gaps flagged
 
 1. **Both entity types built, not just database** (see above) — no scoping-out needed.

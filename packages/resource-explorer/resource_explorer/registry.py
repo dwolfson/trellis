@@ -4174,6 +4174,39 @@ class ProjectRegistry:
                 )
         return self.get_doc_source(entity_type, entity_slug, matched_id or source_id)
 
+    def get_doc_source_outbox_row(self, entity_type: str, entity_slug: str, source_id: str,
+                                   element_kind: str = "doc_source_publish") -> dict | None:
+        """Most recent `egeria_outbox` row for one declared source's publish
+        attempt — Egeria publish-state fix (2026-09-29). Backs the per-row
+        state `web/routes/doc_sources.py` renders (`catalogued` / `local —
+        publishing…` / `local — publish failed: ..., retrying` / `local
+        only`).
+
+        Matched on the payload's `source_id` (JSON, not indexed) rather than
+        `qualified_name` alone: `qualified_name` is `ExternalReference::
+        <url>`, and `doc_source_egeria.py` notes two sources could in
+        principle share a URL, so `qualified_name` alone would not tell them
+        apart. `entity_type`/`entity_slug` are real indexed columns and
+        narrow this to one resource's own rows first; the outbox table is
+        small per resource, so a Python-side filter over what is left costs
+        nothing worth a new index for.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM egeria_outbox WHERE entity_type=? AND entity_slug=? "
+                "AND element_kind=? ORDER BY id DESC",
+                (entity_type, entity_slug, element_kind),
+            ).fetchall()
+        for r in rows:
+            row = dict(r)
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except ValueError:
+                continue
+            if payload.get("source_id") == source_id:
+                return row
+        return None
+
     def list_resources_by_tag(self, tag: str) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(

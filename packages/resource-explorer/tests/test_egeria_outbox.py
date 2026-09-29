@@ -1170,3 +1170,129 @@ class TestCompletePublishRunIfDone:
         assert db.complete_publish_run_if_done(run_id) is True
         assert db.get_last_published_annotation_types(project) == {}
         assert db.get_last_published_analyses(project) == {}
+
+
+class TestDocSourceOutbox:
+    """Egeria publish-state fix (2026-09-29,
+    docs/design-notes/DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md).
+
+    `doc_source_publish`/`doc_source_unpublish` reuse THIS outbox (not a new
+    retry queue) for a documentation source declared/removed on a resource
+    that is ALREADY published — previously the source stayed local-only
+    until the resource's own next full re-publish. Both creators resolve the
+    entity and (for publish) the local `doc_sources` row fresh at apply
+    time, via a `ProjectRegistry()` they construct themselves — the
+    `doc_registry` fixture below monkeypatches `ProjectRegistry.__init__` to
+    share one prepared registry's state, the same trick
+    `tests/test_doc_sources_routes.py`'s `client` fixture already uses.
+    """
+
+    @pytest.fixture
+    def doc_registry(self, tmp_path, monkeypatch):
+        from resource_explorer.registry import DatabaseEntity
+
+        reg = ProjectRegistry(db_path=str(tmp_path / "docsrc.db"))
+        reg.register_database(DatabaseEntity(
+            slug="adventureworks", display_name="AdventureWorks", db_type="postgresql",
+            host="localhost", port=5432, database_name="adventureworks",
+            egeria_url="https://egeria.example", egeria_server="view1",
+            egeria_user="u", egeria_password="p", egeria_asset_guid="asset-1",
+        ))
+        monkeypatch.setattr(
+            "resource_explorer.registry.ProjectRegistry.__init__",
+            lambda self, db_path=None: setattr(self, "__dict__", reg.__dict__) or None,
+        )
+        return reg
+
+    def _publish_row(self, source_id: str, url: str = "https://docs.example/x") -> dict:
+        return {
+            "id": 1, "egeria_guid": "", "element_kind": "doc_source_publish",
+            "qualified_name": f"ExternalReference::{url}",
+            "payload_json": json.dumps({
+                "entity_type": "database", "entity_slug": "adventureworks", "source_id": source_id,
+            }),
+        }
+
+    def _unpublish_row(self, ref_guid: str = "ref-1") -> dict:
+        return {
+            "id": 1, "egeria_guid": "", "element_kind": "doc_source_unpublish",
+            "qualified_name": f"ExternalReferenceRemoval::{ref_guid}",
+            "payload_json": json.dumps({
+                "entity_type": "database", "entity_slug": "adventureworks", "ref_guid": ref_guid,
+            }),
+        }
+
+    def test_publish_creator_writes_the_ref_guid_back_onto_the_local_row(self, doc_registry, monkeypatch):
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: {"ok": True, "ref_guid": "ref-1", "link_guid": "link-1", "error": ""},
+        )
+
+        guid = apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
+
+        assert guid == "ref-1"
+        updated = doc_registry.get_doc_source("database", "adventureworks", row["id"])
+        assert updated["egeria_external_ref_guid"] == "ref-1"
+        assert updated["egeria_link_relationship_guid"] == "link-1"
+
+    def test_generic_lookup_is_never_consulted_for_doc_source_publish(self, doc_registry, monkeypatch):
+        # If the outbox's generic step-2 qualifiedName search DID run for
+        # this kind, it could adopt a same-qualifiedName ExternalReference
+        # from an unrelated feature (the homepage reference uses the exact
+        # same "ExternalReference::<url>" convention) and mark the row done
+        # WITHOUT ever linking it to this asset — the bug _SELF_RESOLVING_
+        # KINDS exists to prevent. A poisoned lookup proves it is skipped.
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: {"ok": True, "ref_guid": "ref-1", "link_guid": "", "error": ""},
+        )
+
+        def poisoned(qn):
+            raise AssertionError("generic find_element_guid must not be called for doc_source_publish")
+
+        assert apply_element(self._publish_row(row["id"]), OutboxClients(), poisoned) == "ref-1"
+
+    def test_publish_failure_raises_so_the_drain_retries(self, doc_registry, monkeypatch):
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: {"ok": False, "ref_guid": "", "link_guid": "", "error": "boom"},
+        )
+
+        with pytest.raises(OutboxApplyError, match="boom"):
+            apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "")
+
+    def test_publish_is_a_no_op_when_the_local_row_was_removed_before_the_drain(self, doc_registry, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: calls.append(1) or
+                {"ok": True, "ref_guid": "x", "link_guid": "", "error": ""},
+        )
+
+        guid = apply_element(self._publish_row("never-existed", "https://gone.example"),
+                             OutboxClients(), lambda qn: "")
+
+        assert guid == ""
+        assert calls == [], "a source removed before its publish drained must not call Egeria at all"
+
+    def test_unpublish_creator_detaches_and_deletes_the_one_reference(self, doc_registry, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.unpublish_doc_source",
+            lambda ref_guid, asset_guid, **kw: calls.append((ref_guid, asset_guid)) or {"ok": True, "error": ""},
+        )
+
+        assert apply_element(self._unpublish_row("ref-1"), OutboxClients(), lambda qn: "") == "ref-1"
+        assert calls == [("ref-1", "asset-1")]
+
+    def test_unpublish_failure_raises_so_the_drain_retries(self, doc_registry, monkeypatch):
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.unpublish_doc_source",
+            lambda ref_guid, asset_guid, **kw: {"ok": False, "error": "network down"},
+        )
+
+        with pytest.raises(OutboxApplyError, match="network down"):
+            apply_element(self._unpublish_row("ref-1"), OutboxClients(), lambda qn: "")
