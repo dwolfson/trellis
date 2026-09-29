@@ -395,7 +395,7 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
     own retry vocabulary.
     """
     from resource_explorer.doc_source_egeria import (
-        publish_doc_source, resolve_entity_for_doc_source,
+        publish_doc_source, ref_guid_exists, resolve_entity_for_doc_source,
     )
     from resource_explorer.registry import ProjectRegistry
 
@@ -436,10 +436,41 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
     )
     if not result["ok"]:
         raise OutboxApplyError(result["error"] or "publish_doc_source failed")
-    registry.set_doc_source_egeria_ref(
-        entity_type, entity_slug, source_id, result["ref_guid"], result.get("link_guid", ""),
-    )
-    return result["ref_guid"]
+    ref_guid = result["ref_guid"]
+    link_guid = result.get("link_guid", "")
+    # Proof-row rule (design, round 5, 2026-09-29): "done" is a claim like
+    # any other state this system renders, and needs the same evidence-
+    # backing discipline as everything else -- reaching `done` without BOTH
+    # guids actually written back must never happen again. This is the exact
+    # incident this round fixes: `publish_doc_source`'s own best-effort link
+    # step can return `ok: True` with `link_guid` empty (a duplicate-link
+    # exception on a re-publish is swallowed there on purpose, see its own
+    # docstring) -- that is a real, honest "not linked yet" outcome for the
+    # OUTBOX's purposes, even though it isn't a `publish_doc_source` failure.
+    if not ref_guid or not link_guid:
+        raise OutboxApplyError(
+            result["error"] or
+            "publish_doc_source returned without both a ref guid and a link guid "
+            "-- the reference exists but the link step did not complete; not "
+            "marking this row done on an unlinked reference"
+        )
+    # "Verified", not just "attempted" (design's own wording): re-confirm the
+    # ref guid we are about to persist as this row's proof still resolves in
+    # Egeria RIGHT NOW, using the exact same existence check
+    # `publish_doc_source` itself uses to decide whether an old guid is safe
+    # to reuse -- rather than trusting our own just-returned result blindly.
+    # Closes the live incident by construction: a stale/deleted ref guid can
+    # no longer be written back as "done" from this path either.
+    if not ref_guid_exists(ref_guid, view_server=entity.egeria_server,
+                            platform_url=entity.egeria_url, user_id=entity.egeria_user,
+                            user_password=entity.egeria_password):
+        raise OutboxApplyError(
+            f"publish_doc_source reported ref {ref_guid} and link {link_guid}, but "
+            f"{ref_guid} does not resolve in Egeria right now -- not marking done on "
+            "an unverified guid"
+        )
+    registry.set_doc_source_egeria_ref(entity_type, entity_slug, source_id, ref_guid, link_guid)
+    return ref_guid
 
 
 def _create_doc_source_unpublish(clients: "OutboxClients", payload: dict) -> str:

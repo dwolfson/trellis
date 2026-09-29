@@ -63,6 +63,7 @@ def test_publish_reuses_an_existing_reference_by_qualified_name(monkeypatch):
 
     monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
     monkeypatch.setattr(m, "_find_ref_guid", lambda client, qn: "existing-guid")
+    monkeypatch.setattr(m, "ref_guid_exists", lambda *a, **kw: True)
 
     source = {"url": "https://docs.example/dict"}
     result = m.publish_doc_source(source, "asset-guid-1", **_EGERIA_KW)
@@ -120,6 +121,7 @@ def test_publish_reuses_a_found_ref_when_nothing_is_unpublishing_it(monkeypatch)
 
     monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
     monkeypatch.setattr(m, "_find_ref_guid", lambda client, qn: "existing-guid")
+    monkeypatch.setattr(m, "ref_guid_exists", lambda *a, **kw: True)
 
     source = {"url": "https://docs.example/dict"}
     result = m.publish_doc_source(
@@ -139,6 +141,7 @@ def test_publish_with_known_ref_guid_links_it_without_a_lookup(monkeypatch):
     fake_client.link_external_reference.return_value = "link-guid-3"
 
     monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(m, "ref_guid_exists", lambda *a, **kw: True)
 
     def poisoned(client, qn):
         raise AssertionError("_find_ref_guid must not be called when known_ref_guid is given")
@@ -179,6 +182,137 @@ def test_publish_abandons_a_known_ref_guid_that_is_being_unpublished(monkeypatch
 
     assert result["ok"] is True
     assert result["ref_guid"] == "fresh-guid-2"
+    fake_client.create_external_reference.assert_called_once()
+
+
+# ── Stuck-row / stale-guid guard (round 5, 2026-09-29) ───────────────────────
+# Live incident: a self-heal re-queued a publish for a row whose stored ref
+# guid had been genuinely DELETED from Egeria by an unrelated unpublish. The
+# old code reused the dead guid unconditionally, the link call against a
+# nonexistent element failed silently (caught by the best-effort try/except),
+# and the outbox row still completed "done" -- a permanent, silent no-op
+# loop. `ref_guid_exists` closes this: no ref guid is trusted without asking
+# Egeria first.
+
+def _patched_metadata_expert(monkeypatch, behaviors: dict):
+    """Same style `test_egeria_recheck.py` uses for the identical client:
+    a stand-in for pyegeria's MetadataExpert, keyed by guid -> outcome
+    (an exception to raise, a "not found" string sentinel, or nothing for
+    a hit). Patched at the real import path `ref_guid_exists` reaches for,
+    not at a module attribute of `doc_source_egeria` -- the same reasoning
+    `test_egeria_recheck.py`'s own `_patched` helper documents: this checks
+    what `ref_guid_exists` actually calls, not a substitute for it."""
+    import sys
+    from unittest.mock import MagicMock
+
+    class FakeElementClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def create_egeria_bearer_token(self, *a, **kw):
+            pass
+
+        def get_metadata_element_by_guid(self, guid, *a, **kw):
+            outcome = behaviors.get(guid)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if outcome is not None:
+                return outcome
+            return {"elementHeader": {}, "guid": guid}
+
+    fake_module = MagicMock()
+    fake_module.MetadataExpert = FakeElementClient
+    monkeypatch.setitem(sys.modules, "pyegeria.omvs.metadata_expert", fake_module)
+
+
+def test_ref_guid_exists_is_false_for_an_empty_guid():
+    assert m.ref_guid_exists("", **_EGERIA_KW) is False
+
+
+def test_ref_guid_exists_is_true_when_egeria_still_has_the_element(monkeypatch):
+    _patched_metadata_expert(monkeypatch, {})  # every guid resolves
+    assert m.ref_guid_exists("still-here", **_EGERIA_KW) is True
+
+
+def test_ref_guid_exists_is_false_on_a_confirmed_unknown_guid_error(monkeypatch):
+    unknown_guid_error = Exception(
+        "OMRS-REPOSITORY-404-002 The entity identified with guid b9925119 "
+        "is not known to the open metadata repository")
+    _patched_metadata_expert(monkeypatch, {"b9925119": unknown_guid_error})
+    assert m.ref_guid_exists("b9925119", **_EGERIA_KW) is False
+
+
+def test_ref_guid_exists_is_false_on_a_not_found_string_sentinel(monkeypatch):
+    # Same "absent shape" test_egeria_recheck.py models: some misses come
+    # back as a plain string rather than an exception.
+    _patched_metadata_expert(monkeypatch, {"gone-guid": "no elements found"})
+    assert m.ref_guid_exists("gone-guid", **_EGERIA_KW) is False
+
+
+def test_ref_guid_exists_is_false_but_does_not_raise_on_a_connection_error(monkeypatch):
+    # An unrelated failure (Egeria unreachable) is not proof the element is
+    # gone, but this function has no way to distinguish "definitely gone"
+    # from "could not check" in its boolean return -- treated as
+    # not-safe-to-reuse per the module's documented "on our failure to
+    # establish something, run the step" rule, same as everywhere else in
+    # this codebase that follows it.
+    _patched_metadata_expert(monkeypatch, {"unreachable-guid": Exception("Connection refused")})
+    assert m.ref_guid_exists("unreachable-guid", **_EGERIA_KW) is False
+
+
+def test_publish_with_a_dead_known_ref_guid_creates_a_new_reference_and_links_it(monkeypatch):
+    """The required regression test for the live incident (round 5,
+    2026-09-29): a row carrying `egeria_external_ref_guid = b9925119...`,
+    the exact ExternalReference deleted from Egeria by an unrelated
+    unpublish, must NOT be silently accepted as already-published on its
+    next self-heal publish attempt. It must create a brand NEW reference and
+    a brand NEW link -- proving the fix closes the silent no-op loop rather
+    than only detecting it."""
+    fake_client = MagicMock()
+    fake_client.create_external_reference.return_value = "fresh-ref-guid"
+    fake_client.link_external_reference.return_value = "fresh-link-guid"
+
+    monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
+    # Once the known (dead) guid is cleared, the code correctly falls back
+    # to the normal qualifiedName lookup -- which also finds nothing else,
+    # same as a genuinely fresh publish.
+    monkeypatch.setattr(m, "_find_ref_guid", lambda client, qn: "")
+    # The stored ref guid does NOT resolve in Egeria -- it was deleted.
+    monkeypatch.setattr(m, "ref_guid_exists", lambda guid, **kw: guid != "b9925119-dead-guid")
+
+    source = {"url": "https://egeria.ai", "label": "not-adventureworks",
+              "source_type": "installation_guide"}
+    result = m.publish_doc_source(
+        source, "asset-guid-1", known_ref_guid="b9925119-dead-guid",
+        is_ref_unpublishing=lambda guid: False,  # not concurrently unpublishing -- just gone
+        **_EGERIA_KW,
+    )
+
+    assert result["ok"] is True
+    # Must NOT have adopted the dead guid -- a brand new reference and link.
+    assert result["ref_guid"] == "fresh-ref-guid"
+    assert result["link_guid"] == "fresh-link-guid"
+    fake_client.create_external_reference.assert_called_once()
+    fake_client.link_external_reference.assert_called_once_with("asset-guid-1", "fresh-ref-guid")
+
+
+def test_publish_found_ref_guid_also_verified_before_reuse(monkeypatch):
+    # The same guard applies to a guid `_find_ref_guid` looks up fresh (not
+    # only one carried in as `known_ref_guid`) -- the qualifiedName search
+    # can also return a since-deleted guid.
+    fake_client = MagicMock()
+    fake_client.create_external_reference.return_value = "fresh-ref-guid-2"
+    fake_client.link_external_reference.return_value = "fresh-link-guid-2"
+
+    monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(m, "_find_ref_guid", lambda client, qn: "found-but-dead-guid")
+    monkeypatch.setattr(m, "ref_guid_exists", lambda guid, **kw: False)
+
+    source = {"url": "https://egeria.ai"}
+    result = m.publish_doc_source(source, "asset-guid-1", **_EGERIA_KW)
+
+    assert result["ok"] is True
+    assert result["ref_guid"] == "fresh-ref-guid-2"
     fake_client.create_external_reference.assert_called_once()
 
 

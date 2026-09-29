@@ -76,6 +76,69 @@ def _qualified_name(url: str) -> str:
     return f"ExternalReference::{url}"
 
 
+def ref_guid_exists(ref_guid: str, *, view_server: str, platform_url: str, user_id: str,
+                     user_password: str) -> bool:
+    """True when `ref_guid` still resolves to a real element in Egeria.
+
+    Round 5 fix (2026-09-29): a stuck-row bug found live (b9925119…, database
+    8813) traced to `publish_doc_source` trusting a stored `egeria_external_
+    ref_guid` just because the row carried one — including one that had been
+    genuinely DELETED from Egeria by an unrelated unpublish before the row's
+    own self-heal re-queued it. The self-heal's publish attempt reused the
+    dead guid, the link call against a nonexistent element failed silently
+    (caught by the best-effort `try/except` around `link_external_reference`),
+    and the outbox row still completed `done` — a permanent, silent no-op
+    loop (see `_compute_egeria_state`'s self-heal, which re-queues the exact
+    same shape every time it renders).
+
+    This is the fix: before trusting ANY ref guid (whether `known_ref_guid`
+    or one `_find_ref_guid` just looked up) as reusable, actually ask Egeria
+    whether it still exists. Reuses `egeria_linkage.is_unknown_guid_error` —
+    the same "does this cached GUID still resolve" detection
+    `recheck_all_linkages` already uses for every other cached-GUID
+    staleness check in this codebase — rather than inventing a second
+    existence-check heuristic. `MetadataExpert.get_metadata_element_by_guid`
+    is the same type-agnostic client `recheck_all_linkages` settled on (an
+    `ExternalReference` is not an Asset, so `AssetMaker` would be the wrong
+    client here too).
+
+    On an UNRELATED failure (timeout, auth hiccup, transient network error —
+    not a confirmed "not known to the repository" answer), this returns
+    `False` rather than raising: "could not establish the guid is good" is
+    treated the same as "not found" here, consistent with this codebase's
+    established `credential_capability.py` rule ("on our failure to
+    establish something, run the step") — a caller that cannot confirm an
+    old reference is safe to reuse creates a fresh one rather than blocking
+    or crashing the whole publish attempt on it.
+    """
+    if not ref_guid:
+        return False
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+
+    from resource_explorer.egeria_linkage import is_unknown_guid_error
+
+    try:
+        client = MetadataExpert(view_server, platform_url, user_id, user_password)
+        client.create_egeria_bearer_token()
+        element = client.get_metadata_element_by_guid(ref_guid)
+    except Exception as exc:
+        if is_unknown_guid_error(exc):
+            log.info("doc source: ref %r no longer resolves in Egeria (confirmed not found)",
+                      ref_guid)
+        else:
+            log.debug("doc source: could not verify ref %r exists (treating as unresolved): %s",
+                       ref_guid, exc)
+        return False
+    # MetadataExpert's own "not found" sentinel is a bare string rather than
+    # an exception for some call shapes (mirrors recheck_all_linkages's own
+    # handling of the identical client).
+    if isinstance(element, str) or not element:
+        log.info("doc source: ref %r no longer resolves in Egeria (empty/string result)",
+                  ref_guid)
+        return False
+    return True
+
+
 def _find_ref_guid(client, qualified_name: str) -> str:
     """Existing ExternalReference by qualified name, or '' — mirrors
     `EgeriaPublisher._find_element_guid`, duplicated rather than imported
@@ -174,6 +237,18 @@ def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platf
             log.info("doc source: known ref %r for %s has a pending/running unpublish — "
                       "abandoning it, looking up/creating fresh", ref_guid, qualified_name)
             ref_guid = ""
+        if ref_guid and not ref_guid_exists(
+            ref_guid, view_server=view_server, platform_url=platform_url,
+            user_id=user_id, user_password=user_password,
+        ):
+            # Round 5 fix (2026-09-29): the row's own stored ref guid may
+            # have been genuinely deleted from Egeria by something else
+            # entirely (the b9925119… incident — an unrelated unpublish beat
+            # this row's self-heal to it). A dead guid must not be reused —
+            # see ref_guid_exists's own docstring.
+            log.info("doc source: known ref %r for %s no longer exists in Egeria — "
+                      "clearing it, looking up/creating fresh", ref_guid, qualified_name)
+            ref_guid = ""
         if not ref_guid:
             ref_guid = _find_ref_guid(client, qualified_name)
         if ref_guid and is_ref_unpublishing is not None and is_ref_unpublishing(ref_guid):
@@ -186,6 +261,17 @@ def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platf
             # below instead of racing the one being deleted.
             log.info("doc source: found %r (%s) but it has a pending/running unpublish — "
                       "creating a new reference instead of adopting it", qualified_name, ref_guid)
+            ref_guid = ""
+        if ref_guid and not ref_guid_exists(
+            ref_guid, view_server=view_server, platform_url=platform_url,
+            user_id=user_id, user_password=user_password,
+        ):
+            # Same guard as above, applied to whatever _find_ref_guid just
+            # found by qualifiedName — that lookup can also return a guid
+            # that no longer resolves (e.g. deleted between the lookup index
+            # and this read).
+            log.info("doc source: found %r (%s) no longer exists in Egeria — "
+                      "creating a new reference instead", qualified_name, ref_guid)
             ref_guid = ""
         if not ref_guid:
             body = {

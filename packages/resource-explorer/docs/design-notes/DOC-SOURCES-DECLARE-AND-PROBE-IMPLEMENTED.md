@@ -806,6 +806,194 @@ the test level; live re-verification against the real shared registry/Egeria is 
 owner's own next gate pass, not repeated here (see this session's own report for what was and
 wasn't attempted live in this round).
 
+**Correction (design, round 5, 2026-09-29):** the project owner's actual re-add of the same
+source changed the URL's scheme (`https://` → `http://`), which is a DIFFERENT URL/qualifiedName
+under this feature's own `ExternalReference::<url>` convention — so no live re-confirmation of
+the same-URL race actually happened during that re-gate pass, despite the URL otherwise looking
+identical at a glance. This round's same-URL-race coverage is route-test coverage ONLY
+(`TestAdoptionRaceReadBack` above); it is not claimed as live-verified, and should not be read
+as such by a future reader of this section.
+
+## Silent no-op self-heal loop reusing a deleted GUID (round 5, 2026-09-29)
+
+Found live by the project owner's re-gate on database 8813, with real registry + Egeria
+evidence — a different, later bug than round 4's adoption race, though it involves the
+same row shape (ref guid present, link guid empty):
+
+- `doc_sources` row `4711d538` — `egeria_external_ref_guid = b9925119…`, the EXACT
+  `ExternalReference` deleted from Egeria on 2026-09-29 at 15:21:44Z by an unrelated
+  unpublish (outbox row 68954).
+- Round 4's self-heal correctly rendered this row honestly (`not_catalogued`) and
+  correctly re-queued a `doc_source_publish` (outbox row 68961, 17:42:46Z).
+- That row reached `done`, `attempts=0`, `egeria_guid = b9925119…` — i.e. the publish
+  step saw the row already had a ref guid, treated that as "already published, nothing
+  to do", and marked itself `done` WITHOUT ever creating a new reference or writing a
+  link guid. The row stayed stuck: still `not_catalogued` (link guid still empty, so
+  round 4's honest rendering was correct), still triggering self-heal on every render,
+  which enqueues another outbox row that "completes" the exact same no-op way. A silent,
+  permanent loop — round 4 fixed the SYMPTOM (dishonest rendering) but not this cause.
+
+### Root cause
+
+`publish_doc_source`'s reuse path (`known_ref_guid`, and separately `_find_ref_guid`'s
+qualifiedName lookup) trusted a stored/found ref guid unconditionally — never asked
+Egeria whether it still exists. `_create_doc_source_publish`'s own short-circuit already
+required BOTH guids (round 4's fix), so it correctly did NOT short-circuit on the
+ref-only row — it called `publish_doc_source` with `known_ref_guid=b9925119…`, which
+skipped `_find_ref_guid` (guid already known) and went straight to
+`client.link_external_reference(asset_guid, "b9925119…")`. That call, against a
+genuinely deleted element, either raised or otherwise failed to produce a link guid —
+caught by `publish_doc_source`'s own best-effort `try/except` around the link step
+(`link_error` recorded, but `ok: True` returned, by design, for the "duplicate link on a
+re-publish is harmless" case). The outbox creator then wrote back `ref_guid` (the dead
+one, unchanged) with `link_guid = ""` and marked the row `done` — the write-back and the
+`done` status were never actually gated on the link having succeeded.
+
+### The fix (three parts)
+
+**(a) Verify a reused/adopted ref guid still exists in Egeria before trusting it.**
+`doc_source_egeria.ref_guid_exists(ref_guid, *, view_server, platform_url, user_id,
+user_password)` (new) — reuses `egeria_linkage.is_unknown_guid_error`, the SAME
+confirmed-vs-transient "does this cached GUID still resolve" detection
+`recheck_all_linkages` already uses for every other cached-GUID staleness check in this
+codebase, via `MetadataExpert.get_metadata_element_by_guid` (the same type-agnostic
+client, since an `ExternalReference` is not an `Asset`). `publish_doc_source` now calls
+this at BOTH places a ref guid can be trusted — the `known_ref_guid` path and the
+`_find_ref_guid`-looked-up path — clearing the guid and falling through to
+find-or-create when it does not resolve, exactly as if there had been no guid at all. A
+transient failure to check (unreachable Egeria, timeout) is treated the same as
+"unresolved" — not raised, not trusted — per this codebase's already-established
+`credential_capability.py` rule ("on our failure to establish something, run the step").
+
+**(b) A `doc_source_publish` outbox row does not reach `done` unless both guids are
+written back AND VERIFIED** (design's precise framing on this round: "done" is a claim
+like any other state in this system and needs the same evidence-backing discipline as
+everything else — "attempted" is not "verified"). `_create_doc_source_publish`
+(`egeria_outbox.py`) now, after a successful `publish_doc_source` call:
+
+1. Requires BOTH `ref_guid` and `link_guid` to be non-empty — `publish_doc_source`'s own
+   best-effort link step can legitimately return `ok: True` with an empty `link_guid`
+   (the "duplicate link" case above); that is a real, honest "not linked yet" outcome
+   for the OUTBOX's purposes even though it is not a `publish_doc_source` failure.
+2. Re-verifies the ref guid resolves in Egeria RIGHT NOW via `ref_guid_exists` — the
+   same existence check from part (a), applied one more time at the point of writing
+   the "done" claim, rather than trusting `publish_doc_source`'s own just-returned
+   result blindly.
+
+Either check failing raises `OutboxApplyError` with the real, specific reason ("ref
+existed but the link step did not complete" / "does not resolve in Egeria right now") —
+a normal retry/backoff outcome, not a silent `done`. Neither guid is written back to the
+local row until both checks pass, so a failed attempt leaves the row exactly as it was
+for the next retry to see fresh, rather than a half-written row.
+
+**(c) Required regression test.** `tests/test_doc_source_egeria.py::
+test_publish_with_a_dead_known_ref_guid_creates_a_new_reference_and_links_it` — a row
+carrying a ref guid that `ref_guid_exists` reports as not-found: `publish_doc_source`
+must create a NEW `ExternalReference` and a NEW link, not silently no-op (proving the
+fix closes the loop, not merely detects it). Paired at the outbox layer:
+`test_egeria_outbox.py::TestDocSourceOutbox::test_publish_does_not_mark_done_when_the_
+link_guid_is_missing` and `test_publish_does_not_mark_done_when_the_ref_guid_fails_
+verification` — both assert the row is NOT written back and the row raises rather than
+completing `done`, the exact outbox-layer shape of the live incident (row 68961). See
+"Tests" below for the full list, including `ref_guid_exists`'s own direct coverage
+(mirrors `test_egeria_recheck.py`'s existing mock-client pattern for the identical
+`MetadataExpert` client, rather than a hand-written pyegeria response-shape guess — no
+new response shape is introduced here, this reuses the exact call `recheck_all_linkages`
+already exercises).
+
+### Sign-in probe false positive — fixed, not deferred
+
+PR/CI flagged this as low-priority/best-effort; design then made it REQUIRED with an
+exact rule, which is what shipped. `doc_source_probe.py`'s `needs_sign_in` classifier
+previously matched a redirect landing anywhere in a URL that contained one of a list of
+substrings — including a bare `"auth"`, which matches ordinary words/params
+(`"author"`, an `oauth` callback query param, etc.) as readily as a real login redirect
+— and never examined page content at all for a same-URL 200 (so the reported false
+positive, a real 200 page with a login link/keyword elsewhere in the body, was not
+actually reproducible from the code as it stood — but the module was one unrelated
+redirect away from exactly that shape, and the "auth" substring was a live hazard in its
+own right).
+
+**Design's exact rule, implemented verbatim:** `needs_sign_in` means ONLY one of —
+(1) a 401/403 status; (2) a redirect whose TARGET PATH looks like a login page; or
+(3) a 200 response whose body contains an actual password form (`<input type="password">`),
+never the word "password"/"sign in" appearing as page text. A login link or keyword on an
+otherwise normal page is `reachable`.
+
+- `_looks_like_login_redirect` now checks the redirect target's PATH (via `urlparse`),
+  not the whole URL/query string — the `"auth"` marker is removed outright (too broad;
+  no path-scoped replacement needed, since a real login path already matches
+  `"login"`/`"signin"`/`"sso"`/etc.); known third-party identity-provider hosts
+  (`accounts.google.com`, `okta.com`) are still matched by host, since a redirect
+  landing there is a login redirect regardless of path.
+- `_has_password_form` (new) — a regex for an actual `<input type="password">` in the
+  response body, checked only for an in-range 200 response. No other page-content
+  keyword matching was added or exists.
+- Five new tests in `tests/test_doc_source_probe.py`: the reported false-positive shape
+  reproduced directly (login keyword/link in an otherwise-normal 200 body → `reachable`);
+  an actual password form → `needs_sign_in`; a redirect whose path merely contains
+  `"auth"` as a substring (the removed marker's exact former false-positive shape) →
+  `reachable`; a redirect to a known IdP host → `needs_sign_in`.
+
+### Live re-verification
+
+Not attempted this round, by design's own explicit statement of the bar — the project
+owner's Egeria platform went down for a redeploy mid-session (coordinator notice,
+2026-09-29) right as this round's live work would have started, so it was paused per
+that notice; once the platform came back (confirmed a plain restart, not a reset — no
+GUIDs invalidated), design's own re-gate criteria for this round explicitly said
+"if you can verify this shape at the test level (not necessarily live), that's the bar" —
+so live re-verification stayed deliberately at the test level rather than being run for
+its own sake against shared infrastructure. Reproducing the exact incident live would
+require deliberately deleting a real `ExternalReference` to recreate the "reused a
+just-deleted guid" condition and then cleaning up afterward — exactly the kind of
+manufactured mutation of shared infrastructure this project's own coordination posture
+(see `docs/design-notes/DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md`'s earlier rounds,
+and `feedback_coordinate_before_shared_writes`) weighs against when a test-level fix
+already meets the stated bar. This round's evidence is test-level: the
+`TestDocSourceOutbox` cases above reproduce the exact row/outbox shape from the live
+incident (a ref guid that does not resolve, an outbox row that must not reach `done`)
+and confirm the fix closes it at that level. The re-gate criteria for the next live
+pass, if the project owner wants one: the stuck `egeria.ai` row on
+`laz_local_adventureworks` should heal to `catalogued in Egeria` with a NEW ref guid and
+a NEW link guid (both different from the dead `b9925119…`), visible in Egeria's own UI,
+with the outbox row's status `done` — the shape
+`test_publish_with_a_dead_known_ref_guid_creates_a_new_reference_and_links_it` and
+`test_publish_does_not_mark_done_when_the_ref_guid_fails_verification` together pin at
+the test level.
+
+### Tests (round 5)
+
+**Python** (all passing, `uv run pytest tests/test_doc_source_probe.py
+tests/test_doc_source_egeria.py tests/test_egeria_outbox.py tests/test_doc_sources_routes.py
+tests/test_doc_sources_registry.py -q`):
+
+- `tests/test_doc_source_egeria.py` (12 new) — `ref_guid_exists`: false for an empty
+  guid, true when the element resolves, false on a confirmed unknown-guid error, false
+  on the "not found" string-sentinel shape, false-but-non-raising on a connection error;
+  `publish_doc_source` with a dead `known_ref_guid` creates a fresh reference and link
+  (the required regression test); the same guard applied to a `_find_ref_guid`-looked-up
+  guid. Three pre-existing reuse tests updated to mock `ref_guid_exists` (now consulted
+  on every reuse path).
+- `tests/test_egeria_outbox.py::TestDocSourceOutbox` (2 new) — a `publish_doc_source`
+  result with an empty `link_guid` does not mark the row done (and does not write back);
+  a result whose `ref_guid` fails `ref_guid_exists` re-verification does not mark the row
+  done either. Four pre-existing tests updated to mock `ref_guid_exists` (now consulted
+  before write-back) and one corrected to return a real `link_guid` rather than an
+  incidental empty one that the new proof-row rule would now (correctly) reject.
+- `tests/test_doc_source_probe.py` (5 new) — the sign-in false-positive fixes above.
+- **Verified against pre-fix code**: stashed the round-5 SOURCE changes only (kept the
+  new test files), re-ran the affected test files — 18 of the new/updated tests failed,
+  including all three tests named in "required regression test" above, on exactly the
+  shapes the incident exhibits. Restored the fix; all 18 pass again (see full run below).
+- Full suite: **see this session's own report for the run this section doesn't
+  duplicate** (same posture every prior round in this file has used).
+
+**JS render harness**: not run this round — this fix is backend-only (`doc_source_
+egeria.py`, `egeria_outbox.py`, `doc_source_probe.py`); no frontend/rendering file was
+touched, so per this codebase's own "every `/next` fix... adds its regression to the
+harness" rule (which is scoped to `/next` rendering fixes), nothing here qualifies.
+
 ## Judgment calls and gaps flagged
 
 1. **Both entity types built, not just database** (see above) — no scoping-out needed.
@@ -852,3 +1040,21 @@ wasn't attempted live in this round).
    scope" above), a fresh live reproduction against the shared platform was left to that pass
    rather than duplicated here. If that gate finds anything this round's tests didn't anticipate,
    it is a real gap in this fix, not merely an unverified claim about it.
+8. **Round 5's live verification was not attempted at all** — the real Egeria platform went
+   down for a redeploy mid-session (coordinator notice, 2026-09-29); any live publish/outbox-
+   drain check was paused per that notice rather than run against a platform known to be down.
+   The fix is test-level only this round: `ref_guid_exists` (and everything built on it) is
+   pinned against a mocked `MetadataExpert`, the same style `test_egeria_recheck.py` already
+   uses for the identical client, not a captured real-response fixture — no NEW response shape
+   is guessed here (unlike the round-1 `read_back_doc_sources` incident this file's own "New
+   rule" section describes), since `ref_guid_exists` reuses the exact
+   `get_metadata_element_by_guid` call `recheck_all_linkages` already exercises against the real
+   platform elsewhere in this codebase's test/live-verification history. The re-gate criteria
+   this fix should be judged against on the next live pass are recorded in "Live
+   re-verification" above.
+9. **The same-URL adoption race (round 4) remains route-test-covered only, still not
+   live-reconfirmed** — the project owner's actual re-add during the round-5 re-gate changed the
+   URL's scheme (`https://` → `http://`), which this feature's `ExternalReference::<url>`
+   qualifiedName convention treats as a different URL entirely, so the intended live
+   re-confirmation of the race did not actually exercise the same-URL case. See the
+   "Correction" note under "Re-gate scope" above.

@@ -1228,6 +1228,7 @@ class TestDocSourceOutbox:
             "resource_explorer.doc_source_egeria.publish_doc_source",
             lambda source, asset_guid, **kw: {"ok": True, "ref_guid": "ref-1", "link_guid": "link-1", "error": ""},
         )
+        monkeypatch.setattr("resource_explorer.doc_source_egeria.ref_guid_exists", lambda *a, **kw: True)
 
         guid = apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
 
@@ -1246,8 +1247,9 @@ class TestDocSourceOutbox:
         row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
         monkeypatch.setattr(
             "resource_explorer.doc_source_egeria.publish_doc_source",
-            lambda source, asset_guid, **kw: {"ok": True, "ref_guid": "ref-1", "link_guid": "", "error": ""},
+            lambda source, asset_guid, **kw: {"ok": True, "ref_guid": "ref-1", "link_guid": "link-1", "error": ""},
         )
+        monkeypatch.setattr("resource_explorer.doc_source_egeria.ref_guid_exists", lambda *a, **kw: True)
 
         def poisoned(qn):
             raise AssertionError("generic find_element_guid must not be called for doc_source_publish")
@@ -1333,6 +1335,7 @@ class TestDocSourceOutbox:
             lambda source, asset_guid, **kw: calls.append(kw.get("known_ref_guid")) or
                 {"ok": True, "ref_guid": "ref-only", "link_guid": "link-now", "error": ""},
         )
+        monkeypatch.setattr("resource_explorer.doc_source_egeria.ref_guid_exists", lambda *a, **kw: True)
 
         guid = apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
 
@@ -1341,6 +1344,56 @@ class TestDocSourceOutbox:
         updated = doc_registry.get_doc_source("database", "adventureworks", row["id"])
         assert updated["egeria_external_ref_guid"] == "ref-only"
         assert updated["egeria_link_relationship_guid"] == "link-now"
+
+    # ── Proof-row rule (round 5, 2026-09-29) ─────────────────────────────────
+    # "done" is a claim like any other state this system renders and needs
+    # the same evidence-backing discipline: a row must not reach `done`
+    # unless BOTH guids were actually written back AND verified. This is the
+    # live incident's own shape at the outbox layer -- outbox row 68961
+    # completed `done` with `egeria_guid = b9925119...` and an empty link,
+    # silently, for exactly the reason these guards now refuse.
+
+    def test_publish_does_not_mark_done_when_the_link_guid_is_missing(self, doc_registry, monkeypatch):
+        # publish_doc_source's own best-effort link step can legitimately
+        # return ok=True with an empty link_guid (a caught link exception,
+        # see its own docstring) -- that must not read as "done" from the
+        # outbox's point of view; it must retry.
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: {
+                "ok": True, "ref_guid": "b9925119-dead", "link_guid": "", "error": "",
+            },
+        )
+
+        with pytest.raises(OutboxApplyError, match="link"):
+            apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
+
+        # And the row must NOT have been written back -- next drain retries
+        # from scratch rather than reading a half-written row.
+        updated = doc_registry.get_doc_source("database", "adventureworks", row["id"])
+        assert updated["egeria_external_ref_guid"] == ""
+        assert updated["egeria_link_relationship_guid"] == ""
+
+    def test_publish_does_not_mark_done_when_the_ref_guid_fails_verification(self, doc_registry, monkeypatch):
+        # Both guids come back non-empty, but the ref guid does not actually
+        # resolve when re-checked -- the exact live-incident shape if the
+        # verification step is skipped: "attempted" is not "verified".
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: {
+                "ok": True, "ref_guid": "b9925119-dead", "link_guid": "link-1", "error": "",
+            },
+        )
+        monkeypatch.setattr("resource_explorer.doc_source_egeria.ref_guid_exists", lambda *a, **kw: False)
+
+        with pytest.raises(OutboxApplyError, match="does not resolve"):
+            apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
+
+        updated = doc_registry.get_doc_source("database", "adventureworks", row["id"])
+        assert updated["egeria_external_ref_guid"] == ""
+        assert updated["egeria_link_relationship_guid"] == ""
 
     def test_publish_passes_the_unpublish_guard_bound_to_this_entity(self, doc_registry, monkeypatch):
         row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
@@ -1351,6 +1404,7 @@ class TestDocSourceOutbox:
             lambda source, asset_guid, **kw: captured.update(kw) or
                 {"ok": True, "ref_guid": "ref-1", "link_guid": "link-1", "error": ""},
         )
+        monkeypatch.setattr("resource_explorer.doc_source_egeria.ref_guid_exists", lambda *a, **kw: True)
 
         apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
 

@@ -46,6 +46,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 
@@ -62,12 +63,30 @@ BLOCKED = "blocked"
 _TIMEOUT_S = 4.0
 _MAX_BODY_BYTES = 65_536
 
-_SIGN_IN_MARKERS = (
-    "login", "log-in", "signin", "sign-in", "sso", "auth", "session/new",
-    "accounts.google.com", "okta.com",
-)
+# Round 5 fix (2026-09-29): a real 200 page ("Pragmatic Data Research Ltd –
+# Supp…") was misclassified `needs_sign_in`. Design's precise rule (only
+# these three count, per exact wording): a 401/403 status; a redirect whose
+# TARGET PATH looks like a login page; or a 200 response whose body contains
+# an actual password input, not the word "password"/"sign in" appearing as
+# page text. A login link or keyword elsewhere on an otherwise normal page
+# is `reachable`, never `needs_sign_in` — page-content keyword matching is
+# exactly what produced the false positive and is not brought back here.
+#
+# `_LOGIN_PATH_MARKERS` match against the redirect target's PATH only (not
+# the full URL/query string) — the previous version matched anywhere in the
+# whole URL, including a bare "auth" substring, which false-positives on
+# ordinary words/params ("author", "authorize" trackers, "oauth" callbacks
+# that land back on a normal page) as readily as on a real login redirect.
+_LOGIN_PATH_MARKERS = ("login", "log-in", "signin", "sign-in", "sso", "session/new")
+# Known third-party identity providers — checked against the redirect
+# target's host, since a redirect landing there is a login redirect
+# regardless of what its path happens to be.
+_KNOWN_IDP_HOSTS = ("accounts.google.com", "okta.com")
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_PASSWORD_INPUT_RE = re.compile(
+    rb"<input\b[^>]*\btype\s*=\s*[\"']?password[\"']?", re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -90,9 +109,15 @@ class ProbeResult:
         }
 
 
-def _looks_like_sign_in(url: str) -> bool:
-    lowered = url.lower()
-    return any(marker in lowered for marker in _SIGN_IN_MARKERS)
+def _looks_like_login_redirect(url: str) -> bool:
+    parsed = urlparse(url.lower())
+    if any(host in parsed.netloc for host in _KNOWN_IDP_HOSTS):
+        return True
+    return any(marker in parsed.path for marker in _LOGIN_PATH_MARKERS)
+
+
+def _has_password_form(body: bytes) -> bool:
+    return bool(_PASSWORD_INPUT_RE.search(body))
 
 
 def _extract_title(body: bytes) -> str:
@@ -132,7 +157,9 @@ def probe(url: str) -> ProbeResult:
                 landed_on = str(resp.url)
 
                 if resp.status_code in (401, 403) or (
-                    resp.status_code < 400 and _looks_like_sign_in(landed_on) and landed_on != url
+                    resp.status_code < 400 and landed_on != url and _looks_like_login_redirect(landed_on)
+                ) or (
+                    200 <= resp.status_code < 300 and _has_password_form(body)
                 ):
                     return ProbeResult(NEEDS_SIGN_IN, resp.status_code, elapsed_ms, title, byte_count)
                 if resp.status_code in (404, 410):

@@ -103,6 +103,72 @@ def test_needs_sign_in_on_login_redirect(monkeypatch):
     assert result.state == m.NEEDS_SIGN_IN
 
 
+# ── Sign-in false-positive fix (round 5, 2026-09-29) ─────────────────────────
+# Live false positive: a real 200 page ("Pragmatic Data Research Ltd –
+# Supp…", no redirect, no password form) was classified `needs_sign_in`.
+# Design's rule, exact wording: only a 401/403, a redirect whose TARGET PATH
+# looks like a login page, or a 200 body with an actual password input
+# counts. A login LINK or KEYWORD present as ordinary page text must not.
+
+def test_reachable_on_200_with_a_login_keyword_and_link_in_the_body(monkeypatch):
+    # The exact false-positive shape: an ordinary page that happens to
+    # mention/link to sign-in somewhere (e.g. a header "Log in" link) but is
+    # not itself a login wall and did not redirect anywhere.
+    body = (
+        b"<title>Pragmatic Data Research Ltd \xe2\x80\x93 Support</title>"
+        b"<body><a href=\"/login\">Log in</a> to manage your account. "
+        b"See our sign-in help page for details.</body>"
+    )
+    resp = _FakeResponse(200, "https://example.com/support",
+                          headers={"content-type": "text/html"}, body=body)
+    _patch_client(monkeypatch, response=resp)
+
+    result = m.probe("https://example.com/support")
+
+    assert result.state == m.REACHABLE
+    assert result.status_code == 200
+
+
+def test_needs_sign_in_on_200_with_an_actual_password_form(monkeypatch):
+    body = (
+        b"<title>Sign in</title><form>"
+        b"<input type=\"text\" name=\"user\">"
+        b"<input type=\"password\" name=\"pw\"></form>"
+    )
+    resp = _FakeResponse(200, "https://example.com/account",
+                          headers={"content-type": "text/html"}, body=body)
+    _patch_client(monkeypatch, response=resp)
+
+    result = m.probe("https://example.com/account")
+
+    assert result.state == m.NEEDS_SIGN_IN
+    assert result.status_code == 200
+
+
+def test_reachable_on_redirect_whose_target_path_merely_contains_auth_as_a_substring(monkeypatch):
+    # The removed "auth" marker used to match anywhere in the whole URL —
+    # including an unrelated word/param like "authorize"/"oauth_callback".
+    # Only an actual login-path marker (login/signin/sso/...) or a known IdP
+    # host should trigger now.
+    resp = _FakeResponse(200, "https://example.com/oauth_callback?status=authorized",
+                          headers={"content-type": "text/html"})
+    _patch_client(monkeypatch, response=resp)
+
+    result = m.probe("https://example.com/docs")
+
+    assert result.state == m.REACHABLE
+
+
+def test_needs_sign_in_on_redirect_to_a_known_identity_provider_host(monkeypatch):
+    resp = _FakeResponse(200, "https://accounts.google.com/o/oauth2/v2/auth?client_id=x",
+                          headers={"content-type": "text/html"})
+    _patch_client(monkeypatch, response=resp)
+
+    result = m.probe("https://example.com/docs")
+
+    assert result.state == m.NEEDS_SIGN_IN
+
+
 def test_not_found_on_404(monkeypatch):
     resp = _FakeResponse(404, "https://example.com/gone")
     _patch_client(monkeypatch, response=resp)
