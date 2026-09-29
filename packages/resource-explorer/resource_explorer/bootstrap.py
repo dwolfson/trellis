@@ -176,11 +176,99 @@ class BatchStatus:
     consecutive_failures: int = 0
 
 
+@dataclass
+class PrefectPoolStatus:
+    """Worker liveness for the `resource-explorer-pool` work pool (2026-09-28,
+    part of the whole-definition-Prefect-default change — see
+    docs/design-notes/PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md).
+
+    Same tri-state shape as `BatchStatus`: `reachable` says whether the last
+    attempt could actually reach the Prefect API at all, independent of
+    whether a worker was found — a real incident earlier tonight was
+    `prefect_up.sh` starting a worker on the wrong pool, silent until a run
+    degraded; this exists so that shows up here, before anyone hits it in a
+    run.
+    """
+
+    reachable: bool | None = None
+    worker_count: int = 0
+    last_heartbeat: str = ""
+    last_checked_at: str = ""
+    last_check_error: str = ""
+
+
 _status: dict[str, BatchStatus] = {}
 _status_lock = threading.Lock()
 _reinitializing = False
 _stop_event: threading.Event | None = None
 _thread: threading.Thread | None = None
+
+_prefect_pool_status = PrefectPoolStatus()
+_prefect_pool_status_lock = threading.Lock()
+
+
+def check_prefect_pool_workers(pool: str | None = None) -> PrefectPoolStatus:
+    """Query Prefect's own API for `pool`'s registered workers — the same
+    `work_pools/{pool}/workers/filter` data `prefect_up.sh` and the
+    dispatch-honesty live gate checked by hand — and update/return the
+    module-level status.
+
+    Fails open like the batch canary checks above: an unreachable Prefect
+    API reports `reachable=False` with the error text, never a false
+    "0 workers" that would look identical to a real empty pool. `pool`
+    defaults to `config.prefect.work_pool`.
+    """
+    from resource_explorer.config import get_config
+
+    pool = pool or get_config().prefect.work_pool
+    status = PrefectPoolStatus(last_checked_at=_now())
+    try:
+        import asyncio
+
+        from resource_explorer.surveyors.prefect_adapter import re_prefect_client
+
+        async def _fetch():
+            async with re_prefect_client() as client:
+                return await client.read_workers_for_work_pool(pool)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            from resource_explorer.concurrency import run_sync
+
+            workers = run_sync(lambda: asyncio.run(_fetch()))
+        else:
+            workers = asyncio.run(_fetch())
+
+        status.reachable = True
+        status.worker_count = len(workers)
+        heartbeats = [
+            str(w.last_heartbeat_time) for w in workers if getattr(w, "last_heartbeat_time", None)
+        ]
+        status.last_heartbeat = max(heartbeats) if heartbeats else ""
+        if status.worker_count == 0:
+            log.warning(
+                "bootstrap: Prefect work pool %r has NO registered workers — a "
+                "default whole-definition run will find the API reachable but "
+                "have nothing to dispatch to; see docs/design-notes/"
+                "PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md", pool,
+            )
+        else:
+            log.info(
+                "bootstrap: Prefect work pool %r has %d worker(s), last "
+                "heartbeat %s", pool, status.worker_count, status.last_heartbeat or "unknown",
+            )
+    except Exception as exc:
+        status.reachable = False
+        status.last_check_error = str(exc)
+        log.warning("bootstrap: could not check Prefect pool %r workers: %s", pool, exc)
+
+    with _prefect_pool_status_lock:
+        global _prefect_pool_status
+        _prefect_pool_status = status
+    return status
 
 
 def _now() -> str:
@@ -604,10 +692,25 @@ def get_status(docs_dir: Path = DOCS_DIR) -> dict:
             "idempotent": batch.idempotent,
             "file_count": len(batch.files),
         }
+    with _prefect_pool_status_lock:
+        pool_st = _prefect_pool_status
+
     return {
         "reinitializing": _reinitializing,
         "egeria_reachable": not any_unreachable,
         "batches": out,
+        # 2026-09-28 — resource-explorer-pool worker liveness, reported
+        # alongside the Dr.Egeria batch status the admin banner already
+        # reads, so a missing/offline Prefect worker is a monitored
+        # condition rather than something discovered by a confusing run
+        # failure or silent local fallback.
+        "prefect_pool": {
+            "reachable": pool_st.reachable,
+            "worker_count": pool_st.worker_count,
+            "last_heartbeat": pool_st.last_heartbeat,
+            "last_checked_at": pool_st.last_checked_at,
+            "last_check_error": pool_st.last_check_error,
+        },
     }
 
 
@@ -621,6 +724,12 @@ def _loop(docs_dir: Path, interval: int, stop: threading.Event) -> None:
             # Never let a bad pass kill the loop — the next tick should still
             # get a chance to notice and repair a reset.
             log.exception("bootstrap: check pass failed")
+        try:
+            check_prefect_pool_workers()
+        except Exception:
+            # Same tolerance as the batch-heal pass above — a worker-liveness
+            # check that itself throws must not stop future ticks either.
+            log.exception("bootstrap: Prefect pool worker check failed")
         stop.wait(interval)
 
 
