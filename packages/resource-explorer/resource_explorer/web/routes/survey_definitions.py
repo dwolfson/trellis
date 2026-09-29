@@ -453,6 +453,12 @@ async def list_candidates(
                 # ⚠ beside "ran Xm ago" opens these, rather than only
                 # flagging that something went wrong with no way to see what.
                 "last_run_errors": last_activity.get("last_run_errors") or [],
+                # Which engine actually ran the last run -- see registry.py's
+                # get_survey_definition_last_activity for how this is read
+                # back off the same activity_log detail SurveyDefinitionExecutor
+                # already writes. Rendered on the row itself (app.js), not as
+                # a transient note that a pane reload wipes out.
+                "last_run_engine_note": last_activity.get("last_run_engine_note", ""),
                 "last_published_at": last_activity.get("last_published_at", ""),
                 # 'candidate' = a real per-Survey-Definition publish (the ☁
                 # Publish button on this exact card); 'repo' = inferred from
@@ -537,6 +543,7 @@ async def list_candidates(
                 cand["last_run_at"] = best["last_run_at"]
                 cand["last_run_status"] = best.get("last_run_status", "")
                 cand["last_run_via"] = best["qualified_name"]
+                cand["last_run_engine_note"] = best.get("last_run_engine_note", "")
 
         # Extends the registry's own repo-wide-publish fallback (see
         # get_survey_definition_last_activity's docstring) to candidates that
