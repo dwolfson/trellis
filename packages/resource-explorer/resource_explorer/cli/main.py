@@ -2497,6 +2497,133 @@ def prefect_worker(
         raise typer.Exit(1)
 
 
+# ── board_summary backfill (docs/design-notes/BOARD-SUMMARY-READ-COST-IMPLEMENTED.md) ──
+
+@app.command(name="backfill-board-summaries")
+def backfill_board_summaries(
+    slug: Optional[str] = typer.Argument(
+        None, help="Database or filesystem slug to backfill. Omit and pass --all instead."),
+    all_resources: bool = typer.Option(
+        False, "--all", help="Backfill every database and filesystem resource in the registry."),
+):
+    """Pre-populate `board_summary` rows for a resource (or every resource)
+    BEFORE any real user visits its By-analysis pane.
+
+    `build_survey_results(..., board_id=...)` (`resource_explorer/workflows/
+    analysis.py`) already self-heals — the first read of a missing/stale
+    board recomputes it and persists the result, so a real visitor's request
+    is never wrong, just slow the first time. On coco_pharma that first-visit
+    cost measured over 4 minutes across all 7 discovery boards, all paid in
+    the request path by whoever happened to click first (2026-09-29 owner
+    gate check). This command drives the SAME recompute-and-persist function
+    proactively, out of band, so an operator (or CI, right after a merge)
+    can pay that cost once, before anyone is waiting on it.
+
+    Only `board_id`s already fresh in `board_summary` are skipped — this is a
+    warm/backfill command, not a forced recompute of everything. A board
+    whose analysis has never run is still visited (it persists an empty-but-
+    valid summary, the same self-heal a real request would trigger) so a
+    later real run's write hook has a consistent row to update rather than a
+    gap.
+
+    Scoped to `database` and `filesystem` entity types only. `repo` boards
+    are not covered — no per-analysis run route exists for repo through this
+    branch's writer hook shape (see the IMPLEMENTED doc's writer-path
+    section); nothing here silently pretends otherwise.
+    """
+    import time
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.analysis import (
+        _read_board_summary_if_fresh,
+        build_survey_results,
+        list_survey_result_boards,
+    )
+
+    if bool(slug) == all_resources:
+        if slug and all_resources:
+            console.print("[red]Pass a slug OR --all, not both.[/red]")
+        else:
+            console.print("[red]Pass a resource slug, or --all to backfill every resource.[/red]")
+        raise typer.Exit(code=1)
+
+    registry = ProjectRegistry()
+
+    targets: list[tuple[str, str]] = []
+    if all_resources:
+        targets.extend(("database", db.slug) for db in registry.list_databases())
+        targets.extend(("filesystem", fs.slug) for fs in registry.list_filesystems())
+        if not targets:
+            console.print("[dim]No database or filesystem resources registered.[/dim]")
+            return
+    elif registry.database_exists(slug):
+        targets.append(("database", slug))
+    elif registry.filesystem_exists(slug):
+        targets.append(("filesystem", slug))
+    else:
+        console.print(f"[red]'{slug}' is not a registered database or filesystem.[/red]")
+        raise typer.Exit(code=1)
+
+    total_boards = 0
+    backfilled = 0
+    skipped = 0
+    errors: list[str] = []
+    overall_start = time.monotonic()
+
+    for entity_type, rslug in targets:
+        try:
+            boards = list_survey_result_boards(registry, entity_type, rslug).get("boards") or []
+        except Exception as exc:
+            errors.append(f"{entity_type}/{rslug}: could not list boards — {exc}")
+            console.print(f"[red]{entity_type}/{rslug}: could not list boards — {exc}[/red]")
+            continue
+
+        for i, board in enumerate(boards, start=1):
+            board_id = board["id"]
+            total_boards += 1
+            already_fresh = _read_board_summary_if_fresh(
+                registry, entity_type, rslug, board_id, "", True,
+            )
+            if already_fresh is not None and already_fresh.get("dashboards"):
+                console.print(
+                    f"backfilling {rslug}: board {i}/{len(boards)} ({board_id})... "
+                    f"[dim]already fresh, skipped[/dim]"
+                )
+                skipped += 1
+                continue
+
+            start = time.monotonic()
+            try:
+                build_survey_results(
+                    registry, entity_type, rslug, stage="", include_empty=True, board_id=board_id,
+                )
+            except Exception as exc:
+                elapsed = time.monotonic() - start
+                errors.append(f"{entity_type}/{rslug}/{board_id}: {exc}")
+                console.print(
+                    f"backfilling {rslug}: board {i}/{len(boards)} ({board_id})... "
+                    f"[red]FAILED after {elapsed:.1f}s — {exc}[/red]"
+                )
+                continue
+            elapsed = time.monotonic() - start
+            backfilled += 1
+            console.print(
+                f"backfilling {rslug}: board {i}/{len(boards)} ({board_id})... "
+                f"[green]done in {elapsed:.1f}s[/green]"
+            )
+
+    total_elapsed = time.monotonic() - overall_start
+    console.print(
+        f"\n[bold]{len(targets)} resource(s), {total_boards} board(s) — "
+        f"{backfilled} backfilled, {skipped} already fresh, {len(errors)} error(s), "
+        f"{total_elapsed:.1f}s total[/bold]"
+    )
+    if errors:
+        for e in errors:
+            console.print(f"  [yellow]{e}[/yellow]")
+        raise typer.Exit(code=1)
+
+
 # ── batch CSV import/export (resource_explorer/batch_io.py) ─────────────────
 
 @app.command(name="export-resources")

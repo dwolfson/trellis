@@ -332,3 +332,37 @@ Gate served on 8813, tip 7289dd88. Results by item:
 **Two smaller fixes made on this branch as a result of the same gate:**
 - Pluralization bug: the Shared Names header read "1 names carried by more than one analysis" for the single-shared-name case. Fixed (`shared.size === 1 ? '' : 's'`); harness and source-text tests updated to check for the criterion phrase without asserting a hardcoded plural.
 - Board-row headline truncation ("no way to see the rest", owner feedback) — NOT fixed here. Deferred to the (a)+(c) follow-up (Table Grain description + PNG export slice) as a title attribute plus wrap-on-hover, per design's call that this is a copy/UX slice, not a read-cost one.
+
+## Backfill CLI (2026-09-29)
+
+**The gap this closes.** The read-cost fix above is correct but lazy: `board_summary` is written at run completion and self-heals on a cold/stale read, so the FIRST real visitor to a resource's By-analysis pane after a fresh analysis run pays the full expensive recompute, in the request path, for every board that hasn't been read yet. Found live on 2026-09-29, on a coco_pharma owner gate check: the first visit measured **over 4 minutes** to settle across all 7 discovery boards (worse than the ~1:20 pre-this-branch baseline with no persistence at all, since this branch's writes/self-heal add their own overhead on top of a cold recompute — the per-request server-latency issue from the gate result above compounds this further). Design's call: add a one-shot, out-of-band way to warm `board_summary` for a resource *before* any real user visits it, so nobody ever pays this cost live. The lazy self-heal-on-miss behavior in `build_survey_results` is unchanged — this is a second, proactive way to reach the same persisted rows, not a replacement for the safety net.
+
+**`resource-explorer backfill-board-summaries`** (`resource_explorer/cli/main.py`). Drives the exact same recompute-and-persist path a real request would (`list_survey_result_boards` for the catalog, then `build_survey_results(..., board_id=..., include_empty=True)` per board — the same function `_refresh_board_summaries_after_run` calls at run completion and the request path calls lazily), so there is no second, parallel "compute a summary" implementation to drift out of sync.
+
+Behavior:
+- A board already fresh in `board_summary` (checked via the same `_read_board_summary_if_fresh` the read path uses) is **skipped**, not recomputed — this is a warm/backfill command, not a forced full recompute. A board whose analysis has never run is still visited, the same way a real first-read self-heals: it persists an empty-but-valid summary rather than being left with no row.
+- Progress is printed per board (`backfilling <slug>: board <i>/<n> (<board_id>)... done in <seconds>s`, or `already fresh, skipped`, or `FAILED after <seconds>s — <error>`), and a final summary line reports resources processed, boards backfilled/skipped/errored, and total elapsed time.
+- A single board's failure does **not** abort the run — every other board and resource is still attempted, matching the fail-soft pattern the mechanism itself already uses internally (`_read_analyses`'s per-analysis-reader try/except, `_persist_board_summary`'s never-raise contract). The command exits non-zero only if at least one board actually failed, after finishing everything else.
+
+**Scope: `database` and `filesystem` only, not `repo`.** Repo boards were never in scope for this — see "Open gaps / judgment calls flagged" item 2 above: no per-analysis run route exists for `filesystem` either (the same gap), but `filesystem`'s board reads still go through the identical `build_survey_results(..., board_id=...)` self-heal/persist path database uses, so backfilling it out-of-band works the same way; only `repo`'s dashboard-grouped (`SURVEY_RESULT_DASHBOARDS`) shape and its own writer hook were out of scope for this CLI addition, since `repo`'s per-run writer hook already exists and this command adds nothing repo doesn't already get from a real survey run. Extending this command to `repo` would need `list_survey_result_boards`'s repo branch (dashboard ids, not analysis ids) wired the same way — straightforward if wanted, just not built here since it wasn't asked for and repo already has run-completion warming.
+
+**Usage:**
+
+```bash
+# One resource (database or filesystem slug — auto-detected against the registry)
+resource-explorer backfill-board-summaries laz_local_adventureworks
+
+# Every registered database and filesystem
+resource-explorer backfill-board-summaries --all
+```
+
+**Tests:** `tests/test_cli_backfill_board_summaries.py` — backfills a resource with no summaries (every board recomputed and persisted), skips a resource with a fresh summary already in place (reader not re-invoked), continues past a per-board failure (the other board in the same resource still gets backfilled and the failing one leaves no row behind), and `--all` iterates every registered database and filesystem. Follows `test_board_summary_read_cost.py`'s own `_wire_one_analysis`-style pattern (MagicMock results_reader, call-count assertions) rather than wall-clock timing.
+
+**Recommended run against the two gate databases, once PR #349 merges:**
+
+```bash
+resource-explorer backfill-board-summaries laz_local_adventureworks
+resource-explorer backfill-board-summaries localhost_docker_coco_pharma
+```
+
+(or a single `resource-explorer backfill-board-summaries --all` covering both, plus any other registered database/filesystem, in one run) — run right after merge, before anyone opens either resource's By-analysis pane, so the coco_pharma 4-minute first-visit finding cannot recur for either gate resource.
