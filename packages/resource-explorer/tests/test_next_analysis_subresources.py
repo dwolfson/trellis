@@ -295,9 +295,14 @@ class TestResultsAlreadyReachByAnalysisGenerically:
     the data_profile Survey Result dashboard alongside data_file_profiling."""
 
     def test_by_analysis_pane_handles_any_findings_array_generically(self):
+        # BY-ANALYSIS-PROGRESSIVE-AND-GRAPH (2026-09-28): the per-board
+        # findings loop moved out of loadByAnalysisPane's own body and into
+        # boardFindingsHtml(board), one card body renderer called for every
+        # board generically -- same behavior (still no analysis-id special
+        # case), different function.
         app = _app()
-        start = app.index("async function loadByAnalysisPane() {")
-        end = app.index("\n}", start + 2000)
+        start = app.index("function boardFindingsHtml(board)")
+        end = app.index("\n}", start)
         body = app[start:end]
         assert "Array.isArray(res.findings)" in body
         # No analysis-id special case -- the loop is generic across every

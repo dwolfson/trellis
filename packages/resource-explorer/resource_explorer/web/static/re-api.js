@@ -835,13 +835,32 @@ function _surveyResultsPath(entityType, slug) {
 
 /** `entityType` defaults to 'repo' for every existing caller — pass
  *  `apiEntityType(state.resourceType)`-translated value at every /next
- *  boundary crossing, same as `getQuestions` above. */
-export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false, entityType = 'repo' } = {}) => {
+ *  boundary crossing, same as `getQuestions` above.
+ *
+ *  `boardId` (BRIEF-BY-ANALYSIS-PANEL-USABILITY.md's "Progressive render"):
+ *  scope the read to exactly one board, so the By-analysis pane can fetch
+ *  boards one at a time and fill cards as each lands instead of waiting on
+ *  the full sweep — the same call this always was, one board at a time. */
+export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false, entityType = 'repo', boardId = '' } = {}) => {
   const qs = new URLSearchParams();
   if (stage) qs.set('stage', stage);
   if (includeEmpty) qs.set('include_empty', 'true');
+  if (boardId) qs.set('board_id', boardId);
   const q = qs.toString();
   return get(`${_surveyResultsPath(entityType, slug)}${q ? `?${q}` : ''}`);
+};
+
+/** The By-analysis contents board's cheap half: [{id, title, description,
+ *  analysis_ids, stages}], catalog metadata only — no results/headline
+ *  reader is called. Fetched first, before any board's own
+ *  `getSurveyDashboards(..., { boardId })` read, so the contents board can
+ *  paint immediately. See `workflows.analysis.list_survey_result_boards`'s
+ *  docstring. */
+export const listSurveyResultBoards = (slug, stage = '', { entityType = 'repo' } = {}) => {
+  const qs = new URLSearchParams();
+  if (stage) qs.set('stage', stage);
+  const q = qs.toString();
+  return get(`${_surveyResultsPath(entityType, slug)}/boards${q ? `?${q}` : ''}`);
 };
 
 /** One-line headline per analysis that has results — the summary tiles. */

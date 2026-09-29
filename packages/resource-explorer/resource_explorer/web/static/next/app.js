@@ -29,7 +29,7 @@ import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/for
 // The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
-import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
+import { STATES as GLYPH_STATES, stateEntry } from '/static/next/glyphs.js';
 // `readEnvelope` and its own private helpers used to live here directly;
 // split into their own module (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §D,
 // 2026-09-27) so a node-run test can import `readEnvelope` and check it
@@ -37,7 +37,10 @@ import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 // top-level DOM/auth side effects. `esc`/`tnum` stay defined here and are
 // passed into `readEnvelope`/`answerHtml` as parameters, not imported back
 // (that would be circular) — see envelope.js's header comment.
-import { readEnvelope, factMermaid, factGraphviz, prose, scalarMeasures, cap } from '/static/next/envelope.js';
+import {
+  readEnvelope, factMermaid, factGraphviz, prose, scalarMeasures, cap,
+  firstSentence, leadAnalysisId, answerHtml,
+} from '/static/next/envelope.js';
 // One module per stage (PLAN-FINISH-REPOS.md, Part 2 §1) — each exports its
 // own pane renderer(s); app.js keeps routing, shared state and the chrome.
 // Enrichment, Understanding, Curate, Automate, Investigation and (item 11)
@@ -113,6 +116,7 @@ import {
   listSurveyDefinitions,
   getAnalysesIndex,
   getSurveyDashboards,
+  listSurveyResultBoards,
   runSurveyDefinition,
   getMe,
   getMemberChildren,
@@ -1395,6 +1399,139 @@ function bindCopyTargets(root) {
   });
 }
 
+/**
+ * Fetch and render a Mermaid or Graphviz diagram (`turn.mermaid` /
+ * `turn.graphviz`) into `container` — server-side render via Kroki, pan/zoom
+ * wired up, extreme-aspect framing, dropped-style note. Extracted out of
+ * `promoteToPane`'s own diagram branch (BY-ANALYSIS-PROGRESSIVE-AND-GRAPH,
+ * 2026-09-28) so the By-analysis card body's inline Relationship Graph
+ * rendering and the Questions-tab Evidence rail's "open diagram in pane"
+ * path go through the exact same renderer — one implementation, two mount
+ * points — rather than the card growing its own copy of this logic.
+ * `uid` namespaces the inner `#<uid>-svg`/`#<uid>-note` ids so two mounts
+ * (e.g. a promoted pane behind a By-analysis card) never collide. */
+async function renderDiagramInto(container, turn, uid = 'promoted') {
+  const t = tokens();
+  // A Graphviz DOT source (the relationship graph) skips mermaidForKroki
+  // entirely — those transforms are Mermaid-specific escaping/cap rules
+  // that do not apply to DOT — and hits the sibling /graphviz endpoint.
+  const isGraphviz = !!turn.graphviz;
+  const endpoint = isGraphviz ? '/api/diagrams/graphviz' : '/api/diagrams/mermaid';
+  const source = isGraphviz ? turn.graphviz : mermaidForKroki(turn.mermaid).source;
+  const prepped = isGraphviz ? { source, droppedStyles: 0 } : mermaidForKroki(turn.mermaid);
+  // Server-side render via Kroki — the browser never loads mermaid.js
+  // (or a graphviz.js equivalent).
+  let res;
+  try {
+    res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source }),
+    });
+  } catch (networkErr) {
+    // Kroki (or the network path to it) is down — not a bad diagram.
+    // The DOT/Mermaid source itself is still real evidence, so offer it
+    // as text rather than showing a blank/broken image.
+    container.innerHTML = renderRendererUnavailable(source, networkErr.message);
+    bindCopyTargets(container);
+    return;
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+    if (res.status === 502) {
+      // The backend's own "could not reach Kroki" / non-200-from-Kroki
+      // signal — same "renderer unavailable, not a broken diagram"
+      // treatment as a network-level failure above.
+      container.innerHTML = renderRendererUnavailable(source, detail);
+      bindCopyTargets(container);
+      return;
+    }
+    throw new ApiError(res.status, detail, endpoint);
+  }
+  // The endpoint returns the RAW SVG body as image/svg+xml, not JSON —
+  // it is a thin proxy to Kroki and hands back exactly what Kroki sent.
+  const raw = await res.text();
+  if (!raw.includes('<svg')) throw new Error('the renderer returned no SVG');
+
+  container.innerHTML = `
+    <div id="${uid}-svg" class="w-full overflow-hidden rounded-sm border border-rule-strong"
+      style="height:min(70vh,640px);background:${t.paper}">${raw}</div>
+    <div id="${uid}-note" class="mt-s2 text-provenance text-ink-muted"></div>`;
+
+  await loadScript('/static/vendor/svg-pan-zoom.min.js');
+  const svgEl = container.querySelector(`#${uid}-svg svg`);
+  const note = [];
+  if (svgEl) {
+    themeSvgElement(svgEl, t);
+    // Read the INTRINSIC size before touching it. These diagrams are
+    // extreme strips — the real one measures 14102 x 193, a 73:1 ratio —
+    // and forcing width AND height to 100% squashed it to an invisible
+    // sliver, which is what "blank space where the diagram should be"
+    // was. Let svg-pan-zoom own the sizing instead, and say how big the
+    // thing actually is so a flat-looking strip is not a surprise.
+    const vb = (svgEl.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    const w = Math.round(vb[2] || svgEl.getBoundingClientRect().width);
+    const h = Math.round(vb[3] || svgEl.getBoundingClientRect().height);
+    svgEl.removeAttribute('width');
+    svgEl.removeAttribute('height');
+    svgEl.style.width = '100%';
+    svgEl.style.height = '100%';
+    svgEl.style.maxWidth = 'none';       // mermaid sets an inline max-width
+    if (window.svgPanZoom) {
+      const pz = window.svgPanZoom(svgEl, {
+        controlIconsEnabled: true, fit: true, contain: true, center: true,
+        minZoom: 0.05, maxZoom: 60,
+      });
+      // `fit` fits the LIMITING dimension, which for a 73:1 strip means
+      // fitting the width and leaving the diagram 8px tall — visually
+      // indistinguishable from an empty box, and exactly what "blank
+      // space where the diagram should be" looked like.
+      //
+      // For an extreme aspect the useful opening view is fit-to-HEIGHT
+      // with the left edge in view: nodes are legible and you pan
+      // sideways. Capped, so a pathological ratio cannot zoom to a pixel.
+      try {
+        const sz = pz.getSizes();
+        const vbW = sz.viewBox.width;
+        const vbH = sz.viewBox.height;
+        if (vbW && vbH && vbW / vbH > 4) {
+          const shownH = sz.width * (vbH / vbW);       // height after fit-to-width
+          const factor = Math.min(sz.height / shownH, 12);
+          if (factor > 1.2) {
+            pz.zoom(pz.getZoom() * factor);
+            // Let the library do the arithmetic. Computing the pan by
+            // hand put the content at y = -609 — above the box, zero
+            // nodes on screen, which measures as "53 nodes rendered at
+            // 96x39" and looks like an empty white panel. Centre, then
+            // move only the horizontal axis to the left edge.
+            pz.center();
+            pz.pan({ x: 0, y: pz.getPan().y });
+          }
+        }
+      } catch (e) {
+        // Pan/zoom tuning is a nicety; a diagram that opened badly
+        // framed still beats one that threw on the way in.
+        console.warn('could not frame the diagram:', e);
+      }
+    }
+    if (w && h) {
+      note.push(`<span class="tnum">${w}</span> × <span class="tnum">${h}</span> at full size`
+        + (w / h > 6 ? ' — a wide strip; scroll-zoom or use the controls' : ''));
+    }
+  }
+  if (prepped.droppedStyles) {
+    // Say what was given up, and why. A silently unstyled node is the
+    // kind of small loss this project keeps finding months later.
+    note.push(`<span class="text-accent-ink">the dashed “pending” styling on
+      <span class="tnum">${prepped.droppedStyles}</span> node(s) was dropped —
+      this renderer refuses a diagram that styles more than
+      <span class="tnum">${KROKI_MAX_CLASSED_NODES}</span></span>`);
+  }
+  const noteEl = container.querySelector(`#${uid}-note`);
+  if (noteEl) noteEl.innerHTML = note.join(' · ');
+}
+
 /** Render a promoted artefact in the content pane, at full width. */
 export async function promoteToPane(turn) {
   const el = $('content');
@@ -1427,125 +1564,7 @@ export async function promoteToPane(turn) {
       await window.Plotly.newPlot(body, fig.data || [], chartLayout(fig.layout || {}),
                                   { displaylogo: false, responsive: true });
     } else if (form === 'diagram') {
-      const t = tokens();
-      // A Graphviz DOT source (the relationship graph) skips mermaidForKroki
-      // entirely — those transforms are Mermaid-specific escaping/cap rules
-      // that do not apply to DOT — and hits the sibling /graphviz endpoint.
-      const isGraphviz = !!turn.graphviz;
-      const endpoint = isGraphviz ? '/api/diagrams/graphviz' : '/api/diagrams/mermaid';
-      const source = isGraphviz ? turn.graphviz : mermaidForKroki(turn.mermaid).source;
-      const prepped = isGraphviz ? { source, droppedStyles: 0 } : mermaidForKroki(turn.mermaid);
-      // Server-side render via Kroki — the browser never loads mermaid.js
-      // (or a graphviz.js equivalent).
-      let res;
-      try {
-        res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source }),
-        });
-      } catch (networkErr) {
-        // Kroki (or the network path to it) is down — not a bad diagram.
-        // The DOT/Mermaid source itself is still real evidence, so offer it
-        // as text rather than showing a blank/broken image.
-        body.innerHTML = renderRendererUnavailable(source, networkErr.message);
-        bindCopyTargets(body);
-        return;
-      }
-      if (!res.ok) {
-        let detail = res.statusText;
-        try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
-        if (res.status === 502) {
-          // The backend's own "could not reach Kroki" / non-200-from-Kroki
-          // signal — same "renderer unavailable, not a broken diagram"
-          // treatment as a network-level failure above.
-          body.innerHTML = renderRendererUnavailable(source, detail);
-          bindCopyTargets(body);
-          return;
-        }
-        throw new ApiError(res.status, detail, endpoint);
-      }
-      // The endpoint returns the RAW SVG body as image/svg+xml, not JSON —
-      // it is a thin proxy to Kroki and hands back exactly what Kroki sent.
-      const raw = await res.text();
-      if (!raw.includes('<svg')) throw new Error('the renderer returned no SVG');
-
-      body.innerHTML = `
-        <div id="promoted-svg" class="w-full overflow-hidden rounded-sm border border-rule-strong"
-          style="height:min(70vh,640px);background:${t.paper}">${raw}</div>
-        <div id="diagram-note" class="mt-s2 text-provenance text-ink-muted"></div>`;
-
-      await loadScript('/static/vendor/svg-pan-zoom.min.js');
-      const svgEl = body.querySelector('#promoted-svg svg');
-      const note = [];
-      if (svgEl) {
-        themeSvgElement(svgEl, t);
-        // Read the INTRINSIC size before touching it. These diagrams are
-        // extreme strips — the real one measures 14102 x 193, a 73:1 ratio —
-        // and forcing width AND height to 100% squashed it to an invisible
-        // sliver, which is what "blank space where the diagram should be"
-        // was. Let svg-pan-zoom own the sizing instead, and say how big the
-        // thing actually is so a flat-looking strip is not a surprise.
-        const vb = (svgEl.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
-        const w = Math.round(vb[2] || svgEl.getBoundingClientRect().width);
-        const h = Math.round(vb[3] || svgEl.getBoundingClientRect().height);
-        svgEl.removeAttribute('width');
-        svgEl.removeAttribute('height');
-        svgEl.style.width = '100%';
-        svgEl.style.height = '100%';
-        svgEl.style.maxWidth = 'none';       // mermaid sets an inline max-width
-        if (window.svgPanZoom) {
-          const pz = window.svgPanZoom(svgEl, {
-            controlIconsEnabled: true, fit: true, contain: true, center: true,
-            minZoom: 0.05, maxZoom: 60,
-          });
-          // `fit` fits the LIMITING dimension, which for a 73:1 strip means
-          // fitting the width and leaving the diagram 8px tall — visually
-          // indistinguishable from an empty box, and exactly what "blank
-          // space where the diagram should be" looked like.
-          //
-          // For an extreme aspect the useful opening view is fit-to-HEIGHT
-          // with the left edge in view: nodes are legible and you pan
-          // sideways. Capped, so a pathological ratio cannot zoom to a pixel.
-          try {
-            const sz = pz.getSizes();
-            const vbW = sz.viewBox.width;
-            const vbH = sz.viewBox.height;
-            if (vbW && vbH && vbW / vbH > 4) {
-              const shownH = sz.width * (vbH / vbW);       // height after fit-to-width
-              const factor = Math.min(sz.height / shownH, 12);
-              if (factor > 1.2) {
-                pz.zoom(pz.getZoom() * factor);
-                // Let the library do the arithmetic. Computing the pan by
-                // hand put the content at y = -609 — above the box, zero
-                // nodes on screen, which measures as "53 nodes rendered at
-                // 96x39" and looks like an empty white panel. Centre, then
-                // move only the horizontal axis to the left edge.
-                pz.center();
-                pz.pan({ x: 0, y: pz.getPan().y });
-              }
-            }
-          } catch (e) {
-            // Pan/zoom tuning is a nicety; a diagram that opened badly
-            // framed still beats one that threw on the way in.
-            console.warn('could not frame the diagram:', e);
-          }
-        }
-        if (w && h) {
-          note.push(`<span class="tnum">${w}</span> × <span class="tnum">${h}</span> at full size`
-            + (w / h > 6 ? ' — a wide strip; scroll-zoom or use the controls' : ''));
-        }
-      }
-      if (prepped.droppedStyles) {
-        // Say what was given up, and why. A silently unstyled node is the
-        // kind of small loss this project keeps finding months later.
-        note.push(`<span class="text-accent-ink">the dashed “pending” styling on
-          <span class="tnum">${prepped.droppedStyles}</span> node(s) was dropped —
-          this renderer refuses a diagram that styles more than
-          <span class="tnum">${KROKI_MAX_CLASSED_NODES}</span></span>`);
-      }
-      const noteEl = $('diagram-note');
-      if (noteEl) noteEl.innerHTML = note.join(' · ');
+      await renderDiagramInto(body, turn, 'promoted');
     } else {
       body.innerHTML = `<div class="whitespace-pre-wrap text-answer text-ink">${tnum(esc(turn.answer || ''))}</div>`;
     }
@@ -5337,192 +5356,793 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
   if (typeof setRailOpen === 'function') setRailOpen(true);
 }
 
+/**
+ * By-analysis, rebuilt (BRIEF-BY-ANALYSIS-PANEL-USABILITY.md +
+ * REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2, 2026-09-28).
+ *
+ * Two problems this rebuild exists for, both live-confirmed by the project
+ * owner: (1) the pane rendered nothing but "Reading the dashboards…" for up
+ * to 109s -- the ORIGINAL comment above the old single `getSurveyDashboards`
+ * call named this cost and did nothing about it; (2) the Relationship
+ * Graph card showed only numbers, never the graph `factGraphviz` already
+ * knows how to render (the Questions-tab Evidence rail's own path).
+ *
+ * THE FIX FOR (1) IS NOT "make the reader faster" -- `build_survey_results`'s
+ * own results/headline readers are genuinely expensive (db_derived-backed);
+ * this pane stops BLOCKING ON THEM AS ONE BATCH instead:
+ *
+ *   - The contents board (glyph + headline + run time per board) paints from
+ *     `state.analyses` -- already fetched at boot (`start()`'s
+ *     `listAnalyses(...)` call) -- with NO network call at all when the
+ *     current entity type is database/filesystem (board id === analysis_id
+ *     there, so state.analyses IS the board list). repo's dashboards group
+ *     several analyses under one id state.analyses doesn't carry, so repo
+ *     falls back to the new cheap `listSurveyResultBoards`/`/survey-results/
+ *     boards` endpoint (catalog metadata only, no results/headline reader
+ *     -- see `workflows.analysis.list_survey_result_boards`'s docstring).
+ *     Either way this is visible before ANY board's own data has been
+ *     fetched.
+ *   - Each board's real data is then fetched ONE AT A TIME, in parallel,
+ *     via `getSurveyDashboards(..., { boardId })` (the new `board_id` query
+ *     param `build_survey_results` now takes) -- not the old single call
+ *     that read every board in one sweep. A card fills in as its own read
+ *     lands; a slow board no longer holds up a fast one.
+ *   - `dashToken`'s existing stale-read-cancellation pattern still applies
+ *     (`live()` below), scoped to the whole pane load exactly as before.
+ */
+
+/** How many board reads run at once -- found necessary live (not merely
+ *  theoretical): switching stages quickly left several `db_derived`-backed
+ *  board reads from the ABANDONED stage still running server-side (their
+ *  RESULT was ignored via `live()`, but the request itself kept the thread
+ *  pool busy), which starved even the cheap boards-catalog call for the new
+ *  stage behind them. Small and fixed rather than tuned -- this pane's job
+ *  is "don't block on one 109s sweep", not "find the server's exact
+ *  concurrency ceiling". */
+const BY_ANALYSIS_MAX_CONCURRENT_READS = 3;
+
+/** localStorage convenience: whether this board's card was left open on
+ *  this resource, on this browser. Per-viewer only -- never read back by
+ *  this session, never shared. */
+function byAnalysisOpenKey(slug, boardId) { return `re-next:by-analysis-open:${slug}:${boardId}`; }
+function byAnalysisCardOpen(slug, boardId, defaultOpen) {
+  try {
+    const v = window.localStorage.getItem(byAnalysisOpenKey(slug, boardId));
+    return v === null ? defaultOpen : v === '1';
+  } catch { return defaultOpen; }
+}
+function setByAnalysisCardOpen(slug, boardId, open) {
+  try { window.localStorage.setItem(byAnalysisOpenKey(slug, boardId), open ? '1' : '0'); } catch { /* fine without */ }
+}
+
+/**
+ * Order boards the way the brief's "Order" section asks for: the order the
+ * stage's own questions ask for them (the first question that names the
+ * board's id, in the questions list's own order); a board no question names
+ * keeps its catalog position, appended after every named board.
+ *
+ * `leadAnalysisId` (envelope.js) is reused here rather than reading
+ * `analysis_ids[0]` -- the same reasoning that function's own docstring
+ * gives for the Questions row: a question's note can name an analysis OTHER
+ * than `analysis_ids[0]` as the one it is actually asking for.
+ */
+function orderBoardsByQuestions(boards, questions) {
+  const boardIds = new Set(boards.map((b) => b.id));
+  const named = [];
+  const namedIds = new Set();
+  for (const q of questions || []) {
+    const ids = q.analysis_ids || [];
+    const lead = leadAnalysisId(q);
+    const preferred = [...(lead ? [lead] : []), ...ids];
+    for (const id of preferred) {
+      if (boardIds.has(id) && !namedIds.has(id)) { named.push(id); namedIds.add(id); }
+    }
+  }
+  const rest = boards.filter((b) => !namedIds.has(b.id));
+  const byId = new Map(boards.map((b) => [b.id, b]));
+  return [...named.map((id) => byId.get(id)), ...rest];
+}
+
+/** Never-run boards last, stable otherwise -- the brief's own rule, applied
+ *  once real state is known (a board whose fetch hasn't settled yet is left
+ *  where it is; only a SETTLED, genuinely-never-run board moves). */
+function neverRunLast(boards, boardState) {
+  const scored = boards.map((b, i) => {
+    const entry = boardState.get(b.id);
+    const settledNeverRun = entry && entry.status === 'done' && entry.board && !entry.board.has_results;
+    return { b, i, last: !!settledNeverRun };
+  });
+  scored.sort((x, y) => (x.last === y.last ? x.i - y.i : x.last ? 1 : -1));
+  return scored.map((s) => s.b);
+}
+
+/** One STATES key (glyphs.js) for a board's current read state. Coarser
+ *  than the Questions row's own `rowState` -- the by-analysis payload
+ *  carries `has_results`/`results`, not a per-fact `result_status.py`
+ *  state -- but reads the one honest signal that IS in that payload
+ *  (`needs-lens`, via `preliminary_fit`'s own `lens_declared` marker,
+ *  same check `needsLensDeclaration` above makes on the Questions
+ *  envelope) rather than collapsing every "ran" case to a flat tick. */
+export function boardStateKey(entry) {
+  if (entry.status === 'loading') return null;   // rendered separately -- no STATES entry fits "still fetching"
+  if (entry.status === 'error') return 'error';
+  const board = entry.board;
+  if (!board) return 'error';
+  const needsLens = (board.analyses || []).some(
+    (a) => a.analysis_id === 'preliminary_fit' && a.results && a.results.lens_declared === false);
+  if (needsLens) return 'needs-lens';
+  // `result_status.py`'s NOT_ESTABLISHED, surfaced here for the first time
+  // (BRIEF-BY-ANALYSIS-PANEL-USABILITY.md gate task 4: "the not-established
+  // cards must read as such in the table of contents"). Before this, a
+  // board whose analysis measured something but could not settle a result
+  // -- `has_results: true`, `results.state === 'not_established'` -- fell
+  // straight through to `measured` below and showed a plain ✓, the exact
+  // "confident wrong answer" shape: a real read, but not a settled one.
+  // Neither gate database (laz_local_adventureworks,
+  // localhost_docker_coco_pharma) has a not-established analysis today, so
+  // this is covered by a harness fixture test instead of a live screenshot
+  // -- see frontend-build/test-harness's by-analysis-not-established test.
+  const notEstablished = (board.analyses || []).some(
+    (a) => a.results && a.results.state === 'not_established');
+  if (notEstablished) return 'not_established';
+  if (!board.has_results) return 'unrun';
+  return 'measured';
+}
+
+/** The board's own headline, one sentence, per REPLY-DESIGNER-ROUND2-
+ *  DATABASE-SCREENS.md §2.4 -- `a.headline` in the payload is `head` from
+ *  `_headline_for`'s OWN `headline_reader(registry, slug)` call
+ *  (`workflows.analysis._read_analyses`'s `headline_map.get(analysis_id)`
+ *  is literally the same function object `facts.py`'s FactLayer resolves
+ *  for the Questions tab's lead question on this analysis -- see
+ *  `test_by_analysis_headline_matches_questions.py`), so this is the exact
+ *  same sentence the Questions tab would show, run through the same
+ *  one-sentence truncation rule (`firstSentence`) that slot uses. */
+function boardHeadlineHtml(board) {
+  if (!board) return '';
+  const lead = (board.analyses || []).find((a) => a.headline && a.headline.label);
+  if (!lead) return '';
+  return answerHtml(firstSentence(lead.headline.label), esc, tnum);
+}
+function boardHeadlineText(board) {
+  if (!board) return '';
+  const lead = (board.analyses || []).find((a) => a.headline && a.headline.label);
+  return lead ? firstSentence(lead.headline.label) : '';
+}
+
+/**
+ * Match each board to the question that names it, the same "lead analysis,
+ * then any analysis_id" preference `orderBoardsByQuestions` already applies
+ * -- pulled out so the headline fallback below can use the identical
+ * matching rule rather than a second guess at it.
+ */
+export function boardQuestionMap(boards, questions) {
+  const boardIds = new Set(boards.map((b) => b.id));
+  const map = new Map();
+  for (const q of questions || []) {
+    const ids = q.analysis_ids || [];
+    const lead = leadAnalysisId(q);
+    const preferred = [...(lead ? [lead] : []), ...ids];
+    for (const id of preferred) {
+      if (boardIds.has(id) && !map.has(id)) map.set(id, q);
+    }
+  }
+  return map;
+}
+
+/**
+ * The row's headline BEFORE the board's own (slow) read has landed --
+ * BRIEF-BY-ANALYSIS-PANEL-USABILITY.md's "Progressive render" addendum:
+ * "the contents board... reads only the per-analysis state already resolved
+ * for the Questions tab, no dashboard fetch required."
+ *
+ * Genuinely free: this makes NO new network call. `answers` is `state.
+ * answers` -- the Questions tab's own per-question envelope cache
+ * (`loadAnswer`, `getAnswer`) -- so this only has something to show when the
+ * Questions tab has already resolved the matching question's envelope for
+ * this slug/stage, in this browser session. When it hasn't (a cold load
+ * that goes straight to By-analysis without visiting Questions first), this
+ * returns '' and the row shows the same "reading…" placeholder it always
+ * did -- an honest floor, not a manufactured line. (`getQuestions()` itself,
+ * fetched for board ordering just above this function's one call site, was
+ * checked and does NOT carry a resolved headline of its own -- its
+ * `has_data` field is a boolean, and the headline readers
+ * `DATABASE_ANALYSIS_HEADLINE_MAP`/etc. name are each their own registry
+ * read, not free -- see this branch's IMPLEMENTED doc for the full trace.)
+ *
+ * Reuses `leadAnalysisId`/`firstSentence` -- the same pair `boardHeadlineText`
+ * and `readEnvelope` (envelope.js) both already use -- rather than a third,
+ * bespoke extraction of "the one sentence this row shows".
+ */
+export function envelopeHeadlineText(question, answers) {
+  if (!question) return '';
+  const env = answers.get(question.question);
+  if (!env || typeof env !== 'object' || env.__error) return '';
+  const facts = (env.facts || []).filter((f) => f.is_known);
+  if (!facts.length) return '';
+  const lead = leadAnalysisId(question);
+  const preferred = [
+    ...(lead ? [lead] : []),
+    ...(question.analysis_ids || []),
+    ...facts.map((f) => f.analysis_id),
+  ];
+  const seen = new Set();
+  for (const id of preferred) {
+    if (seen.has(id) || !id) continue;
+    seen.add(id);
+    const f = facts.find((x) => x.analysis_id === id);
+    if (!f) continue;
+    if (f.headline) return firstSentence(f.headline);
+    const p = prose(f);
+    if (p) return firstSentence(p);
+  }
+  return '';
+}
+
+/** Every numeric measure across every SETTLED board, grouped by name --
+ *  same "a name reported twice" detection the old per-card COUNTS table
+ *  did, now computed once for the whole pane so the Shared Names block
+ *  (REPLY §2.3, reworded per the owner's 2026-09-28 gate feedback -- see
+ *  `sharedNamesHtml`'s own doc) can render each shared name ONCE instead of
+ *  inside every card that carries it.
+ *
+ *  Two derived sets, kept separate on purpose:
+ *   - `shared` -- every name carried by more than one analysis, whether or
+ *     not their values agree. This, not "disagree", is the Shared Names
+ *     block's own inclusion criterion (the owner: "I don't know what '1
+ *     DISAGREE' means" -- a count that conflated "shared" with "shared and
+ *     different" was the confusion).
+ *   - `disagreeing` -- the subset of `shared` whose comparable values
+ *     actually differ. Still the right (and only) set for the per-card `≠`
+ *     mark (`boardCountsHtml`), whose own title text says "reported with
+ *     different values elsewhere" -- broadening ITS set to plain "shared"
+ *     would make the mark lie for a name two analyses happen to agree on.
+ *
+ *  `preliminary_fit`'s `confidence: 0` is marked `noLens` and excluded from
+ *  the VALUES compared for disagreement (REPLY §2.3: "no lens was supplied,
+ *  so there was nothing to be confident about... leave it out of the
+ *  comparison") but still carried in the row for display, rendered as
+ *  "— (no lens declared)" rather than a bare, misleading zero. */
+export function collectMeasures(boards, boardState) {
+  const seen = new Map();
+  for (const b of boards) {
+    const entry = boardState.get(b.id);
+    if (!entry || entry.status !== 'done' || !entry.board) continue;
+    for (const a of entry.board.analyses || []) {
+      for (const [k, v] of Object.entries(a.results || {})) {
+        if (typeof v !== 'number') continue;
+        const noLens = a.analysis_id === 'preliminary_fit' && k === 'confidence' && v === 0;
+        const rec = seen.get(k) || [];
+        rec.push({ analysis: a.analysis_id, value: v, when: a.last_surveyed_at, noLens });
+        seen.set(k, rec);
+      }
+    }
+  }
+  const shared = new Map();
+  const disagreeing = new Set();
+  for (const [k, rec] of seen) {
+    if (rec.length > 1) shared.set(k, rec);
+    const comparable = rec.filter((x) => !x.noLens);
+    if (comparable.length > 1 && new Set(comparable.map((x) => x.value)).size > 1) disagreeing.add(k);
+  }
+  return { seen, shared, disagreeing };
+}
+
+/** A shared measure's display text -- the no-lens placeholder, or the
+ *  ordinary formatted number. Used both by the Shared Names block and by
+ *  `boardCountsHtml`'s own per-card row for the exact same value, so the
+ *  two never disagree about how `preliminary_fit`'s no-lens 0 reads (the
+ *  owner's 2026-09-28 coco_pharma finding: the Shared Names block already
+ *  said "— (no lens declared)" while the card's own COUNTS table, computing
+ *  its display text separately, still showed a bare "0" for the identical
+ *  value). */
+export function measureDisplay(x, key) {
+  return x.noLens ? '— (no lens declared)' : fmtScalar(x.value, key);
+}
+
+/** COUNTS grouping (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2, the
+ *  brief's own "Result / Coverage / Diagnostics" split): Result = the
+ *  scalars a person quotes as the analysis's own headline numbers (edge/
+ *  component/table counts, determined counts, confidence); Coverage =
+ *  how much of the resource this reading covers (table/schema/column
+ *  counts, measured/estimated/unmeasured, keys captured); everything else
+ *  is Diagnostics. A heuristic on the NAME, same spirit as `fmtScalar`'s
+ *  own suffix-only rule -- deliberately conservative rather than guessing
+ *  from magnitude. */
+function countGroupFor(key) {
+  const k = key.toLowerCase();
+  if (/table|schema|column|coverage|captured|measured|estimated|unmeasured|readable/.test(k)) return 'coverage';
+  if (/edge|component|isolated|determined|grain|confidence|overall|count$/.test(k)) return 'result';
+  return 'diagnostics';
+}
+const COUNT_GROUP_LABELS = { result: 'Result', coverage: 'Coverage', diagnostics: 'Diagnostics' };
+const COUNT_GROUP_ORDER = ['result', 'coverage', 'diagnostics'];
+
+/** Grouped COUNTS table for one board -- the non-headline scalar/boolean
+ *  fields across its analyses, three groups instead of one flat list.
+ *  Shared names are still shown HERE too (a reader looking at one card
+ *  should not have to leave it to see the number this card itself
+ *  measured), with a `≠` mark linking to the Shared Names block for the
+ *  ones that actually disagree, per REPLY §2's "each card's COUNTS keeps
+ *  its own value with a small ≠ mark".
+ *
+ *  `disagreeing` is `collectMeasures`'s disagreeing SET (names whose
+ *  comparable values actually differ) -- not its `shared` map, which would
+ *  mark every merely-shared name with `≠` even when they agree.
+ *
+ *  `noLens` is tracked per row exactly the way `collectMeasures` tracks it
+ *  for the Shared Names block, and rendered through the same `measureDisplay`
+ *  helper -- found 2026-09-28 on coco_pharma: this table used to format
+ *  every value with a bare `fmtScalar`, so `preliminary_fit`'s no-lens
+ *  `confidence: 0` showed as a plain "0" here while the Shared Names block,
+ *  right next to it on the same screen, correctly said "— (no lens
+ *  declared)" for the identical value -- two renderings of one number,
+ *  disagreeing with each other. */
+export function boardCountsHtml(board, disagreeing) {
+  if (!board) return '';
+  const groups = { result: [], coverage: [], diagnostics: [] };
+  for (const a of board.analyses || []) {
+    const res = a.results || {};
+    for (const [k, v] of Object.entries(res)) {
+      if (k === 'graphviz' || k === 'headline' || typeof v === 'object') continue;
+      if (typeof v !== 'number' && typeof v !== 'boolean') continue;
+      const noLens = a.analysis_id === 'preliminary_fit' && k === 'confidence' && v === 0;
+      groups[countGroupFor(k)].push({
+        key: k, value: v, analysisId: a.analysis_id, when: a.last_surveyed_at, noLens,
+      });
+    }
+  }
+  const anyRows = COUNT_GROUP_ORDER.some((g) => groups[g].length);
+  if (!anyRows) return '';
+  return COUNT_GROUP_ORDER.filter((g) => groups[g].length).map((g) => `
+    <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(COUNT_GROUP_LABELS[g])}</div>
+    <table class="w-full border-collapse text-caveat">
+      ${groups[g].map((c) => {
+        const disagree = disagreeing.has(c.key);
+        return `<tr class="wl-countrow cursor-pointer border-b border-rule ${disagree ? 'bg-[rgba(168,113,42,.07)]' : ''}"
+          data-measure="${esc(c.analysisId)}" data-metric="${esc(c.key)}"
+          data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(c.when || '')}">
+          <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}${
+            disagree ? ' <span class="text-state-warn" title="reported with different values elsewhere -- see Shared names above">≠</span>' : ''}</td>
+          <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(measureDisplay(c, c.key))}</td>
+          <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${esc(c.analysisId)}${
+            c.when ? ` · ${esc(ago(c.when))}` : ''}</td>
+        </tr>`;
+      }).join('')}
+    </table>`).join('');
+}
+
+/** Findings (repo-only groupings carry these; database/filesystem's one-
+ *  analysis-per-board synthesis rarely does) -- unresolved first, same
+ *  glyph vocabulary as before. */
+function boardFindingsHtml(board) {
+  const findings = [];
+  for (const a of board.analyses || []) {
+    const res = a.results || {};
+    if (Array.isArray(res.findings) && res.findings.length) {
+      for (const f of res.findings) findings.push({ ...f, analysis_id: a.analysis_id, when: a.last_surveyed_at });
+    }
+  }
+  if (!findings.length) return '';
+  findings.sort((x, y) => {
+    const ux = UNRESOLVED_LABELS.has(String(x.label || '').toLowerCase()) ? 0 : 1;
+    const uy = UNRESOLVED_LABELS.has(String(y.label || '').toLowerCase()) ? 0 : 1;
+    return ux - uy;
+  });
+  return `
+    <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Findings · unresolved first</div>
+    ${findings.map((f) => {
+      const c = findingGlyph(f.label);
+      return `<button type="button" class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-s2 text-left"
+        data-measure="${esc(f.analysis_id)}" data-check="${esc(f.check_name || '')}"
+        data-title="${esc((f.check_name || f.analysis_id).replace(/_/g, ' '))}"
+        data-summary="${esc(f.summary || '')}" data-when="${esc(f.when || '')}">
+        <span class="w-[16px] shrink-0 ${c.tone}" title="${esc(c.label)}">${c.glyph}</span>
+        <span class="min-w-0 flex-1 text-ink">
+          <strong class="font-semibold">${
+            f.check_name
+              ? `${esc(f.check_name.replace(/_/g, ' '))}${f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
+              : esc(humanLabel(f.label) || f.analysis_id)}.</strong>
+          ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
+          <span class="block text-provenance text-ink-muted"
+            data-delta="${esc(f.analysis_id)}|${esc(f.check_name || '')}">·</span></span>
+        <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(f.analysis_id)}${
+          f.when ? ` · ${esc(ago(f.when))}` : ''} ›</span>
+      </button>`;
+    }).join('')}`;
+}
+
+/**
+ * The Relationship Graph (and, generalized, any other) card body's inline
+ * diagram -- reuses `factGraphviz`/`factMermaid` (envelope.js) UNCHANGED,
+ * by wrapping the board's own `a.results` in the same `{facts: [{value}]}`
+ * shape those functions already read from a Questions-tab envelope. Those
+ * two functions read `f.value.graphviz`/`f.value.mermaid`; `a.results` IS
+ * that `value` -- the SAME results_reader backs both the Questions
+ * envelope's fact and this board's `a.results` (`facts.py`'s `_read_
+ * results` and `workflows.analysis._read_analyses` both call the entry in
+ * `*_ANALYSIS_RESULTS_MAP`) -- so no backend change or duplicate reader was
+ * needed for this. Not hardcoded to `db_relationship_graph`: any analysis
+ * in the board whose results carry a `graphviz` or `mermaid` field gets the
+ * same treatment, first one found.
+ */
+function boardDiagramHtml(board) {
+  if (!board) return { html: '', mount: null };
+  for (const a of board.analyses || []) {
+    const envelope = { facts: [{ value: a.results, analysis_id: a.analysis_id, last_run_at: board.last_surveyed_at }] };
+    const gv = factGraphviz(envelope);
+    if (gv) return { html: graphvizCardHtml(board.id, gv), mount: (root) => bindGraphvizCard(root, board.id, gv) };
+    const mm = factMermaid(envelope);
+    if (mm) {
+      const uid = `ba-diagram-${esc(board.id)}`;
+      return {
+        html: `<div class="mt-s3 rounded-sm border border-rule-strong p-s3">
+          <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Diagram</div>
+          <div id="${uid}" class="min-h-[220px]"></div>
+        </div>`,
+        mount: (root) => {
+          const container = root.querySelector(`#${uid}`);
+          if (container) renderDiagramInto(container, { mermaid: mm.source }, uid).catch((err) => {
+            container.innerHTML = `<div class="text-caveat text-state-warn">This could not be rendered: ${esc(err.message)}</div>`;
+          });
+        },
+      };
+    }
+  }
+  return { html: '', mount: null };
+}
+
+/** The three-zoom-level Relationship Graph card body -- schema map / whole
+ *  database (or its own named fallback state) / a per-schema select --
+ *  the SAME affordances the Questions-tab Evidence rail offers
+ *  (`showEvidence`'s `graphvizBlock`, ~line 7200), rendered inline instead
+ *  of behind a rail button since the gate asks this card's BODY to show the
+ *  graph, not merely link to it. The schema map renders immediately on
+ *  mount (no extra click) since it "always renders, any database size"
+ *  (that function's own comment); the other two levels swap the same
+ *  mount point's content in place via `renderDiagramInto` -- the identical
+ *  renderer the Evidence rail's own "open diagram in pane" path uses (see
+ *  that function's header comment), so this is not a second implementation
+ *  of diagram rendering. */
+function graphvizCardHtml(boardId, gv) {
+  const schemaNames = Object.keys(gv.bySchema).sort();
+  const uid = `ba-graphviz-${esc(boardId)}`;
+  return `
+    <div class="mt-s3 rounded-sm border border-rule-strong p-s3" data-graphviz-card="${esc(boardId)}">
+      <div class="mb-s2 flex flex-wrap items-center gap-s2">
+        <span class="text-caps uppercase tracking-caps text-ink-muted">Relationship graph
+          ${gv.tableCount != null ? `· <span class="tnum">${gv.tableCount}</span> tables` : ''}</span>
+        <div class="ml-auto flex flex-wrap gap-s2">
+          <button type="button" data-graphviz-level="schema_map"
+            class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[2px] text-chip text-accent-ink"
+            >${icon('maximize-2', { size: 13 })} Schema map</button>
+          ${gv.full
+            ? `<button type="button" data-graphviz-level="full"
+                 class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[2px] text-chip text-accent-ink"
+                 >${icon('maximize-2', { size: 13 })} Whole database</button>`
+            : gv.fallbackReason
+              ? `<span class="text-chip text-state-warn">${esc(gv.fallbackReason)}</span>`
+              : ''}
+          ${schemaNames.length ? `<div class="relative">
+              <select data-graphviz-schema
+                   class="w-full cursor-pointer appearance-none rounded-sm border border-accent bg-transparent px-[10px] py-[2px] pr-[26px]
+                          text-chip text-accent-ink hover:bg-accent-tint focus:outline-none focus:ring-1 focus:ring-accent">
+                <option value="">Open a schema…</option>
+                ${schemaNames.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+              </select>
+              <span class="pointer-events-none absolute right-[8px] top-1/2 -translate-y-1/2 text-accent-ink">${icon('chevron-down', { size: 13 })}</span>
+            </div>` : ''}
+        </div>
+      </div>
+      <div id="${uid}" class="min-h-[220px] overflow-hidden rounded-sm border border-rule" style="height:min(50vh,480px)"></div>
+      <div class="mt-s1 text-provenance text-ink-muted">${esc(gv.analysisId)}${
+        gv.lastRun ? ` · run ${esc(ago(gv.lastRun))}` : ''} · rendered by Kroki, no retrieval</div>
+    </div>`;
+}
+function bindGraphvizCard(root, boardId, gv) {
+  const card = root.querySelector(`[data-graphviz-card="${boardId}"]`);
+  if (!card) return;
+  const uid = `ba-graphviz-${boardId}`;
+  const mount = card.querySelector(`#${uid}`);
+  const render = (source) => {
+    if (!mount) return;
+    renderDiagramInto(mount, { graphviz: source }, uid).catch((err) => {
+      mount.innerHTML = `<div class="p-s2 text-caveat text-state-warn">This could not be rendered: ${esc(err.message)}</div>`;
+    });
+  };
+  render(gv.schemaMap);   // the schema map "always renders, any database size" -- open by default
+  card.querySelectorAll('[data-graphviz-level]').forEach((btn) => {
+    btn.addEventListener('click', () => render(btn.dataset.graphvizLevel === 'full' ? gv.full : gv.schemaMap));
+  });
+  card.querySelector('[data-graphviz-schema]')?.addEventListener('change', (e) => {
+    if (e.target.value) render(gv.bySchema[e.target.value]);
+  });
+}
+
+/** One card's body -- headline first, description collapsed, findings,
+ *  grouped COUNTS, and (REPLY §2's card-anatomy) a band boundary rather
+ *  than a box: space above, a strong top rule, name-size heading. */
+function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, entry, disagreeing, defaultOpen) {
+  const board = entry.status === 'done' ? entry.board : null;
+  const open = byAnalysisCardOpen(slug, boardId, defaultOpen);
+  const glyphKey = boardStateKey(entry);
+  const glyph = glyphKey ? stateEntry(glyphKey) : { glyph: '◔', tone: 'text-ink-muted', word: 'reading' };
+  const headline = entry.status === 'loading'
+    ? '<span class="text-ink-muted">reading…</span>'
+    : entry.status === 'error'
+      ? `<span class="text-state-warn">This could not be read: ${esc(entry.error || '')}</span>`
+      : (boardHeadlineHtml(board) || (board && board.has_results
+          ? '<span class="text-ink-muted">ran; no summary reader yet.</span>'
+          : '<span class="text-ink-muted">Not run yet.</span>'));
+  const runWhen = board && board.last_surveyed_at ? `run ${esc(ago(board.last_surveyed_at))}` : '';
+  const overall = board && (board.analyses || []).find((a) => typeof (a.results || {}).overall === 'number');
+  const { html: diagramHtml } = board ? boardDiagramHtml(board) : { html: '' };
+  return `
+    <details data-by-analysis-card="${esc(boardId)}" class="mt-s6 border-t-2 border-rule-strong pt-s3" ${open ? 'open' : ''}>
+      <summary class="flex cursor-pointer list-none flex-wrap items-baseline gap-s2">
+        <span class="${glyph.tone} font-glyph" title="${esc(glyph.word)}" aria-label="${esc(glyph.word)}">${glyph.glyph}</span>
+        <span class="font-heading text-name font-normal text-ink">${esc(catalogTitle)}</span>
+        <span class="ml-auto text-provenance text-ink-muted">${esc(runWhen)}</span>
+      </summary>
+      <div class="mt-s2 max-w-[70ch] text-answer text-ink">${headline}</div>
+      ${catalogDescription ? `
+        <details class="mt-s2">
+          <summary class="cursor-pointer text-caveat text-accent-ink">what it does ▸</summary>
+          <p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(catalogDescription)}</p>
+        </details>` : ''}
+      ${overall ? headlineHtml(overall) : ''}
+      ${board ? boardFindingsHtml(board) : ''}
+      ${board ? boardCountsHtml(board, disagreeing) : ''}
+      ${diagramHtml}
+    </details>`;
+}
+
+/** The Shared Names block (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.3):
+ *  every shared name, once, not per card.
+ *
+ *  Reworded 2026-09-28 per the owner's live coco_pharma gate feedback ("I
+ *  don't know what '1 DISAGREE' means"): the header used to read "N
+ *  DISAGREE", a count that read as a verdict on its own. The inclusion
+ *  criterion was always "carried by more than one analysis" (`shared`,
+ *  `collectMeasures`) -- whether those analyses' values actually differ is
+ *  now said in words, per row, not folded into a header count. No "DISAGREE"
+ *  string appears anywhere in this block any more. */
+export function sharedNamesHtml(shared, disagreeing) {
+  if (!shared.size) return '';
+  return `
+    <div class="mb-s5 rounded-sm border border-rule-strong p-s3" data-shared-names>
+      <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Shared names ·
+        <span class="tnum">${shared.size}</span> names carried by more than one analysis</div>
+      ${[...shared.entries()].map(([key, rec]) => {
+        const differs = disagreeing.has(key);
+        return `
+        <div class="mb-s1 text-caveat text-ink">
+          <span class="${differs ? 'text-state-warn' : 'text-ink-muted'}">${differs ? '⚠' : '·'}</span> <strong class="font-semibold">${esc(key.replace(/_/g, ' '))}</strong>
+          · ${rec.map((x) => `${esc(x.analysis)} <span class="tnum">${esc(measureDisplay(x, key))}</span>`).join(' · ')}
+          <span class="block text-provenance text-ink-muted">${differs
+            ? 'different measures share a name -- not necessarily wrong, likely worth a rename'
+            : 'these measures share a name and agree'}</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+/** The contents board / table of contents -- sticky, click-to-jump, and
+ *  (BRIEF's "Progressive render") the ONE line that says how much is still
+ *  outstanding. Re-rendered on every board settling, so the "still reading
+ *  N of M" count and each row's glyph/headline stay live. */
+export function renderByAnalysisContents(slug, boards, boardState, settled, total, boardQuestions) {
+  const contentsEl = $('by-analysis-contents');
+  if (!contentsEl) return;
+  const ran = boards.filter((b) => (boardState.get(b.id) || {}).board && boardState.get(b.id).board.has_results).length;
+  const neverRun = boards.filter((b) => {
+    const e = boardState.get(b.id);
+    return e && e.status === 'done' && e.board && !e.board.has_results;
+  }).length;
+  const stillReading = total - settled;
+  const rows = boards.map((b) => {
+    const entry = boardState.get(b.id) || { status: 'loading' };
+    const glyphKey = boardStateKey(entry);
+    const glyph = glyphKey ? stateEntry(glyphKey) : { glyph: '◔', tone: 'text-ink-muted', word: 'reading' };
+    // The board's own headline once its read has landed; before that, the
+    // matching question's ALREADY-RESOLVED envelope, if one is sitting in
+    // state.answers -- see envelopeHeadlineText's own doc for exactly when
+    // that is (and isn't) the case. Never a fresh fetch either way.
+    const headlineText = entry.status === 'done'
+      ? boardHeadlineText(entry.board)
+      : envelopeHeadlineText(boardQuestions.get(b.id), state.answers);
+    const board = entry.status === 'done' ? entry.board : null;
+    const runWhen = board && board.last_surveyed_at ? `run ${esc(ago(board.last_surveyed_at))}`
+      : entry.status === 'loading' ? 'reading…'
+      : board && !board.has_results ? 'never run' : '';
+    return `<button type="button" data-jump-board="${esc(b.id)}"
+      class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-[3px] text-left">
+      <span class="w-[16px] shrink-0 ${glyph.tone} font-glyph" title="${esc(glyph.word)}" aria-label="${esc(glyph.word)}">${glyph.glyph}</span>
+      <span class="shrink-0 text-caveat text-ink">${esc(b.title)}</span>
+      <span class="min-w-0 flex-1 truncate text-caveat text-ink-muted">${headlineText ? tnum(esc(headlineText)) : ''}</span>
+      <span class="shrink-0 text-provenance text-ink-muted">${esc(runWhen)}</span>
+    </button>`;
+  }).join('');
+  contentsEl.innerHTML = `
+    <div class="sticky top-0 z-10 -mx-s1 border-b border-rule-strong bg-paper px-s1 pb-s2">
+      <div class="mb-s1 text-caveat text-ink-muted">
+        <span class="tnum">${boards.length}</span> analyses ·
+        <span class="tnum">${ran}</span> ran ·
+        <span class="tnum">${neverRun}</span> never run
+        ${stillReading > 0
+          ? ` · <span class="text-accent-ink">still reading <span class="tnum">${stillReading}</span> of <span class="tnum">${total}</span></span>`
+          : ''}
+      </div>
+      <div>${rows}</div>
+    </div>`;
+  contentsEl.querySelectorAll('[data-jump-board]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const card = document.querySelector(`[data-by-analysis-card="${btn.dataset.jumpBoard}"]`);
+      if (!card) return;
+      card.open = true;
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
 async function loadByAnalysisPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
   const stage = state.stage;
+  const entityType = apiEntityType(state.resourceType);
 
   // Its own token: an earlier click's slow read must not overwrite a
-  // later one's -- the dashboards read has cost 109s on Analysis.
+  // later one's -- the OLD single dashboards read cost 109s on Analysis;
+  // now every board fetches independently, so this guards each one.
   const token = ++dashToken;
+  const live = () => token === dashToken && state.subTab === 'by_analysis';
+
   el.innerHTML = subTabsHtml() + `
     <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
       <span class="text-caps uppercase tracking-caps text-ink-muted">Survey results, by analysis · ${esc(stage)}</span>
     </div>
-    <div id="dash-boards" class="text-caveat text-ink-muted">Reading the dashboards…</div>`;
+    <div id="by-analysis-contents" class="text-caveat text-ink-muted">Reading the analysis catalog…</div>
+    <div id="by-analysis-shared"></div>
+    <div id="by-analysis-cards"></div>`;
   bindSubTabs();
 
-  const live = () => token === dashToken && state.subTab === 'by_analysis';
-
-  // database/filesystem now have a real (if partial -- see docs/Backlog.md,
-  // "By analysis" was repo-only) survey-results route of their own
-  // (workflows.analysis.build_survey_results) -- apiEntityType() translates
-  // state.resourceType at this boundary the same way getSurveyCandidates/
-  // runSurveyDefinition already do, so 'db' never reaches the server
-  // untranslated.
-  let data;
-  try {
-    data = await getSurveyDashboards(slug, stage, { includeEmpty: true, entityType: apiEntityType(state.resourceType) });
-  } catch (err) {
-    if (live()) $('dash-boards').innerHTML =
-      `<span class="text-state-warn">The dashboards could not be read: ${esc(err.message)}</span>`;
-    return;
+  // THE FAST PATH: for database/filesystem, a board's id IS its
+  // analysis_id, so `state.analyses` (fetched at boot, `listAnalyses` --
+  // see `start()`) already names every board with no network call at all.
+  // repo's dashboards group several analyses under one id state.analyses
+  // doesn't carry, so repo alone falls back to the cheap boards-catalog
+  // endpoint below.
+  let catalogBoards = null;
+  if (entityType !== 'repo' && Array.isArray(state.analyses) && state.analyses.length) {
+    catalogBoards = state.analyses
+      .filter((a) => (a.intent || '').toLowerCase() === stage)
+      .map((a) => ({ id: a.id, title: a.name || a.id, description: a.description || '' }));
+  }
+  if (!catalogBoards || !catalogBoards.length) {
+    try {
+      const catalog = await listSurveyResultBoards(slug, stage, { entityType });
+      if (!live()) return;
+      catalogBoards = (catalog.boards || []).map((b) => ({ id: b.id, title: b.title, description: b.description }));
+    } catch (err) {
+      if (live()) $('by-analysis-contents').innerHTML =
+        `<span class="text-state-warn">The analysis catalog could not be read: ${esc(err.message)}</span>`;
+      return;
+    }
   }
   if (!live()) return;
-  const boards = data.dashboards || [];
-  if (!boards.length) {
-    $('dash-boards').innerHTML = `No dashboard is registered for ${esc(stage)}.`;
+  if (!catalogBoards.length) {
+    $('by-analysis-contents').innerHTML = `No dashboard is registered for ${esc(stage)}.`;
     return;
   }
 
-  // Every measurement on the pane, so a NAME REPORTED TWICE WITH DIFFERENT
-  // VALUES can be marked where it is displayed rather than left for a reader
-  // to notice or not.
-  const seen = new Map();
-  for (const b of boards) {
-    for (const a of b.analyses || []) {
-      for (const [k, v] of Object.entries(a.results || {})) {
-        if (typeof v !== 'number') continue;
-        const rec = seen.get(k) || [];
-        rec.push({ analysis: a.analysis_id, value: v });
-        seen.set(k, rec);
-      }
-    }
-  }
-  const disputed = new Map();
-  for (const [k, rec] of seen) {
-    if (rec.length > 1 && new Set(rec.map((x) => x.value)).size > 1) disputed.set(k, rec);
-  }
-
-  $('dash-boards').innerHTML = boards.map((b) => {
-    const analyses = b.analyses || [];
-    // THE GROUP HEADER CARRIES NO DATE. "Health & Maturity — measured 12h ago"
-    // over cards from three analyses is the per-resource as-of date deleted
-    // from the matrix, returned one level up. Dates belong on measurements.
-    const headline = analyses.find((a) => typeof (a.results || {}).overall === 'number');
-    const findings = [];
-    const counts = [];
-    for (const a of analyses) {
-      const res = a.results || {};
-      if (a === headline) continue;
-      if (Array.isArray(res.findings) && res.findings.length) {
-        for (const f of res.findings) findings.push({ ...f, analysis_id: a.analysis_id, when: a.last_surveyed_at });
-        continue;
-      }
-      for (const [k, v] of Object.entries(res)) {
-        if (typeof v === 'number' || typeof v === 'boolean') {
-          counts.push({ key: k, value: v, analysis_id: a.analysis_id, when: a.last_surveyed_at });
-        }
-      }
-    }
-    findings.sort((x, y) => {
-      const ux = UNRESOLVED_LABELS.has(String(x.label || '').toLowerCase()) ? 0 : 1;
-      const uy = UNRESOLVED_LABELS.has(String(y.label || '').toLowerCase()) ? 0 : 1;
-      return ux - uy;
+  // Per-board state, keyed by board id -- 'loading' until its own fetch
+  // settles. Paint the contents board and every card's skeleton NOW, before
+  // a single board's own data has been requested.
+  const boardState = new Map(catalogBoards.map((b) => [b.id, { status: 'loading', board: null }]));
+  let orderedBoards = catalogBoards;
+  // Which question names each board -- filled in once getQuestions() (below)
+  // resolves. Empty until then, which is fine: envelopeHeadlineText just has
+  // nothing to look up yet, same as any other board with no matching
+  // question.
+  let boardQuestions = new Map();
+  const paintAll = (final = false) => {
+    if (!live()) return;
+    const { shared, disagreeing } = collectMeasures(orderedBoards, boardState);
+    const settled = [...boardState.values()].filter((e) => e.status !== 'loading').length;
+    renderByAnalysisContents(slug, orderedBoards, boardState, settled, orderedBoards.length, boardQuestions);
+    $('by-analysis-shared').innerHTML = sharedNamesHtml(shared, disagreeing);
+    const cardsEl = $('by-analysis-cards');
+    cardsEl.innerHTML = orderedBoards.map((b, i) => byAnalysisCardHtml(
+      slug, b.id, b.title, b.description, boardState.get(b.id), disagreeing,
+      i === 0 || orderedBoards.length <= 3,
+    )).join('');
+    cardsEl.querySelectorAll('[data-by-analysis-card]').forEach((card) => {
+      card.addEventListener('toggle', () => setByAnalysisCardOpen(slug, card.dataset.byAnalysisCard, card.open));
     });
+    cardsEl.querySelectorAll('[data-measure]').forEach((n) => {
+      n.addEventListener('click', () => openMeasurementDetail({
+        slug,
+        analysisId: n.dataset.measure,
+        title: n.dataset.title || n.dataset.measure,
+        metric: n.dataset.metric || '',
+        summary: n.dataset.summary || '',
+        when: n.dataset.when || '',
+      }));
+    });
+    for (const n of cardsEl.querySelectorAll('[data-delta]')) {
+      const [analysisId] = n.dataset.delta.split('|');
+      deltaFor(slug, analysisId).then((text) => {
+        if (!live()) return;
+        n.textContent = text || '';
+        n.className = text === 'first measurement' ? 'block text-provenance text-ink-muted' : 'block text-provenance text-ink';
+      });
+    }
+    orderedBoards.forEach((b) => {
+      const entry = boardState.get(b.id);
+      if (entry.status === 'done' && entry.board) {
+        const { mount } = boardDiagramHtml(entry.board);
+        if (mount) mount(cardsEl);
+      }
+    });
+  };
+  paintAll();   // visible now -- no dashboards call has been made yet.
 
-    return `
-      <section class="mb-s5">
-        <div class="text-answer text-ink">${esc(b.title || b.id)}</div>
-        ${b.description ? `<p class="mt-[2px] max-w-[70ch] text-caveat text-ink-muted">${esc(b.description)}</p>` : ''}
-        ${!b.has_results ? `<p class="mt-s1 text-caveat text-state-warn">Registered, never run.</p>` : ''}
+  // Refine the order in the background (question order, per the brief's
+  // "Order" rule) -- a fast, catalog-only call, so this rarely changes what
+  // the reader already sees, but nothing above depended on waiting for it.
+  getQuestions(slug, { phase: stage, entityType }).then((checklist) => {
+    if (!live()) return;
+    const questions = checklist.questions || [];
+    orderedBoards = orderBoardsByQuestions(orderedBoards, questions);
+    // Same board/question matching `orderBoardsByQuestions` just used, kept
+    // around so the contents row's headline fallback (envelopeHeadlineText)
+    // can look up each board's question too -- see renderByAnalysisContents.
+    boardQuestions = boardQuestionMap(orderedBoards, questions);
+    paintAll();
+  }).catch(() => { /* ordering is a nicety -- catalog order stands without it */ });
 
-        ${headline ? headlineHtml(headline) : ''}
-
-        ${findings.length ? `
-          <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Findings · unresolved first</div>
-          ${findings.map((f) => {
-            const c = findingGlyph(f.label);
-            return `<button type="button" class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-s2 text-left"
-              data-measure="${esc(f.analysis_id)}" data-check="${esc(f.check_name || '')}"
-              data-title="${esc((f.check_name || f.analysis_id).replace(/_/g, ' '))}"
-              data-summary="${esc(f.summary || '')}" data-when="${esc(f.when || '')}">
-              <span class="w-[16px] shrink-0 ${c.tone}" title="${esc(c.label)}">${c.glyph}</span>
-              <span class="min-w-0 flex-1 text-ink">
-                <strong class="font-semibold">${
-                  f.check_name
-                    ? `${esc(f.check_name.replace(/_/g, ' '))}${
-                        f.label ? ` — ${esc(humanLabel(f.label))}` : ''}`
-                    : esc(humanLabel(f.label) || f.analysis_id)}.</strong>
-                ${f.summary ? ` ${tnum(esc(f.summary))}` : ''}
-                <span class="block text-provenance text-ink-muted"
-                  data-delta="${esc(f.analysis_id)}|${esc(f.check_name || '')}">·</span></span>
-              <span class="shrink-0 font-mono text-provenance text-ink-muted">${esc(f.analysis_id)}${
-                f.when ? ` · ${esc(ago(f.when))}` : ''} ›</span>
-            </button>`;
-          }).join('')}` : ''}
-
-        ${counts.length ? `
-          <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Counts</div>
-          <table class="w-full border-collapse text-caveat">
-            ${(() => {
-              // A disputed name is ONE row carrying every value, not one row
-              // per analysis saying the same thing mirrored.
-              const shown = new Set();
-              return counts.map((c) => {
-                const rec = disputed.get(c.key);
-                if (rec) {
-                  if (shown.has(c.key)) return '';
-                  shown.add(c.key);
-                  return `<tr class="border-b border-rule bg-[rgba(168,113,42,.07)]">
-                    <td class="py-[5px] pr-s3 text-ink"><span class="text-state-warn">⚠</span>
-                      ${esc(c.key.replace(/_/g, ' '))}
-                      <span class="text-provenance text-ink-muted">— <span class="tnum">${
-                        rec.length}</span> analyses report this name with different values;
-                        they may not be measuring the same thing</span></td>
-                    <td class="tnum py-[5px] pr-s3 text-right text-ink">${
-                      esc(rec.map((x) => fmtScalar(x.value, c.key)).join(' / '))}</td>
-                    <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
-                      esc(rec.map((x) => x.analysis).join(' / '))}</td>
-                  </tr>`;
-                }
-                // Two analyses AGREEING on a name is one fact, not two rows.
-                // Both are named, so the agreement itself stays visible.
-                if (shown.has(c.key)) return '';
-                shown.add(c.key);
-                const agree = (seen.get(c.key) || []).filter((x) => x.analysis !== c.analysis_id);
-                return `<tr class="wl-countrow cursor-pointer border-b border-rule"
-                  data-measure="${esc(c.analysis_id)}" data-metric="${esc(c.key)}"
-                  data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(c.when || '')}">
-                  <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}</td>
-                  <td class="tnum py-[5px] pr-s3 text-right text-ink">${esc(fmtScalar(c.value, c.key))}</td>
-                  <td class="py-[5px] text-right font-mono text-provenance text-ink-muted">${
-                    esc([c.analysis_id, ...agree.map((x) => x.analysis)].join(' · '))}${
-                    c.when ? ` · ${esc(ago(c.when))}` : ''}</td>
-                </tr>`;
-              }).join('');
-            })()}
-          </table>` : ''}
-      </section>`;
-  }).join('');
-
-  // EVERY MEASUREMENT OPENS THE SAME DETAIL. Three entry points, one
-  // component — a dashboard finding, a count, and the matrix cell popup.
-  $('dash-boards').querySelectorAll('[data-measure]').forEach((n) => {
-    n.addEventListener('click', () => openMeasurementDetail({
-      slug,
-      analysisId: n.dataset.measure,
-      title: n.dataset.title || n.dataset.measure,
-      metric: n.dataset.metric || '',
-      summary: n.dataset.summary || '',
-      when: n.dataset.when || '',
-    }));
-  });
-
-  // Inline deltas, from the same series the detail uses. Filled after render
-  // so a slow trend read never delays the pane.
-  for (const n of $('dash-boards').querySelectorAll('[data-delta]')) {
-    const [analysisId] = n.dataset.delta.split('|');
-    deltaFor(slug, analysisId).then((text) => {
+  // Now the slow part -- one fetch per board, in parallel, each filling its
+  // own card the moment it lands. No board's fetch waits on another's --
+  // but each board's own read is genuinely expensive (`db_derived`-backed
+  // readers recompute from stored rows on every call, same cost the OLD
+  // single sweep paid per analysis_id), so firing every board at once would
+  // trade "one 109s block" for "N concurrent heavy reads fighting over the
+  // same thread pool" -- measured live switching stages quickly: an
+  // abandoned stage's in-flight board reads kept running server-side (this
+  // pane only ignores their RESULT via `live()`, it does not cancel the
+  // request) and starved even the cheap boards-catalog call behind them.
+  // BY_ANALYSIS_MAX_CONCURRENT_READS bounds how many board reads run at
+  // once, and `live()` is checked before EACH one starts (not just before
+  // using its result), so switching away stops new reads from being
+  // queued at all rather than merely discarding their answers.
+  const queue = [...catalogBoards];
+  const worker = async () => {
+    while (queue.length) {
       if (!live()) return;
-      n.textContent = text || '';
-      n.className = text === 'first measurement'
-        ? 'block text-provenance text-ink-muted'
-        : 'block text-provenance text-ink';
-    });
-  }
+      const b = queue.shift();
+      try {
+        const data = await getSurveyDashboards(slug, stage, { includeEmpty: true, entityType, boardId: b.id });
+        if (!live()) return;
+        const board = (data.dashboards || [])[0] || null;
+        boardState.set(b.id, { status: 'done', board });
+      } catch (err) {
+        if (!live()) return;
+        boardState.set(b.id, { status: 'error', board: null, error: err.message });
+      }
+      paintAll();
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(BY_ANALYSIS_MAX_CONCURRENT_READS, catalogBoards.length) }, worker),
+  );
+  if (!live()) return;
+
+  // Everything has settled -- apply the "never-run last" ordering rule now
+  // that real state is known, once, so cards don't reshuffle mid-read.
+  orderedBoards = neverRunLast(orderedBoards, boardState);
+  paintAll(true);
 }
 
 /** The composed score, once, at size — with its own sub-scores beside it.

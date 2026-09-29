@@ -534,7 +534,15 @@ async def get_scouting_questions(
     As of the database/filesystem generalization (docs/Backlog.md,
     "scouting-questions was repo-only"), this is a thin wrapper over
     `workflows.scouting.build_question_checklist` -- see that function's
-    docstring. repo's own behavior here is unchanged."""
+    docstring. repo's own behavior here is unchanged.
+
+    Off the event loop (BY-ANALYSIS-PROGRESSIVE-AND-GRAPH, 2026-09-28): a
+    live thread dump caught the database sibling of this route blocking the
+    whole process inside `build_question_checklist` -- `question_has_data`
+    reaches the same expensive readers `/survey-results` already off-loads
+    (see `databases.py`'s `get_database_questions` docstring for the full
+    trace). This route makes the identical call, so it carries the same
+    fix."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.scouting import build_question_checklist
 
@@ -545,9 +553,10 @@ async def get_scouting_questions(
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
     purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
-    return QuestionChecklist(
-        **build_question_checklist(registry, "repo", slug, phase, persp_list, purp_list)
+    result = await asyncio.to_thread(
+        build_question_checklist, registry, "repo", slug, phase, persp_list, purp_list,
     )
+    return QuestionChecklist(**result)
 
 
 # POST /{slug}/profile-scan was retired 2026-08-20. It refreshed
@@ -1028,8 +1037,32 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
     return {"runs": trend_reader(registry, slug)}
 
 
+@router.get("/{slug}/survey-results/boards")
+async def get_survey_results_boards(slug: str, stage: str = "") -> dict:
+    """The By-analysis contents board's cheap half — catalog metadata only,
+    no results/headline reader called. See `workflows.analysis.
+    list_survey_result_boards`'s docstring (BRIEF-BY-ANALYSIS-PANEL-
+    USABILITY.md's "Progressive render" section). Registered before
+    `/survey-results` in this file so `/boards` cannot be captured by
+    the `{slug}` path param of a route registered earlier — it isn't, since
+    this is itself the first `/survey-results*` route, but see the sibling
+    ordering note below on the plain `/survey-results` route.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.workflows.analysis import list_survey_result_boards
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    return await asyncio.to_thread(list_survey_result_boards, registry, "repo", slug, stage)
+
+
 @router.get("/{slug}/survey-results")
-async def get_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+async def get_survey_results(
+    slug: str, stage: str = "", include_empty: bool = False, board_id: str = "",
+) -> dict:
     """Tier 2 — the Survey Results dashboards, off the event loop.
 
     This aggregation re-runs the same results readers the per-analysis cards
@@ -1038,12 +1071,20 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
     while it was in flight took 100s, so ONE person opening this pane froze
     the app for everyone.
 
+    `board_id` (optional, added alongside `/survey-results/boards` above):
+    scopes the read to exactly one board, so a caller (the /next By-analysis
+    pane) can fetch boards one at a time and fill cards progressively
+    instead of waiting on the full sweep — see BRIEF-BY-ANALYSIS-PANEL-
+    USABILITY.md's "Progressive render" section.
+
     Same fix, and same reason, as the `remove` route below it.
     """
-    return await asyncio.to_thread(_survey_results_sync, slug, stage, include_empty)
+    return await asyncio.to_thread(_survey_results_sync, slug, stage, include_empty, board_id)
 
 
-def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+def _survey_results_sync(
+    slug: str, stage: str = "", include_empty: bool = False, board_id: str = "",
+) -> dict:
     """Tier 2 -- the Survey Results dashboards for this repo.
 
     stage (optional): restrict to cards belonging to that funnel stage, so each
@@ -1053,6 +1094,9 @@ def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False
     include_empty (optional): return cards with no stored results too. Off by
     default -- see build_survey_results' has_results comment for why an empty
     card is worse than an absent one.
+
+    board_id (optional): one board only — see `get_survey_results`'s
+    docstring.
 
     As of the database/filesystem generalization (docs/Backlog.md, "By
     analysis" was repo-only), this is a thin wrapper over
@@ -1067,7 +1111,7 @@ def _survey_results_sync(slug: str, stage: str = "", include_empty: bool = False
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    return build_survey_results(registry, "repo", slug, stage, include_empty)
+    return build_survey_results(registry, "repo", slug, stage, include_empty, board_id=board_id)
 
 
 @router.get("/{slug}/survey-results/summary")

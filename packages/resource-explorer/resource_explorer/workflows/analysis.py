@@ -1014,8 +1014,65 @@ def _results_map_for(entity_type: str):
     return REPO_ANALYSIS_RESULTS_MAP, REPO_ANALYSIS_HEADLINE_MAP
 
 
+def list_survey_result_boards(registry, entity_type: str, slug: str, stage: str = "") -> dict:
+    """The By-analysis contents board's cheap half: [{id, title, description,
+    analysis_ids}] for `entity_type`/`stage` — catalog metadata ONLY, no
+    results/headline reader is called. Exists so the /next By-analysis pane
+    (`app.js`'s `loadByAnalysisPane`) can paint its table-of-contents and
+    fire one fetch per board (`build_survey_results(..., board_id=...)`
+    below) instead of waiting on `build_survey_results`' full sweep, which
+    `build_survey_results`'s own docstring already measured at 109s on one
+    repo's Analysis stage — see BRIEF-BY-ANALYSIS-PANEL-USABILITY.md's
+    "Progressive render" section, added 2026-09-28 for exactly this.
+
+    Same id/title/description shape `build_survey_results` returns per
+    board, minus `analyses`/`has_results`/timestamps — a caller that wants
+    those already has `build_survey_results(..., board_id=this board's id)`
+    to fetch them one board at a time.
+    """
+    if entity_type == "repo":
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            SURVEY_RESULT_DASHBOARDS,
+            get_dashboard_stages,
+        )
+
+        boards = []
+        for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+            stages = get_dashboard_stages(dashboard.analysis_ids)
+            if stage and stage not in stages:
+                continue
+            boards.append({
+                "id": dashboard.id,
+                "title": dashboard.title,
+                "description": dashboard.description,
+                "analysis_ids": list(dashboard.analysis_ids),
+                "stages": stages,
+            })
+        return {"slug": slug, "stage": stage, "boards": boards}
+
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    results_map, _headline_map = _results_map_for(entity_type)
+    catalog_by_id = {a["id"]: a for a in get_analyses(entity_type, include_egeria_live=False)}
+    boards = []
+    for analysis_id in results_map:
+        entry = catalog_by_id.get(analysis_id)
+        this_stage = ((entry or {}).get("intent") or "").strip().lower()
+        if stage and stage != this_stage:
+            continue
+        boards.append({
+            "id": analysis_id,
+            "title": (entry or {}).get("name") or analysis_id.replace("_", " ").title(),
+            "description": (entry or {}).get("description") or "",
+            "analysis_ids": [analysis_id],
+            "stages": [this_stage] if this_stage else [],
+        })
+    return {"slug": slug, "stage": stage, "boards": boards}
+
+
 def build_survey_results(
     registry, entity_type: str, slug: str, stage: str = "", include_empty: bool = False,
+    board_id: str = "",
 ) -> dict:
     """Tier 2 — the Survey Results ("By analysis") dashboards for any
     entity_type, generalized out of `projects.py`'s `_survey_results_sync`
@@ -1064,6 +1121,8 @@ def build_survey_results(
         )
 
         for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+            if board_id and dashboard.id != board_id:
+                continue
             stages = get_dashboard_stages(dashboard.analysis_ids)
             if stage and stage not in stages:
                 continue
@@ -1096,6 +1155,8 @@ def build_survey_results(
     # this entity_type actually has a results reader for.
     catalog_by_id = {a["id"]: a for a in get_analyses(entity_type, include_egeria_live=False)}
     for analysis_id in results_map:
+        if board_id and analysis_id != board_id:
+            continue
         entry = catalog_by_id.get(analysis_id)
         analyses = _read_analyses(registry, slug, [analysis_id], results_map, headline_map)
         this_stage = ((entry or {}).get("intent") or "").strip().lower()
