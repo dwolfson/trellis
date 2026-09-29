@@ -2861,12 +2861,14 @@ database_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: semantic_suggestions (proposed) — the vocabulary layer: match column names and the stored
-      column-profile evidence (distinct ratio, patterns, top values, sampled under the credential''s budget)
-      against Egeria glossary terms and data classes, proposing SemanticAnnotations for a person to confirm
-      in Enrichment; no row is read beyond the profile''s sample. SemanticAnnotation exists as a type
-      and nothing produces one yet. See DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §2. Reworded
-      2026-09-28.'
+    note: 'GAP: semantic suggestions (a proposed capability — registered 2026-09-29 as the stub catalog
+      id semantic-suggestions, ENRICHMENT-E1-CONTEXT-TAB, not implemented) — the vocabulary layer: match
+      column names and the stored column-profile evidence (distinct ratio, patterns, top values, sampled
+      under the credential''s budget) against Egeria glossary terms and data classes, proposing SemanticAnnotations
+      for a person to confirm in Enrichment; no row is read beyond the profile''s sample. SemanticAnnotation
+      exists as a type and nothing produces one yet: the stub is a placeholder registration only, gated
+      on a confirmed glossary term, with no runner behind it. See DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md
+      §2. Reworded 2026-09-28.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
   rationale: Suggestions rather than assignments, drawn from column names, any matched Data Classes and
     any matched reference-data sets, and published as Egeria SemanticAnnotations for a steward to accept
@@ -3833,12 +3835,14 @@ filesystem_questions:
     kind: gap
     analysis_ids: []
     checks: []
-    note: 'GAP: semantic_suggestions (proposed) — the vocabulary layer: match column names and the stored
-      column-profile evidence (distinct ratio, patterns, top values, sampled under the credential''s budget)
-      against Egeria glossary terms and data classes, proposing SemanticAnnotations for a person to confirm
-      in Enrichment; no row is read beyond the profile''s sample. SemanticAnnotation exists as a type
-      and nothing produces one yet. See DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md §2. Reworded
-      2026-09-28.'
+    note: 'GAP: semantic suggestions (a proposed capability — registered 2026-09-29 as the stub catalog
+      id semantic-suggestions, ENRICHMENT-E1-CONTEXT-TAB, not implemented) — the vocabulary layer: match
+      column names and the stored column-profile evidence (distinct ratio, patterns, top values, sampled
+      under the credential''s budget) against Egeria glossary terms and data classes, proposing SemanticAnnotations
+      for a person to confirm in Enrichment; no row is read beyond the profile''s sample. SemanticAnnotation
+      exists as a type and nothing produces one yet: the stub is a placeholder registration only, gated
+      on a confirmed glossary term, with no runner behind it. See DESIGN-BROADER-QUESTIONS-WITHOUT-CONTENT-INGESTION.md
+      §2. Reworded 2026-09-28.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
   rationale: Suggestions rather than assignments, drawn from column names, any matched Data Classes and
     any matched reference-data sets, and published as Egeria SemanticAnnotations for a steward to accept

@@ -50,14 +50,14 @@ import { personRowLineHtml } from '/static/next/row-anatomy.js';
  * Nothing here is written to the catalogue until Curate. That sentence is
  * the one misconception worth pre-empting, and it is on the pane.
  */
-const JUDGEMENTS = [
+export const JUDGEMENTS = [
   { key: 'sensitivity',  label: 'Sensitivity',  options: ['public', 'internal', 'confidential', 'restricted'] },
   { key: 'criticality',  label: 'Criticality',  options: ['low', 'important', 'critical'] },
   { key: 'intended_use', label: 'Intended use', placeholder: 'what is this for, here?' },
   { key: 'actual_use',   label: 'Actual use',   placeholder: 'how is it used today?' },
   { key: 'owner',        label: 'Owner',        placeholder: 'who answers for it?' },
 ];
-const OBSERVATIONS = [
+export const OBSERVATIONS = [
   { key: 'licence',      label: 'Licence',      fromAnalysis: 'license_classification' },
   { key: 'environment',  label: 'Environment',  options: ['prod', 'dev', 'test', 'research', 'archive'] },
   { key: 'retention',    label: 'Retention',    placeholder: 'how long, and by whose rule?' },
@@ -196,7 +196,6 @@ function renderEnrichmentForm(slug) {
   if (!host) return;
 
   const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
-  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   host.innerHTML = `
     <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here is written to the catalogue until you catalogue it (Curate).
       What you set here is testimony — yours, dated — and the surveys' findings in the rail are material to read, not answers to accept.</p>
@@ -213,6 +212,20 @@ function renderEnrichmentForm(slug) {
     <div class="mb-s1 mt-s4 text-caps uppercase tracking-caps text-ink">What only you can answer</div>
     <div class="mb-s2 text-provenance text-ink-muted">The catalog's own questions for a person, below — each saves alone.</div>`;
 
+  wireEnrichmentFieldControls(host, slug, () => renderEnrichmentForm(slug));
+  renderEnrichmentEvidence(slug);
+}
+
+/** Save-control wiring for the judgement/observation rows built by
+ *  `fieldRowHtml` above (`[data-save]`/`[data-owner-interim]`/
+ *  `[data-confirm]`) — extracted (ENRICHMENT-E1-CONTEXT-TAB) so
+ *  `stages/context.js`'s Context tab can wire the SAME controls against its
+ *  own container, rather than reimplementing the save/confirm/interim-owner
+ *  logic a second time. `rerender` is called after every successful save —
+ *  `renderEnrichmentForm` here, `renderContext` there — so each caller
+ *  re-renders its own pane, not the other one's. */
+export function wireEnrichmentFieldControls(host, slug, rerender) {
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   host.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
     const key = b.dataset.save; const kind = b.dataset.kind;
     const ctl = host.querySelector(`[data-field="${key}"]`);
@@ -227,7 +240,7 @@ function renderEnrichmentForm(slug) {
         source: kind === 'observation' ? 'user' : '',
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
-      renderEnrichmentForm(slug);
+      rerender();
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not saved: ${err.message}`;
@@ -240,7 +253,7 @@ function renderEnrichmentForm(slug) {
         value: b.dataset.ownerInterim, kind: 'judgement', evidence: evidenceSnapshot(), interim: true,
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), owner: out.field };
-      renderEnrichmentForm(slug);
+      rerender();
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not recorded: ${err.message}`;
@@ -253,13 +266,12 @@ function renderEnrichmentForm(slug) {
         value: b.dataset.value, kind: 'observation', source: b.dataset.source,
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [b.dataset.confirm]: out.field };
-      renderEnrichmentForm(slug);
+      rerender();
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not confirmed: ${err.message}`;
     }
   }));
-  renderEnrichmentEvidence(slug);
 }
 
 /** The rail: evidence as material. Each analysis's own sentence, its age, and

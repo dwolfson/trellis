@@ -399,6 +399,25 @@ class TestSlice17DbDerivedRunnabilityFromCatalog:
         for analysis_id in DB_DERIVED_ANALYSES:
             assert DATABASE_ANALYSIS_RE_STEP_MAP.get(analysis_id) == ["db_derived"], analysis_id
 
+    #: ENRICHMENT-E1-CONTEXT-TAB (2026-09-29 amendment): three catalog
+    #: entries `intent: enrichment`, `source: local, action: survey`,
+    #: registered so Enrichment's "Survey & analyses" map has real ids to
+    #: point at, but declared PLACEHOLDER-ONLY in analysis_catalog.yaml's
+    #: own comment — no runner exists for any of the three (see that
+    #: comment: "Not built. Placeholder registration only"). This is a
+    #: DIFFERENT case from the slice-17 bug this class guards: that bug was
+    #: an id that WAS runnable (a real db_derived reader + run-route entry)
+    #: reading as not-runnable because one hand-maintained map lagged
+    #: another. These three genuinely have no implementation anywhere, so
+    #: `runnable_and_reason` reporting "not runnable" is the TRUTH, not a
+    #: recurrence of the bug — named here, the same way
+    #: `DISCOVERY_FETCHES_ANYWAY` names its own exceptions, so a future
+    #: genuinely-unmapped id still fails this guard rather than silently
+    #: joining this set.
+    ENRICHMENT_STUBS_WITH_NO_RUNNER_YET = {
+        "doc_source_ingestion", "doc_evidence_check", "semantic_suggestions",
+    }
+
     def test_every_local_survey_database_id_has_a_re_step_map_entry(self):
         """The catalog cross-check the brief asked for: every
         `analysis_catalog.yaml` database entry with `source: local, action:
@@ -417,10 +436,18 @@ class TestSlice17DbDerivedRunnabilityFromCatalog:
             if a.get("source") == "local" and a.get("action") == "survey"
         }
         assert local_survey_ids
-        assert local_survey_ids <= set(DATABASE_ANALYSIS_RE_STEP_MAP)
-        for analysis_id in local_survey_ids:
+        mapped_ids = local_survey_ids - self.ENRICHMENT_STUBS_WITH_NO_RUNNER_YET
+        assert mapped_ids <= set(DATABASE_ANALYSIS_RE_STEP_MAP)
+        for analysis_id in mapped_ids:
             runnable, reason = runnable_and_reason(analysis_id, "database")
             assert runnable is True, f"{analysis_id}: {reason}"
+        # The stubs' OWN honest state: genuinely not runnable, and the
+        # standard route says so rather than crashing or claiming otherwise.
+        for analysis_id in self.ENRICHMENT_STUBS_WITH_NO_RUNNER_YET:
+            assert analysis_id in local_survey_ids, f"{analysis_id} is no longer in the catalog — update this set"
+            runnable, reason = runnable_and_reason(analysis_id, "database")
+            assert runnable is False
+            assert reason
 
 
 class TestFetchStepCounts:

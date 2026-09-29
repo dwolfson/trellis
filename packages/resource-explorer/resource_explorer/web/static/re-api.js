@@ -389,6 +389,18 @@ export function questionKey(text) {
 export const saveQuestionAnswer = (entityType, slug, question, answer) =>
   patch(`/api/context/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/answer`, { question, answer });
 
+/** ENRICHMENT-E1-CONTEXT-TAB (2026-09-29 amendment): the Enrichment stage's
+ *  "Survey & analyses" map — every `intent: enrichment` catalog entry for
+ *  this resource type, each with its current unlock state, computed
+ *  server-side through the prerequisite resolver's new human-input
+ *  precondition kind (`step_preconditions.human_input_state`). Returns
+ *  `{ analyses: [{id, name, requires_input, unlocked, reason, state}] }` —
+ *  an empty list for a resource type with no enrichment-tier entries
+ *  (repo, filesystem, today), which is the map having nothing to say, not a
+ *  failed read. */
+export const getEnrichmentAnalysesMap = (entityType, slug) =>
+  get(`/api/context/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/enrichment-analyses`);
+
 export const getDispositionHistory = (githubUrl) =>
   get(`/api/discovery/disposition-history?github_url=${encodeURIComponent(githubUrl)}`);
 
