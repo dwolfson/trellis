@@ -5394,6 +5394,22 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
  *  concurrency ceiling". */
 const BY_ANALYSIS_MAX_CONCURRENT_READS = 3;
 
+/** How long a single board's fetch may sit 'loading' before the pane gives
+ *  up spinning on it and offers a manual "open to load" trigger instead
+ *  (design requirement added 2026-09-28, owner gate check on
+ *  laz_local_adventureworks: pane settle ran 5+ minutes on an un-warmed
+ *  board_summary, deemed unacceptable even as an interim while the
+ *  board_summary read-cost fix lands). This is a SAFETY NET independent of
+ *  that fix's effectiveness -- it applies whether a board's summary is
+ *  missing/stale and the fallback recompute is fast or still slow, so the
+ *  pane never hangs indefinitely on one card. The underlying fetch is not
+ *  cancelled (no AbortController here -- the same reasoning `live()`
+ *  already applies to an abandoned stage's in-flight reads: the request
+ *  keeps running server-side either way, only the UI's wait for it ends);
+ *  if it does resolve after the timeout, the card still updates to its
+ *  real state then. */
+const BY_ANALYSIS_BOARD_TIMEOUT_MS = 30000;
+
 /** localStorage convenience: whether this board's card was left open on
  *  this resource, on this browser. Per-viewer only -- never read back by
  *  this session, never shared. */
@@ -5458,6 +5474,7 @@ function neverRunLast(boards, boardState) {
  *  envelope) rather than collapsing every "ran" case to a flat tick. */
 function boardStateKey(entry) {
   if (entry.status === 'loading') return null;   // rendered separately -- no STATES entry fits "still fetching"
+  if (entry.status === 'timeout') return null;    // rendered separately -- "still reading -- open to load"
   if (entry.status === 'error') return 'error';
   const board = entry.board;
   if (!board) return 'error';
@@ -5739,10 +5756,14 @@ function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, ent
   const board = entry.status === 'done' ? entry.board : null;
   const open = byAnalysisCardOpen(slug, boardId, defaultOpen);
   const glyphKey = boardStateKey(entry);
-  const glyph = glyphKey ? stateEntry(glyphKey) : { glyph: '◔', tone: 'text-ink-muted', word: 'reading' };
+  const glyph = glyphKey ? stateEntry(glyphKey)
+    : entry.status === 'timeout' ? { glyph: '⏸', tone: 'text-state-warn', word: 'still reading' }
+    : { glyph: '◔', tone: 'text-ink-muted', word: 'reading' };
   const headline = entry.status === 'loading'
     ? '<span class="text-ink-muted">reading…</span>'
-    : entry.status === 'error'
+    : entry.status === 'timeout'
+      ? `<span class="text-state-warn">still reading — <button type="button" class="underline" data-retry-board="${esc(boardId)}">open to load</button></span>`
+      : entry.status === 'error'
       ? `<span class="text-state-warn">This could not be read: ${esc(entry.error || '')}</span>`
       : (boardHeadlineHtml(board) || (board && board.has_results
           ? '<span class="text-ink-muted">ran; no summary reader yet.</span>'
@@ -5803,11 +5824,14 @@ function renderByAnalysisContents(slug, boards, boardState, settled, total) {
   const rows = boards.map((b) => {
     const entry = boardState.get(b.id) || { status: 'loading' };
     const glyphKey = boardStateKey(entry);
-    const glyph = glyphKey ? stateEntry(glyphKey) : { glyph: '◔', tone: 'text-ink-muted', word: 'reading' };
+    const glyph = glyphKey ? stateEntry(glyphKey)
+      : entry.status === 'timeout' ? { glyph: '⏸', tone: 'text-state-warn', word: 'still reading' }
+      : { glyph: '◔', tone: 'text-ink-muted', word: 'reading' };
     const headlineText = entry.status === 'done' ? boardHeadlineText(entry.board) : '';
     const board = entry.status === 'done' ? entry.board : null;
     const runWhen = board && board.last_surveyed_at ? `run ${esc(ago(board.last_surveyed_at))}`
       : entry.status === 'loading' ? 'reading…'
+      : entry.status === 'timeout' ? 'still reading — open to load'
       : board && !board.has_results ? 'never run' : '';
     return `<button type="button" data-jump-board="${esc(b.id)}"
       class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-[3px] text-left">
@@ -5935,6 +5959,9 @@ async function loadByAnalysisPane() {
         if (mount) mount(cardsEl);
       }
     });
+    cardsEl.querySelectorAll('[data-retry-board]').forEach((n) => {
+      n.addEventListener('click', () => retryBoard(n.dataset.retryBoard));
+    });
   };
   paintAll();   // visible now -- no dashboards call has been made yet.
 
@@ -5962,16 +5989,70 @@ async function loadByAnalysisPane() {
   // using its result), so switching away stops new reads from being
   // queued at all rather than merely discarding their answers.
   const queue = [...catalogBoards];
+
+  // Manual "open to load" trigger for a card the automatic worker gave up
+  // spinning on (BY_ANALYSIS_BOARD_TIMEOUT_MS) -- an independent fetch for
+  // just this one board, outside the bounded queue above, so it isn't
+  // waiting on a BY_ANALYSIS_MAX_CONCURRENT_READS slot the abandoned
+  // worker read may still be holding. If that original read does
+  // eventually resolve too, whichever of the two settles LAST simply
+  // overwrites boardState with its own (equally correct) answer -- both
+  // fetch the same board_id. Bound to `[data-retry-board]` clicks in
+  // paintAll above (referenced there only lazily, at click time, so
+  // declaring it here rather than earlier changes nothing about when a
+  // click can actually reach it).
+  const retryBoard = async (boardId) => {
+    if (!live()) return;
+    boardState.set(boardId, { status: 'loading', board: null });
+    paintAll();
+    let already = false;
+    const giveUpTimer = setTimeout(() => {
+      if (already || !live()) return;
+      boardState.set(boardId, { status: 'timeout', board: null });
+      paintAll();
+    }, BY_ANALYSIS_BOARD_TIMEOUT_MS);
+    try {
+      const data = await getSurveyDashboards(slug, stage, { includeEmpty: true, entityType, boardId });
+      already = true;
+      clearTimeout(giveUpTimer);
+      if (!live()) return;
+      const board = (data.dashboards || [])[0] || null;
+      boardState.set(boardId, { status: 'done', board });
+    } catch (err) {
+      already = true;
+      clearTimeout(giveUpTimer);
+      if (!live()) return;
+      boardState.set(boardId, { status: 'error', board: null, error: err.message });
+    }
+    paintAll();
+  };
+
   const worker = async () => {
     while (queue.length) {
       if (!live()) return;
       const b = queue.shift();
+      // BY_ANALYSIS_BOARD_TIMEOUT_MS: give up SPINNING on this one card if
+      // it hasn't settled in time -- the safety net for "board_summary
+      // missing/stale AND the fallback recompute is still slow". The fetch
+      // itself is not cancelled (see that constant's own comment); a
+      // settled `already` flag stops the timeout from clobbering a result
+      // that arrived just as it fired.
+      let already = false;
+      const giveUpTimer = setTimeout(() => {
+        if (already || !live()) return;
+        boardState.set(b.id, { status: 'timeout', board: null });
+        paintAll();
+      }, BY_ANALYSIS_BOARD_TIMEOUT_MS);
       try {
         const data = await getSurveyDashboards(slug, stage, { includeEmpty: true, entityType, boardId: b.id });
+        already = true;
+        clearTimeout(giveUpTimer);
         if (!live()) return;
         const board = (data.dashboards || [])[0] || null;
         boardState.set(b.id, { status: 'done', board });
       } catch (err) {
+        already = true;
+        clearTimeout(giveUpTimer);
         if (!live()) return;
         boardState.set(b.id, { status: 'error', board: null, error: err.message });
       }

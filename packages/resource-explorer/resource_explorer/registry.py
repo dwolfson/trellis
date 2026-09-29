@@ -2199,6 +2199,55 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_step_runs_slug "
                 "ON step_runs(slug, surveyed_at)"
             )
+            # ── board_summary — one row per (entity_type, slug, board_id):
+            # the persisted headline/state/COUNTS a By-analysis board fetch
+            # reads, instead of recomputing on every GET
+            # (docs/design-notes/BOARD-SUMMARY-READ-COST-IMPLEMENTED.md).
+            #
+            # The problem this exists for: `build_survey_results(board_id=…)`
+            # measured 10-26s PER BOARD on adventureworks discovery boards,
+            # read fresh on every By-analysis pane load, with 7 boards firing
+            # in parallel against the same registry — nothing settled within
+            # 60+s on a real gate check even after PR #346's progressive
+            # render made the ORDER of that wait bearable.
+            #
+            # Written once, at run completion, by the same code path that
+            # already has the run's results in hand
+            # (`execute_and_record_database_analysis`,
+            # `execute_and_record_analysis` — see workflows/analysis.py's
+            # `_persist_board_summary`). Additive: a registry with no rows
+            # here just always falls back to the pre-existing expensive read
+            # path (`build_survey_results`'s own recompute), so this table
+            # shipping empty is invisible until a writer populates it — no
+            # migration of historical data, no behavior change until the
+            # first run after this lands.
+            #
+            # `summary_json` is the EXACT dashboard dict `build_survey_
+            # results(..., board_id=X)` would return for this one board — not
+            # a redesigned shape — so the read path can hand it back verbatim
+            # instead of re-deriving a smaller projection that then has to be
+            # kept in sync with the full shape by hand.
+            #
+            # `source_run_at` is the `last_run_at` of the analysis run that
+            # produced this summary (from `get_analysis_last_run`), NOT
+            # `computed_at` (when this row was written) — staleness compares
+            # against the former: a summary is stale when the analysis has a
+            # NEWER run than the one this summary reflects, regardless of how
+            # recently the row itself was written (a lazy-recompute-and-
+            # persist on a stale read writes a fresh row whose `computed_at`
+            # is "just now" but whose `source_run_at` is still the old run,
+            # if that old run is genuinely the latest one on record).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS board_summary (
+                    entity_type   TEXT NOT NULL,
+                    slug          TEXT NOT NULL,
+                    board_id      TEXT NOT NULL,
+                    summary_json  TEXT NOT NULL DEFAULT '{}',
+                    source_run_at TEXT DEFAULT '',
+                    computed_at   TEXT NOT NULL,
+                    PRIMARY KEY (entity_type, slug, board_id)
+                )
+            """)
             # One-time repair for project_dependencies rows written before
             # this Phase B change: upsert_dependencies() used to compute
             # datetime.utcnow() inside its per-row list comprehension, so
@@ -9847,6 +9896,76 @@ class ProjectRegistry:
                     entry["last_published_at"] = repo_wide_publish_at
                     entry["last_published_scope"] = "repo"
         return result
+
+    # ── board_summary — the By-analysis fast-read path ──────────────────
+    #
+    # See board_summary's CREATE TABLE comment above for the full design.
+    # These two methods are the entire interface: a writer calls
+    # `write_board_summary` once, at run completion, with the exact
+    # dashboard dict `build_survey_results` would otherwise have to
+    # recompute; a reader calls `get_board_summary` and gets that dict back
+    # verbatim, or `None` when no summary has ever been written for this
+    # board (the pre-existing expensive path is the only fallback then).
+    def write_board_summary(
+        self, entity_type: str, slug: str, board_id: str, summary: dict,
+        source_run_at: str = "",
+    ) -> None:
+        """Persist `summary` (the exact dict `build_survey_results(...,
+        board_id=board_id)` would return for this one board) as the fast-read
+        row for (entity_type, slug, board_id).
+
+        `source_run_at` is the `last_run_at` of the analysis run this summary
+        reflects (from `get_analysis_last_run`) — the staleness anchor a
+        reader compares against, NOT when this row was written. Callers that
+        don't have a run timestamp handy (e.g. a lazy recompute-and-persist
+        on the read path, which already has a fresh answer but has not
+        necessarily also re-derived a run timestamp) may pass `""`; a reader
+        then treats the summary as always-fresh-enough-to-use-once-written
+        rather than comparing against a run it cannot name — see
+        `get_board_summary`'s docstring.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO board_summary
+                   (entity_type, slug, board_id, summary_json, source_run_at, computed_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, slug, board_id) DO UPDATE SET
+                     summary_json=excluded.summary_json,
+                     source_run_at=excluded.source_run_at,
+                     computed_at=excluded.computed_at""",
+                (entity_type, slug, board_id, json.dumps(summary),
+                 source_run_at or "", datetime.utcnow().isoformat()),
+            )
+
+    def get_board_summary(self, entity_type: str, slug: str, board_id: str) -> dict | None:
+        """{"summary": dict, "source_run_at": str, "computed_at": str} for
+        this board, or `None` if nothing has ever been written.
+
+        Returns the raw row rather than deciding freshness itself — that
+        comparison needs `get_analysis_last_run`'s answer for the board's own
+        analysis_id(s), which is a different query this method has no
+        opinion about; `build_survey_results` (workflows/analysis.py) is
+        where the two are compared.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT summary_json, source_run_at, computed_at FROM board_summary "
+                "WHERE entity_type = ? AND slug = ? AND board_id = ?",
+                (entity_type, slug, board_id),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            summary = json.loads(row["summary_json"] or "{}")
+        except (TypeError, ValueError):
+            return None
+        return {
+            "summary": summary,
+            "source_run_at": row["source_run_at"] or "",
+            "computed_at": row["computed_at"] or "",
+        }
 
     def get_analysis_last_run(
         self, entity_type: str, entity_slug: str, limit: int = 500,

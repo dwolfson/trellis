@@ -436,6 +436,8 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
         activity_id, result.status, summary=summary, detail=json.dumps(detail),
         annotations=result.annotations or None, publish_run_id=publish_run_id,
     )
+    if result.status == "ok":
+        _refresh_board_summaries_after_run(registry, entity_type, slug, analysis_id)
     return result
 
 
@@ -618,6 +620,8 @@ def execute_and_record_database_analysis(slug: str, analysis_id: str, activity_i
         activity_id, result.status, summary=result.summary or result.error or "",
         detail=json.dumps(detail), annotations=result.annotations or None,
     )
+    if result.status == "ok":
+        _refresh_board_summaries_after_run(registry, "database", slug, analysis_id)
     return result
 
 
@@ -1096,7 +1100,30 @@ def build_survey_results(
     last_surveyed_at) is computed the same way the repo branch computes it,
     just scoped to that one analysis_id's own annotation_types instead of a
     dashboard's union.
+
+    **The read-cost fix (2026-09-28, docs/design-notes/BOARD-SUMMARY-READ-
+    COST-IMPLEMENTED.md):** when `board_id` is given, this first tries
+    `registry.get_board_summary` — a single-row read of what a writer
+    (`_refresh_board_summaries_after_run` below, called from
+    `execute_and_record_analysis`/`execute_and_record_database_analysis` at
+    run completion) already computed and persisted. That summary is used as-
+    is when it exists and is at least as new as the board's own analysis_id's
+    most recent recorded run (`registry.get_analysis_last_run`); otherwise
+    this falls through to the expensive per-call recompute below exactly as
+    before PR #346/this change. Whenever board_id is given and this DOES
+    recompute (summary missing, stale, or entity_type/board_id combination
+    this reader has never seen written), the freshly-built dashboard dict is
+    persisted before returning, so the next read of the same board is fast —
+    a form of self-healing that needs no separate backfill step. Measured
+    before this fix: `db_classification` 25.8s, `db_relationship_graph`
+    12.2s, `db_fingerprint` 10.4s, per call, on adventureworks discovery
+    boards — see the IMPLEMENTED doc for the full before/after table.
     """
+    if board_id:
+        fast = _read_board_summary_if_fresh(registry, entity_type, slug, board_id, stage, include_empty)
+        if fast is not None:
+            return fast
+
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 
     results_map, headline_map = _results_map_for(entity_type)
@@ -1149,19 +1176,34 @@ def build_survey_results(
                 "publish_stale": bool(last_published_at) and publish_stale,
                 "last_surveyed_at": last_surveyed_at,
             })
+        if board_id and dashboards:
+            _persist_board_summary(registry, entity_type, slug, board_id, dashboards[0])
         return {"slug": slug, "stage": stage, "dashboards": dashboards}
 
     # database / filesystem: one synthesized dashboard per analysis_id that
     # this entity_type actually has a results reader for.
+    #
+    # **Stage filter runs BEFORE `_read_analyses` (2026-09-28, the second
+    # half of the read-cost fix).** `_read_analyses` is the expensive call —
+    # it invokes this analysis_id's `results_reader`/`headline_reader`, the
+    # same readers this whole change exists to stop paying for repeatedly.
+    # Harmless when `board_id` scopes the loop to one analysis_id (the
+    # common case, one iteration either way), but for a stage-wide call with
+    # no board_id (`GET .../survey-results?stage=discovery`, no board_id —
+    # e.g. a legacy/non-progressive caller, or the pre-#346 pane) the OLD
+    # order paid the full read cost for EVERY analysis_id in `results_map`,
+    # including every other stage's, before checking whether this one's
+    # stage even matched — reading (and discarding) every OTHER stage's
+    # boards' full cost for a call that only wanted one stage's.
     catalog_by_id = {a["id"]: a for a in get_analyses(entity_type, include_egeria_live=False)}
     for analysis_id in results_map:
         if board_id and analysis_id != board_id:
             continue
         entry = catalog_by_id.get(analysis_id)
-        analyses = _read_analyses(registry, slug, [analysis_id], results_map, headline_map)
         this_stage = ((entry or {}).get("intent") or "").strip().lower()
         if stage and stage != this_stage:
             continue
+        analyses = _read_analyses(registry, slug, [analysis_id], results_map, headline_map)
         has_results = any(_results_have_data(a["results"]) for a in analyses)
         if not has_results and not include_empty:
             continue
@@ -1184,7 +1226,120 @@ def build_survey_results(
             "publish_stale": bool(last_published_at) and publish_stale,
             "last_surveyed_at": last_surveyed_at,
         })
+    if board_id and dashboards:
+        _persist_board_summary(registry, entity_type, slug, board_id, dashboards[0])
     return {"slug": slug, "stage": stage, "dashboards": dashboards}
+
+
+def _board_analysis_ids(entity_type: str, board_id: str) -> list[str]:
+    """The analysis_id(s) a board_id's freshness should be judged against —
+    just `[board_id]` for database/filesystem (1:1), or a repo dashboard's
+    own `analysis_ids` when `board_id` names one of `SURVEY_RESULT_
+    DASHBOARDS`. `[]` when `board_id` names neither (caller falls back to
+    the expensive recompute, which will itself return no dashboard for an
+    unknown id — same as today)."""
+    if entity_type == "repo":
+        from resource_explorer.surveyors.repo_survey_definition_adapter import SURVEY_RESULT_DASHBOARDS
+
+        dashboard = SURVEY_RESULT_DASHBOARDS.get(board_id)
+        return list(dashboard.analysis_ids) if dashboard else []
+    return [board_id]
+
+
+def _latest_run_at(registry, entity_type: str, slug: str, analysis_ids: list[str]) -> str:
+    """The newest `last_run_at` (ISO, lexically comparable) any of these
+    analysis_ids has recorded — `""` when none of them has ever run."""
+    last_run = registry.get_analysis_last_run(entity_type, slug)
+    return max(
+        (last_run.get(aid, {}).get("last_run_at") or "" for aid in analysis_ids),
+        default="",
+    )
+
+
+def _read_board_summary_if_fresh(
+    registry, entity_type: str, slug: str, board_id: str, stage: str, include_empty: bool,
+) -> dict | None:
+    """The fast path: a persisted `board_summary` row, used as-is when it's
+    at least as new as the board's own analysis_id(s)' latest recorded run —
+    `None` when there is nothing persisted, it's stale, or `board_id` isn't
+    one this reader recognises (any of which means "fall through to the
+    expensive recompute", exactly as if this function did not exist).
+
+    Applies the SAME stage/include_empty filtering the expensive path would
+    have — a fast answer that skipped those checks would disagree with the
+    slow one about what to return, which is the one thing a read-cost-only
+    change must never do (see this function's caller's docstring).
+    """
+    analysis_ids = _board_analysis_ids(entity_type, board_id)
+    if not analysis_ids:
+        return None
+    persisted = registry.get_board_summary(entity_type, slug, board_id)
+    if persisted is None:
+        return None
+    source_run_at = persisted["source_run_at"]
+    if source_run_at:
+        latest_run_at = _latest_run_at(registry, entity_type, slug, analysis_ids)
+        if latest_run_at and source_run_at < latest_run_at:
+            return None  # stale — a newer run exists than this summary reflects
+    board = persisted["summary"]
+    if not isinstance(board, dict) or board.get("id") != board_id:
+        return None  # malformed/mismatched row — recompute rather than trust it
+    if stage and stage not in (board.get("stages") or []):
+        return {"slug": slug, "stage": stage, "dashboards": []}
+    if not board.get("has_results") and not include_empty:
+        return {"slug": slug, "stage": stage, "dashboards": []}
+    return {"slug": slug, "stage": stage, "dashboards": [board]}
+
+
+def _persist_board_summary(registry, entity_type: str, slug: str, board_id: str, board: dict) -> None:
+    """Write `board` (one dashboard dict, exactly as returned to a caller)
+    as this board's fast-read row. Never raises — a persist failure must not
+    turn a successful read into an error; the next read just falls back to
+    recomputing again, same as if this had never been called."""
+    try:
+        analysis_ids = _board_analysis_ids(entity_type, board_id) or [board_id]
+        source_run_at = _latest_run_at(registry, entity_type, slug, analysis_ids)
+        registry.write_board_summary(entity_type, slug, board_id, board, source_run_at=source_run_at)
+    except Exception:
+        log.warning(
+            "board_summary persist failed for %s/%s/%s", entity_type, slug, board_id, exc_info=True,
+        )
+
+
+def _refresh_board_summaries_after_run(registry, entity_type: str, slug: str, analysis_id: str) -> None:
+    """Recompute-and-persist the board_summary row(s) this analysis_id's run
+    just made stale, right at run completion — the writer half of the
+    read-cost fix (registry.write_board_summary's docstring has the full
+    design). Called from `execute_and_record_analysis`/`execute_and_record_
+    database_analysis` after a successful run.
+
+    Deliberately reuses `build_survey_results(..., board_id=...)` itself
+    rather than a second, parallel "compute a board summary" implementation
+    — that function already persists whatever it computes whenever
+    `board_id` is given (see its own docstring), so this is "ask for this
+    board's fresh answer, once, right now, while the reads that just wrote
+    it are warm" rather than a new write path that could drift out of sync
+    with what a read actually returns.
+
+    Never raises — see `_persist_board_summary`'s own docstring for why a
+    summary that fails to refresh is never worse than one that was never
+    written; this wraps the whole thing in the same spirit for the
+    dashboard-lookup step, which `_persist_board_summary` alone doesn't
+    cover (e.g. `SURVEY_RESULT_DASHBOARDS` import failing).
+    """
+    try:
+        if entity_type == "repo":
+            from resource_explorer.surveyors.repo_survey_definition_adapter import SURVEY_RESULT_DASHBOARDS
+
+            board_ids = [d.id for d in SURVEY_RESULT_DASHBOARDS.values() if analysis_id in d.analysis_ids]
+        else:
+            board_ids = [analysis_id]
+        for board_id in board_ids:
+            build_survey_results(registry, entity_type, slug, stage="", include_empty=True, board_id=board_id)
+    except Exception:
+        log.warning(
+            "board_summary refresh failed for %s/%s/%s", entity_type, slug, analysis_id, exc_info=True,
+        )
 
 
 def _read_analyses(registry, slug: str, analysis_ids: list[str], results_map: dict, headline_map: dict) -> list[dict]:
