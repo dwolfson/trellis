@@ -10,7 +10,7 @@ from trellis_microflow import resolve_resources
 
 from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
-from resource_explorer.surveyors import prerequisite_resolver, step_cost_observer
+from resource_explorer.surveyors import credential_capability, prerequisite_resolver, step_cost_observer
 from resource_explorer.surveyors import result_status, step_preconditions
 from resource_explorer.surveyors.survey_report import summarise_annotations, ClassificationAnnotation, SurveyResult
 
@@ -321,6 +321,33 @@ class SurveyOrchestrator:
             #: found nothing.
             auto_ran: set[str] = set()
 
+            #: The stored `credential_capability` probe, resolved AT MOST
+            #: ONCE for this whole run rather than once per `resolve()` call.
+            #: 2026-09-29 round 3 (docs/design-notes/PER-REQUEST-SERVER-
+            #: LATENCY-ROUND-3-IMPLEMENTED.md) — `resolve()` already accepts
+            #: `capability_probe` as a pass-in specifically so a caller that
+            #: needs it more than once doesn't have to let `resolve()`
+            #: re-fetch it each time (see that parameter's own docstring);
+            #: this loop calls `resolve()` up to twice per step (the
+            #: auto-run re-check) across every step in `selected`, and
+            #: nothing was actually passing the probe in, so each call
+            #: independently re-fetched via `credential_capability.
+            #: stored_probe` -> `get_database_surveys` — measured (by the
+            #: registry-cache-staleness fix, dc065497's own commit message)
+            #: at up to 6x per run for one slug, 3.4s uncached on a
+            #: 57-row/61MB survey history. The per-instance cache added
+            #: alongside that fix now absorbs the repeat cost too, but that
+            #: makes the cache a safety net for this pattern, not the fix —
+            #: resolving once and threading it through is the actual fix,
+            #: independent of whether a cache exists downstream. Lazy: only
+            #: fetched if some step in `STEP_REGISTRY` actually declares
+            #: `requires_capability` (`_declares_capability`, the same
+            #: check `resolve()` itself would otherwise make on every call),
+            #: so a repo/filesystem run — which declares no capability axis
+            #: at all — still makes zero registry calls for this.
+            capability_probe: dict | None = None
+            capability_probe_resolved = False
+
             for step_key, surveyor in selected:
                 # Preconditions on stored data, before dispatch. A step whose
                 # input another step produces is absent cannot say anything, and
@@ -343,6 +370,14 @@ class SurveyOrchestrator:
                 _info = STEP_REGISTRY.get(step_key)
                 _ctx = getattr(_info, "requires_context", None)
                 if _ctx:
+                    if not capability_probe_resolved:
+                        if prerequisite_resolver._declares_capability(
+                            STEP_REGISTRY, STEP_REGISTRY.keys(),
+                        ):
+                            capability_probe = credential_capability.stored_probe(
+                                self._registry, project,
+                            )
+                        capability_probe_resolved = True
                     resolution = prerequisite_resolver.resolve(
                         self._registry, project, step_key, STEP_REGISTRY,
                         surveyed_at=surveyed_at,
@@ -350,6 +385,7 @@ class SurveyOrchestrator:
                         max_compute_cost=max_compute_cost,
                         resolved_resources=set(resources),
                         already_ran=auto_ran,
+                        capability_probe=capability_probe,
                     )
                     for producer in resolution.auto_run:
                         why_ran = self._auto_run(
@@ -370,6 +406,7 @@ class SurveyOrchestrator:
                             max_compute_cost=max_compute_cost,
                             resolved_resources=set(resources),
                             already_ran=auto_ran,
+                            capability_probe=capability_probe,
                         )
                     if not resolution.may_run:
                         why = resolution.reason

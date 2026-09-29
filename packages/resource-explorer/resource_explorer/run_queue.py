@@ -513,9 +513,7 @@ class QueueRunner:
 
     def _loop(self) -> None:
         from resource_explorer.concurrency import run_sync
-        from resource_explorer.registry import ProjectRegistry
 
-        registry = ProjectRegistry()
         while not self._stop.is_set():
             try:
                 # Through the shared bounded pool (step 2a's concurrency.py),
