@@ -5415,7 +5415,7 @@ const BY_ANALYSIS_MAX_CONCURRENT_READS = 3;
  *  keeps running server-side either way, only the UI's wait for it ends);
  *  if it does resolve after the timeout, the card still updates to its
  *  real state then. */
-const BY_ANALYSIS_BOARD_TIMEOUT_MS = 30000;
+export const BY_ANALYSIS_BOARD_TIMEOUT_MS = 30000;
 
 /** localStorage convenience: whether this board's card was left open on
  *  this resource, on this browser. Per-viewer only -- never read back by
@@ -5870,7 +5870,13 @@ function renderByAnalysisContents(slug, boards, boardState, settled, total) {
   });
 }
 
-async function loadByAnalysisPane() {
+// Exported (no logic change -- `export` keyword only) so the node/jsdom
+// render harness (frontend-build/test-harness/) can drive the REAL By-
+// analysis pane -- including its 30s give-up timer and `retryBoard` click
+// handler -- against a stubbed fetch, rather than asserting against the
+// source text (BOARD-SUMMARY-READ-COST-IMPLEMENTED.md's own flagged gap).
+// See docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md for the pattern.
+export async function loadByAnalysisPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }

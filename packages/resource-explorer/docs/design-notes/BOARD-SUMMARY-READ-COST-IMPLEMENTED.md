@@ -267,9 +267,52 @@ exactly those three rows, run immediately before each cold measurement).
    task was scoped against is entirely database boards.
 4. **The 30-second safety net's UI states were verified by static source
    assertion only**, not by driving a real browser against a genuinely slow
-   board — no jsdom/DOM harness exists in this codebase (confirmed by the
-   pattern every other `/next` test file already follows), and manufacturing
-   a real 30s-plus stall against `laz_local_adventureworks` for a live click-
-   through was not attempted in this session given the time budget; the
-   mechanism (timer arm/clear, state transition, retry trigger) is pinned by
-   tests, the actual DOM rendering is not.
+   board — no jsdom/DOM harness existed in this codebase at the time (the
+   pattern every other `/next` test file then followed), and manufacturing a
+   real 30s-plus stall against `laz_local_adventureworks` for a live click-
+   through was not attempted in that session given the time budget; the
+   mechanism (timer arm/clear, state transition, retry trigger) was pinned by
+   source-text tests, the actual DOM rendering was not. **Closed 2026-09-28**
+   — see "Harness test added" below.
+
+## Harness test added (2026-09-28, closes gap 4 above)
+
+PR #346 landed a real node+jsdom render harness for `/next`
+(`frontend-build/test-harness/`, `docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md`)
+in the meantime, with a project-owner rule (2026-09-28): every `/next` fix
+from here on adds its regression to the harness, not only a source-text
+test. Design flagged this branch's own gap 4 above as exactly the case that
+rule exists for — a timing-dependent UI state transition only a rendered
+page shows.
+
+`frontend-build/test-harness/by-analysis-board-timeout.test.mjs` drives the
+real, unmodified `loadByAnalysisPane()` (now exported — no logic change,
+`export` keyword only, same pattern as this harness's other three exports)
+with a stubbed `fetch`: one board's `getSurveyDashboards(..., { boardId })`
+read returns a promise that never settles. Using `node:test`'s built-in
+`t.mock.timers` to advance past `BY_ANALYSIS_BOARD_TIMEOUT_MS` without a real
+30-second wait, it asserts the card and the contents row both render "still
+reading — open to load", then dispatches a real DOM click on the rendered
+`[data-retry-board]` button (not calling `retryBoard()` directly — it is a
+closure private to `loadByAnalysisPane`, not a module-level export) and
+asserts that click re-triggers a second `fetch()` call for the same board,
+which this time resolves, taking the card out of the timeout state.
+`BY_ANALYSIS_BOARD_TIMEOUT_MS` itself was also exported so the test reads the
+real constant rather than hardcoding `30000`.
+
+**Red/green verification**: with `app.js` swapped for its pre-timeout-feature
+version (`4e7183f0^`, before this branch's single commit added the whole
+mechanism — confirmed by `git show 4e7183f0^:...app.js | grep
+BY_ANALYSIS_BOARD_TIMEOUT_MS` returning nothing), the new test fails exactly
+as expected: the card stays on `reading…`/`◔` forever after the mock-timer
+advance, because there is no timeout logic to transition it, and the
+assertion for the "still reading — open to load" copy fails with the actual
+(never-transitioning) card HTML in the diff. Restoring the real `app.js`
+turns it green again. This confirms the test exercises the real timeout/
+retry mechanism rather than being a tautology.
+
+**Harness suite**: `npm run test:harness` (node v20.11.0 via nvm — this
+harness needs `node --test`, unavailable on this checkout's default v14) —
+8/8 pass (the pre-existing 7 plus this one; `npm install` was needed first
+to bring in `jsdom`, not yet present in a fresh `frontend-build/`
+`node_modules`).
