@@ -366,10 +366,22 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
       15-minute window), there is nothing left to publish. Returning ''
       rather than raising: this is not a failure, the work item is simply
       moot now.
-    - If it already carries a GUID (a concurrent full publish via
-      `publish_local_doc_sources` beat this row to it, or a previous
-      attempt of THIS row wrote it and then crashed before `mark_outbox_
-      done`), adopt that GUID rather than publishing a second time.
+    - If it already carries BOTH a ref guid AND a link guid (a concurrent
+      full publish via `publish_local_doc_sources` beat this row to it, or a
+      previous attempt of THIS row wrote both and then crashed before
+      `mark_outbox_done`), adopt the ref guid rather than publishing a
+      second time — genuinely nothing left to do.
+    - If it carries a ref guid but NO link guid (round 4, 2026-09-29: a
+      read-back adopted an existing reference by URL but read-back cannot
+      capture the relationship's own GUID, or a prior attempt created the
+      reference and crashed before linking it — this is also exactly what
+      `_compute_egeria_state`'s self-heal re-queues for), still call
+      `publish_doc_source`, passing the known ref guid through so it links
+      THAT reference rather than minting a second, independent one for the
+      same row. **Not** treated as "already done" — a ref guid alone proves
+      an `ExternalReference` element exists somewhere, never that IT IS
+      LINKED to this asset, which is the whole distinction the adoption-race
+      fix exists to enforce (see `derive_doc_source_egeria_state`).
     - Otherwise call `publish_doc_source` (its own lookup-then-create-then-
       link) and write the result straight back onto the `doc_sources` row —
       this creator is the ONLY path that runs for this kind (see
@@ -397,7 +409,10 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
         log.info("doc source outbox: %s/%s source %s was removed before its publish "
                  "was drained — nothing to do", entity_type, entity_slug, source_id)
         return ""
-    if source.get("egeria_external_ref_guid"):
+    if source.get("egeria_external_ref_guid") and source.get("egeria_link_relationship_guid"):
+        # Both present — a real, already-linked reference. Nothing to do.
+        # (A ref guid ALONE is not this condition — see the docstring above
+        # and derive_doc_source_egeria_state; that shape still needs linking.)
         return source["egeria_external_ref_guid"]
 
     entity = resolve_entity_for_doc_source(registry, entity_type, entity_slug)
@@ -411,6 +426,13 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
         view_server=entity.egeria_server, platform_url=entity.egeria_url,
         user_id=entity.egeria_user, user_password=entity.egeria_password,
         display_name=entity.display_name,
+        known_ref_guid=source.get("egeria_external_ref_guid") or "",
+        # Adoption-race guard (2026-09-29) — refuse to reuse (or keep) an
+        # ExternalReference that a pending/running doc_source_unpublish
+        # row is concurrently deleting; see publish_doc_source's own
+        # docstring for the incident this closes.
+        is_ref_unpublishing=lambda guid: registry.has_pending_unpublish_for_ref(
+            entity_type, entity_slug, guid),
     )
     if not result["ok"]:
         raise OutboxApplyError(result["error"] or "publish_doc_source failed")

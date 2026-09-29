@@ -79,6 +79,109 @@ def test_publish_with_no_url_fails_cleanly(monkeypatch):
     assert "url" in result["error"].lower()
 
 
+# ── Adoption-race guard (round 4, 2026-09-29) ────────────────────────────────
+# `_find_ref_guid` matches by qualifiedName ALONE — global, not scoped to
+# whether the match is currently being deleted by a concurrent
+# doc_source_unpublish. `is_ref_unpublishing`/`known_ref_guid` are how
+# `egeria_outbox.py`'s `_create_doc_source_publish` (which has a registry to
+# ask) tells `publish_doc_source` "this candidate GUID is unsafe to reuse".
+
+def test_publish_does_not_reuse_a_found_ref_that_is_being_unpublished(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.create_external_reference.return_value = "fresh-guid"
+    fake_client.link_external_reference.return_value = "fresh-link-guid"
+
+    monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
+    # _find_ref_guid finds the OLD reference — still visible to Egeria
+    # because its concurrent unpublish hasn't completed the delete yet.
+    monkeypatch.setattr(m, "_find_ref_guid", lambda client, qn: "being-deleted-guid")
+
+    source = {"url": "https://egeria.ai", "label": "not-adventureworks",
+              "source_type": "installation_guide"}
+    result = m.publish_doc_source(
+        source, "asset-guid-1",
+        is_ref_unpublishing=lambda guid: guid == "being-deleted-guid",
+        **_EGERIA_KW,
+    )
+
+    assert result["ok"] is True
+    # Must NOT have adopted the reference being deleted -- a brand new one
+    # was created and linked instead.
+    assert result["ref_guid"] == "fresh-guid"
+    fake_client.create_external_reference.assert_called_once()
+    fake_client.link_external_reference.assert_called_once_with("asset-guid-1", "fresh-guid")
+
+
+def test_publish_reuses_a_found_ref_when_nothing_is_unpublishing_it(monkeypatch):
+    # Sanity check the guard is not overzealous: a normal reuse (no pending
+    # unpublish for the found guid) is unaffected.
+    fake_client = MagicMock()
+    fake_client.link_external_reference.return_value = "link-guid-2"
+
+    monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(m, "_find_ref_guid", lambda client, qn: "existing-guid")
+
+    source = {"url": "https://docs.example/dict"}
+    result = m.publish_doc_source(
+        source, "asset-guid-1", is_ref_unpublishing=lambda guid: False, **_EGERIA_KW,
+    )
+
+    assert result["ok"] is True
+    assert result["ref_guid"] == "existing-guid"
+    fake_client.create_external_reference.assert_not_called()
+
+
+def test_publish_with_known_ref_guid_links_it_without_a_lookup(monkeypatch):
+    # The self-heal shape (round 4): a local row already carries a ref guid
+    # (from a read-back adoption) but no link guid. publish_doc_source must
+    # link THAT reference, not search for/create a different one.
+    fake_client = MagicMock()
+    fake_client.link_external_reference.return_value = "link-guid-3"
+
+    monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
+
+    def poisoned(client, qn):
+        raise AssertionError("_find_ref_guid must not be called when known_ref_guid is given")
+
+    monkeypatch.setattr(m, "_find_ref_guid", poisoned)
+
+    source = {"url": "https://egeria.ai"}
+    result = m.publish_doc_source(
+        source, "asset-guid-1", known_ref_guid="known-guid-1",
+        is_ref_unpublishing=lambda guid: False, **_EGERIA_KW,
+    )
+
+    assert result["ok"] is True
+    assert result["ref_guid"] == "known-guid-1"
+    fake_client.create_external_reference.assert_not_called()
+    fake_client.link_external_reference.assert_called_once_with("asset-guid-1", "known-guid-1")
+
+
+def test_publish_abandons_a_known_ref_guid_that_is_being_unpublished(monkeypatch):
+    # The exact incident shape: the row's OWN stored ref_guid turns out to
+    # be the one concurrently being deleted (adopted by an earlier
+    # read-back before this guard existed, or before this call's own
+    # unpublish check). It must be abandoned, not linked to — falling
+    # through to the normal find-or-create flow for a fresh, independent
+    # reference.
+    fake_client = MagicMock()
+    fake_client.create_external_reference.return_value = "fresh-guid-2"
+    fake_client.link_external_reference.return_value = "fresh-link-2"
+
+    monkeypatch.setattr(m, "_client", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(m, "_find_ref_guid", lambda client, qn: "")  # nothing else found either
+
+    source = {"url": "https://egeria.ai"}
+    result = m.publish_doc_source(
+        source, "asset-guid-1", known_ref_guid="stale-guid",
+        is_ref_unpublishing=lambda guid: guid == "stale-guid", **_EGERIA_KW,
+    )
+
+    assert result["ok"] is True
+    assert result["ref_guid"] == "fresh-guid-2"
+    fake_client.create_external_reference.assert_called_once()
+
+
 def test_publish_reports_failure_rather_than_raising(monkeypatch):
     def _boom(*a, **kw):
         raise RuntimeError("platform unreachable")

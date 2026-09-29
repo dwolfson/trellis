@@ -136,3 +136,56 @@ def test_repeat_read_back_does_not_duplicate(registry):
     registry.upsert_doc_source_from_egeria("database", "s", url="https://x", ref_guid="g1")
 
     assert len(registry.list_doc_sources("database", "s")) == 1
+
+
+# ── Adoption-race guard: has_pending_unpublish_for_ref (round 4, 2026-09-29) ─
+# The incident this closes: a source removed at 15:21:41 enqueued a
+# doc_source_unpublish for its ExternalReference; a DIFFERENT source at the
+# same URL, declared a second later, adopted that SAME reference — while it
+# was still being deleted — via the read-back `url` fallback. This method is
+# the guard `_sync_egeria_read_back`/`publish_doc_source` check before
+# adopting or reusing any ExternalReference found by URL/qualifiedName.
+
+def test_has_pending_unpublish_for_ref_false_with_no_outbox_rows(registry):
+    assert registry.has_pending_unpublish_for_ref("database", "s", "ref-1") is False
+
+
+def test_has_pending_unpublish_for_ref_false_for_empty_guid(registry):
+    assert registry.has_pending_unpublish_for_ref("database", "s", "") is False
+
+
+def test_has_pending_unpublish_for_ref_true_when_pending(registry):
+    from resource_explorer.egeria_outbox import enqueue_doc_source_unpublish
+
+    enqueue_doc_source_unpublish(registry, "database", "s", "ref-1")
+
+    assert registry.has_pending_unpublish_for_ref("database", "s", "ref-1") is True
+
+
+def test_has_pending_unpublish_for_ref_true_when_running(registry):
+    from resource_explorer.egeria_outbox import enqueue_doc_source_unpublish
+
+    element_id = enqueue_doc_source_unpublish(registry, "database", "s", "ref-1")
+    registry.claim_due_outbox_elements(element_id=element_id)  # pending -> running
+
+    assert registry.has_pending_unpublish_for_ref("database", "s", "ref-1") is True
+
+
+def test_has_pending_unpublish_for_ref_false_once_done(registry):
+    from resource_explorer.egeria_outbox import enqueue_doc_source_unpublish
+
+    element_id = enqueue_doc_source_unpublish(registry, "database", "s", "ref-1")
+    registry.mark_outbox_done(element_id, "ref-1")
+
+    assert registry.has_pending_unpublish_for_ref("database", "s", "ref-1") is False
+
+
+def test_has_pending_unpublish_for_ref_scoped_to_the_right_guid_and_entity(registry):
+    from resource_explorer.egeria_outbox import enqueue_doc_source_unpublish
+
+    enqueue_doc_source_unpublish(registry, "database", "s", "ref-OTHER")
+    enqueue_doc_source_unpublish(registry, "database", "other-slug", "ref-1")
+
+    # Neither an unpublish for a different ref, nor one for a different
+    # entity, should register as "pending for ref-1 on database/s".
+    assert registry.has_pending_unpublish_for_ref("database", "s", "ref-1") is False

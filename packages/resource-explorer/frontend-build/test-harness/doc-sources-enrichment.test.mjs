@@ -285,3 +285,75 @@ test('each of the four Egeria publish-state rows renders its own required wordin
   assert.match(host.textContent, /1.*in Egeria/s);
   assert.match(host.textContent, /3.*local/s);
 });
+
+test('the not_catalogued state (round 4, 2026-09-29) renders its own honest wording, never "publishing"', async () => {
+  // Adoption-race fix: a row with a ref guid but no link guid and nothing
+  // pending/running must say it is NOT catalogued, not "local —
+  // publishing…" with nothing actually in flight backing that claim.
+  const base = docSourcesFixture().sources[0];
+  const fixture = docSourcesFixture({
+    published: true,
+    sources: [{
+      ...base, id: 'stuck-1', label: 'Stuck source',
+      egeria_external_ref_guid: 'ref-guid-stuck', egeria_state: 'not_catalogued',
+      egeria_state_detail: '',
+    }],
+  });
+  const { enrichment, host } = await setUpEnrichmentDom();
+  stubFetchJson({ '/api/doc-sources/database/adventureworks': fixture });
+
+  await enrichment.renderDocSources('adventureworks');
+
+  assert.match(host.textContent, /local — not catalogued \(publish needed\)/);
+  assert.doesNotMatch(host.textContent, /local — publishing…/);
+  assert.doesNotMatch(host.textContent, /catalogued in Egeria/);
+});
+
+test('a "publishing" row polls the GET endpoint and updates to catalogued without any user action (round 4, 2026-09-29)', async () => {
+  // The bug this pins against: the add response reflects the PRE-drain
+  // state and nothing ever re-fetched once the background immediate-attempt
+  // drain finished -- live-verified 2026-09-29 (source "pdr"): the server
+  // completed in ~4s, the page stayed stuck on "local — publishing…"
+  // forever. `renderDocSourcesFromData` must schedule a re-fetch while any
+  // row is `publishing` and re-render from it, with no click/reload.
+  const { enrichment, host } = await setUpEnrichmentDom();
+  const base = docSourcesFixture().sources[0];
+  const publishingFixture = docSourcesFixture({
+    published: true, in_egeria_count: 0, local_count: 1,
+    sources: [{ ...base, id: 'poll-1', egeria_external_ref_guid: '',
+      egeria_state: 'publishing', egeria_state_detail: '' }],
+  });
+  const cataloguedFixture = docSourcesFixture({
+    published: true, in_egeria_count: 1, local_count: 0,
+    sources: [{ ...base, id: 'poll-1', egeria_external_ref_guid: 'ref-guid-99',
+      egeria_state: 'catalogued', egeria_state_detail: 'ref-guid-99' }],
+  });
+
+  let call = 0;
+  globalThis.fetch = async () => {
+    call += 1;
+    const body = call === 1 ? publishingFixture : cataloguedFixture;
+    return { ok: true, status: 200, json: async () => body };
+  };
+
+  // The real poll interval is 2s (capped at 30s) -- too slow for a unit
+  // test. Speed up ONLY the wait, not the scheduling logic itself: replace
+  // setTimeout with an immediate-ish version for this test, restored after.
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn) => realSetTimeout(fn, 0);
+  try {
+    await enrichment.renderDocSources('adventureworks');
+    assert.match(host.textContent, /local — publishing…/);
+    assert.equal(call, 1);
+
+    // Let the scheduled poll tick (and its own re-render) settle -- no
+    // click, no reload, nothing but time passing.
+    await new Promise((resolve) => realSetTimeout(resolve, 10));
+    await new Promise((resolve) => realSetTimeout(resolve, 10));
+
+    assert.match(host.textContent, /catalogued in Egeria/, 'row must update on its own');
+    assert.ok(call >= 2, 'expected the poll to have re-fetched at least once');
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+});

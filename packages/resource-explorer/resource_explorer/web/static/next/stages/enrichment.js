@@ -285,22 +285,77 @@ const PROBE_LABEL = {
   reachable: 'reachable', needs_sign_in: 'needs sign-in', not_found: 'not found', blocked: 'blocked',
 };
 
-// Egeria publish-state fix (2026-09-29) — every row carries exactly one of
-// these four states, never blank. Previously `publishNote` rendered '' for
-// ANY published resource regardless of whether THIS source actually made it
-// to Egeria — the find-absence-as-answer bug this replaces (confirmed live:
-// an adventureworks source sat local-only, origin='local', on an already-
-// published resource, with nothing on the row saying so).
+// Egeria publish-state fix (2026-09-29, extended round 4 same day) — every
+// row carries exactly one of these FIVE states, never blank. Originally
+// `publishNote` rendered '' for ANY published resource regardless of
+// whether THIS source actually made it to Egeria (confirmed live: an
+// adventureworks source sat local-only, origin='local', on an already-
+// published resource, with nothing on the row saying so) — round 1 fixed
+// that to four states. Round 4 added `not_catalogued`: a row with a ref
+// guid but no link guid and nothing pending/running used to render
+// `publishing` with no outbox row backing that claim at all (a second
+// find-absence-as-answer bug, this time about the STATE ITSELF rather than
+// the header note) — see `derive_doc_source_egeria_state` (backend) for the
+// exact rule.
 const EGERIA_STATE_TEXT = {
   catalogued: () => 'catalogued in Egeria',
   publishing: () => 'local — publishing…',
   publish_failed: (src) => `local — publish failed: ${src.egeria_state_detail || 'unknown error'}, retrying`,
+  not_catalogued: () => 'local — not catalogued (publish needed)',
   local_only: () => 'local only — resource not published',
 };
 const EGERIA_STATE_TONE = {
   catalogued: 'text-state-ok', publishing: 'text-ink-muted',
-  publish_failed: 'text-state-warn', local_only: 'text-ink-muted',
+  publish_failed: 'text-state-warn', not_catalogued: 'text-state-warn',
+  local_only: 'text-ink-muted',
 };
+
+// Egeria publish-state fix, round 4 (2026-09-29): the add/remove HTTP
+// response renders the PRE-drain state — `_attempt_outbox_row_immediately`
+// (web/routes/doc_sources.py) fires the real Egeria write on a background
+// thread specifically so the request is not held open for it, so the
+// response legitimately cannot know the outcome yet. The bug was that
+// nothing EVER re-fetched afterward: live-verified 2026-09-29 (a clean
+// retry, source "pdr") that the server-side drain completed in ~4s — ref
+// and link both created, outbox row 'done' — while the page kept showing
+// "local — publishing…" forever, because no code path re-rendered the block
+// once that background thread finished. Same idiom `pollActivity` (re-
+// api.js) already establishes elsewhere in this codebase for "started an
+// operation off the request thread, need to reflect its own completion" —
+// bounded rather than indefinite, so a row Egeria genuinely cannot reach
+// (down, or retries exhausted into 'dead') stops polling and falls back to
+// showing whatever real state the last fetch returned, not an infinite spin.
+let docSourcesPollTimer = null;
+const DOC_SOURCES_POLL_MS = 2000;
+const DOC_SOURCES_POLL_MAX_MS = 30000;
+
+function stopDocSourcesPoll() {
+  if (docSourcesPollTimer) {
+    clearTimeout(docSourcesPollTimer);
+    docSourcesPollTimer = null;
+  }
+}
+
+function scheduleDocSourcesPoll(slug, entityType, deadline) {
+  stopDocSourcesPoll();
+  if (Date.now() >= deadline) return; // cap reached — leave the last fetch's state showing
+  docSourcesPollTimer = setTimeout(async () => {
+    docSourcesPollTimer = null;
+    if (slug !== state.selectedSlug) return; // navigated away — nothing to update
+    let data;
+    try {
+      data = await getDocSources(entityType, slug);
+    } catch {
+      // A transient fetch failure during the poll is not the same as the
+      // publish itself failing — keep polling within the same deadline
+      // rather than giving up on the first blip.
+      scheduleDocSourcesPoll(slug, entityType, deadline);
+      return;
+    }
+    if (slug !== state.selectedSlug) return;
+    renderDocSourcesFromData(slug, entityType, data, deadline);
+  }, DOC_SOURCES_POLL_MS);
+}
 
 function docSourceRowHtml(src) {
   const g = PROBE_GLYPH[src.probe_state] || { glyph: '?', tone: 'text-ink-muted' };
@@ -346,6 +401,7 @@ function docSourceRowHtml(src) {
 export async function renderDocSources(slug) {
   const host = $('doc-sources-block');
   if (!host) return;
+  stopDocSourcesPoll(); // a fresh render supersedes any poll from a prior one
   const entityType = apiEntityType(state.resourceType);
   host.innerHTML = `<div class="text-caveat text-ink-muted">Loading documentation sources…</div>`;
   let data;
@@ -356,6 +412,18 @@ export async function renderDocSources(slug) {
     return;
   }
   if (slug !== state.selectedSlug) return;
+  renderDocSourcesFromData(slug, entityType, data, Date.now() + DOC_SOURCES_POLL_MAX_MS);
+}
+
+// Split from `renderDocSources` (round 4, 2026-09-29) so the poll tick can
+// re-render from a fresh fetch WITHOUT re-showing "Loading…" (that flicker
+// on every 2s tick would be worse than the bug it fixes) and without
+// re-deriving its own copy of "is anything still publishing". `deadline` is
+// an absolute `Date.now()`-scale timestamp threaded through so the total
+// poll budget is fixed from the first render, not restarted every tick.
+function renderDocSourcesFromData(slug, entityType, data, deadline) {
+  const host = $('doc-sources-block');
+  if (!host) return;
   const sources = data.sources || [];
   // Egeria publish-state fix (2026-09-29): the header used to say nothing
   // once `data.published` was true, regardless of whether any given source
@@ -427,6 +495,16 @@ export async function renderDocSources(slug) {
       if (statusEl) statusEl.textContent = err.status === 401 ? 'sign in to add a source' : `not added: ${err.message}`;
     }
   });
+
+  // Round 4 fix: keep polling while ANY row is still `publishing` — the
+  // background `_attempt_outbox_row_immediately` thread this state depends
+  // on runs off the request that produced this very data, so the only way
+  // to learn it finished is to ask again. Stops on its own once no row is
+  // `publishing` (resolved to `catalogued`/`publish_failed`) or the
+  // deadline passes, whichever comes first.
+  if (sources.some((s) => s.egeria_state === 'publishing')) {
+    scheduleDocSourcesPoll(slug, entityType, deadline);
+  }
 }
 
 /** The rail: evidence as material. Each analysis's own sentence, its age, and

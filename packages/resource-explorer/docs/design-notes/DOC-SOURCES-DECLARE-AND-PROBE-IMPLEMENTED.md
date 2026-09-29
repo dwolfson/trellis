@@ -590,6 +590,222 @@ passing) — reproducing a real Egeria failure live would need either breaking t
 or forging bad credentials against a shared resource, neither of which seemed like a
 reasonable price for this fix's own test to pay.
 
+## Adoption race + dishonest state + missing UI refresh (round 4, 2026-09-29)
+
+Found live by the project owner's re-gate on database 8813, with real registry + Egeria
+evidence (timeline, UTC):
+
+- **15:17:34** — publish created `ExternalReference` `b9925119…` for `https://egeria.ai`.
+- **15:21:41** — the owner removed that source → an outbox row (`doc_source_unpublish` for
+  `b9925119…`) enqueued, `done` at 15:21:44 (reference deleted in Egeria).
+- **15:21:42** — WHILE that unpublish was in flight, the owner added a DIFFERENT source
+  ("not-adventureworks", `installation_guide`, **same URL** `https://egeria.ai`). Its row
+  ended up with `egeria_external_ref_guid = b9925119…` — the SAME reference being
+  concurrently deleted — and `egeria_link_relationship_guid` EMPTY, with **no
+  `doc_source_publish` outbox row ever created for it**. It stayed stuck reading "local —
+  publishing…" for minutes with nothing actually pending or running.
+- A clean retry ("pdr", `https://pdr-associates.com`, 15:24:15) proved the SERVER side then
+  worked correctly in isolation — ref+link created, outbox row `done` in ~4s — but the PAGE
+  still showed "local — publishing…" indefinitely: a third, independent defect (no refresh
+  after the background drain completes).
+
+### Root cause 1 — the adoption race: matching key is the URL/qualifiedName
+
+Confirmed against the real registry rows for both sources, not guessed: **the two sources
+shared the exact same URL**, `https://egeria.ai` (different label and `source_type`, same
+URL). The adoption happens in `web/routes/doc_sources.py`'s `_sync_egeria_read_back` →
+`registry.upsert_doc_source_from_egeria`, whose `url` fallback match key is precisely
+`ExternalReference::<url>` — the same convention `_qualified_name()`
+(`doc_source_egeria.py`) and `_find_ref_guid`'s `AutomatedCuration.get_guid_for_name` lookup
+both use. A `GET` (read-back) landing in the ~3-second window between the unpublish being
+enqueued and its detach+delete actually completing in Egeria still sees the OLD reference as
+a live `ExternalReferenceLink` on the asset — because it genuinely still is one, at that
+instant. With no local row for that URL yet (the old row was already deleted, the new one
+not yet declared), `upsert_doc_source_from_egeria` created a brand-new local row carrying the
+being-deleted ref guid, and because that path never goes through the outbox, no
+`doc_source_publish` row was ever queued for it — exactly what was observed live.
+
+**Design's precise adoption rule** (design session, 2026-09-29): a read-back/reuse may adopt
+an existing `ExternalReference` only when ALL of — it matches on (asset, URL); its
+`ExternalReferenceLink` to THIS asset already exists (structurally true for anything
+`read_back_doc_sources` returns, since that call is itself scoped to the asset's own
+relationships); and no `doc_source_unpublish` row for it is `pending`/`running`. Anything
+else is "not catalogued" and must get a fresh publish of its own.
+
+**Fix — closes the race, not just narrows it:**
+
+- `ProjectRegistry.has_pending_unpublish_for_ref(entity_type, entity_slug, ref_guid)`
+  (`registry.py`) — the guard: true when a `doc_source_unpublish` outbox row targeting exactly
+  this GUID is still `pending`/`running` for this entity.
+- `_sync_egeria_read_back` (`web/routes/doc_sources.py`) — skips adopting any remote
+  reference this guard flags, rather than writing a soon-to-be-invalid ref guid onto a local
+  row at all. The next read-back (after the unpublish actually lands) sees the reference is
+  genuinely gone and adopts nothing; a genuinely new source at the same URL gets its own
+  independent, correctly-linked reference via the self-heal below.
+- `doc_source_egeria.publish_doc_source` — hardened at the SAME hazard on its own path (not
+  the one that fired in this incident, but the identical shape): `_find_ref_guid` matches by
+  qualifiedName GLOBALLY, with no check on whether the match is mid-deletion. New
+  `is_ref_unpublishing: Callable[[str], bool] | None` parameter — when the found (or a
+  caller-supplied `known_ref_guid`) candidate is flagged by it, the candidate is abandoned and
+  a fresh, independent `ExternalReference` is created instead of reusing one that may vanish
+  out from under the new link. `egeria_outbox.py`'s `_create_doc_source_publish` supplies this
+  as `registry.has_pending_unpublish_for_ref` bound to the entity — `doc_source_egeria.py`
+  stays standalone (no registry import) per its own design, the caller with the registry
+  provides the check.
+- **A latent bug found while wiring this in, before it shipped:** `_create_doc_source_publish`
+  used to short-circuit ("already done, nothing to write") on `egeria_external_ref_guid`
+  ALONE — exactly the field the adoption race can set without ever linking. Re-queuing a
+  publish for a ref-but-no-link row (the self-heal below) would have hit that short-circuit
+  and returned immediately WITHOUT ever calling `link_external_reference` — defeating the
+  self-heal for precisely the shape it exists to fix. Now short-circuits only when BOTH
+  `egeria_external_ref_guid` AND `egeria_link_relationship_guid` are set; a ref-only row is
+  passed through to `publish_doc_source` via a new `known_ref_guid` parameter, which links
+  THAT reference (still subject to the same `is_ref_unpublishing` check) rather than minting a
+  second, independent one for the same local row.
+
+### Root cause 2 — dishonest state: a pure four-→-five-state function
+
+`_compute_egeria_state` (round 1) trusted `egeria_external_ref_guid` alone as proof of
+"catalogued" — which is also precisely what let an adoption-race row (ref guid set, never
+linked) render as fully catalogued. Design asked for the fix to take a specific shape: a
+small, PURE function — row facts in, state word out, no side effects, no branching on how the
+row got there — so the vocabulary can't drift out of sync with reality again the way a bare
+ref guid drifted into meaning "catalogued".
+
+`derive_doc_source_egeria_state(*, ref_guid, link_guid, is_published, outbox_row)` (new,
+`web/routes/doc_sources.py`) is exactly that function:
+
+1. `catalogued` — `ref_guid` AND `link_guid` BOTH non-empty.
+2. `local_only` — the resource itself isn't published (only reached once rule 1 doesn't hold —
+   a genuinely complete ref+link still reads `catalogued` even if the publish-status flag is
+   stale, same precedence the pre-fix code already had).
+3. `publishing` — the outbox row is `pending`/`running`.
+4. `publish_failed` — the outbox row is `failed`/`dead`; detail is the row's own `last_error`.
+5. `not_catalogued` (**new**) — everything else, most notably `ref_guid` set, `link_guid`
+   EMPTY, nothing pending/running. Rendered honestly ("local — not catalogued (publish
+   needed)") instead of the old code's `publishing` with nothing backing that claim — a second,
+   distinct find-absence-as-answer bug from the one round 1 already fixed (that one was about
+   the header note being empty; this one is about the STATE WORD ITSELF being wrong).
+
+`_compute_egeria_state` is now a thin orchestrator around the pure function, owning the one
+side effect: self-healing. A row landing on `not_catalogued` while published with no outbox
+row in flight means the add/read-back path missed enqueueing a publish for it — queued right
+here, same as round 1's self-heal — and now **logged** (`log.warning`) when it fires, per
+design's ask: self-heal firing means something upstream should have queued it already, which
+is worth knowing about even though the recovery itself is graceful, not the expected steady
+state.
+
+`tests/test_doc_sources_routes.py::TestDeriveEgeriaStateTable` (13 new tests) is the required
+table test, covering ref+link present/absent × every outbox status
+(pending/running/failed/dead/done/none) plus the `is_published`-vs-`catalogued` precedence
+case above.
+
+### Root cause 3 — the page never refreshed after the background drain finished
+
+The add/remove HTTP response necessarily reflects the PRE-drain state —
+`_attempt_outbox_row_immediately` fires the real Egeria write on a background daemon thread
+specifically so the request isn't held open for it. The gap: nothing EVER re-fetched
+afterward. Live-verified with the "pdr" retry: the server-side drain completed in ~4s (ref +
+link created, outbox row `done`, visible in Egeria within seconds) while the page kept
+showing "local — publishing…" indefinitely, because no code path re-rendered the block once
+that thread finished.
+
+**Fix** (`web/static/next/stages/enrichment.js`) — polling, matching this codebase's existing
+idiom for "started an operation off the request thread, need to reflect its own completion"
+(`pollActivity`, `re-api.js`), rather than the alternative of having the add endpoint block on
+the drain (rejected: it would reintroduce exactly the request-blocked-on-an-Egeria-round-trip
+problem `_attempt_outbox_row_immediately` was built to avoid). `renderDocSources` was split
+into a fetch step and `renderDocSourcesFromData` (render-only, reusable from a poll tick
+without the "Loading…" flicker a full re-render would cause every 2s); whenever any row is
+`publishing` after a render, `scheduleDocSourcesPoll` re-fetches the same `GET` every 2s,
+capped at 30s total, re-rendering from each response until nothing is `publishing` anymore or
+the cap is hit — at which point the block simply shows whatever real state the last fetch
+returned (never spins forever on a row Egeria genuinely cannot reach). A fresh call to
+`renderDocSources` (recheck/remove/add, or navigating to a different slug) cancels any poll in
+flight from a prior render.
+
+### Tests (round 4)
+
+**Python** — 166 tests total in the doc-sources area now pass (up from the round-3 baseline),
+run via `uv run pytest tests/test_doc_sources_registry.py tests/test_doc_source_egeria.py
+tests/test_egeria_outbox.py tests/test_doc_sources_routes.py -q`. New:
+
+- `tests/test_doc_sources_registry.py` (6 new) — `has_pending_unpublish_for_ref`: false with no
+  rows, false for an empty guid, true when `pending`, true when `running` (via
+  `claim_due_outbox_elements`), false once `done`, and scoped correctly to the right
+  guid/entity (a pending unpublish for a different ref or a different entity doesn't count).
+- `tests/test_doc_source_egeria.py` (5 new) — `publish_doc_source` does not reuse a found ref
+  flagged by `is_ref_unpublishing` (creates fresh instead); reuse is unaffected when nothing
+  flags it; a `known_ref_guid` links directly with NO `_find_ref_guid` lookup (poisoned-lookup
+  test); a flagged `known_ref_guid` is abandoned, falling through to find-or-create.
+- `tests/test_egeria_outbox.py::TestDocSourceOutbox` (3 new) — the publish creator
+  short-circuits ONLY when both guids are already set (poisoned-`publish_doc_source` test); a
+  ref-only row still calls `publish_doc_source` (with `known_ref_guid` threaded through) and
+  the write-back sets both guids; the `is_ref_unpublishing` callback passed through is bound to
+  the right entity (a pending unpublish for a different entity/slug does not flag a ref as
+  unpublishing here).
+- `tests/test_doc_sources_routes.py::TestDeriveEgeriaStateTable` (13 new) — the required pure-
+  function table test, see above.
+- `tests/test_doc_sources_routes.py::TestAdoptionRaceReadBack` (1 new,
+  `test_a_get_landing_mid_unpublish_does_not_adopt_the_reference_being_deleted`) — reproduces
+  the exact live timeline at the route/outbox level: a fully-catalogued source is removed
+  (`_NeverStartsThread` keeps its `doc_source_unpublish` row deterministically `pending`, i.e.
+  "still in flight"), a `GET` lands in that window with `read_back_doc_sources` stubbed to
+  report the still-live reference (matching real Egeria behavior before the delete lands), and
+  the new same-URL source is then declared. Asserts: the read-back adopts nothing (no local row
+  at all right after the `GET`); the newly-declared source gets `egeria_external_ref_guid ==
+  ""` and its OWN fresh `doc_source_publish` outbox row (never silently treated as
+  already-published); and once the unpublish completes and Egeria's read-back correctly
+  reports the reference gone, nothing is resurrected.
+  - **Verified this test fails against pre-fix code**: stashed the round-4 source changes
+    (keeping the round-4 test files), re-ran `TestAdoptionRaceReadBack` and
+    `TestDeriveEgeriaStateTable` — all 14 failed, the race test specifically on
+    `registry.list_doc_sources(...) == []` after the read-back (pre-fix code left the
+    being-deleted reference adopted onto a ghost local row, exactly the live incident).
+    Restored the fix; all 166 tests in the doc-sources area pass again.
+- Full suite: **see this session's own report for the run this section doesn't duplicate.**
+
+**JS render harness** (`frontend-build/test-harness/doc-sources-enrichment.test.mjs`, 10 tests
+total, all passing via `/usr/local/bin/node --test`) — 2 new:
+
+- `'the not_catalogued state (round 4, 2026-09-29) renders its own honest wording, never
+  "publishing"'` — a fixture row with `egeria_state: 'not_catalogued'` renders "local — not
+  catalogued (publish needed)" and neither "publishing" nor "catalogued in Egeria".
+- `'a "publishing" row polls the GET endpoint and updates to catalogued without any user
+  action (round 4, 2026-09-29)'` — a fixture starts `publishing`; `globalThis.fetch` flips to a
+  `catalogued` fixture on the second call; `globalThis.setTimeout` is temporarily replaced with
+  an immediate-firing version (the real 2s/30s budget would make a unit test slow); asserts the
+  row updates to "catalogued in Egeria" with no click, no reload — nothing but the scheduled
+  poll firing on its own. Full harness run: 24 tests, 0 failed, no regressions in the other
+  three harness files.
+
+### Does the fix close the race, or only narrow the window?
+
+**Closes it.** The PR/CI notes mentioned the owner was separately re-trying the gate with a
+manual pause between remove and add, to avoid triggering the race by hand — this fix makes
+that pause unnecessary rather than only documenting it as a workaround. The guard
+(`has_pending_unpublish_for_ref`) is checked inside the SAME transaction-scoped read that would
+otherwise adopt or reuse a reference, not a time-based delay or a retry-until-safe loop — there
+is no window during which an unsafe adoption can still slip through between the check and the
+read-back's own upsert, because the check happens immediately before that upsert on every
+single read-back pass, not once at some earlier point that could go stale. The remaining
+theoretical edge (an unpublish enqueued but not yet WRITTEN to the outbox table at the exact
+instant a concurrent read-back's guard-check runs) is not a race this fix can leave open by
+construction, because `remove_doc_source`'s local delete and `enqueue_doc_source_unpublish`'s
+outbox insert happen inside the same request before any response is returned — by the time a
+client could possibly issue the racing `GET`, the outbox row already exists for the guard to
+see.
+
+### Re-gate scope (2026-09-29, confirmed by design)
+
+Item 5 on `laz_local_adventureworks` only, covering all three of: add → "catalogued in Egeria"
+appears BY ITSELF (no manual refresh) within a few seconds; remove → gone in Egeria; and
+remove-then-re-add of the SAME URL → catalogued, not stuck. The route-level race test above
+and the state/polling harness tests are this session's evidence for the same three outcomes at
+the test level; live re-verification against the real shared registry/Egeria is the project
+owner's own next gate pass, not repeated here (see this session's own report for what was and
+wasn't attempted live in this round).
+
 ## Judgment calls and gaps flagged
 
 1. **Both entity types built, not just database** (see above) — no scoping-out needed.
@@ -628,3 +844,11 @@ reasonable price for this fix's own test to pay.
    the four-state classification is independently pinned by the twelve unit tests in
    `test_doc_source_probe.py` against a broader range of real HTTP status codes/timeouts than three
    URLs would exercise anyway.
+7. **Round 4's live verification is test-level only, not re-run against the real shared
+   registry/Egeria in this round.** The route/outbox race test, the pure-function table test,
+   and the frontend harness's polling test are this session's evidence that the fix behaves
+   correctly; per this session's coordination posture, and because the PR/CI dispatch names the
+   project owner's own re-gate on `laz_local_adventureworks` as the next live check (see "Re-gate
+   scope" above), a fresh live reproduction against the shared platform was left to that pass
+   rather than duplicated here. If that gate finds anything this round's tests didn't anticipate,
+   it is a real gap in this fix, not merely an unverified claim about it.

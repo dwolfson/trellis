@@ -1297,6 +1297,73 @@ class TestDocSourceOutbox:
         with pytest.raises(OutboxApplyError, match="network down"):
             apply_element(self._unpublish_row("ref-1"), OutboxClients(), lambda qn: "")
 
+    # ── Adoption-race fix, round 4 (2026-09-29) ──────────────────────────────
+    # A ref guid ALONE must not short-circuit the publish creator: only a
+    # row with BOTH ref_guid and link_guid already set is genuinely done.
+
+    def test_publish_short_circuits_only_when_both_guids_are_already_set(
+        self, doc_registry, monkeypatch,
+    ):
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+        doc_registry.set_doc_source_egeria_ref(
+            "database", "adventureworks", row["id"], "ref-already", "link-already")
+
+        def poisoned(source, asset_guid, **kw):
+            raise AssertionError("publish_doc_source must not be called when ref+link are both set")
+
+        monkeypatch.setattr("resource_explorer.doc_source_egeria.publish_doc_source", poisoned)
+
+        guid = apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
+
+        assert guid == "ref-already"
+
+    def test_publish_still_runs_and_links_when_ref_is_set_but_link_is_not(
+        self, doc_registry, monkeypatch,
+    ):
+        # The exact self-heal shape: a row adopted by read-back carries a ref
+        # guid but no link guid. Re-queueing its publish must actually LINK
+        # it, not treat the bare ref guid as "already done" (the bug that
+        # would have silently left it unlinked forever).
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+        doc_registry.set_doc_source_egeria_ref("database", "adventureworks", row["id"], "ref-only")
+
+        calls = []
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: calls.append(kw.get("known_ref_guid")) or
+                {"ok": True, "ref_guid": "ref-only", "link_guid": "link-now", "error": ""},
+        )
+
+        guid = apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
+
+        assert guid == "ref-only"
+        assert calls == ["ref-only"], "the known (already-adopted) ref guid must be passed through"
+        updated = doc_registry.get_doc_source("database", "adventureworks", row["id"])
+        assert updated["egeria_external_ref_guid"] == "ref-only"
+        assert updated["egeria_link_relationship_guid"] == "link-now"
+
+    def test_publish_passes_the_unpublish_guard_bound_to_this_entity(self, doc_registry, monkeypatch):
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://docs.example/x")
+
+        captured = {}
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source",
+            lambda source, asset_guid, **kw: captured.update(kw) or
+                {"ok": True, "ref_guid": "ref-1", "link_guid": "link-1", "error": ""},
+        )
+
+        apply_element(self._publish_row(row["id"]), OutboxClients(), lambda qn: "SHOULD-NOT-BE-CALLED")
+
+        assert callable(captured.get("is_ref_unpublishing"))
+        # Bound to THIS entity — a pending unpublish enqueued for a
+        # different entity/slug must not register as unpublishing here.
+        from resource_explorer.egeria_outbox import enqueue_doc_source_unpublish
+
+        enqueue_doc_source_unpublish(doc_registry, "database", "some-other-db", "ref-elsewhere")
+        assert captured["is_ref_unpublishing"]("ref-elsewhere") is False
+        enqueue_doc_source_unpublish(doc_registry, "database", "adventureworks", "ref-here")
+        assert captured["is_ref_unpublishing"]("ref-here") is True
+
 
 class TestElementScopedDrain:
     """Egeria publish-state fix round 3 (2026-09-29): `add_doc_source`/the

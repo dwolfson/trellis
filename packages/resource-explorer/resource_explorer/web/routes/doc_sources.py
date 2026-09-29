@@ -126,6 +126,19 @@ def _sync_egeria_read_back(registry: ProjectRegistry, entity_type: str, slug: st
     for ref in remote:
         if ref["ref_guid"] in known_guids or ref["url"] in known_urls:
             continue
+        # Adoption-race guard (2026-09-29) — found live: a source removed a
+        # moment earlier enqueues a `doc_source_unpublish` for its ref guid;
+        # if THIS read-back runs before that unpublish's detach+delete
+        # actually lands in Egeria, the still-live reference looks exactly
+        # like a legitimate "declared elsewhere" one. Skip it — the next
+        # read-back (after the unpublish completes) will correctly see it's
+        # gone, and a genuinely new source at the same URL self-heals its
+        # own fresh publish via `_compute_egeria_state` rather than adopting
+        # a reference that is being deleted out from under it.
+        if registry.has_pending_unpublish_for_ref(entity_type, slug, ref["ref_guid"]):
+            log.info("doc sources: read-back skip — %s (%s) has a pending/running unpublish, "
+                      "not adopting it for %s/%s", ref["url"], ref["ref_guid"], entity_type, slug)
+            continue
         registry.upsert_doc_source_from_egeria(
             entity_type, slug, url=ref["url"], ref_guid=ref["ref_guid"], label=ref.get("label", ""),
         )
@@ -155,11 +168,14 @@ class DocSourceOut(BaseModel):
     probe_error: str = ""
     probed_at: str = ""
     egeria_external_ref_guid: str = ""
-    # Egeria publish-state fix (2026-09-29) — exactly one of four states, never
-    # empty: "catalogued" / "publishing" / "publish_failed" / "local_only".
-    # See _compute_egeria_state's docstring for what each means and how it's
-    # derived; find-absence-as-answer is exactly the bug this replaces (an
-    # empty publish_note that meant four different things indistinguishably).
+    # Egeria publish-state fix (2026-09-29, extended round 4 same day) — one
+    # of FIVE states, never empty: "catalogued" / "publishing" /
+    # "publish_failed" / "not_catalogued" / "local_only". See
+    # `derive_doc_source_egeria_state`'s docstring for what each means and
+    # how it's derived (a small, pure function — no branching on how the row
+    # got here); find-absence-as-answer is exactly the bug this replaces (an
+    # empty publish_note that meant several things indistinguishably, and
+    # later, "publishing" rendered for a row with nothing actually pending).
     egeria_state: str = "local_only"
     egeria_state_detail: str = ""
 
@@ -181,49 +197,99 @@ def _out(row: dict) -> DocSourceOut:
                             if k not in ("egeria_state", "egeria_state_detail")})
 
 
-def _compute_egeria_state(registry: ProjectRegistry, entity_type: str, slug: str,
-                           row: dict, is_published: bool) -> tuple[str, str]:
-    """The one place that decides which of the four states a row is in, and
-    the only place `doc_source_publish` rows get (re-)queued from a read.
+def derive_doc_source_egeria_state(*, ref_guid: str, link_guid: str, is_published: bool,
+                                    outbox_row: dict | None) -> tuple[str, str]:
+    """Pure derivation: the word a row's Egeria linkage gets, computed ONLY
+    from persisted facts passed in — never from which code path produced
+    them. Design session (2026-09-29, round 4, after the adoption-race fix)
+    asked for exactly this shape: every earlier version of this decision
+    trusted `ref_guid` alone as proof of "catalogued", which is also
+    precisely what let a read-back-adopted reference (ref guid set, no link
+    ever created — see `doc_source_egeria.publish_doc_source`'s adoption-race
+    guard) render as fully catalogued when it was never actually linked to
+    THIS asset.
 
-    1. `catalogued` — the row already carries a real `egeria_external_ref_
-       guid`. Detail is the GUID itself (the brief's "surfaced somewhere
-       accessible" — the frontend puts it in a `title` attribute).
-    2. `local_only` — the resource itself isn't published yet. Same rule as
-       before this fix (`egeria_linkage.describe_publish_status`), unchanged.
-    3. `publishing` — the resource IS published, no ref guid yet, and an
-       outbox row for this source is `pending`/`running`.
-    4. `publish_failed` — same, but the outbox row is `failed` (still being
-       retried) or `dead` (retries exhausted — worded the same way per the
-       fixed four-state vocabulary; a `dead` row is the rarer case, needs a
-       human via the RFA `record_drain_outcome` already raises, and is not
-       given a fifth wording of its own).
+    No side effects, no branching on "how we got here" — same `row`/
+    `outbox_row` shape whether the row was declared locally, adopted by
+    read-back, or is being re-derived on a plain `GET`. See
+    `tests/test_doc_sources_routes.py::TestDeriveEgeriaStateTable` for the
+    full input-combination table this is pinned against.
 
-    Self-heals the gap this fix exists for: if the resource is published,
-    the row has no ref guid, and NO outbox row is tracking it at all — a
-    source declared before this fix landed, or a narrow race between
-    "declare" and "this resource's publish landing" — one is queued right
-    here rather than the row sitting unexplained forever. Idempotent: once
-    queued, the next call finds the row and stops re-queuing.
+    - `catalogued` — BOTH `ref_guid` and `link_guid` are non-empty. This is
+      the only state that means "this source has a real
+      `ExternalReferenceLink` to THIS asset in Egeria", not merely "an
+      `ExternalReference` element with this qualifiedName exists somewhere".
+      Detail is the ref guid (the brief's "surfaced somewhere accessible" —
+      the frontend puts it in a `title` attribute).
+    - `local_only` — the resource itself isn't published yet. Same rule as
+      before this fix (`egeria_linkage.describe_publish_status`), unchanged.
+    - `publishing` — `outbox_row["status"]` is `pending`/`running`.
+    - `publish_failed` — `outbox_row["status"]` is `failed` (still retrying)
+      or `dead` (retries exhausted — worded the same way; a `dead` row is
+      the rarer case, already reported to a human via the outbox's own
+      `record_drain_outcome` → RFA path, and is not given a wording of its
+      own). Detail is the row's own `last_error`, never a generic message.
+    - `not_catalogued` — everything else: most notably `ref_guid` set,
+      `link_guid` EMPTY, and no outbox row in flight — a reference exists
+      but was never (yet) linked to this asset, whether from a read-back
+      adoption, a crash between create and link, or a row stranded before
+      this fix existed. Rendered honestly rather than the old code's
+      `publishing` (a real find-absence-as-answer bug: nothing was pending,
+      nothing was running, the row said so anyway). The self-heal that
+      queues a fresh publish for this exact shape is the ORCHESTRATOR's job
+      (`_compute_egeria_state`, below) — this function has no side effects
+      and never decides to enqueue anything.
     """
-    ref_guid = row.get("egeria_external_ref_guid") or ""
-    if ref_guid:
+    ref_guid = ref_guid or ""
+    link_guid = link_guid or ""
+    if ref_guid and link_guid:
         return "catalogued", ref_guid
     if not is_published:
         return "local_only", ""
-    outbox_row = registry.get_doc_source_outbox_row(entity_type, slug, row["id"])
-    if outbox_row is None:
+    status = (outbox_row or {}).get("status")
+    if status in ("pending", "running"):
+        return "publishing", ""
+    if status in ("failed", "dead"):
+        return "publish_failed", (outbox_row or {}).get("last_error") or "unknown error"
+    return "not_catalogued", ""
+
+
+def _compute_egeria_state(registry: ProjectRegistry, entity_type: str, slug: str,
+                           row: dict, is_published: bool) -> tuple[str, str]:
+    """The one place that calls the pure `derive_doc_source_egeria_state`
+    AND owns this feature's one side effect: self-healing.
+
+    A row landing on `not_catalogued` while the resource IS published and no
+    outbox row is tracking it means the add/read-back path missed
+    enqueueing a publish for it — a source declared before this fix landed,
+    a narrow race between "declare" and "this resource's publish landing",
+    or a read-back adoption that set a ref guid without a link (the
+    adoption-race fix's own leftover, since read-back cannot itself capture
+    the link relationship's GUID). One is queued right here rather than the
+    row sitting unexplained forever, LOGGED because this firing means
+    something upstream should have queued it already (design session,
+    2026-09-29, round 4) — the self-heal recovering gracefully doesn't make
+    it the expected steady state. Idempotent: once queued, the next call
+    finds the pending/running row and `derive_doc_source_egeria_state`
+    reports `publishing` instead.
+    """
+    ref_guid = row.get("egeria_external_ref_guid") or ""
+    link_guid = row.get("egeria_link_relationship_guid") or ""
+    outbox_row = registry.get_doc_source_outbox_row(entity_type, slug, row["id"]) if is_published else None
+    state, detail = derive_doc_source_egeria_state(
+        ref_guid=ref_guid, link_guid=link_guid, is_published=is_published, outbox_row=outbox_row,
+    )
+    if state == "not_catalogued" and outbox_row is None:
+        log.warning(
+            "doc sources: self-heal — %s/%s source %s is published with ref_guid=%r, "
+            "link_guid=%r, and no outbox row in flight; the add/read-back path missed "
+            "enqueueing a publish for it — queuing one now",
+            entity_type, slug, row["id"], ref_guid, link_guid,
+        )
         element_id = enqueue_doc_source_publish(registry, entity_type, slug, row["id"], row["url"])
         _attempt_outbox_row_immediately(element_id)
         return "publishing", ""
-    status = outbox_row.get("status")
-    if status in ("failed", "dead"):
-        return "publish_failed", outbox_row.get("last_error") or "unknown error"
-    # 'pending' / 'running' / a 'done' row whose write-back hasn't been read
-    # in THIS call yet (see _create_doc_source_publish — write-back happens
-    # inside the same drain pass that marks the row done, so this is a rare,
-    # self-correcting race, not a steady state).
-    return "publishing", ""
+    return state, detail
 
 
 @router.get("/{entity_type}/{slug}", response_model=DocSourcesResponse)

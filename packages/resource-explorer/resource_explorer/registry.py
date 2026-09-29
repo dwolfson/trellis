@@ -4256,6 +4256,41 @@ class ProjectRegistry:
                 return row
         return None
 
+    def has_pending_unpublish_for_ref(self, entity_type: str, entity_slug: str,
+                                       ref_guid: str) -> bool:
+        """True when a `doc_source_unpublish` outbox row targeting exactly
+        this `ExternalReference` GUID is still `pending`/`running` for this
+        entity — the adoption-race guard (found live 2026-09-29: a source
+        removed at 15:21:41 enqueued an unpublish for `b9925119…`; a
+        DIFFERENT source declared a second later, at the same URL, adopted
+        that SAME reference — concurrently being deleted — via the read-back
+        `url` fallback in `upsert_doc_source_from_egeria`, ending up with a
+        ref guid and no link guid, no outbox row of its own).
+
+        Callers (`web/routes/doc_sources.py`'s `_sync_egeria_read_back`,
+        `doc_source_egeria.publish_doc_source`'s reuse-by-qualifiedName step
+        via the `is_ref_unpublishing` hook) must check this BEFORE adopting
+        or reusing a found `ExternalReference` GUID — a reference with an
+        in-flight unpublish is not safe to adopt no matter how it was found,
+        since the unpublish may delete it (and, per `unpublish_doc_source`'s
+        own contract, only detaches+deletes — never re-creates)."""
+        if not ref_guid:
+            return False
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM egeria_outbox WHERE entity_type=? AND entity_slug=? "
+                "AND element_kind='doc_source_unpublish' AND status IN ('pending', 'running')",
+                (entity_type, entity_slug),
+            ).fetchall()
+        for r in rows:
+            try:
+                payload = json.loads(r["payload_json"] or "{}")
+            except ValueError:
+                continue
+            if payload.get("ref_guid") == ref_guid:
+                return True
+        return False
+
     def list_resources_by_tag(self, tag: str) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(

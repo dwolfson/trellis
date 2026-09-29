@@ -126,13 +126,40 @@ def _find_ref_guid(client, qualified_name: str) -> str:
 
 
 def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platform_url: str,
-                        user_id: str, user_password: str, display_name: str = "") -> dict:
+                        user_id: str, user_password: str, display_name: str = "",
+                        is_ref_unpublishing=None, known_ref_guid: str = "") -> dict:
     """Create (or reuse) an `ExternalReference` for one declared source and
     link it to `asset_guid`. Returns `{"ok": bool, "ref_guid": str,
     "link_guid": str, "error": str}` — never raises for an ordinary Egeria
     failure, so a batch of several sources can publish the ones that
     succeed and report the ones that didn't rather than aborting the whole
-    publish (see module docstring)."""
+    publish (see module docstring).
+
+    `is_ref_unpublishing` (optional `Callable[[str], bool]`) — the adoption-
+    race guard (2026-09-29): `_find_ref_guid` matches by `qualified_name`
+    alone (`ExternalReference::<url>`), which is GLOBAL — it does not check
+    whether the match it found is currently being detached/deleted by a
+    concurrent `doc_source_unpublish`. Passed by `egeria_outbox.py`'s
+    `_create_doc_source_publish` as `registry.has_pending_unpublish_for_ref`
+    bound to this entity, so this module stays standalone (no registry
+    import — see module docstring) while still refusing to reuse a
+    reference someone else is mid-way through deleting. A caller that
+    doesn't pass one (e.g. `publish_local_doc_sources`'s full-publish sweep,
+    which is not exposed to this specific race the same way) gets the old
+    always-reuse behavior.
+
+    `known_ref_guid` (round 4, 2026-09-29) — when the caller's own local row
+    already carries a `egeria_external_ref_guid` (typically: adopted by a
+    read-back, or a prior attempt that created the reference but crashed
+    before linking it), pass it here to skip the `_find_ref_guid` lookup and
+    go straight to linking THAT reference — the self-heal path
+    (`_compute_egeria_state`) re-queues exactly this shape (ref present,
+    link missing) and must NOT mint a second, independent `ExternalReference`
+    for the same row when the first one is still perfectly good. Still
+    subject to the same `is_ref_unpublishing` guard: a known ref_guid that
+    turns out to have a pending/running unpublish is abandoned (falls
+    through to the normal find-or-create flow below) rather than linked to a
+    reference that may be deleted out from under it."""
     url = (source.get("url") or "").strip()
     if not url:
         return {"ok": False, "ref_guid": "", "link_guid": "", "error": "source has no URL"}
@@ -142,7 +169,24 @@ def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platf
     type_label = _SOURCE_TYPE_LABEL.get(source_type, "documentation")
     try:
         client = _client(view_server, platform_url, user_id, user_password)
-        ref_guid = _find_ref_guid(client, qualified_name)
+        ref_guid = (known_ref_guid or "").strip()
+        if ref_guid and is_ref_unpublishing is not None and is_ref_unpublishing(ref_guid):
+            log.info("doc source: known ref %r for %s has a pending/running unpublish — "
+                      "abandoning it, looking up/creating fresh", ref_guid, qualified_name)
+            ref_guid = ""
+        if not ref_guid:
+            ref_guid = _find_ref_guid(client, qualified_name)
+        if ref_guid and is_ref_unpublishing is not None and is_ref_unpublishing(ref_guid):
+            # This reference exists but is concurrently being torn down by a
+            # pending/running unpublish — not safe to adopt (it may vanish
+            # out from under the link we're about to create, or the unpublish
+            # may run AFTER our link and delete the reference we just linked
+            # to, leaving this source pointed at nothing). Treat it as
+            # not-found: a fresh, independent ExternalReference is created
+            # below instead of racing the one being deleted.
+            log.info("doc source: found %r (%s) but it has a pending/running unpublish — "
+                      "creating a new reference instead of adopting it", qualified_name, ref_guid)
+            ref_guid = ""
         if not ref_guid:
             body = {
                 "class": "NewElementRequestBody",

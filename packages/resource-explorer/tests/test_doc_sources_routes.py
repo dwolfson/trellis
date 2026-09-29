@@ -252,7 +252,13 @@ class TestEgeriaPublishStateFix:
         registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
         added = client.post("/api/doc-sources/database/adventureworks",
                              json={"url": "https://x"}).json()
-        registry.set_doc_source_egeria_ref("database", "adventureworks", added["id"], "ref-guid-9")
+        # Adoption-race fix (round 4, 2026-09-29): "catalogued" requires BOTH
+        # the ref guid AND the link guid — a ref guid alone is exactly the
+        # shape of the incident this fix closes (see
+        # test_list_reports_ref_without_link_and_no_outbox_as_not_catalogued
+        # below for that case specifically).
+        registry.set_doc_source_egeria_ref("database", "adventureworks", added["id"],
+                                            "ref-guid-9", "link-guid-9")
 
         resp = client.get("/api/doc-sources/database/adventureworks")
 
@@ -262,6 +268,38 @@ class TestEgeriaPublishStateFix:
         assert row["egeria_state_detail"] == "ref-guid-9"
         assert body["in_egeria_count"] == 1
         assert body["local_count"] == 0
+
+    def test_list_reports_ref_without_link_and_no_outbox_as_not_catalogued(
+        self, client, monkeypatch, registry,
+    ):
+        # The state half of the adoption-race fix (round 4, 2026-09-29): a
+        # row with a ref guid but NO link guid, and a doc_source_publish
+        # outbox row already in flight for it (so no self-heal re-queue
+        # fires), must never read "catalogued" OR "publishing" with nothing
+        # backing that claim — see derive_doc_source_egeria_state.
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+                             lambda *a, **kw: [])
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+        added = client.post("/api/doc-sources/database/adventureworks",
+                             json={"url": "https://x"}).json()
+        registry.set_doc_source_egeria_ref("database", "adventureworks", added["id"], "ref-guid-9")
+        # A doc_source_publish row already exists from the add above; mark it
+        # 'done' so the pure function's pending/running/failed/dead branches
+        # all miss and it falls through to `not_catalogued` rather than the
+        # orchestrator's self-heal re-queueing a duplicate.
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_row_id = next(r["id"] for r in rows if r["element_kind"] == "doc_source_publish")
+        with registry._conn() as conn:
+            conn.execute("UPDATE egeria_outbox SET status='done' WHERE id=?", (publish_row_id,))
+
+        resp = client.get("/api/doc-sources/database/adventureworks")
+
+        row = next(s for s in resp.json()["sources"] if s["id"] == added["id"])
+        assert row["egeria_state"] == "not_catalogued"
+        assert row["egeria_state"] != "catalogued"
+        assert row["egeria_state"] != "publishing"
 
     def test_list_reports_publish_failed_with_the_real_reason(self, client, monkeypatch, registry):
         monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
@@ -441,3 +479,195 @@ class TestImmediateOutboxAttempt:
         publish_rows = [r for r in rows if r["element_kind"] == "doc_source_publish"]
         assert len(publish_rows) == 1
         assert publish_rows[0]["status"] in ("pending", "running")
+
+
+class TestDeriveEgeriaStateTable:
+    """`derive_doc_source_egeria_state` — design session, 2026-09-29, round 4:
+    a small PURE function (row facts in -> state word out, no side effects,
+    no branching on how the row got there), table-tested over every
+    meaningful input combination so the vocabulary can't drift out of sync
+    with reality again the way `ref_guid` alone drifted into meaning
+    "catalogued" even when nothing was ever linked."""
+
+    def _derive(self, **kw):
+        from resource_explorer.web.routes.doc_sources import derive_doc_source_egeria_state
+        defaults = dict(ref_guid="", link_guid="", is_published=True, outbox_row=None)
+        defaults.update(kw)
+        return derive_doc_source_egeria_state(**defaults)
+
+    def test_unpublished_resource_with_no_real_link_is_local_only(self):
+        assert self._derive(is_published=False) == ("local_only", "")
+        assert self._derive(is_published=False, outbox_row={"status": "failed"}) == ("local_only", "")
+
+    def test_a_genuinely_complete_ref_and_link_is_catalogued_even_if_is_published_reads_false(self):
+        # `catalogued` is checked first, same precedence the pre-fix code
+        # already had (a real ref+link is stronger evidence than the
+        # resource-level publish flag, which is a separate, independently
+        # tracked fact -- e.g. it could go stale without this source's own
+        # link changing). Only the ABSENCE of a complete ref+link falls
+        # through to the is_published gate.
+        assert self._derive(is_published=False, ref_guid="r", link_guid="l") == ("catalogued", "r")
+
+    def test_ref_and_link_both_present_is_catalogued(self):
+        assert self._derive(ref_guid="ref-1", link_guid="link-1") == ("catalogued", "ref-1")
+
+    def test_ref_present_link_present_still_catalogued_even_with_a_stale_done_outbox_row(self):
+        # Once truly linked, a leftover 'done' outbox row changes nothing.
+        assert self._derive(
+            ref_guid="ref-1", link_guid="link-1", outbox_row={"status": "done"},
+        ) == ("catalogued", "ref-1")
+
+    def test_ref_only_no_link_no_outbox_row_is_not_catalogued(self):
+        # The adoption-race shape exactly: a ref guid with nothing linking
+        # it and nothing in flight must not read "publishing" OR
+        # "catalogued".
+        assert self._derive(ref_guid="ref-1", link_guid="") == ("not_catalogued", "")
+
+    def test_neither_guid_no_outbox_row_is_not_catalogued(self):
+        assert self._derive(ref_guid="", link_guid="") == ("not_catalogued", "")
+
+    def test_ref_only_with_pending_outbox_row_is_publishing(self):
+        assert self._derive(
+            ref_guid="ref-1", link_guid="", outbox_row={"status": "pending"},
+        ) == ("publishing", "")
+
+    def test_neither_guid_with_running_outbox_row_is_publishing(self):
+        assert self._derive(outbox_row={"status": "running"}) == ("publishing", "")
+
+    def test_ref_only_with_failed_outbox_row_is_publish_failed_with_the_real_reason(self):
+        assert self._derive(
+            ref_guid="ref-1", outbox_row={"status": "failed", "last_error": "connection refused"},
+        ) == ("publish_failed", "connection refused")
+
+    def test_dead_outbox_row_is_publish_failed_worded_the_same_as_failed(self):
+        assert self._derive(
+            outbox_row={"status": "dead", "last_error": "retries exhausted"},
+        ) == ("publish_failed", "retries exhausted")
+
+    def test_failed_outbox_row_with_no_last_error_still_gets_a_non_generic_fallback(self):
+        state, detail = self._derive(outbox_row={"status": "failed", "last_error": ""})
+        assert state == "publish_failed"
+        assert detail  # non-empty -- never silently blank
+
+    def test_ref_and_link_present_beats_a_pending_outbox_row(self):
+        # A pending row for a DIFFERENT reason (e.g. a stale queued retry
+        # from before the ref got linked by another path) must not mask a
+        # genuinely catalogued state.
+        assert self._derive(
+            ref_guid="ref-1", link_guid="link-1", outbox_row={"status": "pending"},
+        ) == ("catalogued", "ref-1")
+
+    def test_link_without_ref_is_not_catalogued(self):
+        # Not a real shape this codebase produces, but the pure function
+        # must not special-case it into "catalogued" either -- BOTH guids
+        # are required, not "either one".
+        assert self._derive(ref_guid="", link_guid="link-only") == ("not_catalogued", "")
+
+
+class TestAdoptionRaceReadBack:
+    """The actual root cause, reproduced at the route/outbox level: found
+    live 2026-09-29 on database 8813. Timeline —
+
+      15:21:41 — a source at `https://egeria.ai` is removed. Its
+                 ExternalReference (`b9925119…`) is detached+deleted through
+                 a `doc_source_unpublish` outbox row, enqueued but not yet
+                 applied.
+      15:21:42 — a DIFFERENT source, same URL, different label/type
+                 ("not-adventureworks", installation_guide), is declared.
+
+    A `GET` landing between those two moments calls `_sync_egeria_read_back`,
+    which asks Egeria for every `ExternalReferenceLink`-connected reference
+    on the asset. Because the unpublish's detach+delete hadn't landed yet,
+    Egeria still reported the reference — matched here by its URL
+    (`ExternalReference::<url>`, confirmed as the adoption key) — and, before
+    this fix, `upsert_doc_source_from_egeria`'s `url` fallback would adopt it
+    onto whatever local row matched that URL, without ever creating a
+    `doc_source_publish` outbox row of its own.
+    """
+
+    def test_a_get_landing_mid_unpublish_does_not_adopt_the_reference_being_deleted(
+        self, client, monkeypatch, registry,
+    ):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.threading.Thread", _NeverStartsThread)
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
+        url = "https://egeria.ai"
+
+        # 1. A fully-catalogued source exists at this URL (ref AND link set
+        #    -- a real, previously-published reference).
+        old = registry.add_doc_source("database", "adventureworks", url, label="Egeria homepage")
+        registry.set_doc_source_egeria_ref(
+            "database", "adventureworks", old["id"], "b9925119-old-ref", "link-old")
+
+        # 2. It's removed -- local row gone, doc_source_unpublish enqueued.
+        #    _NeverStartsThread means the immediate-attempt thread never
+        #    actually runs, so the row stays 'pending' -- "still in flight",
+        #    exactly the live timeline's 15:21:41-44 window.
+        del_resp = client.delete(f"/api/doc-sources/database/adventureworks/{old['id']}")
+        assert del_resp.status_code == 200
+        assert del_resp.json()["egeria_unpublish"] == "queued"
+        assert registry.list_doc_sources("database", "adventureworks") == []
+
+        # 3. A GET lands in that window. Egeria's own read-back API (stubbed
+        #    here) still reports the reference -- the detach+delete hasn't
+        #    landed. No local row exists for this URL at all right now (the
+        #    old one is gone, the new one hasn't been declared yet), so
+        #    without the guard, upsert_doc_source_from_egeria's url fallback
+        #    would have nothing to match and would CREATE a new local row
+        #    carrying the being-deleted ref guid.
+        monkeypatch.setattr(
+            "resource_explorer.web.routes.doc_sources.read_back_doc_sources",
+            lambda *a, **kw: [{"ref_guid": "b9925119-old-ref", "url": url, "label": "Egeria homepage"}],
+        )
+        mid_resp = client.get("/api/doc-sources/database/adventureworks")
+        assert mid_resp.status_code == 200
+        # The guard must have skipped adoption entirely.
+        assert registry.list_doc_sources("database", "adventureworks") == [], (
+            "read-back must not adopt a reference with a pending/running unpublish"
+        )
+
+        # 4. The new, differently-labeled source is declared at the SAME URL.
+        add_resp = client.post(
+            "/api/doc-sources/database/adventureworks",
+            json={"url": url, "label": "not-adventureworks", "source_type": "installation_guide"},
+        )
+        assert add_resp.status_code == 200
+        new_row = add_resp.json()
+        # Must NOT have adopted the reference being deleted.
+        assert new_row["egeria_external_ref_guid"] != "b9925119-old-ref"
+        assert new_row["egeria_external_ref_guid"] == ""
+        # It must have queued its OWN fresh publish -- never silently
+        # skipped because "a ref guid was already there".
+        rows = registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_rows = [r for r in rows if r["element_kind"] == "doc_source_publish"]
+        assert len(publish_rows) == 1
+        payload = json.loads(publish_rows[0]["payload_json"])
+        assert payload["source_id"] == new_row["id"]
+        assert new_row["egeria_state"] == "publishing"
+
+        # 5. Once the unpublish actually completes (simulated: mark it done,
+        #    and Egeria's read-back now correctly reports the ref is gone),
+        #    a further GET must not resurrect anything either.
+        unpublish_rows = [r for r in rows if r["element_kind"] == "doc_source_unpublish"]
+        assert len(unpublish_rows) == 1
+        registry.mark_outbox_done(unpublish_rows[0]["id"], "b9925119-old-ref")
+        monkeypatch.setattr(
+            "resource_explorer.web.routes.doc_sources.read_back_doc_sources", lambda *a, **kw: [])
+        final_resp = client.get("/api/doc-sources/database/adventureworks")
+        assert len(final_resp.json()["sources"]) == 1
+        assert final_resp.json()["sources"][0]["id"] == new_row["id"]
+
+
+class _NeverStartsThread:
+    """Stand-in for `threading.Thread` whose `.start()` does nothing at all
+    -- used where a test needs an enqueued outbox row to deterministically
+    STAY `pending` (simulating "the immediate-attempt background thread
+    hasn't run yet"), as opposed to `_SyncThread` above, which runs it
+    synchronously to completion."""
+
+    def __init__(self, target=None, name=None, daemon=None):
+        pass
+
+    def start(self):
+        pass
