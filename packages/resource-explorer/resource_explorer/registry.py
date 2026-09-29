@@ -4041,7 +4041,11 @@ class ProjectRegistry:
     # BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1. See doc_sources' table
     # docstring above for the shape; this is CRUD plus the probe-result write.
 
-    DOC_SOURCE_TYPES = ("data_dictionary", "design_notes", "runbook", "wiki", "other")
+    DOC_SOURCE_TYPES = (
+        "data_dictionary", "design_notes", "runbook", "wiki",
+        "installation_guide", "user_manual", "api_reference", "release_notes",
+        "other",
+    )
 
     def add_doc_source(self, entity_type: str, entity_slug: str, url: str,
                         label: str = "", source_type: str = "other",

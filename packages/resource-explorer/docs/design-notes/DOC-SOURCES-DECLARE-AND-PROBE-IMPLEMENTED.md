@@ -165,6 +165,40 @@ database/filesystem-aware call already uses.
   as the judgment call it is rather than building a new unpublish surface as a side effect of this
   slice.
 
+## Source-kind vocabulary expanded (2026-09-29)
+
+The original five kinds (`data_dictionary`, `design_notes`, `runbook`, `wiki`, `other`) came
+straight from `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md` and shipped as-is in this slice. During the
+live gate check on database 8813 (2026-09-29) the project owner asked for two more: **Installation
+Guide** and **User Manual** — real doc kinds people were declaring that had nowhere to go but
+"other". While touching this vocabulary, design's decision was to also add **API Reference** and
+**Release Notes**, rather than expand it again for the next obvious gap.
+
+Final nine-kind vocabulary, same `snake_case` value / lowercase display-label convention the
+original five already used:
+
+`data_dictionary`, `design_notes`, `runbook`, `wiki`, `installation_guide`, `user_manual`,
+`api_reference`, `release_notes`, `other`.
+
+Three places carry this list, kept in sync by hand (no shared source of truth — the frontend
+`<select>` needs display labels, the two backend spots need different label strings, so a single
+shared constant would still need per-consumer label maps):
+
+- `resource_explorer/registry.py`'s `ProjectRegistry.DOC_SOURCE_TYPES` — validates `add_doc_source`,
+  falling back to `"other"` for anything not in the tuple (unchanged behavior, now checked against
+  nine values instead of five).
+- `resource_explorer/doc_source_egeria.py`'s `_SOURCE_TYPE_LABEL` — the label baked into the
+  Egeria `ExternalReference` body on publish.
+- `resource_explorer/web/static/next/stages/enrichment.js`'s `DOC_SOURCE_TYPES` — the `<select>`
+  options a person picks from when declaring a source, and the label shown on each declared-source
+  row.
+
+Pinned by `tests/test_doc_sources_registry.py::test_doc_source_types_vocabulary` (the tuple),
+`tests/test_doc_source_egeria.py::test_source_type_label_covers_the_full_vocabulary` (the label
+map), and `frontend-build/test-harness/doc-sources-enrichment.test.mjs`'s "source-kind dropdown
+offers all nine declared kinds" test (the rendered `<option>` set) — so a future edit to any one of
+the three that drops or renames a value fails a test rather than silently drifting from the others.
+
 ## Tests
 
 **Python — 46 new tests, all passing, 0 regressions in the areas touched:**

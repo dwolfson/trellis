@@ -17,6 +17,24 @@ _EGERIA_KW = dict(view_server="view1", platform_url="https://egeria.example",
                    user_id="u", user_password="p")
 
 
+def test_source_type_label_covers_the_full_vocabulary():
+    """Owner gate feedback on 8813 (2026-09-29) added installation_guide and
+    user_manual; design added api_reference and release_notes while touching
+    the list. Pinned here alongside registry.py's DOC_SOURCE_TYPES so the two
+    can't drift apart."""
+    assert m._SOURCE_TYPE_LABEL == {
+        "data_dictionary": "data dictionary",
+        "design_notes": "design notes",
+        "runbook": "runbook",
+        "wiki": "wiki",
+        "installation_guide": "installation guide",
+        "user_manual": "user manual",
+        "api_reference": "api reference",
+        "release_notes": "release notes",
+        "other": "documentation",
+    }
+
+
 def test_publish_creates_a_new_reference_and_links_it(monkeypatch):
     fake_client = MagicMock()
     fake_client.create_external_reference.return_value = "ref-guid-1"

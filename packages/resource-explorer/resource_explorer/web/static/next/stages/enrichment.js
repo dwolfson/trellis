@@ -268,6 +268,10 @@ const DOC_SOURCE_TYPES = [
   { value: 'design_notes', label: 'design notes' },
   { value: 'runbook', label: 'runbook' },
   { value: 'wiki', label: 'wiki' },
+  { value: 'installation_guide', label: 'installation guide' },
+  { value: 'user_manual', label: 'user manual' },
+  { value: 'api_reference', label: 'api reference' },
+  { value: 'release_notes', label: 'release notes' },
   { value: 'other', label: 'other' },
 ];
 

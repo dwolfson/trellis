@@ -33,6 +33,10 @@ _SOURCE_TYPE_LABEL = {
     "design_notes": "design notes",
     "runbook": "runbook",
     "wiki": "wiki",
+    "installation_guide": "installation guide",
+    "user_manual": "user manual",
+    "api_reference": "api reference",
+    "release_notes": "release notes",
     "other": "documentation",
 }
 

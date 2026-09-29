@@ -188,6 +188,33 @@ test('the re-check button re-fetches and the row reflects the NEW probe state af
   assert.match(host.textContent, /HTTP 503/);
 });
 
+test('the source-kind dropdown offers all nine declared kinds, including the 2026-09-29 additions', async () => {
+  // Owner gate feedback on 8813 (2026-09-29) added Installation Guide and
+  // User Manual; design added API Reference and Release Notes while
+  // touching the list. This pins the full <select> option set so it can't
+  // silently regress to the original five.
+  const { enrichment, host } = await setUpEnrichmentDom();
+  stubFetchJson({ '/api/doc-sources/database/adventureworks': docSourcesFixture() });
+
+  await enrichment.renderDocSources('adventureworks');
+
+  const select = host.querySelector('#doc-source-type');
+  assert.ok(select, 'expected the source-kind <select>');
+  const options = [...select.querySelectorAll('option')].map((o) => o.value);
+  assert.deepEqual(options, [
+    'data_dictionary', 'design_notes', 'runbook', 'wiki',
+    'installation_guide', 'user_manual', 'api_reference', 'release_notes',
+    'other',
+  ]);
+
+  const labels = [...select.querySelectorAll('option')].map((o) => o.textContent);
+  assert.deepEqual(labels, [
+    'data dictionary', 'design notes', 'runbook', 'wiki',
+    'installation guide', 'user manual', 'api reference', 'release notes',
+    'other',
+  ]);
+});
+
 test('the ingest action is present but disabled ("coming soon") -- slice 2 is not built here', async () => {
   const { enrichment, host } = await setUpEnrichmentDom();
   stubFetchJson({ '/api/doc-sources/database/adventureworks': docSourcesFixture() });

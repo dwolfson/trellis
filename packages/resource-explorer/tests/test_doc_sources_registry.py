@@ -36,6 +36,28 @@ def test_invalid_source_type_falls_back_to_other(registry):
     assert row["source_type"] == "other"
 
 
+def test_doc_source_types_vocabulary():
+    """Owner gate feedback on 8813 (2026-09-29) added installation_guide and
+    user_manual; design added api_reference and release_notes while touching
+    the list. Pinned here so the vocabulary can't silently drift."""
+    assert ProjectRegistry.DOC_SOURCE_TYPES == (
+        "data_dictionary", "design_notes", "runbook", "wiki",
+        "installation_guide", "user_manual", "api_reference", "release_notes",
+        "other",
+    )
+
+
+@pytest.mark.parametrize("source_type", [
+    "data_dictionary", "design_notes", "runbook", "wiki",
+    "installation_guide", "user_manual", "api_reference", "release_notes",
+    "other",
+])
+def test_each_declared_source_type_round_trips(registry, source_type):
+    row = registry.add_doc_source("database", "s", f"https://x/{source_type}",
+                                   source_type=source_type)
+    assert row["source_type"] == source_type
+
+
 def test_scoped_by_entity_type_and_slug(registry):
     registry.add_doc_source("database", "a", "https://a.example/1")
     registry.add_doc_source("database", "b", "https://b.example/1")
