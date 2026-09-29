@@ -1128,8 +1128,37 @@ def _credential_capability_results(registry, slug: str) -> dict:
     schema(s)" from an earlier run, while this reader (and therefore the
     `schema_inventory` headline's visibility clause) saw nothing and rendered
     no credential-visibility fraction at all for the exact same database.
+
+    **Round 2 (2026-09-29, docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+    ROUND-2-IMPLEMENTED.md):** prefers `registry.find_latest_database_survey_
+    with_key(slug, "credential_capability")` when the registry implements
+    it — the query-pushed-to-Postgres version of the exact same "search
+    every stored survey newest-first" scan below, ~2-3x faster on a
+    heavily-surveyed database (see that method's own docstring for why it
+    can never be less correct, only faster). Falls back to the linear scan
+    for any registry that doesn't implement it (SQLite already falls back
+    *inside* that method; this is the outer fallback for a registry STUB
+    that implements `get_database_surveys` but not the new method at all —
+    `tests/test_schema_inventory_headline.py`'s `_FakeRegistry` and
+    `_MultiSurveyRegistry` are exactly that shape, and
+    `test_credential_totals_from_an_older_survey_still_show_when_the_latest_
+    run_omits_the_probe` (the 2026-09-26 regression test) is what pins this
+    fallback still returning the right answer).
     """
     import json as _json
+
+    fast = getattr(registry, "find_latest_database_survey_with_key", None)
+    if callable(fast):
+        survey = fast(slug, "credential_capability")
+        if survey is not None:
+            try:
+                survey_data = _json.loads(survey.get("survey_data") or "{}")
+            except (ValueError, TypeError):
+                survey_data = {}
+            cap = survey_data.get("credential_capability")
+            if cap:
+                return cap
+        return {}
 
     get_surveys = getattr(registry, "get_database_surveys", None)
     if not callable(get_surveys):
