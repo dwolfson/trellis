@@ -8668,5 +8668,6 @@ that unification seriously:
 - "Add this work list's members to investigation X" — merge an existing list's members into an
   investigation's working set.
 
-Small slice. Scheduled after the Enrichment IA designer reply (`ASK-DESIGNER-ENRICHMENT-STAGE-IA.md`,
-PR #350) — same sidebar/IA territory, no need to design it twice in two passes.
+Small slice. Sent to the designer as `ASK-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md` (PR #354),
+same shape as the Enrichment IA ask (`ASK-DESIGNER-ENRICHMENT-STAGE-IA.md`, PR #350) — scheduled
+after that reply, same sidebar/IA territory, no need to design it twice in two passes.
