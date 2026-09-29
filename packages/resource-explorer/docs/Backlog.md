@@ -8650,3 +8650,72 @@ an Enrichment sub-tab, or should Enrichment's sub-tabs be organized around what 
 Written up for the designer as `ASK-DESIGNER-ENRICHMENT-STAGE-IA.md` (PR #350). #348 ships its
 Documentation sources block under the current sub-tabs regardless — the re-seating, if any, comes
 with the designer's reply, not before.
+
+## `database_surveys.survey_data` stored as TEXT, not JSONB — measured 8x cost, rejected for now (per-request-latency round 3, 2026-09-29)
+
+`ProjectRegistry.find_latest_database_survey_with_key`'s `jsonb_exists(survey_data::jsonb, %s)`
+query (per-request-latency round 2) costs ~340-490ms on `laz_local_adventureworks` (57 rows for
+that slug) even with a purpose-built GIN index on the cast expression — measured directly with
+`EXPLAIN ANALYZE`, the index does not help, because Postgres always rechecks the jsonb condition
+against the actual heap tuple for a bitmap scan, which means re-parsing the same large `TEXT`
+value regardless of the index (full evidence in `docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+ROUND-3-IMPLEMENTED.md`, item 1).
+
+**Measured the real fix directly, via a throwaway `TEMP TABLE`** — same data, same query, same
+slug filter, `survey_data` stored as native `jsonb` instead of `TEXT`: **47ms vs 342-391ms, ~8x
+faster**, with no GIN index at all (a plain btree on `database_slug` was enough). There is
+genuinely nothing left to parse at query time once the value is stored pre-parsed.
+
+**Rejected for this round, not implemented — design's ruling (2026-09-29):** a `TEXT` → `JSONB`
+column type migration would only speed the recompute-when-missing path and the one-shot
+`backfill-board-summaries` CLI (per-request-latency round 3's diagnostic-0 established the
+steady-state board read never touches `survey_data` at all, via PR #349's persisted-summary fast
+path) — real, but not on a path a person's click takes directly. It is also **breaking**:
+psycopg2 returns a native `jsonb` column as an already-parsed Python `dict`, not a string, so
+every call site currently doing `json.loads(row.get("survey_data") or "{}")` would raise
+`TypeError: the JSON object must be str, bytes or bytearray, not dict` the moment the column
+stopped being `TEXT`. Affected call sites (`grep -rn 'survey_data' resource_explorer/ --
+include=*.py`, non-exhaustive but the real ones): `registry.py`'s own `record_database_survey`
+(the write side, `json.dumps`) and `get_database_surveys`/`get_latest_database_survey`/`find_
+latest_database_survey_with_key` (the read side); `surveyors/database/survey_definition_adapter.
+py`'s `_credential_capability_results` and every other `_operations_section_reader`-shaped
+results reader that pulls a section out of the stored blob; `web/routes/databases.py`'s
+`_to_summary`; `db_derived.py` does NOT read `survey_data` directly (it reads the structured
+detail tables instead, unaffected).
+
+**Take this together with the `_store_results` generic-mechanism consolidation above (same
+document, "clobbers a survey_data section" entry) — one migration, not two.** That entry already
+proposes rewriting how `survey_data`'s sections are read and written (a `requested_sections`-aware
+mechanism replacing the current per-field preserve-prior fallbacks); whoever picks that up will
+already be touching every one of the read call sites listed above, so folding the column-type
+change into that same pass avoids two separate migrations each touching the same reader set.
+
+## `db_classification`'s remaining cost after per-request-latency round 3: `apply_container_grain`'s own 89-query N+1, and no per-field-scoped read path
+
+Per-request-latency round 3 fixed the 398-query pattern in `db_derived.py`'s `load_inputs`
+(`_resolve_table_surveyed_at`'s walk → one `MAX(surveyed_at)` query per structured table) —
+`load_inputs` itself: 2.4s → 0.24-0.47s, fixture-verified identical output. Accepted as that
+item's deliverable, per design's ruling (2026-09-29) — no further work needed on `load_inputs`.
+
+**Two real, separate contributors remain, measured but not fixed, because they run at run
+completion and backfill time, not on a person's click** (design's own framing for deferring
+these — they wait behind the user-facing queue):
+
+1. **`apply_container_grain`** (`db_derived.py`, ~line 4552) — computes per-container breakdowns
+   for `db_relationship_graph`/`schema_conventions`/`subject_signals`/`coverage_signals`/
+   `preliminary_fit` via `fingerprint_by_container`/`relationship_graph_by_container`/
+   `conventions_by_container`, and makes 89 of its own `query_detail_rows` calls, independent of
+   (and not touched by) `load_inputs`'s fix. Same shape of problem — per-item queries where a
+   set-based read could likely do — in different functions.
+2. **`_raw_derived_field`** (`survey_definition_adapter.py`) — the reader every `db_derived`-owned
+   board analysis goes through (`db_classification` included) calls `run_db_derived` in FULL and
+   extracts just the one requested field. There is no per-field-scoped computation path at all:
+   asking for `db_classification` alone still pays for computing `db_relationship_graph`,
+   `grain_determination`, `schema_conventions`, and everything else `run_db_derived` produces.
+
+**Measured (combined round 1+2+3, `laz_local_adventureworks`):** `run_db_derived` overall,
+516-1036ms — over the 300ms target for a single field, with `apply_container_grain` as the
+dominant remaining cost once `load_inputs` stopped being it. Whoever picks this up next should
+start by checking whether `apply_container_grain`'s 89 queries have the same "walk one candidate
+at a time" shape `_resolve_table_surveyed_at` had (in which case the same set-based-query
+technique likely applies directly) before assuming a bigger redesign is needed.

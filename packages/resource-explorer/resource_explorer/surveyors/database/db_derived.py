@@ -1037,9 +1037,21 @@ def derive_relationship_graph(inputs: DerivedInputs) -> dict:
             f"not.{unmeasured_note}"
         )
 
+    # Sorted by `referenced_by` descending, `table` ascending as a
+    # deterministic tiebreaker (2026-09-29 round 3, docs/design-notes/
+    # PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md) — without the
+    # tiebreaker, two tables with the SAME referenced_by count sort by
+    # whatever order `in_degree.items()` happens to iterate in, which
+    # depends on dict insertion order, which depends on the order edges
+    # came back from the database — not guaranteed stable across two
+    # identical calls without an explicit `ORDER BY` upstream. Found live:
+    # running `derive_relationship_graph` twice in a row on the SAME
+    # unmodified data produced two different orderings among tied entries.
+    # Design's ruling: nondeterministic evidence text is a correctness bug,
+    # not a Backlog item — fixed here, not deferred.
     hubs = sorted(
         ({"table": f"{s}.{t}", "referenced_by": d} for (s, t), d in in_degree.items() if d),
-        key=lambda h: h["referenced_by"], reverse=True,
+        key=lambda h: (-h["referenced_by"], h["table"]),
     )[:10]
 
     return {

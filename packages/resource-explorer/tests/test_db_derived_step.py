@@ -473,6 +473,54 @@ class TestRelationshipGraph:
         assert result["edge_count"] == 1
         assert len(result["dangling_references"]) == 1
 
+    def test_most_referenced_ties_are_broken_deterministically_by_table_name(self, registry):
+        """2026-09-29 round 3 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+        ROUND-3-IMPLEMENTED.md): found live comparing round 3's fixture
+        output against an UNMODIFIED baseline run twice — `most_referenced`
+        sorted only by `referenced_by` descending, with no tiebreaker, so
+        entries tied on that count ordered by `in_degree.items()`'s
+        iteration order, itself dependent on dict insertion order from
+        whatever order edges came back from the database. Two runs of the
+        SAME unmodified code on the SAME data produced two different
+        orderings. Design's ruling: nondeterministic evidence text is a
+        correctness bug, fixed here (not Backlogged) with a deterministic
+        `table` name tiebreaker.
+
+        Three hub tables (`z_hub`, `a_hub`, `m_hub` — named out of
+        alphabetical order on purpose, so a name-based tiebreak is
+        distinguishable from insertion order) are each referenced by
+        exactly one leaf table — a genuine tie on `referenced_by`. Expected
+        order is alphabetical by table name: `a_hub`, `m_hub`, `z_hub`."""
+        tables = [
+            _table("z_hub"), _table("a_hub"), _table("m_hub"), _table("leaf", cols=4),
+        ]
+        columns = [
+            _column("z_hub", "id", pk=True),
+            _column("a_hub", "id", pk=True),
+            _column("m_hub", "id", pk=True),
+            _column("leaf", "id", pk=True),
+            _column("leaf", "z_hub_id", fk={
+                "foreign_schema": "public", "foreign_table": "z_hub", "foreign_column": "id"}),
+            _column("leaf", "a_hub_id", fk={
+                "foreign_schema": "public", "foreign_table": "a_hub", "foreign_column": "id"}),
+            _column("leaf", "m_hub_id", fk={
+                "foreign_schema": "public", "foreign_table": "m_hub", "foreign_column": "id"}),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns)
+
+        results = [
+            derive_relationship_graph(load_inputs(registry, "coco_ods"))
+            for _ in range(2)
+        ]
+        assert results[0]["most_referenced"] == results[1]["most_referenced"], (
+            "most_referenced order differed across two identical calls — "
+            "the tie-order nondeterminism this test exists to pin"
+        )
+        tied = [h for h in results[0]["most_referenced"] if h["referenced_by"] == 1]
+        assert [h["table"] for h in tied] == [
+            "public.a_hub", "public.m_hub", "public.z_hub",
+        ]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. grain_determination

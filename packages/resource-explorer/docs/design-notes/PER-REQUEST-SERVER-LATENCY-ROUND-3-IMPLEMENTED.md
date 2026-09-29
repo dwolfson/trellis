@@ -2,12 +2,18 @@
 
 **Status:** Implemented, with one honest negative result. Diagnostic-0 answered with evidence
 (steady-state board reads no longer touch `survey_data` at all — PR #349, already merged to
-main, closed that path). Item 1 (a GIN index) was built, measured, and **does not help** —
-reported as a negative result with `EXPLAIN ANALYZE` evidence rather than shipped anyway. Item 2
-(`db_classification`'s 398-query pattern) is fixed and fixture-verified identical, and a real,
-separate, larger bottleneck was found while verifying the gate — reported, not silently absorbed
-into a false "gate met" claim. Two small follow-ons (a dead local, a repeat-fetch pattern in the
-prerequisite resolver) are also done.
+main, closed that path — **board-summary gate MET on that path**, 12-66ms; the recompute-fallback
+path's ~500ms-1s is the expected, acceptable cost of the fallback, not a second failed
+measurement of the same gate). Item 1 (a GIN index) was built, measured, and **does not help** —
+reported as a negative result with `EXPLAIN ANALYZE` evidence rather than shipped anyway; the real
+fix (a TEXT→JSONB column migration) is Backlogged, not implemented, per design's ruling. Item 2
+(`db_classification`'s 398-query pattern) is fixed and fixture-verified identical and **accepted
+as this item's deliverable as-is**; the separate, larger `apply_container_grain`/`_raw_derived_
+field` bottleneck found while verifying the gate is Backlogged with its own numbers rather than
+folded into this round. The `most_referenced` tie-ordering nondeterminism found during that
+verification was fixed directly (design's ruling: a correctness bug, not a Backlog item), with a
+regression test that fails without the fix. Two small follow-ons (a dead local, a repeat-fetch
+pattern in the prerequisite resolver) are also done.
 
 This is round 3 of the investigation in `PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md` (round 1)
 and `PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md` (round 2, its two unmet gate items). Read
@@ -63,6 +69,22 @@ missing/stale path (a board whose summary doesn't exist yet, or is older than it
 last run), and the one-shot `backfill-board-summaries` CLI (`cli/main.py`, added alongside #349)
 that deliberately forces every board through the expensive path once to warm the cache. Both are
 real, both still run the code these fixes touch.
+
+**This is the result that matters, stated plainly, per design's own framing — two paths, two
+numbers, both correct for what they are:**
+
+- **Fast path (the one a person's click actually takes, every time a board's summary is already
+  persisted and fresh): 12-66ms. GATE MET.** This is not a best case or a favorable subset — it is
+  the steady-state path for any database that has completed at least one run since #349 shipped,
+  which is the normal state of a database someone is looking at.
+- **Recompute-when-missing/stale path (the fallback — first visit before any summary exists, a
+  summary older than its analysis_id's last run, or the backfill CLI warming the cache): ~500ms-
+  1.9s, measured across rounds 1-3.** This is expected and acceptable, not a gate failure: it is
+  the fallback path, taken once per board per staleness event rather than on every read, and its
+  own cost is what rounds 1-3's fixes (the registry caching, the jsonb query, `db_classification`'s
+  N+1) target and measurably improve, even though — per items 1 and 2 below — it does not clear
+  300ms/200ms on its own yet. The two numbers describe two different things; neither is a failure
+  of the other's target.
 
 ## Item 1: a GIN index for the jsonb containment query — built, measured, does not help
 
@@ -230,10 +252,25 @@ and inspecting each candidate row in Python.
   nondeterminism in the codebase, unrelated to this fix**, not something this change introduced.
   Confirmed directly rather than assumed: `before1 == before2` is `False` for `db_relationship_
   graph` and `True` for every other field, on two runs of code this round never touched. Flagged
-  here as a separate, real, minor finding (worth a follow-up: something in `relationship_graph_by_
-  container`'s tie-breaking reads row order that Postgres does not guarantee without an explicit
-  `ORDER BY` tiebreaker) — not fixed this round, out of scope, and does not affect this fix's own
-  correctness claim.
+  here as a separate, real, minor finding — the root cause is `derive_relationship_graph`'s
+  `most_referenced` list, sorted only by `referenced_by` descending with no tiebreaker, so tables
+  tied on that count ordered by `in_degree.items()`'s dict-iteration order, itself dependent on
+  the order edges came back from the database (never guaranteed stable without an explicit
+  `ORDER BY` tiebreaker upstream).
+
+  **Fixed directly in this round, not deferred** — design's ruling: nondeterministic evidence text
+  is a correctness bug, not a Backlog item, and the fix is one line: a deterministic secondary sort
+  key (`table` name, ascending) breaks the tie the same way every time. See `db_derived.py`'s
+  `hubs = sorted(...)` in `derive_relationship_graph` (the same function `relationship_graph_by_
+  container` calls once per container, so the fix covers both the whole-database and per-container
+  orderings from one change). New regression test, `TestRelationshipGraph::test_most_referenced_
+  ties_are_broken_deterministically_by_table_name` (`tests/test_db_derived_step.py`) — three hub
+  tables tied on `referenced_by`, named out of alphabetical order on purpose so a name-based
+  tiebreak is distinguishable from insertion order; asserts two consecutive calls to `derive_
+  relationship_graph` (each re-running `load_inputs`, so this exercises the real database-round-trip
+  path, not just calling a pure function twice on cached data) produce byte-identical
+  `most_referenced` lists. Verified failing without the fix (reverted the sort key, reran — fails)
+  and passing with it, the same before/after discipline as every other fix in this doc.
 
 ### Measured (isolated, `load_inputs` only, no round-1/2 caching present on this branch)
 
@@ -325,17 +362,40 @@ gap, not silently omitted.
 
 ## Gate results
 
-1. **Board summary under 200ms, in-server.** **PASS**, for the steady-state case diagnostic-0
-   establishes as the actual live path (11.9-66.5ms across 6 boards tested on `laz_local_
-   adventureworks`, all via the persisted-summary fast path). Not re-measured for the recompute
-   path specifically in this round beyond the direct-call numbers above — see "Measurement note"
-   below for why a full in-server coordinated-window pass was not completed this round.
-2. **Cold-load By-analysis headlines under 2s.** Same as above — the dominant cost round 2
-   identified (board reads) is now off the steady-state path per diagnostic-0; not re-measured
-   in-server this round.
-3. **`db_classification` under 300ms.** **NOT MET.** 516-1036ms combined (round 1+2+3), root
-   cause identified (`apply_container_grain`'s own separate N+1, plus `run_db_derived`'s
-   all-or-nothing computation shape) and flagged for a future round, not silently claimed passing.
+1. **Board summary under 200ms, in-server.** **MET, on the path that matters** — the fast path
+   (persisted, fresh `board_summary` row) is the steady-state read for any database that has
+   already run its analyses, and measures 11.9-66.5ms across 6 boards tested on `laz_local_
+   adventureworks`, well under the bar. The recompute-when-missing/stale path — the fallback,
+   not the normal case — measures ~500ms-1.9s across rounds 1-3's fixes and does NOT clear
+   200ms on its own; that is expected and acceptable per design's ruling (see diagnostic-0's own
+   "result that matters" callout above), not a second failed measurement of the same gate. Not
+   re-measured in-server for either path with a real coordinated window this round beyond the
+   direct-call numbers above — see "Measurement note" below.
+2. **Cold-load By-analysis headlines under 2s.** Same shape as (1) — the dominant cost round 2
+   identified (board reads) is off the steady-state path per diagnostic-0, so a real page load
+   against a database with completed analyses should already clear this; not re-measured
+   in-server with a real coordinated window this round.
+3. **`db_classification` under 300ms.** **Accepted as-is per design's ruling — no further work
+   this round.** `load_inputs` itself: 2.4s → 0.24-0.47s, fixture-identical output — that is this
+   item's deliverable and it is done. The combined `run_db_derived` total (516-1036ms) is still
+   over 300ms because of `apply_container_grain`'s own separate 89-query N+1 and `_raw_derived_
+   field`'s all-or-nothing computation (no per-field-scoped read path at all) — both real, both
+   Backlogged with these numbers (see `docs/Backlog.md`) rather than fixed here: they run at run
+   completion and backfill time, not on a person's click, so they wait behind the user-facing
+   queue per design's explicit prioritization.
+
+## Known gaps in this round's own work — named explicitly, not only implied
+
+- **No call-count-specific regression test for the `SurveyOrchestrator` capability_probe fix**
+  (the second cheap follow-on above). The existing 81-test prerequisite/orchestrator suite passes
+  unchanged, which is real evidence the fix didn't change resolution OUTCOMES, but nothing in the
+  suite asserts the CALL COUNT itself dropped (i.e. nothing would fail if this fix were reverted
+  except a wall-clock/profiling comparison, not a test). Not fixed this round — flagged as a gap
+  to close, not silently left off the list.
+- **No final in-server, coordinated-quiet-window HTTP measurement against the real merged head**
+  for any of this round's three gate items — see "Measurement note" immediately below for the
+  full reasoning (this round's branch doesn't have round 1/2's fixes, so an in-server pass on it
+  alone wouldn't represent the shipped system).
 
 ## Measurement note — what this round did and did not complete
 
