@@ -1479,7 +1479,15 @@ class TestDocSourceOutbox:
         assert reopened["status"] == "pending"
         assert reopened["egeria_guid"] == ""
 
-        summary = drain_outbox(doc_registry)
+        # A non-empty OutboxClients is required so `drain_outbox` doesn't hit
+        # its own "no Egeria client available" early-out (`_default_clients()`
+        # constructing a REAL pyegeria client against the live platform) —
+        # the creator this test exercises never reads `clients` itself
+        # (`publish_doc_source`/`ref_guid_exists` are monkeypatched directly
+        # above), so any non-None stub satisfies it, matching this file's own
+        # established pattern for a drain that doesn't need a real client
+        # (e.g. `OutboxClients(discovery=object())` elsewhere in this file).
+        summary = drain_outbox(doc_registry, OutboxClients(discovery=object()), lambda qn: "")
 
         assert summary["done"] == 1
         assert publish_calls == ["dead-guid-b99"], (

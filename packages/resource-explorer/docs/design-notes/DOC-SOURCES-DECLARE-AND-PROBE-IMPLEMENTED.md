@@ -1184,6 +1184,56 @@ test level: the row ends up `catalogued` with a NEW ref guid and a NEW link guid
 from the dead `b9925119…`), visible in Egeria's own UI, with the outbox row's own status `done` —
 the SAME row id, not a fresh one alongside it.
 
+### Addendum — CI failure: round 6's own regression test carried a hidden live-Egeria
+### dependency (2026-09-29)
+
+CI run 36615527243 on this branch (commit `2ac55b80`) failed 1/6952:
+`tests/test_egeria_outbox.py::TestDocSourceOutbox::test_reopening_a_done_row_with_a_dead_guid_
+and_draining_produces_a_new_ref_and_link` — `assert summary["done"] == 1` got `0`. It had passed
+locally when written because Egeria happened to be reachable on that machine.
+
+**Root cause.** The test stubbed `publish_doc_source` and `ref_guid_exists` directly (correctly
+following this file's own "Required test" description above), but called
+`drain_outbox(doc_registry)` with no `clients` argument. Every OTHER test in this file that
+exercises `drain_outbox` passes an explicit `OutboxClients(...)` stub (e.g.
+`OutboxClients(discovery=object())`); this one didn't, so `drain_outbox`'s own `clients is None`
+branch ran `_default_clients()`, which constructs a real pyegeria client against
+`EGERIA_PLATFORM_URL`. On a machine where Egeria is unreachable, that construction fails,
+`drain_outbox` logs "no Egeria client available, leaving N rows pending" and returns every row
+to `pending` rather than draining it — hence `summary["done"] == 0`. `_create_doc_source_publish`
+(the creator this row actually applies) never reads `clients` at all, so the missing stub was
+invisible by inspection of the creator's own code — only visible by noticing `drain_outbox`'s
+call site lacked the argument every sibling test supplies.
+
+**Fix.** Pass `OutboxClients(discovery=object())` and `lambda qn: ""` to `drain_outbox`, matching
+this file's established pattern for a drain whose creator doesn't read `clients`:
+
+```python
+summary = drain_outbox(doc_registry, OutboxClients(discovery=object()), lambda qn: "")
+```
+
+**Negative-check proof.** Reverted the fix (back to `drain_outbox(doc_registry)`) with the repo's
+`mock_egeria_client_connections` fail-fast fixture (`tests/conftest.py`) forced on — the test
+failed the same way CI did (`summary["done"] == 0`), confirming the fix is load-bearing and not
+coincidental.
+
+**Sweep method (design's refinement, coordinator instruction mid-fix).** Rather than only
+grepping round 5/6's test additions by eye, `tests/conftest.py`'s existing
+`mock_egeria_client_connections` fixture — which makes every pyegeria client construction raise
+`PyegeriaConnectionException` immediately instead of hanging/succeeding against a real platform —
+was temporarily made `autouse=True` for a sweep run, so every test in the doc-sources area would
+fail exactly the way CI fails if it secretly depended on live Egeria. Ran the full round 5/6 test
+surface under it: `test_egeria_outbox.py`, `test_doc_sources_routes.py`,
+`test_doc_sources_registry.py`, `test_doc_source_egeria.py`, `test_doc_source_probe.py`,
+`test_repair_stuck_doc_source_publish_rows.py` — **197 passed**, no other instance found. The
+`autouse=True` change was reverted after the sweep (it was a temporary diagnostic, not a policy
+change to the fixture's default scope); `tests/conftest.py` carries no diff from this addendum.
+
+**Verification.** The fixed test passes both under the fail-fast fixture (forced) and against
+this environment's real `EGERIA_PLATFORM_URL` pointed at an unreachable host — see the negative
+check above for the case that matters (fixture forced + fix reverted → fails; fixture forced + fix
+applied → passes). Full suite: `uv run pytest tests/ -q -rf` — 0 failures.
+
 ## Judgment calls and gaps flagged
 
 1. **Both entity types built, not just database** (see above) — no scoping-out needed.
