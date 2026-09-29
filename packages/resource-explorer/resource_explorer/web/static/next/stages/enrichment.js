@@ -12,7 +12,7 @@
  * change needs to trigger the evidence rail from outside this file.
  */
 import { ago, whenMs } from '/static/next/format.js';
-import { getBulkFacts, saveEnrichmentField } from '/static/re-api.js';
+import { getBulkFacts, saveEnrichmentField, getDocSources, addDocSource, recheckDocSource, removeDocSource } from '/static/re-api.js';
 import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntityType } from '/static/next/app.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
@@ -201,6 +201,7 @@ function renderEnrichmentForm(slug) {
       <span class="text-provenance text-ink-muted">durable</span>
     </div>
     ${OBSERVATIONS.map((d) => fieldRowHtml(d, 'observation')).join('')}
+    ${['db', 'filesystem'].includes(state.resourceType) ? `<div id="doc-sources-block" class="mt-s4"></div>` : ''}
     <div class="mb-s1 mt-s4 text-caps uppercase tracking-caps text-ink">What only you can answer</div>
     <div class="mb-s2 text-provenance text-ink-muted">The catalog's own questions for a person, below — each saves alone.</div>`;
 
@@ -251,6 +252,134 @@ function renderEnrichmentForm(slug) {
     }
   }));
   renderEnrichmentEvidence(slug);
+  if (['db', 'filesystem'].includes(state.resourceType)) renderDocSources(slug);
+}
+
+/* ── Documentation sources ───────────────────────────────────────────────
+ * BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1, "Declare and probe".
+ * A person points RE at a URL that documents this resource elsewhere; RE
+ * probes it read-only and reports reachable/needs_sign_in/not_found/blocked
+ * with the HTTP status and fetch time. Ingest/re-ingest (slice 2) is shown
+ * as a disabled "coming soon" affordance rather than omitted, so that slice
+ * has a known place to attach.
+ */
+const DOC_SOURCE_TYPES = [
+  { value: 'data_dictionary', label: 'data dictionary' },
+  { value: 'design_notes', label: 'design notes' },
+  { value: 'runbook', label: 'runbook' },
+  { value: 'wiki', label: 'wiki' },
+  { value: 'other', label: 'other' },
+];
+
+const PROBE_GLYPH = {
+  reachable: { glyph: '●', tone: 'text-state-ok' },
+  needs_sign_in: { glyph: '◐', tone: 'text-state-warn' },
+  not_found: { glyph: '○', tone: 'text-state-gap' },
+  blocked: { glyph: '✕', tone: 'text-state-warn' },
+};
+const PROBE_LABEL = {
+  reachable: 'reachable', needs_sign_in: 'needs sign-in', not_found: 'not found', blocked: 'blocked',
+};
+
+function docSourceRowHtml(src) {
+  const g = PROBE_GLYPH[src.probe_state] || { glyph: '?', tone: 'text-ink-muted' };
+  const statusBit = src.probe_status_code ? ` · HTTP ${src.probe_status_code}` : '';
+  const timeBit = src.probe_ms != null ? ` · ${src.probe_ms}ms` : '';
+  const whenBit = src.probed_at ? ` · probed ${esc(ago(src.probed_at))}` : ' · not yet probed';
+  const typeLabel = (DOC_SOURCE_TYPES.find((t) => t.value === src.source_type) || {}).label || src.source_type;
+  const originBit = src.origin === 'egeria' ? ' · <span class="text-ink-muted">declared in Egeria</span>' : '';
+  return `<div class="border-b border-rule py-s2" data-source-row="${esc(src.id)}">
+    <div class="flex items-baseline gap-s2">
+      <span class="${g.tone}">${g.glyph}</span>
+      <a href="${esc(src.url)}" target="_blank" rel="noopener" class="min-w-0 flex-1 truncate text-question text-accent-ink underline">${esc(src.label || src.url)}</a>
+      <span class="text-provenance text-ink-muted">${esc(typeLabel)}</span>
+    </div>
+    <div class="pl-[20px] text-provenance text-ink-muted">
+      ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit}
+      ${src.probe_error ? ` · <span class="text-state-warn">${esc(src.probe_error)}</span>` : ''}
+    </div>
+    <div class="pl-[20px] mt-[2px] flex items-baseline gap-s3 text-provenance">
+      <button type="button" data-doc-recheck="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button>
+      <button type="button" disabled title="ingestion ships in a later slice" class="cursor-not-allowed bg-transparent p-0 text-ink-muted line-through decoration-dotted">ingest — coming soon</button>
+      <button type="button" data-doc-remove="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-state-warn underline">remove</button>
+    </div>
+  </div>`;
+}
+
+// Exported for the /next render harness (frontend-build/test-harness) —
+// same pattern app.js uses for surveyRowHtml/schemaTreeHtml/tableHtml: no
+// logic changed, only visibility, so a test can call it directly rather
+// than driving the whole Enrichment pane bootstrap.
+export async function renderDocSources(slug) {
+  const host = $('doc-sources-block');
+  if (!host) return;
+  const entityType = apiEntityType(state.resourceType);
+  host.innerHTML = `<div class="text-caveat text-ink-muted">Loading documentation sources…</div>`;
+  let data;
+  try {
+    data = await getDocSources(entityType, slug);
+  } catch (err) {
+    host.innerHTML = `<div class="text-caveat text-state-warn">Could not load documentation sources: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug) return;
+  const sources = data.sources || [];
+  const publishNote = data.published
+    ? ''
+    : (data.publish_note
+      ? `<span class="text-state-warn">${esc(data.publish_note)}</span>`
+      : `<span>local only — publish this resource to Egeria to catalog these sources there too</span>`);
+  host.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading text-question text-ink">Documentation sources</span>
+      <span class="text-provenance text-ink-muted"><span class="tnum">${sources.length}</span> declared · ${publishNote}</span>
+    </div>
+    ${sources.length ? sources.map(docSourceRowHtml).join('') : `<div class="text-provenance text-ink-muted">No documentation sources declared yet.</div>`}
+    <div class="mt-s2 grid grid-cols-[1fr_140px_150px_auto] items-baseline gap-s2">
+      <input id="doc-source-url" type="text" placeholder="https://…" class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink placeholder:text-ink-muted">
+      <input id="doc-source-label" type="text" placeholder="label" class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink placeholder:text-ink-muted">
+      <select id="doc-source-type" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink">
+        ${DOC_SOURCE_TYPES.map((t) => `<option value="${t.value}">${esc(t.label)}</option>`).join('')}
+      </select>
+      <button type="button" id="doc-source-add" class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">add + probe</button>
+    </div>
+    <div id="doc-source-add-status" class="mt-[2px] text-provenance text-ink-muted"></div>`;
+
+  host.querySelectorAll('[data-doc-recheck]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'checking…';
+    try {
+      await recheckDocSource(entityType, slug, b.dataset.docRecheck);
+      renderDocSources(slug);
+    } catch (err) {
+      b.disabled = false; b.textContent = `not checked: ${err.message}`;
+    }
+  }));
+  host.querySelectorAll('[data-doc-remove]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'removing…';
+    try {
+      await removeDocSource(entityType, slug, b.dataset.docRemove);
+      renderDocSources(slug);
+    } catch (err) {
+      b.disabled = false; b.textContent = `not removed: ${err.message}`;
+    }
+  }));
+  const addBtn = $('doc-source-add');
+  addBtn?.addEventListener('click', async () => {
+    const url = ($('doc-source-url')?.value || '').trim();
+    const label = ($('doc-source-label')?.value || '').trim();
+    const sourceType = $('doc-source-type')?.value || 'other';
+    const statusEl = $('doc-source-add-status');
+    if (!url) { statusEl.textContent = 'enter a URL first'; return; }
+    addBtn.disabled = true; addBtn.textContent = 'adding…';
+    if (statusEl) statusEl.textContent = 'probing…';
+    try {
+      await addDocSource(entityType, slug, { url, label, sourceType });
+      renderDocSources(slug);
+    } catch (err) {
+      addBtn.disabled = false; addBtn.textContent = 'add + probe';
+      if (statusEl) statusEl.textContent = err.status === 401 ? 'sign in to add a source' : `not added: ${err.message}`;
+    }
+  });
 }
 
 /** The rail: evidence as material. Each analysis's own sentence, its age, and

@@ -2491,6 +2491,60 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag)"
             )
+            # ── doc_sources — declared documentation sources (Enrichment) ──
+            #
+            # `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`, slice 1 ("Declare
+            # and probe"). One row per URL a person points RE at for a
+            # database (or filesystem) — a wiki page, a data dictionary, a
+            # runbook — plus the last read-only reachability probe against
+            # it. Keyed the same way `resource_tags`/`egeria_linkage_status`
+            # are (`entity_type`/`entity_slug`, no FK) because it spans two
+            # parent tables (`databases`, `filesystems`) and neither a
+            # cross-table FK nor two near-identical tables was worth it for
+            # what is, at this slice, five declared fields and four probe
+            # fields.
+            #
+            # `id` is a short random token (see `add_doc_source`), not an
+            # AUTOINCREMENT int — it is used in URL paths
+            # (`DELETE /api/doc-sources/{entity_type}/{slug}/{source_id}`)
+            # and as the tag on the pgvector rows Slice 2 will write, so it
+            # needs to be stable and opaque rather than reused across
+            # entities the way a small int would invite.
+            #
+            # Ingestion fields (`ingested_pages`/`ingested_bytes`/
+            # `ingested_at`) are declared now, ahead of Slice 2, so that
+            # slice is an ADD-only migration rather than a second pass over
+            # this table — same reasoning as `step_runs`' `flow_run_id`
+            # above. Nothing in Slice 1 writes them.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS doc_sources (
+                    id                    TEXT PRIMARY KEY,
+                    entity_type           TEXT NOT NULL,
+                    entity_slug           TEXT NOT NULL,
+                    url                   TEXT NOT NULL,
+                    label                 TEXT NOT NULL DEFAULT '',
+                    source_type           TEXT NOT NULL DEFAULT 'other',
+                    added_at              TEXT NOT NULL,
+                    added_by              TEXT DEFAULT '',
+                    probe_state           TEXT DEFAULT '',
+                    probe_status_code     INTEGER DEFAULT NULL,
+                    probe_ms              INTEGER DEFAULT NULL,
+                    probe_title           TEXT DEFAULT '',
+                    probe_byte_count      INTEGER DEFAULT NULL,
+                    probe_error           TEXT DEFAULT '',
+                    probed_at             TEXT DEFAULT '',
+                    egeria_external_ref_guid TEXT DEFAULT '',
+                    egeria_link_relationship_guid TEXT DEFAULT '',
+                    origin                TEXT NOT NULL DEFAULT 'local',
+                    ingested_pages        INTEGER DEFAULT NULL,
+                    ingested_bytes        INTEGER DEFAULT NULL,
+                    ingested_at           TEXT DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_doc_sources_entity "
+                "ON doc_sources(entity_type, entity_slug)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_feedback (
                     id           TEXT PRIMARY KEY,
@@ -3982,6 +4036,139 @@ class ProjectRegistry:
                 "SELECT tag, COUNT(*) as count FROM resource_tags GROUP BY tag ORDER BY tag"
             ).fetchall()
         return [{"tag": r["tag"], "count": r["count"]} for r in rows]
+
+    # ── Documentation sources (Enrichment) ──────────────────────────────────
+    # BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1. See doc_sources' table
+    # docstring above for the shape; this is CRUD plus the probe-result write.
+
+    DOC_SOURCE_TYPES = ("data_dictionary", "design_notes", "runbook", "wiki", "other")
+
+    def add_doc_source(self, entity_type: str, entity_slug: str, url: str,
+                        label: str = "", source_type: str = "other",
+                        added_by: str = "") -> dict:
+        """Declare a new documentation source. Returns the stored row (no
+        probe result yet — the caller runs the probe and calls
+        `record_doc_source_probe` next; kept as two steps so the probe, which
+        makes a network call, is not inside the registry's write path)."""
+        import secrets
+
+        if source_type not in self.DOC_SOURCE_TYPES:
+            source_type = "other"
+        source_id = secrets.token_hex(8)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO doc_sources
+                   (id, entity_type, entity_slug, url, label, source_type, added_at, added_by, origin)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'local')""",
+                (source_id, entity_type, entity_slug, url.strip(), label.strip(),
+                 source_type, now, added_by),
+            )
+        return self.get_doc_source(entity_type, entity_slug, source_id)
+
+    def get_doc_source(self, entity_type: str, entity_slug: str, source_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM doc_sources WHERE entity_type=? AND entity_slug=? AND id=?",
+                (entity_type, entity_slug, source_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_doc_sources(self, entity_type: str, entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM doc_sources WHERE entity_type=? AND entity_slug=? ORDER BY added_at",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_doc_source_probe(self, entity_type: str, entity_slug: str, source_id: str, *,
+                                 state: str, status_code: int | None, elapsed_ms: int | None,
+                                 title: str = "", byte_count: int | None = None,
+                                 error: str = "") -> dict | None:
+        """Store the result of a read-only reachability probe. Overwrites the
+        previous probe unconditionally — this is a re-check, not a history —
+        Slice 3 ("Freshness") is what adds a schedule/staleness story on top."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE doc_sources SET probe_state=?, probe_status_code=?, probe_ms=?,
+                   probe_title=?, probe_byte_count=?, probe_error=?, probed_at=?
+                   WHERE entity_type=? AND entity_slug=? AND id=?""",
+                (state, status_code, elapsed_ms, title, byte_count, error, now,
+                 entity_type, entity_slug, source_id),
+            )
+        return self.get_doc_source(entity_type, entity_slug, source_id)
+
+    def set_doc_source_egeria_ref(self, entity_type: str, entity_slug: str, source_id: str,
+                                   ref_guid: str, link_relationship_guid: str = "") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE doc_sources SET egeria_external_ref_guid=?, egeria_link_relationship_guid=?
+                   WHERE entity_type=? AND entity_slug=? AND id=?""",
+                (ref_guid, link_relationship_guid, entity_type, entity_slug, source_id),
+            )
+
+    def remove_doc_source(self, entity_type: str, entity_slug: str, source_id: str) -> dict | None:
+        """Delete the row and return it (so the caller — which also needs to
+        detach/delete the ExternalReference, if any — knows the GUID without
+        a second read after it is gone)."""
+        row = self.get_doc_source(entity_type, entity_slug, source_id)
+        if not row:
+            return None
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM doc_sources WHERE entity_type=? AND entity_slug=? AND id=?",
+                (entity_type, entity_slug, source_id),
+            )
+        return row
+
+    def upsert_doc_source_from_egeria(self, entity_type: str, entity_slug: str, *,
+                                       url: str, ref_guid: str, label: str = "",
+                                       source_type: str = "other") -> dict:
+        """A source read back from Egeria's ExternalReferences on this asset
+        that RE has no local row for — declared by someone else, or in a
+        prior/different RE install. Matched on `egeria_external_ref_guid`
+        first (stable across a URL edit in Egeria), falling back to `url`
+        for a reference this table has never seen. Upsert, not insert-only:
+        called on every read-back, so a repeat read of the same reference
+        must not grow duplicate rows."""
+        # Returning must happen AFTER the `with` block exits and commits —
+        # `get_doc_source` opens its own connection, and returning from
+        # inside this block (as an earlier version of this method did) read
+        # back the row before its own write was committed, so a matched
+        # existing row came back with the OLD `egeria_external_ref_guid`
+        # (empty, on a source never published) rather than the one just set.
+        # Caught by test_upsert_from_egeria_matches_existing_local_row_by_url.
+        matched_id: str | None = None
+        source_id: str | None = None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM doc_sources WHERE entity_type=? AND entity_slug=? "
+                "AND (egeria_external_ref_guid=? OR url=?)",
+                (entity_type, entity_slug, ref_guid, url),
+            ).fetchone()
+            if row:
+                matched_id = row["id"]
+                conn.execute(
+                    "UPDATE doc_sources SET egeria_external_ref_guid=? "
+                    "WHERE entity_type=? AND entity_slug=? AND id=?",
+                    (ref_guid, entity_type, entity_slug, matched_id),
+                )
+            else:
+                import secrets
+                source_id = secrets.token_hex(8)
+                now = datetime.now(timezone.utc).isoformat()
+                if source_type not in self.DOC_SOURCE_TYPES:
+                    source_type = "other"
+                conn.execute(
+                    """INSERT INTO doc_sources
+                       (id, entity_type, entity_slug, url, label, source_type, added_at,
+                        added_by, origin, egeria_external_ref_guid)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, '', 'egeria', ?)""",
+                    (source_id, entity_type, entity_slug, url, label, source_type, now, ref_guid),
+                )
+        return self.get_doc_source(entity_type, entity_slug, matched_id or source_id)
 
     def list_resources_by_tag(self, tag: str) -> list[dict]:
         with self._conn() as conn:

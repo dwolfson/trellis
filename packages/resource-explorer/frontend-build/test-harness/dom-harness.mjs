@@ -49,7 +49,17 @@ import { JSDOM } from 'jsdom';
 
 let registered = false;
 
-function ensureLoaderRegistered() {
+// Exported (2026-09-28, doc-sources-enrichment.test.mjs) so a test that
+// needs to import a `/next` module by its PLAIN specifier -- to land on the
+// exact same cached module instance a real `/next` file's own static
+// `import ... from '/static/...'` resolves to, rather than a cache-busted
+// copy `loadAppModule()` would produce -- can register the loader hook
+// without going through `loadAppModule()` first. See that test file's
+// `setUpEnrichmentDom` for why the distinction matters: a cache-busted
+// `app.js` instance and enrichment.js's own plain-specifier import of
+// `app.js` are TWO DIFFERENT module instances with two different `state`
+// objects, so mutating one is invisible to code driven through the other.
+export function ensureLoaderRegistered() {
   if (registered) return;
   register('./static-loader.mjs', import.meta.url);
   registered = true;

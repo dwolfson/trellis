@@ -547,6 +547,16 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             user_password=pwd,
         )
         publish_res = egeria_surveyor.catalog_and_survey(fs_entity, survey["survey_data"], registry=registry)
+        # BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1 — same hook as
+        # databases.py's publish route; see its comment for why this is
+        # best-effort and never fails the filesystem's own publish.
+        fs_asset_guid = publish_res.get("filesystem_guid", "")
+        if fs_asset_guid:
+            try:
+                from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
+                publish_local_doc_sources("filesystem", slug, fs_asset_guid, registry=registry)
+            except Exception:
+                log.warning("Could not publish documentation sources for %s", slug, exc_info=True)
         return {
             "status": "ok",
             "egeria_asset_guid": publish_res.get("filesystem_guid", ""),
