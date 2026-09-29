@@ -150,6 +150,18 @@ class Observation:
     #: §17.1's attribution: "" for a directly-requested step, the requesting
     #: step's key for an auto-run prerequisite.
     demanded_by: str = ""
+    #: Prefect dispatch honesty (2026-09-28). Mirrors `executor_ref` for a
+    #: genuine Prefect dispatch (kept as its own field, not folded into
+    #: `executor_ref`, per the step_runs schema migration's own reasoning —
+    #: see registry.py::record_step_run). Empty unless `executor=='prefect'`
+    #: and the dispatch actually happened.
+    flow_run_id: str = ""
+    #: Non-empty only when a Prefect dispatch was attempted and fell back to
+    #: local execution — the exception text `run_prefect_step` caught. Empty
+    #: for a step that was never routed to Prefect at all, which is a
+    #: different, unremarkable case this field must not conflate with a
+    #: failure.
+    dispatch_failed: str = ""
 
     def vector(self) -> dict:
         """The cost vector as it is stored, one key per §17.2 axis.
@@ -458,6 +470,7 @@ def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None
             executor_ref=obs.executor_ref, demanded_by=obs.demanded_by,
             metrics=obs.vector(), declared=obs.declared_vector(),
             disagreement=obs.disagreement,
+            flow_run_id=obs.flow_run_id, dispatch_failed=obs.dispatch_failed,
         )
     except Exception as exc:
         vector_recorded = False

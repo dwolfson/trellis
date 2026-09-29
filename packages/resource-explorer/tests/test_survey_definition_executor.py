@@ -773,10 +773,25 @@ class TestEngineOverride:
         import resource_explorer.config as config_module
         import resource_explorer.surveyors.prefect_adapter as prefect_adapter_module
 
+        def _fake_run_prefect_step(entity_type, slug, step_name, runner_kwargs,
+                                   dispatch_info=None):
+            # A genuine dispatch fills `dispatch_info` (see run_prefect_step's
+            # own contract, added 2026-09-28 for dispatch honesty) — the real
+            # function under test reads it to decide what `step_runs.executor`
+            # / the steps_report `engine` field actually say, so a mock that
+            # left it empty would make every override test here read
+            # "engine": "local" regardless of what was actually dispatched.
+            if dispatch_info is not None:
+                dispatch_info["engine"] = "prefect"
+                dispatch_info["flow_run_id"] = "fake-flow-run-id"
+                dispatch_info["dispatch_failed"] = ""
+            return {"ok": True, "via": "prefect"}
+
+        fake_run_prefect_step = MagicMock(side_effect=_fake_run_prefect_step)
+
         with patch.object(sde_module, "_prefect_orchestration_enabled", return_value=False), \
              patch.object(config_module, "get_config", return_value=fake_cfg), \
-             patch.object(prefect_adapter_module, "run_prefect_step",
-                          return_value={"ok": True, "via": "prefect"}) as fake_run_prefect_step:
+             patch.object(prefect_adapter_module, "run_prefect_step", fake_run_prefect_step):
             result = executor.run(
                 entity_type=entity_type, slug="my-thing", engine_override=engine_override,
             )
@@ -1112,3 +1127,176 @@ class TestProposeProducerDefinition:
         exc = _MissingPrereq("bare message", producer_key="")
         assert executor._propose_producer_definition(self._ENTITY_TYPE, exc) == "bare message"
         reader.find_candidate_process_guids.assert_not_called()
+
+
+# ── §4 item 3 (2026-09-28): a fresh stored producer answer must actually ───
+# route the run to Prefect, not merely make the resolver SAY "satisfied" ────
+#
+# docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md. Section E's own
+# PREFECT-PREREQUISITE-RESOLUTION-IMPLEMENTED.md already fixed the structural
+# half of this (`build_plan`'s `_add_produces_edges` short-circuits via
+# `step_preconditions.fresh_hit()` when `registry`/`entity` are passed) and
+# claimed it verified live — but every one of that doc's own tests stops at
+# `build_plan()`/`_run_via_prefect()` in isolation, never through
+# `SurveyDefinitionExecutor.run()` end to end with a real, populated
+# registry. This test closes that gap: it seeds a FRESH stored producer row
+# through the real registry (not a mock/fixture double), then asserts the
+# Prefect flow function is actually invoked and the local per-step runner is
+# NOT — i.e. the run really goes to Prefect, not merely that
+# `prerequisite_resolver.resolve()` reports SATISFIED in isolation.
+class TestFreshStoredAnswerActuallyReachesPrefect:
+    _ENTITY_TYPE = "fake_db_e4"
+
+    def _seed(self, tmp_path):
+        from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+
+        registry = ProjectRegistry(db_path=str(tmp_path / "e4.db"))
+        entity = DatabaseEntity(
+            slug="e4_db", display_name="E4 DB", db_type="postgresql",
+            host="localhost", port=5432, database_name="e4",
+        )
+        registry.register_database(entity)
+        # A fresh row for the precondition `consumer_step` declares —
+        # `has_schema_inventory` counts `database_tables` keyed by
+        # `database_slug` (step_preconditions.py's PRECONDITIONS). Recent
+        # `surveyed_at` so `fresh_hit()` (24h window) accepts it, not just
+        # `unmet()` (which accepts any age).
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO database_tables (database_slug, surveyed_at, source, "
+                "schema_name, table_name) VALUES (?, ?, 'local', 'public', 'orders')",
+                (entity.slug, now),
+            )
+        return registry, entity
+
+    def _survey_def(self):
+        # `postgres_schema_and_stats` (the one that would fill has_schema_inventory) is
+        # deliberately NOT one of this definition's own steps — the exact
+        # shape PREFECT-PREREQUISITE-RESOLUTION-IMPLEMENTED.md's own tests
+        # use, and the shape that most exercises the structural short-circuit
+        # (a producer that's absent from the definition either needs an edge
+        # folded in from stored data, or the build raises).
+        return SurveyDefinition(
+            process_guid="proc-e4", display_name="E4 Analysis",
+            qualified_name="GovActionProcess::E4Analysis",
+            supported_technology_type="PostgreSQL Database",
+            steps=[
+                SurveyStep(
+                    guid="s1", display_name="Consumer", qualified_name="Step::Consumer",
+                    executes_at="resource-explorer", re_analysis_step="consumer_step",
+                ),
+            ],
+        )
+
+    def _register(self, consumer_runner, producer_runner=None):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import StepInfo
+
+        step_registry = {
+            "postgres_schema_and_stats": StepInfo(
+                "postgres_schema_and_stats", None, "", [], fetch_cost="none", compute_cost="low",
+                produces=("database_tables",)),
+            "consumer_step": StepInfo(
+                "consumer_step", None, "", [], fetch_cost="none", compute_cost="low",
+                requires_context={"has_schema_inventory": "needs a schema inventory"}),
+        }
+        adapter = ResourceTypeAdapter(
+            entity_type=self._ENTITY_TYPE, technology_type="PostgreSQL Database",
+            re_analysis_steps={"consumer_step": consumer_runner,
+                               "postgres_schema_and_stats":
+                                   producer_runner or MagicMock(return_value={"ok": True})},
+            get_entity=lambda registry, slug: registry.get_database(slug),
+            publish=MagicMock(return_value="report-guid-e4"),
+            step_registry=lambda: step_registry,
+        )
+        register_adapter(adapter)
+
+    def test_fresh_stored_answer_routes_to_prefect_not_the_local_loop(self, tmp_path):
+        registry, entity = self._seed(tmp_path)
+        consumer_runner = MagicMock(return_value={"ok": True})
+        self._register(consumer_runner)
+
+        reader = _fake_reader(
+            self._survey_def(),
+            candidates=[{"guid": "proc-e4", "qualified_name": "GovActionProcess::E4Analysis",
+                        "display_name": "E4 Analysis"}],
+        )
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        # Shape `_run_via_prefect` expects back from the flow: a list of
+        # per-step report entries (step_key/status/output), not the
+        # (steps_report, outputs, errors) tuple it itself returns.
+        fake_flow_report = [
+            {"step_key": "consumer_step", "status": "ok", "output": {"ok": True}},
+        ]
+        with patch("resource_explorer.prefect.flows.re_survey_definition_flow",
+                   return_value=fake_flow_report) as fake_flow:
+            executor.run(entity_type=self._ENTITY_TYPE, slug=entity.slug,
+                        engine_override="prefect")
+
+        fake_flow.assert_called_once()
+        # The tell: if the resolver's SATISFIED verdict had not actually
+        # reached the Prefect path (this test's whole point), the local loop
+        # would have called consumer_runner directly instead.
+        consumer_runner.assert_not_called()
+
+    def test_control_no_stored_answer_falls_back_to_the_local_loop(self, tmp_path):
+        """Negative control for the test above: without a stored producer
+        row at all, `_any_step_needs_prerequisites` must say True (there is
+        real work — an auto-run — for the resolver to do), so the run goes
+        through the local loop and auto-runs the producer there, never
+        reaching `re_survey_definition_flow`. Pins that the positive test
+        above is actually exercising the fresh-row short-circuit, not
+        something that would pass regardless of what was seeded.
+
+        The producer mock here deliberately does NOT write a real
+        `database_tables` row (it just returns `{"ok": True}`, same as
+        every other fake runner in this file) — so `consumer_step` still
+        finds nothing after the auto-run and is legitimately skipped. That
+        is realistic (a mock producer cannot actually satisfy the
+        precondition) and does not weaken this control: the auto-run firing
+        at all, on the LOCAL loop, is the evidence that `_run_via_prefect`
+        was never reached."""
+        from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+
+        registry = ProjectRegistry(db_path=str(tmp_path / "e4-control.db"))
+        entity = DatabaseEntity(
+            slug="e4_db_control", display_name="E4 DB Control", db_type="postgresql",
+            host="localhost", port=5432, database_name="e4c",
+        )
+        registry.register_database(entity)
+        # No database_tables row seeded at all.
+
+        consumer_runner = MagicMock(return_value={"ok": True})
+        producer_runner = MagicMock(return_value={"ok": True})
+        self._register(consumer_runner, producer_runner=producer_runner)
+
+        reader = _fake_reader(
+            self._survey_def(),
+            candidates=[{"guid": "proc-e4", "qualified_name": "GovActionProcess::E4Analysis",
+                        "display_name": "E4 Analysis"}],
+        )
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        # No engine_override here (unlike the positive test): with a stored
+        # answer to short-circuit, `engine_override="prefect"` would force
+        # EVERY "resource-explorer" step through the per-step Prefect route
+        # too (`_use_prefect`'s own contract), which would dispatch against
+        # whatever real Prefect server this test happened to find reachable
+        # — exactly the hermeticity this control needs to avoid. Prefect
+        # disabled via config instead, so the local loop is reached for the
+        # reason the fix is actually about (no stored answer -> real
+        # producer work to do -> `_any_step_needs_prerequisites` -> True),
+        # not merely because Prefect was turned off.
+        import resource_explorer.config as config_module
+
+        fake_cfg = MagicMock()
+        fake_cfg.prefect.enabled = False
+        with patch.object(config_module, "get_config", return_value=fake_cfg), \
+             patch("resource_explorer.prefect.flows.re_survey_definition_flow") as fake_flow:
+            executor.run(entity_type=self._ENTITY_TYPE, slug=entity.slug)
+
+        fake_flow.assert_not_called()
+        producer_runner.assert_called_once()
+        consumer_runner.assert_not_called()  # correctly skipped: the mock producer wrote nothing real

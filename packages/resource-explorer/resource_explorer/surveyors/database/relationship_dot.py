@@ -50,6 +50,43 @@ FULL_GRAPH_TABLE_LIMIT = 100
 #: below 5 does).
 HUB_MIN_IN_DEGREE = 5
 
+#: Long single-word identifiers are WRAPPED across multiple lines within
+#: their node, never cut. Root cause (live-verified against the real
+#: `egeria-shared-kroki` container at localhost:6002, not assumed from
+#: source): every `node [...]` default in this module ALREADY sets an
+#: explicit `fontname="DejaVu Serif"` matching the edge declarations — a
+#: missing/inconsistent `fontname` is not the bug. The actual mechanism is
+#: that "DejaVu Serif" is never embedded in or shipped alongside the SVG
+#: Kroki returns — it is emitted only as a `font-family` *name* on each
+#: `<text>` element — so Graphviz's server-side box-width calculation (done
+#: against whatever "DejaVu Serif" metrics its own fontconfig resolves
+#: inside the Kroki container) and the box's ACTUAL rendered width (done by
+#: whatever displays the SVG afterward — a browser, which silently
+#: substitutes a different font if "DejaVu Serif" isn't genuinely installed
+#: there) are computed against two different font metric tables. Confirmed
+#: directly, not assumed: in the browser that renders this app's evidence
+#: rail, `canvas.measureText()` returns the IDENTICAL width for
+#: `font: "DejaVu Serif"` and for a font name that does not exist at all —
+#: i.e. no real "DejaVu Serif" is present there and both fall back to the
+#: same generic serif. Rendering `schema_detail_dot`'s own output for a
+#: table named `salesorderheadersalesreason` (28 chars) through the real
+#: Kroki container reproduces the reported overflow exactly (the label
+#: crowds/exceeds its box edges); `specialofferproduct` (20 chars) and
+#: `countryregioncurrency` (22 chars) render with a visible margin at the
+#: same fontsize. No fixed margin tuned for one font's metrics can be
+#: guaranteed to hold for whatever font a viewer's browser actually
+#: substitutes — so rather than gamble on a margin, or drop characters,
+#: this module wraps: a name over `WRAP_LINE_CHARS` breaks onto additional
+#: lines (at `_`, or by hard character count for AdventureWorks-style
+#: squashed names with no separator at all), and the node's box/height grow
+#: to fit every line. The name is never shortened or cut — every character
+#: the surveyor read is still on the node, just wrapped. (A shortened label
+#: with the full name on `tooltip` remains available as a documented
+#: fallback for a context that cannot wrap at all, e.g. a single-line
+#: schema-map box — not needed by anything this module currently draws,
+#: since no schema-map node carries a bare table name.)
+WRAP_LINE_CHARS = 14
+
 # Palette lifted directly from the merged wireframe's own `.dot` sources —
 # not reinvented here, so the rendered picture matches what the design note
 # actually approved.
@@ -113,6 +150,51 @@ def _in_degrees(edges: list[dict], node_ids: set[str]) -> dict[str, int]:
     return counts
 
 
+def _wrap_identifier_lines(name: str, max_line_chars: int = WRAP_LINE_CHARS) -> list[str]:
+    """Splits a long identifier into display lines of at most
+    `max_line_chars`, by slicing contiguous substrings of `name` —
+    `"".join(_wrap_identifier_lines(name)) == name` always, by construction,
+    so no character can ever go missing (see `WRAP_LINE_CHARS`'s docstring
+    for why a fixed margin or a shortened label can't be trusted here
+    instead). Each line greedily takes up to `max_line_chars`, preferring to
+    break right AFTER the last `_` inside that window (common in snake_case
+    table/column names, and more readable than a mid-word split) — the
+    underscore itself stays on the line before the break, never dropped.
+    An AdventureWorks-style name with no separator at all
+    (`salesorderheadersalesreason`) has no `_` to break on and falls back
+    to a hard character-count wrap.
+    """
+    if len(name) <= max_line_chars:
+        return [name]
+    lines: list[str] = []
+    remaining = name
+    while len(remaining) > max_line_chars:
+        window = remaining[:max_line_chars]
+        underscore_at = window.rfind("_")
+        break_at = underscore_at + 1 if underscore_at > 0 else max_line_chars
+        lines.append(remaining[:break_at])
+        remaining = remaining[break_at:]
+    if remaining:
+        lines.append(remaining)
+    return lines
+
+
+def _wrapped_html_label_text(name: str, max_line_chars: int = WRAP_LINE_CHARS) -> str:
+    """Multi-line HTML-like label fragment (`<br/>`-separated, entity-escaped
+    per line) for a long identifier — for use inside an existing
+    `label=<...>` block. Short names pass through as a single, unwrapped
+    line."""
+    return "<br/>".join(_html_escape(line) for line in _wrap_identifier_lines(name, max_line_chars))
+
+
+def _wrapped_plain_label_text(name: str, max_line_chars: int = WRAP_LINE_CHARS) -> str:
+    """Multi-line QUOTED-STRING label text (Graphviz's own `\\n` line-break
+    escape — distinct from, and not usable inside, an HTML-like label) for
+    a long identifier, for use inside `label="..."`. Short names pass
+    through as a single, unwrapped, `_dot_escape`d line."""
+    return "\\n".join(_dot_escape(line) for line in _wrap_identifier_lines(name, max_line_chars))
+
+
 def _node_style(qname: str, bare_name: str, in_degree: int, note: str = "") -> str:
     """One node declaration line. Hub weighting is a straight ramp off
     in-degree, matching the wireframe's own values (penwidth = 0.8 +
@@ -125,12 +207,12 @@ def _node_style(qname: str, bare_name: str, in_degree: int, note: str = "") -> s
         fontsize = round(9 + 0.25 * in_degree, 1)
         if note:
             label = (
-                f'<<b>{_html_escape(bare_name)}</b>'
+                f'<<b>{_wrapped_html_label_text(bare_name)}</b>'
                 f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_html_escape(note)}</font>>'
             )
         else:
             label = (
-                f'<<b>{_html_escape(bare_name)}</b> '
+                f'<<b>{_wrapped_html_label_text(bare_name)}</b> '
                 f'<font color="{_DARK_ACCENT}">←{in_degree}</font>>'
             )
         return (
@@ -139,11 +221,11 @@ def _node_style(qname: str, bare_name: str, in_degree: int, note: str = "") -> s
         )
     if note:
         label = (
-            f'<{_html_escape(bare_name)}'
+            f'<{_wrapped_html_label_text(bare_name)}'
             f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_html_escape(note)}</font>>'
         )
         return f'"{node_id}" [label={label},color="{_INK}",penwidth=1.1];'
-    return f'"{node_id}" [label="{_dot_escape(bare_name)}"];'
+    return f'"{node_id}" [label="{_wrapped_plain_label_text(bare_name)}"];'
 
 
 def _isolated_note(qname: str, has_in: bool, has_out: bool) -> str:
@@ -315,7 +397,7 @@ def full_database_dot(
             qname = _qname(schema, table)
             if table in not_captured:
                 lines.append(
-                    f'"{_id(qname)}" [label=<{_html_escape(table)}'
+                    f'"{_id(qname)}" [label=<{_wrapped_html_label_text(table)}'
                     f'<br/><font point-size="7.5" color="{_DARK_ACCENT}">{_html_escape(caption)}'
                     f'</font>>,style="rounded,dashed",color="{_RULE}"];'
                 )
@@ -387,19 +469,19 @@ def schema_detail_dot(
         node_id = _id(_qname(schema, table))
         if table in not_captured_set:
             lines.append(
-                f'"{node_id}" [label=<{_html_escape(table)}'
+                f'"{node_id}" [label=<{_wrapped_html_label_text(table)}'
                 f'<br/><font point-size="8" color="{_DARK_ACCENT}">'
                 f'{_html_escape(not_captured_caption)}</font>>,'
                 f'style="rounded,dashed",color="{_RULE}"];'
             )
         elif table in has_internal_edge:
-            lines.append(f'"{node_id}" [label="{_dot_escape(table)}"];')
+            lines.append(f'"{node_id}" [label="{_wrapped_plain_label_text(table)}"];')
         elif table in has_outgoing:
             # The fix in picture form: a table with ONLY outgoing keys is
             # captioned "no keys inside <schema>", never "isolated" — it has
             # a real edge drawn below, to a table in another schema.
             lines.append(
-                f'"{node_id}" [label=<{_html_escape(table)}'
+                f'"{node_id}" [label=<{_wrapped_html_label_text(table)}'
                 f'<br/><font point-size="8" color="{_DARK_ACCENT}">no keys '
                 f'inside {_html_escape(schema)} — joined across</font>>,'
                 f'color="{_INK}",penwidth=1.1];'
@@ -408,7 +490,7 @@ def schema_detail_dot(
             # Genuinely isolated even counting outgoing keys — this IS
             # "isolated", and only this case is allowed to say so.
             lines.append(
-                f'"{node_id}" [label=<{_html_escape(table)}'
+                f'"{node_id}" [label=<{_wrapped_html_label_text(table)}'
                 f'<br/><font point-size="8" color="{_DARK_ACCENT}">isolated '
                 f'— no keys in or out</font>>,color="{_INK}",penwidth=1.1];'
             )
@@ -421,7 +503,7 @@ def schema_detail_dot(
             ghost_nodes[target] = (
                 f'"{_id(target)}" [label=<'
                 f'<font color="{_DARK_ACCENT}">{_html_escape(edge["to_schema"])}.'
-                f'</font>{_html_escape(edge["to_table"])}>,shape=plaintext,'
+                f'</font>{_wrapped_html_label_text(edge["to_table"])}>,shape=plaintext,'
                 'style="",fontsize=9.5];'
             )
     for decl in ghost_nodes.values():

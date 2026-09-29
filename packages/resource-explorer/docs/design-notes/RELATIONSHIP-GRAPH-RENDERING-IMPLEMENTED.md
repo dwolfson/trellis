@@ -1,5 +1,138 @@
 # Relationship graph rendering — implemented
 
+## Update: long table-name labels overflowing their node boxes (separate branch, `re/relationship-graph-label-overflow`)
+
+Reported live by the project owner, with screenshots, the same night this feature merged:
+table-name labels ("salesorderheadersalesreason", "specialofferproduct", "countryregioncurrency")
+visibly extending past their rounded node boxes in the rendered SVG.
+
+**Root cause, confirmed empirically, not assumed from source.** The investigation started from a
+specific hypothesis — that the `node [...]` default declarations in `relationship_dot.py` never set
+an explicit `fontname`, so Graphviz would fall back to a different font than the `fontname="DejaVu
+Serif"` the edge declarations pin, and lay boxes out for one font while a viewer sees another.
+**That hypothesis was wrong**: reading the file (all three `node [...]` defaults, ~line 172/301/379)
+showed every one of them already sets `fontname="DejaVu Serif"`, matching the edges exactly. No
+missing/inconsistent `fontname` anywhere.
+
+The real mechanism, found by rendering this module's own output through the real
+`egeria-shared-kroki` container at `localhost:6002` (not just reading the DOT source) and inspecting
+both the returned SVG and a browser's own text metrics:
+
+1. Rendering `schema_detail_dot`'s output for `sales` with `salesorderheadersalesreason` (28 chars),
+   `specialofferproduct` (20 chars), and `countryregioncurrency` (22 chars) through real Kroki
+   reproduces the reported overflow exactly — the 28-char label's box has almost no left/right
+   margin left, unlike the other two, which still have a visible (if tight) margin at 20–22 chars.
+2. `"DejaVu Serif"` is correctly and consistently named in every `graph`/`node`/`edge` default in
+   this module — but Graphviz does not embed the font or convert the label to outlined paths in the
+   SVG it returns; it emits plain `<text font-family="DejaVu Serif">` elements. Graphviz's own
+   server-side box-width *calculation* (done inside the Kroki container, against whatever "DejaVu
+   Serif" metrics its fontconfig resolves there) and the box's *actual displayed* width (done by
+   whatever renders the SVG afterward — the browser the project owner was looking at it in) are two
+   independent font-metric lookups that only agree if that exact font is genuinely installed in both
+   places.
+3. Confirmed directly that it is not, in the environment used to view this app's evidence rail:
+   `canvas.measureText()` with `font: '10px "DejaVu Serif"'` returns the width `112.72` for
+   `"salesorderheadersalesreason"` — and asking for a font name that **does not exist at all**
+   (`"ThisFontDoesNotExist12345"`) returns the *identical* `112.72`. Both silently fall back to the
+   same generic serif. So the box was sized against real DejaVu Serif metrics inside Kroki, tightly
+   (its per-node `margin` — `"0.06,0.02"`/`"0.07,0.03"` — leaves very little slack), and then
+   displayed using a different, apparently wider, substituted font — which is exactly the overflow
+   pattern reported, worst on the longest unbroken identifier.
+
+**This is not fixable by choosing a "better" font name.** Any font-family string written into the
+SVG is only as good as whatever the *viewer's* environment happens to have installed under that
+exact name — there is no font this module could name that is guaranteed present in every browser
+that will ever open this app. A fixed margin has the same problem one level removed: it can be
+tuned to survive *today's* measured substitution gap, but nothing bounds how much wider a different
+viewer's fallback font could be for an arbitrarily long, unbroken identifier.
+
+**Fix: wrap, don't shrink or cut.** Real-world table names that trigger this
+(`salesorderheadersalesreason`, `specialofferproduct`, `countryregioncurrency`) are the
+AdventureWorks style — long, single "words" with no natural break — so no margin tuning fixes this
+in general. `relationship_dot.py` now wraps any identifier over `WRAP_LINE_CHARS` (14) onto multiple
+lines inside its node, instead of truncating it:
+
+- `_wrap_identifier_lines(name)` slices `name` into ≤14-character lines, preferring to break right
+  after the last `_` inside each window (readable for snake_case names) and falling back to a hard
+  character-count wrap when there's no separator at all (the AdventureWorks case). Built so
+  `"".join(_wrap_identifier_lines(name)) == name` always — the wrap only slices contiguous
+  substrings, so **no character can ever be dropped**, unlike an earlier draft of this same helper
+  which discarded the `_` itself at a line break (`special_offer_product` → `special_offerproduct`)
+  until a test (`test_wrap_helper_prefers_underscore_breaks_when_present`) caught it.
+- `_wrapped_html_label_text()` / `_wrapped_plain_label_text()` join those lines with `<br/>` (inside
+  an HTML-like `label=<...>`) or Graphviz's own `\n` line-break escape (inside a quoted
+  `label="..."`) respectively — both existing label forms this module already used, so no new label
+  shape was introduced. The node's box and height grow to fit the extra lines the same way Graphviz
+  already grows a box for the existing two-line title+caption pattern.
+- Applied everywhere a bare table/schema name enters a node label: `_node_style` (used by
+  `full_database_dot`'s hub and plain nodes), `full_database_dot`'s not-captured (dashed) nodes,
+  all four branches of `schema_detail_dot`'s per-table labelling, and the "ghost" nodes
+  `schema_detail_dot` draws for an outgoing key's external target.
+- **The full identifier is never shortened anywhere in this fix.** Node IDs (used for edge
+  references) were always the untruncated qualified name and stay that way; only the *display label*
+  wraps. A shortened label with the full name on a `tooltip` attribute (an SVG `<title>`, visible on
+  hover) was considered as a fallback but wasn't needed by anything this module draws — no node this
+  module produces is constrained to a single line that can't grow (a `schema_map_dot` box, the one
+  place that IS a single fixed-ish line, never carries a bare table name to begin with — only schema
+  names, short in every real database surveyed so far).
+
+**Clearing up the "schema-map" screenshot.** The project owner's report described the overflow as
+visible "on both the schema-map (small sales schema box) and whole-database-schema-cluster views."
+`schema_map_dot` (zoom level 1) draws one box per *schema* with table/key counts — it never draws a
+bare table name, so it structurally cannot exhibit this specific overflow (confirmed by rendering it
+through real Kroki with the same schema names — no issue, screenshot below). The "small sales schema
+box" is almost certainly `schema_detail_dot`'s own per-schema cluster (zoom level 3) — a box titled
+"sales" containing the schema's tables — which is exactly where the overflow reproduces. Recorded
+here rather than corrected silently, since the discrepancy is a fact about the report, not a reason
+to distrust it.
+
+## Live verification (this fix)
+
+Rendered `schema_detail_dot`'s `sales` view (the reported case), `full_database_dot`'s `sales`
+cluster with the same three long names, and `schema_map_dot`, all through the real
+`egeria-shared-kroki` container at `localhost:6002` (not a mock), and inspected the resulting SVG in
+a real browser (not just the DOT source):
+
+- **Before the fix** (`schema_detail_dot`, unwrapped): `salesorderheadersalesreason`'s label and its
+  "no keys inside sales — joined across" caption both crowd the box edges with almost no margin,
+  visibly worse than `specialofferproduct`/`countryregioncurrency` in the same rendering —
+  reproduces the reported bug.
+- **After the fix** (`schema_detail_dot`): all three long names wrap onto two lines
+  (`salesorderhead`/`ersalesreason`, `specialofferpr`/`oduct`, `countryregionc`/`urrency`), each line
+  sitting with a clear, comfortable margin inside its box — no overflow, at real 1x scale and at 3x
+  zoom.
+- **After the fix** (`full_database_dot`, `sales` cluster with the same three names plus `customer`):
+  same wrapping behaviour, same clear margins, cross-cluster edge still renders correctly to the
+  wrapped node.
+- **`schema_map_dot`**: unaffected either way, as expected — it never carries a table name.
+
+## Tests
+
+`tests/test_relationship_dot.py` gained a new `TestLabelWrapping` class (8 cases): the wrap helper
+never drops a character (short names pass through unwrapped; `salesorderheadersalesreason`, a
+60-character synthetic name, and an underscore-separated name all reassemble byte-for-byte via
+`"".join`); the longest real AdventureWorks name and the 60-char synthetic name are never cut (no
+`…`/`...`) in `schema_detail_dot`, `full_database_dot`, or a `schema_detail_dot` ghost node; and
+determinism holds with a long wrapped name in the mix. All 39 cases in the file pass (31 pre-existing
++ 8 new — see file for the exact count by class), unchanged behaviour for every existing case
+(escaping, hub sizing, isolated/not-captured captions, credential-scope titles, the wired
+integration tests) since every name in those fixtures is short enough to pass through the wrap
+helper as a single unwrapped line.
+
+## Full test suite (this fix)
+
+```
+uv run pytest tests/ -q -rf
+6746 passed, 103 skipped, 0 failed, 4930 warnings in 1032.93s (0:17:12)
+```
+
+No `-k`, no deselects, full run. Zero failures. (Total collected count is higher than the
+`6718 passed` recorded after the previous escaping/credential-scope pass above — other sessions'
+work landed on `main` between that pass and this one; this run is against a fresh `origin/main` tip
+fetched for this fix, not a stale count.)
+
+---
+
 ## Update: escaping fix + credential-scope title (same branch, before merge)
 
 Two items raised in review before this branch merged, both addressed in the same push:
