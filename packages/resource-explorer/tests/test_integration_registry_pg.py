@@ -22,6 +22,8 @@ integration test here — the suite still runs with no external services.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from resource_explorer.registry import Project, ProjectRegistry
@@ -339,3 +341,166 @@ class TestDatabaseSurveysCacheIsInstanceScopedAndWriteInvalidated:
         )
         latest = pg_registry.get_latest_database_survey(pg_surveyed_database)
         assert latest["surveyed_at"] == "2026-01-02T00:00:00"
+
+
+class TestFindLatestDatabaseSurveyWithKey:
+    """2026-09-29 round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+    ROUND-2-IMPLEMENTED.md): `find_latest_database_survey_with_key` replaces
+    the "fetch every historical blob, loop in Python" pattern with a
+    server-side `jsonb_exists` containment query on Postgres. This is the
+    exact search shape the 2026-09-26 fix (`a0f28aec`, "Fix schema-count
+    leading number and credential-capability key mismatch") landed —
+    `_credential_capability_results` searching every stored survey
+    newest-first rather than only the latest — so this class exercises
+    that shape directly against real Postgres, not just the
+    `_FakeRegistry`-level unit test in test_schema_inventory_headline.py."""
+
+    @pytest.fixture
+    def pg_surveyed_database(self, pg_registry):
+        from resource_explorer.registry import DatabaseEntity
+
+        slug = "pg_itest_find_survey_with_key_db"
+        if pg_registry.get_database(slug) is None:
+            pg_registry.register_database(DatabaseEntity(
+                slug=slug, display_name="Find Survey With Key Test DB", db_type="postgresql",
+                host="localhost", port=5432, database_name=slug,
+            ))
+        yield slug
+        pg_registry.remove_database(slug)
+
+    def test_returns_none_when_no_survey_has_the_key(self, pg_registry, pg_surveyed_database):
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=1, column_count=1,
+            survey_data={"schema_count": 1},
+        )
+        assert pg_registry.find_latest_database_survey_with_key(
+            pg_surveyed_database, "credential_capability") is None
+
+    def test_finds_the_key_on_the_only_survey(self, pg_registry, pg_surveyed_database):
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=1, column_count=1,
+            survey_data={"credential_capability": {"schema_total": 8, "schema_visible": 6}},
+        )
+        found = pg_registry.find_latest_database_survey_with_key(
+            pg_surveyed_database, "credential_capability")
+        assert found is not None
+        assert json.loads(found["survey_data"])["credential_capability"]["schema_total"] == 8
+
+    def test_the_2026_09_26_bug_shape_an_older_survey_carries_the_key_the_newest_does_not(
+        self, pg_registry, pg_surveyed_database,
+    ):
+        """The exact real-world shape found live 2026-09-26 on `coco_pharma`:
+        an older survey ran the credential_capability probe; a later,
+        newer survey was schema/statistics-only and carries no such key at
+        all (not merely a falsy one — the key is genuinely absent, exactly
+        as `DatabaseSurveyor.survey()` only ever sets it when the probe
+        step actually ran). The newest-first search must not stop at the
+        newer, probe-less survey and report "nothing" — it must keep
+        looking and find the older reading, same as `_credential_capability_
+        results`'s own docstring requires and `a0f28aec` fixed live for."""
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=8, table_count=61, column_count=200,
+            survey_data={"credential_capability": {"schema_total": 8, "schema_visible": 6,
+                                                     "table_total": 61, "table_select": 3}},
+            surveyed_at="2026-09-25T00:00:00",
+        )
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=8, table_count=61, column_count=200,
+            survey_data={"schema_count": 8},  # newer, no probe this run
+            surveyed_at="2026-09-26T00:00:00",
+        )
+        found = pg_registry.find_latest_database_survey_with_key(
+            pg_surveyed_database, "credential_capability")
+        assert found is not None
+        assert found["surveyed_at"] == "2026-09-25T00:00:00"
+        cap = json.loads(found["survey_data"])["credential_capability"]
+        assert cap["schema_total"] == 8
+        assert cap["schema_visible"] == 6
+
+    def test_an_empty_dict_value_is_treated_as_falsy_and_search_continues(
+        self, pg_registry, pg_surveyed_database,
+    ):
+        """The key existing with a falsy value (`{}`) is the one case the
+        fast SQL path alone cannot distinguish from a truthy one — pinned
+        directly per `find_latest_database_survey_with_key`'s own docstring
+        ("Candidate had the key but a falsy value... fall through to the
+        exhaustive scan"). Not expected in real surveyor output (the probe
+        either omits the key or writes a real reading), but correctness
+        here must not depend on that assumption holding."""
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=1, column_count=1,
+            survey_data={"credential_capability": {"schema_total": 3, "schema_visible": 3}},
+            surveyed_at="2026-09-25T00:00:00",
+        )
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=1, column_count=1,
+            survey_data={"credential_capability": {}},  # present, empty — falsy
+            surveyed_at="2026-09-26T00:00:00",
+        )
+        found = pg_registry.find_latest_database_survey_with_key(
+            pg_surveyed_database, "credential_capability")
+        assert found is not None
+        assert found["surveyed_at"] == "2026-09-25T00:00:00", (
+            "the newer survey's empty credential_capability was treated as "
+            "truthy — the fast path's candidate check must verify, not just "
+            "check key presence"
+        )
+
+    def test_credential_capability_results_reader_uses_the_fast_path_correctly(
+        self, pg_registry, pg_surveyed_database,
+    ):
+        """End to end through the actual results reader
+        (`_credential_capability_results`), not just the registry method —
+        confirms the reader's `find_latest_database_survey_with_key`
+        integration returns the same answer the pre-round-2 linear scan
+        would have, for the exact bug shape `a0f28aec` fixed."""
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            _credential_capability_results,
+        )
+
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=8, table_count=61, column_count=200,
+            survey_data={"credential_capability": {"schema_total": 8, "schema_visible": 6}},
+            surveyed_at="2026-09-25T00:00:00",
+        )
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=8, table_count=61, column_count=200,
+            survey_data={"schema_count": 8},
+            surveyed_at="2026-09-26T00:00:00",
+        )
+        cap = _credential_capability_results(pg_registry, pg_surveyed_database)
+        assert cap == {"schema_total": 8, "schema_visible": 6}
+
+    def test_repeat_calls_within_one_instance_do_not_requery(self, pg_registry, pg_surveyed_database, monkeypatch):
+        """A single board read calls `_credential_capability_results` (and
+        so this method) from several distinct call sites for the same
+        slug/key — 5 times, per `cProfile` on `schema_inventory`. Cached
+        per `(slug, key)` on the `ProjectRegistry` instance, lazily and
+        deliberately WITHOUT touching `__init__`/`record_database_survey`
+        (see this method's own docstring for why) — pinned here the same
+        way `get_database_surveys`'s own dedup is pinned, by counting real
+        `database_surveys` queries across repeat calls."""
+        from resource_explorer.registry import ConnectionWrapper
+
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=1, column_count=1,
+            survey_data={"credential_capability": {"schema_total": 3, "schema_visible": 3}},
+        )
+
+        calls = []
+        real_execute = ConnectionWrapper.execute
+
+        def _counting_execute(self, sql, params=None):
+            if "FROM database_surveys" in sql:
+                calls.append(1)
+            return real_execute(self, sql, params)
+
+        monkeypatch.setattr(ConnectionWrapper, "execute", _counting_execute)
+
+        first = pg_registry.find_latest_database_survey_with_key(
+            pg_surveyed_database, "credential_capability")
+        second = pg_registry.find_latest_database_survey_with_key(
+            pg_surveyed_database, "credential_capability")
+
+        assert len(calls) == 1, "second find_latest_database_survey_with_key() call re-queried Postgres"
+        assert first == second

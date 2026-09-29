@@ -159,12 +159,15 @@ class EgeriaAnnotationItem(BaseModel):
 
 def _to_summary(db) -> DatabaseSummary:
     """Convert DatabaseEntity to DatabaseSummary."""
-    # Get latest survey data if available
+    # Get latest survey data if available. `get_latest_database_survey`
+    # (2026-09-29 round 1, docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+    # IMPLEMENTED.md), not `get_database_surveys(...)[0]` — this route used
+    # to pay the full unbounded "every historical survey's full blob" fetch
+    # for a value that only ever needed the single newest row.
     import json
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    surveys = registry.get_database_surveys(db.slug)
-    latest = surveys[0] if surveys else None
+    latest = registry.get_latest_database_survey(db.slug)
     disp = registry.get_disposition_for_entity("database", db.slug) or {}
 
     # The credential_capability probe's last result, if the survey_data blob
@@ -174,16 +177,21 @@ def _to_summary(db) -> DatabaseSummary:
     # rather than a dedicated table. Checked across all stored surveys, most
     # recent first, since a plain schema/statistics-only run after the probe
     # ran would otherwise silently hide a still-current capability reading.
+    #
+    # Uses `find_latest_database_survey_with_key` (2026-09-29 round 2,
+    # docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md)
+    # rather than looping `surveys` (already fetched above for
+    # schema/table/column counts) — that method pushes the same
+    # newest-first "has this key" search into Postgres instead of
+    # rescanning every historical blob in Python a second time.
     credential_capability: dict | None = None
-    for row in surveys:
+    cap_survey = registry.find_latest_database_survey_with_key(db.slug, "credential_capability")
+    if cap_survey is not None:
         try:
-            data = json.loads(row.get("survey_data") or "{}")
+            data = json.loads(cap_survey.get("survey_data") or "{}")
         except (ValueError, TypeError):
-            continue
-        cap = data.get("credential_capability")
-        if cap:
-            credential_capability = cap
-            break
+            data = {}
+        credential_capability = data.get("credential_capability") or None
 
     from resource_explorer.egeria_linkage import describe_publish_status
     publish_status = describe_publish_status(
@@ -219,13 +227,32 @@ def _to_summary(db) -> DatabaseSummary:
     )
 
 
-@router.get("/", response_model=list[DatabaseSummary])
-async def list_databases(db_type: str | None = None) -> list[DatabaseSummary]:
-    """List all registered databases, optionally filtered by type."""
+def _list_databases_sync(db_type: str | None) -> list[DatabaseSummary]:
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     databases = registry.list_databases(db_type=db_type)
     return [_to_summary(db) for db in databases]
+
+
+@router.get("/", response_model=list[DatabaseSummary])
+async def list_databases(db_type: str | None = None) -> list[DatabaseSummary]:
+    """List all registered databases, optionally filtered by type.
+
+    Wrapped in `asyncio.to_thread` (2026-09-29 round 2, docs/design-notes/
+    PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md) — found live while
+    measuring round 2's gate numbers: `_to_summary` calls several
+    synchronous registry methods (including the round-2
+    `find_latest_database_survey_with_key`, a real query) directly inside
+    this `async def` handler, unwrapped. With only 3 registered databases
+    in the environment this was measured in, the effect wasn't a 68-project
+    -scale stall (`list_projects`'s round-1 bug) but it was still real:
+    `/api/auth/me`, which touches no database at all, was caught at 871ms
+    in a concurrent boot-sequence measurement, queued behind this same
+    event-loop-thread block. Same bug class and same fix as `list_projects`
+    (round 1) and `/questions` (BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-
+    IMPLEMENTED.md §2a) — this is a third, independently-found instance.
+    """
+    return await asyncio.to_thread(_list_databases_sync, db_type)
 
 
 @router.get("/{slug}", response_model=DatabaseSummary)

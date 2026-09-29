@@ -139,6 +139,82 @@ class TestProjectsRouter:
         assert resp.json()["disposition"] == "undecided"
         assert resp.json()["working_set_hidden"] is True
 
+    def test_list_projects_keeps_each_projects_disposition_and_hidden_flag_distinct(
+        self, client, registry,
+    ):
+        """2026-09-29 round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
+        ROUND-2-IMPLEMENTED.md): `list_projects` now batch-fetches
+        disposition/working-set-hidden/Egeria-linkage for every project in
+        three queries total instead of per-project round trips, joining in
+        Python. The failure mode a batch-then-join refactor risks is
+        crossed wires — project B ending up with project A's disposition —
+        so this pins several projects with DIFFERENT values on every one of
+        those three axes at once and checks each project gets its own,
+        not a neighbor's."""
+        from resource_explorer.registry import Project
+
+        registry.add(Project(
+            slug="secondproj", display_name="Second Project",
+            github_url="https://github.com/test/secondproj",
+        ))
+        registry.add(Project(
+            slug="thirdproj", display_name="Third Project",
+            github_url="https://github.com/test/thirdproj",
+        ))
+        registry.set_disposition("https://github.com/test/myproj", "using")
+        registry.set_disposition("https://github.com/test/secondproj", "investigating")
+        # thirdproj: no disposition set — stays "undecided".
+        registry.set_working_set_hidden("repo", "secondproj", True)
+        # myproj/thirdproj: working_set_hidden stays False.
+
+        resp = client.get("/api/projects/?include_ignored=true&include_working_set_hidden=true")
+        assert resp.status_code == 200
+        by_slug = {p["slug"]: p for p in resp.json()}
+        assert set(by_slug) == {"myproj", "secondproj", "thirdproj"}
+
+        assert by_slug["myproj"]["disposition"] == "using"
+        assert by_slug["myproj"]["working_set_hidden"] is False
+
+        assert by_slug["secondproj"]["disposition"] == "investigating"
+        assert by_slug["secondproj"]["working_set_hidden"] is True
+
+        assert by_slug["thirdproj"]["disposition"] == "undecided"
+        assert by_slug["thirdproj"]["working_set_hidden"] is False
+
+    def test_list_projects_keeps_each_projects_publish_status_distinct(self, client, registry):
+        """The third batched axis (`get_egeria_linkages_for_entities`, via
+        the `_PrefetchedLinkageRegistry` shim in `web/routes/projects.py`)
+        — a project with no GUID, one with a healthy GUID, and one with a
+        GUID whose linkage is marked stale must each get their OWN
+        `is_published`/`egeria_publish_note`, not get crossed by the batch
+        join."""
+        from resource_explorer.registry import Project
+
+        registry.add(Project(
+            slug="publishedproj", display_name="Published Project",
+            github_url="https://github.com/test/publishedproj",
+        ))
+        registry.add(Project(
+            slug="staleproj", display_name="Stale Project",
+            github_url="https://github.com/test/staleproj",
+        ))
+        registry.set_egeria_asset_guid("publishedproj", "guid-healthy")
+        registry.set_egeria_asset_guid("staleproj", "guid-stale")
+        registry.mark_egeria_linkage_stale("repo", "staleproj", stale_guid="guid-stale")
+
+        resp = client.get("/api/projects/")
+        by_slug = {p["slug"]: p for p in resp.json()}
+        assert set(by_slug) == {"myproj", "publishedproj", "staleproj"}
+
+        assert by_slug["myproj"]["is_published"] is False  # no GUID at all
+        assert by_slug["myproj"]["egeria_publish_note"] == ""
+
+        assert by_slug["publishedproj"]["is_published"] is True
+        assert by_slug["publishedproj"]["egeria_publish_note"] == ""
+
+        assert by_slug["staleproj"]["is_published"] is False
+        assert "stale" in by_slug["staleproj"]["egeria_publish_note"]
+
     def test_get_project_found(self, client):
         resp = client.get("/api/projects/myproj")
         assert resp.status_code == 200

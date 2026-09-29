@@ -73,10 +73,80 @@ def _to_summary(p, registry=None) -> ProjectSummary:
     )
 
 
+class _PrefetchedLinkageRegistry:
+    """Throwaway shim so `egeria_linkage.describe_publish_status` — which
+    only ever calls `registry.get_egeria_linkage(entity_type, entity_slug)`
+    on whatever `registry` it's given — can run against a batch-prefetched
+    dict instead of one query per project. Reuses that function's exact,
+    already-tested logic rather than re-deriving "is this published"
+    separately for the batched path (`ProjectRegistry.
+    get_egeria_linkages_for_entities`'s own docstring)."""
+
+    def __init__(self, linkages_by_slug: dict[str, dict]) -> None:
+        self._linkages_by_slug = linkages_by_slug
+
+    def get_egeria_linkage(self, entity_type: str, entity_slug: str) -> dict | None:
+        return self._linkages_by_slug.get(entity_slug)
+
+
 def _list_projects_sync(include_ignored: bool, include_working_set_hidden: bool) -> list[ProjectSummary]:
+    """Batch-fetches disposition/working-set-hidden/Egeria-linkage for every
+    registered project in three queries total, instead of `_to_summary`'s
+    per-project reads (up to three real round trips EACH — 68 projects on
+    the box this was profiled on). Round 2, 2026-09-29
+    (docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md):
+    round 1 already moved this off the event loop (`asyncio.to_thread`,
+    see `list_projects`'s own docstring), which stopped it blocking OTHER
+    requests, but did nothing about its own wall-clock cost — this fix is
+    that second half. `cProfile` on the unbatched version found the
+    dominant single cost was `get_disposition(p.github_url)`'s
+    `resolve_repo_entity_slug` → `get_by_github_url`, itself a **full
+    `SELECT * FROM projects` table scan searched in Python, per project**
+    (0.93s of 1.42s total) — `get_dispositions_for_entities`'s own
+    docstring explains why keying directly on `p.slug` (which every project
+    here already has, being already-imported) skips that resolution step
+    entirely rather than just batching it.
+
+    `_to_summary` itself is untouched and still used by `get_project` (one
+    project, where per-item registry calls are the right shape, not an N+1)
+    — this is a second, batched summary builder for the list route
+    specifically, not a replacement.
+    """
+    from resource_explorer.egeria_linkage import describe_publish_status
     from resource_explorer.registry import ProjectRegistry
+
     registry = ProjectRegistry()
-    summaries = [_to_summary(p, registry) for p in registry.list_all()]
+    projects = registry.list_all()
+    slugs = [p.slug for p in projects]
+
+    dispositions = registry.get_dispositions_for_entities("repo", slugs)
+    working_set_hidden = registry.get_working_set_hidden_for_entities("repo", slugs)
+    guid_slugs = [p.slug for p in projects if getattr(p, "egeria_asset_guid", "") or ""]
+    linkages = registry.get_egeria_linkages_for_entities("repo", guid_slugs)
+    linkage_shim = _PrefetchedLinkageRegistry(linkages)
+
+    summaries = []
+    for p in projects:
+        guid = getattr(p, "egeria_asset_guid", "") or ""
+        disp = dispositions.get(p.slug)
+        publish_status = describe_publish_status(linkage_shim, "repo", p.slug, guid)
+        summaries.append(ProjectSummary(
+            slug=p.slug,
+            display_name=p.display_name,
+            github_url=p.github_url,
+            description=p.description,
+            status=p.status.value,
+            collections=p.collections,
+            last_indexed_at=p.last_indexed_at,
+            last_commit_sha=p.last_commit_sha,
+            group_slug=getattr(p, "group_slug", "") or "",
+            last_surveyed_at=getattr(p, "last_surveyed_at", "") or "",
+            is_published=publish_status["is_published"],
+            egeria_publish_note=publish_status["note"],
+            disposition=disp["disposition"] if disp else "undecided",
+            working_set_hidden=working_set_hidden.get(p.slug, False),
+        ))
+
     if not include_ignored:
         summaries = [s for s in summaries if s.disposition not in _HIDDEN_DISPOSITIONS]
     if not include_working_set_hidden:
