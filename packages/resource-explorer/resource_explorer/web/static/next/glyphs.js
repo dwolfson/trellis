@@ -46,6 +46,17 @@
  * THIS MODULE HAS NO IMPORTS, deliberately -- every one of its several
  * consumers (app.js, worklist.js, stages/curate.js, and whichever of G2/G3's
  * new surfaces come next) can import it with no risk of a cycle.
+ *
+ * COLOUR RULE (GLYPH-STATE-TONE-COLOR-FIX-IMPLEMENTED.md, designer reply to
+ * ASK-DESIGNER-ENRICHMENT-STAGE-IA.md §5, accepted 2026-09-29): the accent
+ * colors controls, never states. `text-accent-ink`/`text-accent-on-dark`
+ * mean "you can click this" -- reserved for actual controls -- and must
+ * never appear as a state's `tone` here or in app.js's `STATE_TONE`. This
+ * module's own §1.3 of the G1 doc flagged `partial` as an unresolved
+ * inconsistency between this table and `STATE_TONE`; that and two more
+ * accent-for-state uses (`human`/`needs-lens`, `running`) were fixed
+ * together. `tests/test_next_state_tone_no_accent.py` guards this
+ * structurally.
  */
 
 /**
@@ -144,7 +155,10 @@ export const STATES = {
   no_access:       { glyph: '?', family: 'not-established', word: 'no access', tone: 'text-ink-muted' },
 
   // ── ⚠ needs a person -- ONLY this meaning now ───────────────────────
-  human: { glyph: '⚠', family: 'needs-person', word: 'needs you', tone: 'text-accent-ink' },
+  // tone: text-ink, not text-accent-ink -- this is a full-strength
+  // instruction to the reader, neither a warning nor a finding, and the
+  // accent color is reserved for controls (see the module docstring).
+  human: { glyph: '⚠', family: 'needs-person', word: 'needs you', tone: 'text-ink' },
   // G2 (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §2.4): `preliminary_fit`'s
   // `no_requirement_declared` verdict is a real, measured answer -- no lens
   // was supplied, so fit is not a question this credential can settle -- but
@@ -153,10 +167,11 @@ export const STATES = {
   // answered"; the honest state says a person still needs to supply the
   // missing lens. Same family/glyph as `human` (still "needs a person"),
   // its own word because "needs you" alone does not say what is needed.
-  'needs-lens': { glyph: '⚠', family: 'needs-person', word: 'needs a person: declare a lens', tone: 'text-accent-ink' },
+  'needs-lens': { glyph: '⚠', family: 'needs-person', word: 'needs a person: declare a lens', tone: 'text-ink' },
 
   // ── as today ─────────────────────────────────────────────────────────
-  running:      { glyph: '◔', family: 'running',      word: 'running',      tone: 'text-accent-ink' },
+  // tone: text-ink-muted, not text-accent-ink -- see the module docstring.
+  running:      { glyph: '◔', family: 'running',      word: 'running',      tone: 'text-ink-muted' },
   error:        { glyph: '✕', family: 'failed',       word: 'error',        tone: 'text-state-warn' },
   // §17.1 of app.js's original GLYPH: a proposal is a decision point, not a
   // state of the world, so it earns its own mark rather than borrowing
