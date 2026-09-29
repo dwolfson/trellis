@@ -3353,7 +3353,14 @@ const _TABLE_KIND_LABELS = {
   'FOREIGN': 'foreign table',
 };
 
-function schemaTreeHtml(schemas) {
+// `schemaTreeHtml`/`tableHtml`/`filterSchemaTree` are exported (no logic
+// change -- these three lines add the `export` keyword only) so the node/
+// jsdom render harness (frontend-build/test-harness/) can import and call
+// the REAL functions directly, rather than re-extracting/re-executing their
+// source text as a string (the pattern every other app.js-adjacent test
+// uses -- see tests/test_next_schema_inventory_filter.py's own docstring).
+// See docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md.
+export function schemaTreeHtml(schemas) {
   if (!schemas.length) return `<div class="text-caveat text-ink-muted">No stored schema rows yet — run a survey first.</div>`;
   const parts = schemas.map((s) => {
     if (s.classification === 'system') {
@@ -3386,7 +3393,7 @@ function schemaTreeHtml(schemas) {
   return parts.join('');
 }
 
-function tableHtml(t) {
+export function tableHtml(t) {
   const rowStamp = t.row_count == null
     ? 'not measured'
     : `${Number(t.row_count).toLocaleString('en-US')} row(s)${t.row_count_state === 'catalog_estimate' ? ' (est.)' : ''}`;
@@ -3441,7 +3448,7 @@ function tableHtml(t) {
  * Clearing the filter leaves every node exactly as it was (no
  * saved-collapse-state clobbering, unlike the sidebar's persistent one —
  * this tree has no cross-session collapse preference to protect). */
-function filterSchemaTree(raw) {
+export function filterSchemaTree(raw) {
   const q = raw.trim().toLowerCase();
   const root = $('schema-tree');
   if (!root) return;
@@ -3949,7 +3956,7 @@ function producesTypes(c) {
   return [...seen];
 }
 
-function surveyRowHtml(c) {
+export function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
   const produces = producesTypes(c);
   return `<div class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
