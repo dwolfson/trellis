@@ -105,6 +105,11 @@ module.exports = {
         s2: '9.2px',
         s3: '13.8px',
         s4: '18.4px',
+        // s5 was missing (used by app.js's gap-s5/mb-s5/mt-s5 with no rule
+        // ever compiled for it) -- added to fit the existing sN = N*4.6px
+        // progression rather than changing the usages, per
+        // TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md.
+        s5: '23px',
         s6: '27.6px',
         s8: '36.8px',
       },

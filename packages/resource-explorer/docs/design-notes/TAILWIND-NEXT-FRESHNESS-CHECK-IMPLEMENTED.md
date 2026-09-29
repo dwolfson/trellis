@@ -142,18 +142,21 @@ config only — `next/*.js` belongs to other agents' branches tonight):
   Confirmed absent from both `tailwind-next.css` and `index.html`'s `<style>`
   block for all five — this is a judgement call about intent, not a parsing gap,
   so it's reviewed here rather than hidden.
-- **`KNOWN_PREEXISTING_GAPS`** — classes this check's first run found that are
+- **`KNOWN_PREEXISTING_GAPS`** — classes this check's first run found that were
   genuinely uncompiled and **not** dynamic-pattern false negatives: `gap-s5`,
-  `mb-s5`, `mt-s5` (the spacing scale only defines `s1`/`s2`/`s3`/`s4`/`s6`/`s8` —
+  `mb-s5`, `mt-s5` (the spacing scale only defined `s1`/`s2`/`s3`/`s4`/`s6`/`s8` —
   no `s5`), and `bg-paper-raised`, `border-rule-soft`, `hover:bg-paper-alt`,
-  `hover:bg-paper-raised` (none of `paper-raised`, `paper-alt`, `rule-soft` are
-  color tokens defined in `tailwind-next.config.js`). These are **real,
-  pre-existing bugs** the check surfaces on its first run — not something this
-  task fixes (out of scope: this task doesn't touch `next/*.js`/`stages/*.js`).
-  The test itself asserts none of these have quietly started compiling (e.g. if a
-  color token gets added later), so the allowlist can't silently outlive its
-  reason. A follow-up to actually resolve these (add the missing tokens, or fix
-  the typos) has been flagged separately rather than folded into this branch.
+  `hover:bg-paper-raised` (none of `paper-raised`, `paper-alt`, `rule-soft` were
+  color tokens defined in `tailwind-next.config.js`). These were **real,
+  pre-existing bugs** the check surfaced on its first run, initially left
+  unfixed as out of this task's original scope — then fixed in a follow-up on
+  this same branch once the design session confirmed the mappings and the
+  scope was explicitly widened (§4.2). The test itself asserts nothing left in
+  this set has quietly started compiling, so a stale allowlist entry can't
+  silently outlive its reason — that assertion is what caught, mid-task, that
+  all seven entries needed to come out once the fixes landed.
+  `KNOWN_PREEXISTING_GAPS` is now an empty set, kept (not deleted) as the
+  reviewed place a future genuinely-pre-existing gap would go.
 
 `index.html`'s inline `<style>` block is treated as a second valid source of
 "exists" deliberately, not as a workaround: its own opening comment says it holds
@@ -168,28 +171,73 @@ a permanent, wrong "missing" finding.
 
 ## 4 · What today's run actually found (2026-09-28)
 
-**Both new tests currently FAIL against the committed `tailwind-next.css` — for
-the same single reason, not two different ones.** Checked as the first diagnostic
-step per the dispatch: a fresh rebuild of `tailwind-next.css` differs from the
-committed file starting at byte 13,951 — the committed file is missing the rule
-for `.px-\[8px\]`. `grep` confirms `px-[8px]` is used in `app.js` (part of
-tonight's concurrent dropdown-affordance work, per the "Resource Explorer expansion
-architecture" session). Both checks report exactly this one class as the gap, once
-`KNOWN_HOOK_ONLY_CLASSES`/`KNOWN_PREEXISTING_GAPS` are excluded — i.e. the checks
-are not raising unrelated noise, they're correctly catching the exact bug pattern
-this task exists to close, live, on the first night they ran.
+### 4.1 · First pass: both new tests failed, for one documented reason
 
-**This is expected and is not fixed on this branch.** Per coordination with the
-"Resource Explorer expansion architecture" session: `tailwind-next.css` itself is
-explicitly out of this task's scope (checking it, not rebuilding it), and the
-peer session asked that the final rebuild+commit of `tailwind-next.css` be held
-until *after* `re/relationship-graph-dropdown-affordance` and the By-analysis
-branch (both of which touch `next/*.js` and may also rebuild CSS) have merged, so
-this doesn't land a rebuild that's immediately stale again. **The "Resource-explorer
-PR/CI merge" session should merge this PR last of tonight's `app.js`-touching
-branches**, then run `npm run build:css:next` once from a clean tree and commit the
-result — at that point both new tests should go green with no further changes
-needed here.
+**Both new tests initially FAILED against the committed `tailwind-next.css` — for
+the same single reason, not two different ones.** Checked as the first diagnostic
+step per the dispatch: a fresh rebuild of `tailwind-next.css` differed from the
+committed file starting at byte 13,951 — the committed file was missing the rule
+for `.px-\[8px\]`. `grep` confirmed `px-[8px]` was used in `app.js` (part of
+that night's concurrent dropdown-affordance work, per the "Resource Explorer
+expansion architecture" session). Both checks reported exactly this one class as
+the gap, once `KNOWN_HOOK_ONLY_CLASSES`/`KNOWN_PREEXISTING_GAPS` were excluded —
+i.e. the checks were not raising unrelated noise, they were correctly catching
+the exact bug pattern this task exists to close, live, on the first night they
+ran.
+
+Per coordination with the "Resource Explorer expansion architecture" session,
+this was deliberately not fixed on the branch's first push: `tailwind-next.css`
+itself was out of this task's original scope, and the peer session asked that the
+final rebuild+commit be held until *after* `re/relationship-graph-dropdown-
+affordance` and the By-analysis branch (`re/by-analysis-progressive-and-graph`,
+both of which touch `next/*.js` and might also rebuild CSS) had merged, so this
+branch wouldn't land a rebuild that goes stale again immediately.
+
+### 4.2 · Second pass: scope widened, rebuilt, and the 7 gaps fixed
+
+`re/relationship-graph-dropdown-affordance` merged (PR #340, then PR #341 for a
+follow-up label-overflow fix) before the By-analysis branch did. Per the design
+session's approved fallback (message logged in this branch's history via the
+coordinating session), work proceeded once dropdown-affordance alone landed
+rather than waiting further — dropdown-affordance's own merge already included
+its own `npm run build:css:next` rebuild (commit `b981836c`, "Rebuild
+tailwind-next.css: new select classes were never compiled in"), so by the time
+this branch rebased onto the new `main` (`1ad40dbb`), a fresh local rebuild was
+**already byte-identical** to the committed CSS — the `px-[8px]` gap from §4.1
+was already closed upstream; no rebuild was needed to fix it.
+
+The design session then confirmed the mapping for all 7 `KNOWN_PREEXISTING_GAPS`
+entries and explicitly widened this task's scope to include fixing them (rather
+than only checking for them), giving the site-by-site treatment below:
+
+| Class | Fix | Sites |
+|---|---|---|
+| `gap-s5`, `mb-s5`, `mt-s5` | Added `s5: '23px'` to `tailwind-next.config.js`'s spacing scale — fits the existing `sN = N * 4.6px` progression (`s1`=4.6, `s2`=9.2, `s3`=13.8, `s4`=18.4, `s6`=27.6, `s8`=36.8), so `s5`=23 was a missing entry, not a usage error. Usages in `app.js` (lines 4086, 5329, 5448) left unchanged. |
+| `bg-paper-raised`, `hover:bg-paper-raised` | Replaced with the existing `bg-paper-surface`/`hover:bg-paper-surface` tokens — already the established, correct pattern elsewhere (`admin/feedback.js`, `admin/logs.js`, `admin/annotation_types.js`, `admin/question_catalog.js`), and matches a precedent fix already sitting unmerged on a stale branch (`fix/next-admin-paper-raised`, 2026-09-20) that made the identical swap for five *other* admin files. | `admin/discovery_sources.js` (5 occurrences: lines 110, 152, 235, 250, 265), `admin/repair.js` (3: lines 91, 111, 126), `admin/resync.js` (5: lines 110, 199, 206, 285, 303) |
+| `hover:bg-paper-alt` | Replaced with `hover:bg-paper-surface` — same token, same reasoning (no `paper-alt` color was ever defined; `paper-surface` is the established row-hover token throughout `/next`). | `stages/investigation.js:126` |
+| `border-rule-soft` | Replaced with the existing `border-rule` token — `tailwind-next.config.js` defines `rule` (a hairline divider) and `rule-strong` (a stronger-contrast variant) but no "soft" tier; `rule` already *is* the softest divider in the palette. | `chat.js:511` |
+
+No color tokens were added to the palette — every fix reused an existing,
+already-correct token rather than inventing a new one, per the design session's
+either/or ("define in config, or replace with an existing token — say which").
+
+Ran one clean rebuild (`npx tailwindcss -c tailwind-next.config.js -i
+./input.css -o ../resource_explorer/web/static/next/tailwind-next.css --minify`
+from `frontend-build/`, matching `npm run build:css:next`) and committed the
+result together with the six source fixes above.
+
+**Emptying the allowlist was itself caught by the check, not asserted by hand.**
+`test_every_class_literal_used_in_next_js_exists_in_committed_css_or_style_block`'s
+own sanity assertion — "an entry in `KNOWN_PREEXISTING_GAPS` that has quietly
+started compiling should be noticed and removed" — failed immediately after the
+rebuild, correctly flagging all 7 entries as now-resolved. `KNOWN_PREEXISTING_GAPS`
+was then emptied (kept as an empty set, not deleted — see §3.3).
+
+**Result: all three new tests pass** (`test_tailwind_next_css_is_not_stale`,
+`test_every_class_literal_used_in_next_js_exists_in_committed_css_or_style_block`,
+`test_dynamic_exclusion_count_has_not_jumped_unexplained`) against the branch's
+own head, with no allowlisted exceptions doing any work — the coverage check now
+passes on its merits alone, not because something real is being excused.
 
 ---
 
@@ -216,10 +264,15 @@ uv sync --all-packages --extra dev
 uv run pytest tests/ -q -rf
 ```
 
-**6,739 passed, 2 failed, 103 skipped** (863s). The 2 failures are exactly the two
-new tests, both failing for the single documented reason in §4 (today's
-`px-[8px]` staleness) — no other test regressed. No other files besides the two
-new test files and the workflow's one added step were touched.
+**First pass (§4.1, before dropdown-affordance merged):** 6,739 passed, 2 failed,
+103 skipped (863s). The 2 failures were exactly the two new tests, both failing
+for the single documented reason (`px-[8px]` staleness) — no other test
+regressed.
+
+**Second pass (§4.2, after rebasing onto `main` at `1ad40dbb` and applying the 7
+fixes):** **6,754 passed, 0 failed, 103 skipped** (629s). All three new tests
+pass; the 15-test increase over the first pass is `main` having advanced (two
+more merged PRs' worth of tests) between the two runs, not anything added here.
 
 ---
 
@@ -228,7 +281,19 @@ new test files and the workflow's one added step were touched.
 - `tests/test_tailwind_next_freshness.py` (new)
 - `tests/test_tailwind_next_class_coverage.py` (new)
 - `.github/workflows/resource-explorer.yml` (added the `npm ci` step)
+- `frontend-build/tailwind-next.config.js` (added `s5` to the spacing scale)
+- `resource_explorer/web/static/next/chat.js` (`border-rule-soft` → `border-rule`)
+- `resource_explorer/web/static/next/stages/investigation.js`
+  (`hover:bg-paper-alt` → `hover:bg-paper-surface`)
+- `resource_explorer/web/static/next/admin/discovery_sources.js`,
+  `admin/repair.js`, `admin/resync.js` (`bg-paper-raised`/`hover:bg-paper-raised`
+  → `bg-paper-surface`/`hover:bg-paper-surface`)
+- `resource_explorer/web/static/next/tailwind-next.css` (rebuilt, once, clean,
+  from the above)
 - This doc
 
-`tailwind-next.css`, `next/*.js`, `stages/*.js`, `admin/*.js` — not touched, by
-design (see §4).
+Scope note: the original dispatch explicitly excluded `tailwind-next.css` and
+`next/*.js`/`stages/*.js`/`admin/*.js` from this task (§4.1). That changed
+mid-task, on the design session's explicit direction, once the dependency
+branches merged and the 7 fixes were confirmed (§4.2) — recorded here rather
+than silently expanding scope without a trace.

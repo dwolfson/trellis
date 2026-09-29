@@ -88,7 +88,7 @@ function membershipsHtml() {
         <button type="button" data-repoint="${esc(m.investigation_slug)}"
           class="cursor-pointer rounded-sm border border-rule-strong px-2 py-[2px] text-provenance text-ink hover:border-accent">Repoint</button>
         <button type="button" data-drop="${esc(m.investigation_slug)}"
-          class="cursor-pointer rounded-sm border border-state-warn px-2 py-[2px] text-provenance text-state-warn hover:bg-paper-raised">Drop</button>
+          class="cursor-pointer rounded-sm border border-state-warn px-2 py-[2px] text-provenance text-state-warn hover:bg-paper-surface">Drop</button>
       </div>
     </div>`).join('');
 }
@@ -108,7 +108,7 @@ function detailHtml(repo) {
           <input type="text" data-rename-input placeholder="new_slug"
             class="flex-1 rounded-sm border border-rule-strong bg-transparent px-2 py-[3px] font-mono text-caveat text-ink">
           <button type="button" data-rename
-            class="cursor-pointer rounded-sm border border-accent px-3 py-[3px] text-caveat text-accent-ink hover:bg-paper-raised">Rename</button>
+            class="cursor-pointer rounded-sm border border-accent px-3 py-[3px] text-caveat text-accent-ink hover:bg-paper-surface">Rename</button>
         </div>
       </div>
 
@@ -123,7 +123,7 @@ function detailHtml(repo) {
           <input type="text" data-url-input placeholder="https://github.com/org/correct-repo"
             class="flex-1 rounded-sm border border-rule-strong bg-transparent px-2 py-[3px] font-mono text-caveat text-ink">
           <button type="button" data-change-url
-            class="cursor-pointer rounded-sm border border-accent px-3 py-[3px] text-caveat text-accent-ink hover:bg-paper-raised">Change URL</button>
+            class="cursor-pointer rounded-sm border border-accent px-3 py-[3px] text-caveat text-accent-ink hover:bg-paper-surface">Change URL</button>
         </div>
       </div>
 

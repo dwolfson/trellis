@@ -86,23 +86,20 @@ KNOWN_HOOK_ONLY_CLASSES = {
     "inv-new-purpose": "stages/investigation.js -- querySelectorAll('.inv-new-purpose:checked')",
 }
 
-# Genuinely uncompiled Tailwind class attempts found by this check on its
-# first run (2026-09-28) -- undefined color tokens (paper-raised, paper-alt,
-# rule-soft aren't in tailwind-next.config.js's palette) and an out-of-range
-# spacing scale step (s5 -- the scale only defines s1/s2/s3/s4/s6/s8). These
-# are real, pre-existing bugs this check surfaces, not something this task
-# (a CI-check add, scoped away from next/*.js) fixes. Tracked as a follow-up;
-# do not add new entries here for a class introduced after 2026-09-28 --
-# that's a regression this check exists to block, not a grandfather case.
-KNOWN_PREEXISTING_GAPS = {
-    "gap-s5",
-    "mb-s5",
-    "mt-s5",
-    "bg-paper-raised",
-    "border-rule-soft",
-    "hover:bg-paper-alt",
-    "hover:bg-paper-raised",
-}
+# Genuinely uncompiled Tailwind class attempts this check found on its first
+# run (2026-09-28) -- undefined color tokens (paper-raised, paper-alt,
+# rule-soft weren't in tailwind-next.config.js's palette) and an out-of-range
+# spacing scale step (s5 -- the scale only defined s1/s2/s3/s4/s6/s8). All
+# seven were resolved the same day (see
+# TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md §4): `s5` was added to the
+# spacing scale (fits the existing sN = N*4.6px progression); `paper-raised`
+# and `paper-alt` usages were replaced with the existing `paper-surface`
+# token (site list in the doc); `rule-soft` usages were replaced with the
+# existing `rule` token. Kept empty, not deleted, as the place a future
+# genuinely-pre-existing (not newly-introduced) gap would go -- deliberately:
+# a new entry here should be rare and reviewed, not a quiet way to make a
+# red check green.
+KNOWN_PREEXISTING_GAPS: set[str] = set()
 
 # Pinned so a big jump is visible in review even though individual names in
 # this bucket can't be checked (see module docstring). Re-measure and update
