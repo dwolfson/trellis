@@ -125,6 +125,46 @@ test('the lens row: no lens declared, both links marked deferred, not built', as
   assert.match(html, /feeds → preliminary_fit/);
 });
 
+test('a repo resource (amundsen): renderContext never fetches database-only facts and shows no database-only section', async () => {
+  makeDomEnvironment();
+  await loadAppModule();
+  const app = await import('/static/next/app.js');
+  const { renderContext } = await import('/static/next/stages/context.js');
+
+  app.state.resourceType = 'repo';
+  app.state.selectedSlug = 'amundsen';
+  app.state.investigation = '';
+  app.state.investigations = [];
+  app.state.questions = [];
+
+  const host = document.createElement('div');
+  host.id = 'content';
+  document.body.appendChild(host);
+  host.innerHTML = '<div id="context-form"></div>';
+
+  // NOT stubbed for '/api/analyses/facts' (the preliminary_fit lens fetch) —
+  // if renderContext calls it for a repo, the unstubbed-fetch guard throws
+  // and this test fails loudly, proving the `state.resourceType === 'db'`
+  // gate actually held rather than merely reading correctly.
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/api/context/')) {
+      return { ok: true, status: 200, json: async () => ({ enrichment: {}, question_answers: {} }) };
+    }
+    throw new Error(`amundsen (repo) must not call this database-only endpoint: ${u}`);
+  };
+
+  await renderContext('amundsen');
+  const html = document.getElementById('context-form').innerHTML;
+
+  // The rail (renderEnrichmentEvidence, database-scoped evidence) must not
+  // have been reached -- its target id stays absent/untouched.
+  assert.equal(document.getElementById('rail-evidence'), null);
+  // Nothing in Context's own markup names a database-only structure.
+  assert.doesNotMatch(html, /Schema Inventory/i);
+  assert.doesNotMatch(html, /administered by/i);   // §4's per-type db owner line (E2, not built)
+});
+
 test('the lens row: a declared lens (from preliminary_fit\'s own last read) renders without the decline wording', async () => {
   makeDomEnvironment();
   await loadAppModule();
