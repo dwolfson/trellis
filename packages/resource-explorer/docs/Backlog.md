@@ -8760,3 +8760,18 @@ that unification seriously:
 Small slice. Sent to the designer as `ASK-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md` (PR #354),
 same shape as the Enrichment IA ask (`ASK-DESIGNER-ENRICHMENT-STAGE-IA.md`, PR #350) — scheduled
 after that reply, same sidebar/IA territory, no need to design it twice in two passes.
+
+## Questions-envelope latency slice — cancelled, the number decided it (2026-09-29)
+
+Scoped as a follow-on to the per-request-latency rounds (same mechanism as `board_summary`:
+persist each question's resolved envelope at run completion, one-shot backfill at merge, 30s
+degrade rule) on the strength of `getQuestions()` measuring 48-52s on adventureworks under load.
+Measured directly against the fully-merged main before dispatching it: **0.8-1.3s cold load**,
+a ~25-65x improvement, even though nothing in rounds 1-3 targeted this endpoint directly. The
+48-52s was the PER-REQUEST cost (schema-verification-per-construction, an undersized connection
+pool, event-loop-blocking N+1 queries) that rounds 1-3 fixed, not a problem with the readers
+themselves. Full measurement: `docs/design-notes/QUESTIONS-TAB-COLD-LOAD-MEASUREMENT-2026-09-29.md`.
+
+**One line kept open**: the Assessment-stage's first call (a larger question set) measured 4.1s
+in the same session — not part of the gate (not a controlled cold-restart), but worth watching.
+Revisit if a stage tab exceeds 2s on coco_pharma or a bigger database.
