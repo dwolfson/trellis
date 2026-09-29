@@ -73,14 +73,7 @@ def _to_summary(p, registry=None) -> ProjectSummary:
     )
 
 
-@router.get("/", response_model=list[ProjectSummary])
-async def list_projects(include_ignored: bool = False, include_working_set_hidden: bool = False) -> list[ProjectSummary]:
-    """Excludes `ignored`/`abandoned`-disposition repos and working-set-hidden
-    repos by default — the sidebar's "Show hidden (N)" toggle passes both
-    params to reveal everything. Reversible, not a hard delete either way
-    (registry.py's repo_dispositions/resource_working_set rows are
-    untouched) ("Discover repos to scout" plan, D10; "Scouting workflow
-    redesign" plan, D3/D4)."""
+def _list_projects_sync(include_ignored: bool, include_working_set_hidden: bool) -> list[ProjectSummary]:
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     summaries = [_to_summary(p, registry) for p in registry.list_all()]
@@ -89,6 +82,34 @@ async def list_projects(include_ignored: bool = False, include_working_set_hidde
     if not include_working_set_hidden:
         summaries = [s for s in summaries if not s.working_set_hidden]
     return summaries
+
+
+@router.get("/", response_model=list[ProjectSummary])
+async def list_projects(include_ignored: bool = False, include_working_set_hidden: bool = False) -> list[ProjectSummary]:
+    """Excludes `ignored`/`abandoned`-disposition repos and working-set-hidden
+    repos by default — the sidebar's "Show hidden (N)" toggle passes both
+    params to reveal everything. Reversible, not a hard delete either way
+    (registry.py's repo_dispositions/resource_working_set rows are
+    untouched) ("Discover repos to scout" plan, D10; "Scouting workflow
+    redesign" plan, D3/D4).
+
+    Wrapped in `asyncio.to_thread` (2026-09-29,
+    docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md) — this was
+    calling `_to_summary(p, registry)` **once per registered project**
+    (three registry reads each: `get_disposition`, `is_working_set_hidden`,
+    `describe_publish_status`) directly on the event loop thread. A live
+    SIGUSR1 thread dump during a concurrent by-analysis-pane load caught
+    the **main/event-loop thread itself** parked inside
+    `is_working_set_hidden` → `ProjectRegistry._conn` → a Postgres
+    connection-pool checkout — meaning every other in-flight request,
+    including ones touching no database at all (`/api/auth/me`), queued
+    behind this one route for as long as ~68 projects' worth of
+    synchronous round trips took. Same bug class as the `/questions` fix in
+    BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md §2a.
+    """
+    return await asyncio.to_thread(
+        _list_projects_sync, include_ignored, include_working_set_hidden
+    )
 
 
 class GroupStats(BaseModel):

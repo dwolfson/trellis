@@ -216,3 +216,126 @@ class TestRenameProjectSlugOnRealPostgres:
         finally:
             pg_registry.remove(new_slug) if pg_registry.get(new_slug) else None
             pg_registry.remove(slug) if pg_registry.get(slug) else None
+
+
+class TestRegistryConstructionIsCheapOnAWarmProcess:
+    """2026-09-29 per-request-latency investigation
+    (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md): every
+    `ProjectRegistry()` construction re-ran `_init_schema` — ~150
+    CREATE TABLE/ALTER TABLE/CREATE INDEX statements — against Postgres,
+    measured directly at 250-470ms EVERY time, not just cold. Almost every
+    web route does `registry = ProjectRegistry()` fresh, so this landed on
+    every request. Fixed by caching the Engine and an "already verified"
+    flag per `database_url` at the class level, so a process only pays this
+    once per URL. These tests pin that behaviour directly against real
+    Postgres rather than timing it, which would be flaky."""
+
+    def test_second_construction_for_the_same_url_skips_schema_init(self, pg_test_schema, monkeypatch):
+        from resource_explorer.config import get_config
+        from resource_explorer.registry import ProjectRegistry
+
+        cfg = get_config().pgvector
+        url = (f"postgresql://{cfg.db_user}:{cfg.password}@{cfg.host}:{cfg.port}"
+               f"/{cfg.dbname}?options=-csearch_path%3D{pg_test_schema}")
+
+        # `pg_test_schema` is session-scoped (one throwaway schema, reused by
+        # every integration test), so an earlier test in this same session
+        # may already have constructed a `ProjectRegistry` against this exact
+        # URL and populated the class-level cache. Clear this URL's entries
+        # so "first ever construction" is deterministic regardless of test
+        # order, rather than asserting the process-wide cache is untouched.
+        ProjectRegistry._pg_engine_cache.pop(url, None)
+        ProjectRegistry._pg_schema_ready.discard(url)
+
+        calls = []
+        real_init_schema = ProjectRegistry._init_schema
+
+        def _counting_init_schema(self):
+            calls.append(1)
+            return real_init_schema(self)
+
+        monkeypatch.setattr(ProjectRegistry, "_init_schema", _counting_init_schema)
+
+        first = ProjectRegistry(database_url=url)
+        second = ProjectRegistry(database_url=url)
+
+        assert len(calls) == 1, "second construction re-ran _init_schema"
+        assert first.engine is second.engine, "second construction opened its own pool"
+        assert url in ProjectRegistry._pg_schema_ready
+
+
+class TestDatabaseSurveysCacheIsInstanceScopedAndWriteInvalidated:
+    """2026-09-29: profiling one board's `/survey-results` request showed
+    `get_database_surveys` (fetches every historical survey's full
+    `survey_data` blob) called 5 times for the same slug within a single
+    request — `_credential_capability_results` deliberately searches every
+    stored survey (its own docstring explains why), but nothing stopped
+    five separate callers each re-running that same full fetch. Cached
+    per-`ProjectRegistry`-instance; these tests pin the two properties that
+    matter: repeat reads within one instance don't re-query, and a write
+    through the same instance is never served stale."""
+
+    @pytest.fixture
+    def pg_surveyed_database(self, pg_registry):
+        from resource_explorer.registry import DatabaseEntity
+
+        slug = "pg_itest_survey_cache_db"
+        if pg_registry.get_database(slug) is None:
+            pg_registry.register_database(DatabaseEntity(
+                slug=slug, display_name="Survey Cache Test DB", db_type="postgresql",
+                host="localhost", port=5432, database_name=slug,
+            ))
+        yield slug
+        pg_registry.remove_database(slug)
+
+    def test_repeat_reads_within_one_instance_do_not_requery(self, pg_registry, pg_surveyed_database, monkeypatch):
+        from resource_explorer.registry import ConnectionWrapper
+
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=1, column_count=1,
+            survey_data={"credential_capability": {"visible": True}},
+        )
+
+        calls = []
+        real_execute = ConnectionWrapper.execute
+
+        def _counting_execute(self, sql, params=None):
+            if "FROM database_surveys" in sql:
+                calls.append(1)
+            return real_execute(self, sql, params)
+
+        monkeypatch.setattr(ConnectionWrapper, "execute", _counting_execute)
+
+        first = pg_registry.get_database_surveys(pg_surveyed_database)
+        second = pg_registry.get_database_surveys(pg_surveyed_database)
+
+        assert len(calls) == 1, "second get_database_surveys() call re-queried Postgres"
+        assert first == second
+
+    def test_write_through_the_same_instance_is_not_served_stale(self, pg_registry, pg_surveyed_database):
+        first = pg_registry.get_database_surveys(pg_surveyed_database)
+        assert first == []
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=2, column_count=3,
+            survey_data={"credential_capability": {"visible": True}},
+        )
+        second = pg_registry.get_database_surveys(pg_surveyed_database)
+        assert len(second) == 1, (
+            "get_database_surveys served a cached empty result after a "
+            "write through the same ProjectRegistry instance"
+        )
+
+    def test_get_latest_database_survey_uses_a_limit_1_query(self, pg_registry, pg_surveyed_database):
+        """A dedicated query, not `get_database_surveys(...)[0]` — see that
+        method's own docstring for why (profiled: 700-900ms vs ~30ms on a
+        heavily-surveyed database)."""
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=1, table_count=1, column_count=1,
+            survey_data={"a": 1}, surveyed_at="2026-01-01T00:00:00",
+        )
+        pg_registry.record_database_survey(
+            pg_surveyed_database, schema_count=2, table_count=2, column_count=2,
+            survey_data={"b": 2}, surveyed_at="2026-01-02T00:00:00",
+        )
+        latest = pg_registry.get_latest_database_survey(pg_surveyed_database)
+        assert latest["surveyed_at"] == "2026-01-02T00:00:00"

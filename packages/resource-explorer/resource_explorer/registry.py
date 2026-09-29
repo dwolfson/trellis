@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -1124,6 +1125,38 @@ def _decode_detail_row(row: dict) -> dict:
 
 
 class ProjectRegistry:
+    # Process-wide cache: a Postgres `Engine` (connection pool) and whether
+    # `_init_schema` has already run, keyed by `database_url`. Added
+    # 2026-09-29 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
+    # after live timing showed `ProjectRegistry()` costing 250-470ms on a
+    # *warm* Postgres — every one of ~150 CREATE TABLE/ALTER TABLE/CREATE
+    # INDEX statements in `_init_schema` round-tripping to Postgres, on
+    # EVERY construction, because almost every route does
+    # `registry = ProjectRegistry()` fresh rather than sharing one. Most of
+    # those call sites are synchronous code running directly in an
+    # `async def` route handler (not `asyncio.to_thread`-wrapped, the same
+    # bug class `_init_schema`'s own `/questions` cousin was fixed for in
+    # BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md §2a) — so this cost
+    # was landing on the event loop thread itself, stalling every other
+    # in-flight request (including ones touching no database at all, like
+    # `/api/auth/me`) for as long as the schema re-verification took.
+    #
+    # The schema does not change while a process is running, so re-running
+    # `_init_schema` on every construction was pure waste, not safety — the
+    # real fix is "verify once per process", not "verify off the event
+    # loop" (which would still pay the cost, just less visibly). Scoped to
+    # Postgres URLs only: SQLite is test/dev-fallback only, tests construct
+    # many distinct `tmp_path`-backed registries per session, and caching
+    # those engines for the process lifetime would hold file descriptors
+    # open long after each test is done with them for no benefit — the
+    # actual shared-registry problem this fixes is exclusively Postgres.
+    # `:memory:` is excluded on principle even though no current caller
+    # uses it for `ProjectRegistry`: two independent in-memory databases
+    # sharing a cached engine would silently merge their data.
+    _pg_engine_cache: dict[str, Any] = {}
+    _pg_schema_ready: set[str] = set()
+    _pg_cache_lock = threading.Lock()
+
     def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
         """database_url, when given, is used verbatim — bypassing the
         db_path sentinel/config-lookup logic below entirely. Added for the
@@ -1174,10 +1207,79 @@ class ProjectRegistry:
         # pool_recycle bounds how long a connection may live regardless, so a
         # half-open connection that still answers a ping cannot linger forever.
         # Both are no-ops for SQLite, which is why they are not conditional.
-        self.engine = create_engine(
-            self.database_url, pool_pre_ping=True, pool_recycle=1800,
+        is_cacheable_pg = (
+            self.database_url.startswith("postgresql")
+            and ":memory:" not in self.database_url
         )
-        self._init_schema()
+        # Diagnostic timing only (see PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
+        # — this is the phase that turned out to dominate per-request cost
+        # before the engine/schema cache above existed. Logged whenever it
+        # is non-trivial, not gated behind a debug flag, since a construction
+        # that is suddenly slow again is exactly what the next regression in
+        # this class looks like.
+        import time as _time
+
+        _t0 = _time.perf_counter()
+        ran_schema_init = False
+        if is_cacheable_pg:
+            # Reuse one Engine (and its connection pool) per database_url for
+            # the life of the process, and run `_init_schema` at most once
+            # per database_url — see the class docstring above. Double-
+            # checked under the lock so two threads racing to construct the
+            # first `ProjectRegistry()` for a URL don't both pay full init
+            # cost (harmless — every statement is idempotent — but pointless).
+            engine = ProjectRegistry._pg_engine_cache.get(self.database_url)
+            if engine is None:
+                with ProjectRegistry._pg_cache_lock:
+                    engine = ProjectRegistry._pg_engine_cache.get(self.database_url)
+                    if engine is None:
+                        # pool_size/max_overflow raised from SQLAlchemy's
+                        # defaults (5/10) 2026-09-29, alongside the caching
+                        # above: caching means every `ProjectRegistry()` in
+                        # this process now shares ONE pool rather than each
+                        # getting its own, so a small pool that used to be
+                        # merely wasteful (many short-lived per-request
+                        # pools) became a real concurrency bottleneck.
+                        # Measured directly: a concurrent burst of the
+                        # by-analysis pane's boot requests (auth/me,
+                        # projects, activity, databases, ~7 board reads) hit
+                        # requests queued for a connection for 8-60+s at the
+                        # old default. Postgres here allows 1000
+                        # connections (`SHOW max_connections`), so 15+25 is
+                        # nowhere near a real ceiling.
+                        engine = create_engine(
+                            self.database_url, pool_pre_ping=True, pool_recycle=1800,
+                            pool_size=15, max_overflow=25,
+                        )
+                        ProjectRegistry._pg_engine_cache[self.database_url] = engine
+            self.engine = engine
+            if self.database_url not in ProjectRegistry._pg_schema_ready:
+                with ProjectRegistry._pg_cache_lock:
+                    if self.database_url not in ProjectRegistry._pg_schema_ready:
+                        self._init_schema()
+                        ProjectRegistry._pg_schema_ready.add(self.database_url)
+                        ran_schema_init = True
+        else:
+            self.engine = create_engine(
+                self.database_url, pool_pre_ping=True, pool_recycle=1800,
+            )
+            self._init_schema()
+            ran_schema_init = True
+        _elapsed_ms = (_time.perf_counter() - _t0) * 1000
+        if _elapsed_ms > 5:
+            logging.getLogger(__name__).info(
+                "registry_init path=%s ran_schema_init=%s elapsed_ms=%.1f",
+                self.database_url, ran_schema_init, _elapsed_ms,
+            )
+        # Per-INSTANCE cache for `get_database_surveys` — see that method's
+        # docstring. Instance-scoped, not class/process-scoped: a
+        # `ProjectRegistry` is typically constructed fresh per request (the
+        # same pattern the engine/schema cache above exists to make cheap),
+        # so this dies with the request and can never serve another
+        # request's caller a stale answer. `record_database_survey` clears
+        # the entry it writes, so even a longer-lived instance (a worker
+        # loop reusing one `ProjectRegistry`) sees its own writes.
+        self._database_surveys_cache: dict[str, list[dict]] = {}
 
     @contextmanager
     def _conn(self):
@@ -8899,6 +9001,12 @@ class ProjectRegistry:
     def remove_database(self, slug: str) -> None:
         """Remove a database entity and all its survey records."""
         normalized = self._normalize_slug(slug)
+        # Invalidated up front, not after the transaction commits below —
+        # see `get_database_surveys`'s cache docstring. This method's own
+        # `with self._conn()` block stays a single transaction (unchanged
+        # from before this cache existed); popping here only affects this
+        # Python-level dict, never the DB commit/rollback boundary.
+        self._database_surveys_cache.pop(normalized, None)
         with self._conn() as conn:
             # Child before parent — database_surveys has a real FK to
             # databases.slug; SQLite silently allows the reverse order
@@ -8971,6 +9079,7 @@ class ProjectRegistry:
                    WHERE slug=?""",
                 (schema_count, table_count, column_count, surveyed_at, slug),
             )
+        self._database_surveys_cache.pop(slug, None)
         # Materialise the structured detail rows from the same blob, so a
         # survey run today is queryable without waiting for a back-fill
         # (design §5.7). Done here rather than in each surveyor because every
@@ -8998,8 +9107,28 @@ class ProjectRegistry:
             )
 
     def get_database_surveys(self, slug: str) -> list[dict]:
-        """Return all survey records for a database, newest first."""
+        """Return all survey records for a database, newest first.
+
+        Cached per-instance (2026-09-29,
+        docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md): this
+        fetches every historical survey's full `survey_data` blob — for
+        `laz_local_adventureworks`, 57 rows totalling ~61MB — and several
+        callers (`_credential_capability_results` deliberately, per its own
+        docstring, plus others) call it more than once for the same slug
+        within a single board read. Profiled directly: one board request
+        called this 5 times, 1.85-2.86s of a ~2-3s total. The query and its
+        "search every stored survey" semantics are unchanged — this only
+        stops paying for the identical fetch twice within one instance's
+        lifetime. See `__init__`'s `_database_surveys_cache` docstring for
+        why instance-scoping (not class/process-level) is what keeps this
+        safe: a `ProjectRegistry` is normally built fresh per request, and
+        `record_database_survey` clears the slug's entry on write for the
+        instances that outlive one.
+        """
         slug = self._normalize_slug(slug)
+        cached = self._database_surveys_cache.get(slug)
+        if cached is not None:
+            return cached
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT database_slug, surveyed_at, egeria_report_guid,
@@ -9010,12 +9139,41 @@ class ProjectRegistry:
                    ORDER BY surveyed_at DESC""",
                 (slug,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+        self._database_surveys_cache[slug] = result
+        return result
 
     def get_latest_database_survey(self, slug: str) -> dict | None:
-        """Return the most recent survey record for a database, or None."""
-        surveys = self.get_database_surveys(slug)
-        return surveys[0] if surveys else None
+        """Return the most recent survey record for a database, or None.
+
+        A dedicated `LIMIT 1` query as of 2026-09-29
+        (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md) —
+        this used to delegate to `get_database_surveys` and take `[0]`,
+        which fetches (and JSON-decodes) `survey_data` for EVERY historical
+        survey of this database, not just the one actually used. Profiled
+        directly: for `laz_local_adventureworks` (57 accumulated survey
+        rows, ~61MB of `survey_data` combined) a single board's
+        `build_survey_results` calls this method 5 times via
+        `_credential_capability_results`/`_credential_scope_status`, each
+        paying the full 57-row/61MB fetch — 1.85s of a 1.94s total board
+        read, ~95%, per `cProfile`. `get_database_surveys` itself is left
+        untouched: several real callers (survey-history views, trend
+        stats) genuinely want every row, so this is a second, narrower
+        query for the one caller that only ever wanted the first.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT database_slug, surveyed_at, egeria_report_guid,
+                          schema_count, table_count, column_count, survey_data, source,
+                          surveyed_as
+                   FROM database_surveys
+                   WHERE database_slug = ?
+                   ORDER BY surveyed_at DESC
+                   LIMIT 1""",
+                (slug,),
+            ).fetchall()
+        return dict(rows[0]) if rows else None
 
     # ── structured DB/FS detail rows (design §5.7, §6) ────────────────────────
     #

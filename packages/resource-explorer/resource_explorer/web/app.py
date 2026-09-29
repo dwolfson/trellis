@@ -92,6 +92,42 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+
+@app.middleware("http")
+async def _phase_timing_middleware(request, call_next):
+    """Per-request total wall time, logged at INFO as `phase_timing`.
+
+    Diagnostic only — added for the 2026-09-29 per-request-latency
+    investigation (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
+    and left in place since it is cheap (one perf_counter pair, one log
+    line) and the next regression in this class needs exactly this data.
+    Registered ahead of `_identity_middleware` below, which — per
+    `_install_login_required_middleware`'s docstring on `add_middleware`'s
+    `insert(0, ...)` + `reversed()` build order — makes `_identity_middleware`
+    the OUTER layer and this one INNER: this timer starts after identity
+    resolution, not before, so `total_ms` covers the route handler only
+    (identity resolution is one JWT decode, negligible either way — see
+    `_identity_middleware`'s own docstring). The pure-ASGI login gate and
+    CORS wrap everything added via `@app.middleware`/`add_middleware` here
+    regardless, so neither is included either way. The per-phase breakdown
+    that actually found the root cause (`ProjectRegistry.__init__`
+    re-running full schema verification on every construction) came from
+    direct, isolated timing of that constructor, not from subdividing this
+    middleware further — logged separately, see `ProjectRegistry.__init__`'s
+    own timing below.
+    """
+    import time
+
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    log.info(
+        "phase_timing path=%s method=%s status=%s total_ms=%.1f",
+        request.url.path, request.method, response.status_code, elapsed_ms,
+    )
+    return response
+
+
 @app.middleware("http")
 async def _identity_middleware(request, call_next):
     """Publish the signed-in caller for the duration of this request.
