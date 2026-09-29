@@ -126,6 +126,21 @@ jobs:
           path: ~/.cache/huggingface
           key: hf-all-MiniLM-L6-v2-${{ runner.os }}
 
+      - name: Install frontend-build JS dependencies
+        # ubuntu-latest ships Node/npm preinstalled (test_next_renders_text_
+        # cross_check.py and friends already run plain `node` here with no
+        # setup step) -- but that's just the runtime, not this package's own
+        # devDependencies. test_tailwind_next_freshness.py and
+        # test_tailwind_next_class_coverage.py need the actual pinned
+        # tailwindcss CLI installed at frontend-build/node_modules/.bin/,
+        # which `npm ci` (using the committed package-lock.json) provides.
+        # Without this step both tests skip/fail here -- the one place a
+        # stale tailwind-next.css must actually be caught, not the one place
+        # it silently isn't (see docs/Backlog.md, "tailwind-next.css has no
+        # build-freshness check").
+        working-directory: packages/resource-explorer/frontend-build
+        run: npm ci
+
       - name: Create the schema and the vector extension
         run: |
           PGPASSWORD=advisor psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor \
