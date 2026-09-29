@@ -4002,7 +4002,7 @@ export function surveyRowHtml(c) {
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
     <button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-      >Run →</button>
+      >${c.last_run_at ? 're-run' : 'run'} →</button>
   </div>`;
 }
 
