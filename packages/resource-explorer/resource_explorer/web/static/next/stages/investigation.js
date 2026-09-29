@@ -123,7 +123,7 @@ async function renderList() {
         <th class="pb-s2 font-normal">Egeria</th>
       </tr></thead>
       <tbody>${rows.map((inv) => `
-        <tr class="cursor-pointer border-b border-rule hover:bg-paper-alt" data-open-inv="${esc(inv.slug)}">
+        <tr class="cursor-pointer border-b border-rule hover:bg-paper-surface" data-open-inv="${esc(inv.slug)}">
           <td class="py-s2 pr-s3 text-answer text-ink">
             ${inv.slug === state.investigation ? '<span title="current investigation">★ </span>' : ''}
             ${esc(inv.display_name || inv.slug)}

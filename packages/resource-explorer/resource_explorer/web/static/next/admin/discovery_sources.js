@@ -107,7 +107,7 @@ function sourcesTableHtml() {
     return '<p class="py-s4 text-center text-caveat text-ink-muted">No discovery sources yet — add one below.</p>';
   }
   const rows = _sources.map((s) => `
-    <tr class="border-b border-rule hover:bg-paper-raised">
+    <tr class="border-b border-rule hover:bg-paper-surface">
       <td class="py-s2 pr-s3 text-caveat text-ink">${esc(s.display_name)}</td>
       <td class="py-s2 pr-s3 font-mono text-provenance text-accent-ink">${esc(s.slug)}</td>
       <td class="py-s2 pr-s3 text-caveat text-ink-muted">${s.source_type === 'list' ? '📋 list' : '🔍 search'}</td>
@@ -149,7 +149,7 @@ function searchFormHtml() {
     : add.previewError
       ? `<p class="mt-s2 text-caveat text-state-warn">${esc(add.previewError)}</p>`
       : add.preview
-        ? `<div class="mt-s2 rounded-sm border border-rule bg-paper-raised p-s2">
+        ? `<div class="mt-s2 rounded-sm border border-rule bg-paper-surface p-s2">
             <p class="text-caveat text-ink">Found ${add.preview.length} repo${add.preview.length === 1 ? '' : 's'}${
               add.preview.length ? ': ' + esc(add.preview.slice(0, 5).map((r) => r.full_name).join(', ')) + (add.preview.length > 5 ? ', …' : '') : ''
             }</p>
@@ -232,7 +232,7 @@ function quickAddHtml() {
 
 function addFormHtml() {
   return `
-    <div class="mt-s4 rounded-sm border border-rule bg-paper-raised p-s3">
+    <div class="mt-s4 rounded-sm border border-rule bg-paper-surface p-s3">
       <div class="mb-s2 flex items-center gap-s2">
         <span class="text-caps uppercase tracking-caps text-ink-muted">+ Add a source</span>
         ${addTabBtn('search', '🔍 Search & save')}
@@ -247,7 +247,7 @@ function addFormHtml() {
 function runPanelHtml() {
   if (!run.slug) return '';
   if (run.busy && run.repos === null) {
-    return `<div class="mt-s4 rounded-sm border border-rule bg-paper-raised p-s3">
+    return `<div class="mt-s4 rounded-sm border border-rule bg-paper-surface p-s3">
       <p class="text-caveat text-ink-muted">Running "${esc(run.displayName)}"…</p></div>`;
   }
   if (run.repos === null) return '';
@@ -262,7 +262,7 @@ function runPanelHtml() {
       <td class="py-s1 pr-s2 text-provenance text-ink-muted">${r.stars}★</td>
       <td class="py-s1 pr-s2 text-provenance text-ink-muted">${r.already_registered ? 'already registered' : esc(r.disposition || '')}</td>
     </tr>`).join('');
-  return `<div class="mt-s4 rounded-sm border border-rule bg-paper-raised p-s3">
+  return `<div class="mt-s4 rounded-sm border border-rule bg-paper-surface p-s3">
     <div class="mb-s2 flex items-center justify-between">
       <span class="text-caveat text-ink">Results for "${esc(run.displayName)}" — ${fresh} new, ${already} already registered</span>
       <button type="button" data-close-run class="cursor-pointer text-provenance text-ink-muted hover:text-ink">✕ close</button>

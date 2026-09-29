@@ -508,7 +508,7 @@ function structuredTableHtml(turn) {
       <div class="mb-s1 text-caps text-ink-muted">${t.kind} symbols in <span class="font-mono">${esc(t.project)}</span>
         — <span class="tnum">${t.items.length}</span> of <span class="tnum">${t.total}</span> shown</div>
       <table class="w-full border-collapse text-caveat"><tbody>
-        ${t.items.map((r) => `<tr class="border-b border-rule-soft">
+        ${t.items.map((r) => `<tr class="border-b border-rule">
           <td class="py-[3px] pr-s2 align-top text-ink-muted">${esc(r.kind)}</td>
           <td class="py-[3px] pr-s2 align-top font-mono">${esc(r.name)}</td>
           <td class="py-[3px] align-top text-ink-muted">${esc(r.file)}:${esc(String(r.line ?? ''))}</td>

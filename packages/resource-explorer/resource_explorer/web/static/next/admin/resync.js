@@ -107,7 +107,7 @@ function itemsHtml(f) {
       esc(Object.entries(i).map(([k, v]) => `${k}=${v}`).join('  '))}</div>`).join('');
   return `<details class="mt-[6px]">
     <summary class="cursor-pointer select-none text-caveat text-ink-muted hover:text-ink">show ${f.count}</summary>
-    <div class="mt-[4px] max-h-[30vh] space-y-[2px] overflow-auto rounded-sm border border-rule bg-paper-raised p-s2">
+    <div class="mt-[4px] max-h-[30vh] space-y-[2px] overflow-auto rounded-sm border border-rule bg-paper-surface p-s2">
       ${rows}
       ${f.truncated ? `<div class="text-provenance text-ink-muted">… and ${f.truncated} more</div>` : ''}
     </div>
@@ -196,14 +196,14 @@ function privateZoneHtml() {
   if (!z) return '';
   const zone = esc(z.zone || 'private zone');
   if (z.enforced) {
-    return `<div class="mb-s3 rounded-sm border border-rule bg-paper-raised p-s3">
+    return `<div class="mb-s3 rounded-sm border border-rule bg-paper-surface p-s3">
       <div class="text-caveat text-state-ok">🔒 Private zone enforced</div>
       <div class="mt-[2px] text-provenance text-ink-muted">Personal and Experiment investigations
         publish to <span class="font-mono">${zone}</span>, readable only by their creator.</div>
     </div>`;
   }
   const settling = (z.settling_seconds_remaining || 0) > 0;
-  return `<div class="mb-s3 rounded-sm border border-rule bg-paper-raised p-s3">
+  return `<div class="mb-s3 rounded-sm border border-rule bg-paper-surface p-s3">
     <div class="text-caveat text-state-warn">${settling ? '⏳ Private zone settling' : '⚠ Private investigations cannot publish'}</div>
     <div class="mt-[2px] text-caveat text-ink">${settling
       ? `The <span class="font-mono">${zone}</span> control exists but Egeria's security connector `
@@ -282,7 +282,7 @@ function render() {
       <div class="space-y-s2">${repairable.map(repairableRowHtml).join('')}</div>
       <div class="mt-s2 flex items-center gap-s3">
         <button type="button" data-apply-selected
-          class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[4px] text-caveat text-accent-ink hover:bg-paper-raised">
+          class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[4px] text-caveat text-accent-ink hover:bg-paper-surface">
           Apply selected
         </button>
         <span class="text-provenance text-ink-muted">Runs in dependency order regardless of what you tick.</span>
@@ -300,7 +300,7 @@ function render() {
 }
 
 function resultHtml(applied) {
-  return `<div class="mt-s3 rounded-sm border border-rule bg-paper-raised p-s3 text-caveat">
+  return `<div class="mt-s3 rounded-sm border border-rule bg-paper-surface p-s3 text-caveat">
     <div class="text-ink">Applied:</div>
     ${Object.entries(applied || {}).map(([k, v]) =>
       `<div class="font-mono text-provenance text-ink-muted">${esc(k)} — ${esc(JSON.stringify(v))}</div>`).join('')}
