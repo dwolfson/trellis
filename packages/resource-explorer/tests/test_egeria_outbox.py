@@ -16,6 +16,8 @@ from resource_explorer.egeria_outbox import (
     OutboxClients,
     apply_element,
     drain_outbox,
+    enqueue_doc_source_publish,
+    enqueue_doc_source_unpublish,
     record_drain_outcome,
 )
 from resource_explorer.registry import Project, ProjectRegistry
@@ -1417,6 +1419,113 @@ class TestDocSourceOutbox:
         assert captured["is_ref_unpublishing"]("ref-elsewhere") is False
         enqueue_doc_source_unpublish(doc_registry, "database", "adventureworks", "ref-here")
         assert captured["is_ref_unpublishing"]("ref-here") is True
+
+    # ── Self-heal reopen fix, round 6 (2026-09-29) ───────────────────────────
+    # Round 5 made `_create_doc_source_publish` verify a reused ref guid
+    # before trusting it, and required BOTH guids + verification before a
+    # row reaches `done`. That fix never RAN for the live-incident row
+    # because the self-heal enqueue step (`web/routes/doc_sources.py::
+    # _compute_egeria_state`) treated an existing `done` row — even one
+    # whose claim predates round 5's guarantee — as "already handled" and
+    # never re-queued anything. `registry.reopen_outbox_row` is the fix:
+    # reset the SAME row to `pending` (not a second row) so the next drain
+    # actually exercises round 5's verify-before-trust logic.
+    #
+    # This test reproduces the exact data shape from the live bug end to
+    # end at the outbox/drain layer: a `done` row with `egeria_guid=X`, a
+    # `doc_sources` row with `ref=X`/no link, `X` missing in Egeria — reopen
+    # it, drain for real, and confirm the SAME row ends up `done` with a
+    # NEW ref + a NEW link, not a second row alongside the old one.
+
+    def test_reopening_a_done_row_with_a_dead_guid_and_draining_produces_a_new_ref_and_link(
+        self, doc_registry, monkeypatch,
+    ):
+        row = doc_registry.add_doc_source("database", "adventureworks", "https://egeria.ai")
+        doc_registry.set_doc_source_egeria_ref("database", "adventureworks", row["id"], "dead-guid-b99")
+        # Enqueue as the original add would have, then simulate the
+        # PRE-round-5 write-back that produced the live incident: `done`,
+        # `egeria_guid` set to the now-dead ref, no link ever recorded.
+        element_id = enqueue_doc_source_publish(
+            doc_registry, "database", "adventureworks", row["id"], row["url"])
+        doc_registry.mark_outbox_done(element_id, "dead-guid-b99")
+        stuck = doc_registry.get_doc_source_outbox_row("database", "adventureworks", row["id"])
+        assert stuck["status"] == "done"
+
+        # `ref_guid_exists` reports the dead guid gone (the live fact — an
+        # unrelated unpublish deleted it) and any fresh guid this drain
+        # mints as present, so `publish_doc_source`'s own round-5 guard
+        # abandons the dead guid and creates a new reference.
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.ref_guid_exists",
+            lambda guid, **kw: guid != "dead-guid-b99",
+        )
+        publish_calls = []
+
+        def fake_publish_doc_source(source, asset_guid, **kw):
+            publish_calls.append(kw.get("known_ref_guid"))
+            # Mirrors publish_doc_source's real round-5 behavior at exactly
+            # the boundary this test cares about: a known_ref_guid that
+            # fails verification is abandoned in favor of a fresh reference.
+            return {"ok": True, "ref_guid": "fresh-ref-guid", "link_guid": "fresh-link-guid", "error": ""}
+
+        monkeypatch.setattr(
+            "resource_explorer.doc_source_egeria.publish_doc_source", fake_publish_doc_source)
+
+        # Reproduces exactly what `_compute_egeria_state`'s self-heal now
+        # does for a not_catalogued row backed by a `done` outbox row.
+        doc_registry.reopen_outbox_row(element_id, "test: proof no longer holds")
+        reopened = doc_registry.get_doc_source_outbox_row("database", "adventureworks", row["id"])
+        assert reopened["id"] == element_id, "reopened the SAME row, not a fresh one"
+        assert reopened["status"] == "pending"
+        assert reopened["egeria_guid"] == ""
+
+        summary = drain_outbox(doc_registry)
+
+        assert summary["done"] == 1
+        assert publish_calls == ["dead-guid-b99"], (
+            "the dead guid was passed through so publish_doc_source's own "
+            "verify-before-reuse guard is what abandons it, not this test"
+        )
+        final_row = doc_registry.get_doc_source_outbox_row("database", "adventureworks", row["id"])
+        assert final_row["id"] == element_id, "still the same row — not a duplicate"
+        assert final_row["status"] == "done"
+        assert final_row["egeria_guid"] == "fresh-ref-guid"
+        updated_source = doc_registry.get_doc_source("database", "adventureworks", row["id"])
+        assert updated_source["egeria_external_ref_guid"] == "fresh-ref-guid"
+        assert updated_source["egeria_link_relationship_guid"] == "fresh-link-guid"
+        # No second doc_source_publish row was created for this element.
+        all_rows = doc_registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_rows = [r for r in all_rows if r["element_kind"] == "doc_source_publish"]
+        assert len(publish_rows) == 1
+
+    def test_reopen_outbox_row_clears_status_guid_and_attempts_and_records_why(self, doc_registry):
+        # Direct unit coverage of `reopen_outbox_row` itself, independent of
+        # the doc-sources self-heal caller — kind-agnostic, so this also
+        # covers the `doc_source_unpublish` shape (no self-heal call site
+        # exists for that kind yet; this proves the primitive itself is
+        # ready for one without inventing a call site that doesn't
+        # correspond to a real bug — see that kind's own docstring).
+        element_id = enqueue_doc_source_unpublish(doc_registry, "database", "adventureworks", "ref-1")
+        doc_registry.mark_outbox_done(element_id, "ref-1")
+        with doc_registry._conn() as conn:
+            conn.execute("UPDATE egeria_outbox SET attempts=3, last_error='old failure' WHERE id=?",
+                         (element_id,))
+
+        doc_registry.reopen_outbox_row(element_id, "test: reference still resolves, retry deletion")
+
+        rows = doc_registry.list_outbox_elements(entity_slug="adventureworks")
+        row = next(r for r in rows if r["id"] == element_id)
+        assert row["status"] == "pending"
+        assert row["egeria_guid"] == ""
+        assert row["attempts"] == 0
+        assert row["completed_at"] == ""
+        assert row["last_error"] == ""
+        assert row["reopened_at"]
+        assert row["reopen_reason"] == "test: reference still resolves, retry deletion"
+        # It is still the SAME row (same qualified_name/element_kind) — a
+        # reopen never touches the element's own identity.
+        assert row["element_kind"] == "doc_source_unpublish"
+        assert row["qualified_name"] == "ExternalReferenceRemoval::ref-1"
 
 
 class TestElementScopedDrain:

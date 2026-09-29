@@ -994,6 +994,196 @@ egeria.py`, `egeria_outbox.py`, `doc_source_probe.py`); no frontend/rendering fi
 touched, so per this codebase's own "every `/next` fix... adds its regression to the
 harness" rule (which is scoped to `/next` rendering fixes), nothing here qualifies.
 
+## Self-heal never re-queued a `done` row with a dead guid (round 6, 2026-09-29)
+
+Found live by the project owner's re-gate on database 8813 (`e3b01a69`), with real registry +
+Egeria evidence — a different, later bug than round 5's, on the exact same row round 5 was
+supposed to fix:
+
+- `doc_sources` row `4711d538` — `ref = b9925119…` (the SAME dead reference round 5's own
+  incident used — deleted 2026-09-29T15:21:44Z by an unrelated unpublish), `link` empty,
+  `origin = egeria`.
+- The only outbox rows for this element are TWO rows, both `done`, both from BEFORE round 5's
+  fix deployed (15:17 and 17:42), both carrying `egeria_guid = b9925119…` — the dead guid.
+- After `e3b01a69` (round 5) deployed, the owner refreshed the page repeatedly — **no new
+  outbox row was ever created**, and the row stayed `not_catalogued` forever.
+
+### Root cause — confirmed by reading the dedup logic, not assumed
+
+`_compute_egeria_state` (`web/routes/doc_sources.py`) is the ONLY place that decides whether
+self-heal fires. Before this round its condition was:
+
+```python
+if state == "not_catalogued" and outbox_row is None:
+    ...  # enqueue a fresh doc_source_publish row
+```
+
+`outbox_row` comes from `registry.get_doc_source_outbox_row(entity_type, slug, row["id"])`
+(`registry.py`) — "most recent `egeria_outbox` row for one declared source's publish attempt,"
+matched on the payload's `source_id`, with **no filter on `status` at all**. It returns a `done`
+row exactly as readily as a `pending` one. So the dedup key genuinely is "does *any* row already
+exist for this element" — a `done` row reads as "already handled" identically to a live one, and
+self-heal's `outbox_row is None` check skips re-queueing for either. This is the exact mechanism
+the dispatch asked to be confirmed rather than assumed, and it is confirmed: no other dedup layer
+is involved (`enqueue_outbox_element` itself has no dedup — it always inserts — the dedup is
+entirely this one `is None` check on the caller's side).
+
+Round 5 made `_create_doc_source_publish` verify a reused ref guid before trusting it, and
+required BOTH guids + a fresh `ref_guid_exists` check before a row reaches `done`. That fix is
+correct but **only runs when a row is actually drained** — and self-heal, the ONLY thing that
+would re-queue this specific stuck row, never fired for it, because both of its outbox rows were
+already `done` (written under the PRE-round-5 rule, before round 5's verification existed).
+Round 5 fixed the creator; round 6 is what makes the creator ever run again for this row.
+
+### The fix
+
+**`derive_doc_source_egeria_state` already proves the negative for free.** Reaching
+`not_catalogued` at all means `ref_guid`/`link_guid` are not both set (its own docstring) — under
+round 5's "done means verified" rule, the *only* way an outbox row can be `done` while its
+element is still `not_catalogued` is if that row predates round 5. A `pending`/`running` row
+already renders `publishing`; a `failed`/`dead` row already renders `publish_failed` — neither
+reaches the `not_catalogued` branch at all. So the only two outbox states `_compute_egeria_state`
+can see once `state == "not_catalogued"` are `None` (nothing ever queued) or `done` (queued, but
+stale) — no live Egeria call is needed at self-heal decision time to know the `done` row's claim
+doesn't hold; the local `doc_sources` row's own missing `link_guid` already proves it.
+
+**Design's precise rule (coordinator refinement, round 6 design session, 2026-09-29), applied
+verbatim:** a `done` outbox row is only a valid dedupe target WHILE its proof still holds — ref
+guid AND link guid present on the `doc_sources` row, and (at drain time) the ref still resolving
+in Egeria. A `done` row whose proof has failed is **reopened**, not duplicated with a fresh row,
+so history stays one row per element.
+
+- `registry.reopen_outbox_row(row_id, reason)` (new) — resets the SAME row to `pending`, clears
+  `egeria_guid`/`attempts`/`last_error`/`completed_at`, sets `next_attempt_at` to now, and records
+  `reopened_at`/`reopen_reason` (two new `egeria_outbox` columns, added the same
+  `ALTER TABLE ... ADD COLUMN` way `claimed_at` was). Kind-agnostic — nothing in it is specific to
+  `doc_source_publish`.
+- `_compute_egeria_state` — when `state == "not_catalogued"`: if `outbox_row is None`, enqueue a
+  fresh row (unchanged from round 4); if `outbox_row["status"] == "done"`, **reopen that same
+  row** via `reopen_outbox_row` instead. Either way, `_attempt_outbox_row_immediately` fires for
+  the resulting row id, same as round 3's immediate-attempt mechanism, so the fix is not "wait for
+  the 15-minute scheduler" — the very next render's self-heal also triggers a real drain attempt.
+
+**Applying the identical rule to the unpublish side (coordinator refinement).** No
+`doc_source_unpublish` self-heal call site exists today — nothing currently re-derives an
+unpublish row's state the way `_compute_egeria_state` does for publish, so there is no live bug
+on that side to reproduce. `reopen_outbox_row` itself is kind-agnostic and is directly tested
+against a `doc_source_unpublish` row (`test_reopen_outbox_row_clears_status_guid_and_attempts_
+and_records_why`, `tests/test_egeria_outbox.py`) so the *same primitive* is proven ready the day a
+self-heal path for unpublish is added, rather than this round inventing a call site that
+corresponds to no real defect.
+
+### The one-time repair for existing stuck data
+
+**Design's explicit call (coordinator refinement):** the repair for the backlog of already-stuck
+rows should run ONCE, as a signed, logged pass at merge time — not fire on every request/render.
+
+Two things are both true and not in tension:
+
+1. **The self-heal fix alone WOULD catch the stuck row automatically** on the very next GET of
+   that resource's documentation sources — `_compute_egeria_state` runs on every `list_doc_
+   sources`/`add_doc_source`/`recheck_doc_source` call, and the fixed condition now reopens a
+   `done` row for a `not_catalogued` element unconditionally, with no dependency on which round
+   wrote it `done`. So a person merely loading the page would repair it.
+2. **Design did not want to rely on that.** A known, already-identified backlog of bad rows
+   deserves an explicit, auditable one-time pass rather than depending on someone happening to
+   load the right page — and per this project's own coordination posture, a change that touches
+   shared registry data should be a deliberate, logged action, not an implicit side effect of
+   whoever renders a page first.
+
+Built as `scripts/repair_stuck_doc_source_publish_rows.py`, following this repo's existing
+one-time-sweep convention (`scripts/sweep_stale_egeria_guids.py`): read-only by default, `--apply`
+to reopen, `--drain` (with `--apply`) to also attempt a real drain of each reopened row
+immediately rather than waiting for the scheduler or a page render. `find_stuck_rows` (its own
+audit query, pinned directly by `tests/test_repair_stuck_doc_source_publish_rows.py`) finds every
+`doc_source_publish` outbox row that is `done` while the `doc_sources` row it targets still has no
+`egeria_link_relationship_guid` — the exact shape `_compute_egeria_state` now reopens on sight —
+and skips a row whose local source was since removed (nothing left to repair) or is genuinely
+linked (round 5's own proof holds; leave it alone).
+
+Not run against the real shared registry this round — see "Live re-verification" below for why,
+and for what running it live would require.
+
+### Required test
+
+`tests/test_egeria_outbox.py::TestDocSourceOutbox::test_reopening_a_done_row_with_a_dead_guid_
+and_draining_produces_a_new_ref_and_link` — exactly the data shape from the live bug: a `done`
+`doc_source_publish` row with `egeria_guid = "dead-guid-b99"`, a `doc_sources` row with
+`ref_guid = "dead-guid-b99"` and no link guid, `ref_guid_exists("dead-guid-b99")` stubbed `False`
+(genuinely gone). Calls `registry.reopen_outbox_row` (what self-heal now does) then a real
+`drain_outbox(registry)` — asserts the drain produces a **fresh** ref guid and link guid (never
+reusing the dead one, mirroring round 5's own guard, which this test proves actually gets a
+chance to run), writes them back onto the `doc_sources` row, marks the **same** outbox row `done`
+(not a duplicate — `list_outbox_elements` still shows exactly one `doc_source_publish` row for the
+element), and that `publish_doc_source` was called with the dead guid as `known_ref_guid` (proving
+the guard, not the test's own mock, is what abandons it).
+
+Paired with:
+
+- `tests/test_egeria_outbox.py::TestDocSourceOutbox::test_reopen_outbox_row_clears_status_guid_
+  and_attempts_and_records_why` — direct unit coverage of `reopen_outbox_row` itself (status,
+  guid, attempts, `completed_at`/`last_error` cleared; `reopened_at`/`reopen_reason` recorded), on
+  a `doc_source_unpublish` row specifically, to cover the kind-agnostic claim above.
+- `tests/test_doc_sources_routes.py::TestEgeriaPublishStateFix::test_list_self_heals_by_reopening_
+  a_done_outbox_row_rather_than_leaving_it_stuck` — route-level: a `GET` against exactly the live
+  shape (done row, dead-looking guid, `not_catalogued` element) reopens the SAME row id (asserted
+  via `list_outbox_elements`), returns `egeria_state: "publishing"`, and triggers the immediate
+  scoped drain for that row (via the same `_SyncThread` test double `TestImmediateOutboxAttempt`
+  already uses). This test **replaces** `test_list_reports_ref_without_link_and_no_outbox_as_not_
+  catalogued`, which asserted the OLD (buggy) behavior — that a `done` row correctly suppressed
+  self-heal and the element stayed `not_catalogued` forever — as its expected outcome. That
+  pure-function-level assertion (a `done` outbox row's presence never by itself proves
+  `catalogued`) is kept, moved into a smaller pure-function test
+  (`test_derive_reports_ref_without_link_as_not_catalogued_pure_function`) that calls
+  `derive_doc_source_egeria_state` directly rather than asserting anything about the
+  orchestrator's self-heal decision, since that decision is exactly what round 6 changed.
+- `tests/test_repair_stuck_doc_source_publish_rows.py` (5 tests) — the one-time repair script's
+  own `find_stuck_rows` query: finds the stuck shape, does not flag a genuinely-linked row, does
+  not flag a still-pending row, skips a row whose local source was since removed, and confirms
+  `reopen_outbox_row` applied to what it finds reopens the same row (not a duplicate) and the row
+  is no longer flagged afterward.
+
+**Verified against pre-fix code**: `git stash push -u -- resource_explorer/registry.py
+resource_explorer/web/routes/doc_sources.py` (kept every test file), re-ran the four new/updated
+test files — **4 failed** (`test_reopening_a_done_row_...`,
+`test_reopen_outbox_row_clears_status_...`,
+`test_list_self_heals_by_reopening_a_done_outbox_row_...`,
+`test_repair_reopens_the_same_row_not_a_duplicate`), each on exactly the shape the incident
+exhibits (`reopen_outbox_row` did not exist; self-heal's `outbox_row is None` check still skipped
+a `done` row). Restored the fix (`git stash apply` + `git stash drop`, never a bare `git stash
+pop`, per this repo's shared-checkout convention) — all 197 tests across
+`test_egeria_outbox.py`/`test_doc_sources_routes.py`/`test_doc_sources_registry.py`/
+`test_doc_source_egeria.py`/`test_doc_source_probe.py`/`test_repair_stuck_doc_source_publish_
+rows.py` pass again.
+
+### Live re-verification
+
+**Not attempted this round.** Per this session's coordination posture and the same reasoning
+round 5 used for its own live check: a genuine live reproduction of "a `done` row with a dead
+guid" would require deliberately deleting a real `ExternalReference` (or waiting for one to go
+stale on its own) to set the condition up, which is exactly the kind of manufactured mutation of
+shared infrastructure this project weighs against when a test-level fix already meets the stated
+bar — and this round's fix is a small, mechanical change (reopen instead of skip) fully exercised
+at the test level, including a real `drain_outbox(registry)` call, not merely a mocked state
+check. The one-time repair script (`scripts/repair_stuck_doc_source_publish_rows.py`) was also
+**not run against the real shared registry** this round, for the same reason plus one more: this
+session did not want to reopen `laz_local_adventureworks`'s real stuck `egeria.ai` outbox row
+without the project owner's live re-gate coordinating around it, given the standing "ask every
+live peer before shared writes" rule — that run is the project owner's own next gate pass.
+
+**Whether the currently-stuck real row self-heals automatically, or needs the repair script:**
+both are true, not a contradiction — see "The one-time repair" above. Once this fix ships, the
+stuck `laz_local_adventureworks` `egeria.ai` row (round 5's own re-gate target) will self-heal the
+next time anyone loads its documentation-sources block (no manual step required for THAT to
+happen), **and** design's own preference is to also run the repair script as an explicit, logged,
+one-time pass rather than depend on that. Running `scripts/repair_stuck_doc_source_publish_rows.py
+--apply --drain` against the real shared registry is exactly the next live gate check this fix
+should be judged against — the shape
+`test_reopening_a_done_row_with_a_dead_guid_and_draining_produces_a_new_ref_and_link` pins at the
+test level: the row ends up `catalogued` with a NEW ref guid and a NEW link guid (both different
+from the dead `b9925119…`), visible in Egeria's own UI, with the outbox row's own status `done` —
+the SAME row id, not a fresh one alongside it.
+
 ## Judgment calls and gaps flagged
 
 1. **Both entity types built, not just database** (see above) — no scoping-out needed.
@@ -1058,3 +1248,23 @@ harness" rule (which is scoped to `/next` rendering fixes), nothing here qualifi
    qualifiedName convention treats as a different URL entirely, so the intended live
    re-confirmation of the race did not actually exercise the same-URL case. See the
    "Correction" note under "Re-gate scope" above.
+10. **Round 6's self-heal-reopen fix and its one-time repair script were both verified at the
+    test level only, not against the real shared registry/Egeria** — the fix is small and
+    mechanical (reopen instead of skip an outbox row already known to be stuck), fully exercised
+    by a real `drain_outbox(registry)` call in the required regression test, and reproducing the
+    live shape would mean deliberately deleting another real `ExternalReference` to set up a dead
+    guid, which this session weighed against per the standing shared-infrastructure posture. The
+    repair script was written but deliberately not run with `--apply --drain` against
+    `laz_local_adventureworks`'s real stuck row — left for the project owner's own next live gate
+    pass, coordinated rather than run unilaterally against shared data. See "Live
+    re-verification" under round 6 above for the exact re-gate criteria this fix should be judged
+    against.
+11. **No `doc_source_unpublish` self-heal call site exists, so "the identical rule applied to
+    unpublish" (design's own refinement) is realized as a kind-agnostic, directly-tested
+    primitive (`reopen_outbox_row`) rather than a parallel bug fix** — there is no current code
+    path that re-derives an unpublish row's state the way `_compute_egeria_state` does for
+    publish, so there was no live defect on that side to reproduce or close. If a future change
+    adds such a call site, `reopen_outbox_row` and its "done-only-while-proof-holds" reasoning are
+    already there to reuse, and are already proven against a `doc_source_unpublish` row
+    specifically — a judgment call to record explicitly rather than build a fix for a bug that,
+    on inspection, does not yet exist.

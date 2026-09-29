@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from resource_explorer.doc_source_probe import ProbeResult
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+from resource_explorer.web.routes.doc_sources import derive_doc_source_egeria_state
 
 
 @pytest.fixture
@@ -269,37 +270,76 @@ class TestEgeriaPublishStateFix:
         assert body["in_egeria_count"] == 1
         assert body["local_count"] == 0
 
-    def test_list_reports_ref_without_link_and_no_outbox_as_not_catalogued(
+    def test_derive_reports_ref_without_link_as_not_catalogued_pure_function(self):
+        # The state half of the adoption-race fix (round 4, 2026-09-29): a
+        # row with a ref guid but NO link guid must never read "catalogued"
+        # with nothing backing that claim — `derive_doc_source_egeria_state`
+        # (the pure function, no outbox self-heal side effect) reports
+        # `not_catalogued` regardless of what an outbox row says, since a
+        # `done` row's claim is exactly what round 6 (below) established
+        # cannot be trusted unconditionally. See `TestDeriveEgeriaStateTable`
+        # for the full input table this pins; this one keeps the ORIGINAL
+        # regression's own naming/shape as a direct pointer to the incident.
+        state, detail = derive_doc_source_egeria_state(
+            ref_guid="ref-guid-9", link_guid="", is_published=True,
+            outbox_row={"status": "done", "id": 1},
+        )
+        assert state == "not_catalogued"
+        assert state != "catalogued"
+
+    def test_list_self_heals_by_reopening_a_done_outbox_row_rather_than_leaving_it_stuck(
         self, client, monkeypatch, registry,
     ):
-        # The state half of the adoption-race fix (round 4, 2026-09-29): a
-        # row with a ref guid but NO link guid, and a doc_source_publish
-        # outbox row already in flight for it (so no self-heal re-queue
-        # fires), must never read "catalogued" OR "publishing" with nothing
-        # backing that claim — see derive_doc_source_egeria_state.
+        # Round 6 (2026-09-29): the fix for the case the test THIS ONE
+        # REPLACES used to assert as correct — a `done` doc_source_publish
+        # outbox row for a `not_catalogued` element used to be read as
+        # "already handled" and self-heal never fired, leaving the row stuck
+        # `not_catalogued` forever (the exact live incident on database
+        # 8813, row 4711d538). A `done` row is no longer a reason to skip
+        # self-heal; it gets REOPENED (same row id, not a second row) so the
+        # next drain runs round 5's verify-before-trust logic for real.
         monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
                              lambda url: _fake_probe())
         monkeypatch.setattr("resource_explorer.web.routes.doc_sources.read_back_doc_sources",
                              lambda *a, **kw: [])
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.threading.Thread", _SyncThread)
         registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
         added = client.post("/api/doc-sources/database/adventureworks",
                              json={"url": "https://x"}).json()
         registry.set_doc_source_egeria_ref("database", "adventureworks", added["id"], "ref-guid-9")
         # A doc_source_publish row already exists from the add above; mark it
-        # 'done' so the pure function's pending/running/failed/dead branches
-        # all miss and it falls through to `not_catalogued` rather than the
-        # orchestrator's self-heal re-queueing a duplicate.
+        # 'done' with a stale egeria_guid, exactly the pre-round-5 write-back
+        # shape (done with a ref guid, never linked).
         rows = registry.list_outbox_elements(entity_slug="adventureworks")
         publish_row_id = next(r["id"] for r in rows if r["element_kind"] == "doc_source_publish")
         with registry._conn() as conn:
-            conn.execute("UPDATE egeria_outbox SET status='done' WHERE id=?", (publish_row_id,))
+            conn.execute("UPDATE egeria_outbox SET status='done', egeria_guid='ref-guid-9' "
+                         "WHERE id=?", (publish_row_id,))
+
+        drained_ids = []
+
+        def fake_drain_outbox_row(reg, element_id, clients=None, find_element_guid=None):
+            drained_ids.append(element_id)
+            return {"claimed": 1, "done": 1, "failed": 0, "dead": 0, "skipped": 0}
+
+        monkeypatch.setattr(
+            "resource_explorer.web.routes.doc_sources.drain_outbox_row", fake_drain_outbox_row)
 
         resp = client.get("/api/doc-sources/database/adventureworks")
 
         row = next(s for s in resp.json()["sources"] if s["id"] == added["id"])
-        assert row["egeria_state"] == "not_catalogued"
-        assert row["egeria_state"] != "catalogued"
-        assert row["egeria_state"] != "publishing"
+        assert row["egeria_state"] == "publishing"
+        # The SAME row was reopened — no second doc_source_publish row exists
+        # for this element, and the immediate attempt drained exactly that
+        # row (proving "reopen", not "duplicate alongside the old one").
+        rows_after = registry.list_outbox_elements(entity_slug="adventureworks")
+        publish_rows_after = [r for r in rows_after if r["element_kind"] == "doc_source_publish"]
+        assert len(publish_rows_after) == 1
+        assert publish_rows_after[0]["id"] == publish_row_id
+        assert publish_rows_after[0]["status"] == "pending"
+        assert publish_rows_after[0]["egeria_guid"] == ""
+        assert publish_rows_after[0]["reopened_at"]
+        assert drained_ids == [publish_row_id]
 
     def test_list_reports_publish_failed_with_the_real_reason(self, client, monkeypatch, registry):
         monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",

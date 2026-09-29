@@ -259,19 +259,46 @@ def _compute_egeria_state(registry: ProjectRegistry, entity_type: str, slug: str
     """The one place that calls the pure `derive_doc_source_egeria_state`
     AND owns this feature's one side effect: self-healing.
 
-    A row landing on `not_catalogued` while the resource IS published and no
-    outbox row is tracking it means the add/read-back path missed
-    enqueueing a publish for it — a source declared before this fix landed,
-    a narrow race between "declare" and "this resource's publish landing",
-    or a read-back adoption that set a ref guid without a link (the
-    adoption-race fix's own leftover, since read-back cannot itself capture
-    the link relationship's GUID). One is queued right here rather than the
-    row sitting unexplained forever, LOGGED because this firing means
-    something upstream should have queued it already (design session,
-    2026-09-29, round 4) — the self-heal recovering gracefully doesn't make
-    it the expected steady state. Idempotent: once queued, the next call
-    finds the pending/running row and `derive_doc_source_egeria_state`
-    reports `publishing` instead.
+    A row landing on `not_catalogued` while the resource IS published means
+    something needs to be (re-)queued — the add/read-back path missed
+    enqueueing a publish for it (a source declared before this fix landed, a
+    narrow race between "declare" and "this resource's publish landing", or
+    a read-back adoption that set a ref guid without a link), OR an existing
+    outbox row for it already reached `done` with a claim that no longer
+    holds (round 6, 2026-09-29 — see below). Either way `derive_doc_source_
+    egeria_state` will keep reporting `not_catalogued` forever unless
+    something acts on it here.
+
+    **A `done` outbox row is only a valid reason to skip self-heal WHILE its
+    proof still holds.** `derive_doc_source_egeria_state` already proves the
+    negative for us: reaching `not_catalogued` at all means `ref_guid` and
+    `link_guid` are not BOTH set (see its own docstring) — round 5's own
+    "done means verified" rule (`egeria_outbox.py::_create_doc_source_
+    publish`) means the only way an outbox row can be `done` AND this row
+    still be `not_catalogued` is if that row predates round 5's guarantee
+    (exactly the incident round 6 fixes: `doc_sources` row `4711d538`, ref
+    guid `b9925119…` deleted from Egeria by an unrelated unpublish, an
+    outbox row that reached `done` under the PRE-round-5 write-back rule
+    without ever checking the guid still resolved). A `pending`/`running`
+    row already reports `publishing` (not `not_catalogued`) and a `failed`/
+    `dead` row already reports `publish_failed` — neither reaches this
+    branch, so the only outbox statuses possible here are `None` (nothing
+    ever queued) or `done` (queued, but its claim is stale).
+
+    - `outbox_row is None` — nothing has ever tracked this element; queue a
+      fresh `doc_source_publish` row (unchanged from round 4).
+    - `outbox_row["status"] == "done"` — REOPEN that same row (round 6) via
+      `registry.reopen_outbox_row` rather than inserting a second row for
+      the same element: history stays one row per element, and the very
+      next drain (this immediate attempt, or the normal 15-minute loop if
+      it fails) runs round 5's verify-before-trust logic against it for
+      real, which is what a pre-round-5 `done` row never got.
+
+    LOGGED either way because this firing means something upstream should
+    have queued (or correctly completed) it already — the self-heal
+    recovering gracefully doesn't make it the expected steady state.
+    Idempotent: once (re)queued, the next call finds the pending/running row
+    and `derive_doc_source_egeria_state` reports `publishing` instead.
     """
     ref_guid = row.get("egeria_external_ref_guid") or ""
     link_guid = row.get("egeria_link_relationship_guid") or ""
@@ -279,7 +306,20 @@ def _compute_egeria_state(registry: ProjectRegistry, entity_type: str, slug: str
     state, detail = derive_doc_source_egeria_state(
         ref_guid=ref_guid, link_guid=link_guid, is_published=is_published, outbox_row=outbox_row,
     )
-    if state == "not_catalogued" and outbox_row is None:
+    if state != "not_catalogued":
+        return state, detail
+    if outbox_row is not None and outbox_row.get("status") == "done":
+        reason = (
+            f"self-heal (round 6): {entity_type}/{slug} source {row['id']} is "
+            f"not_catalogued (ref_guid={ref_guid!r}, link_guid={link_guid!r}) but its "
+            f"tracking outbox row {outbox_row['id']} already reached 'done' with "
+            f"egeria_guid={outbox_row.get('egeria_guid')!r} — that claim no longer holds; "
+            "reopening for a fresh verified attempt rather than leaving it stuck"
+        )
+        log.warning("doc sources: %s", reason)
+        registry.reopen_outbox_row(outbox_row["id"], reason)
+        element_id = outbox_row["id"]
+    else:
         log.warning(
             "doc sources: self-heal — %s/%s source %s is published with ref_guid=%r, "
             "link_guid=%r, and no outbox row in flight; the add/read-back path missed "
@@ -287,9 +327,8 @@ def _compute_egeria_state(registry: ProjectRegistry, entity_type: str, slug: str
             entity_type, slug, row["id"], ref_guid, link_guid,
         )
         element_id = enqueue_doc_source_publish(registry, entity_type, slug, row["id"], row["url"])
-        _attempt_outbox_row_immediately(element_id)
-        return "publishing", ""
-    return state, detail
+    _attempt_outbox_row_immediately(element_id)
+    return "publishing", ""
 
 
 @router.get("/{entity_type}/{slug}", response_model=DocSourcesResponse)

@@ -2902,7 +2902,19 @@ class ProjectRegistry:
             # same transaction as the select, so a second drainer cannot take
             # it. Nullable because every pre-existing row predates claiming.
             existing_outbox = self._get_table_columns(conn, "egeria_outbox")
-            for col, defn in [("claimed_at", "TEXT DEFAULT ''")]:
+            for col, defn in [
+                ("claimed_at", "TEXT DEFAULT ''"),
+                # Doc-sources self-heal fix, round 6 (2026-09-29): a `done`
+                # row can be REOPENED (rather than a fresh row minted
+                # alongside it) once its proof no longer holds — see
+                # `reopen_outbox_row` below. These two columns are the
+                # audit trail for that: when it last happened and why,
+                # kept distinct from `last_error` (a drain failure) and
+                # `completed_at` (which a reopen clears, since the row is
+                # no longer done).
+                ("reopened_at", "TEXT DEFAULT ''"),
+                ("reopen_reason", "TEXT DEFAULT ''"),
+            ]:
                 if col not in existing_outbox:
                     conn.execute(f"ALTER TABLE egeria_outbox ADD COLUMN {col} {defn}")
             conn.execute("""
@@ -4255,6 +4267,57 @@ class ProjectRegistry:
             if payload.get("source_id") == source_id:
                 return row
         return None
+
+    def reopen_outbox_row(self, row_id: int, reason: str) -> None:
+        """Re-open one outbox row whose `done` (or `failed`/`dead`) claim no
+        longer holds — round 6 (2026-09-29), the fix for the self-heal
+        no-op loop `DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md`'s round 5
+        section documents: a `doc_source_publish` row reached `done` (before
+        round 5's verify-before-trust fix existed) carrying a ref guid that
+        was later deleted from Egeria by an unrelated unpublish. Round 5
+        fixed the CREATOR to verify a reused guid before trusting it, but
+        that fix never ran for the stuck row, because whatever found "an
+        outbox row already exists for this element" (`get_doc_source_
+        outbox_row`, `web/routes/doc_sources.py`'s self-heal) treated a
+        `done` row identically to a `pending`/`running` one — "something is
+        already tracking this" — and never re-queued anything. The row sat
+        `done` with a dead guid forever, silently re-triggering self-heal on
+        every render with nothing actually happening.
+
+        **Reopens the SAME row rather than inserting a fresh one alongside
+        it** — design's explicit preference (round 6 design session,
+        2026-09-29): history stays one row per element instead of
+        accumulating dead `done` rows next to their live retry. `attempts`
+        resets to 0 (this is a fresh attempt at fixing a stale claim, not a
+        continuation of whatever attempt history produced the bad `done`),
+        `egeria_guid` is cleared (it was the dead/unverified guid — a stale
+        "proof" must not linger on a row that is no longer claiming
+        anything), `next_attempt_at` is set to now so the very next drain
+        pass picks it up rather than waiting out whatever backoff an
+        earlier, unrelated attempt left behind, and `completed_at`/
+        `last_error` are cleared since the row is no longer done or failed.
+
+        `reopened_at`/`reason` are kept SEPARATE from `last_error` — a
+        drain failure and a self-heal reopening are different events, and a
+        row that later fails a NEW attempt should not lose the record of
+        why it was reopened in the first place under an overwritten
+        `last_error`.
+
+        Kind-agnostic by design: nothing here is specific to
+        `doc_source_publish`. A future `doc_source_unpublish` self-heal call
+        site (none exists yet — see that kind's own docstring) can reuse
+        this exact mechanism rather than inventing a parallel one; the
+        proof-validity JUDGMENT (what makes a `done` row's claim stale) is
+        the caller's, not this method's.
+        """
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE egeria_outbox SET status='pending', egeria_guid='', attempts=0, "
+                "next_attempt_at=?, claimed_at='', last_error='', completed_at='', "
+                "reopened_at=?, reopen_reason=? WHERE id=?",
+                (now, now, (reason or "")[:2000], row_id),
+            )
 
     def has_pending_unpublish_for_ref(self, entity_type: str, entity_slug: str,
                                        ref_guid: str) -> bool:
