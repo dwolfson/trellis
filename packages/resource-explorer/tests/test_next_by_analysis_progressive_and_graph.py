@@ -215,7 +215,9 @@ class TestSharedNamesRenderedOnce:
         # a bare "DISAGREE" count, and no row uses the word "DISAGREE" either.
         body = _fn("function sharedNamesHtml(shared, disagreeing)")
         assert "DISAGREE" not in body
-        assert "names carried by more than one analysis" in body
+        assert "carried by more than one analysis" in body
+        # Singular/plural handled -- a lone shared name reads "1 name", not "1 names".
+        assert "shared.size === 1 ? '' : 's'" in body
 
     def test_shared_set_is_every_name_carried_by_more_than_one_analysis(self):
         # The Shared Names block's inclusion criterion is "shared" --

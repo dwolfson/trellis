@@ -316,3 +316,19 @@ harness needs `node --test`, unavailable on this checkout's default v14) —
 8/8 pass (the pre-existing 7 plus this one; `npm install` was needed first
 to bring in `jsdom`, not yet present in a fresh `frontend-build/`
 `node_modules`).
+
+## Owner gate result, adventureworks (2026-09-29): mechanism proven, one target UNMET for a reason outside this diff
+
+Gate served on 8813, tip 7289dd88. Results by item:
+
+1. Board visible: **PASS** (53ms).
+2. All row headlines present within 2s: **UNMET**. Measured 4.4s from click to every headline present.
+3. Settled within 5s: **PASS**, narrowly (4.4s).
+
+**Root cause of item 2, confirmed not to be this branch's mechanism.** Timing `list_survey_result_boards` and each board's persisted-summary read directly, outside the running server: catalog read 0.25s, each individual board 8-33ms — the `board_summary` fast path works exactly as designed and measured earlier in this doc. But the SAME reads, made as real HTTP requests against the running server, each took 1.4-3s, with roughly two completing at a time rather than all seven in parallel as `BY_ANALYSIS_MAX_CONCURRENT_READS` should allow. A control measurement nails this down further: `GET /api/auth/me` — no board work, no database read, nothing this branch touches — took 2.3s at boot on the same server. That rules out this branch's reader/persistence code as the cause; something in the server's per-request path (candidates as identified live: the registry connection path — a shared connection or a lock; the anyio threadpool; concurrent load from other sessions' test suites sharing the same registry Postgres that night) is adding roughly a second or more of overhead to every request, board-related or not.
+
+**Decision (design session, 2026-09-29):** this UNMET target does not block this PR — it is not this diff's defect, and the mechanism this branch actually built (persist-at-run-completion, single-row read, self-healing recompute) is proven correct and fast in isolation. A new, higher-priority slice ("per-request server latency") was opened to chase the actual cause, explicitly ahead of the planned Questions-tab read-cost follow-up, since an unfixed per-request cost would make that slice's own numbers wrong too. See that slice's own IMPLEMENTED doc once it lands. The 2s headline target stays UNMET here and is expected to close there, not in a revision of this branch.
+
+**Two smaller fixes made on this branch as a result of the same gate:**
+- Pluralization bug: the Shared Names header read "1 names carried by more than one analysis" for the single-shared-name case. Fixed (`shared.size === 1 ? '' : 's'`); harness and source-text tests updated to check for the criterion phrase without asserting a hardcoded plural.
+- Board-row headline truncation ("no way to see the rest", owner feedback) — NOT fixed here. Deferred to the (a)+(c) follow-up (Table Grain description + PNG export slice) as a title attribute plus wrap-on-hover, per design's call that this is a copy/UX slice, not a read-cost one.

@@ -5933,7 +5933,7 @@ export function sharedNamesHtml(shared, disagreeing) {
   return `
     <div class="mb-s5 rounded-sm border border-rule-strong p-s3" data-shared-names>
       <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Shared names ·
-        <span class="tnum">${shared.size}</span> names carried by more than one analysis</div>
+        <span class="tnum">${shared.size}</span> name${shared.size === 1 ? '' : 's'} carried by more than one analysis</div>
       ${[...shared.entries()].map(([key, rec]) => {
         const differs = disagreeing.has(key);
         return `

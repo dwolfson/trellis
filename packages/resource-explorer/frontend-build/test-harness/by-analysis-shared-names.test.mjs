@@ -67,7 +67,7 @@ test('the Shared Names header names the criterion ("carried by more than one ana
   host.innerHTML = app.sharedNamesHtml(shared, disagreeing);
 
   assert.doesNotMatch(host.textContent, /DISAGREE/, 'no "DISAGREE" wording anywhere in the block');
-  assert.match(host.textContent, /names carried by more than one analysis/);
+  assert.match(host.textContent, /name carried by more than one analysis/, 'singular "name" -- this fixture has exactly one shared NAME ("confidence"), reported by three analyses');
   assert.match(host.textContent, /— \(no lens declared\)/, 'preliminary_fit\'s no-lens confidence must still read as "no lens declared", not a bare 0');
   assert.doesNotMatch(host.textContent, /confidence[^)]*\b0\b(?!\))/, 'the no-lens value must never render as a bare "0"');
 });
