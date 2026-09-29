@@ -8641,3 +8641,12 @@ night (F 6615/0, G3 6612/0, G2 6621/0, the cache fix itself 6605/0) — only Sec
 failed the trio after merging `main`, which narrowed the polluter to that branch's own diff in
 minutes. Two hours of infrastructure hypotheses (Prefect server reachability, shared-registry
 state, a genuine semantic merge conflict) had been chased first without success.
+
+## Enrichment stage IA — designer ask #350 pending
+
+Owner feedback during the #348 doc-sources gate (2026-09-29): does "Survey & analyses" belong as
+an Enrichment sub-tab, or should Enrichment's sub-tabs be organized around what a person supplies
+(lens, cost, ownership, documentation sources, confirmed glossary terms) and what consumes it?
+Written up for the designer as `ASK-DESIGNER-ENRICHMENT-STAGE-IA.md` (PR #350). #348 ships its
+Documentation sources block under the current sub-tabs regardless — the re-seating, if any, comes
+with the designer's reply, not before.
