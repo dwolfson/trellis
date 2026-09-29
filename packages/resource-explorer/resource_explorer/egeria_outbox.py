@@ -147,6 +147,20 @@ def _resolve_link_referents(payload: dict, resolve_row_guids) -> dict:
     return {"summary_guid": summary_guid, "evidence_guid": evidence_guid}
 
 
+#: Kinds whose creator already does its own lookup-then-create — and, for
+#: `doc_source_publish`, an extra LINK step the generic search below knows
+#: nothing about (`doc_source_egeria.publish_doc_source`, mirroring
+#: `egeria_publisher._publish_homepage_reference`'s identical "find or
+#: create, THEN always link" shape). Skipping the generic step-2 search for
+#: these kinds is deliberate: if it adopted a same-`qualified_name` element
+#: found by coincidence (the homepage feature uses the exact same
+#: `ExternalReference::<url>` convention), the row would be marked 'done'
+#: with a real GUID that was never actually linked to THIS resource's
+#: asset — a silent gap the generic annotation/membership/link kinds don't
+#: have, because a bare create is everything their own creators do too.
+_SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish"}
+
+
 def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str],
                   resolve_row_guids: "Callable[[list[int]], dict[int, str]] | None" = None) -> str:
     """Write one outbox row to Egeria and return the element's GUID.
@@ -157,7 +171,8 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
        attempt and nothing is written. The GUID is Egeria's primary identity.
     2. Otherwise search by `qualified_name`. A hit means Egeria wrote the
        element but we crashed before recording it — adopt the GUID rather than
-       creating a second one with the same qualifiedName.
+       creating a second one with the same qualifiedName. Skipped for
+       `_SELF_RESOLVING_KINDS` — see that set's own docstring.
     3. Only then create.
 
     Step 2 is the whole reason `qualified_name` is NOT NULL on the table.
@@ -178,15 +193,17 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         return existing
 
     qualified_name = row["qualified_name"]
-    try:
-        found = find_element_guid(qualified_name)
-    except Exception as exc:  # defensive — real _find_element_guid never raises
-        log.debug("Outbox lookup failed for %s (will attempt create): %s", qualified_name, exc)
-        found = ""
-    if found:
-        log.info("Outbox row %s: %s already exists (GUID %s) — adopting, not re-creating",
-                 row.get("id"), qualified_name, found)
-        return found
+    kind = row["element_kind"]
+    if kind not in _SELF_RESOLVING_KINDS:
+        try:
+            found = find_element_guid(qualified_name)
+        except Exception as exc:  # defensive — real _find_element_guid never raises
+            log.debug("Outbox lookup failed for %s (will attempt create): %s", qualified_name, exc)
+            found = ""
+        if found:
+            log.info("Outbox row %s: %s already exists (GUID %s) — adopting, not re-creating",
+                     row.get("id"), qualified_name, found)
+            return found
 
     try:
         payload = json.loads(row["payload_json"])
@@ -198,7 +215,6 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         # visible in the same place as every other stuck write.
         raise OutboxApplyError(f"payload_json is not valid JSON: {exc}") from exc
 
-    kind = row["element_kind"]
     creator = _CREATORS.get(kind)
     if creator is None:
         raise OutboxApplyError(
@@ -333,6 +349,169 @@ def _create_annotation_link(clients: "OutboxClients", payload: dict) -> str:
     return _guid_of(clients.require("metadata_expert").create_related_elements(body=body))
 
 
+def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
+    """Publish one declared documentation source's `ExternalReference` to
+    Egeria — the async, retried half of the Egeria publish-state fix
+    (2026-09-29, `DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md`). Enqueued by
+    `enqueue_doc_source_publish` whenever a source is declared (or found
+    un-published on a read) on a resource that is ALREADY published — never
+    waits for the resource's own next full re-publish.
+
+    Resolves the entity and the source row FRESH at apply time (never from
+    the payload, which carries only `entity_type`/`entity_slug`/`source_id`)
+    so a retry always sees current credentials and current local state:
+
+    - If the source row is gone (removed locally before this row was
+      drained — a real race between "declare" and "remove" within one
+      15-minute window), there is nothing left to publish. Returning ''
+      rather than raising: this is not a failure, the work item is simply
+      moot now.
+    - If it already carries BOTH a ref guid AND a link guid (a concurrent
+      full publish via `publish_local_doc_sources` beat this row to it, or a
+      previous attempt of THIS row wrote both and then crashed before
+      `mark_outbox_done`), adopt the ref guid rather than publishing a
+      second time — genuinely nothing left to do.
+    - If it carries a ref guid but NO link guid (round 4, 2026-09-29: a
+      read-back adopted an existing reference by URL but read-back cannot
+      capture the relationship's own GUID, or a prior attempt created the
+      reference and crashed before linking it — this is also exactly what
+      `_compute_egeria_state`'s self-heal re-queues for), still call
+      `publish_doc_source`, passing the known ref guid through so it links
+      THAT reference rather than minting a second, independent one for the
+      same row. **Not** treated as "already done" — a ref guid alone proves
+      an `ExternalReference` element exists somewhere, never that IT IS
+      LINKED to this asset, which is the whole distinction the adoption-race
+      fix exists to enforce (see `derive_doc_source_egeria_state`).
+    - Otherwise call `publish_doc_source` (its own lookup-then-create-then-
+      link) and write the result straight back onto the `doc_sources` row —
+      this creator is the ONLY path that runs for this kind (see
+      `_SELF_RESOLVING_KINDS`), so this is the one and only place that
+      write-back can happen.
+
+    Raises `OutboxApplyError` on an unsuccessful `publish_doc_source` result
+    so `drain_outbox` retries/backs off it like any other failed write —
+    `publish_doc_source` itself never raises for an ordinary Egeria failure,
+    it returns `{"ok": False, ...}`, which this translates into the outbox's
+    own retry vocabulary.
+    """
+    from resource_explorer.doc_source_egeria import (
+        publish_doc_source, ref_guid_exists, resolve_entity_for_doc_source,
+    )
+    from resource_explorer.registry import ProjectRegistry
+
+    entity_type = payload["entity_type"]
+    entity_slug = payload["entity_slug"]
+    source_id = payload["source_id"]
+    registry = ProjectRegistry()
+
+    source = registry.get_doc_source(entity_type, entity_slug, source_id)
+    if source is None:
+        log.info("doc source outbox: %s/%s source %s was removed before its publish "
+                 "was drained — nothing to do", entity_type, entity_slug, source_id)
+        return ""
+    if source.get("egeria_external_ref_guid") and source.get("egeria_link_relationship_guid"):
+        # Both present — a real, already-linked reference. Nothing to do.
+        # (A ref guid ALONE is not this condition — see the docstring above
+        # and derive_doc_source_egeria_state; that shape still needs linking.)
+        return source["egeria_external_ref_guid"]
+
+    entity = resolve_entity_for_doc_source(registry, entity_type, entity_slug)
+    if entity is None:
+        raise OutboxApplyError(
+            f"{entity_type} {entity_slug!r} no longer resolves — cannot publish doc source "
+            f"{source_id} (no Egeria credentials to use)"
+        )
+    result = publish_doc_source(
+        source, entity.egeria_asset_guid or "",
+        view_server=entity.egeria_server, platform_url=entity.egeria_url,
+        user_id=entity.egeria_user, user_password=entity.egeria_password,
+        display_name=entity.display_name,
+        known_ref_guid=source.get("egeria_external_ref_guid") or "",
+        # Adoption-race guard (2026-09-29) — refuse to reuse (or keep) an
+        # ExternalReference that a pending/running doc_source_unpublish
+        # row is concurrently deleting; see publish_doc_source's own
+        # docstring for the incident this closes.
+        is_ref_unpublishing=lambda guid: registry.has_pending_unpublish_for_ref(
+            entity_type, entity_slug, guid),
+    )
+    if not result["ok"]:
+        raise OutboxApplyError(result["error"] or "publish_doc_source failed")
+    ref_guid = result["ref_guid"]
+    link_guid = result.get("link_guid", "")
+    # Proof-row rule (design, round 5, 2026-09-29): "done" is a claim like
+    # any other state this system renders, and needs the same evidence-
+    # backing discipline as everything else -- reaching `done` without BOTH
+    # guids actually written back must never happen again. This is the exact
+    # incident this round fixes: `publish_doc_source`'s own best-effort link
+    # step can return `ok: True` with `link_guid` empty (a duplicate-link
+    # exception on a re-publish is swallowed there on purpose, see its own
+    # docstring) -- that is a real, honest "not linked yet" outcome for the
+    # OUTBOX's purposes, even though it isn't a `publish_doc_source` failure.
+    if not ref_guid or not link_guid:
+        raise OutboxApplyError(
+            result["error"] or
+            "publish_doc_source returned without both a ref guid and a link guid "
+            "-- the reference exists but the link step did not complete; not "
+            "marking this row done on an unlinked reference"
+        )
+    # "Verified", not just "attempted" (design's own wording): re-confirm the
+    # ref guid we are about to persist as this row's proof still resolves in
+    # Egeria RIGHT NOW, using the exact same existence check
+    # `publish_doc_source` itself uses to decide whether an old guid is safe
+    # to reuse -- rather than trusting our own just-returned result blindly.
+    # Closes the live incident by construction: a stale/deleted ref guid can
+    # no longer be written back as "done" from this path either.
+    if not ref_guid_exists(ref_guid, view_server=entity.egeria_server,
+                            platform_url=entity.egeria_url, user_id=entity.egeria_user,
+                            user_password=entity.egeria_password):
+        raise OutboxApplyError(
+            f"publish_doc_source reported ref {ref_guid} and link {link_guid}, but "
+            f"{ref_guid} does not resolve in Egeria right now -- not marking done on "
+            "an unverified guid"
+        )
+    registry.set_doc_source_egeria_ref(entity_type, entity_slug, source_id, ref_guid, link_guid)
+    return ref_guid
+
+
+def _create_doc_source_unpublish(clients: "OutboxClients", payload: dict) -> str:
+    """Detach+delete one removed documentation source's `ExternalReference`
+    — the async, retried half of removal. Enqueued by `enqueue_doc_source_
+    unpublish` right after the local `doc_sources` row is deleted, since by
+    then there is no local row left to update; this row exists purely so
+    the Egeria-side removal is retried if it fails the first time, same as
+    every other outbox write.
+
+    Only the ONE `ref_guid` the removed row carried is ever touched — see
+    `unpublish_doc_source`'s own docstring for why a shared-URL collision is
+    deliberately left alone rather than swept.
+    """
+    from resource_explorer.doc_source_egeria import (
+        resolve_entity_for_doc_source, unpublish_doc_source,
+    )
+    from resource_explorer.registry import ProjectRegistry
+
+    ref_guid = payload.get("ref_guid", "")
+    if not ref_guid:
+        return ""
+    entity_type = payload["entity_type"]
+    entity_slug = payload["entity_slug"]
+    registry = ProjectRegistry()
+    entity = resolve_entity_for_doc_source(registry, entity_type, entity_slug)
+    if entity is None:
+        raise OutboxApplyError(
+            f"{entity_type} {entity_slug!r} no longer resolves — cannot resolve Egeria "
+            f"credentials to remove ExternalReference {ref_guid}"
+        )
+    result = unpublish_doc_source(
+        ref_guid, entity.egeria_asset_guid or "",
+        view_server=entity.egeria_server, platform_url=entity.egeria_url,
+        user_id=entity.egeria_user, user_password=entity.egeria_password,
+    )
+    if not result["ok"]:
+        raise OutboxApplyError(result["error"] or "unpublish_doc_source failed")
+    return ref_guid
+
+
 def _guid_of(result) -> str:
     """pyegeria create_* calls variously return a GUID string, a dict, or
     nothing useful. An empty string is not an error here — the row is still
@@ -357,11 +536,14 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "collection_membership": _create_collection_membership,
     "resource_list": _create_resource_list,
     "annotation_link": _create_annotation_link,
+    "doc_source_publish": _create_doc_source_publish,
+    "doc_source_unpublish": _create_doc_source_unpublish,
 }
 
 
 def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
-                 limit: int = DRAIN_BATCH, run_id: str | None = None) -> dict:
+                 limit: int = DRAIN_BATCH, run_id: str | None = None,
+                 element_id: int | None = None) -> dict:
     """One drain pass. Returns a summary dict; never raises.
 
     Called from `scheduler.py`'s existing loop, once per iteration — the same
@@ -374,11 +556,25 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
     without a live platform, and are resolved lazily from the repo publisher
     when not supplied — that publisher already owns a connected client and a
     proven `_find_element_guid`.
+
+    `element_id` scopes this pass to exactly one outbox row — the "attempt
+    this write right now" case (`doc_sources.py`'s add/remove routes, Egeria
+    publish-state fix round 3, 2026-09-29): enqueue, then attempt that one
+    row immediately, off the request thread, rather than only relying on the
+    15-minute scheduler loop. This is deliberately the SAME function the
+    scheduler calls for its full drain, not a second copy — `element_id`
+    only narrows which rows `claim_due_outbox_elements` claims; every other
+    step (apply, retry bookkeeping, dead-lettering, `record_drain_outcome`,
+    publish-run completion) is unchanged, so a scoped call behaves exactly
+    like the full drain would have behaved on that one row, including
+    leaving it for the normal 15-minute retry loop on failure (see
+    `mark_outbox_failed` below — nothing about a scoped call skips backoff
+    or dead-lettering).
     """
     summary = {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
               "publish_run_check_failed": 0}
     try:
-        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id)
+        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary
@@ -474,6 +670,20 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             log.exception("Could not check publish-run completion for run_id %s", base_run_id)
 
     return summary
+
+
+def drain_outbox_row(registry, element_id: int, clients: "OutboxClients | None" = None,
+                      find_element_guid=None) -> dict:
+    """Attempt exactly one outbox row right now. A thin, named convenience
+    over `drain_outbox(..., element_id=...)` — same function, same apply/
+    retry/dead-letter logic, nothing duplicated — for callers (`doc_sources.
+    py`'s add/remove routes) that want "attempt this one write immediately"
+    without spelling out `limit`/`run_id` at every call site. Never raises
+    (drain_outbox itself never does); on failure the row is left exactly as
+    `mark_outbox_failed` leaves any row, so it falls back to the normal
+    15-minute scheduler drain like every other outbox row.
+    """
+    return drain_outbox(registry, clients, find_element_guid, element_id=element_id)
 
 
 def _default_clients():
@@ -723,6 +933,62 @@ def enqueue_blueprint_members(
             run_id=run_id,
         ))
     return row_ids
+
+
+def enqueue_doc_source_publish(
+    registry, entity_type: str, entity_slug: str, source_id: str, url: str, *, run_id: str = "",
+) -> int:
+    """Queue a best-effort Egeria `ExternalReference` publish for one
+    already-declared documentation source, for a resource that is ALREADY
+    published. Egeria publish-state fix (2026-09-29): previously a source
+    added (or found un-published on a read) after the resource's own publish
+    stayed local-only until the next full re-publish; this queues the write
+    for the outbox's next drain instead, same as any other best-effort
+    Egeria write in this codebase.
+
+    Called from `web/routes/doc_sources.py`'s `add_doc_source` when the
+    resource is already published, and from its `_compute_egeria_state`
+    self-heal path when a GET finds a source with no `egeria_external_ref_
+    guid` AND no outbox row already tracking it (a source declared before
+    this fix, or a narrow race between "declare" and "this resource's
+    publish landing"). An unpublished resource's source stays local — same
+    as before this fix — and nothing is queued for it; see `_compute_egeria_
+    state`'s `local_only` branch.
+
+    `qualified_name` mirrors `doc_source_egeria._qualified_name` exactly
+    (`ExternalReference::<url>`) so a retry — or a concurrent full re-publish
+    via `publish_local_doc_sources` — converges on the SAME element rather
+    than minting a second one under a different identity. `source_id` (not
+    derivable from `qualified_name` alone — see `get_doc_source_outbox_row`'s
+    docstring) travels in the payload so the creator can resolve and write
+    back to the exact local row.
+    """
+    qualified_name = f"ExternalReference::{url}"
+    return registry.enqueue_outbox_element(
+        entity_type, entity_slug, "doc_source_publish", qualified_name,
+        {"entity_type": entity_type, "entity_slug": entity_slug, "source_id": source_id},
+        run_id=run_id,
+    )
+
+
+def enqueue_doc_source_unpublish(
+    registry, entity_type: str, entity_slug: str, ref_guid: str, *, run_id: str = "",
+) -> int:
+    """Queue a best-effort Egeria `ExternalReference` detach+delete for a
+    just-removed documentation source's own reference — only this one GUID,
+    same "and only that one" rule `unpublish_doc_source` already documents.
+
+    Called from `web/routes/doc_sources.py`'s DELETE handler right after the
+    local `doc_sources` row is gone — there is no more local state to write
+    back to; this row exists purely so the Egeria-side removal retries if
+    Egeria is unreachable at that moment, rather than a one-shot best-effort
+    attempt with no second try (the gap this fix closes on the removal side)."""
+    qualified_name = f"ExternalReferenceRemoval::{ref_guid}"
+    return registry.enqueue_outbox_element(
+        entity_type, entity_slug, "doc_source_unpublish", qualified_name,
+        {"entity_type": entity_type, "entity_slug": entity_slug, "ref_guid": ref_guid},
+        run_id=run_id,
+    )
 
 
 def record_drain_outcome(
