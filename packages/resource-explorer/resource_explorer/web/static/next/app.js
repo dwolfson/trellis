@@ -3881,6 +3881,61 @@ function lastRunHtml(c) {
     <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>`;
 }
 
+/** Which engine actually ran a definition's last run, rendered ON THE ROW
+ *  itself -- sourced from `last_run_engine_note` (persisted in the
+ *  activity_log detail SurveyDefinitionExecutor already writes, carried
+ *  through by registry.get_survey_definition_last_activity /
+ *  survey_definitions.py), not from a page-lifetime DOM node.
+ *
+ *  Design bug this closes (2026-09-28,
+ *  docs/design-notes/ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): launchSurvey()
+ *  used to append this as a transient `#survey-note` div and then, a few
+ *  lines later, call loadSurveyPane() -- which re-renders the whole pane,
+ *  including a fresh, empty `#survey-note`, wiping the note out right after
+ *  writing it. A live check confirmed dispatch itself worked correctly
+ *  (flow-run completed, step_runs recorded) -- only the UI signal was lost.
+ *  Deriving the line from data instead of a transient write means it
+ *  survives any re-render, and shows up for past runs too, not only the one
+ *  just launched.
+ *
+ *  Exact display text per design sign-off:
+ *    success:  "ran via Prefect (flow-run <id-prefix>…, <HH:MM>Z)"
+ *    fallback: "ran locally: Prefect dispatch failed — <reason>"
+ */
+function engineNoteHtml(c) {
+  const note = c.last_run_engine_note || '';
+  if (!note) return '';
+  const fellBack = /unreachable|dispatch failed/i.test(note);
+  let text;
+  if (fellBack) {
+    // Two whole-definition fallback shapes the executor writes into
+    // `engine_note` (survey_definition_executor.py):
+    //   "Prefect API unreachable at <detail>: ran locally"  -- has a reason
+    //   "Prefect dispatch failed: ran locally"               -- no reason at all
+    // Strip the boilerplate on both ends; an empty remainder (the second
+    // shape) means there is nothing to name after the dash, so leave it off
+    // rather than rendering "... — ran locally", a reason that names no
+    // reason.
+    const reason = note
+      .replace(/^Prefect API unreachable at\s*/i, '')
+      .replace(/^Prefect dispatch failed:?\s*/i, '')
+      .replace(/:\s*ran locally\s*$/i, '')
+      .replace(/^ran locally$/i, '')
+      .trim();
+    text = reason
+      ? `ran locally: Prefect dispatch failed — ${reason}`
+      : 'ran locally: Prefect dispatch failed';
+  } else {
+    const m = note.match(/flow-run\s+([^\s)]+)/i);
+    const idPart = m ? `flow-run ${m[1].slice(0, 8)}…` : 'flow-run';
+    const ms = whenMs(c.last_run_at);
+    const whenPart = Number.isFinite(ms)
+      ? `, ${new Date(ms).toISOString().slice(11, 16)}Z` : '';
+    text = `ran via Prefect (${idPart}${whenPart})`;
+  }
+  return `<div class="mt-[2px] text-provenance ${fellBack ? 'text-state-warn' : 'text-ink-muted'}">${esc(text)}</div>`;
+}
+
 /** The union of annotation types a definition's steps declare — RE steps carry
  *  their own `annotation_types`, native (Egeria-executed) steps carry theirs
  *  nested one level down, in `egeria_produced_annotation_types[].annotation_type`.
@@ -3906,6 +3961,7 @@ function surveyRowHtml(c) {
           class="cursor-pointer bg-transparent underline">definition history</button>` : ''}</div>
       <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
         produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
+      ${engineNoteHtml(c)}
     </div>
     <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step${steps === 1 ? '' : 's'}${
       // Point 2 (SPEC-THE-STAGE-PAGE.md): the axis tiering itself turns on --
@@ -4456,23 +4512,22 @@ async function launchSurvey(slug, ref) {
       // here, on the same line a person is already watching.
       if (note && finishedEntry) {
         let steps = [];
-        let engineNote = '';
         try {
           const d = typeof finishedEntry.detail === 'string'
             ? JSON.parse(finishedEntry.detail) : (finishedEntry.detail || {});
           steps = d.steps || [];
-          engineNote = d.engine_note || '';
         } catch (_) { /* a detail we cannot parse has nothing to report here */ }
-        // Whole-definition Prefect default (2026-09-28,
-        // docs/design-notes/PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md):
-        // name which engine actually ran this whole definition — success
-        // ("running via Prefect (flow-run …)") as well as the fallback
-        // case, on the same line, so a default run's engine choice is never
-        // silent.
-        if (engineNote) {
-          const warn = /unreachable|dispatch failed/i.test(engineNote);
-          note.innerHTML += `<div class="mt-s1 ${warn ? 'text-state-warn' : 'text-state-ok'}">${esc(engineNote)}</div>`;
-        }
+        // Whole-definition engine choice (which engine actually ran this
+        // run — Prefect, or a local fallback and why) is NOT appended here
+        // any more (engine-note persistence, 2026-09-28,
+        // docs/design-notes/ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): this
+        // div is about to be replaced wholesale by loadSurveyPane() below,
+        // which would wipe a transient append here right after writing it —
+        // that was the bug. The engine line now renders on the definition's
+        // own row (surveyRowHtml -> engineNoteHtml), sourced from the run
+        // detail persisted to the activity log, so it survives the reload
+        // this function is about to trigger and shows for historical runs
+        // too.
         const fellBack = steps.filter((s) =>
           typeof s.detail === 'string' && s.detail.startsWith('ran locally: Prefect dispatch failed'));
         if (fellBack.length) {
