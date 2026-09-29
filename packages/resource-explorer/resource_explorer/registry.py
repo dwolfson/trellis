@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -1124,6 +1125,38 @@ def _decode_detail_row(row: dict) -> dict:
 
 
 class ProjectRegistry:
+    # Process-wide cache: a Postgres `Engine` (connection pool) and whether
+    # `_init_schema` has already run, keyed by `database_url`. Added
+    # 2026-09-29 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
+    # after live timing showed `ProjectRegistry()` costing 250-470ms on a
+    # *warm* Postgres — every one of ~150 CREATE TABLE/ALTER TABLE/CREATE
+    # INDEX statements in `_init_schema` round-tripping to Postgres, on
+    # EVERY construction, because almost every route does
+    # `registry = ProjectRegistry()` fresh rather than sharing one. Most of
+    # those call sites are synchronous code running directly in an
+    # `async def` route handler (not `asyncio.to_thread`-wrapped, the same
+    # bug class `_init_schema`'s own `/questions` cousin was fixed for in
+    # BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md §2a) — so this cost
+    # was landing on the event loop thread itself, stalling every other
+    # in-flight request (including ones touching no database at all, like
+    # `/api/auth/me`) for as long as the schema re-verification took.
+    #
+    # The schema does not change while a process is running, so re-running
+    # `_init_schema` on every construction was pure waste, not safety — the
+    # real fix is "verify once per process", not "verify off the event
+    # loop" (which would still pay the cost, just less visibly). Scoped to
+    # Postgres URLs only: SQLite is test/dev-fallback only, tests construct
+    # many distinct `tmp_path`-backed registries per session, and caching
+    # those engines for the process lifetime would hold file descriptors
+    # open long after each test is done with them for no benefit — the
+    # actual shared-registry problem this fixes is exclusively Postgres.
+    # `:memory:` is excluded on principle even though no current caller
+    # uses it for `ProjectRegistry`: two independent in-memory databases
+    # sharing a cached engine would silently merge their data.
+    _pg_engine_cache: dict[str, Any] = {}
+    _pg_schema_ready: set[str] = set()
+    _pg_cache_lock = threading.Lock()
+
     def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
         """database_url, when given, is used verbatim — bypassing the
         db_path sentinel/config-lookup logic below entirely. Added for the
@@ -1174,10 +1207,84 @@ class ProjectRegistry:
         # pool_recycle bounds how long a connection may live regardless, so a
         # half-open connection that still answers a ping cannot linger forever.
         # Both are no-ops for SQLite, which is why they are not conditional.
-        self.engine = create_engine(
-            self.database_url, pool_pre_ping=True, pool_recycle=1800,
+        is_cacheable_pg = (
+            self.database_url.startswith("postgresql")
+            and ":memory:" not in self.database_url
         )
-        self._init_schema()
+        # Diagnostic timing only (see PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
+        # — this is the phase that turned out to dominate per-request cost
+        # before the engine/schema cache above existed. Logged whenever it
+        # is non-trivial, not gated behind a debug flag, since a construction
+        # that is suddenly slow again is exactly what the next regression in
+        # this class looks like.
+        import time as _time
+
+        _t0 = _time.perf_counter()
+        ran_schema_init = False
+        if is_cacheable_pg:
+            # Reuse one Engine (and its connection pool) per database_url for
+            # the life of the process, and run `_init_schema` at most once
+            # per database_url — see the class docstring above. Double-
+            # checked under the lock so two threads racing to construct the
+            # first `ProjectRegistry()` for a URL don't both pay full init
+            # cost (harmless — every statement is idempotent — but pointless).
+            engine = ProjectRegistry._pg_engine_cache.get(self.database_url)
+            if engine is None:
+                with ProjectRegistry._pg_cache_lock:
+                    engine = ProjectRegistry._pg_engine_cache.get(self.database_url)
+                    if engine is None:
+                        # pool_size/max_overflow raised from SQLAlchemy's
+                        # defaults (5/10) 2026-09-29, alongside the caching
+                        # above: caching means every `ProjectRegistry()` in
+                        # this process now shares ONE pool rather than each
+                        # getting its own, so a small pool that used to be
+                        # merely wasteful (many short-lived per-request
+                        # pools) became a real concurrency bottleneck.
+                        # Measured directly: a concurrent burst of the
+                        # by-analysis pane's boot requests (auth/me,
+                        # projects, activity, databases, ~7 board reads) hit
+                        # requests queued for a connection for 8-60+s at the
+                        # old default. Postgres here allows 1000
+                        # connections (`SHOW max_connections`), so 15+25 is
+                        # nowhere near a real ceiling.
+                        engine = create_engine(
+                            self.database_url, pool_pre_ping=True, pool_recycle=1800,
+                            pool_size=15, max_overflow=25,
+                        )
+                        ProjectRegistry._pg_engine_cache[self.database_url] = engine
+            self.engine = engine
+            if self.database_url not in ProjectRegistry._pg_schema_ready:
+                with ProjectRegistry._pg_cache_lock:
+                    if self.database_url not in ProjectRegistry._pg_schema_ready:
+                        self._init_schema()
+                        ProjectRegistry._pg_schema_ready.add(self.database_url)
+                        ran_schema_init = True
+        else:
+            self.engine = create_engine(
+                self.database_url, pool_pre_ping=True, pool_recycle=1800,
+            )
+            self._init_schema()
+            ran_schema_init = True
+        _elapsed_ms = (_time.perf_counter() - _t0) * 1000
+        if _elapsed_ms > 5:
+            logging.getLogger(__name__).info(
+                "registry_init path=%s ran_schema_init=%s elapsed_ms=%.1f",
+                self.database_url, ran_schema_init, _elapsed_ms,
+            )
+        # Per-INSTANCE, self-invalidating cache for `get_database_surveys` —
+        # see that method's docstring
+        # (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md's
+        # "Registry cache staleness" addendum). Each entry is keyed on a
+        # cheap freshness signature (`(max(surveyed_at), count(*))` for the
+        # slug), not just the slug — so a stale entry is detected and
+        # refetched automatically, regardless of WHICH `ProjectRegistry`
+        # instance or process wrote the newer survey. This protects every
+        # holder, including the three long-lived ones found 2026-09-29
+        # (`run_queue.py`'s worker loop, `egeria_resync.EgeriaResync`) that
+        # construct one instance and reuse it beyond a single request —
+        # the original write-through-this-instance-only invalidation could
+        # never see a survey a DIFFERENT instance or process wrote.
+        self._database_surveys_cache: dict[str, tuple[tuple, list[dict]]] = {}
 
     @contextmanager
     def _conn(self):
@@ -6309,6 +6416,29 @@ class ProjectRegistry:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_egeria_linkages_for_entities(
+        self, entity_type: str, entity_slugs: list[str],
+    ) -> dict[str, dict]:
+        """The batch form of `get_egeria_linkage`, one query for every slug
+        instead of one per entity. Added 2026-09-29 round 2 for
+        `list_projects`'s N+1 fix, used via `egeria_linkage.describe_publish_
+        status` through a small prefetched-dict shim (`web/routes/projects.py`'s
+        `_PrefetchedLinkageRegistry`) rather than duplicating that function's
+        logic — `describe_publish_status` only ever calls `get_egeria_linkage`
+        on whatever `registry` it's given, so a shim backed by this batch
+        result runs the exact same, already-tested code path."""
+        if not entity_slugs:
+            return {}
+        slugs = list(dict.fromkeys(entity_slugs))
+        placeholders = ",".join(["?"] * len(slugs))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM egeria_linkage_status WHERE entity_type=? "
+                f"AND entity_slug IN ({placeholders})",
+                tuple([entity_type, *slugs]),
+            ).fetchall()
+        return {r["entity_slug"]: dict(r) for r in rows}
+
     def list_stale_egeria_linkages(self) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
@@ -7542,6 +7672,43 @@ class ProjectRegistry:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_dispositions_for_entities(
+        self, entity_type: str, entity_slugs: list[str],
+    ) -> dict[str, dict]:
+        """Every current disposition for `entity_slugs`, in ONE query,
+        keyed by entity_slug — the batch form of `get_disposition_for_entity`
+        for a caller building many summaries at once. Added 2026-09-29
+        round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-
+        IMPLEMENTED.md) for `list_projects`, which used to call
+        `get_disposition(p.github_url)` — itself `resolve_repo_entity_slug`
+        → `get_by_github_url`, a **full `SELECT * FROM projects` table
+        scan searched in Python**, per project. Profiled directly: 0.93s
+        of a 1.42s `list_projects` call, dominant over
+        `is_working_set_hidden`'s own per-project round trips. For an
+        already-imported project (this method's only real caller today),
+        `entity_slug` IS `p.slug` — dispositions are reconciled onto the
+        real slug at import time (see `resolve_repo_entity_slug`'s
+        docstring) — so this needs no per-project slug resolution at all,
+        unlike the singular `get_disposition(github_url)` form this
+        replaces for that call site specifically (that form still exists,
+        unchanged, for callers with only a github_url in hand).
+
+        A slug with no row (nobody has ever decided) is simply absent from
+        the returned dict — same "undecided" contract as the singular
+        form's `None`.
+        """
+        if not entity_slugs:
+            return {}
+        slugs = list(dict.fromkeys(entity_slugs))  # de-dup, preserve order
+        placeholders = ",".join(["?"] * len(slugs))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM repo_dispositions WHERE entity_type = ? "
+                f"AND entity_slug IN ({placeholders})",
+                tuple([entity_type, *slugs]),
+            ).fetchall()
+        return {r["entity_slug"]: dict(r) for r in rows}
+
     def get_disposition_history_for_entity(self, entity_type: str, entity_slug: str) -> list[dict]:
         """Every disposition ever set for this entity, oldest first — backs
         the Disposition sub-tab's timeline view. `depth_offer` comes back
@@ -7780,6 +7947,38 @@ class ProjectRegistry:
         by_user = {r["user_id"]: r for r in rows}
         row = by_user.get(user_id) or by_user.get(SHARED_USER_ID)
         return bool(row["hidden"]) if row else False
+
+    def get_working_set_hidden_for_entities(
+        self, entity_type: str, entity_slugs: list[str], *, user_id: str | None = None,
+    ) -> dict[str, bool]:
+        """The batch form of `is_working_set_hidden`, one query for every
+        slug in `entity_slugs` instead of one round trip per slug. Added
+        2026-09-29 round 2 for `list_projects`'s N+1 fix — same per-user/
+        shared-bucket resolution as the singular form, just fetched and
+        resolved once for the whole batch rather than per project. A slug
+        with no row for either user_id resolves to `False`, same as the
+        singular form's fallback."""
+        if not entity_slugs:
+            return {}
+        slugs = list(dict.fromkeys(entity_slugs))
+        user_id = current_user_id() if user_id is None else user_id
+        placeholders = ",".join(["?"] * len(slugs))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT entity_slug, user_id, hidden FROM resource_working_set "
+                f"WHERE entity_type = ? AND entity_slug IN ({placeholders}) "
+                f"AND user_id IN (?, ?)",
+                tuple([entity_type, *slugs, user_id, SHARED_USER_ID]),
+            ).fetchall()
+        by_slug: dict[str, dict] = {}
+        for r in rows:
+            by_slug.setdefault(r["entity_slug"], {})[r["user_id"]] = r
+        result: dict[str, bool] = {}
+        for slug in slugs:
+            by_user = by_slug.get(slug) or {}
+            row = by_user.get(user_id) or by_user.get(SHARED_USER_ID)
+            result[slug] = bool(row["hidden"]) if row else False
+        return result
 
     # ── Investigations (docs/investigation-framing-design.md §1) ──────────
     #
@@ -8948,6 +9147,12 @@ class ProjectRegistry:
     def remove_database(self, slug: str) -> None:
         """Remove a database entity and all its survey records."""
         normalized = self._normalize_slug(slug)
+        # No manual cache pop needed here (2026-09-29 hardening) —
+        # `get_database_surveys`'s freshness-keyed cache detects this
+        # delete on its own next read, from any instance, via
+        # `_database_surveys_freshness`'s `count(*)` half. See that
+        # method's docstring for why a single self-invalidating mechanism
+        # replaced the old same-instance-only manual pop.
         with self._conn() as conn:
             # Child before parent — database_surveys has a real FK to
             # databases.slug; SQLite silently allows the reverse order
@@ -9020,6 +9225,10 @@ class ProjectRegistry:
                    WHERE slug=?""",
                 (schema_count, table_count, column_count, surveyed_at, slug),
             )
+        # No manual cache pop needed here (2026-09-29 hardening) — see
+        # `remove_database`'s comment and `get_database_surveys`'s
+        # docstring: the freshness-keyed cache detects this insert on its
+        # own, from any instance.
         # Materialise the structured detail rows from the same blob, so a
         # survey run today is queryable without waiting for a back-fill
         # (design §5.7). Done here rather than in each surveyor because every
@@ -9046,9 +9255,72 @@ class ProjectRegistry:
                 slug, surveyed_at, source, exc,
             )
 
+    def _database_surveys_freshness(self, slug: str) -> tuple:
+        """A cheap freshness signature for `slug`'s stored surveys.
+
+        `(max(surveyed_at), count(*))` rather than just a row count: a
+        row count alone cannot distinguish "the newest survey got replaced"
+        from "nothing changed" when the total stays the same (it can't —
+        `record_database_survey` only ever inserts, never updates or
+        deletes, but `remove_database` deletes and a future write path
+        could too), and `max(surveyed_at)` alone cannot distinguish
+        "unchanged" from "a row was added/removed elsewhere with an older
+        timestamp" (backfills, imports). The pair is the smallest signature
+        that is wrong only if two writes land with an identical
+        `(max(surveyed_at), count)` pair, which `record_database_survey`'s
+        own `datetime.utcnow().isoformat()` (microsecond precision) makes
+        vanishingly unlikely for two real writes.
+
+        Measured directly against Postgres on a 57-row/61MB survey history
+        (the same fixture `PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md`
+        profiled): 0.4-1.2ms — negligible next to the ~500-600ms full fetch
+        it guards, so paying it on every `get_database_surveys` call (cache
+        hit or miss) does not reintroduce the latency problem this cache
+        exists to fix.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT max(surveyed_at), count(*) FROM database_surveys "
+                "WHERE database_slug = ?",
+                (slug,),
+            ).fetchone()
+        return (row[0], row[1]) if row else (None, 0)
+
     def get_database_surveys(self, slug: str) -> list[dict]:
-        """Return all survey records for a database, newest first."""
+        """Return all survey records for a database, newest first.
+
+        Cached per-instance, keyed on a freshness signature (2026-09-29,
+        docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md; hardened
+        2026-09-29 against cross-instance/cross-process staleness — see that
+        doc's "Registry cache staleness" addendum): this fetches every
+        historical survey's full `survey_data` blob — for
+        `laz_local_adventureworks`, 57 rows totalling ~61MB — and callers
+        that legitimately re-read the same slug more than once within one
+        `ProjectRegistry` instance's lifetime (e.g.
+        `prerequisite_resolver.resolve()`'s per-step loop, via
+        `credential_capability.stored_probe`, re-checking a database's
+        `credential_capability` probe for each of a survey run's
+        `requires_context` steps) would otherwise pay the full ~500-600ms
+        fetch again on every repeat read — measured directly: 6 back-to-back
+        uncached reads of the same slug cost ~3.4s versus ~0ms for cached
+        repeats.
+
+        The cache entry is `(freshness_signature, result)`, not just
+        `result` — see `_database_surveys_freshness`'s docstring for why a
+        `(max(surveyed_at), count(*))` pair, and why that check (0.4-1.2ms)
+        is cheap enough to pay unconditionally. This is what makes the
+        cache self-invalidating rather than only correct for writes that
+        happen to go through THIS SAME instance: a stale entry is detected
+        and refetched the moment its freshness signature no longer matches
+        the table, no matter which `ProjectRegistry` instance or process
+        wrote the newer row. The query and its "search every stored survey"
+        semantics are otherwise unchanged.
+        """
         slug = self._normalize_slug(slug)
+        freshness = self._database_surveys_freshness(slug)
+        cached = self._database_surveys_cache.get(slug)
+        if cached is not None and cached[0] == freshness:
+            return cached[1]
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT database_slug, surveyed_at, egeria_report_guid,
@@ -9059,12 +9331,174 @@ class ProjectRegistry:
                    ORDER BY surveyed_at DESC""",
                 (slug,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+        self._database_surveys_cache[slug] = (freshness, result)
+        return result
 
     def get_latest_database_survey(self, slug: str) -> dict | None:
-        """Return the most recent survey record for a database, or None."""
-        surveys = self.get_database_surveys(slug)
-        return surveys[0] if surveys else None
+        """Return the most recent survey record for a database, or None.
+
+        A dedicated `LIMIT 1` query as of 2026-09-29
+        (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md) —
+        this used to delegate to `get_database_surveys` and take `[0]`,
+        which fetches (and JSON-decodes) `survey_data` for EVERY historical
+        survey of this database, not just the one actually used. Profiled
+        directly: for `laz_local_adventureworks` (57 accumulated survey
+        rows, ~61MB of `survey_data` combined) a single board's
+        `build_survey_results` calls this method 5 times via
+        `_credential_capability_results`/`_credential_scope_status`, each
+        paying the full 57-row/61MB fetch — 1.85s of a 1.94s total board
+        read, ~95%, per `cProfile`. `get_database_surveys` itself is left
+        untouched: several real callers (survey-history views, trend
+        stats) genuinely want every row, so this is a second, narrower
+        query for the one caller that only ever wanted the first.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT database_slug, surveyed_at, egeria_report_guid,
+                          schema_count, table_count, column_count, survey_data, source,
+                          surveyed_as
+                   FROM database_surveys
+                   WHERE database_slug = ?
+                   ORDER BY surveyed_at DESC
+                   LIMIT 1""",
+                (slug,),
+            ).fetchall()
+        return dict(rows[0]) if rows else None
+
+    def find_latest_database_survey_with_key(self, slug: str, key: str) -> dict | None:
+        """The most recent stored survey for `slug` whose `survey_data` JSON
+        has a truthy top-level `key`, or None if none do.
+
+        The query-pushed-to-Postgres version of "search every stored survey
+        newest-first for one that has X" — `_credential_capability_results`'s
+        own deliberate pattern (`surveyors/database/survey_definition_adapter.py`),
+        kept correct by `tests/test_schema_inventory_headline.py`'s
+        `test_credential_totals_from_an_older_survey_still_show_when_the_latest_run_omits_the_probe`
+        (the 2026-09-26 fix this exists not to regress). Added 2026-09-29
+        round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md)
+        after the round-1 per-instance cache (`get_database_surveys`'s
+        docstring) removed the *redundant* repeat fetches within one board
+        read but left the one real fetch — 688-905ms on a 57-row/61MB
+        history — as the dominant remaining cost.
+
+        On Postgres this uses `jsonb_exists(survey_data::jsonb, %s)` as a
+        WHERE filter with `LIMIT 1`, pushing the scan into Postgres instead
+        of transferring every historical blob to filter in Python (measured
+        directly: ~300-500ms vs ~700-900ms). Deliberately NOT the `?`
+        operator: `PostgresCursorWrapper._translate_sql` does a blind
+        `sql.replace('?', '%s')` for this codebase's `?`-as-bind-placeholder
+        convention, which would corrupt a literal `?` operator in the SQL
+        text itself — `jsonb_exists(...)` is the operator's function form
+        and uses no `?` character at all, sidestepping that collision
+        entirely rather than working around it.
+
+        Every write to `database_surveys` goes through `record_database_
+        survey`'s `json.dumps`, so the `::jsonb` cast is safe by
+        construction — there is no other write path (verified: `grep -n
+        "INSERT INTO database_surveys" resource_explorer/registry.py`
+        finds exactly one). Even so, this can never be LESS correct than
+        the linear scan it replaces: the fast path's single candidate is
+        verified truthy in Python before being trusted, and both a query
+        error and a falsy/missing candidate fall through to the same
+        newest-first Python loop over `get_database_surveys` that
+        `_credential_capability_results` used before this method existed —
+        so SQLite (no native jsonb) and any registry stub that only
+        implements `get_database_surveys` (e.g. tests' `_FakeRegistry`)
+        both keep working unchanged via that fallback.
+
+        Cached per-instance, per `(slug, key)` — a single board read calls
+        this up to 5 times (`_credential_capability_results` has that many
+        distinct call sites: `_schema_inventory_results`, `_schema_
+        inventory_headline`, `_schema_inventory_container_rows`, and
+        `_credential_scope_status`'s own two callers), each paying the full
+        query without it. Deliberately a SEPARATE cache attribute from
+        `get_database_surveys`'s own (`_database_surveys_cache`) — lazily
+        created here via `self.__dict__.setdefault(...)` rather than a line
+        in `__init__`, and with no write-path invalidation hook in
+        `record_database_survey` — both to avoid touching either of those
+        while a separate, concurrent fix addresses THAT cache's staleness
+        for the long-lived-registry holders (`run_queue.py`, `egeria_
+        resync.py`). Confirmed safe on its own terms, not just by avoidance:
+        `grep` finds neither file calling into this method, `_credential_
+        capability_results`, or any of its board-reader callers at all —
+        every real caller is a request handler that constructs a fresh
+        `ProjectRegistry()` per request, so this cache's worst case is
+        "possibly stale for the remainder of one HTTP request that both
+        reads and writes the same database's surveys," not the
+        cross-process/long-lived staleness the other fix addresses.
+        """
+        slug = self._normalize_slug(slug)
+        cache = self.__dict__.setdefault("_survey_with_key_cache", {})
+        cache_key = (slug, key)
+        if cache_key in cache:
+            return cache[cache_key]
+        result = self._find_latest_database_survey_with_key_uncached(slug, key)
+        cache[cache_key] = result
+        return result
+
+    def _find_latest_database_survey_with_key_uncached(self, slug: str, key: str) -> dict | None:
+        if self.database_url.startswith("postgresql"):
+            import psycopg2
+            import sqlalchemy.exc
+
+            try:
+                with self._conn() as conn:
+                    rows = conn.execute(
+                        """SELECT database_slug, surveyed_at, egeria_report_guid,
+                                  schema_count, table_count, column_count, survey_data, source,
+                                  surveyed_as
+                           FROM database_surveys
+                           WHERE database_slug = ?
+                             AND jsonb_exists(survey_data::jsonb, ?)
+                           ORDER BY surveyed_at DESC
+                           LIMIT 1""",
+                        (slug, key),
+                    ).fetchall()
+                if rows:
+                    candidate = dict(rows[0])
+                    try:
+                        survey_data = json.loads(candidate.get("survey_data") or "{}")
+                    except (ValueError, TypeError):
+                        survey_data = None
+                    if survey_data and survey_data.get(key):
+                        return candidate
+                    # Candidate had the key but a falsy value (e.g. `{}`) —
+                    # extremely unlikely in practice (the surveyor either
+                    # omits the key or writes a real reading) but fall
+                    # through to the exhaustive scan rather than assume.
+            except (psycopg2.Error, sqlalchemy.exc.SQLAlchemyError):
+                # Narrowed from a bare `except Exception` (test_no_silent_
+                # success.py's ratchet correctly flagged the broad form as
+                # a new silent-success site) to exactly the DB-layer errors
+                # this fallback exists for: `psycopg2.Error` for a query
+                # that fails once it reaches Postgres (a genuinely
+                # malformed `survey_data` cast — expected to be rare, every
+                # write goes through `record_database_survey`'s
+                # `json.dumps`, so the cast is safe by construction, see
+                # this method's own docstring) and `sqlalchemy.exc.
+                # SQLAlchemyError` for a connection-acquisition failure
+                # (`self._conn()`'s `raw_connection()` checkout, which can
+                # raise SQLAlchemy's own wrapper types rather than a bare
+                # psycopg2 error on a pool/pre_ping failure). A bug in
+                # unrelated Python code above (a `TypeError`/`AttributeError`
+                # from a caller mistake) must still raise and be visible,
+                # not be silently absorbed into "fall back to the slow path
+                # and carry on".
+                logging.getLogger(__name__).warning(
+                    "find_latest_database_survey_with_key: fast path failed "
+                    "for %s/%s, falling back to a full scan", slug, key,
+                    exc_info=True,
+                )
+        for survey in self.get_database_surveys(slug) or []:
+            try:
+                survey_data = json.loads(survey.get("survey_data") or "{}")
+            except (ValueError, TypeError):
+                continue
+            if survey_data.get(key):
+                return survey
+        return None
 
     # ── structured DB/FS detail rows (design §5.7, §6) ────────────────────────
     #
