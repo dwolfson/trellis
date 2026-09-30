@@ -117,6 +117,10 @@ export const STATES = {
   // word because G3's own label text is exactly "empty", not "0"); `no_tables`
   // is a schema with no tables at all, which is also a genuine, counted
   // absence rather than an unmeasured one.
+  // A direct-field row whose stored field is empty ("No description recorded
+  // ..."): a real, known "nothing there", not `○ not run` (something could
+  // run) and not `◌ no reader` (a reader exists and answered).
+  nothing_recorded: { glyph: '∅', family: 'measured-nothing', word: 'nothing recorded', tone: 'text-state-ok' },
   empty:      { glyph: '∅', family: 'measured-nothing', word: 'empty', tone: 'text-state-ok' },
   no_tables:  { glyph: '∅', family: 'measured-nothing', word: 'no tables', tone: 'text-state-ok' },
 

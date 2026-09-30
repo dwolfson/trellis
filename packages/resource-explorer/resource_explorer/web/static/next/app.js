@@ -625,7 +625,7 @@ export function feedbackVotesHtml({ theme = 'paper', dataAttr = '', dataValue = 
  * `no-surveyor` — nothing has run AND nothing can; no surveyor exists
  * `unclassified` — the catalog does not say how this would be answered
  */
-function rowState(entry, env) {
+export function rowState(entry, env) {
   const kind = entry.kind || 'unknown';
   if (kind === 'gap') return 'no-surveyor';
   if (kind === 'human') return 'human';
@@ -633,6 +633,10 @@ function rowState(entry, env) {
   if (env && env.answerable) {
     if (env.level_mismatch) return 'partial';
     if (needsLensDeclaration(env)) return 'needs-lens';
+    // A direct-field answer that is a known "nothing there" (every known
+    // fact `nothing_found`, e.g. an empty description) is ∅, not ✓.
+    const known = (env.facts || []).filter((f) => f.is_known);
+    if (kind === 'direct' && known.length && known.every((f) => f.state === 'nothing_found')) return 'nothing_recorded';
     return ['direct', 'registry', 'chart'].includes(kind) ? 'automatic' : 'answered';
   }
   // A `direct`/`chart` row with no declared reader is NOT "not run" --
@@ -697,7 +701,7 @@ function isFullyAnswered(env) {
 // literal glyph-to-meaning mapping" bar. `needs-lens` (§2.4) is the fit row's
 // own honest state -- same ⚠ family as `human`, its own word.
 const GLYPH_KEYS = [
-  'answered', 'automatic', 'unrun', 'partial', 'human', 'needs-lens', 'no-surveyor',
+  'answered', 'automatic', 'nothing_recorded', 'unrun', 'partial', 'human', 'needs-lens', 'no-surveyor',
   // `no_reader` (glyphs.js's RESERVED-for-G2/G3 entry, now claimed here):
   // same ◌ glyph/family as `no-surveyor` ("no answer here"), its own word
   // ("no reader") -- `no-surveyor` means no MECHANISM exists at all (a
@@ -727,6 +731,7 @@ export const STATE_TONE = {
   answered:      { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
   partial:       { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   automatic:     { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
+  nothing_recorded: { paper: 'text-state-ok', chrome: 'text-state-ok-on-dark' },
   unrun:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   human:         { paper: 'text-ink',         chrome: 'text-chrome-ink' },
   // Same role as `human` -- "needs your attention" -- §2.4's fit row.
@@ -6609,7 +6614,7 @@ function deferredPaneHtml(tab) {
  * reading order, not a second vocabulary.
  */
 const LEGEND_ORDER = [
-  'answered', 'automatic', 'partial', 'unrun', 'human', 'needs-lens', 'no-surveyor',
+  'answered', 'automatic', 'nothing_recorded', 'partial', 'unrun', 'human', 'needs-lens', 'no-surveyor',
   // `no_reader` counted separately from `unrun` -- DATABASE-DIRECT-FIELD-
   // ROWS-IMPLEMENTED.md: the whole point of the vocabulary fix is that a
   // reader-less direct/chart row must not be folded into the "not run"
@@ -7478,13 +7483,13 @@ function provenanceLine(entry, i, lines, st) {
 
   // How it was known, when it was not a survey. A direct field and a survey
   // result are different kinds of claim and must not read alike.
-  if (st === 'automatic') {
+  if (st === 'automatic' || st === 'nothing_recorded') {
     const how = { direct: 'direct field', registry: 'from the registry', chart: 'chart' }[entry.kind];
     if (how) bits.push(how);
   }
 
   const actions = [];
-  if (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens') {
+  if (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens' || st === 'nothing_recorded') {
     actions.push(`<button data-evidence="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">evidence</button>`);
   }
   // A relationship answer has a diagram behind it. It cannot be read in a
@@ -7509,7 +7514,7 @@ function provenanceLine(entry, i, lines, st) {
   // "sources" names first) -- a question naming several analyses gets the
   // rest via that analysis's own row on `by_analysis`, not duplicated here.
   const primaryId = (entry.analysis_ids || [])[0];
-  if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens')) {
+  if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens' || st === 'nothing_recorded')) {
     actions.push(`<button data-numbers="${i}" data-numbers-for="${esc(primaryId)}"
       data-numbers-level="${esc(primaryQuestionLevel(entry))}"
       class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
@@ -8232,7 +8237,7 @@ function rowAsMarkdown(entry, i) {
 // every call site went with it.
 
 const STATE_LABEL = {
-  answered: 'answered', automatic: 'automatic', unrun: 'not run',
+  answered: 'answered', automatic: 'automatic', nothing_recorded: 'nothing recorded', unrun: 'not run',
   partial: 'ran, but not at this level',
   human: 'needs human input', 'needs-lens': 'needs a person: declare a lens',
   'no-surveyor': 'no reader yet',

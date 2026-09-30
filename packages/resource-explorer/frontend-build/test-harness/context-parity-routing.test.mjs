@@ -188,3 +188,20 @@ test('one word for the ◌ glyph: no-surveyor and no_reader share it, and it is 
   assert.equal(g.stateEntry('no-surveyor').glyph, g.stateEntry('no_reader').glyph);
   void STATES;
 });
+
+test('a direct-field row whose field is empty is ∅ "nothing recorded", never ✓, ○ or ◌', async () => {
+  makeDomEnvironment();
+  ensureLoaderRegistered();
+  const app = await import('/static/next/app.js');
+  const g = await import('/static/next/glyphs.js');
+  const entry = { kind: 'direct', question: 'What is this resource, and what is it for?' };
+  const empty = { answerable: true, facts: [{ is_known: true, state: 'nothing_found',
+    headline: 'No description recorded for this database yet.' }] };
+  const filled = { answerable: true, facts: [{ is_known: true, state: 'measured', headline: 'A sample db' }] };
+  const st = app.rowState(entry, empty);
+  assert.equal(st, 'nothing_recorded');
+  assert.equal(g.stateEntry(st).glyph, '∅');
+  assert.equal(app.rowState(entry, filled), 'automatic');
+  // Unanswerable stays ◌, not ∅.
+  assert.equal(app.rowState(entry, { answerable: false, facts: [] }), 'no_reader');
+});

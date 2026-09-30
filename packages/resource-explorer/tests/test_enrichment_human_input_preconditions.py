@@ -160,3 +160,23 @@ class TestEnrichmentAnalysesRoute:
         resp = client.get("/api/context/repo/some-repo/enrichment-analyses")
         assert resp.status_code == 200
         assert resp.json()["analyses"] == []
+
+
+class TestPreconditionQueriesHitRealSchema:
+    """The original bug: the documentation_source precondition queried a
+    table (`documentation_sources`) that no code ever created, and
+    `_row_count` turns ANY query error into -1 -> "not present", so the
+    phantom table read as a plain "none declared". These run against the
+    registry's real, migrated schema (no hand-built tables) and require the
+    query to SUCCEED (>= 0), so the next phantom table/column fails here."""
+
+    def test_doc_sources_count_query_succeeds_on_the_real_schema(self, registry):
+        n = step_preconditions._row_count(registry, "doc_sources", "adventureworks",
+                                          slug_column="entity_slug")
+        assert n == 0, "the doc_sources count query failed against the real schema"
+
+    def test_ingested_query_succeeds_on_the_real_schema(self, registry):
+        n = step_preconditions._row_count(
+            registry, "doc_sources", "adventureworks",
+            where="ingested_at IS NOT NULL AND ingested_at != ''", slug_column="entity_slug")
+        assert n == 0, "the ingested count query failed against the real schema"
