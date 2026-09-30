@@ -16,10 +16,20 @@ import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
 
 const NOW = '2026-09-29T10:00:00Z';
 
+const REPO_EVIDENCE_IDS = ['interface_surface', 'security_scan', 'chaoss_metrics', 'cve_scan',
+  'repository_health', 'license_classification', 'secret_scan', 'documentation_coverage'];
+/** GET /api/analyses/<kind>: the catalog's per-kind analyses (E3 fetches by kind). */
+export function catalogFor(url) {
+  const m = /\/api\/analyses\/(repo|database|filesystem)(\?|$)/.exec(url);
+  if (!m) return null;
+  return m[1] === 'repo' ? REPO_EVIDENCE_IDS.map((id) => ({ id })) : [{ id: 'schema_inventory' }, { id: 'preliminary_fit' }];
+}
+
 function stubServer({ facts = [], doc = { sources: [], published: false, publish_note: '' } } = {}) {
   globalThis.fetch = async (url) => {
     const u = String(url);
     const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+    if (catalogFor(u)) return ok(catalogFor(u));
     if (u.includes('/api/analyses/facts')) return ok({ subjects: { amundsen: facts } });
     if (u.includes('/api/doc-sources/')) return ok(doc);
     if (u.includes('/api/context/')) return ok({ enrichment: {}, question_answers: {} });
@@ -85,7 +95,8 @@ test('routing: the Context tab shows the Evidence rail with the old form\'s meas
 test('routing: the license row offers the survey-measured license to confirm', async () => {
   const { document } = await routeToContext('repo', 'amundsen', { facts: [LICENSE_FACT] });
   const html = document.getElementById('context-observations').innerHTML;
-  assert.match(html, /from survey:/);
+  assert.match(html, /proposed by/);
+  assert.match(html, /license_classification/);
   assert.match(html, /Apache License 2\.0/);
   assert.match(html, /data-confirm="licence"/);
 });
@@ -137,6 +148,7 @@ test('routing: switching resources never leaves the previous resource\'s measure
   const ok = (body) => ({ ok: true, status: 200, json: async () => body });
   globalThis.fetch = async (url) => {
     const u = String(url);
+    if (catalogFor(u)) return ok(catalogFor(u));
     if (u.includes('/api/analyses/facts')) { await gate; return ok({ subjects: { coco_pharma: [] } }); }
     if (u.includes('/api/context/')) return ok({ enrichment: {}, question_answers: {} });
     if (u.includes('/api/doc-sources/')) return ok({ sources: [], published: false, publish_note: '' });

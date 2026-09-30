@@ -431,6 +431,9 @@ class DatabaseSurveyor:
             #: "credential_capability" runs — see
             #: _survey_credential_capability().
             "credential_capability": {},
+            #: `pg_database.datdba` of the connected database (ENRICHMENT-E3),
+            #: read in the always-running schema step; {} = not measured.
+            "database_owner": {},
         }
         if catalog_load_error:
             results["errors"].append(
@@ -446,6 +449,22 @@ class DatabaseSurveyor:
                 # Survey schema — always runs, see _ALL_STEPS's comment.
                 schema_info = self._survey_schema(conn)
                 results["schema_info"] = schema_info
+                # The connected database's owner role: a server-level fact this
+                # connection can read for free. Non-fatal and engine-optional.
+                owner_reader = getattr(conn, "get_database_owner", None)
+                if callable(owner_reader):
+                    try:
+                        owner = owner_reader() or {}
+                        if owner.get("owner"):
+                            results["database_owner"] = {
+                                **owner, "measured_at": results["surveyed_at"],
+                            }
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("Could not read the database owner for %s: %s",
+                                    self.db_entity.slug, exc)
+                        results["errors"].append(
+                            f"Could not read the database owner role (non-fatal): {exc}"
+                        )
                 results["annotations"].extend(
                     self._create_schema_annotations(schema_info)
                 )
@@ -1746,6 +1765,7 @@ class DatabaseSurveyor:
         prior_views: list = []
         prior_operations: dict = {}
         prior_credential_capability: dict = {}
+        prior_database_owner: dict = {}
         try:
             prior_survey = self.registry.get_latest_database_survey(self.db_entity.slug)
             if prior_survey:
@@ -1754,6 +1774,7 @@ class DatabaseSurveyor:
                 prior_views = prior_data.get("views") or []
                 prior_operations = prior_data.get("operations") or {}
                 prior_credential_capability = prior_data.get("credential_capability") or {}
+                prior_database_owner = prior_data.get("database_owner") or {}
         except Exception:
             pass
 
@@ -1799,6 +1820,8 @@ class DatabaseSurveyor:
                 "credential_capability": (
                     results.get("credential_capability") or prior_credential_capability
                 ),
+                #: database_owner (ENRICHMENT-E3) -- preserve-prior, same rule.
+                "database_owner": results.get("database_owner") or prior_database_owner,
             },
             surveyed_at=results["surveyed_at"],
             # `surveyed_as`: the credential identity this run connected as

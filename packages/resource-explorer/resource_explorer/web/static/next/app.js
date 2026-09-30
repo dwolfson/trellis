@@ -7087,6 +7087,14 @@ export function wireHumanAnswers(host, slug) {
     // toggles `state.editingAnswer` and re-renders this row with an
     // input+save control on it, the same shape `stages/enrichment.js`
     // already uses for judgements/observations.
+    if (ev.target.closest('[data-goto-context]')) {
+      state.stage = 'enrichment';
+      state.subTab = 'context';
+      writeUrl();
+      renderIntentNav();
+      loadPane();
+      return;
+    }
     const editBtn = ev.target.closest('[data-human-edit]');
     if (editBtn) {
       state.editingAnswer = editBtn.getAttribute('data-human-edit');
@@ -7218,6 +7226,19 @@ function rowShell(entry, i) {
 // above: only the `export` keyword changed, no logic. Used by
 // human-question-answer-row-anatomy.test.mjs to render a real question row
 // through the exact function `loadPane()` uses.
+/** Catalogued questions whose answer now has a READER: a Context observation
+ *  row a person fills (ENRICHMENT-E3 §4). `◌ no reader yet` meant exactly
+ *  that, and it stopped being true for databases the moment Context's licence
+ *  row existed, so the row says where the answer lives instead. Databases
+ *  only: a repository's licence is answered by a survey. */
+const CONTEXT_RECORDED_QUESTIONS = {
+  'Under what license or agreement may this resource be used?': { key: 'licence', label: 'licence' },
+};
+function contextRecorded(entry) {
+  const c = CONTEXT_RECORDED_QUESTIONS[entry.question];
+  return c && state.resourceType === 'db' ? c : null;
+}
+
 export function rowInner(entry, i, env) {
   // ALL of them, wrapping — not just the first. Seeing that a question
   // carries four perspectives is how you learn the axis barely filters, and
@@ -7232,7 +7253,7 @@ export function rowInner(entry, i, env) {
     : pending ? 'proposal'
     : env === 'loading' ? 'loading'
     : env && env.__error ? 'error'
-    : rowState(entry, env);
+    : contextRecordedState(entry, env) || rowState(entry, env);
 
   const glyph = GLYPH[st] || '·';
   // Glyph AND colour. The glyph survives printing, greyscale and colour
@@ -7275,8 +7296,33 @@ export function rowInner(entry, i, env) {
   return head + bodyLines(entry, i, st, env);
 }
 
+/** The Scouting row for a fact Context records: `answered` (✓) once a person
+ *  has recorded a value, `human` (⚠ needs you) until then -- never `◌`. Only
+ *  replaces what would have been `no_reader`; a row with a real reader keeps
+ *  its own state. */
+function contextRecordedState(entry, env) {
+  const c = contextRecorded(entry);
+  if (!c || rowState(entry, env) !== 'no_reader') return '';
+  return (state.enrichment || {})[c.key]?.value ? 'answered' : 'human';
+}
+
+function contextRecordedBodyHtml(entry, indent) {
+  const c = contextRecorded(entry);
+  const held = (state.enrichment || {})[c.key];
+  const link = `<button type="button" data-goto-context
+    class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${held?.value ? 'Enrichment › Context ›' : 'record it on Context ›'}</button>`;
+  return held?.value
+    ? `<div class="${indent} text-answer text-ink" data-context-recorded>recorded on ${link}</div>`
+    : `<div class="${indent} text-answer text-ink" data-context-recorded>no survey measures this for databases · ${link}</div>`;
+}
+
 function bodyLines(entry, i, st, env) {
   const indent = 'ml-[22px] mt-[6px]';
+
+  if ((st === 'answered' || st === 'human') && contextRecorded(entry)
+      && rowState(entry, env) === 'no_reader') {
+    return contextRecordedBodyHtml(entry, indent);
+  }
 
   if (st === 'loading') {
     // A skeleton, not a spinner, and not a claim.

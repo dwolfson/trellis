@@ -1247,6 +1247,33 @@ def _credential_capability_results(registry, slug: str) -> dict:
     return {}
 
 
+def _database_owner_results(registry, slug: str) -> dict:
+    """The database's owner role (`pg_database.datdba`) from the newest stored
+    survey that carries one -- same search-every-survey shape as
+    `_credential_capability_results`. {} means "not measured yet" (an
+    existing database that has not been re-surveyed since E3), never
+    "no owner"."""
+    import json as _json
+
+    fast = getattr(registry, "find_latest_database_survey_with_key", None)
+    surveys = []
+    if callable(fast):
+        found = fast(slug, "database_owner")
+        surveys = [found] if found is not None else []
+    else:
+        get_surveys = getattr(registry, "get_database_surveys", None)
+        surveys = (get_surveys(slug) or []) if callable(get_surveys) else []
+    for survey in surveys:
+        try:
+            data = _json.loads(survey.get("survey_data") or "{}")
+        except (ValueError, TypeError):
+            continue
+        owner = data.get("database_owner")
+        if owner and owner.get("owner"):
+            return owner
+    return {}
+
+
 def _credential_scope_status(registry, slug: str) -> dict | None:
     """The third fact-envelope state's trigger (design REPLY-DATABASE-
     CREDENTIAL-CAPABILITY-VISIBILITY.md §4): when the latest
@@ -1383,6 +1410,7 @@ def _schema_inventory_results(registry, slug: str) -> dict:
         if t.get("schema_name") and t.get("table_type") == "BASE TABLE"
     })
     cap = _credential_capability_results(registry, slug)
+    owner_measured = _database_owner_results(registry, slug)
     value = {
         "relation_count": len(tables),
         "column_count": len(columns),
@@ -1396,6 +1424,9 @@ def _schema_inventory_results(registry, slug: str) -> dict:
         # all," a stronger and different claim than "not measured yet."
         **({"schema_total": cap["schema_total"], "schemas_visible": cap["schema_visible"]}
            if cap.get("schema_total") else {}),
+        # The measured owner role (E3): material for Context's owner
+        # judgement row. Omitted, not empty, when never measured.
+        **({"database_owner": owner_measured} if owner_measured else {}),
         "base_table_count": base_table_count,
         "view_count": view_count,
         "materialized_view_count": materialized_view_count,
