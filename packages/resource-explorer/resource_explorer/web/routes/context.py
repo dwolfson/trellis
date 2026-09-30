@@ -77,6 +77,14 @@ class EnrichmentField(BaseModel):
     # analysis_id -> last_run_at, as shown when the judgement was made.
     evidence: dict[str, str] = Field(default_factory=dict)
     interim: bool = False            # owner only: the investigator standing in
+    # ENRICHMENT-E3, observations with a proposing analysis only (licence):
+    # what the survey measured when this row was written, stamped by the
+    # SERVER from its own fact layer -- never taken from the client. The row's
+    # observation state (proposed / confirmed / overridden / survey-now-
+    # disagrees) is derived by comparing a LATER measurement with this one,
+    # never with the person's own value. Empty when nothing was measured.
+    measured_value: str = ""
+    measured_at: str = ""
 
 
 class FieldWrite(BaseModel):
@@ -271,6 +279,48 @@ async def save_context(entity_type: str, slug: str, data: ContextData, request: 
     }
 
 
+#: The only proposing pairs: observation key -> the analysis that measures the
+#: same fact. Judgements (sensitivity, owner, ...) are never here -- a survey
+#: can be material for a judgement, never a proposal for it.
+PROPOSING_ANALYSES = {"licence": "license_classification"}
+
+
+def licence_value_from_fact(fact) -> str:
+    """The licence a `license_classification` fact measured, or "" -- the
+    Python twin of enrichment.js `proposedFrom`. Gated on a CLASSIFIED licence:
+    "none" is a measured finding too, and is not a licence name."""
+    if getattr(fact, "state", "") != "measured":
+        return ""
+    value = getattr(fact, "value", None) or {}
+    tier = next((x for x in (value.get("findings") or []) if x.get("check_name") == "license_risk_tier"), None)
+    if not tier or not tier.get("label") or str(tier.get("label")) == "none":
+        return ""
+    raw = tier.get("summary") or getattr(fact, "headline", "") or ""
+    if " \u2014 " not in raw:
+        return ""
+    return str(raw).split(" \u2014 ")[0].strip()
+
+
+def measured_for(registry, entity_type: str, slug: str, key: str) -> tuple[str, str]:
+    """(value, run time) the proposing analysis measures for `key` right now;
+    ("", "") when there is no proposing pair, the analysis does not apply to
+    this kind, or nothing classified has been measured."""
+    analysis_id = PROPOSING_ANALYSES.get(key)
+    if not analysis_id:
+        return "", ""
+    try:
+        from resource_explorer.facts import FactLayer
+        from resource_explorer.surveyors import analysis_catalog_reader as acr
+
+        if analysis_id not in {a["id"] for a in acr.get_analyses(entity_type)}:
+            return "", ""
+        fact = FactLayer(registry, resource_type=entity_type).fact(slug, analysis_id)
+        value = licence_value_from_fact(fact) if key == "licence" else ""
+        return (value, getattr(fact, "last_run_at", "") or "") if value else ("", "")
+    except Exception:
+        return "", ""  # an unreadable measurement is absence, never a blocked save
+
+
 @router.patch("/{entity_type}/{slug}/field")
 def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request) -> dict:
     """Save ONE enrichment field. Eight independent facts should not share a
@@ -295,10 +345,18 @@ def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request)
     registry = ProjectRegistry()
     context = registry.get_context(entity_type, slug) or {}
     fields = dict(context.get("enrichment") or {})
+    # Stamp what the survey measures NOW beside the person's value (only for
+    # observations with a proposing analysis). Confirming, overriding and
+    # re-choosing all pass through here, so every choice re-stamps -- which is
+    # the only thing that clears a "survey now disagrees" flag.
+    measured_value, measured_at = (
+        measured_for(registry, entity_type, slug, key) if write.kind == "observation" else ("", "")
+    )
     fields[key] = EnrichmentField(
         value=write.value.strip(), kind=write.kind, author=author,
         set_at=datetime.now(timezone.utc).isoformat(), source=write.source.strip(),
         evidence=dict(write.evidence), interim=bool(write.interim),
+        measured_value=measured_value, measured_at=measured_at,
     ).model_dump()
     context["enrichment"] = fields
     if key in _MIRROR:
