@@ -15,6 +15,8 @@
 # survey_definition_executor.py.
 #
 # Each process has a `kind`, which controls how RE is allowed to use it:
+#   (optional per process) action_target_name - the name Egeria's survey service
+#                        expects its subject under; defaults to "serverToSurvey".
 #   survey_existing    - a single GovernanceActionType that surveys an
 #                        already-cataloged asset (target = existing asset
 #                        GUID, action target name "serverToSurvey"). Safe to
@@ -73,6 +75,7 @@ technology_types:
       - qualified_name: "FileSurvey::survey-folder"
         display_name: "Survey Folder"
         kind: survey_existing
+        action_target_name: fileToSurvey
         description: >-
           Egeria's native survey of an already-cataloged FileFolder — file/
           folder counts, sizes, and classification, without recursing into

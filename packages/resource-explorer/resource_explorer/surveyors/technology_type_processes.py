@@ -28,6 +28,10 @@ class NativeProcess:
     display_name: str
     kind: str
     description: str = ""
+    #: Name of the action target the survey service expects its subject under
+    #: (Egeria's `supportedActionTarget` spec for that GovernanceActionType).
+    #: "serverToSurvey" for PostgreSQL; the folder survey names it "fileToSurvey".
+    action_target_name: str = "serverToSurvey"
 
 
 @functools.lru_cache(maxsize=1)
@@ -46,6 +50,7 @@ def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[tuple[str, str], lis
                 display_name=p.get("display_name", p["qualified_name"]),
                 kind=p.get("kind", "unknown"),
                 description=(p.get("description") or "").strip(),
+                action_target_name=p.get("action_target_name") or "serverToSurvey",
             )
             for p in tt.get("processes") or []
         ]
