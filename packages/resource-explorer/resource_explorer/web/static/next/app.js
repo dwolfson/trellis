@@ -635,6 +635,18 @@ function rowState(entry, env) {
     if (needsLensDeclaration(env)) return 'needs-lens';
     return ['direct', 'registry', 'chart'].includes(kind) ? 'automatic' : 'answered';
   }
+  // A `direct`/`chart` row with no declared reader is NOT "not run" --
+  // `unrun` promises a real analysis exists and just has not been
+  // triggered yet, which is false here: nothing was ever built to answer
+  // this one. DATABASE-DIRECT-FIELD-ROWS-IMPLEMENTED.md (2026-09-29, owner
+  // live on laz_local_adventureworks / #8810): 11 database rows read
+  // `○ not run` for exactly this reason before this fix -- none of them
+  // had a surveyor at all. Mirrors facts.py's own `UNDECLARED_KINDS` table
+  // (`direct`, `chart`) -- the backend's "answerable from a field, but the
+  // catalog does not say which one machine-readably yet" classification.
+  // Apply this generally: any `direct`/`chart` row that is not answerable
+  // shows `◌ no reader`, never `○ not run` -- not only the 11 named above.
+  if (['direct', 'chart'].includes(kind)) return 'no_reader';
   return 'unrun';
 }
 
@@ -686,6 +698,13 @@ function isFullyAnswered(env) {
 // own honest state -- same ⚠ family as `human`, its own word.
 const GLYPH_KEYS = [
   'answered', 'automatic', 'unrun', 'partial', 'human', 'needs-lens', 'no-surveyor',
+  // `no_reader` (glyphs.js's RESERVED-for-G2/G3 entry, now claimed here):
+  // same ◌ glyph/family as `no-surveyor` ("no answer here"), its own word
+  // ("no reader") -- `no-surveyor` means no MECHANISM exists at all (a
+  // catalog `gap`); `no_reader` means a mechanism kind is declared
+  // (`direct`/`chart`) but no reader has been wired up for it yet. Distinct
+  // states, same reasoning as `unrun` vs `no-surveyor` already had.
+  'no_reader',
   'unclassified', 'running', 'error', 'proposal',
 ];
 const GLYPH = Object.fromEntries(GLYPH_KEYS.map((k) => [k, GLYPH_STATES[k].glyph]));
@@ -713,6 +732,7 @@ export const STATE_TONE = {
   // Same role as `human` -- "needs your attention" -- §2.4's fit row.
   'needs-lens':  { paper: 'text-ink',         chrome: 'text-chrome-ink' },
   'no-surveyor': { paper: 'text-state-gap',   chrome: 'text-state-gap-on-dark' },
+  no_reader:     { paper: 'text-state-gap',   chrome: 'text-state-gap-on-dark' },
   unclassified:  { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
   running:       { paper: 'text-ink-muted',   chrome: 'text-chrome-muted' },
   error:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
@@ -6590,6 +6610,11 @@ function deferredPaneHtml(tab) {
  */
 const LEGEND_ORDER = [
   'answered', 'automatic', 'partial', 'unrun', 'human', 'needs-lens', 'no-surveyor',
+  // `no_reader` counted separately from `unrun` -- DATABASE-DIRECT-FIELD-
+  // ROWS-IMPLEMENTED.md: the whole point of the vocabulary fix is that a
+  // reader-less direct/chart row must not be folded into the "not run"
+  // count, on the legend line same as on the row glyph.
+  'no_reader',
   'unclassified', 'running', 'error',
 ];
 const LEGEND = LEGEND_ORDER.map((k) => [k, GLYPH_STATES[k].word]);
@@ -7154,6 +7179,12 @@ export function rowInner(entry, i, env) {
         ${perspectives.map((pv) => `<span class="rounded-pill border border-rule-strong px-2 py-[1px] text-caps text-ink-muted"
           >${esc(pv)}</span>`).join('')}
       </span>`
+    : st === 'no_reader'
+    ? `<span class="ml-auto flex flex-wrap justify-end gap-[4px]">
+        <span class="rounded-pill border border-dashed border-state-gap px-2 py-[1px] text-caps text-state-gap">no reader yet</span>
+        ${perspectives.map((pv) => `<span class="rounded-pill border border-rule-strong px-2 py-[1px] text-caps text-ink-muted"
+          >${esc(pv)}</span>`).join('')}
+      </span>`
     : perspectiveTags;
 
   const glyphWord = (GLYPH_STATES[st] || {}).word || '';
@@ -7198,6 +7229,16 @@ function bodyLines(entry, i, st, env) {
     const why = (env && env.blocked_reason)
       || entry.note
       || 'No surveyor exists for this question. Nothing has run and nothing can.';
+    return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`;
+  }
+
+  // The catalog names a mechanism (`direct`/`chart`), but no reader has been
+  // wired up for it yet -- distinct from `no-surveyor` (no mechanism exists
+  // at all). DATABASE-DIRECT-FIELD-ROWS-IMPLEMENTED.md.
+  if (st === 'no_reader') {
+    const why = (env && env.blocked_reason)
+      || entry.note
+      || 'Answerable from a stored field, but no reader has been wired up for it yet.';
     return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`;
   }
 
