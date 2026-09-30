@@ -370,6 +370,12 @@ class PostgresCursorWrapper:
         return self.raw_cursor.rowcount
 
 
+#: `step_runs.step_key` prefix for a native Egeria survey launch -- the rest is
+#: the Egeria process's qualifiedName (`configdata/technology_type_processes.yaml`).
+#: A distinct namespace so no RE analysis step key can ever collide with one.
+NATIVE_SURVEY_STEP_PREFIX = "egeria-native:"
+
+
 #: What a schedule row's `analysis_id` refers to. Running always goes through a
 #: survey type by preference (a single analysis gets a single-step survey type,
 #: so there is one way to run things rather than two) — TARGET_ANALYSIS remains
@@ -2262,7 +2268,18 @@ class ProjectRegistry:
                     disagreement  TEXT DEFAULT '',
                     surveyed_as   TEXT DEFAULT '',
                     flow_run_id   TEXT DEFAULT '',
-                    dispatch_failed TEXT DEFAULT ''
+                    dispatch_failed TEXT DEFAULT '',
+                    engine_action_guid        TEXT DEFAULT '',
+                    engine_action_status      TEXT DEFAULT '',
+                    engine_action_message     TEXT DEFAULT '',
+                    engine_action_read_at     TEXT DEFAULT '',
+                    engine_action_read_error  TEXT DEFAULT '',
+                    survey_report_guid        TEXT DEFAULT '',
+                    survey_report_at          TEXT DEFAULT '',
+                    report_read_at            TEXT DEFAULT '',
+                    report_annotation_count    INTEGER DEFAULT NULL,
+                    submit_error              TEXT DEFAULT '',
+                    submitted_by              TEXT DEFAULT ''
                 )
             """)
             # `entity_type` and `executor_ref` post-date the first shape this
@@ -2295,6 +2312,30 @@ class ProjectRegistry:
                 # just not through Prefect).
                 ("flow_run_id", "TEXT DEFAULT ''"),
                 ("dispatch_failed", "TEXT DEFAULT ''"),
+                # Native Egeria survey launch (2026-09-30,
+                # docs/design-notes/NATIVE-EGERIA-SURVEY-LAUNCH-IMPLEMENTED.md).
+                # ADD-only and entirely separate from the Prefect columns
+                # above: a whole-definition run still stores `flow_run_id`
+                # and never touches these. These are the PROOF a native
+                # survey row's status words derive from --
+                # `engine_action_guid` (Egeria accepted the submission),
+                # `engine_action_status`/`_message`/`_read_at` (Egeria's OWN
+                # status word, message and the moment RE read them back),
+                # `survey_report_guid`/`survey_report_at` (the report Egeria
+                # says the action originated), `report_read_at`/
+                # `report_annotation_count` (the report was read into RE).
+                # `submit_error` is a submission that never got a GUID.
+                ("engine_action_guid", "TEXT DEFAULT ''"),
+                ("engine_action_status", "TEXT DEFAULT ''"),
+                ("engine_action_message", "TEXT DEFAULT ''"),
+                ("engine_action_read_at", "TEXT DEFAULT ''"),
+                ("engine_action_read_error", "TEXT DEFAULT ''"),
+                ("survey_report_guid", "TEXT DEFAULT ''"),
+                ("survey_report_at", "TEXT DEFAULT ''"),
+                ("report_read_at", "TEXT DEFAULT ''"),
+                ("report_annotation_count", "INTEGER DEFAULT NULL"),
+                ("submit_error", "TEXT DEFAULT ''"),
+                ("submitted_by", "TEXT DEFAULT ''"),
             ):
                 if _step_run_cols and _col not in _step_run_cols:
                     conn.execute(f"ALTER TABLE step_runs ADD COLUMN {_col} {_ddl}")
@@ -2305,6 +2346,48 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_step_runs_slug "
                 "ON step_runs(slug, surveyed_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_step_runs_engine_action "
+                "ON step_runs(engine_action_guid)"
+            )
+            # ── native_survey_annotations — the annotations of an Egeria
+            # SurveyReport read back into RE (native Egeria survey launch).
+            #
+            # **Idempotent by the key that survives a re-read: the report's
+            # own GUID plus the annotation's GUID.** Reading the same report
+            # twice (a retried refresh, a second browser polling) must never
+            # write a second copy, and a count keyed on anything Egeria can
+            # merge would be blind to a collision (reference: egeria dedup
+            # and link patterns). A SECOND RUN produces a NEW report with new
+            # GUIDs, so its rows sit beside the first run's, dated by
+            # `report_at` -- the same append-and-read-the-latest shape
+            # `database_surveys` and `query_findings` already use.
+            # No FOREIGN KEY on the slug: databases and filesystems are
+            # different parent tables (same reasoning as `step_runs`).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS native_survey_annotations (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type     TEXT NOT NULL,
+                    slug            TEXT NOT NULL,
+                    process_qualified_name TEXT NOT NULL DEFAULT '',
+                    engine_action_guid TEXT NOT NULL DEFAULT '',
+                    report_guid     TEXT NOT NULL,
+                    report_at       TEXT NOT NULL DEFAULT '',
+                    annotation_guid TEXT NOT NULL,
+                    annotation_type TEXT DEFAULT '',
+                    analysis_step   TEXT DEFAULT '',
+                    summary         TEXT DEFAULT '',
+                    explanation     TEXT DEFAULT '',
+                    confidence      INTEGER DEFAULT NULL,
+                    detail_json     TEXT DEFAULT '{}',
+                    read_at         TEXT NOT NULL DEFAULT '',
+                    UNIQUE (report_guid, annotation_guid)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_native_survey_annotations_res "
+                "ON native_survey_annotations(entity_type, slug, report_at)"
             )
             # ── board_summary — one row per (entity_type, slug, board_id):
             # the persisted headline/state/COUNTS a By-analysis board fetch
@@ -6416,6 +6499,176 @@ class ProjectRegistry:
                     record[column] = {}
             out.append(record)
         return out
+
+    # ── native Egeria survey launch (step_runs + native_survey_annotations) ──
+    #
+    # Every method here is keyed on Egeria's engine-action GUID, never on which
+    # branch of RE's code ran: the GUID is the proof the row exists on
+    # (docs/design-notes/BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md). Nothing in this
+    # block touches `flow_run_id`/`dispatch_failed` -- the Prefect path.
+
+    def record_native_survey_submission(
+        self, entity_type: str, slug: str, process_qualified_name: str,
+        surveyed_at: str, *, engine_action_guid: str = "", submit_error: str = "",
+        submitted_by: str = "",
+    ) -> None:
+        """One step_runs row per SUBMISSION attempt. With a GUID it is proof
+        Egeria accepted the action; without one it records that the attempt
+        failed (`submit_error`), which is a different, honest state -- not a
+        row that quietly claims a submission."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
+                "source, executor, executor_ref, metrics, declared, "
+                "engine_action_guid, submit_error, submitted_by) "
+                "VALUES (?, ?, ?, ?, 'egeria', 'egeria', ?, '{}', '{}', ?, ?, ?)",
+                (self._normalize_slug(slug), entity_type,
+                 NATIVE_SURVEY_STEP_PREFIX + process_qualified_name, surveyed_at,
+                 process_qualified_name, engine_action_guid or "",
+                 submit_error or "", submitted_by or ""),
+            )
+
+    def record_native_survey_readback(
+        self, engine_action_guid: str, *, read_at: str, status: str = "",
+        message: str = "", error: str = "",
+    ) -> None:
+        """Persist what Egeria said about the engine action, and when RE read it.
+
+        A read that FAILED (`error`) records the error and the attempt time and
+        leaves the last good status/message alone: "Egeria was unreachable just
+        now" must not overwrite "Egeria said IN_PROGRESS at 10:02", nor pose as
+        a status of its own."""
+        with self._conn() as conn:
+            if error:
+                conn.execute(
+                    "UPDATE step_runs SET engine_action_read_error = ?, "
+                    "engine_action_read_at = ? WHERE engine_action_guid = ?",
+                    (error, read_at, engine_action_guid),
+                )
+            else:
+                conn.execute(
+                    "UPDATE step_runs SET engine_action_status = ?, "
+                    "engine_action_message = ?, engine_action_read_at = ?, "
+                    "engine_action_read_error = '' WHERE engine_action_guid = ?",
+                    (status, message, read_at, engine_action_guid),
+                )
+
+    def record_native_survey_report(
+        self, engine_action_guid: str, *, entity_type: str, slug: str,
+        process_qualified_name: str, report_guid: str, report_at: str,
+        read_at: str, annotations: list[dict],
+    ) -> int:
+        """Read one Egeria SurveyReport into RE, idempotently, and stamp the
+        step_runs row that originated it.
+
+        Annotations are keyed on (report GUID, annotation GUID) with
+        ON CONFLICT DO NOTHING, so reading the same report again writes
+        nothing new. The row's `report_annotation_count` is then set from the
+        rows that are ACTUALLY THERE for that report, not from `len(annotations)`
+        -- the count is what a status derivation later checks the stored rows
+        against, so it has to come from the store. Returns that count.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            for a in annotations:
+                guid = a.get("guid") or ""
+                if not guid:
+                    continue
+                conf = a.get("confidence")
+                conn.execute(
+                    "INSERT INTO native_survey_annotations (entity_type, slug, "
+                    "process_qualified_name, engine_action_guid, report_guid, "
+                    "report_at, annotation_guid, annotation_type, analysis_step, "
+                    "summary, explanation, confidence, detail_json, read_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(report_guid, annotation_guid) DO NOTHING",
+                    (entity_type, slug, process_qualified_name, engine_action_guid,
+                     report_guid, report_at, guid, a.get("annotation_type") or "",
+                     a.get("analysis_step") or "", a.get("summary") or "",
+                     a.get("explanation") or "",
+                     conf if isinstance(conf, int) and not isinstance(conf, bool) else None,
+                     json.dumps(a.get("detail") or {}, default=str), read_at),
+                )
+            count = conn.execute(
+                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ?",
+                (report_guid,),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE step_runs SET survey_report_guid = ?, survey_report_at = ?, "
+                "report_read_at = ?, report_annotation_count = ? "
+                "WHERE engine_action_guid = ?",
+                (report_guid, report_at, read_at, count, engine_action_guid),
+            )
+        return int(count)
+
+    def list_native_survey_runs(
+        self, entity_type: str, slug: str, process_qualified_name: str | None = None,
+    ) -> list[dict]:
+        """Native-survey step_runs rows for one resource, newest first."""
+        sql = ("SELECT * FROM step_runs WHERE entity_type = ? AND slug = ? "
+               "AND step_key LIKE ?")
+        params: list = [entity_type, self._normalize_slug(slug),
+                        NATIVE_SURVEY_STEP_PREFIX + "%"]
+        if process_qualified_name:
+            sql += " AND step_key = ?"
+            params.append(NATIVE_SURVEY_STEP_PREFIX + process_qualified_name)
+        sql += " ORDER BY surveyed_at DESC, id DESC"
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_in_flight_native_survey_runs(self, limit: int = 200) -> list[dict]:
+        """Rows with an engine-action GUID whose proof is not yet terminal:
+        no status read yet, or a read that was not terminal, or a completed
+        action whose report is not yet read in. Used by the read-back sweep;
+        deriving 'in flight' from the proof columns (not a flag) so a row
+        that a crashed sweep left half-done is picked up again."""
+        # Egeria's "still going" and "succeeded" words are the two that leave
+        # work to do; any other terminal word (FAILED, INVALID, ...) is final.
+        pending = ("REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS")
+        succeeded = ("COMPLETED", "ACTIONED")
+        marks = lambda seq: ", ".join("?" for _ in seq)  # noqa: E731
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM step_runs WHERE step_key LIKE ? "
+                "AND engine_action_guid <> '' AND ("
+                "engine_action_status = '' "
+                f"OR engine_action_status IN ({marks(pending)}) "
+                f"OR (engine_action_status IN ({marks(succeeded)}) "
+                "    AND (report_read_at = '' OR report_annotation_count IS NULL))) "
+                "ORDER BY surveyed_at DESC, id DESC LIMIT " + str(int(limit)),
+                (NATIVE_SURVEY_STEP_PREFIX + "%", *pending, *succeeded),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_native_survey_annotations(
+        self, report_guid: str,
+    ) -> list[dict]:
+        """The stored annotations of one report, decoded."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT annotation_guid, annotation_type, analysis_step, summary, "
+                "explanation, confidence, detail_json, report_at, read_at "
+                "FROM native_survey_annotations WHERE report_guid = ? "
+                "ORDER BY annotation_type, summary, annotation_guid",
+                (report_guid,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["detail"] = json.loads(d.pop("detail_json") or "{}")
+            except (ValueError, TypeError):
+                d["detail"] = {}
+            out.append(d)
+        return out
+
+    def count_native_survey_annotations(self, report_guid: str) -> int:
+        with self._conn() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ?",
+                (report_guid,),
+            ).fetchone()[0])
 
     def median_step_wall_ms(self, step_key: str) -> float | None:
         """Median observed `wall_ms` for a step across every resource, or None
