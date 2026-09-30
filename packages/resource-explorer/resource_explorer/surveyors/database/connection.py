@@ -1330,6 +1330,23 @@ class PostgreSQLConnection(DatabaseConnection):
             result["_errors"] = errors
         return result
 
+    def get_database_owner(self) -> dict:
+        """The owner role of the connected database (`pg_database.datdba`).
+
+        A server-level fact the schema step already has a connection open to
+        read, so it rides there (ENRICHMENT-E3; `db_server_profile` is the
+        eventual consolidated home for server-level facts like this). Shown
+        on Context's owner row as MATERIAL only -- owner is a judgement, and
+        the Postgres role is never offered as the answer. Empty dict when it
+        could not be read: absence, not a guess.
+        """
+        rows = self.execute_query_isolated(
+            "SELECT d.datdba::regrole::text AS owner FROM pg_database d "
+            "WHERE d.datname = current_database()"
+        )
+        owner = (rows[0].get("owner") if rows else "") or ""
+        return {"owner": owner} if owner else {}
+
     def get_credential_capability(self) -> dict:
         """What THIS credential can see and do, as distinct from what the
         database contains — the `credential_capability` probe (design: REPLY-
