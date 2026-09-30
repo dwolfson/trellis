@@ -107,7 +107,7 @@ export const STATES = {
   measured:  { glyph: '✓', family: 'measured', word: 'measured',  tone: 'text-state-ok' },
 
   // ── ∅ measured nothing ──────────────────────────────────────────────
-  nothing:        { glyph: '∅', family: 'measured-nothing', word: 'ran, found nothing', tone: 'text-state-ok' },
+  nothing:        { glyph: '∅', family: 'measured-nothing', word: 'nothing found', tone: 'text-state-ok' },
   // RESERVED for G3's tree overview (§3.2/§3.3 of the reply): a schema
   // counted and genuinely empty, as distinct from `not_measured` below.
   measured_zero:  { glyph: '∅', family: 'measured-nothing', word: '0', tone: 'text-state-ok' },

@@ -8237,7 +8237,7 @@ function rowAsMarkdown(entry, i) {
 // every call site went with it.
 
 const STATE_LABEL = {
-  answered: 'answered', automatic: 'automatic', nothing: 'ran, found nothing', unrun: 'not run',
+  answered: 'answered', automatic: 'automatic', nothing: 'nothing found', unrun: 'not run',
   partial: 'ran, but not at this level',
   human: 'needs human input', 'needs-lens': 'needs a person: declare a lens',
   'no-surveyor': 'no reader yet',

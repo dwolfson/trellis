@@ -201,6 +201,7 @@ test('a direct-field row whose field is empty is ∅ (the existing `nothing` sta
   const st = app.rowState(entry, empty);
   assert.equal(st, 'nothing');
   assert.equal(g.stateEntry(st).glyph, '∅');
+  assert.equal(g.wordOf('nothing'), 'nothing found');
   // One state on ∅ for "known nothing": no second one beside it.
   assert.deepEqual(Object.entries(g.STATES).filter(([, v]) => v.glyph === '∅' && v.word.includes('nothing')).map(([k]) => k), ['nothing']);
   assert.equal(app.rowState(entry, filled), 'automatic');

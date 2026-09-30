@@ -744,7 +744,7 @@ function digestHtml(members, qs) {
         </button>`).join('')}
       </div>
       <div class="mt-s2 flex flex-wrap gap-s3 text-provenance text-ink-muted">
-        ${[['answered', 'answered'], ['nothing', 'ran, found nothing'],
+        ${[['answered', 'answered'], ['nothing', 'nothing found'],
            ['partial', 'partial'], ['stored', 'not read yet'], ['human', 'needs a person']]
           .map(([k, label]) => `<span><i style="display:inline-block;width:9px;height:9px;
             border-radius:2px;margin-right:5px;background:${DIGEST_TONE[k]}"></i>${esc(label)}</span>`).join('')}
@@ -1156,7 +1156,7 @@ function ageRule(iso) {
 
 const STATE_WORD = {
   measured: 'measured',
-  nothing_found: 'ran, found nothing',
+  nothing_found: 'nothing found',
   partial: 'partial',
   not_established: 'ran, could not establish a result',
   never_run: 'never run',
