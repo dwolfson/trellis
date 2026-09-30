@@ -8828,3 +8828,20 @@ Apply the same clear-on-change rule the Context fix uses (clear the rail's state
 loading frame) to every stage/tab transition and resource-slug change, not only Context renders
 — a rail showing another resource's evidence anywhere is a false claim on screen. Pre-existing on
 main; not part of E1's scope, follow-up PR after E1 merges.
+
+## Old Enrichment form is dead code (2026-09-30, found during E2)
+
+`renderEnrichmentForm`/`renderEnrichment` (`resource_explorer/web/static/next/stages/enrichment.js`,
+mount at line 246 as of E1) have no callers anywhere under `resource_explorer/web/static` — E1
+already rewired everything onto the Context tab, so the old form's own mount is unreachable. This
+is the same dead path that caused E1's own doc-sources-unreachable bug (design's own comments in
+`app.js` claimed the form "now lives on the Context tab instead," and that claim is what hid the
+bug until a fix agent traced call paths by hand).
+
+Delete `renderEnrichmentForm` and `renderEnrichment`, move anything still imported from them
+elsewhere in the module, and let the existing routing-level tests (the ones that go through real
+stage/tab navigation rather than calling render functions directly) prove nothing was lost —
+exactly the kind of check that would have caught the original bug immediately. Small, mechanical
+cleanup. **Sequencing:** do this after the native Egeria survey slice merges, since that slice
+also edits Survey & analyses in the same file — landing the cleanup first would create needless
+merge overlap.
