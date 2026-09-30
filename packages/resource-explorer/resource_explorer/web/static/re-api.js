@@ -339,6 +339,21 @@ export const getEntityDispositionHistory = (entityType, entitySlug) =>
 export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType = 'repo') =>
   patch(`/api/context/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
 
+/* ── Documentation sources (Enrichment) ──────────────────────────────────
+ * BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1, "Declare and probe".
+ * `entityType` is 'database' or 'filesystem' — pass
+ * `apiEntityType(state.resourceType)`, same as every other entity-generic
+ * call in this file. */
+export const getDocSources = (entityType, slug) =>
+  get(`/api/doc-sources/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`);
+export const addDocSource = (entityType, slug, { url, label = '', sourceType = 'other' }) =>
+  post(`/api/doc-sources/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`,
+    { url, label, source_type: sourceType });
+export const recheckDocSource = (entityType, slug, sourceId) =>
+  post(`/api/doc-sources/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/${encodeURIComponent(sourceId)}/recheck`);
+export const removeDocSource = (entityType, slug, sourceId) =>
+  del(`/api/doc-sources/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/${encodeURIComponent(sourceId)}`);
+
 /* ── The journal ──────────────────────────────────────────────────────────
  * Append-only prose on a resource, with a server-stamped author. A
  * suggestion is routed by perspective or person and arrives as a work-list

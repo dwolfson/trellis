@@ -8642,6 +8642,26 @@ failed the trio after merging `main`, which narrowed the polluter to that branch
 minutes. Two hours of infrastructure hypotheses (Prefect server reachability, shared-registry
 state, a genuine semantic merge conflict) had been chased first without success.
 
+## Hand-written pyegeria mocks can encode the same wrong assumption they're testing against — sweep existing tests against a fixture-from-real-response rule (found 2026-09-29, doc-sources declare-and-probe slice)
+
+`read_back_doc_sources` (new, `resource_explorer/doc_source_egeria.py`) had a response-shape bug:
+its unit test mocked pyegeria's `get_related_metadata_elements` with the wrong shape
+(`{"elements": [...]}`), the code under test made the identical wrong assumption, and the mocked
+test passed — only the live gate check against a real Egeria platform caught that the real shape
+is `{"elementList": [{"element": {...}}]}` and the function was silently returning 0 references
+every time.
+
+**Decision (design session, 2026-09-29):** mocks of pyegeria response shapes must be captured from
+a real response and stored as fixtures under `tests/fixtures/pyegeria/`, never hand-written from
+memory or documentation. A hand-written mock and the code it tests can share the same wrong belief
+about an external API's shape, and then agree with each other forever.
+
+**Not done here**: a sweep of this codebase's existing hand-written pyegeria-response mocks against
+this rule, replacing any that were guessed rather than captured. Whoever picks this up should start
+by grepping test files for mocked pyegeria method return values (`get_related_metadata_elements`,
+`get_guid_for_name`, and similar) and checking each mock's shape against a real captured response
+before trusting it.
+
 ## Enrichment stage IA — designer ask #350 pending
 
 Owner feedback during the #348 doc-sources gate (2026-09-29): does "Survey & analyses" belong as
@@ -8740,3 +8760,18 @@ that unification seriously:
 Small slice. Sent to the designer as `ASK-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md` (PR #354),
 same shape as the Enrichment IA ask (`ASK-DESIGNER-ENRICHMENT-STAGE-IA.md`, PR #350) — scheduled
 after that reply, same sidebar/IA territory, no need to design it twice in two passes.
+
+## Questions-envelope latency slice — cancelled, the number decided it (2026-09-29)
+
+Scoped as a follow-on to the per-request-latency rounds (same mechanism as `board_summary`:
+persist each question's resolved envelope at run completion, one-shot backfill at merge, 30s
+degrade rule) on the strength of `getQuestions()` measuring 48-52s on adventureworks under load.
+Measured directly against the fully-merged main before dispatching it: **0.8-1.3s cold load**,
+a ~25-65x improvement, even though nothing in rounds 1-3 targeted this endpoint directly. The
+48-52s was the PER-REQUEST cost (schema-verification-per-construction, an undersized connection
+pool, event-loop-blocking N+1 queries) that rounds 1-3 fixed, not a problem with the readers
+themselves. Full measurement: `docs/design-notes/QUESTIONS-TAB-COLD-LOAD-MEASUREMENT-2026-09-29.md`.
+
+**One line kept open**: the Assessment-stage's first call (a larger question set) measured 4.1s
+in the same session — not part of the gate (not a controlled cold-restart), but worth watching.
+Revisit if a stage tab exceeds 2s on coco_pharma or a bigger database.

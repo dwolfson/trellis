@@ -4056,7 +4056,7 @@ export function surveyRowHtml(c) {
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
     <button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-      >Run →</button>
+      >${c.last_run_at ? 're-run' : 'run'} →</button>
   </div>`;
 }
 
@@ -6971,7 +6971,13 @@ function redrawQuestionRow(question) {
   if (i >= 0) replaceRow(state.questions[i], i, state.answers.get(question));
 }
 
-function wireHumanAnswers(host, slug) {
+// Exported for the render harness (frontend-build/test-harness/) -- same
+// minimal-change pattern as `rowInner`'s own export above: only the
+// `export` keyword changed, no logic. Used by
+// human-question-answer-row-anatomy.test.mjs to drive the REAL click ->
+// textarea -> save -> PATCH -> re-render flow, not a parallel simulation
+// of it.
+export function wireHumanAnswers(host, slug) {
   if (host.dataset.humanWired === '1') return;
   host.dataset.humanWired = '1';
   host.addEventListener('click', async (ev) => {

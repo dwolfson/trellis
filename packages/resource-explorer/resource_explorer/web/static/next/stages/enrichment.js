@@ -12,7 +12,7 @@
  * change needs to trigger the evidence rail from outside this file.
  */
 import { ago, whenMs } from '/static/next/format.js';
-import { getBulkFacts, saveEnrichmentField } from '/static/re-api.js';
+import { getBulkFacts, saveEnrichmentField, getDocSources, addDocSource, recheckDocSource, removeDocSource } from '/static/re-api.js';
 import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntityType } from '/static/next/app.js';
 // The row anatomy (who + when + "⚠ review — evidence moved: X") shared with
 // the Questions tab's human-question answer rows — see row-anatomy.js's own
@@ -209,11 +209,13 @@ function renderEnrichmentForm(slug) {
       <span class="text-provenance text-ink-muted">durable</span>
     </div>
     ${OBSERVATIONS.map((d) => fieldRowHtml(d, 'observation')).join('')}
+    ${['db', 'filesystem'].includes(state.resourceType) ? `<div id="doc-sources-block" class="mt-s4"></div>` : ''}
     <div class="mb-s1 mt-s4 text-caps uppercase tracking-caps text-ink">What only you can answer</div>
     <div class="mb-s2 text-provenance text-ink-muted">The catalog's own questions for a person, below — each saves alone.</div>`;
 
   wireEnrichmentFieldControls(host, slug, () => renderEnrichmentForm(slug));
   renderEnrichmentEvidence(slug);
+  if (['db', 'filesystem'].includes(state.resourceType)) renderDocSources(slug);
 }
 
 /** Save-control wiring for the judgement/observation rows built by
@@ -272,6 +274,258 @@ export function wireEnrichmentFieldControls(host, slug, rerender) {
       b.textContent = err.status === 401 ? 'sign in to record' : `not confirmed: ${err.message}`;
     }
   }));
+}
+
+/* ── Documentation sources ───────────────────────────────────────────────
+ * BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1, "Declare and probe".
+ * A person points RE at a URL that documents this resource elsewhere; RE
+ * probes it read-only and reports reachable/needs_sign_in/not_found/blocked
+ * with the HTTP status and fetch time. Ingest/re-ingest (slice 2) is shown
+ * as a disabled "coming soon" affordance rather than omitted, so that slice
+ * has a known place to attach.
+ */
+const DOC_SOURCE_TYPES = [
+  { value: 'data_dictionary', label: 'data dictionary' },
+  { value: 'design_notes', label: 'design notes' },
+  { value: 'runbook', label: 'runbook' },
+  { value: 'wiki', label: 'wiki' },
+  { value: 'installation_guide', label: 'installation guide' },
+  { value: 'user_manual', label: 'user manual' },
+  { value: 'api_reference', label: 'api reference' },
+  { value: 'release_notes', label: 'release notes' },
+  { value: 'other', label: 'other' },
+];
+
+const PROBE_GLYPH = {
+  reachable: { glyph: '●', tone: 'text-state-ok' },
+  needs_sign_in: { glyph: '◐', tone: 'text-state-warn' },
+  not_found: { glyph: '○', tone: 'text-state-gap' },
+  blocked: { glyph: '✕', tone: 'text-state-warn' },
+};
+const PROBE_LABEL = {
+  reachable: 'reachable', needs_sign_in: 'needs sign-in', not_found: 'not found', blocked: 'blocked',
+};
+
+// Egeria publish-state fix (2026-09-29, extended round 4 same day) — every
+// row carries exactly one of these FIVE states, never blank. Originally
+// `publishNote` rendered '' for ANY published resource regardless of
+// whether THIS source actually made it to Egeria (confirmed live: an
+// adventureworks source sat local-only, origin='local', on an already-
+// published resource, with nothing on the row saying so) — round 1 fixed
+// that to four states. Round 4 added `not_catalogued`: a row with a ref
+// guid but no link guid and nothing pending/running used to render
+// `publishing` with no outbox row backing that claim at all (a second
+// find-absence-as-answer bug, this time about the STATE ITSELF rather than
+// the header note) — see `derive_doc_source_egeria_state` (backend) for the
+// exact rule.
+const EGERIA_STATE_TEXT = {
+  catalogued: () => 'catalogued in Egeria',
+  publishing: () => 'local — publishing…',
+  publish_failed: (src) => `local — publish failed: ${src.egeria_state_detail || 'unknown error'}, retrying`,
+  not_catalogued: () => 'local — not catalogued (publish needed)',
+  local_only: () => 'local only — resource not published',
+};
+const EGERIA_STATE_TONE = {
+  catalogued: 'text-state-ok', publishing: 'text-ink-muted',
+  publish_failed: 'text-state-warn', not_catalogued: 'text-state-warn',
+  local_only: 'text-ink-muted',
+};
+
+// Egeria publish-state fix, round 4 (2026-09-29): the add/remove HTTP
+// response renders the PRE-drain state — `_attempt_outbox_row_immediately`
+// (web/routes/doc_sources.py) fires the real Egeria write on a background
+// thread specifically so the request is not held open for it, so the
+// response legitimately cannot know the outcome yet. The bug was that
+// nothing EVER re-fetched afterward: live-verified 2026-09-29 (a clean
+// retry, source "pdr") that the server-side drain completed in ~4s — ref
+// and link both created, outbox row 'done' — while the page kept showing
+// "local — publishing…" forever, because no code path re-rendered the block
+// once that background thread finished. Same idiom `pollActivity` (re-
+// api.js) already establishes elsewhere in this codebase for "started an
+// operation off the request thread, need to reflect its own completion" —
+// bounded rather than indefinite, so a row Egeria genuinely cannot reach
+// (down, or retries exhausted into 'dead') stops polling and falls back to
+// showing whatever real state the last fetch returned, not an infinite spin.
+let docSourcesPollTimer = null;
+const DOC_SOURCES_POLL_MS = 2000;
+const DOC_SOURCES_POLL_MAX_MS = 30000;
+
+function stopDocSourcesPoll() {
+  if (docSourcesPollTimer) {
+    clearTimeout(docSourcesPollTimer);
+    docSourcesPollTimer = null;
+  }
+}
+
+function scheduleDocSourcesPoll(slug, entityType, deadline) {
+  stopDocSourcesPoll();
+  if (Date.now() >= deadline) return; // cap reached — leave the last fetch's state showing
+  docSourcesPollTimer = setTimeout(async () => {
+    docSourcesPollTimer = null;
+    if (slug !== state.selectedSlug) return; // navigated away — nothing to update
+    let data;
+    try {
+      data = await getDocSources(entityType, slug);
+    } catch {
+      // A transient fetch failure during the poll is not the same as the
+      // publish itself failing — keep polling within the same deadline
+      // rather than giving up on the first blip.
+      scheduleDocSourcesPoll(slug, entityType, deadline);
+      return;
+    }
+    if (slug !== state.selectedSlug) return;
+    renderDocSourcesFromData(slug, entityType, data, deadline);
+  }, DOC_SOURCES_POLL_MS);
+}
+
+function docSourceRowHtml(src) {
+  const g = PROBE_GLYPH[src.probe_state] || { glyph: '?', tone: 'text-ink-muted' };
+  const statusBit = src.probe_status_code ? ` · HTTP ${src.probe_status_code}` : '';
+  const timeBit = src.probe_ms != null ? ` · ${src.probe_ms}ms` : '';
+  const whenBit = src.probed_at ? ` · probed ${esc(ago(src.probed_at))}` : ' · not yet probed';
+  const typeLabel = (DOC_SOURCE_TYPES.find((t) => t.value === src.source_type) || {}).label || src.source_type;
+  const originBit = src.origin === 'egeria' ? ' · <span class="text-ink-muted">declared in Egeria</span>' : '';
+  const egeriaState = src.egeria_state || 'local_only';
+  const egeriaText = (EGERIA_STATE_TEXT[egeriaState] || EGERIA_STATE_TEXT.local_only)(src);
+  const egeriaTone = EGERIA_STATE_TONE[egeriaState] || 'text-ink-muted';
+  // The ref GUID is surfaced via `title` rather than in the row's own text —
+  // the brief's "behind/near the evidence link" convention (same idea as the
+  // provenance-glyph tooltips elsewhere in this stage), not clutter on the
+  // line itself.
+  const egeriaTitle = egeriaState === 'catalogued' && src.egeria_state_detail
+    ? ` title="ExternalReference ${esc(src.egeria_state_detail)}"` : '';
+  return `<div class="border-b border-rule py-s2" data-source-row="${esc(src.id)}">
+    <div class="flex items-baseline gap-s2">
+      <span class="${g.tone}">${g.glyph}</span>
+      <a href="${esc(src.url)}" target="_blank" rel="noopener" class="min-w-0 flex-1 truncate text-question text-accent-ink underline">${esc(src.label || src.url)}</a>
+      <span class="text-provenance text-ink-muted">${esc(typeLabel)}</span>
+    </div>
+    <div class="pl-[20px] text-provenance text-ink-muted">
+      ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit}
+      ${src.probe_error ? ` · <span class="text-state-warn">${esc(src.probe_error)}</span>` : ''}
+    </div>
+    <div class="pl-[20px] text-provenance"${egeriaTitle}>
+      <span class="${egeriaTone}" data-doc-egeria-state="${esc(src.id)}">${esc(egeriaText)}</span>
+    </div>
+    <div class="pl-[20px] mt-[2px] flex items-baseline gap-s3 text-provenance">
+      <button type="button" data-doc-recheck="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button>
+      <button type="button" disabled title="ingestion ships in a later slice" class="cursor-not-allowed bg-transparent p-0 text-ink-muted line-through decoration-dotted">ingest — coming soon</button>
+      <button type="button" data-doc-remove="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-state-warn underline">remove</button>
+    </div>
+  </div>`;
+}
+
+// Exported for the /next render harness (frontend-build/test-harness) —
+// same pattern app.js uses for surveyRowHtml/schemaTreeHtml/tableHtml: no
+// logic changed, only visibility, so a test can call it directly rather
+// than driving the whole Enrichment pane bootstrap.
+export async function renderDocSources(slug) {
+  const host = $('doc-sources-block');
+  if (!host) return;
+  stopDocSourcesPoll(); // a fresh render supersedes any poll from a prior one
+  const entityType = apiEntityType(state.resourceType);
+  host.innerHTML = `<div class="text-caveat text-ink-muted">Loading documentation sources…</div>`;
+  let data;
+  try {
+    data = await getDocSources(entityType, slug);
+  } catch (err) {
+    host.innerHTML = `<div class="text-caveat text-state-warn">Could not load documentation sources: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug) return;
+  renderDocSourcesFromData(slug, entityType, data, Date.now() + DOC_SOURCES_POLL_MAX_MS);
+}
+
+// Split from `renderDocSources` (round 4, 2026-09-29) so the poll tick can
+// re-render from a fresh fetch WITHOUT re-showing "Loading…" (that flicker
+// on every 2s tick would be worse than the bug it fixes) and without
+// re-deriving its own copy of "is anything still publishing". `deadline` is
+// an absolute `Date.now()`-scale timestamp threaded through so the total
+// poll budget is fixed from the first render, not restarted every tick.
+function renderDocSourcesFromData(slug, entityType, data, deadline) {
+  const host = $('doc-sources-block');
+  if (!host) return;
+  const sources = data.sources || [];
+  // Egeria publish-state fix (2026-09-29): the header used to say nothing
+  // once `data.published` was true, regardless of whether any given source
+  // had actually made it to Egeria — this counts the real per-row states
+  // instead of a single resource-level boolean. `in_egeria_count`/
+  // `local_count` come from the same server-side count as each row's own
+  // `egeria_state` (server response), so the two can never disagree; a
+  // client-side recount from `sources` would be a second copy of that logic
+  // to keep in sync.
+  const inEgeria = data.in_egeria_count || 0;
+  const local = data.local_count != null ? data.local_count : sources.length - inEgeria;
+  const countsLine = `<span class="tnum">${sources.length}</span> declared`
+    + (sources.length ? ` · <span class="tnum">${inEgeria}</span> in Egeria · <span class="tnum">${local}</span> local` : '');
+  // A stale-linkage warning (or any other publish_note the resource-level
+  // egeria_linkage check hands back) is a fact about the RESOURCE's own
+  // Egeria asset link, distinct from any one source's state — kept as a
+  // second line whenever present, never folded into a row's state text.
+  const staleNote = data.publish_note
+    ? `<div class="text-provenance text-state-warn">${esc(data.publish_note)}</div>` : '';
+  host.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading text-question text-ink">Documentation sources</span>
+      <span class="text-provenance text-ink-muted">${countsLine}</span>
+    </div>
+    ${staleNote}
+    ${sources.length ? sources.map(docSourceRowHtml).join('') : `<div class="text-provenance text-ink-muted">No documentation sources declared yet.</div>`}
+    <div class="mt-s2 grid grid-cols-[1fr_140px_150px_auto] items-baseline gap-s2">
+      <input id="doc-source-url" type="text" placeholder="https://…" class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink placeholder:text-ink-muted">
+      <input id="doc-source-label" type="text" placeholder="label" class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink placeholder:text-ink-muted">
+      <select id="doc-source-type" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink">
+        ${DOC_SOURCE_TYPES.map((t) => `<option value="${t.value}">${esc(t.label)}</option>`).join('')}
+      </select>
+      <button type="button" id="doc-source-add" class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">add + probe</button>
+    </div>
+    <div id="doc-source-add-status" class="mt-[2px] text-provenance text-ink-muted"></div>`;
+
+  host.querySelectorAll('[data-doc-recheck]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'checking…';
+    try {
+      await recheckDocSource(entityType, slug, b.dataset.docRecheck);
+      renderDocSources(slug);
+    } catch (err) {
+      b.disabled = false; b.textContent = `not checked: ${err.message}`;
+    }
+  }));
+  host.querySelectorAll('[data-doc-remove]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'removing…';
+    try {
+      await removeDocSource(entityType, slug, b.dataset.docRemove);
+      renderDocSources(slug);
+    } catch (err) {
+      b.disabled = false; b.textContent = `not removed: ${err.message}`;
+    }
+  }));
+  const addBtn = $('doc-source-add');
+  addBtn?.addEventListener('click', async () => {
+    const url = ($('doc-source-url')?.value || '').trim();
+    const label = ($('doc-source-label')?.value || '').trim();
+    const sourceType = $('doc-source-type')?.value || 'other';
+    const statusEl = $('doc-source-add-status');
+    if (!url) { statusEl.textContent = 'enter a URL first'; return; }
+    addBtn.disabled = true; addBtn.textContent = 'adding…';
+    if (statusEl) statusEl.textContent = 'probing…';
+    try {
+      await addDocSource(entityType, slug, { url, label, sourceType });
+      renderDocSources(slug);
+    } catch (err) {
+      addBtn.disabled = false; addBtn.textContent = 'add + probe';
+      if (statusEl) statusEl.textContent = err.status === 401 ? 'sign in to add a source' : `not added: ${err.message}`;
+    }
+  });
+
+  // Round 4 fix: keep polling while ANY row is still `publishing` — the
+  // background `_attempt_outbox_row_immediately` thread this state depends
+  // on runs off the request that produced this very data, so the only way
+  // to learn it finished is to ask again. Stops on its own once no row is
+  // `publishing` (resolved to `catalogued`/`publish_failed`) or the
+  // deadline passes, whichever comes first.
+  if (sources.some((s) => s.egeria_state === 'publishing')) {
+    scheduleDocSourcesPoll(slug, entityType, deadline);
+  }
 }
 
 /** The rail: evidence as material. Each analysis's own sentence, its age, and

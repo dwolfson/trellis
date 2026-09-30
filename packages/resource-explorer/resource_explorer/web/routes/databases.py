@@ -971,6 +971,19 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
             )
         except Exception:
             pass
+        # BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1: every locally
+        # declared documentation source becomes an ExternalReference on the
+        # asset this publish just created/updated. Best-effort — a doc
+        # source failing to publish must not fail the database's own
+        # publish, which is why publish_local_doc_sources reports rather
+        # than raises per source.
+        asset_guid = result.get("asset_guid") or ""
+        if asset_guid:
+            try:
+                from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
+                publish_local_doc_sources("database", slug, asset_guid, registry=registry)
+            except Exception:
+                log.warning("Could not publish documentation sources for %s", slug, exc_info=True)
         return PublishResult(
             status="ok",
             slug=slug,

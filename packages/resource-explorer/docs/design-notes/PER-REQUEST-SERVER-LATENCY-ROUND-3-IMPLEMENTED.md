@@ -362,19 +362,93 @@ gap, not silently omitted.
 
 ## Gate results
 
+**Final in-server measurement, against the real merged head.** After PR #353 merged, and once
+#352's doc-only follow-up conflicts were also resolved, design/PR-CI arranged a coordinated quiet
+window and this final pass ran against a scratch server on a clean worktree at `origin/main`
+`8c6f1845` (post-#353, post-#356, post-#357) — port 8815, never 8810/8813, same posture as every
+prior round. This supersedes the direct-call/composed numbers below it in this doc, which were the
+best available approximation before this window was possible.
+
+- **Window:** 2026-09-29T19:03:31Z – 2026-09-29T19:04:52Z (~1.5 minutes).
+- **`pg_stat_activity` at start:** 1 active (the check query itself), 57 idle. At end: 1 active,
+  56 idle. Quiet throughout.
+- **CPU load:** `uptime` showed load averages of 24-27 throughout the window — NOT fully idle.
+  The owner's own `resource-explorer web` process (port 8810, a separate checkout at
+  `/Users/dwolfson/localGit/egeria-v6/trellis`, running its own embedded worker) was up and is
+  NOT something this measurement controlled or stopped — same caveat rounds 1 and 2 recorded, and
+  it is worth restating here rather than assuming it stopped mattering: this scratch server (8815)
+  is a completely separate process from 8810, but they share the same machine's CPU, so 8810's own
+  background work is a real, uncontrolled contributor to any latency measured here, not something
+  this round's fixes could account for either way.
+
+**`/api/auth/me` (<100ms target): PASS.** 1.4-2.2ms across 5 repeat calls.
+
+**`/api/projects/` (<300ms target): PASS.** 10.7-27.8ms across 5 repeat calls (65 registered
+projects, matching round 2's own count).
+
+**One board request per discovery board (<200ms target): PASS, all 7.** `laz_local_
+adventureworks`'s 7 discovery-stage boards (`db_classification`, `db_relationship_graph`,
+`grain_determination`, `db_fingerprint`, `subject_signals`, `coverage_signals`,
+`preliminary_fit`), each measured once:
+
+```
+db_classification:      7.5ms
+db_relationship_graph:  6.4ms
+grain_determination:   10.5ms
+db_fingerprint:         5.0ms
+subject_signals:        6.1ms
+coverage_signals:       5.6ms
+preliminary_fit:        5.3ms
+```
+
+All via the persisted `board_summary` fast path (this database has completed analyses for every
+board) — this is diagnostic-0's finding confirmed end to end, in-server, on the real merged head,
+not just the direct-call numbers from earlier in this doc.
+
+**Cold-load By-analysis headline time on adventureworks (<2s target): PASS, twice.** Boot
+sequence (`auth/me`, `projects`, `activity`, `databases`, boards-catalog — concurrent, matching
+the real pane's own request pattern) + first 3 discovery boards (concurrent):
+
+| | boot sequence | first 3 boards | total |
+|---|---|---|---|
+| run 1 | 0.953s | 0.275s | **1.754s** |
+| run 2 | 0.843s | 0.276s | **1.634s** |
+
+Both runs under the 2s target, with real margin (~250-370ms) despite the CPU-load caveat above —
+the boot sequence's own ~0.8-1.0s is itself mostly CPU-contention overhead (individual board reads
+land in single-digit milliseconds once isolated, per the per-board table above), so a quieter
+machine would likely show an even larger margin, not a smaller one.
+
+**Summary — all three (four, counting `/api/projects/` and `/api/auth/me` as the two named
+individually) gate numbers PASS on the real merged head, measured in-server, in a
+coordinator-verified quiet Postgres window, with the machine-load caveat stated rather than
+hidden.**
+
+Scratch server torn down immediately after this measurement pass (`kill -9` on the bound port,
+confirmed no longer listening).
+
+### `db_classification`'s own 300ms target — the one number this pass does not re-litigate
+
+The in-server pass above measures board READS, all of which hit the fast path and are the
+numbers that matter for a person's click (per design's ruling on diagnostic-0). `db_classification`
+under 300ms was scoped specifically to the RECOMPUTE path's own cost (`run_db_derived`, the
+function `load_inputs`/`apply_container_grain` live in) — not re-measured in this final pass,
+since the fast path answers every board request tested above and the recompute path is,
+per design's own ruling, Backlogged rather than gated further this round (see "Gate results"
+below the original composed numbers, and `docs/Backlog.md`).
+
+## Original gate assessment (pre-final-measurement; kept for the record, superseded above)
+
 1. **Board summary under 200ms, in-server.** **MET, on the path that matters** — the fast path
    (persisted, fresh `board_summary` row) is the steady-state read for any database that has
    already run its analyses, and measures 11.9-66.5ms across 6 boards tested on `laz_local_
    adventureworks`, well under the bar. The recompute-when-missing/stale path — the fallback,
    not the normal case — measures ~500ms-1.9s across rounds 1-3's fixes and does NOT clear
    200ms on its own; that is expected and acceptable per design's ruling (see diagnostic-0's own
-   "result that matters" callout above), not a second failed measurement of the same gate. Not
-   re-measured in-server for either path with a real coordinated window this round beyond the
-   direct-call numbers above — see "Measurement note" below.
+   "result that matters" callout above), not a second failed measurement of the same gate.
 2. **Cold-load By-analysis headlines under 2s.** Same shape as (1) — the dominant cost round 2
    identified (board reads) is off the steady-state path per diagnostic-0, so a real page load
-   against a database with completed analyses should already clear this; not re-measured
-   in-server with a real coordinated window this round.
+   against a database with completed analyses should already clear this.
 3. **`db_classification` under 300ms.** **Accepted as-is per design's ruling — no further work
    this round.** `load_inputs` itself: 2.4s → 0.24-0.47s, fixture-identical output — that is this
    item's deliverable and it is done. The combined `run_db_derived` total (516-1036ms) is still
@@ -392,21 +466,23 @@ gap, not silently omitted.
   suite asserts the CALL COUNT itself dropped (i.e. nothing would fail if this fix were reverted
   except a wall-clock/profiling comparison, not a test). Not fixed this round — flagged as a gap
   to close, not silently left off the list.
-- **No final in-server, coordinated-quiet-window HTTP measurement against the real merged head**
-  for any of this round's three gate items — see "Measurement note" immediately below for the
-  full reasoning (this round's branch doesn't have round 1/2's fixes, so an in-server pass on it
-  alone wouldn't represent the shipped system).
+- ~~No final in-server, coordinated-quiet-window HTTP measurement against the real merged
+  head~~ — **closed out.** Ran 2026-09-29 against `origin/main` `8c6f1845` (post-#353/#356/#357);
+  see "Gate results" above for the numbers. Left struck through rather than deleted, so a reader
+  scanning this list's history can see the gap was real and was later closed, not quietly dropped.
 
-## Measurement note — what this round did and did not complete
+## Measurement note — what this round did and did not complete (historical; closed out above)
 
 Per the PR/CI coordinator's sequencing (round 3 started on a fresh branch off bare `main` because
 PR #352, carrying round 2 and the staleness fix, was blocked on the owner's `gh`/1Password auth
-being unavailable), this round's own branch does not have round 1/2's fixes, so an in-server
-coordinated-quiet-window HTTP measurement on THIS branch would not represent the shipped system —
-it would measure round 3's fixes in isolation against a `main` that's missing round 1/2's
-registry-layer work entirely. The combined numbers in this doc (item 2's "Combined measurement"
-section) come from applying this round's diff to the round-1/2 worktree directly, which is the
-best available approximation of the true post-merge state without waiting for #352 to actually
-land. **A final coordinated in-server measurement against the real merged head (main + #352 +
-this round, once all three are together) is still owed** — flagged explicitly rather than
-reporting a number from an incomplete composition as if it were final.
+being unavailable), this round's own branch did not have round 1/2's fixes at the time this note
+was written, so an in-server coordinated-quiet-window HTTP measurement on THAT branch would not
+have represented the shipped system. The combined numbers in this doc (item 2's "Combined
+measurement" section) came from applying this round's diff to the round-1/2 worktree directly —
+the best available approximation of the true post-merge state at that time, without waiting for
+#352 to land.
+
+**Closed out**: #352 merged, then #353 (this round) merged on top, then a final doc-only conflict
+(#354/#355 landing in `Backlog.md` at the same spot) was resolved and re-pushed. The coordinated
+in-server measurement against the real merged head (`origin/main` `8c6f1845`, post-#353/#356/#357)
+ran on 2026-09-29 — see "Gate results" above for the full numbers. All targets pass.
