@@ -1281,7 +1281,17 @@ database_analyses:
       carried through as deferred criteria naming the analysis that answers
       them, never scored here.
     resource_types: ["database"]
-    intent: discovery
+    # Retagged discovery -> enrichment, 2026-09-29 (ENRICHMENT-E1-CONTEXT-TAB,
+    # project owner's amendment to the designer's reply §0.2): the reply said
+    # no analysis runs at Enrichment; the owner's correction is that a class
+    # does, when its prerequisite is a human input rather than a survey read.
+    # This is that case — it already took a `lens` as a runtime parameter
+    # (`db_derived.compute_preliminary_fit`), and a declared lens is exactly
+    # the human input this class is gated on. Discovery's own zero-fetch tier
+    # is unaffected: `test_discovery_is_the_zero_fetch_derivation_tier`
+    # iterates repo analyses only, and this entry is database-only.
+    intent: enrichment
+    requires_input: lens
     perspectives: ["Consumer", "Financial"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
@@ -1290,6 +1300,88 @@ database_analyses:
     action: survey
     target_shape: whole_resource_only
     recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  # ── Enrichment-tier stubs (2026-09-29, ENRICHMENT-E1-CONTEXT-TAB) ────────
+  #
+  # Referenced by Enrichment's "Survey & analyses" map (the amendment above)
+  # but NOT implemented here — each is a placeholder registration only, so
+  # the map has a real catalog id to point at and the gap guard
+  # (test_analysis_catalog_reader.py::test_enrichment_and_automate_have_no_
+  # entries_by_design) can tell "declared, not yet built" apart from "nobody
+  # registered this yet". `availability: queued` and no runner exists for
+  # any of the three — clicking Run on one of these is expected to fail
+  # until its own slice builds it. Scoped to `database_analyses` only for
+  # now (matching every worked example in the reply and the amendment);
+  # broadening to repo/filesystem is a follow-on once #348 and the
+  # glossary-confirmation mechanism exist there too.
+
+  - id: doc_source_ingestion
+    name: "Documentation Source Ingestion"
+    description: >
+      Not built. Placeholder registration only (ENRICHMENT-E1-CONTEXT-TAB).
+      #348's slice 2: once a documentation source is declared and reachable
+      (PR #348, re/doc-sources-declare-and-probe), this ingests its content
+      for doc_evidence_check to read. Unlocked by a declared, reachable
+      documentation source — a human input, not a survey read.
+    resource_types: ["database"]
+    intent: enrichment
+    requires_input: documentation_source
+    perspectives: ["Data Expert", "Steward"]
+    annotation_types: []
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: doc_evidence_check
+    name: "Documentation Evidence Check"
+    description: >
+      Not built. Placeholder registration only (ENRICHMENT-E1-CONTEXT-TAB).
+      Reads ingested documentation (doc_source_ingestion's output) for
+      evidence bearing on the catalog's human questions. Unlocked by
+      ingested documentation — a human input's downstream artifact, not a
+      survey read.
+    resource_types: ["database"]
+    intent: enrichment
+    requires_input: ingested_documentation
+    perspectives: ["Data Expert", "Steward"]
+    annotation_types: []
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: semantic_suggestions
+    name: "Semantic Suggestions"
+    description: >
+      Not built. Placeholder registration only (ENRICHMENT-E1-CONTEXT-TAB).
+      Suggests glossary-term matches once a person has confirmed at least
+      one term for this resource. Unlocked by a confirmed glossary term — a
+      human input, not a survey read.
+    resource_types: ["database"]
+    intent: enrichment
+    requires_input: confirmed_glossary_term
+    perspectives: ["Data Expert", "Steward"]
+    annotation_types: []
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
     egeria_registration:
       candidate: false
       native_process_ref: null

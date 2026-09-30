@@ -101,6 +101,17 @@ DATABASE_SURVEYOR_STEP_MAP: dict[str, list[str]] = {
 }
 
 
+def database_analysis_has_runner(analysis_id: str) -> bool:
+    """True when the per-card Run route can dispatch `analysis_id` for a
+    database: it is a zero-fetch `db_derived` analysis or has step(s) in
+    `DATABASE_SURVEYOR_STEP_MAP`. The single predicate BOTH the run route's
+    validation and the Enrichment map's "offer a Run control?" use, so a
+    button can never be offered for an analysis the route would 400."""
+    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
+
+    return analysis_id in DB_DERIVED_ANALYSES or analysis_id in DATABASE_SURVEYOR_STEP_MAP
+
+
 def _parse_pg_array(value) -> list | None:
     """Parse a Postgres array's text representation (`{a,b,c}`) to a list.
 

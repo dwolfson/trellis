@@ -150,12 +150,33 @@ Is there a Survey Definition authored for this resource's technology type ...  -
 Under what licence or agreement may this resource be used?                     -> answerable=False (not implemented -- renders ◌ no reader, per §3)
 ```
 
-Gate met: on `laz_local_adventureworks`, Discovery stage, no direct-field row
-shows `○ not run`. Ten render a real, one-sentence answer (whichever of
+Gate met: on `laz_local_adventureworks`, no direct-field row shows `○ not run`.
+The eleven direct-field rows are split across TWO stages, not one (corrected
+2026-09-30; this section used to say the gate was run on Discovery only): nine
+are Discovery questions and two (description and licence) are Scouting
+questions. Ten render a real, one-sentence answer (whichever of
 `measured`/`nothing_found` the state genuinely is — `nothing_found` is not a
 failure, it is a real "no" answer, same as repo's own resolvers); the one
-unimplemented row (licence) renders `◌ no reader`, which is the honest state,
-not a silently-swallowed gap.
+unimplemented row (licence) renders `◌ no reader yet`, which is the honest
+state, not a silently-swallowed gap.
+
+All eleven rows, so a future reader does not have to rerun the cross-check:
+
+| # | Question | Stage | State |
+|---|----------|-------|-------|
+| 1 | What is this resource, and what is it for? | Scouting | answered (description; has a real answer) |
+| 2 | Under what licence or agreement may this resource be used? | Scouting | ◌ no reader yet — documented gap, no reader exists |
+| 3 | Has this resource already been catalogued in Egeria, and when? | Discovery | answered |
+| 4 | Is there any existing use within our organization? | Discovery | answered |
+| 5 | Any known feedback? | Discovery | answered |
+| 6 | Does it replace or extend something we already have? | Discovery | answered |
+| 7 | Has this resource already been surveyed at any tier, and what did earlier signals reveal? | Discovery | answered |
+| 8 | Which Survey Definition should I run — a quick coarse check or the full deep survey? | Discovery | answered |
+| 9 | Based on what's already known, is this worth investigating further, or should it be deprioritized? | Discovery | answered |
+| 10 | How much has changed since the last time this was surveyed — is it worth re-running now? | Discovery | answered |
+| 11 | Is there a Survey Definition authored for this resource's technology type at all, or is that a catalog gap? | Discovery | answered |
+
+Discovery: 9 rows. Scouting: 2 rows (description, licence).
 
 `nothing_found` above for "existing use" reflects real data: this database's
 `group_slug` is genuinely empty in the registry (confirmed by reading the row

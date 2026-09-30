@@ -103,6 +103,23 @@ class AnalysisCatalogEntry:
     #: `target_shape` takes above, for the same reason.
     availability: str = "queued"
 
+    #: ENRICHMENT-E1-CONTEXT-TAB (2026-09-29 amendment, project owner):
+    #: analyses whose prerequisite is a HUMAN INPUT rather than a survey read
+    #: run at the Enrichment stage — the designer's reply (§0.2) said no
+    #: analysis runs there; the owner's correction is that a class does,
+    #: gated on something a person supplies rather than something a survey
+    #: measures. `requires_input` names that field/source kind in words
+    #: ("lens", "documentation_source", "ingested_documentation",
+    #: "confirmed_glossary_term") — empty for every analysis unaffected by
+    #: this ruling. The prerequisite resolver's new human-input precondition
+    #: kind (`surveyors/step_preconditions.py`) reads this value indirectly,
+    #: through the catalog id -> requires_input mapping it declares itself,
+    #: rather than this field driving resolution directly — see that
+    #: module's own comment for why the two are declared in two places on
+    #: purpose (the catalog says WHAT is required in words for display; the
+    #: resolver says HOW to check it).
+    requires_input: str = ""
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -119,6 +136,7 @@ class AnalysisCatalogEntry:
             "recommended": self.recommended,
             "egeria_registration": self.egeria_registration,
             "target_shape": self.target_shape,
+            "requires_input": self.requires_input,
             # The orchestrator step keys this analysis actually runs. Present so
             # a card can offer a scoped Publish: _publishScopedSteps needs the
             # step keys, not the analysis id, and without them the local
@@ -171,6 +189,7 @@ def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
         # nobody has considered must not license itself onto a compiler's hot
         # path by staying silent.
         availability=raw.get("availability", "queued"),
+        requires_input=raw.get("requires_input", ""),
     )
 
 

@@ -729,7 +729,7 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.run_queue import requested_by as _requested_by
     from resource_explorer.surveyors.database.database_surveyor import (
-        DATABASE_SURVEYOR_STEP_MAP,
+        database_analysis_has_runner,
     )
     from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
@@ -744,7 +744,7 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     # projects.py's run_single_analysis follows).
     if analysis_id in DB_DERIVED_ANALYSES:
         pass  # zero-fetch — no credentials check needed
-    elif analysis_id not in DATABASE_SURVEYOR_STEP_MAP:
+    elif not database_analysis_has_runner(analysis_id):
         raise HTTPException(
             status_code=400,
             detail=f"Analysis '{analysis_id}' has no local survey step(s) mapped — "
