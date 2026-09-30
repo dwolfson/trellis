@@ -57,3 +57,25 @@ block stay (previously the generic pane silently fell back to the informational
 block only -- same silent-absence defect, fixed). Four more routing cases (one per
 stage) force the read to 500 and assert the heading, the line, no invented rows,
 and the map/candidates intact.
+
+### Red/green proof for the failure cases
+
+RED -- `fetchNativeSurveyRows`'s catch reverted to silent absence
+(`catch { return { rows: null }; }`, no `failed: true`), node 20:
+
+    ok 1..5 (the success cases)
+    not ok 6 - routing: a FAILED native-survey read on discovery is drawn, and leaves the rest of the pane intact
+    not ok 7 - ... on assessment ...
+    not ok 8 - ... on analysis ...
+    not ok 9 - ... on enrichment ...
+    # pass 5
+    # fail 4
+    error: 'the unreadable section must be present'   (assert.ok on #native-surveys-unreadable)
+
+GREEN -- failure handling restored (`failed: true`):
+
+    ok 1..9
+    # pass 9
+    # fail 0
+
+`git diff` was empty after the restore, so the committed code is the green one.
