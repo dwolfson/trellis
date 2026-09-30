@@ -8880,11 +8880,14 @@ secret, Egeria's JDBC connector falls back to the container's OS user, literally
 which doesn't exist as a Postgres role — hence the error. RE's own registry still holds the real
 credentials the whole time; nothing was lost, just not re-projected after the reset.
 
-Two follow-ups:
-1. Auto re-project the secrets file at RE startup, and again on each `egeria_resync` pass when a
-   database/filesystem's collection is found missing from the projected file — so a redeploy heals
-   itself instead of silently failing every native survey until someone notices and manually
-   re-projects (as was done once, by hand, the night this was found).
+Two follow-ups (project owner decision, 2026-09-30 — not this slice, not tonight):
+1. Add a `database reproject-secrets <slug>` command that projects the credentials RE already
+   holds — decrypted via RE's own existing decryption path, the same one the survey runner itself
+   uses when it connects — into the secrets file, so nobody has to type a password again to
+   recover from a redeploy. Call the same projection at RE startup and on each `egeria_resync`
+   pass whenever a database/filesystem's collection is found missing from the file, so a redeploy
+   heals itself instead of silently failing every native survey until someone re-traces it by
+   hand (as was done once, manually, the night this was found).
 2. Add a line to the setup docs noting that a quickstart redeploy resets `/deployments/secrets`,
    so the next person who hits this recognizes it immediately instead of re-tracing it from an
    opaque Postgres role error.
