@@ -61,6 +61,43 @@ the user reads".
   resource-explorer web --port 8813"`, `preview_start` it), confirm
   "Application startup complete" in `preview_logs`, then hand Dan the
   gate text the design session wrote. Tear it down after.
+  *Superseded in part, 2026-09-30; see the next three rules.*
+- **A gate server runs under the same configuration as 8810.** `config.py`
+  loads `.env` from the directory of the package it imports, and a worktree
+  has none. Until 2026-09-29, every gate on 8813 therefore ran without main's
+  `PREFECT_*`, `GITHUB_TOKEN`, `TRELLIS_JWT_SECRET` and `TRELLIS_PORTAL_SECRET`:
+  Prefect was off, and the owner had to sign in separately. The launch command
+  now loads main's file explicitly:
+  `cd <worktree> && uv run --package resource-explorer dotenv -f
+  /Users/dwolfson/localGit/egeria-v6/trellis/packages/resource-explorer/.env
+  run -- resource-explorer web --port 8813`. One reused gate worktree,
+  `.claude/worktrees/wt-relgraph`, is checked out detached at each verified
+  tip. Its name is historical and says nothing about what is checked out.
+- **Every serve report carries three literal lines** read from the live
+  process, and a gate does not start until they match the intended tip:
+  - the worktree HEAD, from `git -C <cwd> rev-parse HEAD`;
+  - the process cwd, from `lsof -a -p $(lsof -ti tcp:8813 -sTCP:LISTEN) -d cwd -Fn`;
+  - the env key NAMES present in the process, never values.
+
+  This rule came after an agent read the worktree's name as proof that the
+  wrong branch was being served, which briefly voided a day of gate results.
+  RE has no version endpoint yet; it is logged in Backlog.md.
+- **The desktop app stops preview servers on its own.** On 2026-09-29, 8813
+  was stopped by the app about an hour after launch, and it was reported as
+  serving for the next 11 hours. Check the process is live
+  (`lsof -ti tcp:8813 -sTCP:LISTEN`) before stating serve state.
+- **Never restart a gate server while an Egeria survey run is in flight**
+  (about 14 minutes). The gate item "the row moves to complete on its own"
+  means nothing if the server changes mid-run.
+- **Unsigned commits are held, never merged.** Check each commit for a
+  `gpgsig` header (`git cat-file commit <sha>`), not only a DCO trailer. An
+  agent's commits once carried `Signed-off-by` but no signature. The branch
+  was re-signed with `rebase --exec 'git commit --amend --no-edit -S -s'`
+  and force-pushed; verify that the tree is unchanged with
+  `git diff <old> <new>`.
+- **The owner sometimes merges on green before the gate.** That is the
+  owner's call. Report it as "merged without its gate", never as "passed",
+  and keep the unwalked gate items listed until they are reported.
 - macOS has no `timeout` binary; a wrapped command silently never runs.
 
 ## State at handoff
