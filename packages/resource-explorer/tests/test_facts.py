@@ -971,5 +971,5 @@ class TestDatabaseResourceStateSources:
         reader."""
         from resource_explorer.facts import DATABASE_RESOURCE_STATE_SOURCES
 
-        assert "Under what licence or agreement may this resource be used?" \
+        assert "Under what license or agreement may this resource be used?" \
             not in DATABASE_RESOURCE_STATE_SOURCES

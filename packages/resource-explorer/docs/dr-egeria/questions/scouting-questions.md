@@ -834,7 +834,7 @@ ___
 User Questions
 
 ### Display Name
-Under what licence or agreement may this resource be used?
+Under what license or agreement may this resource be used?
 
 ### Description
 License field is cheaply available from the GitHub API — deeper copyleft-risk categorization is Assessment-tier (see the license-specifics row below).
@@ -850,7 +850,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-Under what licence or agreement may this resource be used?
+Under what license or agreement may this resource be used?
 
 ___
 
@@ -860,7 +860,7 @@ ___
 Perspective::Security
 
 ### Question Name
-Under what licence or agreement may this resource be used?
+Under what license or agreement may this resource be used?
 
 ___
 
@@ -870,7 +870,7 @@ ___
 Perspective::Architecture
 
 ### Question Name
-Under what licence or agreement may this resource be used?
+Under what license or agreement may this resource be used?
 
 ___
 
@@ -880,14 +880,14 @@ ___
 Perspective::Admin
 
 ### Question Name
-Under what licence or agreement may this resource be used?
+Under what license or agreement may this resource be used?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Under what licence or agreement may this resource be used?
+Under what license or agreement may this resource be used?
 
 ### Scope Reference
 Scouting
@@ -2239,7 +2239,7 @@ ___
 User Questions
 
 ### Display Name
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ### Description
 GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment) categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown) — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace), LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC 5962) is the standard schema this conforms to.
@@ -2255,7 +2255,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2265,7 +2265,7 @@ ___
 Perspective::Financial
 
 ### Question Name
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2275,7 +2275,7 @@ ___
 Perspective::Data Owner
 
 ### Question Name
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2285,7 +2285,7 @@ ___
 Perspective::App/AI Builder
 
 ### Question Name
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
@@ -2295,14 +2295,14 @@ ___
 Perspective::Security
 
 ### Question Name
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ### Scope Reference
 Assessment
@@ -3438,7 +3438,7 @@ What data files does it ship, and what shape are they?
 An inventory and shape profile of the data files shipped in the repository.
 
 ### Summary
-Bundled data can carry licensing and privacy obligations that the repo's own licence does not cover.
+Bundled data can carry licensing and privacy obligations that the repo's own license does not cover.
 
 ### Usage
 Typically asked and answerable during Analysis.
@@ -4040,7 +4040,7 @@ Where is this resource physically located, under which jurisdiction, and are the
 Two halves. The machine half reads host and region from the connection endpoint, cloud instance metadata, or the mount and file path. The human half — legal controller, residency rule — comes through Enrichment. The result is published as a proposed Egeria DataScope classification carrying scopeElements {jurisdiction, region, controller}.
 
 ### Summary
-Data sovereignty decides whether we may hold or process this at all, independently of what the licence permits.
+Data sovereignty decides whether we may hold or process this at all, independently of what the license permits.
 
 ### Usage
 Typically asked and answerable during Discovery.
@@ -4182,13 +4182,13 @@ ___
 User Questions
 
 ### Display Name
-Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+Are there any restrictions for use beyond the license — classification, zone or terms of use?
 
 ### Description
-Separated from the licence question itself when that one became cross-type and moved to Scouting. Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment for anything contractual that is not written down machine-readably.
+Separated from the license question itself when that one became cross-type and moved to Scouting. Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment for anything contractual that is not written down machine-readably.
 
 ### Summary
-A permissive licence does not mean an internal classification, a governance zone or a contractual term allows the use I have in mind.
+A permissive license does not mean an internal classification, a governance zone or a contractual term allows the use I have in mind.
 
 ### Usage
 Typically asked and answerable during Analysis.
@@ -4198,7 +4198,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+Are there any restrictions for use beyond the license — classification, zone or terms of use?
 
 ___
 
@@ -4208,7 +4208,7 @@ ___
 Perspective::Governance
 
 ### Question Name
-Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+Are there any restrictions for use beyond the license — classification, zone or terms of use?
 
 ___
 
@@ -4218,7 +4218,7 @@ ___
 Perspective::Consumer
 
 ### Question Name
-Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+Are there any restrictions for use beyond the license — classification, zone or terms of use?
 
 ___
 
@@ -4228,7 +4228,7 @@ ___
 Perspective::Privacy
 
 ### Question Name
-Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+Are there any restrictions for use beyond the license — classification, zone or terms of use?
 
 ___
 
@@ -4238,14 +4238,14 @@ ___
 Perspective::Security
 
 ### Question Name
-Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+Are there any restrictions for use beyond the license — classification, zone or terms of use?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+Are there any restrictions for use beyond the license — classification, zone or terms of use?
 
 ### Scope Reference
 Analysis
@@ -4261,13 +4261,13 @@ ___
 User Questions
 
 ### Display Name
-Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+Is this resource ready to be offered as a data product — owner, description, license or agreement, schema, freshness, contact and scope?
 
 ### Description
 A composite over facts other questions already establish — Egeria Ownership, a description, License or DataSharingAgreement, a schema, freshness signals, a contact and a DataScope. Design §4 requires this and the demand question to hold together before a DigitalProduct is proposed.
 
 ### Summary
-The supply half of a data product: one with no accountable owner, no licence and no stated scope cannot responsibly be offered.
+The supply half of a data product: one with no accountable owner, no license and no stated scope cannot responsibly be offered.
 
 ### Usage
 Typically asked and answerable during Assessment.
@@ -4277,7 +4277,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+Is this resource ready to be offered as a data product — owner, description, license or agreement, schema, freshness, contact and scope?
 
 ___
 
@@ -4287,7 +4287,7 @@ ___
 Perspective::Governance
 
 ### Question Name
-Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+Is this resource ready to be offered as a data product — owner, description, license or agreement, schema, freshness, contact and scope?
 
 ___
 
@@ -4297,7 +4297,7 @@ ___
 Perspective::Steward
 
 ### Question Name
-Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+Is this resource ready to be offered as a data product — owner, description, license or agreement, schema, freshness, contact and scope?
 
 ___
 
@@ -4307,7 +4307,7 @@ ___
 Perspective::Data Owner
 
 ### Question Name
-Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+Is this resource ready to be offered as a data product — owner, description, license or agreement, schema, freshness, contact and scope?
 
 ___
 
@@ -4317,14 +4317,14 @@ ___
 Perspective::Consumer
 
 ### Question Name
-Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+Is this resource ready to be offered as a data product — owner, description, license or agreement, schema, freshness, contact and scope?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Is this resource ready to be offered as a data product — owner, description, licence or agreement, schema, freshness, contact and scope?
+Is this resource ready to be offered as a data product — owner, description, license or agreement, schema, freshness, contact and scope?
 
 ### Scope Reference
 Assessment

@@ -112,7 +112,7 @@ def list_rfas(
                 # (step, annotation_type) — right for a compact activity
                 # preview, wrong here. Three distinct requests from
                 # SecurityHygieneCheck (no SECURITY.md, no CI config, no
-                # licence) share both keys, so this used to emit ONE row
+                # license) share both keys, so this used to emit ONE row
                 # carrying count=3 and the first one's text: "Security
                 # HygieneCheck 3 / No SECURITY.md found", with the other two
                 # unreachable. That is Dan's original report, and the reason

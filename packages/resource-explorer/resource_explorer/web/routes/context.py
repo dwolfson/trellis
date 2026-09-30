@@ -59,7 +59,7 @@ class EnrichmentField(BaseModel):
     Two kinds, and the kind is not configuration — a field is a JUDGEMENT if
     a person's opinion is the value (sensitivity, criticality, intended use,
     actual use, owner, notes) and an OBSERVATION if a person is supplying a
-    fact about the world (licence, environment, retention). Judgements are
+    fact about the world (license, environment, retention). Judgements are
     perishable: they carry an author, a date, and the measurements that were
     on screen when they were made, so that when those measurements move the
     judgement is not invalidated but FLAGGED for review, and the flag can say

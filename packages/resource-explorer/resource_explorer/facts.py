@@ -530,9 +530,9 @@ def _r_license(reg, p) -> tuple:
     stats = reg.get_latest_project_stats(p.slug) or {}
     name = (stats.get("license") or "").strip()
     spdx = (stats.get("license_spdx_id") or "").strip()
-    # "Other"/"NOASSERTION" is GitHub saying it could not identify a licence,
+    # "Other"/"NOASSERTION" is GitHub saying it could not identify a license,
     # which is NOT the same as there being none — and for a question about
-    # restrictions on use, reporting it as a licence would be the more
+    # restrictions on use, reporting it as a license would be the more
     # dangerous of the two errors.
     unidentified = spdx.upper() in ("NOASSERTION", "") or name.lower() == "other"
     return (
@@ -653,15 +653,15 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #:   _r_catalogued   "Has this repository already been catalogued in Egeria and when?"
 #:                -> "Has this resource already been catalogued in Egeria, and when?"
 #:   _r_license      "Are there any restrictions for use?"
-#:                -> "Under what licence or agreement may this resource be used?"
+#:                -> "Under what license or agreement may this resource be used?"
 #:
-#: `_r_license`'s row SPLIT into two. It maps to the licence row above, which
+#: `_r_license`'s row SPLIT into two. It maps to the license row above, which
 #: is what the resolver actually does (it reads `stats["license"]`). The other
-#: half — "Are there any restrictions for use beyond the licence —
+#: half — "Are there any restrictions for use beyond the license —
 #: classification, zone or terms of use?" — is a new, unbuilt question and
 #: gets NO entry here. A question with no state source is a normal state, and
-#: pointing a licence-field read at it would answer a governance question with
-#: a licence string.
+#: pointing a license-field read at it would answer a governance question with
+#: a license string.
 #:
 #: `test_every_declared_question_is_in_the_real_catalog` fails loudly on each
 #: of these, which is the point: a key matching nothing is a resolver that
@@ -684,7 +684,7 @@ RESOURCE_STATE_SOURCES = {
     "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
         (_r_disposition, "disposition"),
     "Any known feedback?": (_r_feedback, "resource_feedback"),
-    "Under what licence or agreement may this resource be used?": (_r_license, "license"),
+    "Under what license or agreement may this resource be used?": (_r_license, "license"),
     "Is there any existing use within our organization?":
         (_r_existing_use, "catalog_presence"),
     "Does it replace or extend something we already have?":
@@ -806,7 +806,7 @@ _RESOURCE_STATE_HEADLINES: dict[str, "Callable[[dict, str], str]"] = {
 # direct-field row read `◌ no reader` instead; this table is what turns 10 of
 # the 11 into real answers, moving them out of that state entirely.
 #
-# One row of the 11 is NOT implemented here — see the note on licence below.
+# One row of the 11 is NOT implemented here — see the note on license below.
 #
 # Resolvers take `(registry, DatabaseEntity)`, matching the repo resolvers'
 # `(registry, Project)` shape exactly, so `_resource_state_fact` needs only
@@ -1124,7 +1124,7 @@ _RESOURCE_STATE_HEADLINES.update(_DATABASE_RESOURCE_STATE_HEADLINES)
 #: resolver with no collision.
 #:
 #: **Only 10 of the 11 direct-field database rows found live 2026-09-29 are
-#: here.** "Under what licence or agreement may this resource be used?"
+#: here.** "Under what license or agreement may this resource be used?"
 #: is NOT implemented: its catalog `note` is a stale, copy-pasted "direct
 #: field (GitHub license field)" — `DatabaseEntity` (registry.py) has no
 #: license field, GitHub has no opinion about a PostgreSQL database, and no

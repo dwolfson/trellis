@@ -306,7 +306,7 @@ ___
 Repo Discovery Survey
 
 ### Scope Reference
-What explicit licence does this resource use, and are there non-standard or copyleft terms?
+What explicit license does this resource use, and are there non-standard or copyleft terms?
 
 ___
 

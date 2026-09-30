@@ -487,7 +487,7 @@ def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
         # ACTIONABLE list, and a request for action that was summarised away
         # cannot be acted on. Measured on `workshops`: SecurityHygieneCheck
         # emits three RequestForActions — no SECURITY.md, no CI config, no
-        # licence — which share a step and a type, so the group carried
+        # license — which share a step and a type, so the group carried
         # count=3 and the text of the first. The drawer rendered
         # "SecurityHygieneCheck 3 / No SECURITY.md found", which is exactly
         # Dan's original report: "they all seem to be SecurityHygieneCheck 3

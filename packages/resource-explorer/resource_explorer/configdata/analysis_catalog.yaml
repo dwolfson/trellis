@@ -145,7 +145,7 @@ repo_analyses:
     # The id stays `security_scan` deliberately: it keys existing schedules
     # and stored findings. Real scanning belongs in new entries under the
     # same `family="security"`, not by widening this one's claims again.
-    description: "Presence of three security-hygiene artifacts: a security policy (SECURITY.md), a CI configuration, and a licence. File presence only -- this does not scan code, detect secrets, or check CVEs. For GitHub's actual security toggles see Security Features."
+    description: "Presence of three security-hygiene artifacts: a security policy (SECURITY.md), a CI configuration, and a license. File presence only -- this does not scan code, detect secrets, or check CVEs. For GitHub's actual security toggles see Security Features."
     resource_types: ["repo"]
     intent: assessment  # true scoring against criteria — unchanged
     perspectives: ["Security", "Steward"]
@@ -389,7 +389,7 @@ repo_analyses:
 
   - id: foss_scorecard
     name: FOSS Scorecard
-    description: "OpenSSF-Scorecard-shaped checks computed from data already collected — maintenance, licence, CI tests, releases, contributors, SAST settings. A check that cannot be evaluated reports unknown and is EXCLUDED from the score, rather than scored zero as OpenSSF's own tool does, and the coverage is reported alongside the number: 8.0 over five checks and 8.0 over twelve are different claims. Not comparable with a published OpenSSF score, by design."
+    description: "OpenSSF-Scorecard-shaped checks computed from data already collected — maintenance, license, CI tests, releases, contributors, SAST settings. A check that cannot be evaluated reports unknown and is EXCLUDED from the score, rather than scored zero as OpenSSF's own tool does, and the coverage is reported alongside the number: 8.0 over five checks and 8.0 over twelve are different claims. Not comparable with a published OpenSSF score, by design."
     resource_types: ["repo"]
     intent: assessment
     perspectives: ["Security", "Steward", "Governance", "Consumer"]
