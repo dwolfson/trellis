@@ -189,7 +189,7 @@ test('one word for the ◌ glyph: no-surveyor and no_reader share it, and it is 
   void STATES;
 });
 
-test('a direct-field row whose field is empty is ∅ "nothing recorded", never ✓, ○ or ◌', async () => {
+test('a direct-field row whose field is empty is ∅ (the existing `nothing` state), never ✓, ○ or ◌', async () => {
   makeDomEnvironment();
   ensureLoaderRegistered();
   const app = await import('/static/next/app.js');
@@ -199,8 +199,10 @@ test('a direct-field row whose field is empty is ∅ "nothing recorded", never �
     headline: 'No description recorded for this database yet.' }] };
   const filled = { answerable: true, facts: [{ is_known: true, state: 'measured', headline: 'A sample db' }] };
   const st = app.rowState(entry, empty);
-  assert.equal(st, 'nothing_recorded');
+  assert.equal(st, 'nothing');
   assert.equal(g.stateEntry(st).glyph, '∅');
+  // One state on ∅ for "known nothing": no second one beside it.
+  assert.deepEqual(Object.entries(g.STATES).filter(([, v]) => v.glyph === '∅' && v.word.includes('nothing')).map(([k]) => k), ['nothing']);
   assert.equal(app.rowState(entry, filled), 'automatic');
   // Unanswerable stays ◌, not ∅.
   assert.equal(app.rowState(entry, { answerable: false, facts: [] }), 'no_reader');
