@@ -27,6 +27,7 @@ docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md. Unlike the plain
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -344,7 +345,20 @@ def _run_egeria_adaptive(
         db_entity.slug, credentials=credentials, refresh=refresh,
         secrets_path=secrets_path, force_custom=force_custom,
     )
-    result.setdefault("status", "error" if result.get("source") == "error" else "ok")
+    # A survey that measured nothing and carries errors FAILED — say so, with
+    # the real error text (false-zero hotfix, 2026-09-30). Before this, a local
+    # survey that died on an auth error still came back status "ok" (the
+    # Egeria-trigger half "worked") with the error buried in the result, and
+    # the executor's publish step then pushed an empty inventory as if it were
+    # a measurement. "ok" is reserved for results that carry proof of a
+    # measurement or a real retrieval.
+    errs = [str(e) for e in (result.get("errors") or [])]
+    measured_now = bool(result.get("schema_info") or result.get("statistics"))
+    if result.get("source") == "error" or (errs and not measured_now):
+        result["status"] = "failed"
+        result["errors"] = errs or ["Survey failed with no error detail recorded"]
+    else:
+        result.setdefault("status", "ok")
 
     # HybridDatabaseSurveyor.survey() already does its own Egeria write when
     # source == "egeria-custom" (publish_local_survey, called inside
@@ -372,7 +386,21 @@ def _run_egeria_adaptive(
 
 
 def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
-    from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+    """Publish a run's results to Egeria WITHOUT writing a survey row.
+
+    A publish step measures nothing, so it never writes `database_surveys`
+    (false-zero hotfix, 2026-09-30). It reads what it publishes from this
+    run's step outputs when they carry a schema inventory, otherwise from the
+    latest MEASURED stored row (`ProjectRegistry.latest_measured_database_
+    survey` — the one shared definition of "measured"). If neither exists
+    there is nothing to publish and it raises rather than pushing an empty
+    inventory to Egeria. It records its own step_run and stamps the outcome on
+    the measured row it published.
+    """
+    from resource_explorer.surveyors.database.egeria_database_surveyor import (
+        EgeriaDatabaseSurveyor,
+        EgeriaDatabaseSurveyorError,
+    )
 
     schema_info: dict = {}
     statistics: dict = {}
@@ -386,13 +414,41 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
         operations = output.get("operations") or operations
         credential_capability = output.get("credential_capability") or credential_capability
 
+    measured_row = None
+    if not schema_info:
+        measured_row = registry.latest_measured_database_survey(entity.slug)
+        if measured_row is None:
+            raise EgeriaDatabaseSurveyorError(
+                f"Nothing measured to publish for '{entity.slug}': this run produced no "
+                "schema inventory and no measured survey is stored. Run a survey first; "
+                "publish does not write a survey row."
+            )
+        stored = json.loads(measured_row.get("survey_data") or "{}")
+        schema_info = stored.get("schema_info") or {}
+        statistics = statistics or stored.get("statistics") or {}
+        views = views or stored.get("views") or []
+        operations = operations or stored.get("operations") or {}
+
     surveyor = EgeriaDatabaseSurveyor()
     result = surveyor.publish_step_annotations(
         entity, schema_info, statistics, surveyed_at, registry,
         views=views, operations=operations,
         credential_capability=credential_capability,
     )
-    return result.get("report_guid", "")
+    report_guid = result.get("report_guid", "")
+    registry.record_step_run(
+        entity.slug, "egeria_publish", surveyed_at, entity_type="database",
+        source="egeria", executor="local",
+        metrics={"report_guid": report_guid,
+                 "annotation_count": result.get("annotation_count", 0),
+                 "published_measured_at": (measured_row or {}).get("surveyed_at", "")},
+    )
+    # Outcome goes ON the measured row (never a new row). For an in-run
+    # measurement the row is the run's own (slug, surveyed_at); a no-op if
+    # this run stored none.
+    registry.record_database_survey_published(
+        entity.slug, (measured_row or {}).get("surveyed_at") or surveyed_at, report_guid)
+    return report_guid
 
 
 #: Cost, preconditions and PRODUCES for each database step — design §5.7's own

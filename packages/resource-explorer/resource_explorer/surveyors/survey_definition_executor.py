@@ -856,10 +856,19 @@ class SurveyDefinitionExecutor:
                     # egeria_async_survey_result.py) set status="ok" themselves —
                     # reported here as-is instead of overwritten, so a genuinely
                     # completed step is never misreported as merely "triggered".
+                    status = outcome.get("status", "triggered") if isinstance(outcome, dict) else "triggered"
                     if isinstance(outcome, dict):
                         _stamp_definition_provenance(outcome)
-                        step_outputs.append(outcome)
-                    status = outcome.get("status", "triggered") if isinstance(outcome, dict) else "triggered"
+                        if status in ("failed", "error"):
+                            # A failed step's output is NOT a measurement: it
+                            # never feeds the publish step (false-zero hotfix,
+                            # 2026-09-30), and its real error text reaches the
+                            # run's `errors` instead of staying buried in the
+                            # step's detail.
+                            for e in (outcome.get("errors") or [f"step '{step.qualified_name}' failed"]):
+                                errors.append(f"Step '{step.re_analysis_step}' failed: {e}")
+                        else:
+                            step_outputs.append(outcome)
                     # `detail` feeds a json.dumps() call below (the activity-log
                     # summary), so it must stay JSON-safe — outcome's own
                     # "annotations" key (when present) carries real Annotation

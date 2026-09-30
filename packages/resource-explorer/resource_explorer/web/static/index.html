@@ -7210,6 +7210,18 @@ async function submitSurveyDb() {
   const progress = document.getElementById('survey-db-progress');
   const submitBtn = document.getElementById('survey-submit-btn');
 
+  // Say what this run does BEFORE it does it: with "Egeria hybrid" ticked it
+  // runs postgres_schema_and_stats and then publishes the results to Egeria
+  // (false-zero hotfix, 2026-09-30 — three unannounced publishes wrote empty
+  // survey rows for coco_pharma).
+  if (useEgeria && !window.confirm(
+      `Run the Egeria hybrid survey on "${slug}"?\n\n` +
+      'This runs postgres_schema_and_stats, which publishes to Egeria when it finishes ' +
+      '(a SurveyReport is written to the catalog if the database is cataloged there).\n\n' +
+      'Untick "Try Egeria first" for a local-only survey.')) {
+    return;
+  }
+
   // Only require credentials if nothing is stored
   const db = _dbMap[slug];
   const hasStoredCreds = db && db.db_user;
