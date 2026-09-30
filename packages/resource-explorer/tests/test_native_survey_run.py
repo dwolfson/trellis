@@ -536,6 +536,20 @@ class TestCredentialsPrecondition:
         self._point_at(monkeypatch, f)
         assert submit(registry, FakePort())["engine_action_guid"]
 
-    def test_unconfigured_path_cannot_tell_so_it_does_not_refuse(self, registry, monkeypatch):
+    def test_unconfigured_path_cannot_tell_so_it_warns_but_still_runs(self, registry, monkeypatch):
         self._point_at(monkeypatch, "")
+        survey = next(r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)
+                      if r["qualified_name"] == SURVEY_QN)
+        assert survey["runnable"] and survey["credentials"] == nsr.NOT_CONFIGURED
+        assert survey["credentials_note"] == "can't confirm Egeria has credentials · secrets path not configured"
         assert submit(registry, FakePort())["engine_action_guid"]
+
+    def test_exactly_three_states_one_per_situation(self, registry, monkeypatch, tmp_path):
+        entity = registry.get_database("adventureworks")
+        good = tmp_path / "g.omsecrets"
+        good.write_text("---\nsecretsCollections:\n  adventureworks::PostgreSQL Secret:\n    secrets: {}\n")
+        cases = [(str(good), nsr.PRESENT), (str(tmp_path / "missing"), nsr.ABSENT), ("", nsr.NOT_CONFIGURED)]
+        for path, expected in cases:
+            self._point_at(monkeypatch, path)
+            assert nsr.credentials_state(entity) == expected
+        assert {nsr.PRESENT, nsr.ABSENT, nsr.NOT_CONFIGURED} == {"present", "absent", "not-configured"}

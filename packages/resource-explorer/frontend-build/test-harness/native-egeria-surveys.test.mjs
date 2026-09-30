@@ -285,3 +285,14 @@ test('a refused Run (422) shows the reason on the row and leaves the row unchang
   assert.ok(!err.classList.contains('hidden'));
   assert.match(content.querySelector('[data-native-status]').textContent, /not run/);
 });
+
+test('secrets path not configured: a ? note, and Run stays available', async () => {
+  const { document, ns } = await setUp();
+  const host = document.createElement('div');
+  host.innerHTML = ns.nativeSurveyRowHtml(row({
+    credentials: 'not-configured',
+    credentials_note: "can't confirm Egeria has credentials · secrets path not configured" }));
+  assert.match(host.textContent.replace(/\s+/g, ' '),
+    /\? can't confirm Egeria has credentials · secrets path not configured/);
+  assert.ok(host.querySelector('[data-native-run]'));
+});

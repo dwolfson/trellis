@@ -435,32 +435,47 @@ def cannot_run_reason(process: NativeProcess, entity) -> str:
 
 
 NO_CREDENTIALS = "Egeria has no credentials for this database · re-project secrets"
+UNCONFIRMED_CREDENTIALS = "can't confirm Egeria has credentials · secrets path not configured"
+
+#: The three credential states -- exactly these, one word each.
+PRESENT = "present"
+ABSENT = "absent"
+NOT_CONFIGURED = "not-configured"
 
 
-def _missing_credentials_reason(entity) -> str:
-    """The survey engine reads the database's credentials from the projected
-    `.omsecrets` file, by collection name. When that file is gone -- a redeploy
-    reset the secrets directory on 2026-09-29 -- the JDBC connector has no user
-    and falls back to the container's OS user, and every survey fails minutes
-    later with `role "default" does not exist`. Checking the file first turns
-    that into a reason on the row, with no submission attempted.
+def credentials_state(entity) -> str:
+    """Whether the projected `.omsecrets` file holds this database's credentials.
 
-    Only a database (a PostgreSQL credential collection). When
-    `EGERIA_SECRETS_STORE_LOCAL_PATH` is unset RE has no host-visible path to
-    the file and CANNOT tell, which is not the same as "absent": no reason is
-    given (most deployments -- CI, a remote engine host -- are this case).
-    Configured but the file or the collection is missing: refused."""
+    The survey engine reads them from that file by collection name. When it is
+    gone (a redeploy reset the secrets directory on 2026-09-29) the JDBC
+    connector has no user, falls back to the container's OS user, and every
+    survey fails minutes later with `role "default" does not exist`.
+
+    * `present` -- path configured and the collection is in the file.
+    * `absent` -- path configured, but the file or the collection is missing:
+      Run is refused with `NO_CREDENTIALS`.
+    * `not-configured` -- `EGERIA_SECRETS_STORE_LOCAL_PATH` unset. RE has no
+      host-visible path and has established nothing either way (CI, a remote
+      engine host, secrets managed elsewhere), so Run stays available and the
+      row says it cannot confirm (`UNCONFIRMED_CREDENTIALS`).
+
+    Only a database has a PostgreSQL credential collection; anything else is
+    reported `present` (nothing to check)."""
     if not hasattr(entity, "db_type"):
-        return ""
+        return PRESENT
     from resource_explorer import omsecrets_store
 
     path = omsecrets_store.local_path()
     if not path:
-        return ""
+        return NOT_CONFIGURED
     if omsecrets_store.has_collection(
             omsecrets_store.secrets_collection_name(entity.slug), path=path):
-        return ""
-    return NO_CREDENTIALS
+        return PRESENT
+    return ABSENT
+
+
+def _missing_credentials_reason(entity) -> str:
+    return NO_CREDENTIALS if credentials_state(entity) == ABSENT else ""
 
 
 def native_survey_rows(registry, entity_type: str, slug: str, technology_type: str) -> list[dict]:
@@ -474,6 +489,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
         if process.kind == KIND_DELETE:
             continue  # never offered, in any form
         reason = cannot_run_reason(process, entity)
+        creds = credentials_state(entity) if process.kind == KIND_SURVEY_EXISTING else PRESENT
         runs = registry.list_native_survey_runs(entity_type, slug, process.qualified_name)
         latest = runs[0] if runs else None
         stored = None
@@ -487,6 +503,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "description": process.description,
             "runnable": not reason,
             "cannot_run_reason": reason,
+            "credentials": creds,
+            "credentials_note": UNCONFIRMED_CREDENTIALS if creds == NOT_CONFIGURED else "",
             "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
             "run": derived,
         })

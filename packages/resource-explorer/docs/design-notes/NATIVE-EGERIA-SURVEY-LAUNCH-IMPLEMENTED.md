@@ -170,7 +170,8 @@ after submission with `role "default" does not exist` (finding 5 above). Run now
 checks first: when `EGERIA_SECRETS_STORE_LOCAL_PATH` is configured and the file
 or this database's `<slug>::PostgreSQL Secret` collection is absent, the row is
 not runnable and says "Egeria has no credentials for this database · re-project
-secrets"; no submission is attempted. When the path is unset RE cannot tell, and
-does not refuse. Tested against a nonexistent directory
+secrets"; no submission is attempted. When the path is unset RE cannot tell: the row shows "? can't confirm Egeria
+has credentials · secrets path not configured" and Run stays available (design
+ruling). Exactly three states: present, absent (refuse), not-configured (warn). Tested against a nonexistent directory
 (`TestCredentialsPrecondition`). Note this only protects a deployment that sets
 that path.
