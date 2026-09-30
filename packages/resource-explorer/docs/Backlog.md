@@ -8775,3 +8775,56 @@ themselves. Full measurement: `docs/design-notes/QUESTIONS-TAB-COLD-LOAD-MEASURE
 **One line kept open**: the Assessment-stage's first call (a larger question set) measured 4.1s
 in the same session — not part of the gate (not a controlled cold-restart), but worth watching.
 Revisit if a stage tab exceeds 2s on coco_pharma or a bigger database.
+
+## Serve provenance: no way to see what commit a build is running (2026-09-30, E1 gate)
+
+During E1's (`re/enrichment-e1-context-tab`) repeated gate/re-check cycle on 8813, the owner
+asked whether the build was stable because the branch kept moving under him mid-check, and had
+no way to confirm what he was looking at. Separately, a worktree directory name mismatch
+(`wt-relgraph`, a leftover name from an earlier gate, reused as the one detached-checkout
+worktree for every serve) triggered a false alarm that every re-check result that day might be
+void — resolved only by pulling process-level proof (cwd, `git rev-parse HEAD`, import
+resolution) by hand.
+
+There's no `/api/version` or equivalent: `app.py` and `routes/` have no `api/version`,
+`git_sha`, or `health` endpoint. The only commit sha anywhere is a repo resource's
+`last_commit_sha`, which is resource data, not build metadata.
+
+Add a `/api/version` endpoint that returns the served commit (`git rev-parse HEAD` at server
+start, or read from an env var set at deploy time), and surface it in the `/next` footer so
+anyone looking at a served build can independently confirm what they're gating, without needing
+someone to pull process-level proof for them.
+
+## No evidence trail for a slow request (2026-09-30, E1 gate)
+
+During E1's gate, the owner reported "Reading the analyses…" on adventureworks Scouting hanging
+for over a minute. In-process measurement (main vs. the E1 branch, real adventureworks data)
+found no code-path cost that could explain it — `build_analyses_index` and
+`build_question_checklist` both completed in under a second, cold or warm, on both branches. The
+stall could not be reproduced outside the live server, and the live server's own logs showed
+nothing: no request-timing evidence survives a slow request today.
+
+Add a server-side log line for any request whose handling exceeds a threshold (e.g. 5s), naming
+the route and the elapsed time, so the next stall — whether it's thread-pool saturation, registry
+contention, or something else live-only — leaves evidence instead of being unreproducible after
+the fact. Logged here rather than fixed as part of E1, since the in-process numbers ruled out an
+E1 code-path regression; this is investigation infrastructure, not a fix for a known bug.
+
+## Stale evidence rail outside the Context tab (2026-09-30, E1 gate)
+
+E1 fixed the Enrichment evidence rail (`#rail-evidence`) carrying over a previously-viewed
+resource's measurements when rendering the Context tab — it now clears on slug change and shows
+a loading frame until the new fetch lands. That fix only covers Context's own render path.
+
+The same slot is shared across the whole app (written by `renderEnrichment`, `showEvidence`, and
+`openMembers`) and nothing clears it on a plain tab or resource change outside Context — only the
+user's own "close" button clears it. This was caught live during E1's gate: main's Schema
+Inventory pane showed a stale "Evidence · enrichment" panel left over from an earlier Enrichment
+visit, which briefly looked like a missing feature on the E1 branch (E1 correctly shows nothing
+there, since Schema Inventory has no rail-writing path of its own) before being traced back to
+main's pre-existing staleness bug.
+
+Apply the same clear-on-change rule the Context fix uses (clear the rail's state and show a
+loading frame) to every stage/tab transition and resource-slug change, not only Context renders
+— a rail showing another resource's evidence anywhere is a false claim on screen. Pre-existing on
+main; not part of E1's scope, follow-up PR after E1 merges.
