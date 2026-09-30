@@ -492,3 +492,50 @@ class TestSchedulerSweep:
         assert nsr.native_survey_rows(registry, "database", "adventureworks", TECH)[0]["run"]["state"] == nsr.COMPLETE
         # the proof row keeps who SUBMITTED it; the sweep does not overwrite that
         assert latest(registry)["submitted_by"] == "dan"
+
+
+# ── credentials precondition: the projected secrets file ────────────────────
+
+class TestCredentialsPrecondition:
+    """A redeploy wiped the projected .omsecrets file and every survey then
+    failed minutes later. The guard must refuse up front -- and must be proven
+    to fail on purpose, against an empty directory."""
+
+    COLLECTION = "adventureworks::PostgreSQL Secret"
+
+    def _point_at(self, monkeypatch, path):
+        monkeypatch.setattr("resource_explorer.omsecrets_store.local_path", lambda: str(path))
+
+    def test_a_configured_path_with_no_file_refuses_with_the_reason_and_asks_egeria_nothing(
+            self, registry, monkeypatch, tmp_path):
+        self._point_at(monkeypatch, tmp_path / "empty-dir" / "resource-explorer.omsecrets")
+        port = FakePort()
+        with pytest.raises(nsr.NativeSurveyCannotRun) as exc:
+            submit(registry, port)
+        assert str(exc.value) == "Egeria has no credentials for this database · re-project secrets"
+        assert port.calls == []
+        assert latest(registry) is None
+
+    def test_a_file_without_this_databases_collection_refuses(self, registry, monkeypatch, tmp_path):
+        f = tmp_path / "s.omsecrets"
+        f.write_text("---\nsecretsCollections:\n  other::PostgreSQL Secret:\n    secrets: {}\n")
+        self._point_at(monkeypatch, f)
+        with pytest.raises(nsr.NativeSurveyCannotRun, match="re-project secrets"):
+            submit(registry, FakePort())
+
+    def test_the_row_says_so_instead_of_offering_run(self, registry, monkeypatch, tmp_path):
+        self._point_at(monkeypatch, tmp_path / "nope.omsecrets")
+        survey = next(r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)
+                      if r["qualified_name"] == SURVEY_QN)
+        assert not survey["runnable"]
+        assert survey["cannot_run_reason"] == nsr.NO_CREDENTIALS
+
+    def test_with_the_collection_present_it_submits(self, registry, monkeypatch, tmp_path):
+        f = tmp_path / "s.omsecrets"
+        f.write_text(f"---\nsecretsCollections:\n  {self.COLLECTION}:\n    secrets: {{}}\n")
+        self._point_at(monkeypatch, f)
+        assert submit(registry, FakePort())["engine_action_guid"]
+
+    def test_unconfigured_path_cannot_tell_so_it_does_not_refuse(self, registry, monkeypatch):
+        self._point_at(monkeypatch, "")
+        assert submit(registry, FakePort())["engine_action_guid"]

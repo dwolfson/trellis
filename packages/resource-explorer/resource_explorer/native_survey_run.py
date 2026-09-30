@@ -431,7 +431,36 @@ def cannot_run_reason(process: NativeProcess, entity) -> str:
         return "This resource is not registered."
     if not (getattr(entity, "egeria_asset_guid", "") or "").strip():
         return _NEEDS_CATALOGUING
-    return ""
+    return _missing_credentials_reason(entity)
+
+
+NO_CREDENTIALS = "Egeria has no credentials for this database · re-project secrets"
+
+
+def _missing_credentials_reason(entity) -> str:
+    """The survey engine reads the database's credentials from the projected
+    `.omsecrets` file, by collection name. When that file is gone -- a redeploy
+    reset the secrets directory on 2026-09-29 -- the JDBC connector has no user
+    and falls back to the container's OS user, and every survey fails minutes
+    later with `role "default" does not exist`. Checking the file first turns
+    that into a reason on the row, with no submission attempted.
+
+    Only a database (a PostgreSQL credential collection). When
+    `EGERIA_SECRETS_STORE_LOCAL_PATH` is unset RE has no host-visible path to
+    the file and CANNOT tell, which is not the same as "absent": no reason is
+    given (most deployments -- CI, a remote engine host -- are this case).
+    Configured but the file or the collection is missing: refused."""
+    if not hasattr(entity, "db_type"):
+        return ""
+    from resource_explorer import omsecrets_store
+
+    path = omsecrets_store.local_path()
+    if not path:
+        return ""
+    if omsecrets_store.has_collection(
+            omsecrets_store.secrets_collection_name(entity.slug), path=path):
+        return ""
+    return NO_CREDENTIALS
 
 
 def native_survey_rows(registry, entity_type: str, slug: str, technology_type: str) -> list[dict]:

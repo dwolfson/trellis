@@ -161,3 +161,16 @@ report is a legitimate complete, not an absence.
   needs its role fixed before a run can complete.
 - `egeria_async_survey_result.py`'s timestamp attribution could adopt the
   `ReportOriginator` link.
+
+## Addendum (2026-09-30): credentials precondition
+
+The 2026-09-29 redeploy reset the Egeria container's `/deployments/secrets/`,
+losing the projected `resource-explorer.omsecrets`; surveys then failed minutes
+after submission with `role "default" does not exist` (finding 5 above). Run now
+checks first: when `EGERIA_SECRETS_STORE_LOCAL_PATH` is configured and the file
+or this database's `<slug>::PostgreSQL Secret` collection is absent, the row is
+not runnable and says "Egeria has no credentials for this database · re-project
+secrets"; no submission is attempted. When the path is unset RE cannot tell, and
+does not refuse. Tested against a nonexistent directory
+(`TestCredentialsPrecondition`). Note this only protects a deployment that sets
+that path.
