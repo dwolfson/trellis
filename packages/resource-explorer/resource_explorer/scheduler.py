@@ -153,6 +153,10 @@ def _scheduler_loop(stop: threading.Event | None = None) -> None:
             _drain_egeria_outbox()
         except Exception:
             log.exception("Egeria outbox drain iteration failed")
+        try:
+            _sweep_native_surveys()
+        except Exception:
+            log.exception("Native Egeria survey read-back iteration failed")
 
 
 def _reconcile_rfa_actions() -> None:
@@ -165,6 +169,29 @@ def _reconcile_rfa_actions() -> None:
 
     registry = ProjectRegistry()
     reconcile_rfa_actions(registry)
+
+
+def _sweep_native_surveys() -> None:
+    """BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md gate point 3 -- "the row moves to
+    complete on its own". A native survey takes minutes (a 157-table database
+    took ~14), so a browser tab cannot be the only thing that reads it back.
+    Reuses this loop, as the RFA and outbox passes above do.
+
+    Runs in a raw scheduler thread with NO signed-in caller, and that is
+    correct here rather than a leak: it reads Egeria read-only and writes the
+    proof rows of runs somebody else submitted. It never decides visibility
+    or attribution from the caller (`sweep_in_flight` takes no identity), which
+    is the one safe shape for code that runs on nobody's behalf. With nothing
+    in flight it is a single registry query and no Egeria call."""
+    from resource_explorer import native_survey_run
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.list_in_flight_native_survey_runs(limit=1):
+        return
+    n = native_survey_run.sweep_in_flight(registry, native_survey_run.PyegeriaSurveyPort())
+    if n:
+        log.info("Native Egeria survey read-back: read %d in-flight run(s)", n)
 
 
 def _drain_egeria_outbox() -> None:

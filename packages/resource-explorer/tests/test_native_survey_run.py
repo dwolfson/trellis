@@ -463,3 +463,32 @@ class TestRows:
         # native_survey_rows takes no port at all: it cannot reach Egeria.
         import inspect
         assert "port" not in inspect.signature(nsr.native_survey_rows).parameters
+
+
+# ── the scheduler sweep ─────────────────────────────────────────────────────
+
+class TestSchedulerSweep:
+    def test_with_nothing_in_flight_it_builds_no_egeria_client(self, registry, monkeypatch):
+        from resource_explorer import scheduler
+
+        monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                            lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+
+        def boom(*a, **k):
+            raise AssertionError("constructed a port with nothing in flight")
+        monkeypatch.setattr(nsr, "PyegeriaSurveyPort", boom)
+        scheduler._sweep_native_surveys()
+
+    def test_it_finishes_a_run_with_no_signed_in_caller(self, registry, monkeypatch):
+        from resource_explorer import scheduler
+
+        port = FakePort()
+        action = submit(registry, port)["engine_action_guid"]
+        port.finish(action, report="rep-1", annotations=[ann(1)])
+        monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                            lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+        monkeypatch.setattr(nsr, "PyegeriaSurveyPort", lambda: port)
+        scheduler._sweep_native_surveys()
+        assert nsr.native_survey_rows(registry, "database", "adventureworks", TECH)[0]["run"]["state"] == nsr.COMPLETE
+        # the proof row keeps who SUBMITTED it; the sweep does not overwrite that
+        assert latest(registry)["submitted_by"] == "dan"
