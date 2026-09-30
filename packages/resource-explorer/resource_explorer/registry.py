@@ -1130,6 +1130,51 @@ def _decode_detail_row(row: dict) -> dict:
     return row
 
 
+#: A `database_surveys.source` that records a publish, never a measurement.
+#: Rows carrying it were written by publish steps that copied (or, in the
+#: false-zero bug, invented) numbers; the string is never evidence.
+NOT_A_MEASUREMENT_SOURCES = frozenset({"egeria-published"})
+
+#: Reason stamped on rows the false-zero repair marks.
+FALSE_ZERO_REASON = "no measurement: publish step ran without a schema step"
+
+
+def _survey_schema_info(row: dict) -> dict:
+    data = row.get("survey_data") or {}
+    if isinstance(data, str):
+        try:
+            data = json.loads(data or "{}")
+        except (ValueError, TypeError):
+            return {}
+    info = data.get("schema_info") if isinstance(data, dict) else None
+    return info if isinstance(info, dict) else {}
+
+
+def is_measured_survey(row: dict | None) -> bool:
+    """THE single definition of "this database_surveys row is a measurement".
+
+    A survey row is a claim that something was measured. It is measured when
+    (1) it is not marked invalid, (2) its source is an actual surveyor —
+    never "egeria-published", which records a publish — and (3) its
+    survey_data carries a non-empty schema_info. Used by the classic Publish
+    route and the Survey Definition publish step; nothing else may re-derive
+    it. `survey_data` may be the raw JSON text (as stored) or a dict.
+    """
+    if not row:
+        return False
+    if row.get("invalid_at"):
+        return False
+    if (row.get("source") or "") in NOT_A_MEASUREMENT_SOURCES:
+        return False
+    return bool(_survey_schema_info(row))
+
+
+def is_false_zero_survey(row: dict) -> bool:
+    """The DAMAGE itself: a publish-sourced row with no schema_info."""
+    return ((row.get("source") or "") in NOT_A_MEASUREMENT_SOURCES
+            and not _survey_schema_info(row))
+
+
 class ProjectRegistry:
     # Process-wide cache: a Postgres `Engine` (connection pool) and whether
     # `_init_schema` has already run, keyed by `database_url`. Added
@@ -2567,6 +2612,19 @@ class ProjectRegistry:
             # CREDENTIAL it ran as).
             if "surveyed_as" not in existing_ds:
                 conn.execute("ALTER TABLE database_surveys ADD COLUMN surveyed_as TEXT DEFAULT ''")
+            # Migration: soft-invalid marker (false-zero publish hotfix,
+            # 2026-09-30). Follows project_analysis_findings.superseded_at:
+            # a row that is not a real measurement is MARKED, never deleted,
+            # and every reader excludes it. `published_at` is where a publish
+            # records its outcome ON the measured row it published, instead of
+            # writing a new survey row (a publish measures nothing).
+            for _col, _ddl in (
+                ("invalid_at", "TEXT DEFAULT NULL"),
+                ("invalid_reason", "TEXT DEFAULT ''"),
+                ("published_at", "TEXT DEFAULT NULL"),
+            ):
+                if _col not in existing_ds:
+                    conn.execute(f"ALTER TABLE database_surveys ADD COLUMN {_col} {_ddl}")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_database_surveys_slug "
                 "ON database_surveys(database_slug)"
@@ -9871,13 +9929,17 @@ class ProjectRegistry:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT max(surveyed_at), count(*) FROM database_surveys "
-                "WHERE database_slug = ?",
+                "WHERE database_slug = ? AND invalid_at IS NULL",
                 (slug,),
             ).fetchone()
         return (row[0], row[1]) if row else (None, 0)
 
-    def get_database_surveys(self, slug: str) -> list[dict]:
+    def get_database_surveys(self, slug: str, include_invalid: bool = False) -> list[dict]:
         """Return all survey records for a database, newest first.
+
+        Rows marked invalid (`invalid_at IS NOT NULL` — see
+        `mark_database_survey_invalid`) are excluded unless
+        `include_invalid=True`, which bypasses the cache.
 
         Cached per-instance, keyed on a freshness signature (2026-09-29,
         docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md; hardened
@@ -9907,6 +9969,18 @@ class ProjectRegistry:
         semantics are otherwise unchanged.
         """
         slug = self._normalize_slug(slug)
+        if include_invalid:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT database_slug, surveyed_at, egeria_report_guid,
+                              schema_count, table_count, column_count, survey_data, source,
+                              surveyed_as, invalid_at, invalid_reason, published_at
+                       FROM database_surveys
+                       WHERE database_slug = ?
+                       ORDER BY surveyed_at DESC""",
+                    (slug,),
+                ).fetchall()
+            return [dict(r) for r in rows]
         freshness = self._database_surveys_freshness(slug)
         cached = self._database_surveys_cache.get(slug)
         if cached is not None and cached[0] == freshness:
@@ -9915,9 +9989,9 @@ class ProjectRegistry:
             rows = conn.execute(
                 """SELECT database_slug, surveyed_at, egeria_report_guid,
                           schema_count, table_count, column_count, survey_data, source,
-                          surveyed_as
+                          surveyed_as, published_at
                    FROM database_surveys
-                   WHERE database_slug = ?
+                   WHERE database_slug = ? AND invalid_at IS NULL
                    ORDER BY surveyed_at DESC""",
                 (slug,),
             ).fetchall()
@@ -9950,12 +10024,101 @@ class ProjectRegistry:
                           schema_count, table_count, column_count, survey_data, source,
                           surveyed_as
                    FROM database_surveys
-                   WHERE database_slug = ?
+                   WHERE database_slug = ? AND invalid_at IS NULL
                    ORDER BY surveyed_at DESC
                    LIMIT 1""",
                 (slug,),
             ).fetchall()
         return dict(rows[0]) if rows else None
+
+    def latest_measured_database_survey(self, slug: str) -> dict | None:
+        """Newest row of `slug` that `is_measured_survey` accepts, or None.
+
+        Newest-first over the valid rows: a newer empty/egeria-published row
+        never hides an older real measurement.
+        """
+        for row in self.get_database_surveys(slug) or []:
+            if is_measured_survey(row):
+                return row
+        return None
+
+    def mark_database_survey_invalid(self, slug: str, surveyed_at: str, source: str,
+                                     reason: str) -> int:
+        """Soft-mark one survey row invalid (never deletes). Returns rows marked.
+
+        Idempotent: an already-marked row is left alone. Re-syncs the
+        `databases` summary counts/last_surveyed_at to the newest valid row,
+        because `record_database_survey` copied the false values there.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE database_surveys SET invalid_at = ?, invalid_reason = ? "
+                "WHERE database_slug = ? AND surveyed_at = ? AND source = ? "
+                "AND invalid_at IS NULL",
+                (datetime.utcnow().isoformat(), reason, slug, surveyed_at, source),
+            )
+            n = cur.rowcount or 0
+        if n:
+            self.resync_database_summary_from_surveys(slug)
+        return n
+
+    def resync_database_summary_from_surveys(self, slug: str) -> None:
+        """Point the `databases` row's counts/last_surveyed_at at the newest
+        valid survey (or clear them if none is left)."""
+        slug = self._normalize_slug(slug)
+        latest = self.get_latest_database_survey(slug)
+        with self._conn() as conn:
+            if latest:
+                conn.execute(
+                    "UPDATE databases SET schema_count=?, table_count=?, column_count=?, "
+                    "last_surveyed_at=? WHERE slug=?",
+                    (latest["schema_count"], latest["table_count"],
+                     latest["column_count"], latest["surveyed_at"], slug),
+                )
+            else:
+                conn.execute(
+                    "UPDATE databases SET schema_count=0, table_count=0, column_count=0, "
+                    "last_surveyed_at=NULL WHERE slug=?", (slug,))
+
+    def find_false_zero_database_surveys(self) -> list[dict]:
+        """Every not-yet-marked row showing the false-zero damage, ANY slug.
+
+        Keyed on the damage itself (source is a publish source AND empty
+        schema_info), not on a slug or a timestamp.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT database_slug, surveyed_at, source, egeria_report_guid, survey_data "
+                "FROM database_surveys WHERE invalid_at IS NULL AND source = ? "
+                "ORDER BY database_slug, surveyed_at",
+                ("egeria-published",),
+            ).fetchall()
+        return [dict(r) for r in rows if is_false_zero_survey(dict(r))]
+
+    def record_database_survey_published(self, slug: str, surveyed_at: str,
+                                         report_guid: str) -> int:
+        """Record a publish OUTCOME on the measured row it published.
+
+        A publish measures nothing, so it never inserts a survey row; it
+        stamps `published_at` and `egeria_report_guid` on the existing
+        measured row identified by (slug, surveyed_at). Never touches a
+        publish-sourced row. Returns rows updated (0 = no such measured row).
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE database_surveys SET published_at = ?, egeria_report_guid = ? "
+                "WHERE database_slug = ? AND surveyed_at = ? AND source <> ? "
+                "AND invalid_at IS NULL",
+                (datetime.utcnow().isoformat(), report_guid or "", slug, surveyed_at,
+                 "egeria-published"),
+            )
+            n = cur.rowcount or 0
+        # The freshness signature (max(surveyed_at), count) does not move on
+        # an UPDATE, so drop this instance's cached list explicitly.
+        self._database_surveys_cache.pop(slug, None)
+        return n
 
     def find_latest_database_survey_with_key(self, slug: str, key: str) -> dict | None:
         """The most recent stored survey for `slug` whose `survey_data` JSON
@@ -10040,7 +10203,7 @@ class ProjectRegistry:
                                   schema_count, table_count, column_count, survey_data, source,
                                   surveyed_as
                            FROM database_surveys
-                           WHERE database_slug = ?
+                           WHERE database_slug = ? AND invalid_at IS NULL
                              AND jsonb_exists(survey_data::jsonb, ?)
                            ORDER BY surveyed_at DESC
                            LIMIT 1""",
