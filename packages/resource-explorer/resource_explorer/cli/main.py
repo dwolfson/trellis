@@ -1036,6 +1036,29 @@ def repair_rename(
         console.print(f"  [dim]shared collections left unchanged: {result.unchanged_shared_collections}[/dim]")
 
 
+@repair_app.command(name="mark-false-zero-surveys")
+def repair_mark_false_zero_surveys(
+    apply: bool = typer.Option(
+        False, "--apply",
+        help="Actually mark the rows. Without it this is a DRY RUN that only prints what it would mark."),
+):
+    """Mark false-zero database survey rows invalid (never deletes them).
+
+    Finds rows whose source is a publish source ('egeria-published') and whose
+    schema_info is empty, for ANY database — the damage left by a publish step
+    that wrote a survey row with nothing measured. DRY RUN by default: prints
+    slug, timestamp, source and reason per row plus a count, writes nothing.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.repair import (
+        apply_false_zero_survey_repair, format_false_zero_plan, plan_false_zero_survey_repair)
+    registry = ProjectRegistry()
+    plan = plan_false_zero_survey_repair(registry)
+    if apply:
+        apply_false_zero_survey_repair(plan, registry)
+    console.print(format_false_zero_plan(plan, apply=apply), markup=False, highlight=False)
+
+
 @repair_app.command(name="set-github-url")
 def repair_set_github_url(
     slug: str = typer.Argument(help="Repo slug"),

@@ -717,21 +717,10 @@ class EgeriaDatabaseSurveyor:
             except Exception as lin_err:
                 log.warning(f"Could not publish column lineage: {lin_err}")
 
-        if registry:
-            registry.record_database_survey(
-                slug=db_entity.slug,
-                schema_count=len(schema_info.get("schemas", [])) if schema_info else 0,
-                table_count=schema_info.get("total_tables", 0) if schema_info else 0,
-                column_count=schema_info.get("total_columns", 0) if schema_info else 0,
-                survey_data={
-                    "schema_info": schema_info,
-                    "statistics": statistics or {},
-                    "views": views or [],
-                    "operations": operations or {},
-                },
-                egeria_report_guid=report_guid,
-                source="egeria-published",
-            )
+        # A publish measures nothing, so it NEVER writes a database_surveys
+        # row (false-zero hotfix, 2026-09-30): the caller records the outcome
+        # on the measured row it published, via
+        # registry.record_database_survey_published().
 
         return {"asset_guid": db_guid, "report_guid": report_guid, "annotation_count": len(annotations)}
 
@@ -1102,19 +1091,12 @@ class EgeriaDatabaseSurveyor:
             except Exception as lin_err:
                 log.warning(f"Could not publish column lineage: {lin_err}")
 
+        # No survey row is written here: a publish measures nothing (false-zero
+        # hotfix, 2026-09-30). The outcome is stamped on the measured row this
+        # publish read (published_at + report guid), never as a new row.
         if registry and db_guid:
-            registry.record_database_survey(
-                slug=db_entity.slug,
-                schema_count=schema_count,
-                table_count=table_count,
-                column_count=column_count,
-                survey_data={
-                    "schema_info": schema_info,
-                    "statistics": statistics or {},
-                    "views": views or [],
-                },
-                egeria_report_guid=effective_report_guid,
-                source="egeria-published",
+            registry.record_database_survey_published(
+                db_entity.slug, surveyed_at, effective_report_guid,
             )
 
         return {

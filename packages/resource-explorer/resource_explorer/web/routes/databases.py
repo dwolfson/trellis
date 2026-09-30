@@ -567,6 +567,15 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
                 secrets_path=req.secrets_path,
             )
             step_report = (exec_result.get("steps") or [{}])[0]
+            # A failed survey step is a FAILED survey (false-zero hotfix,
+            # 2026-09-30): surface its real error on the run instead of
+            # reconstructing an "ok" response with zero counts. The executor
+            # has already withheld the failed output from the publish step, so
+            # nothing was written to the registry or to Egeria.
+            if step_report.get("status") in ("failed", "error"):
+                run_errors = list(exec_result.get("errors") or []) or [
+                    f"Survey step failed ({step_report.get('status')})"]
+                raise RuntimeError("; ".join(str(e) for e in run_errors))
             # Reconstruct run_hybrid_survey's historic flat response shape:
             # the handler nests "schema_info"/"statistics" under "result" to
             # keep the executor's generic publish step from re-publishing
@@ -894,9 +903,14 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
-    surveys = registry.get_database_surveys(slug)
-    if not surveys:
-        raise HTTPException(status_code=404, detail=f"No survey data for '{slug}' — run a survey first")
+    # The latest MEASURED row, never merely the latest row (false-zero
+    # hotfix, 2026-09-30): a newer empty/egeria-published row must not be
+    # pushed to Egeria as if it were the database's real inventory.
+    measured = registry.latest_measured_database_survey(slug)
+    if measured is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No measured survey data for '{slug}' — run a survey first")
 
     def _do_publish() -> dict[str, Any]:
         import asyncio as _aio
@@ -923,7 +937,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
             user_password=req.egeria_password or database.egeria_password or None,
         )
 
-        latest = surveys[0]
+        latest = measured
         survey_data = _json.loads(latest.get("survey_data", "{}"))
         schema_info = survey_data.get("schema_info", {})
         statistics  = survey_data.get("statistics", {})

@@ -168,7 +168,7 @@ class TestDatabaseEgeriaAdaptiveHandler:
             result = _db_run_egeria_adaptive(db_entity, registry, _FakeStep())
 
         assert result["source"] == "error"
-        assert result["status"] == "error"
+        assert result["status"] == "failed"
         assert result["errors"]
         assert "annotations" not in result or not result["annotations"]
 
