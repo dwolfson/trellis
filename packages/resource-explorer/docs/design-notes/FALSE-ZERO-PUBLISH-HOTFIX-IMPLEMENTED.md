@@ -81,3 +81,27 @@ and reader exclusion; dry-run-by-default CLI and its output format; publish writ
 no row, twice; publish route pushes 8/61/479; failing survey => status failed, real
 auth text, no publish, no row; classic route shows the failure with no row; classic
 modal confirm wording). No /next change, so no /next harness entry.
+
+## Correction: the route/view flag this work was planned to ship did not ship (2026-09-30)
+
+The plan for this hotfix said the invalid-row flag would be wired through to the
+database survey-history route and view, so a person could see WHY a survey they
+remember running is not counted. **That part never landed, and the plan line
+that said it would read as done.** What actually shipped is only
+`ProjectRegistry.get_database_surveys(slug, include_invalid=False)` (rule 3
+above). Grepped and confirmed afterwards: `include_invalid` appeared on the
+registry method alone; no web route accepted it and no UI passed or exposed it.
+Until the follow-up below, a marked-invalid row and its `invalid_reason` were
+visible only to someone with direct database access, which for a person using
+the app is functionally a hidden deletion, the opposite of "mark, don't delete".
+
+Why it slipped through: a plan sentence that states an intended outcome reads
+identically in review whether or not it was built, and no test asserted the
+route or the UI, because the tests were written against the registry method that
+did exist. (This document, as merged, also never listed the route/view work
+under "Not done here", so it under-reported the gap rather than disclosing it.)
+
+Fixed in `DATABASE-SURVEY-HISTORY-INVALID-VIEW-IMPLEMENTED.md`: the
+`GET /api/databases/{slug}/surveys` route takes `include_invalid` (default
+false) and the classic UI's Survey History has a "show invalid" toggle.
+

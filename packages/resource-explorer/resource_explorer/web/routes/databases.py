@@ -799,8 +799,13 @@ async def remove_database(slug: str) -> dict:
 
 
 @router.get("/{slug}/surveys")
-async def get_database_surveys(slug: str) -> list[dict]:
-    """Get survey history for a database."""
+async def get_database_surveys(slug: str, include_invalid: bool = False) -> list[dict]:
+    """Get survey history for a database.
+
+    Rows marked invalid (false-zero repair, `invalid_at` / `invalid_reason`) are
+    excluded by default. `?include_invalid=true` returns them too, so the classic
+    UI's "show invalid" toggle can show WHY a remembered survey is not counted.
+    """
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
@@ -808,7 +813,7 @@ async def get_database_surveys(slug: str) -> list[dict]:
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
-    return registry.get_database_surveys(slug)
+    return registry.get_database_surveys(slug, include_invalid=include_invalid)
 
 
 @router.get("/{slug}/egeria-surveys", response_model=list[EgeriaSurveyReportRow])
