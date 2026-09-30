@@ -49,58 +49,41 @@ class TestHumanInputState:
         assert present is False
         assert "declare a lens" in reason
 
-    def test_documentation_source_locked_when_table_does_not_exist(self, registry):
-        """#348 (re/doc-sources-declare-and-probe) is not merged here, so the
-        `documentation_sources` table does not exist. That must read as
-        NOT PRESENT, never as "cannot tell, allow it" — the reverse of how
-        `_needs_rows` treats an unreadable table for a survey step."""
+    def test_documentation_source_locked_when_none_declared(self, registry):
+        """Zero declared sources reads as NOT PRESENT with the plain reason."""
         project = types.SimpleNamespace(slug="adventureworks")
         present, reason = step_preconditions.human_input_state(registry, project, "documentation_source")
         assert present is False
-        assert "no documentation source" in reason
+        assert reason == "no documentation source declared yet"
 
-    def test_documentation_source_unlocked_once_one_is_declared(self, registry):
-        """The amendment's own gate scenario, stubbed the way E0 stubbed its
-        own live-credential gap: #348 isn't merged, so this test builds the
-        real table by hand (same shape #348 would create) rather than faking
-        the precondition function itself — the CHECK under test is real."""
-        with registry._conn() as conn:
-            conn.execute("""
-                CREATE TABLE documentation_sources (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    database_slug TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    ingest_state TEXT DEFAULT 'not_ingested'
-                )
-            """)
-            conn.execute(
-                "INSERT INTO documentation_sources (database_slug, url) VALUES (?, ?)",
-                ("adventureworks", "https://example.org/docs"),
-            )
-            conn.commit()
+    @pytest.mark.parametrize("entity_type", ["database", "filesystem", "repo"])
+    def test_documentation_source_unlocked_by_the_row_context_reads(self, registry, entity_type):
+        """One declared source, written through the SAME registry method the
+        Context tab's block writes and reads (`add_doc_source`), unlocks --
+        by slug alone, whatever entity_type the row carries. The reader used
+        to query a `documentation_sources.database_slug` table nothing ever
+        created, so a source Context showed never unlocked the analysis."""
+        registry.add_doc_source(entity_type, "adventureworks", "https://example.org/docs")
         project = types.SimpleNamespace(slug="adventureworks")
         present, reason = step_preconditions.human_input_state(registry, project, "documentation_source")
         assert present is True
         assert "1 documentation source" in reason
 
-    def test_ingested_documentation_needs_the_ingest_state_specifically(self, registry):
+    def test_unlock_and_context_agree(self, registry):
+        """The two readers over the same rows: what list_doc_sources (Context)
+        counts is what the precondition counts."""
+        project = types.SimpleNamespace(slug="adventureworks")
+        for n in (0, 1, 2):
+            while len(registry.list_doc_sources("database", "adventureworks")) < n:
+                registry.add_doc_source("database", "adventureworks", f"https://example.org/{n}")
+            declared = len(registry.list_doc_sources("database", "adventureworks"))
+            present, _ = step_preconditions.human_input_state(registry, project, "documentation_source")
+            assert present is (declared > 0)
+
+    def test_ingested_documentation_needs_ingest_specifically(self, registry):
         """A declared-but-not-yet-ingested source must not unlock
-        doc_evidence_check — that is a DIFFERENT human input (ingested
-        content, not a declared link)."""
-        with registry._conn() as conn:
-            conn.execute("""
-                CREATE TABLE documentation_sources (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    database_slug TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    ingest_state TEXT DEFAULT 'not_ingested'
-                )
-            """)
-            conn.execute(
-                "INSERT INTO documentation_sources (database_slug, url, ingest_state) VALUES (?, ?, ?)",
-                ("adventureworks", "https://example.org/docs", "not_ingested"),
-            )
-            conn.commit()
+        doc_evidence_check -- a DIFFERENT human input (ingested content)."""
+        row = registry.add_doc_source("database", "adventureworks", "https://example.org/docs")
         project = types.SimpleNamespace(slug="adventureworks")
         source_present, _ = step_preconditions.human_input_state(registry, project, "documentation_source")
         ingested_present, ingested_reason = step_preconditions.human_input_state(
@@ -108,6 +91,12 @@ class TestHumanInputState:
         assert source_present is True
         assert ingested_present is False
         assert "no documentation has been ingested" in ingested_reason
+        with registry._conn() as conn:
+            conn.execute("UPDATE doc_sources SET ingested_at=? WHERE id=?",
+                         ("2026-09-30T00:00:00+00:00", row["id"]))
+        ingested_present, _ = step_preconditions.human_input_state(
+            registry, project, "ingested_documentation")
+        assert ingested_present is True
 
     def test_confirmed_glossary_term_locked_when_nothing_confirmed(self, registry):
         project = types.SimpleNamespace(slug="adventureworks")
@@ -154,20 +143,7 @@ class TestEnrichmentAnalysesRoute:
         documentation source declared, doc_source_ingestion reads UNLOCKED
         with a Run action; with no lens declared, preliminary_fit reads
         LOCKED with 'declare a lens on the investigation'."""
-        with registry._conn() as conn:
-            conn.execute("""
-                CREATE TABLE documentation_sources (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    database_slug TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    ingest_state TEXT DEFAULT 'not_ingested'
-                )
-            """)
-            conn.execute(
-                "INSERT INTO documentation_sources (database_slug, url) VALUES (?, ?)",
-                ("adventureworks", "https://example.org/docs"),
-            )
-            conn.commit()
+        registry.add_doc_source("database", "adventureworks", "https://example.org/docs")
 
         resp = client.get("/api/context/database/adventureworks/enrichment-analyses")
         assert resp.status_code == 200

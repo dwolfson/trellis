@@ -138,9 +138,9 @@ export const STATES = {
   // `no-surveyor` MOVES here from ○ per the reply -- it used to share a
   // glyph with `unrun`, told apart (in worklist.js's CELL) by colour alone,
   // which is exactly the thing the reply's palette rule forbids.
-  'no-surveyor': { glyph: '◌', family: 'no-answer-here', word: 'no surveyor', tone: 'text-state-gap' },
+  'no-surveyor': { glyph: '◌', family: 'no-answer-here', word: 'no reader yet', tone: 'text-state-gap' },
   // RESERVED for G2/G3.
-  no_reader:               { glyph: '◌', family: 'no-answer-here', word: 'no reader', tone: 'text-state-gap' },
+  no_reader:               { glyph: '◌', family: 'no-answer-here', word: 'no reader yet', tone: 'text-state-gap' },
   containment_undeclared:  { glyph: '◌', family: 'no-answer-here', word: "this engine's grouping isn't declared yet", tone: 'text-state-gap' },
 
   // ── ? tried, couldn't establish (distinct from ∅ -- genuinely unknown,

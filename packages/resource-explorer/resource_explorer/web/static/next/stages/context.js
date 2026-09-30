@@ -31,7 +31,7 @@ import { state, esc, $, apiEntityType } from '/static/next/app.js';
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import {
   JUDGEMENTS, OBSERVATIONS, fieldRowHtml, wireEnrichmentFieldControls,
-  renderEnrichmentEvidence, fetchEnrichmentEvidence, renderDocSources,
+  renderEnrichmentEvidence, renderEnrichmentEvidenceLoading, fetchEnrichmentEvidence, renderDocSources,
 } from '/static/next/stages/enrichment.js';
 
 /** §1: "feeds → Curate (Confidentiality) · Assessment: 'is it safe to use'"
@@ -56,15 +56,16 @@ function fixedFieldFeedsLine(def) {
   return `<div class="text-provenance text-ink-muted">feeds → ${esc(parts.join(' · '))}</div>`;
 }
 
-/** For a catalog human question: derive from its own `answering` block —
- *  `analysis_ids` when present, else the free-text `note` (the CSV's
- *  "Answering Analysis" column, verbatim) so a row with no structured id
- *  still says something rather than nothing. */
+/** For a catalog human question: the analyses its own `answering` block
+ *  names (`analysis_ids`) are the only declared consumers there are. With
+ *  none, the honest line is "nothing reads this yet" -- NEVER the catalog's
+ *  free-text `note` / `answering_mechanism` (CSV prose such as "N/A —
+ *  human-supplied ... may also be Agent over RAG content"), which describes
+ *  how a question might be answered, not who consumes the answer. */
 function questionFeedsLine(entry) {
   const ids = entry.analysis_ids || [];
-  const text = ids.length ? ids.join(', ') : (entry.note || entry.answering_mechanism || '');
-  if (!text) return '';
-  return `<div class="text-provenance text-ink-muted">feeds → ${esc(text)}</div>`;
+  const text = ids.length ? `feeds → ${ids.join(', ')}` : 'nothing reads this yet';
+  return `<div class="text-provenance text-ink-muted">${esc(text)}</div>`;
 }
 
 /* ── 2. What you're looking for: the lens (read-only) ─────────────────── */
@@ -144,7 +145,8 @@ function humanQuestionRowHtml(entry) {
       </div>
     </div>` : '';
   return `<div class="border-b border-rule py-s2">
-    <div class="text-answer text-ink">${esc(entry.question)}</div>
+    <div class="text-question font-heading text-ink">${esc(entry.question)}</div>
+    <div class="pl-s4">
     ${held?.answer && !editing ? `<div class="text-answer text-ink">${esc(held.answer)}</div>` : ''}
     <div class="text-provenance text-ink-muted">
       ${who}
@@ -153,6 +155,7 @@ function humanQuestionRowHtml(entry) {
     </div>
     ${editorHtml}
     ${questionFeedsLine(entry)}
+    </div>
   </div>`;
 }
 
@@ -218,7 +221,7 @@ const DOC_SOURCE_KINDS = ['db', 'filesystem'];
 function docSourcesSlotHtml() {
   if (!DOC_SOURCE_KINDS.includes(state.resourceType)) return '';
   return `<div class="mt-s4">
-    <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Where it's documented</div>
+    <h3 class="m-0 mb-s1 mt-s4 font-heading text-name font-normal text-ink">Where it's documented</h3>
     <div class="mb-s2 text-provenance text-ink-muted">sources, not answers</div>
     <div id="doc-sources-block"></div>
   </div>`;
@@ -228,9 +231,20 @@ function docSourcesSlotHtml() {
 
 const ENRICHMENT_EVIDENCE_FOR_LENS = ['preliminary_fit'];
 
+// The slug the rail's facts currently belong to. A re-render of the SAME
+// resource (after a save) keeps its facts; a different resource clears them
+// and shows "loading" until its own fetch lands -- never the previous one's
+// measurements under the new name.
+let _railFactsSlug = null;
+
 export async function renderContext(slug) {
   const host = $('context-form');
   if (!host) return;
+  if (_railFactsSlug !== slug) {
+    state.enrichmentFacts = {};
+    renderEnrichmentEvidenceLoading(slug);
+    _railFactsSlug = slug;
+  }
   host.innerHTML = `<div class="text-caveat text-ink-muted">Reading what's been supplied…</div>`;
 
   try {
@@ -258,10 +272,12 @@ export async function renderContext(slug) {
   if (state.resourceType === 'db') {
     try {
       const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE_FOR_LENS, apiEntityType(state.resourceType));
-      state.enrichmentFacts = {
-        ...(state.enrichmentFacts || {}),
-        ...Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f])),
-      };
+      if (slug === state.selectedSlug) {
+        state.enrichmentFacts = {
+          ...(state.enrichmentFacts || {}),
+          ...Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f])),
+        };
+      }
     } catch { /* the row degrades to "no lens declared" without it */ }
   }
 
@@ -276,7 +292,7 @@ export async function renderContext(slug) {
       catalogue until you catalogue it (Curate).</p>
 
     <div class="mb-s1 flex items-baseline gap-s2">
-      <span class="font-heading text-question text-ink">What we judge</span>
+      <h3 class="m-0 mb-s1 mt-s4 font-heading text-name font-normal text-ink">What we judge</h3>
       <span class="text-provenance text-ink-muted"><span class="tnum">${setJ}</span> of <span class="tnum">${JUDGEMENTS.length}</span> set · perishable</span>
     </div>
     <div id="context-judgements">${JUDGEMENTS.map((d) => `${fieldRowHtml(d, 'judgement')}${fixedFieldFeedsLine(d)}`).join('')}</div>
@@ -284,12 +300,12 @@ export async function renderContext(slug) {
     ${lensRowHtml()}
 
     <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
-      <span class="text-caps uppercase tracking-caps text-ink">What we record</span>
+      <h3 class="m-0 mb-s1 mt-s4 font-heading text-name font-normal text-ink">What we record</h3>
       <span class="text-provenance text-ink-muted">durable</span>
     </div>
     <div id="context-observations">${OBSERVATIONS.map((d) => `${fieldRowHtml(d, 'observation')}${fixedFieldFeedsLine(d)}`).join('')}</div>
 
-    <div class="mb-s1 mt-s4 text-caps uppercase tracking-caps text-ink">What only you can answer</div>
+    <h3 class="m-0 mb-s1 mt-s4 font-heading text-name font-normal text-ink">What only you can answer</h3>
     <div class="mb-s2 text-provenance text-ink-muted">The catalog's own questions for a person, below — each saves alone.</div>
     <div id="context-human-questions"></div>
 

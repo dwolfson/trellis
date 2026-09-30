@@ -264,9 +264,8 @@ PRECONDITIONS: dict[str, Precondition] = {
 #
 # Every check below reads real stored data where a real table exists, and
 # is deliberately CONSERVATIVE where one does not: an unreadable or missing
-# table (the `documentation_sources`/`confirmed_glossary_terms` tables do
-# not exist in this checkout — #348, re/doc-sources-declare-and-probe, is
-# not yet merged, and no glossary-confirmation mechanism is built at all)
+# table (`confirmed_glossary_terms` does not exist — no glossary-confirmation
+# mechanism is built at all; documentation sources read #348's `doc_sources`)
 # reads as NOT SATISFIED, never as "cannot tell, so allow it" the way
 # `_needs_rows` treats an unreadable table for a SURVEY step. Reversed on
 # purpose from `_needs_rows`: there, "cannot tell" defers to running the
@@ -295,15 +294,19 @@ def _needs_human_input(kind: str) -> Callable:
                     return True, "a lens is declared (from preliminary_fit's own last read)"
                 return False, "declare a lens on the investigation"
             if kind == "documentation_source":
-                n = _row_count(registry, "documentation_sources", project.slug,
-                                slug_column="database_slug")
+                # The table #348 actually created (`doc_sources`), read by
+                # slug alone -- no entity_type filter -- exactly as Context's
+                # block reads it (Context lists by the resource's own slug),
+                # so the unlock and the Context tab cannot disagree.
+                n = _row_count(registry, "doc_sources", project.slug,
+                                slug_column="entity_slug")
                 if n > 0:
                     return True, f"{n} documentation source(s) declared"
                 return False, "no documentation source declared yet"
             if kind == "ingested_documentation":
-                n = _row_count(registry, "documentation_sources", project.slug,
-                                where="ingest_state = 'ingested'",
-                                slug_column="database_slug")
+                n = _row_count(registry, "doc_sources", project.slug,
+                                where="ingested_at IS NOT NULL AND ingested_at != ''",
+                                slug_column="entity_slug")
                 if n > 0:
                     return True, f"{n} documentation source(s) ingested"
                 return False, "no documentation has been ingested yet"

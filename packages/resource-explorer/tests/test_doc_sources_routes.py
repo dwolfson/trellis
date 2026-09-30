@@ -61,6 +61,26 @@ class TestAddAndProbe:
         assert body["probe_ms"] == 42
         assert body["label"] == "Data dict"
 
+    def test_add_stamps_the_signed_in_user_as_added_by(self, client, monkeypatch):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.get_current_user",
+                             lambda request: {"user_id": "erinoverview"})
+        resp = client.post("/api/doc-sources/database/adventureworks",
+                            json={"url": "https://docs.example/dict"})
+        assert resp.status_code == 200
+        assert resp.json()["added_by"] == "erinoverview"
+
+    def test_add_without_identity_stays_unsigned(self, client, monkeypatch):
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
+                             lambda url: _fake_probe())
+        monkeypatch.setattr("resource_explorer.web.routes.doc_sources.get_current_user",
+                             lambda request: None)
+        resp = client.post("/api/doc-sources/database/adventureworks",
+                            json={"url": "https://docs.example/dict"})
+        assert resp.status_code == 200
+        assert resp.json()["added_by"] == ""
+
     def test_add_rejects_a_non_http_url(self, client):
         resp = client.post("/api/doc-sources/database/adventureworks",
                             json={"url": "not-a-url"})

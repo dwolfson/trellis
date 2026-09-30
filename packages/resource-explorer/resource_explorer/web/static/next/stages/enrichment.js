@@ -184,10 +184,30 @@ export async function renderEnrichment(slug) {
  *  fallback) so Context can call it too and reach parity with the old form
  *  rather than retyping the list. Sets `state.enrichmentFacts`. */
 export async function fetchEnrichmentEvidence(slug) {
+  let facts;
   try {
     const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE);
-    state.enrichmentFacts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
-  } catch { state.enrichmentFacts = {}; }
+    facts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
+  } catch { facts = {}; }
+  // A late response for a resource the person has already left must not
+  // overwrite the current one's facts -- state.enrichmentFacts is shared,
+  // unscoped-by-slug state, and the rail reads it.
+  if (slug === state.selectedSlug) state.enrichmentFacts = facts;
+}
+
+/** The rail's honest "loading" frame, written the moment Context starts
+ *  reading a DIFFERENT resource than the one the rail last showed, so the
+ *  previous resource's measurements are never on screen under the new one's
+ *  name. */
+export function renderEnrichmentEvidenceLoading(slug) {
+  const out = $('rail-evidence');
+  if (!out) return;
+  out.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence · enrichment</span>
+      <span class="text-caps text-chrome-muted">for <span class="font-mono">${esc(slug)}</span></span>
+    </div>
+    <div class="text-caps text-chrome-muted">Reading the evidence…</div>`;
 }
 
 /** Re-render the form in place from already-fetched `state.enrichmentFacts`
@@ -409,7 +429,7 @@ function docSourceRowHtml(src) {
       <span class="text-provenance text-ink-muted">${esc(typeLabel)}</span>
     </div>
     <div class="pl-[20px] text-provenance text-ink-muted">
-      ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit}
+      ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit} · added by ${esc(src.added_by || 'unknown')}
       ${src.probe_error ? ` · <span class="text-state-warn">${esc(src.probe_error)}</span>` : ''}
     </div>
     <div class="pl-[20px] text-provenance"${egeriaTitle}>

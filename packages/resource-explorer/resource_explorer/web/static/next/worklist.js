@@ -749,7 +749,7 @@ function digestHtml(members, qs) {
           .map(([k, label]) => `<span><i style="display:inline-block;width:9px;height:9px;
             border-radius:2px;margin-right:5px;background:${DIGEST_TONE[k]}"></i>${esc(label)}</span>`).join('')}
         <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;
-          margin-right:5px;background:${DIGEST_REST}"></i>not run · no surveyor · unread</span>
+          margin-right:5px;background:${DIGEST_REST}"></i>not run · no reader yet · unread</span>
       </div>
     </details>`;
 }
@@ -816,7 +816,7 @@ function readout(qi) {
       ids.length
         ? `<span class="tnum">${ids.length}</span> ${
             ids.length === 1 ? 'analysis' : 'analyses'} · ${esc(ids.join(', '))}`
-        : esc(q.kind === 'gap' ? 'no surveyor exists for this'
+        : esc(q.kind === 'gap' ? 'no reader yet for this'
             : q.kind === 'human' ? 'answered by a person'
             : q.kind === 'direct' ? 'a direct field, not a survey'
             : 'no analysis is mapped to this')}</span>`;
@@ -927,7 +927,7 @@ function renderGrid() {
             ${q.analysis_ids && q.analysis_ids.length
               ? `<div class="text-provenance text-ink-muted">${esc(q.analysis_ids.join(', '))}</div>`
               : `<div class="text-provenance text-ink-muted">${
-                  q.kind === 'gap' ? 'no surveyor exists for this'
+                  q.kind === 'gap' ? 'no reader yet for this'
                   : q.kind === 'human' ? 'answered by a person, not a survey'
                   : q.kind === 'direct' ? 'a direct field, not a survey'
                   : 'no analysis is mapped to this'}</div>`}

@@ -122,3 +122,69 @@ test('renderDocSources keeps its own heading by default (only Context opts out)'
   await enrichment.renderDocSources('amundsen');
   assert.match(host.textContent, /Documentation sources/);
 });
+
+test('routing: switching resources never leaves the previous resource\'s measurements in the rail', async () => {
+  // Resource A (amundsen) renders with a distinctive measurement; then the
+  // person moves to B (coco_pharma) whose fetch is SLOW. While B loads, and
+  // after it lands with no measurements, nothing from A may be on screen.
+  stubServer({ facts: [{ ...SCAN_FACT, headline: 'AMUNDSEN-ONLY-MEASUREMENT' }] });
+  const { document, app } = await routeToContext('repo', 'amundsen', { facts: [{ ...SCAN_FACT, headline: 'AMUNDSEN-ONLY-MEASUREMENT' }] });
+  assert.match(document.getElementById('rail-evidence').textContent, /AMUNDSEN-ONLY-MEASUREMENT/);
+
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/api/analyses/facts')) { await gate; return ok({ subjects: { coco_pharma: [] } }); }
+    if (u.includes('/api/context/')) return ok({ enrichment: {}, question_answers: {} });
+    if (u.includes('/api/doc-sources/')) return ok({ sources: [], published: false, publish_note: '' });
+    return ok({ questions: [] });
+  };
+  app.state.selectedSlug = 'coco_pharma';
+  // The person picks the other resource and lands on Context again through
+  // the strip (the active tab is a span, so re-render the strip off Context).
+  app.state.subTab = 'questions';
+  document.getElementById('content').innerHTML = app.subTabsHtml();
+  app.bindSubTabs();
+  const ctxBtn = document.querySelector('[data-subtab="context"]');
+  ctxBtn.click();
+  for (let i = 0; i < 50 && !/coco_pharma/.test(document.getElementById('rail-evidence').textContent); i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  const loading = document.getElementById('rail-evidence').textContent;
+  assert.doesNotMatch(loading, /AMUNDSEN-ONLY-MEASUREMENT/, 'previous resource\'s data must be gone while the new one loads');
+  assert.match(loading, /Reading the evidence/);
+  assert.equal(Object.keys(app.state.enrichmentFacts).length, 0);
+
+  release();
+  await new Promise((r) => setTimeout(r, 100));
+  const landed = document.getElementById('rail-evidence').textContent;
+  assert.doesNotMatch(landed, /AMUNDSEN-ONLY-MEASUREMENT/);
+  assert.match(landed, /coco_pharma/);
+});
+
+test('doc-source rows say who added them, and "unknown" (not blank) for an unsigned one', async () => {
+  const doc = { sources: [
+    { id: 'a', url: 'https://x/a', label: 'Signed', source_type: 'wiki', added_at: NOW, added_by: 'erinoverview', origin: 'local',
+      probe_state: 'reachable', probe_status_code: 200, probe_ms: 5, probed_at: NOW, egeria_external_ref_guid: '' },
+    { id: 'b', url: 'https://x/b', label: 'Unsigned', source_type: 'wiki', added_at: NOW, added_by: '', origin: 'local',
+      probe_state: 'reachable', probe_status_code: 200, probe_ms: 5, probed_at: NOW, egeria_external_ref_guid: '' },
+  ], published: false, publish_note: '' };
+  const { document } = await routeToContext('db', 'amundsen', { doc });
+  const rows = document.querySelectorAll('[data-source-row]');
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].textContent, /added by erinoverview/);
+  assert.match(rows[1].textContent, /added by unknown/);
+});
+
+test('one word for the ◌ glyph: no-surveyor and no_reader share it, and it is "no reader yet"', async () => {
+  makeDomEnvironment();
+  ensureLoaderRegistered();
+  const { STATES } = await import('/static/next/glyphs.js').then((m) => ({ STATES: m.STATES || m.GLYPH_STATES || null }));
+  const g = await import('/static/next/glyphs.js');
+  assert.equal(g.wordOf('no-surveyor'), 'no reader yet');
+  assert.equal(g.wordOf('no_reader'), 'no reader yet');
+  assert.equal(g.stateEntry('no-surveyor').glyph, g.stateEntry('no_reader').glyph);
+  void STATES;
+});

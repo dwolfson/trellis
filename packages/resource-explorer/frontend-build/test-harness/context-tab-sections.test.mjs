@@ -41,7 +41,7 @@ test('the five sections render in order, each row saying what it feeds', async (
   app.state.investigation = '';
   app.state.investigations = [];
   app.state.questions = [
-    { question: 'What does it cost to run?', kind: 'human', note: '', answering_mechanism: 'Egeria Queries', analysis_ids: [] },
+    { question: 'What does it cost to run?', kind: 'human', note: 'N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content', answering_mechanism: 'Egeria Queries', analysis_ids: [] },
     { question: 'Is this in scope for GDPR?', kind: 'gap', note: '', answering_mechanism: '', analysis_ids: [] },
   ];
 
@@ -76,10 +76,11 @@ test('the five sections render in order, each row saying what it feeds', async (
   // fabricated cross-reference.
   assert.match(html, /feeds → Curate \(catalogue record\) · sourced from license_classification/);
 
-  // The human question row (section 4) shows its own feeds line, derived
-  // from `answering_mechanism` since it has no `analysis_ids`.
+  // The human question row (section 4): no declared consumer (no
+  // `analysis_ids`), so the honest line -- never the catalog's prose.
   assert.match(html, /What does it cost to run\?/);
-  assert.match(html, /feeds → Egeria Queries/);
+  assert.match(html, /nothing reads this yet/);
+  assert.doesNotMatch(html, /feeds → Egeria Queries/);
 
   // Section 4 must NOT include the non-human ("gap") question -- Context's
   // "What only you can answer" is human-catalog-questions only.
@@ -190,4 +191,38 @@ test('the lens row: a declared lens (from preliminary_fit\'s own last read) rend
   const html = document.getElementById('context-form').innerHTML;
   assert.match(html, /a lens is declared for/);
   assert.doesNotMatch(html, /no lens declared/);
+});
+
+test('no feeds line ever carries catalog note prose ("N/A", "may also"); a question with declared analyses names them', async () => {
+  makeDomEnvironment();
+  await loadAppModule();
+  const app = await import('/static/next/app.js');
+  const { renderContext } = await import('/static/next/stages/context.js');
+  app.state.resourceType = 'db';
+  app.state.selectedSlug = 'adventureworks';
+  app.state.investigation = '';
+  app.state.investigations = [];
+  app.state.questions = [
+    { question: 'Prose-only question?', kind: 'human',
+      note: 'N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content',
+      answering_mechanism: 'N/A — may also be Agent over RAG content', analysis_ids: [] },
+    { question: 'Declared question?', kind: 'human', note: 'N/A', answering_mechanism: '', analysis_ids: ['doc_evidence_check'] },
+  ];
+  const host = document.createElement('div');
+  host.id = 'content';
+  document.body.appendChild(host);
+  host.innerHTML = '<div id="context-form"></div>';
+  stubContextFetch({ enrichment: {}, question_answers: {} });
+  await renderContext('adventureworks');
+
+  const feeds = [...document.querySelectorAll('#context-form .text-provenance')]
+    .map((n) => n.textContent.trim())
+    .filter((t) => t.startsWith('feeds') || t.startsWith('nothing reads'));
+  assert.ok(feeds.length >= 2, `expected feeds lines, got ${JSON.stringify(feeds)}`);
+  for (const t of feeds) {
+    assert.doesNotMatch(t, /N\/A/, `feeds line carries catalog prose: ${t}`);
+    assert.doesNotMatch(t, /may also/i, `feeds line carries catalog prose: ${t}`);
+  }
+  assert.ok(feeds.includes('nothing reads this yet'));
+  assert.ok(feeds.includes('feeds → doc_evidence_check'));
 });

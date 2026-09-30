@@ -6634,12 +6634,21 @@ function renderLegend() {
     counts[st] = (counts[st] || 0) + 1;
   }
 
-  const items = LEGEND.filter(([k]) => counts[k]).map(([k, label]) => `
+  // States that share one glyph AND one word (`no-surveyor`, `no_reader`)
+  // are one legend entry with their counts summed -- one word per glyph.
+  const merged = [];
+  for (const [k, label] of LEGEND) {
+    if (!counts[k]) continue;
+    const prior = merged.find((m) => m.label === label);
+    if (prior) prior.n += counts[k];
+    else merged.push({ k, label, n: counts[k] });
+  }
+  const items = merged.map(({ k, label, n }) => `
     <span class="inline-flex items-baseline gap-[5px]">
       <span class="${tone(k, 'paper')} font-glyph" title="${esc(label)}" aria-label="${esc(label)}"
         >${GLYPH[k]}</span>
       <span class="text-ink">${esc(label)}</span>
-      <span class="tnum text-ink">${counts[k]}</span>
+      <span class="tnum text-ink">${n}</span>
     </span>`);
 
   if (pending) {
@@ -7175,7 +7184,7 @@ export function rowInner(entry, i, env) {
     : '';
   const tag = st === 'no-surveyor'
     ? `<span class="ml-auto flex flex-wrap justify-end gap-[4px]">
-        <span class="rounded-pill border border-dashed border-state-gap px-2 py-[1px] text-caps text-state-gap">no surveyor yet</span>
+        <span class="rounded-pill border border-dashed border-state-gap px-2 py-[1px] text-caps text-state-gap">no reader yet</span>
         ${perspectives.map((pv) => `<span class="rounded-pill border border-rule-strong px-2 py-[1px] text-caps text-ink-muted"
           >${esc(pv)}</span>`).join('')}
       </span>`
@@ -8226,13 +8235,13 @@ const STATE_LABEL = {
   answered: 'answered', automatic: 'automatic', unrun: 'not run',
   partial: 'ran, but not at this level',
   human: 'needs human input', 'needs-lens': 'needs a person: declare a lens',
-  'no-surveyor': 'no surveyor exists yet',
+  'no-surveyor': 'no reader yet',
   unclassified: 'unclassified',
 };
 const STATE_SENTENCE = {
   unrun: 'Not run yet.',
   human: 'Answered by a person, not by a survey.',
-  'no-surveyor': 'No surveyor exists for this question.',
+  'no-surveyor': 'No reader yet for this question.',
   unclassified: 'The catalog does not state how this would be answered.',
 };
 
