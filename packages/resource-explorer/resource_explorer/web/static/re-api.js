@@ -821,6 +821,22 @@ export const getSurveyCandidates = (slug, { entityType = 'repo', phase = '' } = 
   get(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/candidates${
     phase ? `?phase=${encodeURIComponent(phase)}` : ''}`);
 
+/* ── Egeria-native surveys (BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md) ─────────
+ *
+ * Rows come back with `run`: the state the SERVER derived from persisted proof.
+ * `refreshNativeSurveys` is the poll target -- read-only against Egeria, and a
+ * registry read only when nothing is in flight. */
+const nativePath = (slug, entityType) =>
+  `/api/native-surveys/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`;
+export const getNativeSurveys = (slug, { entityType = 'database' } = {}) =>
+  get(nativePath(slug, entityType));
+export const runNativeSurvey = (slug, processQualifiedName, { entityType = 'database' } = {}) =>
+  post(`${nativePath(slug, entityType)}/run`, { process_qualified_name: processQualifiedName });
+export const refreshNativeSurveys = (slug, { entityType = 'database' } = {}) =>
+  post(`${nativePath(slug, entityType)}/refresh`);
+export const getNativeSurveyReport = (slug, reportGuid, { entityType = 'database' } = {}) =>
+  get(`${nativePath(slug, entityType)}/reports/${encodeURIComponent(reportGuid)}`);
+
 /** Every authored Survey Definition, catalog-wide -- step_count/fetch_steps
  *  live here, not on a candidates row: the candidates route asks "which
  *  suit THIS resource" (Egeria-backed, per repo); this asks "what surveys

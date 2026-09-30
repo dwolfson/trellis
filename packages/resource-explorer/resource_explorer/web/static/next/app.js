@@ -57,6 +57,7 @@ import {
 // next-steps, purposes, classification, Egeria bind/promote/sync/
 // reclassify) into /next; see that file's own header comment.
 import { renderEnrichment } from '/static/next/stages/enrichment.js';
+import { nativeSurveysSectionHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
@@ -118,6 +119,7 @@ import {
   getDeclaredVsReceived,
   getResourceRuns,
   getSurveyCandidates,
+  getNativeSurveys,
   listSurveyDefinitions,
   getAnalysesIndex,
   getSurveyDashboards,
@@ -4086,7 +4088,7 @@ function nativeProcessesSectionHtml(nativeProcesses) {
   </div>`;
 }
 
-async function loadSurveyPane() {
+export async function loadSurveyPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
@@ -4129,7 +4131,22 @@ async function loadSurveyPane() {
   // Survey Definition candidate here. That is a separate fact from
   // `candidates` (RE-authored definitions) and is shown regardless of whether
   // `candidates` is empty -- not a fallback for the empty state.
-  const nativeProcessesHtml = nativeProcessesSectionHtml(data.egeria_native_processes);
+  //
+  // For a database or filesystem, the Egeria-native surveys are RUNNABLE rows
+  // (BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md): what RE can run, why it cannot run
+  // the rest, and the state derived from persisted proof. If that read fails
+  // the pane falls back to the informational block, so a failure of the new
+  // read never blanks the list Egeria already reported.
+  let nativeRows = null;
+  const nativeEntityType = apiEntityType(state.resourceType);
+  if (nativeEntityType === 'database' || nativeEntityType === 'filesystem') {
+    try {
+      nativeRows = (await getNativeSurveys(slug, { entityType: nativeEntityType })).surveys;
+    } catch { nativeRows = null; }
+  }
+  const nativeProcessesHtml = nativeRows && nativeRows.length
+    ? nativeSurveysSectionHtml(nativeRows)
+    : nativeProcessesSectionHtml(data.egeria_native_processes);
 
   const heavy = all.filter((c) => c.survey_kind === 'automate_full');
   const rest = all.filter((c) => c.survey_kind !== 'automate_full');
@@ -4206,6 +4223,7 @@ async function loadSurveyPane() {
     </div>`;
   bindSubTabs();
 
+  bindNativeSurveys(el, slug, nativeRows);
   el.querySelector('[data-act="rescope"]')?.addEventListener('click', () => loadSurveyPane());
   el.querySelectorAll('[data-defhist]').forEach((b) => b.addEventListener('click', () => {
     const c = all.find((x) => x.qualified_name === b.dataset.defhist);

@@ -189,7 +189,8 @@ def _sweep_native_surveys() -> None:
     registry = ProjectRegistry()
     if not registry.list_in_flight_native_survey_runs(limit=1):
         return
-    n = native_survey_run.sweep_in_flight(registry, native_survey_run.PyegeriaSurveyPort())
+    with native_survey_run.port_session(native_survey_run.PyegeriaSurveyPort()) as port:
+        n = native_survey_run.sweep_in_flight(registry, port)
     if n:
         log.info("Native Egeria survey read-back: read %d in-flight run(s)", n)
 

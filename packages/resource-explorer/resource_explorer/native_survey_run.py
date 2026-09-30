@@ -125,24 +125,6 @@ class EgeriaSurveyPort(Protocol):
     def read_report(self, report_guid: str) -> ReportRead: ...
 
 
-@contextlib.contextmanager
-def _thread_event_loop() -> Iterator[None]:
-    """pyegeria's sync wrappers call `asyncio.get_event_loop()`, which a worker
-    thread does not have. Give this thread one for the duration of the call --
-    the same shape the publish routes and `egeria_resync` use. Never call this
-    from a thread that already runs an event loop; the routes use
-    `asyncio.to_thread` for exactly that reason."""
-    import asyncio
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        yield
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
-
-
 def _iso(value: Any) -> str:
     """Egeria's timestamp (ISO string or epoch millis) as an ISO string; '' when
     it is neither. Not guessing: an unparseable value stays absent."""
@@ -158,12 +140,39 @@ def _iso(value: Any) -> str:
 
 class PyegeriaSurveyPort:
     """The real port. Clients are built lazily, once per instance, with the same
-    env-driven connection RE's other Egeria writers use."""
+    env-driven connection RE's other Egeria writers use.
+
+    **One event loop per instance, not per call.** pyegeria's sync wrappers call
+    `asyncio.get_event_loop()`, which a worker thread does not have, so this
+    gives the thread one -- the same shape the publish routes use. But a pyegeria
+    client caches an HTTP client bound to the loop it first ran on, so a loop
+    created and closed around each call makes the SECOND call on the same client
+    fail with "Event loop is closed" (found live, 2026-09-30, the first time a
+    real port made two calls). The loop therefore lives as long as the port and
+    is closed by `close()` / leaving `port_session`. A port belongs to ONE
+    thread; the routes build one per request and the sweep one per pass.
+    Never use a port from a thread that already runs an event loop."""
 
     def __init__(self) -> None:
         self._curation = None
         self._expert = None
         self._assets = None
+        self._loop = None
+
+    def _enter(self) -> None:
+        import asyncio
+
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+    def close(self) -> None:
+        import asyncio
+
+        if self._loop is not None:
+            self._loop.close()
+            self._loop = None
+            asyncio.set_event_loop(None)
 
     def _connection(self):
         from resource_explorer.rfa_egeria_sync import _egeria_connection_kwargs
@@ -201,27 +210,27 @@ class PyegeriaSurveyPort:
         return isinstance(exc, PyegeriaNotFoundException)
 
     def asset_exists(self, guid: str) -> bool:
-        with _thread_event_loop():
-            try:
-                self._get_expert().get_metadata_element_by_guid(guid)
-            except Exception as exc:  # noqa: BLE001 -- classified below
-                if self._is_not_found(exc):
-                    return False
-                raise
+        self._enter()
+        try:
+            self._get_expert().get_metadata_element_by_guid(guid)
+        except Exception as exc:  # noqa: BLE001 -- classified below
+            if self._is_not_found(exc):
+                return False
+            raise
         return True
 
     def initiate(self, process_qualified_name: str, action_target_name: str,
                  target_guid: str) -> str:
-        with _thread_event_loop():
-            guid = self._get_curation().initiate_gov_action_type(
-                action_type_qualified_name=process_qualified_name,
-                request_source_guids=[],
-                action_targets=[{
-                    "class": "NewActionTarget",
-                    "actionTargetName": action_target_name,
-                    "actionTargetGUID": target_guid.strip(),
-                }],
-            )
+        self._enter()
+        guid = self._get_curation().initiate_gov_action_type(
+            action_type_qualified_name=process_qualified_name,
+            request_source_guids=[],
+            action_targets=[{
+                "class": "NewActionTarget",
+                "actionTargetName": action_target_name,
+                "actionTargetGUID": target_guid.strip(),
+            }],
+        )
         if not guid or guid == "Action not initiated":
             raise NativeSurveyError(
                 f"Egeria did not initiate {process_qualified_name!r} "
@@ -229,8 +238,8 @@ class PyegeriaSurveyPort:
         return guid
 
     def read_action(self, engine_action_guid: str) -> ActionRead:
-        with _thread_event_loop():
-            element = self._get_expert().get_metadata_element_by_guid(engine_action_guid)
+        self._enter()
+        element = self._get_expert().get_metadata_element_by_guid(engine_action_guid)
         props = ((element or {}).get("elementProperties") or {}).get("propertyValueMap") or {}
         status = (props.get("activityStatus") or {}).get("symbolicName") or ""
         if not status:
@@ -242,10 +251,10 @@ class PyegeriaSurveyPort:
         return ActionRead(status=status, message=message)
 
     def report_guid_for_action(self, engine_action_guid: str) -> str | None:
-        with _thread_event_loop():
-            result = self._get_expert().get_related_metadata_elements(
-                engine_action_guid, "ReportOriginator",
-                body={"class": "GetRequestBody"}, starting_at_end=0)
+        self._enter()
+        result = self._get_expert().get_related_metadata_elements(
+            engine_action_guid, "ReportOriginator",
+            body={"class": "GetRequestBody"}, starting_at_end=0)
         if not isinstance(result, dict):
             return None  # pyegeria's "No element found" string: no report yet
         guids = [
@@ -266,11 +275,11 @@ class PyegeriaSurveyPort:
     def read_report(self, report_guid: str) -> ReportRead:
         from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
 
-        with _thread_event_loop():
-            result = self._get_assets().get_asset_by_guid(
-                report_guid,
-                body={"class": "GetRequestBody", "graphQueryDepth": 1},
-                output_format="JSON")
+        self._enter()
+        result = self._get_assets().get_asset_by_guid(
+            report_guid,
+            body={"class": "GetRequestBody", "graphQueryDepth": 1},
+            output_format="JSON")
         if not isinstance(result, dict):
             raise NativeSurveyError(
                 f"Egeria returned no SurveyReport element for {report_guid}")
@@ -297,6 +306,18 @@ class PyegeriaSurveyPort:
             })
         return ReportRead(guid=report_guid, at=at, originator_guid=originator,
                           annotations=annotations)
+
+
+@contextlib.contextmanager
+def port_session(port):
+    """Yield `port`, closing it (its event loop) afterwards when it has a
+    `close`. The one way a real port should be used."""
+    try:
+        yield port
+    finally:
+        close = getattr(port, "close", None)
+        if callable(close):
+            close()
 
 
 # ── the one place proof rows become words ───────────────────────────────────

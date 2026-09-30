@@ -73,9 +73,10 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest) -> di
     submitted_by = requested_by()      # read HERE, in the request, then passed down
 
     def _do() -> dict:
-        return nsr.submit_native_survey(
-            registry, _port(), entity_type, slug, body.process_qualified_name,
-            technology_type=tech, submitted_by=submitted_by)
+        with nsr.port_session(_port()) as port:
+            return nsr.submit_native_survey(
+                registry, port, entity_type, slug, body.process_qualified_name,
+                technology_type=tech, submitted_by=submitted_by)
 
     try:
         state = await asyncio.to_thread(_do)
@@ -107,7 +108,11 @@ async def refresh_native_surveys(entity_type: str, slug: str) -> dict:
     tech = _check(entity_type, slug, registry)
 
     def _do() -> list[dict]:
-        nsr.refresh_resource(registry, _port(), entity_type, slug)
+        # Nothing in flight -> no port is even built (no Egeria client, no
+        # event loop): the poll target must be free when there is nothing to poll.
+        if any(r["in_flight"] for r in nsr.native_survey_rows(registry, entity_type, slug, tech)):
+            with nsr.port_session(_port()) as port:
+                nsr.refresh_resource(registry, port, entity_type, slug)
         return nsr.native_survey_rows(registry, entity_type, slug, tech)
 
     return {"technology_type": tech, "surveys": await asyncio.to_thread(_do)}
