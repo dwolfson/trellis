@@ -213,10 +213,10 @@ function renderHumanQuestions(slug) {
 
 /** Documentation Sources (PR #348), mounted here unchanged: the block is
  *  `enrichment.js`'s own `renderDocSources`, byte-for-byte, into the same
- *  `#doc-sources-block` host the old Enrichment form gave it, for the same
- *  kinds (db, filesystem). E2 applies the reply's §3 corrections in place.
+ *  `#doc-sources-block` host the old Enrichment form gave it, for db, filesystem
+ *  and (E2) repo. E2 applies the reply's §3 corrections in place.
  *  Other kinds get no section (heading included) rather than a "not built" line. */
-const DOC_SOURCE_KINDS = ['db', 'filesystem'];
+const DOC_SOURCE_KINDS = ['db', 'filesystem', 'repo'];
 
 function docSourcesSlotHtml() {
   if (!DOC_SOURCE_KINDS.includes(state.resourceType)) return '';

@@ -20,6 +20,7 @@ import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntity
 // ORIGINAL home: it used to be built inline below, and now calls out to the
 // shared function instead so the Questions tab can call the exact same one.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
+import { glyphSpan } from '/static/next/glyphs.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
  *
@@ -324,15 +325,43 @@ const DOC_SOURCE_TYPES = [
   { value: 'other', label: 'other' },
 ];
 
-const PROBE_GLYPH = {
-  reachable: { glyph: '●', tone: 'text-state-ok' },
-  needs_sign_in: { glyph: '◐', tone: 'text-state-warn' },
-  not_found: { glyph: '○', tone: 'text-state-gap' },
-  blocked: { glyph: '✕', tone: 'text-state-warn' },
+// E2 (2026-09-29, design reply §3): probe states route through glyphs.js's
+// one table -- the local PROBE_GLYPH (a fifth glyph table, with an
+// off-vocabulary `●`) is gone. The glyph and its wording are one decision.
+// timed_out / unreachable / blocked share the `?` family: none of them
+// establishes anything about the page, but they are three DIFFERENT facts
+// (no answer in time / never answered / answered with a refusal).
+const PROBE_GLYPH_STATE = {
+  reachable: 'measured', needs_sign_in: 'scoped', not_found: 'error',
+  blocked: 'not_established', timed_out: 'not_established', unreachable: 'not_established',
 };
-const PROBE_LABEL = {
-  reachable: 'reachable', needs_sign_in: 'needs sign-in', not_found: 'not found', blocked: 'blocked',
-};
+
+function probeGlyphHtml(src) {
+  if (!src.probe_state) return glyphSpan('unrun');
+  return glyphSpan(PROBE_GLYPH_STATE[src.probe_state] || 'not_established');
+}
+
+/** The probe line's wording, per state. Returns {text, used_error}: the
+ *  states that already say why (timed out / unreachable) suppress the
+ *  separate probe_error span so the reason is not shown twice. */
+function probeWording(src) {
+  const code = src.probe_status_code ? `HTTP ${src.probe_status_code}` : '';
+  switch (src.probe_state) {
+    case 'reachable': return { text: ['reachable', code].filter(Boolean).join(' · '), usedError: false };
+    case 'needs_sign_in': return { text: ['reachable behind a sign-in', code].filter(Boolean).join(' · '), usedError: false };
+    case 'not_found': return { text: `not found${code ? ` · ${code}` : ''} — the link is broken, not the site`, usedError: false };
+    case 'blocked': return { text: `blocked by the site${code ? ` · ${code}` : ''}`, usedError: true };
+    case 'timed_out': {
+      const secs = src.probe_ms != null ? `${(src.probe_ms / 1000).toFixed(1)}s` : 'no answer';
+      return { text: `timed out · ${secs} · re-check`, usedError: true };
+    }
+    case 'unreachable': {
+      const why = (src.probe_error || 'no answer').slice(0, 120);
+      return { text: `unreachable · ${why} · re-check`, usedError: true };
+    }
+    default: return { text: src.probe_state || 'not probed yet', usedError: false };
+  }
+}
 
 // Egeria publish-state fix (2026-09-29, extended round 4 same day) — every
 // row carries exactly one of these FIVE states, never blank. Originally
@@ -407,39 +436,43 @@ function scheduleDocSourcesPoll(slug, entityType, deadline) {
 }
 
 function docSourceRowHtml(src) {
-  const g = PROBE_GLYPH[src.probe_state] || { glyph: '?', tone: 'text-ink-muted' };
-  const statusBit = src.probe_status_code ? ` · HTTP ${src.probe_status_code}` : '';
-  const timeBit = src.probe_ms != null ? ` · ${src.probe_ms}ms` : '';
-  const whenBit = src.probed_at ? ` · probed ${esc(ago(src.probed_at))}` : ' · not yet probed';
+  const w = probeWording(src);
+  const timeBit = (src.probe_ms != null && ['reachable', 'needs_sign_in', 'not_found', 'blocked'].includes(src.probe_state))
+    ? ` · ${src.probe_ms}ms` : '';
+  const whenBit = src.probed_at ? ` · probed ${esc(ago(src.probed_at))}` : (src.probe_state ? '' : ' · not probed yet');
   const typeLabel = (DOC_SOURCE_TYPES.find((t) => t.value === src.source_type) || {}).label || src.source_type;
   const originBit = src.origin === 'egeria' ? ' · <span class="text-ink-muted">declared in Egeria</span>' : '';
   const egeriaState = src.egeria_state || 'local_only';
   const egeriaText = (EGERIA_STATE_TEXT[egeriaState] || EGERIA_STATE_TEXT.local_only)(src);
   const egeriaTone = EGERIA_STATE_TONE[egeriaState] || 'text-ink-muted';
-  // The ref GUID is surfaced via `title` rather than in the row's own text —
-  // the brief's "behind/near the evidence link" convention (same idea as the
-  // provenance-glyph tooltips elsewhere in this stage), not clutter on the
-  // line itself.
+  // The ref GUID is surfaced via `title` rather than in the row's own text --
+  // the brief's "behind/near the evidence link" convention, not clutter on
+  // the line itself.
   const egeriaTitle = egeriaState === 'catalogued' && src.egeria_state_detail
     ? ` title="ExternalReference ${esc(src.egeria_state_detail)}"` : '';
+  // E2 §3: signed like every other Context row -- one shared component
+  // (row-anatomy.js), on its own line so the probe line stays purely a
+  // probe line. An unsigned legacy row says so rather than showing nothing.
+  const signature = personRowLineHtml({ author: src.added_by || 'unknown', whenIso: src.added_at || '', verb: 'added by' });
   return `<div class="border-b border-rule py-s2" data-source-row="${esc(src.id)}">
     <div class="flex items-baseline gap-s2">
-      <span class="${g.tone}">${g.glyph}</span>
+      <span data-doc-probe-glyph="${esc(src.id)}">${probeGlyphHtml(src)}</span>
       <a href="${esc(src.url)}" target="_blank" rel="noopener" class="min-w-0 flex-1 truncate text-question text-accent-ink underline">${esc(src.label || src.url)}</a>
       <span class="text-provenance text-ink-muted">${esc(typeLabel)}</span>
     </div>
-    <div class="pl-[20px] text-provenance text-ink-muted">
-      ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit} · added by ${esc(src.added_by || 'unknown')}
-      ${src.probe_error ? ` · <span class="text-state-warn">${esc(src.probe_error)}</span>` : ''}
+    <div class="pl-[20px] text-provenance text-ink-muted" data-doc-probe-line="${esc(src.id)}">
+      ${esc(w.text)}${timeBit}${whenBit}${originBit}
+      ${src.probe_error && !w.usedError ? ` · <span class="text-state-warn">${esc(src.probe_error)}</span>` : ''}
     </div>
+    <div class="pl-[20px] text-provenance text-ink-muted" data-doc-ingest="${esc(src.id)}">ingestion not built yet</div>
     <div class="pl-[20px] text-provenance"${egeriaTitle}>
       <span class="${egeriaTone}" data-doc-egeria-state="${esc(src.id)}">${esc(egeriaText)}</span>
     </div>
+    <div class="pl-[20px] text-provenance text-ink-muted" data-doc-signature="${esc(src.id)}">${signature}</div>
     <div class="pl-[20px] text-provenance text-ink-muted">feeds → nothing reads this yet</div>
     <div class="pl-[20px] mt-[2px] flex items-baseline gap-s3 text-provenance">
       <button type="button" data-doc-recheck="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button>
-      <button type="button" disabled title="ingestion ships in a later slice" class="cursor-not-allowed bg-transparent p-0 text-ink-muted line-through decoration-dotted">ingest — coming soon</button>
-      <button type="button" data-doc-remove="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-state-warn underline">remove</button>
+      <button type="button" data-doc-remove="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">remove</button>
     </div>
   </div>`;
 }
@@ -525,6 +558,11 @@ function renderDocSourcesFromData(slug, entityType, data, deadline) {
     }
   }));
   host.querySelectorAll('[data-doc-remove]').forEach((b) => b.addEventListener('click', async () => {
+    // E2: ask once before deleting. Declining leaves the row and the button
+    // exactly as they were -- no request, no state change.
+    const row = b.closest('[data-source-row]');
+    const name = row?.querySelector('a')?.textContent || 'this source';
+    if (!window.confirm(`Remove documentation source "${name}"?`)) return;
     b.disabled = true; b.textContent = 'removing…';
     try {
       await removeDocSource(entityType, slug, b.dataset.docRemove);
