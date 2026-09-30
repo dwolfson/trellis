@@ -13272,6 +13272,58 @@ async function loadDbSurveyReport() {
   }
 }
 
+// Survey History table. Invalid rows (only present when fetched with
+// include_invalid=true) are muted (opacity-50, same pattern as other
+// disabled/hidden rows) and carry the reason plus when they were MARKED invalid
+// (`invalid_at`) — distinct from when they were originally surveyed (`surveyed_at`).
+function _dbSurveyHistoryTableHtml(rows) {
+  const fmt = t => (t || '').replace('T', ' ').substring(0, 16) + ' UTC';
+  const anyInvalid = rows.some(s => s.invalid_at);
+  let html = `<table class="w-full text-xs" id="db-survey-history-table">
+        <thead class="bg-slate-800/80 text-slate-400">
+          <tr>
+            <th class="px-2 py-1 text-left">Date (UTC)</th>
+            <th class="px-2 py-1 text-right">Schemas</th>
+            <th class="px-2 py-1 text-right">Tables</th>
+            <th class="px-2 py-1 text-right">Columns</th>
+            <th class="px-2 py-1 text-left">Source</th>
+            ${anyInvalid ? '<th class="px-2 py-1 text-left">Invalid</th>' : ''}
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-700/50">`;
+  for (const s of rows) {
+    const inv = !!s.invalid_at;
+    html += `<tr class="hover:bg-slate-700/30${inv ? ' opacity-50 italic' : ''}"${inv ? ' data-invalid="1"' : ''}>
+        <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${fmt(s.surveyed_at)}</td>
+        <td class="px-2 py-1 text-right text-slate-300">${s.schema_count ?? '—'}</td>
+        <td class="px-2 py-1 text-right text-slate-300">${s.table_count ?? '—'}</td>
+        <td class="px-2 py-1 text-right text-slate-400">${s.column_count ?? '—'}</td>
+        <td class="px-2 py-1 text-slate-500">${_esc(s.source || '—')}</td>
+        ${anyInvalid ? `<td class="px-2 py-1 text-slate-500">${inv
+          ? `<span class="invalid-reason">${_esc(s.invalid_reason || '(no reason recorded)')}</span> · marked invalid <span class="invalid-at">${fmt(s.invalid_at)}</span>`
+          : ''}</td>` : ''}
+      </tr>`;
+  }
+  return html + `</tbody></table>`;
+}
+
+let _dbHistoryValid = [];   // the default (valid-only) list, restored when the toggle is unchecked
+async function toggleDbInvalidSurveys(show) {
+  const body = document.getElementById('db-survey-history-body');
+  if (!body || !selectedDatabase) return;
+  if (!show) {
+    body.innerHTML = _dbHistoryValid.length > 1 ? _dbSurveyHistoryTableHtml(_dbHistoryValid) : '';
+    return;
+  }
+  try {
+    const res = await fetch(`/api/databases/${selectedDatabase}/surveys?include_invalid=true`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    body.innerHTML = _dbSurveyHistoryTableHtml(await res.json());
+  } catch (e) {
+    body.innerHTML = `<div class="text-red-400 text-xs py-2">Failed to load invalid surveys: ${_esc(e.message)}</div>`;
+  }
+}
+
 function renderDbSurveyReport(db, surveys) {
   const view = document.getElementById('db-survey-view');
   const latest = surveys[0] || null;
@@ -13555,32 +13607,21 @@ function renderDbSurveyReport(db, surveys) {
   html += `
       </div>
     </div>`;  // Survey history
-  if (surveys.length > 1) {
-    html += `<div class="rpt-section">
+  // Survey history. Rows marked invalid (false-zero repair) are excluded by
+  // default; the "show invalid" toggle re-fetches with ?include_invalid=true and
+  // shows them muted, with the reason and when they were marked.
+  _dbHistoryValid = surveys;
+  html += `<div class="rpt-section" id="db-survey-history-section">
+    <div class="flex items-center justify-between">
       <div class="rpt-section-title">Survey History</div>
-      <table class="w-full text-xs">
-        <thead class="bg-slate-800/80 text-slate-400">
-          <tr>
-            <th class="px-2 py-1 text-left">Date (UTC)</th>
-            <th class="px-2 py-1 text-right">Schemas</th>
-            <th class="px-2 py-1 text-right">Tables</th>
-            <th class="px-2 py-1 text-right">Columns</th>
-            <th class="px-2 py-1 text-left">Source</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-700/50">`;
-    for (const s of surveys) {
-      const ts = (s.surveyed_at||'').replace('T',' ').substring(0,16) + ' UTC';
-      html += `<tr class="hover:bg-slate-700/30">
-        <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${ts}</td>
-        <td class="px-2 py-1 text-right text-slate-300">${s.schema_count ?? '—'}</td>
-        <td class="px-2 py-1 text-right text-slate-300">${s.table_count ?? '—'}</td>
-        <td class="px-2 py-1 text-right text-slate-400">${s.column_count ?? '—'}</td>
-        <td class="px-2 py-1 text-slate-500">${_esc(s.source || '—')}</td>
-      </tr>`;
-    }
-    html += `</tbody></table></div>`;
-  }
+      <label class="text-[10px] text-slate-500 flex items-center gap-1 cursor-pointer"
+             title="Show surveys marked invalid (e.g. false-zero rows), with the reason they are not counted">
+        <input id="db-show-invalid-toggle" type="checkbox" class="accent-emerald-400 cursor-pointer"
+               onchange="toggleDbInvalidSurveys(this.checked)"> show invalid
+      </label>
+    </div>
+    <div id="db-survey-history-body">${surveys.length > 1 ? _dbSurveyHistoryTableHtml(surveys) : ''}</div>
+  </div>`;
 
   if (surveys.length >= 2) {
     html += `<div class="rpt-section">
