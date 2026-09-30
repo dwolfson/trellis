@@ -247,6 +247,106 @@ PRECONDITIONS: dict[str, Precondition] = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Human-input preconditions (ENRICHMENT-E1-CONTEXT-TAB, 2026-09-29 — the
+# project owner's amendment to the designer's reply §0.2: analyses whose
+# prerequisite is a HUMAN INPUT, not a survey read, do run at the Enrichment
+# stage). This module's own docstring says its vocabulary "is deliberately
+# about stored data" — that holds here unchanged: a declared documentation
+# source, a declared lens and a confirmed glossary term are all stored
+# facts, just ones a PERSON writes rather than a survey. Kept as a separate
+# dict rather than folded into `PRECONDITIONS` because the two answer
+# different questions for a caller — `PRECONDITIONS` says "may a SURVEY STEP
+# run" (and its `Precondition.remedy()`/`produced_by()` assume a step
+# produces the missing table); this dict says "is a human input PRESENT",
+# with no step to name as a remedy — the remedy is a person, told in
+# `_needs_human_input`'s own reason text.
+#
+# Every check below reads real stored data where a real table exists, and
+# is deliberately CONSERVATIVE where one does not: an unreadable or missing
+# table (`confirmed_glossary_terms` does not exist — no glossary-confirmation
+# mechanism is built at all; documentation sources read #348's `doc_sources`)
+# reads as NOT SATISFIED, never as "cannot tell, so allow it" the way
+# `_needs_rows` treats an unreadable table for a SURVEY step. Reversed on
+# purpose from `_needs_rows`: there, "cannot tell" defers to running the
+# step, which will itself report an honest absence; here, "cannot tell"
+# must not be indistinguishable from "a person declared this and we lost
+# it" — the direction that matters for a human input is never to claim one
+# exists when it might not.
+def _needs_human_input(kind: str) -> Callable:
+    def check(registry, project) -> tuple[bool, str]:
+        try:
+            if kind == "lens":
+                # No stored, investigation-level DataLens exists yet (§16.5
+                # points 3-5 of the design are explicitly out of scope —
+                # see db_derived.py's own header comment on preliminary_fit).
+                # The one real, already-stored signal is preliminary_fit's
+                # OWN last-read `lens_declared` flag — a resource-scoped
+                # proxy for what should be investigation-scoped. Documented
+                # limitation, not silently assumed: see ENRICHMENT-E1-
+                # CONTEXT-TAB-IMPLEMENTED.md.
+                from resource_explorer.facts import FactLayer
+
+                fl = FactLayer(registry, resource_type="database")
+                fact = fl.fact(project.slug, "preliminary_fit")
+                value = getattr(fact, "value", None) or {}
+                if isinstance(value, dict) and value.get("lens_declared"):
+                    return True, "a lens is declared (from preliminary_fit's own last read)"
+                return False, "declare a lens on the investigation"
+            if kind == "documentation_source":
+                # The table #348 actually created (`doc_sources`), read by
+                # slug alone -- no entity_type filter -- exactly as Context's
+                # block reads it (Context lists by the resource's own slug),
+                # so the unlock and the Context tab cannot disagree.
+                n = _row_count(registry, "doc_sources", project.slug,
+                                slug_column="entity_slug")
+                if n > 0:
+                    return True, f"{n} documentation source(s) declared"
+                return False, "no documentation source declared yet"
+            if kind == "ingested_documentation":
+                n = _row_count(registry, "doc_sources", project.slug,
+                                where="ingested_at IS NOT NULL AND ingested_at != ''",
+                                slug_column="entity_slug")
+                if n > 0:
+                    return True, f"{n} documentation source(s) ingested"
+                return False, "no documentation has been ingested yet"
+            if kind == "confirmed_glossary_term":
+                n = _row_count(registry, "confirmed_glossary_terms", project.slug,
+                                slug_column="database_slug")
+                if n > 0:
+                    return True, f"{n} glossary term(s) confirmed"
+                return False, "no glossary term confirmed yet"
+        except Exception as exc:
+            log.debug("human-input precondition %r could not be checked: %s", kind, exc)
+        return False, f"could not establish whether a {kind.replace('_', ' ')} is present yet"
+    return check
+
+
+#: name (the catalog's `requires_input` vocabulary) → checker. Not
+#: `Precondition` instances — no survey step produces any of these, so
+#: `produced_by()`/`remedy()`'s "run this step" shape does not apply; the
+#: reason string returned by the check IS the remedy.
+HUMAN_INPUT_CHECKS: dict[str, Callable] = {
+    "lens": _needs_human_input("lens"),
+    "documentation_source": _needs_human_input("documentation_source"),
+    "ingested_documentation": _needs_human_input("ingested_documentation"),
+    "confirmed_glossary_term": _needs_human_input("confirmed_glossary_term"),
+}
+
+
+def human_input_state(registry, project, requires_input: str) -> tuple[bool, str]:
+    """(present, reason) for a catalog entry's `requires_input` value.
+
+    An unknown `requires_input` string reads as NOT satisfied rather than
+    raising or silently passing — same conservative direction as every check
+    above, for a caller (the Enrichment "Survey & analyses" map) that must
+    never render "unlocked" for a kind this module does not recognize."""
+    checker = HUMAN_INPUT_CHECKS.get(requires_input)
+    if checker is None:
+        return False, f"unrecognized human-input kind {requires_input!r}"
+    return checker(registry, project)
+
+
 def fresh_hit(registry, project, name: str,
              window_hours: float = DEFAULT_FRESHNESS_WINDOW_HOURS
              ) -> tuple[bool, str | None]:

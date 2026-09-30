@@ -140,6 +140,80 @@ def get_context(entity_type: str, slug: str) -> dict:
     return ProjectRegistry().get_context(entity_type, slug) or {}
 
 
+@router.get("/{entity_type}/{slug}/enrichment-analyses")
+def get_enrichment_analyses(entity_type: str, slug: str) -> dict:
+    """The Enrichment stage's "Survey & analyses" map (ENRICHMENT-E1-
+    CONTEXT-TAB, 2026-09-29 amendment): every catalog entry tagged
+    `intent: enrichment` for this resource type, each with its current
+    unlock state.
+
+    "No analysis runs at the Enrichment stage from a survey read. What you
+    supply here unlocks: ..." — the reply's own premise (§0.2) corrected by
+    the project owner the same day: a class of analysis DOES run here, gated
+    on a human input rather than a survey read. This route computes that
+    state server-side, through the SAME prerequisite-resolver machinery
+    (`step_preconditions.human_input_state`) every other precondition in
+    this codebase goes through, rather than a parallel client-side guess.
+
+    A resource type with no `intent: enrichment` entries (repo, filesystem,
+    today) returns an empty list honestly — that is the map having nothing
+    to say, not a failure to read one.
+    """
+    import types
+
+    from resource_explorer.facts import FactLayer
+    from resource_explorer.surveyors import analysis_catalog_reader as acr
+    from resource_explorer.surveyors import step_preconditions
+
+    entries = acr.get_analyses(entity_type, intent="enrichment", include_egeria_live=False)
+    registry = ProjectRegistry()
+    project = types.SimpleNamespace(slug=slug)
+    fl = FactLayer(registry, resource_type=entity_type)
+    rows = []
+    for entry in entries:
+        requires_input = entry.get("requires_input") or ""
+        if requires_input:
+            present, reason = step_preconditions.human_input_state(registry, project, requires_input)
+        else:
+            # Declared intent: enrichment with no requires_input is a catalog
+            # authoring gap, not "always available" — the same conservative
+            # default every check above takes.
+            present, reason = False, "no requires_input declared for this analysis"
+        # "locked" | "unlocked" | "measured" — the third only ever reachable
+        # from "unlocked" (a locked prerequisite that somehow has a stored
+        # result is a contradiction worth surfacing as unlocked+stale rather
+        # than measured, so a card never reads as done while its own
+        # unlock condition currently fails).
+        card_state = "locked"
+        if present:
+            card_state = "unlocked"
+            try:
+                fact = fl.fact(slug, entry["id"])
+                if getattr(fact, "state", "") in ("measured", "automatic", "answered"):
+                    card_state = "measured"
+            except Exception:
+                pass  # no results reader for a stub id — stays "unlocked"
+        # Whether the per-card Run route can dispatch this analysis. Computed
+        # from the run maps themselves (the same predicate the run route
+        # validates with), so a Run control is never offered for an analysis
+        # with no runner (doc_source_ingestion: slice 2 was never built).
+        if entity_type == "database":
+            from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
+            runnable = database_analysis_has_runner(entry["id"])
+        else:
+            runnable = False
+        rows.append({
+            "id": entry["id"],
+            "name": entry["name"],
+            "runnable": runnable,
+            "requires_input": requires_input,
+            "unlocked": present,
+            "reason": reason,
+            "state": card_state,
+        })
+    return {"analyses": rows}
+
+
 @router.post("/{entity_type}/{slug}")
 async def save_context(entity_type: str, slug: str, data: ContextData, request: Request) -> dict:
     """Save context for a resource.

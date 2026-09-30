@@ -56,7 +56,16 @@ import {
 // Investigations tab (list/create/detail: members, dispositions,
 // next-steps, purposes, classification, Egeria bind/promote/sync/
 // reclassify) into /next; see that file's own header comment.
-import { renderEnrichment } from '/static/next/stages/enrichment.js';
+// Enrichment's Context tab (ENRICHMENT-E1-CONTEXT-TAB) — the new first
+// sub-tab. The judgement/observation form (`renderEnrichment`,
+// `stages/enrichment.js`) used to render inline on the Questions tab
+// whenever `state.stage === 'enrichment'`; it now lives here instead (see
+// loadPane()'s `context` branch below and the Questions branch's own
+// comment on why `renderEnrichment` is no longer called from there).
+// `renderEnrichment`/`renderEnrichmentForm` stay exported from that module
+// (still called from within it, via `context.js`'s shared pieces) even
+// though app.js itself no longer calls `renderEnrichment` directly.
+import { renderContext } from '/static/next/stages/context.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
@@ -166,6 +175,7 @@ import {
   getEntityDispositionHistory,
   setWorkingSetHidden,
   getContext,
+  getEnrichmentAnalysesMap,
   getJournal,
   questionKey,
   writeJournal,
@@ -367,6 +377,19 @@ const RUN_ORDER = new Map(
  * unchanged in what it can say: still "not built in /next", just no longer
  * pretending to be a ninth stage's affordance. */
 const SUB_TABS = [
+  // Context (ENRICHMENT-E1-CONTEXT-TAB, 2026-09-29): Enrichment's new FIRST
+  // sub-tab and its default — everything a person has supplied about the
+  // resource, each row signed, dated, and saying what it feeds. Gated to
+  // the Enrichment stage via `stages`, the same shape `resourceTypes` gates
+  // Schema Inventory to databases below — a stage-specific LEADING tab, per
+  // the designer's reply §1 ("Schema Inventory is a type-specific extra
+  // tab, and Context follows the same pattern"). Every other stage's strip
+  // is unaffected: `subTabsHtml()`'s filter hides this tab entirely rather
+  // than greying it out, since it names something that literally does not
+  // exist off Enrichment (there is no per-stage "Context" content to defer
+  // to), unlike the dashed/deferred tabs below which name a real, just
+  // unbuilt, capability.
+  { id: 'context', label: 'Context', does: "Everything a person has supplied about this resource, each row signed, dated, and saying what it feeds", built: true, stages: ['enrichment'] },
   { id: 'questions', label: 'Questions', does: 'The question checklist', built: true },
   { id: 'survey', label: 'Survey & analyses', does: 'Survey definitions, with their fetch-step counts, and the analyses they run', built: true },
   { id: 'by_analysis', label: 'By analysis', does: 'Survey results grouped by analysis rather than by question', built: true },
@@ -602,7 +625,7 @@ export function feedbackVotesHtml({ theme = 'paper', dataAttr = '', dataValue = 
  * `no-surveyor` — nothing has run AND nothing can; no surveyor exists
  * `unclassified` — the catalog does not say how this would be answered
  */
-function rowState(entry, env) {
+export function rowState(entry, env) {
   const kind = entry.kind || 'unknown';
   if (kind === 'gap') return 'no-surveyor';
   if (kind === 'human') return 'human';
@@ -610,6 +633,10 @@ function rowState(entry, env) {
   if (env && env.answerable) {
     if (env.level_mismatch) return 'partial';
     if (needsLensDeclaration(env)) return 'needs-lens';
+    // A direct-field answer that is a known "nothing there" (every known
+    // fact `nothing_found`, e.g. an empty description) is ∅, not ✓.
+    const known = (env.facts || []).filter((f) => f.is_known);
+    if (kind === 'direct' && known.length && known.every((f) => f.state === 'nothing_found')) return 'nothing';
     return ['direct', 'registry', 'chart'].includes(kind) ? 'automatic' : 'answered';
   }
   // A `direct`/`chart` row with no declared reader is NOT "not run" --
@@ -674,7 +701,7 @@ function isFullyAnswered(env) {
 // literal glyph-to-meaning mapping" bar. `needs-lens` (§2.4) is the fit row's
 // own honest state -- same ⚠ family as `human`, its own word.
 const GLYPH_KEYS = [
-  'answered', 'automatic', 'unrun', 'partial', 'human', 'needs-lens', 'no-surveyor',
+  'answered', 'automatic', 'nothing', 'unrun', 'partial', 'human', 'needs-lens', 'no-surveyor',
   // `no_reader` (glyphs.js's RESERVED-for-G2/G3 entry, now claimed here):
   // same ◌ glyph/family as `no-surveyor` ("no answer here"), its own word
   // ("no reader") -- `no-surveyor` means no MECHANISM exists at all (a
@@ -704,6 +731,7 @@ export const STATE_TONE = {
   answered:      { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
   partial:       { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   automatic:     { paper: 'text-state-ok',    chrome: 'text-state-ok-on-dark' },
+  nothing: { paper: 'text-state-ok', chrome: 'text-state-ok-on-dark' },
   unrun:         { paper: 'text-state-warn',  chrome: 'text-state-warn-on-dark' },
   human:         { paper: 'text-ink',         chrome: 'text-chrome-ink' },
   // Same role as `human` -- "needs your attention" -- §2.4's fit row.
@@ -938,6 +966,12 @@ function renderIntentNav() {
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
       state.stage = b.dataset.stage;
+      // ENRICHMENT-E1-CONTEXT-TAB: "Enrichment opens on Context, Context tab
+      // is the default." Only redirects the module-level default
+      // ('questions') — a subTab the person deliberately chose on another
+      // stage (Survey & analyses, Disposition, ...) survives the switch
+      // unchanged, same as every other stage-to-stage navigation today.
+      if (state.stage === 'enrichment' && state.subTab === 'questions') state.subTab = 'context';
       writeUrl();
       renderIntentNav();
       loadPane();
@@ -2735,7 +2769,13 @@ function writeUrl() {
   if (state.resourceType !== 'repo') p.set('type', state.resourceType);
   if (state.selectedSlug) p.set('resource', state.selectedSlug);
   if (state.stage !== 'scouting') p.set('stage', state.stage);
-  if (state.subTab !== 'questions') p.set('tab', state.subTab);
+  // ENRICHMENT-E1-CONTEXT-TAB: Context is Enrichment's own default, not
+  // 'questions' — omit `tab=` only when subTab already matches whichever
+  // one is the default FOR THIS STAGE, so a bookmarked Enrichment URL
+  // doesn't carry a redundant `tab=context` while still correctly carrying
+  // `tab=questions` if that's what was deliberately chosen instead.
+  const defaultSubTab = state.stage === 'enrichment' ? 'context' : 'questions';
+  if (state.subTab !== defaultSubTab) p.set('tab', state.subTab);
   if (state.workListSlug) p.set('worklist', state.workListSlug);
   if (state.activePerspectives.size) p.set('perspectives', [...state.activePerspectives].join(','));
   const url = `${location.pathname}${p.toString() ? `?${p}` : ''}`;
@@ -2751,6 +2791,11 @@ function readUrl() {
     if (p.get('resource')) state.selectedSlug = p.get('resource');
     if (p.get('stage')) state.stage = p.get('stage');
     if (p.get('tab')) state.subTab = p.get('tab');
+    // A bookmarked/shared `?stage=enrichment` with no `?tab=` should open on
+    // Context, same as clicking into Enrichment from the nav (see that
+    // click handler's own comment) — the URL restore path was the one place
+    // this default did not reach.
+    else if (state.stage === 'enrichment' && state.subTab === 'questions') state.subTab = 'context';
     if (p.get('worklist')) state.workListSlug = p.get('worklist');
     const persp = p.get('perspectives');
     if (persp) state.activePerspectives = new Set(persp.split(',').filter(Boolean));
@@ -3249,9 +3294,10 @@ export function bindResourceHeader() {
  * dashed rule the unbuilt intent uses, and clicking one says so and links
  * out rather than doing nothing.
  */
-function subTabsHtml() {
+export function subTabsHtml() {
   return `<div class="mb-s4 flex flex-wrap items-baseline gap-s3 font-heading text-subtab">
-    ${SUB_TABS.filter((t) => !t.resourceTypes || t.resourceTypes.includes(state.resourceType)).map((t) => {
+    ${SUB_TABS.filter((t) => !t.resourceTypes || t.resourceTypes.includes(state.resourceType))
+      .filter((t) => !t.stages || t.stages.includes(state.stage)).map((t) => {
       if (t.id === state.subTab) {
         return `<span class="border-b border-accent pb-[2px] text-ink">${t.label}</span>`;
       }
@@ -4084,6 +4130,188 @@ function nativeProcessesSectionHtml(nativeProcesses) {
         ${p.description ? `<div class="text-ink-muted">${esc(p.description)}</div>` : ''}
       </div>`).join('')}
   </div>`;
+}
+
+/* ── Enrichment: Context, and the "Survey & analyses" map ─────────────────
+ *
+ * ENRICHMENT-E1-CONTEXT-TAB (2026-09-29). Context is its own pane (not a
+ * Questions-engine variant): it fetches the checklist itself so
+ * `stages/context.js`'s `renderContext` can filter to `kind === 'human'`
+ * rows for its own "What only you can answer" section, then hands off.
+ *
+ * Survey & analyses and By analysis on Enrichment are NOT the generic
+ * per-stage panes every other stage uses — the designer's reply (§1,
+ * corrected by the project owner's amendment the same day) makes this
+ * stage's version of both tabs say something different: which
+ * human-input-gated analyses this stage's own inputs unlock, and their
+ * live state, rather than a list of survey definitions or a per-intent
+ * results board.
+ */
+async function loadContextPane() {
+  const el = $('content');
+  const blocked = paneNeedsRepo();
+  if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
+  const slug = state.selectedSlug;
+
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="context-form"></div>`;
+  bindSubTabs();
+  bindResourceHeader();
+
+  let checklist;
+  try {
+    checklist = await getQuestions(slug, {
+      phase: 'enrichment',
+      perspectives: [...state.activePerspectives],
+      purposes: currentPurposes(),
+      entityType: apiEntityType(state.resourceType),
+    });
+  } catch (err) {
+    $('context-form').innerHTML = `<div class="py-s3 text-answer text-accent-ink">
+      The checklist could not be loaded: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug || state.subTab !== 'context') return;   // a faster click won
+  state.questions = checklist.questions || [];
+  await renderContext(slug);
+}
+
+/** In words: what unlocks an Enrichment-tier analysis, from its catalog
+ *  `requires_input` value — the same vocabulary `analysis_catalog.yaml`'s
+ *  own comments use, said as a sentence rather than a snake_case token. */
+export function requiresInputInWords(requiresInput) {
+  const WORDS = {
+    lens: 'a declared lens',
+    documentation_source: 'a declared, reachable documentation source',
+    ingested_documentation: 'ingested documentation',
+    confirmed_glossary_term: 'a confirmed glossary term',
+  };
+  return WORDS[requiresInput] || (requiresInput ? requiresInput.replace(/_/g, ' ') : 'an unnamed human input');
+}
+
+/** locked | unrun (unlocked, Run available) | measured — the existing
+ *  glyph vocabulary (glyphs.js's STATES, via `stateEntry`), not a new one,
+ *  per the brief's own instruction to reuse "the existing analysis-card
+ *  state rendering this codebase already has." `no-surveyor` (◌) is the
+ *  closest existing meaning to "cannot be answered here yet" for locked;
+ *  `unrun` (○) already means "a surveyor exists, nothing has run" and
+ *  reads correctly for "unlocked, Run available". */
+export function enrichmentAnalysisCardStateKey(row) {
+  if (row.state === 'measured') return 'measured';
+  // Unlocked, but no runner is mapped for it (`runnable === false`, computed
+  // server-side from the run maps): nothing can answer it yet, so ◌ -- not
+  // ○ "not run", which promises a runner exists.
+  if (row.unlocked && row.runnable === false) return 'no-surveyor';
+  if (row.unlocked) return 'unrun';
+  return 'no-surveyor';
+}
+
+export function enrichmentAnalysisRowHtml(row) {
+  const key = enrichmentAnalysisCardStateKey(row);
+  const g = stateEntry(key);
+  const runBtn = row.unlocked && row.runnable !== false && row.state !== 'measured'
+    ? `<button type="button" data-run-enrichment-analysis="${esc(row.id)}"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Run</button>`
+    : '';
+  return `<div class="border-b border-rule py-s2">
+    <div class="flex items-baseline gap-s2 text-answer text-ink">
+      <span class="${g.tone}">${g.glyph}</span>
+      <span class="min-w-0 flex-1 font-mono">${esc(row.name || row.id)}</span>
+      ${runBtn}
+    </div>
+    <div class="pl-[20px] text-provenance text-ink-muted">
+      unlocked by: ${esc(requiresInputInWords(row.requires_input))} ·
+      ${row.unlocked ? esc(row.reason) : `<span class="text-state-warn">${esc(row.reason)}</span>`}
+      ${row.unlocked && row.runnable === false
+        ? `<div class="text-ink-muted">unlocked · ${row.id === 'doc_source_ingestion' ? 'ingestion' : 'this analysis'} not built yet</div>` : ''}
+    </div>
+  </div>`;
+}
+
+/** Survey & analyses, on Enrichment: the amendment's map. */
+async function loadEnrichmentAnalysesMapPane() {
+  const el = $('content');
+  const blocked = paneNeedsRepo();
+  if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
+  const slug = state.selectedSlug;
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="enrichment-analyses-map" class="text-caveat text-ink-muted">Reading what's unlocked…</div>`;
+  bindSubTabs();
+  bindResourceHeader();
+
+  let rows = [];
+  try {
+    const res = await getEnrichmentAnalysesMap(apiEntityType(state.resourceType), slug);
+    rows = res.analyses || [];
+  } catch (err) {
+    $('enrichment-analyses-map').innerHTML = `<div class="text-answer text-accent-ink">
+      The map could not be read: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (slug !== state.selectedSlug || state.subTab !== 'survey') return;
+
+  const host = $('enrichment-analyses-map');
+  host.innerHTML = `
+    <p class="mb-s3 max-w-[70ch] text-answer text-ink">No analysis runs at the Enrichment stage from a
+      survey read. What you supply here unlocks:</p>
+    ${rows.length ? rows.map(enrichmentAnalysisRowHtml).join('')
+      : `<div class="text-caveat text-ink-muted">No analyses declare an Enrichment-tier prerequisite for
+          ${esc(state.resourceType === 'db' ? 'databases' : state.resourceType)} yet.</div>`}`;
+
+  host.querySelectorAll('[data-run-enrichment-analysis]').forEach((b) => b.addEventListener('click', async () => {
+    const analysisId = b.dataset.runEnrichmentAnalysis;
+    const label = b.textContent;
+    b.disabled = true; b.textContent = 'running…';
+    try {
+      await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
+      await loadEnrichmentAnalysesMapPane();
+    } catch (err) {
+      b.disabled = false;
+      // A stub id (doc_source_ingestion, doc_evidence_check,
+      // semantic_suggestions) has no runner behind it yet — see
+      // analysis_catalog.yaml's own comment on those three entries. This is
+      // the honest degradation for that expected case, not a bug.
+      b.textContent = `not built yet: ${err.message}`;
+      setTimeout(() => { b.textContent = label; b.disabled = false; }, 4000);
+    }
+  }));
+}
+
+/** By analysis, on Enrichment: one summary line, per the reply §1. */
+async function loadEnrichmentByAnalysisSummaryPane() {
+  const el = $('content');
+  const blocked = paneNeedsRepo();
+  if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
+  const slug = state.selectedSlug;
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="enrichment-by-analysis-summary" class="text-caveat text-ink-muted">Reading…</div>`;
+  bindSubTabs();
+  bindResourceHeader();
+
+  let rows = [];
+  try {
+    const res = await getEnrichmentAnalysesMap(apiEntityType(state.resourceType), slug);
+    rows = res.analyses || [];
+  } catch { rows = []; }
+  if (slug !== state.selectedSlug || state.subTab !== 'by_analysis') return;
+
+  const unlocked = rows.filter((r) => r.unlocked).length;
+  const host = $('enrichment-by-analysis-summary');
+  host.innerHTML = `<p class="max-w-[70ch] text-answer text-ink">
+    No analysis runs at the Enrichment stage from a survey read; what you supply here unlocks
+    <span class="tnum">${unlocked}</span> of <span class="tnum">${rows.length}</span> analyses today —
+    <button type="button" data-goto-enrichment-survey class="cursor-pointer bg-transparent p-0 text-accent-ink underline">see Survey & analyses ›</button></p>`;
+  host.querySelector('[data-goto-enrichment-survey]')?.addEventListener('click', () => {
+    state.subTab = 'survey';
+    writeUrl();
+    loadPane();
+  });
 }
 
 async function loadSurveyPane() {
@@ -6392,7 +6620,7 @@ function deferredPaneHtml(tab) {
  * reading order, not a second vocabulary.
  */
 const LEGEND_ORDER = [
-  'answered', 'automatic', 'partial', 'unrun', 'human', 'needs-lens', 'no-surveyor',
+  'answered', 'automatic', 'nothing', 'partial', 'unrun', 'human', 'needs-lens', 'no-surveyor',
   // `no_reader` counted separately from `unrun` -- DATABASE-DIRECT-FIELD-
   // ROWS-IMPLEMENTED.md: the whole point of the vocabulary fix is that a
   // reader-less direct/chart row must not be folded into the "not run"
@@ -6417,12 +6645,21 @@ function renderLegend() {
     counts[st] = (counts[st] || 0) + 1;
   }
 
-  const items = LEGEND.filter(([k]) => counts[k]).map(([k, label]) => `
+  // States that share one glyph AND one word (`no-surveyor`, `no_reader`)
+  // are one legend entry with their counts summed -- one word per glyph.
+  const merged = [];
+  for (const [k, label] of LEGEND) {
+    if (!counts[k]) continue;
+    const prior = merged.find((m) => m.label === label);
+    if (prior) prior.n += counts[k];
+    else merged.push({ k, label, n: counts[k] });
+  }
+  const items = merged.map(({ k, label, n }) => `
     <span class="inline-flex items-baseline gap-[5px]">
       <span class="${tone(k, 'paper')} font-glyph" title="${esc(label)}" aria-label="${esc(label)}"
         >${GLYPH[k]}</span>
       <span class="text-ink">${esc(label)}</span>
-      <span class="tnum text-ink">${counts[k]}</span>
+      <span class="tnum text-ink">${n}</span>
     </span>`);
 
   if (pending) {
@@ -6516,11 +6753,23 @@ async function loadPane() {
   }
 
   if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
+  // ENRICHMENT-E1-CONTEXT-TAB: Context is its own pane, not a Questions-
+  // engine variant — see loadContextPane() below.
+  if (state.subTab === 'context') { await loadContextPane(); return; }
+  // Survey & analyses on Enrichment is the amendment's MAP (project owner,
+  // 2026-09-29), not the generic per-stage survey-candidates pane every
+  // other stage uses: "No analysis runs at the Enrichment stage from a
+  // survey read. What you supply here unlocks: ..." — see
+  // loadEnrichmentAnalysesMapPane() below.
+  if (state.subTab === 'survey' && state.stage === 'enrichment') { await loadEnrichmentAnalysesMapPane(); return; }
   if (state.subTab === 'survey') { await loadSurveyPane(); return; }
   // 'dashboard' is a retired tab id -- a bookmarked/shared URL from before
   // the stage-page round lands on its nearest surviving surface rather than
   // the deferred-pane message a stranger id would get.
   if (state.subTab === 'dashboard') { state.subTab = 'by_analysis'; writeUrl(); }
+  // By analysis on Enrichment says the same thing as the map, in one line,
+  // and links there (reply §1) — not the generic per-intent board.
+  if (state.subTab === 'by_analysis' && state.stage === 'enrichment') { await loadEnrichmentByAnalysisSummaryPane(); return; }
   if (state.subTab === 'by_analysis') { await loadByAnalysisPane(); return; }
   if (state.subTab === 'disposition') { await loadDispositionPane(); return; }
 
@@ -6657,7 +6906,6 @@ async function loadPane() {
     </div>
     <div id="state-legend" class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
     <div class="my-s3 h-px bg-rule"></div>
-    <div id="enrichment-form"></div>
     <div id="question-rows"></div>`;
   bindSubTabs();
   bindResourceHeader();
@@ -6730,7 +6978,13 @@ async function loadPane() {
 
   rows.innerHTML = state.questions.map((q, i) => rowShell(q, i)).join('');
   wireHumanAnswers(rows, slug);
-  if (state.stage === 'enrichment') renderEnrichment(slug);
+  // The judgement/observation form used to render inline here
+  // (`renderEnrichment`, writing to `#enrichment-form`) whenever
+  // `state.stage === 'enrichment'`, regardless of sub-tab — the pre-E1
+  // merged Enrichment/Questions pane E0's own doc describes. It now lives
+  // on the Context tab instead (`loadContextPane()`, `stages/context.js`'s
+  // `renderContext`), so this branch is gone; the Questions tab under
+  // Enrichment renders exactly like every other stage's Questions tab.
   updateAnsweredCount();
   renderLegend();
 
@@ -6941,7 +7195,7 @@ export function rowInner(entry, i, env) {
     : '';
   const tag = st === 'no-surveyor'
     ? `<span class="ml-auto flex flex-wrap justify-end gap-[4px]">
-        <span class="rounded-pill border border-dashed border-state-gap px-2 py-[1px] text-caps text-state-gap">no surveyor yet</span>
+        <span class="rounded-pill border border-dashed border-state-gap px-2 py-[1px] text-caps text-state-gap">no reader yet</span>
         ${perspectives.map((pv) => `<span class="rounded-pill border border-rule-strong px-2 py-[1px] text-caps text-ink-muted"
           >${esc(pv)}</span>`).join('')}
       </span>`
@@ -7235,13 +7489,13 @@ function provenanceLine(entry, i, lines, st) {
 
   // How it was known, when it was not a survey. A direct field and a survey
   // result are different kinds of claim and must not read alike.
-  if (st === 'automatic') {
+  if (st === 'automatic' || st === 'nothing') {
     const how = { direct: 'direct field', registry: 'from the registry', chart: 'chart' }[entry.kind];
     if (how) bits.push(how);
   }
 
   const actions = [];
-  if (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens') {
+  if (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens' || st === 'nothing') {
     actions.push(`<button data-evidence="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">evidence</button>`);
   }
   // A relationship answer has a diagram behind it. It cannot be read in a
@@ -7266,7 +7520,7 @@ function provenanceLine(entry, i, lines, st) {
   // "sources" names first) -- a question naming several analyses gets the
   // rest via that analysis's own row on `by_analysis`, not duplicated here.
   const primaryId = (entry.analysis_ids || [])[0];
-  if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens')) {
+  if (primaryId && (st === 'answered' || st === 'automatic' || st === 'partial' || st === 'needs-lens' || st === 'nothing')) {
     actions.push(`<button data-numbers="${i}" data-numbers-for="${esc(primaryId)}"
       data-numbers-level="${esc(primaryQuestionLevel(entry))}"
       class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>`);
@@ -7989,16 +8243,16 @@ function rowAsMarkdown(entry, i) {
 // every call site went with it.
 
 const STATE_LABEL = {
-  answered: 'answered', automatic: 'automatic', unrun: 'not run',
+  answered: 'answered', automatic: 'automatic', nothing: 'nothing found', unrun: 'not run',
   partial: 'ran, but not at this level',
   human: 'needs human input', 'needs-lens': 'needs a person: declare a lens',
-  'no-surveyor': 'no surveyor exists yet',
+  'no-surveyor': 'no reader yet',
   unclassified: 'unclassified',
 };
 const STATE_SENTENCE = {
   unrun: 'Not run yet.',
   human: 'Answered by a person, not by a survey.',
-  'no-surveyor': 'No surveyor exists for this question.',
+  'no-surveyor': 'No reader yet for this question.',
   unclassified: 'The catalog does not state how this would be answered.',
 };
 

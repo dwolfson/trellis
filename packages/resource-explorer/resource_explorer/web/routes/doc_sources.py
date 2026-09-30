@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from resource_explorer.doc_source_egeria import (
@@ -41,6 +41,7 @@ from resource_explorer.egeria_outbox import (
     enqueue_doc_source_publish,
     enqueue_doc_source_unpublish,
 )
+from resource_explorer.auth import get_current_user
 from resource_explorer.registry import ProjectRegistry
 
 log = logging.getLogger(__name__)
@@ -355,15 +356,24 @@ def list_doc_sources(entity_type: str, slug: str) -> DocSourcesResponse:
 
 
 @router.post("/{entity_type}/{slug}", response_model=DocSourceOut)
-def add_doc_source(entity_type: str, slug: str, body: DocSourceCreate) -> DocSourceOut:
+def add_doc_source(entity_type: str, slug: str, body: DocSourceCreate, request: Request) -> DocSourceOut:
     registry = _registry()
     entity = _resolve_entity(registry, entity_type, slug)
     url = body.url.strip()
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="url must be an http(s) URL")
 
+    # Signed-in identity, stamped server-side the same way `save_field` stamps
+    # an enrichment author -- read from the request here, on the request's own
+    # thread, before any background work. The row's `added_by` was never set
+    # at all (the route did not pass it), so every declared source was
+    # unsigned; this is not the bare-thread ContextVar drop, the identity was
+    # simply never read. Anonymous callers stay unsigned ('') and the display
+    # says "added by unknown".
+    user = get_current_user(request) or {}
+    added_by = user.get("user_id") or user.get("sub") or user.get("username") or ""
     row = registry.add_doc_source(entity_type, slug, url, label=body.label,
-                                   source_type=body.source_type)
+                                   source_type=body.source_type, added_by=added_by)
     # Probe immediately on add (the brief's step 2) — synchronous, so the
     # response already carries the state; the gate's "within five seconds"
     # is this call's own latency, not a follow-up poll.

@@ -277,3 +277,8 @@ drawing.
 4. **The observation states** from §2 (licence first, as today's one case), and
    the lens row once the investigation can hold a lens.
 5. **The color fixes** in §5: three small edits.
+
+---
+
+**Addendum 2026-09-29, design session:** analyses whose prerequisite is a
+human input do run at Enrichment; the tab lists them as unlocked; see E1.

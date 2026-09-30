@@ -50,14 +50,14 @@ import { personRowLineHtml } from '/static/next/row-anatomy.js';
  * Nothing here is written to the catalogue until Curate. That sentence is
  * the one misconception worth pre-empting, and it is on the pane.
  */
-const JUDGEMENTS = [
+export const JUDGEMENTS = [
   { key: 'sensitivity',  label: 'Sensitivity',  options: ['public', 'internal', 'confidential', 'restricted'] },
   { key: 'criticality',  label: 'Criticality',  options: ['low', 'important', 'critical'] },
   { key: 'intended_use', label: 'Intended use', placeholder: 'what is this for, here?' },
   { key: 'actual_use',   label: 'Actual use',   placeholder: 'how is it used today?' },
   { key: 'owner',        label: 'Owner',        placeholder: 'who answers for it?' },
 ];
-const OBSERVATIONS = [
+export const OBSERVATIONS = [
   { key: 'licence',      label: 'Licence',      fromAnalysis: 'license_classification' },
   { key: 'environment',  label: 'Environment',  options: ['prod', 'dev', 'test', 'research', 'archive'] },
   { key: 'retention',    label: 'Retention',    placeholder: 'how long, and by whose rule?' },
@@ -174,12 +174,40 @@ export async function renderEnrichment(slug) {
   const host = $('enrichment-form');
   if (!host) return;
   host.innerHTML = `<div class="text-caveat text-ink-muted">Reading the evidence…</div>`;
-  try {
-    const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE);
-    state.enrichmentFacts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
-  } catch { state.enrichmentFacts = {}; }
+  await fetchEnrichmentEvidence(slug);
   if (slug !== state.selectedSlug) return;
   renderEnrichmentForm(slug);
+}
+
+/** The evidence fetch `renderEnrichment` always did, extracted unchanged
+ *  (same call, same eight ids, same default entity type, same failure
+ *  fallback) so Context can call it too and reach parity with the old form
+ *  rather than retyping the list. Sets `state.enrichmentFacts`. */
+export async function fetchEnrichmentEvidence(slug) {
+  let facts;
+  try {
+    const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE);
+    facts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
+  } catch { facts = {}; }
+  // A late response for a resource the person has already left must not
+  // overwrite the current one's facts -- state.enrichmentFacts is shared,
+  // unscoped-by-slug state, and the rail reads it.
+  if (slug === state.selectedSlug) state.enrichmentFacts = facts;
+}
+
+/** The rail's honest "loading" frame, written the moment Context starts
+ *  reading a DIFFERENT resource than the one the rail last showed, so the
+ *  previous resource's measurements are never on screen under the new one's
+ *  name. */
+export function renderEnrichmentEvidenceLoading(slug) {
+  const out = $('rail-evidence');
+  if (!out) return;
+  out.innerHTML = `
+    <div class="mb-s1 flex items-baseline gap-s2">
+      <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence · enrichment</span>
+      <span class="text-caps text-chrome-muted">for <span class="font-mono">${esc(slug)}</span></span>
+    </div>
+    <div class="text-caps text-chrome-muted">Reading the evidence…</div>`;
 }
 
 /** Re-render the form in place from already-fetched `state.enrichmentFacts`
@@ -196,7 +224,6 @@ function renderEnrichmentForm(slug) {
   if (!host) return;
 
   const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
-  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   host.innerHTML = `
     <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here is written to the catalogue until you catalogue it (Curate).
       What you set here is testimony — yours, dated — and the surveys' findings in the rail are material to read, not answers to accept.</p>
@@ -214,6 +241,21 @@ function renderEnrichmentForm(slug) {
     <div class="mb-s1 mt-s4 text-caps uppercase tracking-caps text-ink">What only you can answer</div>
     <div class="mb-s2 text-provenance text-ink-muted">The catalog's own questions for a person, below — each saves alone.</div>`;
 
+  wireEnrichmentFieldControls(host, slug, () => renderEnrichmentForm(slug));
+  renderEnrichmentEvidence(slug);
+  if (['db', 'filesystem'].includes(state.resourceType)) renderDocSources(slug);
+}
+
+/** Save-control wiring for the judgement/observation rows built by
+ *  `fieldRowHtml` above (`[data-save]`/`[data-owner-interim]`/
+ *  `[data-confirm]`) — extracted (ENRICHMENT-E1-CONTEXT-TAB) so
+ *  `stages/context.js`'s Context tab can wire the SAME controls against its
+ *  own container, rather than reimplementing the save/confirm/interim-owner
+ *  logic a second time. `rerender` is called after every successful save —
+ *  `renderEnrichmentForm` here, `renderContext` there — so each caller
+ *  re-renders its own pane, not the other one's. */
+export function wireEnrichmentFieldControls(host, slug, rerender) {
+  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   host.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
     const key = b.dataset.save; const kind = b.dataset.kind;
     const ctl = host.querySelector(`[data-field="${key}"]`);
@@ -228,7 +270,7 @@ function renderEnrichmentForm(slug) {
         source: kind === 'observation' ? 'user' : '',
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
-      renderEnrichmentForm(slug);
+      rerender();
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not saved: ${err.message}`;
@@ -241,7 +283,7 @@ function renderEnrichmentForm(slug) {
         value: b.dataset.ownerInterim, kind: 'judgement', evidence: evidenceSnapshot(), interim: true,
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), owner: out.field };
-      renderEnrichmentForm(slug);
+      rerender();
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not recorded: ${err.message}`;
@@ -254,14 +296,12 @@ function renderEnrichmentForm(slug) {
         value: b.dataset.value, kind: 'observation', source: b.dataset.source,
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [b.dataset.confirm]: out.field };
-      renderEnrichmentForm(slug);
+      rerender();
     } catch (err) {
       b.disabled = false;
       b.textContent = err.status === 401 ? 'sign in to record' : `not confirmed: ${err.message}`;
     }
   }));
-  renderEnrichmentEvidence(slug);
-  if (['db', 'filesystem'].includes(state.resourceType)) renderDocSources(slug);
 }
 
 /* ── Documentation sources ───────────────────────────────────────────────
@@ -389,12 +429,13 @@ function docSourceRowHtml(src) {
       <span class="text-provenance text-ink-muted">${esc(typeLabel)}</span>
     </div>
     <div class="pl-[20px] text-provenance text-ink-muted">
-      ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit}
+      ${esc(PROBE_LABEL[src.probe_state] || src.probe_state || 'unprobed')}${statusBit}${timeBit}${whenBit}${originBit} · added by ${esc(src.added_by || 'unknown')}
       ${src.probe_error ? ` · <span class="text-state-warn">${esc(src.probe_error)}</span>` : ''}
     </div>
     <div class="pl-[20px] text-provenance"${egeriaTitle}>
       <span class="${egeriaTone}" data-doc-egeria-state="${esc(src.id)}">${esc(egeriaText)}</span>
     </div>
+    <div class="pl-[20px] text-provenance text-ink-muted">feeds → nothing reads this yet</div>
     <div class="pl-[20px] mt-[2px] flex items-baseline gap-s3 text-provenance">
       <button type="button" data-doc-recheck="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button>
       <button type="button" disabled title="ingestion ships in a later slice" class="cursor-not-allowed bg-transparent p-0 text-ink-muted line-through decoration-dotted">ingest — coming soon</button>
@@ -407,9 +448,14 @@ function docSourceRowHtml(src) {
 // same pattern app.js uses for surveyRowHtml/schemaTreeHtml/tableHtml: no
 // logic changed, only visibility, so a test can call it directly rather
 // than driving the whole Enrichment pane bootstrap.
-export async function renderDocSources(slug) {
+export async function renderDocSources(slug, { title = true } = {}) {
   const host = $('doc-sources-block');
   if (!host) return;
+  // `title: false` omits this block's own "Documentation sources" heading
+  // (Context supplies its own section heading). Remembered on the host so
+  // the block's internal re-renders (add/remove/recheck, the poll) keep it
+  // without threading the option through every call.
+  if (title) delete host.dataset.omitTitle; else host.dataset.omitTitle = '1';
   stopDocSourcesPoll(); // a fresh render supersedes any poll from a prior one
   const entityType = apiEntityType(state.resourceType);
   host.innerHTML = `<div class="text-caveat text-ink-muted">Loading documentation sources…</div>`;
@@ -454,7 +500,7 @@ function renderDocSourcesFromData(slug, entityType, data, deadline) {
     ? `<div class="text-provenance text-state-warn">${esc(data.publish_note)}</div>` : '';
   host.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
-      <span class="font-heading text-question text-ink">Documentation sources</span>
+      ${host.dataset.omitTitle ? '' : '<span class="font-heading text-question text-ink">Documentation sources</span>'}
       <span class="text-provenance text-ink-muted">${countsLine}</span>
     </div>
     ${staleNote}

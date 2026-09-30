@@ -107,7 +107,7 @@ export const STATES = {
   measured:  { glyph: '✓', family: 'measured', word: 'measured',  tone: 'text-state-ok' },
 
   // ── ∅ measured nothing ──────────────────────────────────────────────
-  nothing:        { glyph: '∅', family: 'measured-nothing', word: 'ran, found nothing', tone: 'text-state-ok' },
+  nothing:        { glyph: '∅', family: 'measured-nothing', word: 'nothing found', tone: 'text-state-ok' },
   // RESERVED for G3's tree overview (§3.2/§3.3 of the reply): a schema
   // counted and genuinely empty, as distinct from `not_measured` below.
   measured_zero:  { glyph: '∅', family: 'measured-nothing', word: '0', tone: 'text-state-ok' },
@@ -138,9 +138,9 @@ export const STATES = {
   // `no-surveyor` MOVES here from ○ per the reply -- it used to share a
   // glyph with `unrun`, told apart (in worklist.js's CELL) by colour alone,
   // which is exactly the thing the reply's palette rule forbids.
-  'no-surveyor': { glyph: '◌', family: 'no-answer-here', word: 'no surveyor', tone: 'text-state-gap' },
+  'no-surveyor': { glyph: '◌', family: 'no-answer-here', word: 'no reader yet', tone: 'text-state-gap' },
   // RESERVED for G2/G3.
-  no_reader:               { glyph: '◌', family: 'no-answer-here', word: 'no reader', tone: 'text-state-gap' },
+  no_reader:               { glyph: '◌', family: 'no-answer-here', word: 'no reader yet', tone: 'text-state-gap' },
   containment_undeclared:  { glyph: '◌', family: 'no-answer-here', word: "this engine's grouping isn't declared yet", tone: 'text-state-gap' },
 
   // ── ? tried, couldn't establish (distinct from ∅ -- genuinely unknown,

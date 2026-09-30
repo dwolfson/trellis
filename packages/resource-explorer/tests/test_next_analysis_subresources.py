@@ -66,16 +66,23 @@ class TestNoFifthTabIsAdded:
     SUB_TABS — see `test_no_sub_resources_tab_id_anywhere_in_sub_tabs`
     below, the actual guard. Slice 22 (2026-09-27) added a genuinely new,
     unrelated tab (`schema_inventory`, database-only — see `resourceTypes`
-    filtering in `subTabsHtml()`), so the exact count this test pins is
-    "the current canonical set," not "four forever"; the ruling this class
-    is named for was never about a hard cap on tab count."""
+    filtering in `subTabsHtml()`); ENRICHMENT-E1-CONTEXT-TAB (2026-09-29)
+    added a second, `context`, gated to the Enrichment stage via the new
+    `stages` filter in `subTabsHtml()` (the same shape `resourceTypes`
+    gates Schema Inventory to databases — the designer's reply §1: "Schema
+    Inventory is a type-specific extra tab, and Context follows the same
+    pattern"). So the exact count this test pins is "the current canonical
+    set," not "four forever" or "five forever"; the ruling this class is
+    named for was never about a hard cap on tab count — only that
+    `sub-resources` specifically must never be one of them, which
+    `test_no_sub_resources_tab_id_anywhere_in_sub_tabs` below still checks."""
 
     def test_sub_tabs_are_the_current_canonical_set(self):
         app = _app()
         start = app.index("const SUB_TABS = [")
         end = app.index("];", start)
         block = app[start:end]
-        ids = ["questions", "survey", "by_analysis", "disposition", "schema_inventory"]
+        ids = ["context", "questions", "survey", "by_analysis", "disposition", "schema_inventory"]
         for i in ids:
             assert f"id: '{i}'" in block
         assert block.count("id: '") == len(ids)
