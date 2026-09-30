@@ -2,7 +2,7 @@
  *  (ENRICHMENT-E1 parity with the pre-E1 Enrichment form).
  *
  *  WHY THESE EXIST: E1 replaced a render path and silently dropped three
- *  things the old path did (the evidence rail, the licence row's survey
+ *  things the old path did (the evidence rail, the license row's survey
  *  proposal, and the Documentation sources block). PR #348's own tests
  *  called `renderDocSources` directly, so they stayed green while the block
  *  was unreachable from any tab. These tests go the way a person does: the
@@ -28,7 +28,7 @@ function stubServer({ facts = [], doc = { sources: [], published: false, publish
   };
 }
 
-const LICENCE_FACT = {
+const LICENSE_FACT = {
   analysis_id: 'license_classification', state: 'measured', last_run_at: NOW,
   headline: 'Apache License 2.0 — Permissive',
   value: { findings: [{ check_name: 'license_risk_tier', label: 'permissive', summary: 'Apache License 2.0 — Permissive' }] },
@@ -75,15 +75,15 @@ async function routeToContext(resourceType, slug, server) {
 }
 
 test('routing: the Context tab shows the Evidence rail with the old form\'s measurements', async () => {
-  const { document } = await routeToContext('repo', 'amundsen', { facts: [LICENCE_FACT, SCAN_FACT] });
+  const { document } = await routeToContext('repo', 'amundsen', { facts: [LICENSE_FACT, SCAN_FACT] });
   const rail = document.getElementById('rail-evidence').textContent;
   assert.match(rail, /Evidence · enrichment/);
   assert.match(rail, /0 high findings/);
   assert.match(rail, /security_scan/);
 });
 
-test('routing: the licence row offers the survey-measured licence to confirm', async () => {
-  const { document } = await routeToContext('repo', 'amundsen', { facts: [LICENCE_FACT] });
+test('routing: the license row offers the survey-measured license to confirm', async () => {
+  const { document } = await routeToContext('repo', 'amundsen', { facts: [LICENSE_FACT] });
   const html = document.getElementById('context-observations').innerHTML;
   assert.match(html, /from survey:/);
   assert.match(html, /Apache License 2\.0/);

@@ -72,7 +72,7 @@ test('the five sections render in order, each row saying what it feeds', async (
 
   // Every judgement/observation row says what it feeds.
   assert.match(html, /feeds → Curate \(catalogue record\)/);
-  // Licence additionally names its survey source (`fromAnalysis`), not a
+  // License additionally names its survey source (`fromAnalysis`), not a
   // fabricated cross-reference.
   assert.match(html, /feeds → Curate \(catalogue record\) · sourced from license_classification/);
 

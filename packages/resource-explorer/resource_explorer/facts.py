@@ -653,11 +653,11 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #:   _r_catalogued   "Has this repository already been catalogued in Egeria and when?"
 #:                -> "Has this resource already been catalogued in Egeria, and when?"
 #:   _r_license      "Are there any restrictions for use?"
-#:                -> "Under what licence or agreement may this resource be used?"
+#:                -> "Under what license or agreement may this resource be used?"
 #:
 #: `_r_license`'s row SPLIT into two. It maps to the licence row above, which
 #: is what the resolver actually does (it reads `stats["license"]`). The other
-#: half — "Are there any restrictions for use beyond the licence —
+#: half — "Are there any restrictions for use beyond the license —
 #: classification, zone or terms of use?" — is a new, unbuilt question and
 #: gets NO entry here. A question with no state source is a normal state, and
 #: pointing a licence-field read at it would answer a governance question with
@@ -684,7 +684,7 @@ RESOURCE_STATE_SOURCES = {
     "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
         (_r_disposition, "disposition"),
     "Any known feedback?": (_r_feedback, "resource_feedback"),
-    "Under what licence or agreement may this resource be used?": (_r_license, "license"),
+    "Under what license or agreement may this resource be used?": (_r_license, "license"),
     "Is there any existing use within our organization?":
         (_r_existing_use, "catalog_presence"),
     "Does it replace or extend something we already have?":
@@ -1124,7 +1124,7 @@ _RESOURCE_STATE_HEADLINES.update(_DATABASE_RESOURCE_STATE_HEADLINES)
 #: resolver with no collision.
 #:
 #: **Only 10 of the 11 direct-field database rows found live 2026-09-29 are
-#: here.** "Under what licence or agreement may this resource be used?"
+#: here.** "Under what license or agreement may this resource be used?"
 #: is NOT implemented: its catalog `note` is a stale, copy-pasted "direct
 #: field (GitHub license field)" — `DatabaseEntity` (registry.py) has no
 #: license field, GitHub has no opinion about a PostgreSQL database, and no

@@ -322,7 +322,7 @@ repo_questions:
     now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
     pre-existing copy/subset row).'
   retired: false
-- question: Under what licence or agreement may this resource be used?
+- question: Under what license or agreement may this resource be used?
   stage: Scouting
   perspectives:
   - Security
@@ -786,7 +786,7 @@ repo_questions:
     review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
     by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
-- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+- question: What explicit license does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
   perspectives:
   - Financial
@@ -1411,7 +1411,7 @@ repo_questions:
     {jurisdiction, region, controller}.
   catalog_history: ''
   retired: false
-- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+- question: Are there any restrictions for use beyond the license — classification, zone or terms of use?
   stage: Analysis
   perspectives:
   - Governance
@@ -1430,12 +1430,12 @@ repo_questions:
     note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
       interpretation of non-standard terms is unbuilt.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
-  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+  rationale: Separated from the license question itself when that one became cross-type and moved to Scouting.
     Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
     for anything contractual that is not written down machine-readably.
   catalog_history: ''
   retired: false
-- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+- question: Is this resource ready to be offered as a data product — owner, description, license or agreement,
     schema, freshness, contact and scope?
   stage: Assessment
   perspectives:
@@ -1696,7 +1696,7 @@ database_questions:
     pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
     §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
-- question: Under what licence or agreement may this resource be used?
+- question: Under what license or agreement may this resource be used?
   stage: Scouting
   perspectives:
   - Security
@@ -1844,7 +1844,7 @@ database_questions:
     review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
     by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
-- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+- question: What explicit license does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
   perspectives:
   - Financial
@@ -2062,7 +2062,7 @@ database_questions:
     / coverage_profile (both catalogued in analysis_catalog.yaml); project owner: ''scope we should be
     able to have a surveyor for''.'
   retired: false
-- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+- question: Are there any restrictions for use beyond the license — classification, zone or terms of use?
   stage: Analysis
   perspectives:
   - Governance
@@ -2081,12 +2081,12 @@ database_questions:
     note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
       interpretation of non-standard terms is unbuilt.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
-  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+  rationale: Separated from the license question itself when that one became cross-type and moved to Scouting.
     Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
     for anything contractual that is not written down machine-readably.
   catalog_history: ''
   retired: false
-- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+- question: Is this resource ready to be offered as a data product — owner, description, license or agreement,
     schema, freshness, contact and scope?
   stage: Assessment
   perspectives:
@@ -3232,7 +3232,7 @@ filesystem_questions:
     pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
     §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
-- question: Under what licence or agreement may this resource be used?
+- question: Under what license or agreement may this resource be used?
   stage: Scouting
   perspectives:
   - Security
@@ -3380,7 +3380,7 @@ filesystem_questions:
     review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
     by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
-- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+- question: What explicit license does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
   perspectives:
   - Financial
@@ -3597,7 +3597,7 @@ filesystem_questions:
     / coverage_profile (both catalogued in analysis_catalog.yaml); project owner: ''scope we should be
     able to have a surveyor for''.'
   retired: false
-- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+- question: Are there any restrictions for use beyond the license — classification, zone or terms of use?
   stage: Analysis
   perspectives:
   - Governance
@@ -3616,12 +3616,12 @@ filesystem_questions:
     note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
       interpretation of non-standard terms is unbuilt.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
-  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+  rationale: Separated from the license question itself when that one became cross-type and moved to Scouting.
     Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
     for anything contractual that is not written down machine-readably.
   catalog_history: ''
   retired: false
-- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+- question: Is this resource ready to be offered as a data product — owner, description, license or agreement,
     schema, freshness, contact and scope?
   stage: Assessment
   perspectives:
@@ -4107,7 +4107,7 @@ dataset_questions:
     pre-existing copy/subset row). | 2026-09-26: rationale extended with the per-axis relation model (design
     §16.8) after the owner''s pre-sales/post-sales and NY/US examples.'
   retired: false
-- question: Under what licence or agreement may this resource be used?
+- question: Under what license or agreement may this resource be used?
   stage: Scouting
   perspectives:
   - Security
@@ -4255,7 +4255,7 @@ dataset_questions:
     review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
     by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
-- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+- question: What explicit license does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
   perspectives:
   - Financial
@@ -4472,7 +4472,7 @@ dataset_questions:
     / coverage_profile (both catalogued in analysis_catalog.yaml); project owner: ''scope we should be
     able to have a surveyor for''.'
   retired: false
-- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+- question: Are there any restrictions for use beyond the license — classification, zone or terms of use?
   stage: Analysis
   perspectives:
   - Governance
@@ -4491,12 +4491,12 @@ dataset_questions:
     note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
       interpretation of non-standard terms is unbuilt.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
-  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+  rationale: Separated from the license question itself when that one became cross-type and moved to Scouting.
     Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
     for anything contractual that is not written down machine-readably.
   catalog_history: ''
   retired: false
-- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+- question: Is this resource ready to be offered as a data product — owner, description, license or agreement,
     schema, freshness, contact and scope?
   stage: Assessment
   perspectives:
@@ -4749,7 +4749,7 @@ model_questions:
     now — content similarity (RAG), scope similarity (lens fit), structural similarity (fingerprint, the
     pre-existing copy/subset row).'
   retired: false
-- question: Under what licence or agreement may this resource be used?
+- question: Under what license or agreement may this resource be used?
   stage: Scouting
   perspectives:
   - Security
@@ -4897,7 +4897,7 @@ model_questions:
     review of the Analysis tab: the answer is human-supplied, so it is asked at Enrichment and consumed
     by Assessment; appearing on Analysis with an ''Answer this'' button read as noise.'
   retired: false
-- question: What explicit licence does this resource use, and are there non-standard or copyleft terms?
+- question: What explicit license does this resource use, and are there non-standard or copyleft terms?
   stage: Assessment
   perspectives:
   - Financial
@@ -5087,7 +5087,7 @@ model_questions:
     {jurisdiction, region, controller}.
   catalog_history: ''
   retired: false
-- question: Are there any restrictions for use beyond the licence — classification, zone or terms of use?
+- question: Are there any restrictions for use beyond the license — classification, zone or terms of use?
   stage: Analysis
   perspectives:
   - Governance
@@ -5106,12 +5106,12 @@ model_questions:
     note: 'GAP: zone and classification restrictions are not read back into the question layer, and agent
       interpretation of non-standard terms is unbuilt.'
   answering_mechanism: Egeria Queries + Agent-Based Analysis
-  rationale: Separated from the licence question itself when that one became cross-type and moved to Scouting.
+  rationale: Separated from the license question itself when that one became cross-type and moved to Scouting.
     Reads Egeria governance zones and classifications, the resource's own terms-of-use text, and Enrichment
     for anything contractual that is not written down machine-readably.
   catalog_history: ''
   retired: false
-- question: Is this resource ready to be offered as a data product — owner, description, licence or agreement,
+- question: Is this resource ready to be offered as a data product — owner, description, license or agreement,
     schema, freshness, contact and scope?
   stage: Assessment
   perspectives:

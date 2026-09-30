@@ -26,7 +26,7 @@ import { personRowLineHtml } from '/static/next/row-anatomy.js';
  * Two halves, not one list of eight fields with one Save. The line between
  * them is not arbitrary: a field is a JUDGEMENT if a person's opinion is the
  * value — sensitivity, criticality, intended use, actual use, owner — and an
- * OBSERVATION if a person is supplying a fact about the world — licence,
+ * OBSERVATION if a person is supplying a fact about the world — license,
  * environment, retention. Opinions need an author, a date and a review
  * state. Observations need a source.
  *
@@ -44,7 +44,7 @@ import { personRowLineHtml } from '/static/next/row-anatomy.js';
  *
  * Evidence sits in the rail as MATERIAL, never as proposals. No "apply
  * suggestion". The one exception is a fact a survey already established —
- * the licence — which is offered to confirm, with its source, into the
+ * the license — which is offered to confirm, with its source, into the
  * observations half.
  *
  * Nothing here is written to the catalogue until Curate. That sentence is
@@ -58,7 +58,7 @@ export const JUDGEMENTS = [
   { key: 'owner',        label: 'Owner',        placeholder: 'who answers for it?' },
 ];
 export const OBSERVATIONS = [
-  { key: 'licence',      label: 'Licence',      fromAnalysis: 'license_classification' },
+  { key: 'licence',      label: 'License',      fromAnalysis: 'license_classification' },
   { key: 'environment',  label: 'Environment',  options: ['prod', 'dev', 'test', 'research', 'archive'] },
   { key: 'retention',    label: 'Retention',    placeholder: 'how long, and by whose rule?' },
 ];
@@ -104,7 +104,7 @@ export function fieldRowHtml(def, kind) {
   const moved = field && kind === 'judgement' ? movedSince(field) : [];
   // Judgements carry an author; observations carry a source. The server
   // stamps `author` on every field, so a source-only branch was dead code
-  // and a confirmed licence read as "alice · 2d ago" with its source stored
+  // and a confirmed license read as "alice · 2d ago" with its source stored
   // and invisible. Both halves render now, in that order. Built through the
   // shared row anatomy (row-anatomy.js) — the same function the Questions
   // tab's human-answer rows call.
@@ -151,17 +151,17 @@ function ownerNoteHtml(field) {
 }
 
 /** A fact a survey already established, offered to confirm — not applied.
- *  Gated on a CLASSIFIED licence: "No license detected on this repository."
+ *  Gated on a CLASSIFIED license: "No license detected on this repository."
  *  is a measured finding too, and offering it to confirm would write that
- *  sentence into the licence field. The tier finding's label says which. */
+ *  sentence into the license field. The tier finding's label says which. */
 function proposedFrom(analysisId) {
   const f = state.enrichmentFacts?.[analysisId];
   if (!f || f.state !== 'measured') return null;
   const tier = (f.value?.findings || []).find((x) => x.check_name === 'license_risk_tier');
-  // `none` is both "no licence" and "nothing examined"; `unknown` is a
-  // licence that IS present and unclassified -- its name is still a fact.
+  // `none` is both "no license" and "nothing examined"; `unknown` is a
+  // license that IS present and unclassified -- its name is still a fact.
   if (!tier || !tier.label || String(tier.label) === 'none') return null;
-  // The licence itself, not its risk tier: the finding's label is
+  // The license itself, not its risk tier: the finding's label is
   // "permissive" and its summary is "Apache License 2.0 — Permissive". The
   // part before the dash is the fact a person would confirm.
   const raw = tier.summary || f.headline || '';

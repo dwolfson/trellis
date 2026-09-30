@@ -141,7 +141,7 @@ function curateWritesHtml(plan, picks, subCount) {
   lines.push(w.owner?.value
     ? `Owner · ${esc(w.owner.value)}${w.owner.interim ? ' · interim' : ''}`
     : `Owner · the person who catalogues, as interim`);
-  lines.push(w.licence ? `Licence · ${esc(w.licence)}` : `Licence · not confirmed on the Enrichment pane`);
+  lines.push(w.licence ? `License · ${esc(w.licence)}` : `License · not confirmed on the Enrichment pane`);
   lines.push(`<span class="tnum">${w.survey_reports_linked || 0}</span> survey report${w.survey_reports_linked === 1 ? '' : 's'} already linked, not copied${
     w.last_published_at ? ` · last <span class="tnum">${esc(ago(w.last_published_at))}</span>` : ''}${
     w.catalogued ? ` · <span class="font-mono">${esc(String(w.asset_guid).slice(0, 8))}…</span> is the asset` : ' · no asset yet'}`);
