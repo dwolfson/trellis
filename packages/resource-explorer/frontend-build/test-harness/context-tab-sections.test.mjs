@@ -62,7 +62,7 @@ test('the five sections render in order, each row saying what it feeds', async (
 
   const html = document.getElementById('context-form').innerHTML;
   const order = ['What we judge', "What you're looking for", 'What we record',
-    'What only you can answer'];   // the doc-sources block fills in async; see context-parity-routing.test.mjs
+    'What only you can answer', "Where it's documented"];
   let lastIdx = -1;
   for (const heading of order) {
     const idx = html.indexOf(heading);

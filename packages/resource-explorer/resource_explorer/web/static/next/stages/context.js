@@ -13,7 +13,7 @@
  *   3. What we record       — the observation fields.
  *   4. What only you can answer — the catalog's human questions, with E0's
  *                              inline editor now given a real home.
- *   5. Documentation sources — #348's block (db and filesystem), mounted
+ *   5. Where it's documented — #348's block (db and filesystem), mounted
  *                              unchanged via `renderDocSources`; E2 applies
  *                              the reply's corrections in place.
  *
@@ -212,12 +212,16 @@ function renderHumanQuestions(slug) {
  *  `enrichment.js`'s own `renderDocSources`, byte-for-byte, into the same
  *  `#doc-sources-block` host the old Enrichment form gave it, for the same
  *  kinds (db, filesystem). E2 applies the reply's §3 corrections in place.
- *  Other kinds get no section rather than a "not built" line. */
+ *  Other kinds get no section (heading included) rather than a "not built" line. */
 const DOC_SOURCE_KINDS = ['db', 'filesystem'];
 
 function docSourcesSlotHtml() {
   if (!DOC_SOURCE_KINDS.includes(state.resourceType)) return '';
-  return `<div id="doc-sources-block" class="mt-s4"></div>`;
+  return `<div class="mt-s4">
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Where it's documented</div>
+    <div class="mb-s2 text-provenance text-ink-muted">sources, not answers</div>
+    <div id="doc-sources-block"></div>
+  </div>`;
 }
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
@@ -297,5 +301,5 @@ export async function renderContext(slug) {
   // The old form rendered the rail for every resource kind.
   renderEnrichmentEvidence(slug);
   // Documentation sources, mounted as #348 built it (db and filesystem).
-  if (DOC_SOURCE_KINDS.includes(state.resourceType)) renderDocSources(slug);
+  if (DOC_SOURCE_KINDS.includes(state.resourceType)) renderDocSources(slug, { title: false });
 }

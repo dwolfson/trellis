@@ -427,9 +427,14 @@ function docSourceRowHtml(src) {
 // same pattern app.js uses for surveyRowHtml/schemaTreeHtml/tableHtml: no
 // logic changed, only visibility, so a test can call it directly rather
 // than driving the whole Enrichment pane bootstrap.
-export async function renderDocSources(slug) {
+export async function renderDocSources(slug, { title = true } = {}) {
   const host = $('doc-sources-block');
   if (!host) return;
+  // `title: false` omits this block's own "Documentation sources" heading
+  // (Context supplies its own section heading). Remembered on the host so
+  // the block's internal re-renders (add/remove/recheck, the poll) keep it
+  // without threading the option through every call.
+  if (title) delete host.dataset.omitTitle; else host.dataset.omitTitle = '1';
   stopDocSourcesPoll(); // a fresh render supersedes any poll from a prior one
   const entityType = apiEntityType(state.resourceType);
   host.innerHTML = `<div class="text-caveat text-ink-muted">Loading documentation sources…</div>`;
@@ -474,7 +479,7 @@ function renderDocSourcesFromData(slug, entityType, data, deadline) {
     ? `<div class="text-provenance text-state-warn">${esc(data.publish_note)}</div>` : '';
   host.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
-      <span class="font-heading text-question text-ink">Documentation sources</span>
+      ${host.dataset.omitTitle ? '' : '<span class="font-heading text-question text-ink">Documentation sources</span>'}
       <span class="text-provenance text-ink-muted">${countsLine}</span>
     </div>
     ${staleNote}

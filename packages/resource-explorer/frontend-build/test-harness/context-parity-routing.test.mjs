@@ -99,7 +99,26 @@ test('routing: the Context tab mounts the Documentation sources block, and says 
   });
   const block = document.getElementById('doc-sources-block');
   assert.ok(block, '#doc-sources-block must be present on Enrichment -> Context');
-  assert.match(block.textContent, /Documentation sources/);
+  // Context's own heading frames the block; the block's title is omitted.
+  assert.match(document.getElementById('context-form').textContent, /Where it's documented/);
+  assert.match(document.getElementById('context-form').textContent, /sources, not answers/);
+  assert.doesNotMatch(block.textContent, /Documentation sources/);
+  assert.match(block.textContent, /1<\/span> declared|1 declared/);
   assert.match(block.textContent, /Data dictionary/);
   assert.doesNotMatch(document.getElementById('context-form').textContent, /Documentation sources — not built/);
+});
+
+test('renderDocSources keeps its own heading by default (only Context opts out)', async () => {
+  const { document } = makeDomEnvironment();
+  ensureLoaderRegistered();
+  stubServer({});
+  const app = await import('/static/next/app.js');
+  const enrichment = await import(`/static/next/stages/enrichment.js?t=${Date.now()}_${Math.random()}`);
+  app.state.resourceType = 'db';
+  app.state.selectedSlug = 'amundsen';
+  const host = document.createElement('div');
+  host.id = 'doc-sources-block';
+  document.body.appendChild(host);
+  await enrichment.renderDocSources('amundsen');
+  assert.match(host.textContent, /Documentation sources/);
 });
