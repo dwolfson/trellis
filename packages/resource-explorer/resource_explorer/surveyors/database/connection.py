@@ -147,7 +147,7 @@ class ContainmentLevel:
     system_containers: tuple[str, ...] = ()
     #: Prefixes for the same, for engines that generate them (`pg_toast`,
     #: `pg_toast_temp_1`, `pg_temp_3`). A prefix rather than a pattern because
-    #: every real case is a prefix and a regex here would be a licence to put
+    #: every real case is a prefix and a regex here would be a license to put
     #: matching logic in a declaration.
     system_container_prefixes: tuple[str, ...] = ()
 
