@@ -8922,3 +8922,19 @@ Fixed for tonight by having the 8813 launch script explicitly load the main chec
 rather than symlinking (a symlink inside a worktree PR/CI recreates would silently vanish). Follow-up:
 the `/api/version` endpoint already logged above (see "Serve provenance") should show the env file
 path it loaded, next to the commit, so this stays visible rather than needing to be re-discovered.
+
+## `database update-credentials` never proves the credential works (2026-09-30, project owner design session)
+
+Found the hard way: the project owner ran `update-credentials` for coco_pharma with his own
+Egeria sign-in name and a placeholder password (following an ambiguous instruction — "--user
+<role>" with an example that looked like a person's name rather than a database login), and the
+command accepted it with no complaint. The database's real credential was silently replaced by
+one that had never been shown to work, and the drift check (which only compares the registry
+against the projected secrets file) had no way to catch it, since both sides agreed on the wrong
+value.
+
+**Decision (project owner's design session, 2026-09-30):** `update-credentials` should test the
+connection with the supplied values BEFORE saving, and refuse with the server's own error if the
+test fails. A credential that has never been proven to connect should never replace one that
+was — even if the new one is what the caller intended, silent acceptance of an unproven value is
+the actual defect, not just this one instance of a wrong value.
