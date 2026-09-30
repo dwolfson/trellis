@@ -82,7 +82,9 @@ def test_never_measured_reads_as_absent_not_as_no_owner(registry, db):
 
 
 def test_a_failed_or_unsupported_read_is_nonfatal_and_absent(registry, db):
-    assert _survey(db, registry, _Conn(raises=True))["database_owner"] == {}
+    failed = _survey(db, registry, _Conn(raises=True))
+    assert failed["database_owner"] == {}
+    assert any("database owner" in e for e in failed["errors"]), "a failed read must be observable, not silent"
     assert _survey(db, registry, _Conn(has_method=False))["database_owner"] == {}
 
 

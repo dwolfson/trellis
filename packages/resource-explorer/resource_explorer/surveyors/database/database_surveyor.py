@@ -462,6 +462,9 @@ class DatabaseSurveyor:
                     except Exception as exc:  # noqa: BLE001
                         log.warning("Could not read the database owner for %s: %s",
                                     self.db_entity.slug, exc)
+                        results["errors"].append(
+                            f"Could not read the database owner role (non-fatal): {exc}"
+                        )
                 results["annotations"].extend(
                     self._create_schema_annotations(schema_info)
                 )
