@@ -12,7 +12,7 @@
  * change needs to trigger the evidence rail from outside this file.
  */
 import { ago, whenMs } from '/static/next/format.js';
-import { getBulkFacts, saveEnrichmentField, getDocSources, addDocSource, recheckDocSource, removeDocSource } from '/static/re-api.js';
+import { getBulkFacts, listAnalyses, saveEnrichmentField, getDocSources, addDocSource, recheckDocSource, removeDocSource } from '/static/re-api.js';
 import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntityType } from '/static/next/app.js';
 // The row anatomy (who + when + "⚠ review — evidence moved: X") shared with
 // the Questions tab's human-question answer rows — see row-anatomy.js's own
@@ -21,6 +21,7 @@ import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntity
 // shared function instead so the Questions tab can call the exact same one.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import { glyphSpan } from '/static/next/glyphs.js';
+import { observationState } from '/static/next/observation-state.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
  *
@@ -100,23 +101,104 @@ function fieldControlHtml(def, field, kind = 'judgement') {
     class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">`;
 }
 
+/** What the survey measures NOW for an observation with a proposing
+ *  analysis, as `{ value, at }` -- or null. Null also when the analysis does
+ *  not apply to this resource's kind: a database can never be proposed a
+ *  licence, so its measurement is absent by construction, not by luck. */
+function measurementFor(def) {
+  if (!def.fromAnalysis || !analysisApplies(def.fromAnalysis)) return null;
+  const p = proposedFrom(def.fromAnalysis);
+  return p ? { value: p.value, at: p.at } : null;
+}
+
+/** True when the catalog says `analysisId` applies to this kind. Unknown
+ *  (catalog unread) counts as applicable so nothing is claimed about absence. */
+function analysisApplies(analysisId) {
+  const a = state.enrichmentApplicable;
+  return !a || a.has(analysisId);
+}
+
+/** The observation row's state line(s), drawn from `observationState()` over
+ *  persisted rows -- every state word derives from rows that prove it. */
+function observationStateHtml(def, field, st) {
+  const signed = (verb) => personRowLineHtml({
+    author: field?.author, whenIso: field?.set_at, verb,
+    sourceLine: field?.source && field.source !== 'user' ? `from ${esc(field.source)}` : '',
+  });
+  const m = st.measured;
+  const measuredBeside = (label) => `<span data-observation-measured>${label} <span class="text-ink">${esc(m || st.stored)}</span>
+    (${esc(def.fromAnalysis)})</span>`;
+  switch (st.state) {
+    case 'proposed': {
+      const meas = measurementFor(def);
+      return `<div data-observation-state="proposed" class="text-provenance text-ink-muted">
+        proposed: <span>${esc(m)}</span> · proposed by <span class="font-mono">${esc(def.fromAnalysis)}</span>${
+          meas?.at ? ` · <span class="tnum">${esc(ago(meas.at))}</span>` : ''} ·
+        <button type="button" data-confirm="${def.key}" data-source="${esc(def.fromAnalysis)}" data-value="${esc(m)}"
+          class="cursor-pointer bg-transparent p-0 text-accent-ink underline">accept</button></div>`;
+    }
+    case 'confirmed':
+      return `<div data-observation-state="confirmed" class="text-provenance text-ink-muted">${signed('confirmed by')}</div>`;
+    case 'overridden':
+      return `<div data-observation-state="overridden" class="text-provenance text-ink-muted">${signed('set by')}</div>
+        <div class="text-provenance text-ink-muted">${measuredBeside('measured:')}</div>`;
+    case 'disagrees':
+      return `<div data-observation-state="disagrees" class="text-provenance text-ink-muted">
+        <span class="text-state-warn">⚠ review — survey now measures ${esc(m)}${st.stored ? ` (was ${esc(st.stored)})` : ''}</span> ·
+        ${signed('recorded by')}</div>
+        <div class="text-provenance text-ink-muted">${measuredBeside('now measured:')} ·
+          <button type="button" data-confirm="${def.key}" data-source="${esc(def.fromAnalysis)}" data-value="${esc(m)}"
+            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">accept measured</button> ·
+          <button type="button" data-keep="${def.key}" data-kind="observation"
+            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">keep mine</button></div>`;
+    default:
+      return `<div data-observation-state="none" class="text-provenance text-ink-muted">not measured yet ·
+        <span class="font-mono">${esc(def.fromAnalysis)}</span> has no result to propose</div>`;
+  }
+}
+
+/** The database owner role a survey measured (`pg_database.datdba`), on the
+ *  OWNER judgement row, as MATERIAL: owner is a judgement, so the measured
+ *  role is never offered as a value to accept -- no button, no data-confirm.
+ *  Drawn only for databases, and only once Context has read the evidence
+ *  (`state.ownerMaterialFor`), so a form that never fetched it cannot claim
+ *  "not measured yet". */
+function ownerMaterialHtml() {
+  if (state.resourceType !== 'db' || state.ownerMaterialFor !== state.selectedSlug) return '';
+  const owner = state.enrichmentFacts?.schema_inventory?.value?.database_owner?.owner;
+  const body = owner
+    ? `database owner role: <span class="text-ink">${esc(owner)}</span> (measured)`
+    : 'database owner role: not measured yet · run a survey';
+  return `<div data-owner-material class="text-provenance text-ink-muted">${body}</div>`;
+}
+
 export function fieldRowHtml(def, kind) {
   const field = (state.enrichment || {})[def.key];
   const moved = field && kind === 'judgement' ? movedSince(field) : [];
+  // An observation with a proposing analysis (licence) is drawn by the four
+  // observation states (E3); every other row keeps the plain anatomy.
+  const proposing = kind === 'observation' && !!def.fromAnalysis;
+  const applies = proposing && analysisApplies(def.fromAnalysis);
+  const st = proposing && applies ? observationState({ field, measurement: measurementFor(def) }) : null;
   // Judgements carry an author; observations carry a source. The server
   // stamps `author` on every field, so a source-only branch was dead code
   // and a confirmed license read as "alice · 2d ago" with its source stored
   // and invisible. Both halves render now, in that order. Built through the
   // shared row anatomy (row-anatomy.js) — the same function the Questions
   // tab's human-answer rows call.
-  const who = personRowLineHtml({
+  const who = proposing ? '' : personRowLineHtml({
     author: field?.author,
     whenIso: field?.set_at,
     moved,
     sourceLine: kind === 'observation' && field?.source ? `from ${esc(field.source)}` : '',
     suffix: field?.interim ? ' · interim' : '',
   });
-  const proposed = def.fromAnalysis && !field?.value ? proposedFrom(def.fromAnalysis) : null;
+  // Databases (and any kind the analysis does not apply to): plain words, and
+  // a typed value becomes confirmed at once -- nothing can propose it.
+  const noSurvey = proposing && !applies
+    ? `<div data-observation-state="no-survey" class="text-provenance text-ink-muted">no survey measures this for ${esc(kindNoun())}</div>
+       ${field?.value ? `<div class="text-provenance text-ink-muted">${personRowLineHtml({ author: field.author, whenIso: field.set_at, verb: 'confirmed by' })}</div>` : ''}`
+    : '';
   // "What we judge" is the larger of the two sets -- the split's whole
   // argument -- so its labels are body size in ink, not caption size muted.
   const labelCls = kind === 'judgement' ? 'text-question font-heading text-ink' : 'text-provenance text-ink-muted';
@@ -126,13 +208,9 @@ export function fieldRowHtml(def, kind) {
       <div class="flex items-baseline gap-s2">${fieldControlHtml(def, field, kind)}
         <button type="button" data-save="${def.key}" data-kind="${kind}"
           class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button></div>
-      <div class="text-provenance text-ink-muted">
-        ${who}
-        ${proposed ? `<span>from survey: <span class="text-ink">${esc(proposed.value)}</span> ·
-          <button type="button" data-confirm="${def.key}" data-source="${esc(def.fromAnalysis)}" data-value="${esc(proposed.value)}"
-            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">confirm</button></span>` : ''}
-      </div>
-      ${def.key === 'owner' ? ownerNoteHtml(field) : ''}
+      <div class="text-provenance text-ink-muted">${who}</div>
+      ${st ? observationStateHtml(def, field, st) : noSurvey}
+      ${def.key === 'owner' ? ownerMaterialHtml() + ownerNoteHtml(field) : ''}
     </div>
   </div>`;
 }
@@ -168,7 +246,7 @@ function proposedFrom(analysisId) {
   const raw = tier.summary || f.headline || '';
   if (!raw.includes(' — ')) return null;
   const value = String(raw).split(' — ')[0].trim();
-  return value ? { value } : null;
+  return value ? { value, at: f.last_run_at || '' } : null;
 }
 
 export async function renderEnrichment(slug) {
@@ -180,21 +258,43 @@ export async function renderEnrichment(slug) {
   renderEnrichmentForm(slug);
 }
 
-/** The evidence fetch `renderEnrichment` always did, extracted unchanged
- *  (same call, same eight ids, same default entity type, same failure
- *  fallback) so Context can call it too and reach parity with the old form
- *  rather than retyping the list. Sets `state.enrichmentFacts`. */
+/** The evidence fetch, BY KIND (ENRICHMENT-E3 §1). It used to pass no entity
+ *  type, so the server answered for `repo` whatever the resource was, and a
+ *  database's rail listed repository analyses as "never run" -- a false claim,
+ *  since they do not apply to a database at all. Now: the resource's REAL
+ *  entity type, and only the evidence analyses the catalog declares for that
+ *  kind (`resource_types` in analysis_catalog.yaml, via `listAnalyses`).
+ *  An inapplicable analysis is absent, not "never run".
+ *
+ *  Sets `state.enrichmentFacts` (measurements) and `state.enrichmentApplicable`
+ *  (the Set of catalogued analysis ids for this kind, or null when the
+ *  catalog could not be read -- absence of knowledge, said as such). */
 export async function fetchEnrichmentEvidence(slug) {
-  let facts;
+  const entityType = apiEntityType(state.resourceType);
+  let applicable = null;
   try {
-    const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE);
-    facts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
-  } catch { facts = {}; }
+    const catalog = await listAnalyses(entityType);
+    if (Array.isArray(catalog)) applicable = new Set(catalog.map((a) => a.id));
+  } catch { applicable = null; }
+  const ids = applicable ? ENRICHMENT_EVIDENCE.filter((id) => applicable.has(id)) : [];
+  let facts = {};
+  if (ids.length) {
+    try {
+      const res = await getBulkFacts([slug], ids, entityType);
+      facts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
+    } catch { facts = {}; }
+  }
   // A late response for a resource the person has already left must not
   // overwrite the current one's facts -- state.enrichmentFacts is shared,
   // unscoped-by-slug state, and the rail reads it.
-  if (slug === state.selectedSlug) state.enrichmentFacts = facts;
+  if (slug === state.selectedSlug) {
+    state.enrichmentFacts = facts;
+    state.enrichmentApplicable = applicable;
+  }
 }
+
+const KIND_NOUN = { repo: 'repositories', database: 'databases', filesystem: 'filesystems' };
+function kindNoun() { return KIND_NOUN[apiEntityType(state.resourceType)] || 'this kind of resource'; }
 
 /** The rail's honest "loading" frame, written the moment Context starts
  *  reading a DIFFERENT resource than the one the rail last showed, so the
@@ -284,6 +384,23 @@ export function wireEnrichmentFieldControls(host, slug, rerender) {
         value: b.dataset.ownerInterim, kind: 'judgement', evidence: evidenceSnapshot(), interim: true,
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), owner: out.field };
+      rerender();
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = err.status === 401 ? 'sign in to record' : `not recorded: ${err.message}`;
+    }
+  }));
+  // "keep mine": the person re-chooses their own value after a survey began
+  // measuring something else. The write re-stamps the current measurement
+  // server-side, which is the only thing that clears "⚠ review".
+  host.querySelectorAll('[data-keep]').forEach((b) => b.addEventListener('click', async () => {
+    const key = b.dataset.keep;
+    b.disabled = true; b.textContent = 'recording…';
+    try {
+      const out = await saveEnrichmentField(slug, key, {
+        value: (state.enrichment?.[key]?.value || ''), kind: 'observation', source: 'user',
+      }, apiEntityType(state.resourceType));
+      state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
       rerender();
     } catch (err) {
       b.disabled = false;
@@ -614,6 +731,14 @@ export function renderEnrichmentEvidence(slug) {
   railClaim();
   const judged = Object.values(state.enrichment || {}).filter((f) => f.kind === 'judgement' && f.set_at);
   const items = ENRICHMENT_EVIDENCE.map((id) => state.enrichmentFacts?.[id]).filter(Boolean);
+  const applicable = state.enrichmentApplicable;
+  // Absence is a sentence, never an empty panel and never "never run" rows for
+  // analyses that do not apply to this kind (E3 §1).
+  const none = !applicable
+    ? `Could not read which analyses apply to ${esc(kindNoun())}.`
+    : !ENRICHMENT_EVIDENCE.some((id) => applicable.has(id))
+      ? `no enrichment evidence is catalogued for ${esc(kindNoun())} yet`
+      : 'No measurements to show yet.';
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence · enrichment</span>
@@ -631,6 +756,6 @@ export function renderEnrichmentEvidence(slug) {
           f.last_run_at ? ` · <span class="tnum">${esc(ago(f.last_run_at))}</span>` : ''}${
           fresh ? ` · <span class="text-accent-on-dark">new since you judged</span>` : seen ? '' : ''}</div>
       </div>`;
-    }).join('') : `<div class="text-caps text-chrome-muted">No measurements to show yet.</div>`}
+    }).join('') : `<div class="text-caps text-chrome-muted" data-rail-empty>${none}</div>`}
     <div class="mt-s2 text-caps text-chrome-muted">Material to read, not answers to accept. No "apply suggestion".</div>`;
 }
