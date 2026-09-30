@@ -55,7 +55,7 @@ and what the gate still needs a person for.
    the always-running schema step already holds the connection, so
    `PostgreSQLConnection.get_database_owner()` runs there, stored as the survey row's
    top-level `database_owner` (preserve-prior, non-fatal, engine-optional) and surfaced
-   by `_schema_inventory_results`. Existing databases read "not measured yet" until
+   by its own reader (see "Follow-up" below). Existing databases read "not measured yet" until
    re-surveyed. **`db_server_profile` (queued in a future database-analysis batch) is
    the eventual consolidated home for server-level facts like this; this extension of
    the schema step is the minimal home for now, not the final architecture.**
@@ -79,21 +79,45 @@ and what the gate still needs a person for.
   the person's value -> the override-same-re-measure routing test and its table row fail;
   Scouting override removed -> the Scouting test fails.
 
+## Follow-up (design acceptance, 2026-09-30): two gaps fixed before serving
+
+1. **One state, one word, everywhere.** `next/context-recorded.js` is the single
+   mapping (question -> Context key -> `answered`/`human`). Every consumer reads it:
+   the Questions row, the Questions KEY/legend counts and the markdown copy (through
+   `effectiveRowState` in `app.js`), and the work list's grid cells, narrow list and
+   digest (through `contextCellState`, reading each member's own Context once when the
+   list opens, only when such a column exists; an unreadable member's cell says `?`).
+   No surface says `◌ no reader yet` for the database licence question any more. Note:
+   the work list's cells for this question were `unclassified` (empty `analysis_ids`),
+   not `no_reader`, before this change; now they match the Questions pane.
+   Harness test: "one state everywhere" (Context, KEY, work-list cells/digest).
+2. **The owner is its own fact.** `database_owner` is registered as an analysis fact key
+   (results map, headline, re-step map -> the schema step) with its own `measured_at`,
+   and `schema_inventory` no longer carries it. The owner line fetches only
+   `database_owner`; a `schema_inventory` fact with an empty tables list changes
+   nothing. Test: a zero-table survey with a successful owner read is `measured`;
+   never surveyed is `never_run` ("not measured yet"). It deliberately has no per-card
+   Run (not in `DATABASE_SURVEYOR_STEP_MAP`): any survey produces it.
+3. **Equal-value case** says "survey now agrees · time" on the material line; the
+   case/whitespace normalisation is documented in `observation-state.js`.
+
+Revert-verified: work-list wiring removed, KEY wiring removed, and owner read from
+`schema_inventory` each fail a test, and pass when restored.
+
 ## Gate status
 
-Verified against stubs/temp registry only (no live 8813 walk was done here):
-gates 1, 2, 3, 4, 6 by routing-level tests; gate 5 ("run a survey on coco_pharma; the
-owner row then shows the measured role, and before the run it read 'not measured yet ·
-run a survey'") is verified for both sides against stubs, and the measurement itself
-against a fake connection. The real `pg_database` query
-(`SELECT datdba::regrole::text … WHERE datname = current_database()`) has not been run
-against a live server; the owner's own survey during the gate is that proof.
+Gate 5, final wording: before the survey the owner line reads "not measured yet · run a
+survey"; the project owner runs a survey on coco_pharma; the line then shows the measured
+role as material, never as a proposal. Verified for both sides against stubs and a fake
+connection; the real `pg_database` query
+(`SELECT datdba::regrole::text ... WHERE datname = current_database()`) has not run against
+a live server -- the owner's own survey is that proof. Gates 1-4 and 6 are covered by
+routing-level tests; no live 8813 walk was done here.
 
 ## Flagged, not fixed
 
-- `rowState` still returns `no_reader` for the db licence question on surfaces other than
-  the Questions pane (work-list digest, legend counts).
-- A database whose survey produced no table rows returns `{}` from `_schema_inventory_results`,
-  so its owner would read "not measured yet" even after a survey.
-- `value.database_owner` rides on `schema_inventory`'s fact, whose `value` also carries the
-  whole tables list; a leaner owner-only fact is a `db_server_profile` concern.
+- `worklist.js` `loadGrid` calls `getQuestions(slug, {phase, perspectives})` without an
+  `entityType`, so a database work list reads the repo question path. Pre-existing; the
+  licence question's wording is cross-type, so this slice's behaviour is unaffected.
+- `value`-less fact: `database_owner`'s fact has no `last_run_at` (live-read); its time is
+  `value.measured_at`.

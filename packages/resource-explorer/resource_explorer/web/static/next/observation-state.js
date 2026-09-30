@@ -16,6 +16,12 @@
  *                from its own fact layer when the person wrote the row.
  *   measurement  what the survey measures NOW: { value, at } or null.
  *
+ * Comparison is on the FACT, not its spelling: values are compared after
+ * trimming, collapsing runs of whitespace, and lower-casing (`sameFact`), so
+ * "mit", " MIT " and "MIT" are one licence and never a disagreement. Nothing
+ * smarter is attempted (no licence-name aliasing): "Apache-2.0" and "Apache
+ * License 2.0" differ.
+ *
  * Output: { state, measured, stored }
  *   state     'none' | 'proposed' | 'confirmed' | 'overridden' | 'disagrees'
  *   measured  the current measurement's value ('' when none)

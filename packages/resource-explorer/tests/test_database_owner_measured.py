@@ -94,22 +94,39 @@ def test_a_later_run_without_an_owner_keeps_the_prior_measurement(registry, db):
     assert _database_owner_results(registry, "coco_pharma")["owner"] == "pharma_owner"
 
 
-def test_schema_inventory_value_carries_owner_only_when_measured(registry, db):
+def test_owner_is_its_own_fact_and_survives_a_zero_table_survey(registry, db, tmp_path):
+    """Absence must come from the right key: a database with NO tables that
+    was surveyed successfully still has its owner. The tables list says
+    nothing about whether the owner read worked."""
+    from resource_explorer.facts import FactLayer
+
+    fl = FactLayer(registry, resource_type="database")
+    before = fl.fact("coco_pharma", "database_owner")
+    assert before.state == "never_run" and not before.value, "never surveyed -> not measured, not 'no owner'"
+
+    res = _survey(db, registry, _Conn(owner="pharma_owner"))
+    assert res["schema_info"]["total_tables"] == 0
+    # A registry handle is per-request in the app; the per-instance survey-key
+    # cache that answered "never" above must not outlive the survey here.
+    fact = FactLayer(ProjectRegistry(db_path=str(tmp_path / "t.db")), resource_type="database").fact("coco_pharma", "database_owner")
+    assert fact.state == "measured"
+    assert fact.value["owner"] == "pharma_owner" and fact.value["measured_at"]
+    assert "pharma_owner" in fact.headline
+    # ... and it is NOT carried on schema_inventory's value any more.
+    assert "database_owner" not in _schema_inventory_results(registry, "coco_pharma")
+
+
+def test_schema_inventory_no_longer_carries_the_owner(registry, db):
     tables = [{"schema_name": "public", "table_name": "t", "table_type": "BASE TABLE", "state": "measured"}]
 
     class Reg:
-        def __init__(self, survey):
-            self._s = survey
-
         def query_detail_rows(self, table, slug):
             return list(tables) if table == "database_tables" else []
 
         def get_latest_database_survey(self, slug):
-            return {"survey_data": json.dumps(self._s)} if self._s is not None else None
+            return {"survey_data": json.dumps({"database_owner": {"owner": "pharma_owner"}})}
 
         def get_database_surveys(self, slug):
-            return [self.get_latest_database_survey(slug)] if self._s is not None else []
+            return [self.get_latest_database_survey(slug)]
 
-    measured = _schema_inventory_results(Reg({"database_owner": {"owner": "pharma_owner"}}), "x")
-    assert measured["database_owner"]["owner"] == "pharma_owner"
-    assert "database_owner" not in _schema_inventory_results(Reg({}), "x")
+    assert "database_owner" not in _schema_inventory_results(Reg(), "x")

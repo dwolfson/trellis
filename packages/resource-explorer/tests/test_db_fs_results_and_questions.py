@@ -89,7 +89,9 @@ class TestDatabaseResultsMapCoverage:
             "egeria_db_survey",
         }
         assert set(DATABASE_ANALYSIS_RE_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 18
+        # Nineteen: ENRICHMENT-E3 added `database_owner` (the measured datdba,
+        # its own fact with its own measured_at).
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 19
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (

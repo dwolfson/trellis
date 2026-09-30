@@ -28,6 +28,7 @@ import {
   getBatchProgress,
   getQuestions,
   getBulkFacts,
+  getContext,
   getBulkStates,
   getAnalysisTrend,
   getDispositionHistory,
@@ -40,6 +41,7 @@ import {
 } from '/static/re-api.js';
 import { ago, daysSince, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
+import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 
 /* ── Cell state ─────────────────────────────────────────────────────────
  *
@@ -84,6 +86,18 @@ const CELL_TONE = {
 export const CELL = Object.fromEntries(Object.keys(CELL_TONE).map((k) => [
   k, { glyph: GLYPH_STATES[k].glyph, tone: CELL_TONE[k], label: GLYPH_STATES[k].word },
 ]));
+
+/** A question Context records (context-recorded.js): the SAME state word the
+ *  Questions pane and its KEY use, read from each member's own Context
+ *  (`grid.contexts`, loaded once when the list opens). '' = not such a
+ *  question; 'unknown' = this member's Context could not be read (never a
+ *  guessed word). */
+function contextCellState(q, slug) {
+  const kind = grid.workList?.entity_type || 'repo';
+  if (!contextRecordedSpec(q.question, kind)) return '';
+  const enrichment = grid.contexts?.get(slug);
+  return contextRecordedState(q.question, kind, enrichment) || 'unknown';
+}
 
 /**
  * One cell's state, from a question and a resource's facts.
@@ -164,6 +178,7 @@ export const grid = {
   bgError: null,
   bgErrors: new Map(),   // slug -> why its background read FAILED (not cancelled)
   ctx: null,             // the pane context, for actions raised from a popup
+  contexts: new Map(),   // slug -> enrichment map, for questions Context records (context-recorded.js)
 };
 
 /* ── Rendering ──────────────────────────────────────────────────────── */
@@ -405,6 +420,8 @@ async function loadGrid(ctx) {
     grid.statesError = err.message;
   }
 
+  await loadMemberContexts(wl);
+
   // Decided HERE — once, when the list opens — and never re-evaluated as the
   // background pass resolves cells underneath it.
   decideDigest(wl.members, grid.questions);
@@ -433,6 +450,26 @@ async function loadGrid(ctx) {
   // and never blocks anything: every pass before it has already rendered.
   const slow = needed.filter((a) => EXPENSIVE_ANALYSES.has(a));
   if (slow.length) resolveInBackground(ctx, slugs, slow);
+}
+
+/** Read each member's Context enrichment, but ONLY when a column's answer is
+ *  a Context row (context-recorded.js) -- otherwise no extra request is made.
+ *  A member whose Context cannot be read is left out of the map, and its cell
+ *  reads `?` ("could not read"), never a guessed state. */
+async function loadMemberContexts(wl) {
+  grid.contexts = new Map();
+  const kind = wl.entity_type || 'repo';
+  if (!grid.questions.some((q) => contextRecordedSpec(q.question, kind))) return;
+  const slugs = wl.members.map((m) => m.entity_slug);
+  for (let i = 0; i < slugs.length; i += 6) {
+    await Promise.all(slugs.slice(i, i + 6).map(async (slug) => {
+      try {
+        const ctx = await getContext(kind, slug);
+        grid.contexts.set(slug, (ctx && ctx.enrichment) || {});
+      } catch { /* left out: the cell says it could not read */ }
+    }));
+  }
+  renderGrid();
 }
 
 /** Turn `□` into real states, a few resources at a time. */
@@ -511,6 +548,8 @@ function renderNarrow(host, wl, qs) {
 
   const stateOf = (q) => {
     const ids = q.analysis_ids || [];
+    const ctxSt = contextCellState(q, slug);
+    if (ctxSt) return ctxSt;
     if (!ids.length) {
       return q.kind === 'gap' ? 'no-surveyor' : q.kind === 'human' ? 'human' : 'unclassified';
     }
@@ -696,7 +735,9 @@ function columnDigest(members, q) {
     const per = grid.states?.[slug] || {};
     const ids = q.analysis_ids || [];
     let st;
-    if (!ids.length) st = q.kind === 'gap' ? 'no-surveyor' : q.kind === 'human' ? 'human' : 'unclassified';
+    const ctxSt = contextCellState(q, slug);
+    if (ctxSt) st = ctxSt;
+    else if (!ids.length) st = q.kind === 'gap' ? 'no-surveyor' : q.kind === 'human' ? 'human' : 'unclassified';
     else if (row && !row.error && ids.some((a) => row.factsById.has(a))) st = cellState(q, row.factsById);
     else if (ids.some((a) => per[a]?.has_results)) st = 'stored';
     else if (ids.every((a) => per[a]?.certain_never_run)) st = 'unrun';
@@ -1018,7 +1059,8 @@ function rowHtml(member, shown, qs) {
     // settled before any of the fact logic below applies. Losing this branch
     // left such a column showing `…` forever, because "still loading" is what
     // the fall-through says when nothing is known and nothing ever will be.
-    const kindState = { gap: 'no-surveyor', human: 'human', unknown: 'unclassified' }[q.kind];
+    const kindState = contextCellState(q, slug)
+      || { gap: 'no-surveyor', human: 'human', unknown: 'unclassified' }[q.kind];
     if (kindState || !(q.analysis_ids || []).length) {
       const c = CELL[kindState] || CELL.unclassified;
       return `<td class="wl-cell p-[6px] ${c.tone} font-glyph" title="${esc(q.question)} — ${esc(c.label)}">${c.glyph}</td>`;

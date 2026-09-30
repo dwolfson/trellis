@@ -66,6 +66,7 @@ import {
 // (still called from within it, via `context.js`'s shared pieces) even
 // though app.js itself no longer calls `renderEnrichment` directly.
 import { renderContext } from '/static/next/stages/context.js';
+import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
@@ -6686,7 +6687,7 @@ const LEGEND_ORDER = [
 ];
 const LEGEND = LEGEND_ORDER.map((k) => [k, GLYPH_STATES[k].word]);
 
-function renderLegend() {
+export function renderLegend() {
   const el = $('state-legend');
   if (!el) return;
 
@@ -6697,7 +6698,7 @@ function renderLegend() {
     if (env === undefined || env === 'loading') { pending += 1; continue; }
     const st = state.runsInFlight.has(q.question) ? 'running'
       : env.__error ? 'error'
-      : rowState(q, env);
+      : effectiveRowState(q, env);
     counts[st] = (counts[st] || 0) + 1;
   }
 
@@ -7227,16 +7228,19 @@ function rowShell(entry, i) {
 // human-question-answer-row-anatomy.test.mjs to render a real question row
 // through the exact function `loadPane()` uses.
 /** Catalogued questions whose answer now has a READER: a Context observation
- *  row a person fills (ENRICHMENT-E3 §4). `◌ no reader yet` meant exactly
- *  that, and it stopped being true for databases the moment Context's licence
- *  row existed, so the row says where the answer lives instead. Databases
- *  only: a repository's licence is answered by a survey. */
-const CONTEXT_RECORDED_QUESTIONS = {
-  'Under what license or agreement may this resource be used?': { key: 'licence', label: 'licence' },
-};
+ *  row a person fills (ENRICHMENT-E3 §4). The mapping and the state word live
+ *  in context-recorded.js so every surface says the same thing. */
 function contextRecorded(entry) {
-  const c = CONTEXT_RECORDED_QUESTIONS[entry.question];
-  return c && state.resourceType === 'db' ? c : null;
+  return contextRecordedSpec(entry.question, apiEntityType(state.resourceType));
+}
+
+/** The ONE state function every Questions-pane consumer reads (row glyph,
+ *  the KEY/legend counts, the markdown copy): `rowState`, except that a row
+ *  Context records is `answered`/`human`, never `no_reader`. */
+function effectiveRowState(entry, env) {
+  const st = rowState(entry, env);
+  if (st !== 'no_reader') return st;
+  return contextRecordedState(entry.question, apiEntityType(state.resourceType), state.enrichment || {}) || st;
 }
 
 export function rowInner(entry, i, env) {
@@ -7253,7 +7257,7 @@ export function rowInner(entry, i, env) {
     : pending ? 'proposal'
     : env === 'loading' ? 'loading'
     : env && env.__error ? 'error'
-    : contextRecordedState(entry, env) || rowState(entry, env);
+    : effectiveRowState(entry, env);
 
   const glyph = GLYPH[st] || '·';
   // Glyph AND colour. The glyph survives printing, greyscale and colour
@@ -7294,16 +7298,6 @@ export function rowInner(entry, i, env) {
     </div>`;
 
   return head + bodyLines(entry, i, st, env);
-}
-
-/** The Scouting row for a fact Context records: `answered` (✓) once a person
- *  has recorded a value, `human` (⚠ needs you) until then -- never `◌`. Only
- *  replaces what would have been `no_reader`; a row with a real reader keeps
- *  its own state. */
-function contextRecordedState(entry, env) {
-  const c = contextRecorded(entry);
-  if (!c || rowState(entry, env) !== 'no_reader') return '';
-  return (state.enrichment || {})[c.key]?.value ? 'answered' : 'human';
 }
 
 function contextRecordedBodyHtml(entry, indent) {
@@ -8303,7 +8297,7 @@ export async function copyAsEvidence(markdown, btn) {
 /** One question row, as markdown with its provenance. */
 function rowAsMarkdown(entry, i) {
   const env = state.answers.get(entry.question);
-  const st = rowState(entry, env);
+  const st = effectiveRowState(entry, env);
   const lines = (env && env !== 'loading' && !env.__error)
     ? readEnvelope(entry, env, esc, tnum) : null;
 

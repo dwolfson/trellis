@@ -18,15 +18,16 @@ const licenceFact = (name, at = T1) => ({
   analysis_id: 'license_classification', state: 'measured', last_run_at: at, headline: `${name} — Permissive`,
   value: { findings: [{ check_name: 'license_risk_tier', label: 'permissive', summary: `${name} — Permissive` }] },
 });
-const ownerFact = (owner) => ({
-  analysis_id: 'schema_inventory', state: 'measured', last_run_at: T1, headline: '3 schema(s)',
-  value: owner ? { database_owner: { owner, measured_at: T1 } } : { relation_count: 3 },
-});
+// The owner is its OWN fact (`database_owner`); never schema_inventory's value.
+const ownerFact = (owner) => owner
+  ? { analysis_id: 'database_owner', state: 'measured', last_run_at: '', headline: `database owner role: ${owner}`,
+      value: { owner, measured_at: T1 } }
+  : { analysis_id: 'database_owner', state: 'never_run', last_run_at: '', headline: '', value: {} };
 
 /** The server. `facts` answers /api/analyses/facts per requested id list. */
 function makeServer({ kind, factsById = {}, enrichment = {}, log }) {
   const saved = { ...enrichment };
-  const catalog = kind === 'repo' ? REPO_EVIDENCE : ['schema_inventory', 'preliminary_fit'];
+  const catalog = kind === 'repo' ? REPO_EVIDENCE : ['schema_inventory', 'preliminary_fit', 'database_owner'];
   const measuredNow = () => {
     const f = factsById.license_classification;
     const s = f?.value?.findings?.[0]?.summary;
@@ -211,14 +212,14 @@ test('gate 4: coco_pharma licence reads "no survey measures this for databases",
 
 // ── gate 5 ────────────────────────────────────────────────────────────────
 test('gate 5: the owner row says "not measured yet · run a survey" before a survey, then the measured role as material', async () => {
-  const before = await routeToContext('db', 'coco_pharma', { factsById: { schema_inventory: ownerFact(null) } });
+  const before = await routeToContext('db', 'coco_pharma', { factsById: { database_owner: ownerFact(null) } });
   const ownerRowText = (document) => {
     const rows = [...document.querySelectorAll('#context-judgements > div')];
     return rows.find((r) => /^\s*Owner/.test(r.textContent))?.textContent.replace(/\s+/g, ' ') || '';
   };
   assert.match(ownerRowText(before.document), /database owner role: not measured yet · run a survey/);
 
-  const after = await routeToContext('db', 'coco_pharma', { factsById: { schema_inventory: ownerFact('pharma_owner') } });
+  const after = await routeToContext('db', 'coco_pharma', { factsById: { database_owner: ownerFact('pharma_owner') } });
   const t = ownerRowText(after.document);
   assert.match(t, /database owner role: pharma_owner \(measured\)/);
   const row = [...after.document.querySelectorAll('#context-judgements > div')].find((r) => /^\s*Owner/.test(r.textContent));
@@ -273,4 +274,96 @@ test('scouting: a repository\'s licence row is untouched (its reader is a survey
   const entry = { question: 'Under what license or agreement may this resource be used?', kind: 'direct', perspectives: [] };
   const html = app.rowInner(entry, 0, { answerable: false, facts: [], blocked_reason: 'x' });
   assert.doesNotMatch(html, /data-goto-context/);
+});
+
+// ── follow-up: the owner is its own fact ──────────────────────────────────
+test('gate 5: the owner line reads ONLY the database_owner fact -- a schema_inventory fact carrying a tables list changes nothing', async () => {
+  const ownerRow = (document) => [...document.querySelectorAll('#context-judgements > div')]
+    .find((r) => /^\s*Owner/.test(r.textContent))?.textContent.replace(/\s+/g, ' ') || '';
+  const empty = { analysis_id: 'schema_inventory', state: 'measured', last_run_at: T1, headline: '0 schema(s)',
+    value: { relation_count: 0, tables: [] } };
+  const a = await routeToContext('db', 'coco_pharma', { factsById: { schema_inventory: empty, database_owner: ownerFact('pharma_owner') } });
+  assert.match(ownerRow(a.document), /database owner role: pharma_owner \(measured\)/, 'an empty-tables schema must not hide a real owner read');
+  const b = await routeToContext('db', 'coco_pharma', { factsById: { schema_inventory: empty } });
+  assert.match(ownerRow(b.document), /not measured yet · run a survey/);
+  assert.ok(b.log.some((l) => /analysis_ids=[^&]*database_owner/.test(l)));
+  assert.ok(!b.log.some((l) => /analysis_ids=[^&]*schema_inventory/.test(l)), 'schema_inventory is no longer fetched for the owner line');
+});
+
+// ── follow-up: "survey now agrees" ────────────────────────────────────────
+test('equal-value case: confirmed, and the material line says "survey now agrees · time"', async () => {
+  const facts = { license_classification: licenceFact('MIT License', T0) };
+  const { document, app } = await routeToContext('repo', 'amundsen', { factsById: facts });
+  document.querySelector('[data-field="licence"]').value = 'GPL-3.0';     // override MIT
+  document.querySelector('[data-save="licence"]').click();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.ok(document.querySelector('[data-observation-state="overridden"]'));
+  // The survey later measures exactly what the person typed.
+  facts.license_classification = licenceFact('GPL-3.0', new Date().toISOString());
+  app.state.subTab = 'questions'; document.getElementById('content').innerHTML = app.subTabsHtml(); app.bindSubTabs();
+  document.querySelector('[data-subtab="context"]').click(); await settle(document);
+  assert.ok(document.querySelector('[data-observation-state="confirmed"]'));
+  assert.ok(!document.querySelector('[data-observation-state="disagrees"]'));
+  assert.match(document.querySelector('[data-observation-agrees]').textContent, /survey now agrees · /);
+});
+
+// ── follow-up: one state, one word, everywhere ────────────────────────────
+const LICENCE_Q = 'Under what license or agreement may this resource be used?';
+test('one state everywhere: Context, the Questions KEY and the work list (cells, narrow list, digest) say the same thing for the db licence row', async () => {
+  const { document, window } = makeDomEnvironment();
+  ensureLoaderRegistered();
+  globalThis.location = window.location; globalThis.history = window.history;
+  window.matchMedia = window.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  const entry = { question: LICENCE_Q, kind: 'direct', analysis_ids: [], stage: 'Scouting', perspectives: ['Security'] };
+  const recorded = { licence: { value: 'internal use only', author: 'dan', set_at: T0, kind: 'observation', source: 'user' } };
+  const ctxBySlug = { rec_db: recorded, blank_db: {} };
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+    const m = /\/api\/context\/database\/([^/?]+)/.exec(u);
+    if (m) return ok({ enrichment: ctxBySlug[m[1]] || {}, question_answers: {} });
+    if (/questions/.test(u)) return ok({ questions: [entry] });
+    if (u.includes('/api/analyses/facts')) return ok({ states: {}, subjects: {} });
+    return ok({});
+  };
+  const app = await import('/static/next/app.js');
+  const wl = await import('/static/next/worklist.js');
+  const g = await import('/static/next/glyphs.js');
+  const word = (k) => g.wordOf(k);
+
+  // -- Questions KEY, for each resource ------------------------------------
+  const keyFor = (enrichment) => {
+    const host = document.createElement('div'); host.id = 'state-legend'; document.body.appendChild(host);
+    Object.assign(app.state, { resourceType: 'db', enrichment, questions: [entry],
+      answers: new Map([[LICENCE_Q, { answerable: false, facts: [], blocked_reason: 'no reader' }]]), runsInFlight: new Map() });
+    app.renderLegend();
+    const t = host.textContent.replace(/\s+/g, ' ');
+    host.remove();
+    return t;
+  };
+  const keyRec = keyFor(recorded);
+  const keyBlank = keyFor({});
+  assert.match(keyRec, new RegExp(`${word('answered')} 1`));
+  assert.match(keyBlank, new RegExp(`${word('human')} 1`));
+  for (const k of [keyRec, keyBlank]) assert.doesNotMatch(k, /no reader yet/, 'the KEY must not count it as ◌');
+
+  // -- the work list over the same two resources ----------------------------
+  wl.grid.workList = { display_name: 'dbs', entity_type: 'database', members: [{ entity_slug: 'rec_db' }, { entity_slug: 'blank_db' }] };
+  const el = document.createElement('div'); document.body.appendChild(el);
+  for (const id of ['wl-actions', 'wl-note', 'wl-progress']) { /* created by renderWorkListPane */ }
+  await wl.renderWorkListPane({ el, stage: 'Scouting', subTabs: [], perspectives: [], analyses: [], onExit() {} });
+  for (let i = 0; i < 50 && !el.querySelector('#wl-grid td'); i++) await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 100));
+  const cellGlyph = (slug) => el.querySelector(`[data-wlrow="${slug}"] td.wl-cell, tr[data-slug="${slug}"] td.wl-cell`)?.textContent.trim();
+  const grid = el.querySelector('#wl-grid').innerHTML;
+  assert.doesNotMatch(grid, /◌/, 'no ◌ anywhere in the work list for this question');
+  assert.ok(grid.includes(wl.CELL.answered.glyph) && grid.includes(wl.CELL.human.glyph),
+    'recorded member reads answered, blank member reads human, in the same vocabulary as the KEY');
+  void cellGlyph;
+  // (The digest's own static key line names the aggregate "not run · no reader
+  // yet · unread" bucket; the assertion is about THIS question's cells.)
+  const cellText = [...el.querySelectorAll('#wl-grid td.wl-cell')].map((c) => `${c.getAttribute('title') || ''} ${c.textContent}`).join(' | ');
+  assert.doesNotMatch(cellText, /no reader yet/);
+  assert.match(cellText, new RegExp(word('answered')));
+  assert.match(cellText, new RegExp(word('human')));
 });

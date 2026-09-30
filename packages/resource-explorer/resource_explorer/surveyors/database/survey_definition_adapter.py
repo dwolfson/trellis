@@ -926,6 +926,8 @@ def _build_database_analysis_re_step_map() -> dict[str, list[str]]:
         "nested_column_profile": ["postgres_nested_columns"],
         "egeria_db_survey": ["egeria_db_survey"],
         "credential_capability": ["credential_capability"],
+        # Read in the always-on schema step (DatabaseSurveyor.survey()).
+        "database_owner": ["postgres_schema_and_stats"],
     }
     # Every db_derived-backed id, derived rather than hand-listed — see this
     # constant's own docstring above for the bug this specifically closes.
@@ -1274,6 +1276,24 @@ def _database_owner_results(registry, slug: str) -> dict:
     return {}
 
 
+def _database_owner_fact_results(registry, slug: str) -> dict:
+    """`database_owner`'s OWN fact (ENRICHMENT-E3): the owner role a survey
+    read from `pg_database.datdba`, with its own `measured_at`, independent of
+    `schema_inventory` -- an empty-tables database that was surveyed
+    successfully still has its owner, and the tables list is not evidence
+    about it either way. {} = never measured (an existing database not yet
+    re-surveyed), which the fact layer reads as no content."""
+    owner = _database_owner_results(registry, slug)
+    if not owner:
+        return {}
+    return {"owner": owner["owner"], "measured_at": owner.get("measured_at", "")}
+
+
+def _database_owner_headline(registry, slug: str) -> dict:
+    owner = _database_owner_results(registry, slug)
+    return {"label": f"database owner role: {owner['owner']}"} if owner else {}
+
+
 def _credential_scope_status(registry, slug: str) -> dict | None:
     """The third fact-envelope state's trigger (design REPLY-DATABASE-
     CREDENTIAL-CAPABILITY-VISIBILITY.md §4): when the latest
@@ -1410,7 +1430,6 @@ def _schema_inventory_results(registry, slug: str) -> dict:
         if t.get("schema_name") and t.get("table_type") == "BASE TABLE"
     })
     cap = _credential_capability_results(registry, slug)
-    owner_measured = _database_owner_results(registry, slug)
     value = {
         "relation_count": len(tables),
         "column_count": len(columns),
@@ -1424,9 +1443,6 @@ def _schema_inventory_results(registry, slug: str) -> dict:
         # all," a stronger and different claim than "not measured yet."
         **({"schema_total": cap["schema_total"], "schemas_visible": cap["schema_visible"]}
            if cap.get("schema_total") else {}),
-        # The measured owner role (E3): material for Context's owner
-        # judgement row. Omitted, not empty, when never measured.
-        **({"database_owner": owner_measured} if owner_measured else {}),
         "base_table_count": base_table_count,
         "view_count": view_count,
         "materialized_view_count": materialized_view_count,
@@ -2590,6 +2606,8 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "coverage_signals": (_db_derived_field_reader("coverage_signals"), None),
     "preliminary_fit": (_db_derived_field_reader("preliminary_fit"), None),
     "credential_capability": (_credential_capability_results, None),
+    # ENRICHMENT-E3: the measured `datdba`, its own fact (see the reader).
+    "database_owner": (_database_owner_fact_results, None),
 }
 
 #: Headline readers (Tier 1 stat tiles) — an additional, optional
@@ -2623,6 +2641,7 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
 #: here rather than a bespoke per-field summary.
 DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "schema_inventory": _schema_inventory_headline,
+    "database_owner": _database_owner_headline,
     "row_count_snapshot": _row_count_snapshot_headline,
     "db_resilience": _db_resilience_headline,
     "db_activity_signals": _db_activity_signals_headline,
