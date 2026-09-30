@@ -62,7 +62,7 @@ test('the five sections render in order, each row saying what it feeds', async (
 
   const html = document.getElementById('context-form').innerHTML;
   const order = ['What we judge', "What you're looking for", 'What we record',
-    'What only you can answer', "Where it's documented"];
+    'What only you can answer'];   // the doc-sources block fills in async; see context-parity-routing.test.mjs
   let lastIdx = -1;
   for (const heading of order) {
     const idx = html.indexOf(heading);
@@ -85,10 +85,10 @@ test('the five sections render in order, each row saying what it feeds', async (
   // "What only you can answer" is human-catalog-questions only.
   assert.doesNotMatch(html, /Is this in scope for GDPR\?/);
 
-  // Section 5 is a labeled placeholder, not #348's real rendering.
-  assert.match(html, /Where it's documented/);
-  assert.match(html, /sources, not answers/);
-  assert.match(html, /not built in \/next yet on this branch/);
+  // Section 5 is #348's real block (mounted by renderContext); it must not
+  // say "not built" anywhere on the tab.
+  assert.doesNotMatch(html, /not built in \/next yet on this branch/);
+  assert.ok(html.includes('id="doc-sources-block"'), 'the doc-sources host must be on the tab for a db resource');
 });
 
 test('the lens row: no lens declared, both links marked deferred, not built', async () => {

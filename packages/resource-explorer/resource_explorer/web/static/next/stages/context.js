@@ -13,12 +13,9 @@
  *   3. What we record       — the observation fields.
  *   4. What only you can answer — the catalog's human questions, with E0's
  *                              inline editor now given a real home.
- *   5. Where it's documented — a labeled SLOT for #348's Documentation
- *                              Sources block (re/doc-sources-declare-and-
- *                              probe, not merged here — see the header
- *                              comment on `docSourcesSlotHtml` below). NOT
- *                              built here; E2 re-seats #348's own rendering
- *                              once #348 merges.
+ *   5. Documentation sources — #348's block (db and filesystem), mounted
+ *                              unchanged via `renderDocSources`; E2 applies
+ *                              the reply's corrections in place.
  *
  * Every row ends with a "feeds →" line (§1) naming which downstream
  * consumer(s) read the field — see `feedsLine()`.
@@ -34,7 +31,7 @@ import { state, esc, $, apiEntityType } from '/static/next/app.js';
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import {
   JUDGEMENTS, OBSERVATIONS, fieldRowHtml, wireEnrichmentFieldControls,
-  renderEnrichmentEvidence,
+  renderEnrichmentEvidence, fetchEnrichmentEvidence, renderDocSources,
 } from '/static/next/stages/enrichment.js';
 
 /** §1: "feeds → Curate (Confidentiality) · Assessment: 'is it safe to use'"
@@ -211,29 +208,16 @@ function renderHumanQuestions(slug) {
 
 /* ── 5. Where it's documented: #348's slot ─────────────────────────────── */
 
-/** LABELED PLACEHOLDER ONLY. §3 of the reply puts Documentation Sources
- *  ("Where it's documented · sources, not answers") as Context's last
- *  section; the real rendering is PR #348's (re/doc-sources-declare-and-
- *  probe — `enrichment.js`'s `renderDocSources`, per that branch's own
- *  harness test, `doc-sources-enrichment.test.mjs`). #348 is a separate,
- *  still-in-progress branch (three corrections pending from the reply's
- *  §3), NOT merged or depended on here. This function reserves the
- *  section's place in the new tab structure and nothing else — E2 (a
- *  separate, already-scoped slice) re-seats #348's real rendering here once
- *  #348 merges. Do not build or duplicate that rendering in this file. */
+/** Documentation Sources (PR #348), mounted here unchanged: the block is
+ *  `enrichment.js`'s own `renderDocSources`, byte-for-byte, into the same
+ *  `#doc-sources-block` host the old Enrichment form gave it, for the same
+ *  kinds (db, filesystem). E2 applies the reply's §3 corrections in place.
+ *  Other kinds get no section rather than a "not built" line. */
+const DOC_SOURCE_KINDS = ['db', 'filesystem'];
+
 function docSourcesSlotHtml() {
-  return `<div class="mt-s4">
-    <div class="mb-s1 text-caps uppercase tracking-caps text-ink">Where it's documented</div>
-    <div class="mb-s2 text-provenance text-ink-muted">sources, not answers</div>
-    <div class="border border-dashed border-rule-strong px-s3 py-s3 text-caveat text-ink-muted">
-      Documentation sources — not built in /next yet on this branch.
-      <!-- TODO(ENRICHMENT-E2): re-seat PR #348's renderDocSources() (stages/
-           enrichment.js on re/doc-sources-declare-and-probe) here, through
-           glyphs.js per the reply's §3 (probe/ingest/publication, three
-           separate facts, three separate glyphs), once #348 merges. Do not
-           reimplement it in this file. -->
-    </div>
-  </div>`;
+  if (!DOC_SOURCE_KINDS.includes(state.resourceType)) return '';
+  return `<div id="doc-sources-block" class="mt-s4"></div>`;
 }
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
@@ -262,6 +246,11 @@ export async function renderContext(slug) {
   // unconditionally overwrites on every call, for the same reason) — a
   // "fetch only if empty" guard here would show a stale lens signal from
   // whichever resource was rendered last, on this one specifically.
+  // Parity with the pre-E1 form (`renderEnrichment`): the same evidence
+  // fetch, all resource kinds. It REPLACES state.enrichmentFacts, so it runs
+  // first and the lens read below adds preliminary_fit on top.
+  await fetchEnrichmentEvidence(slug);
+
   if (state.resourceType === 'db') {
     try {
       const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE_FOR_LENS, apiEntityType(state.resourceType));
@@ -305,5 +294,8 @@ export async function renderContext(slug) {
 
   wireEnrichmentFieldControls(host, slug, () => renderContext(slug));
   renderHumanQuestions(slug);
-  if (state.resourceType === 'db') renderEnrichmentEvidence(slug);
+  // The old form rendered the rail for every resource kind.
+  renderEnrichmentEvidence(slug);
+  // Documentation sources, mounted as #348 built it (db and filesystem).
+  if (DOC_SOURCE_KINDS.includes(state.resourceType)) renderDocSources(slug);
 }

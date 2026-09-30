@@ -174,12 +174,20 @@ export async function renderEnrichment(slug) {
   const host = $('enrichment-form');
   if (!host) return;
   host.innerHTML = `<div class="text-caveat text-ink-muted">Reading the evidence…</div>`;
+  await fetchEnrichmentEvidence(slug);
+  if (slug !== state.selectedSlug) return;
+  renderEnrichmentForm(slug);
+}
+
+/** The evidence fetch `renderEnrichment` always did, extracted unchanged
+ *  (same call, same eight ids, same default entity type, same failure
+ *  fallback) so Context can call it too and reach parity with the old form
+ *  rather than retyping the list. Sets `state.enrichmentFacts`. */
+export async function fetchEnrichmentEvidence(slug) {
   try {
     const res = await getBulkFacts([slug], ENRICHMENT_EVIDENCE);
     state.enrichmentFacts = Object.fromEntries(((res.subjects || {})[slug] || []).map((f) => [f.analysis_id, f]));
   } catch { state.enrichmentFacts = {}; }
-  if (slug !== state.selectedSlug) return;
-  renderEnrichmentForm(slug);
 }
 
 /** Re-render the form in place from already-fetched `state.enrichmentFacts`
