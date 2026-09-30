@@ -8938,3 +8938,27 @@ connection with the supplied values BEFORE saving, and refuse with the server's 
 test fails. A credential that has never been proven to connect should never replace one that
 was — even if the new one is what the caller intended, silent acceptance of an unproven value is
 the actual defect, not just this one instance of a wrong value.
+
+## Wire "Catalog and Survey" for one-click execution (2026-09-30, native survey gate)
+
+Raised by the project owner while gating the native Egeria survey slice: on coco_pharma's
+Enrichment → Survey & analyses (and every other stage's Survey & analyses), "Catalog and Survey"
+shows locked with "RE cannot run this one: it creates the catalogue entry from a connection
+template (host, port, credentials) before surveying it, and RE does not collect those template
+placeholder properties." RE already has all of that data for a registered database — it's not a
+missing-information problem, it's that Egeria's `PostgreSQLDatabase:CreateAndSurveyGovernanceActionProcess`
+expects the values supplied as template placeholder parameters at submission time, a different
+shape than the connection info RE already stores and uses for publishing.
+
+This was explicitly scoped out of tonight's native-survey slice (see
+`config/technology_type_processes.yaml`'s own comment: "Not (yet) wired for one-click execution
+from RE, since that needs template placeholder parameters rather than an existing GUID — shown as
+informational only") — correctly out of scope there, since every database gated tonight already
+had an Egeria asset, so "Survey PostgreSQL Database" (survey an *existing* cataloged asset) was
+the right tool regardless. But it's a real gap for the case this doesn't cover: a database that
+has never been catalogued in Egeria at all, where this process would be the one-click path to
+both create and survey it in one step.
+
+Follow-up: map RE's already-stored connection fields (host, port, credentials via the existing
+secrets-projection mechanism) onto this process's expected template placeholder parameters, and
+wire it for one-click execution the same way "Survey PostgreSQL Database" already works.
