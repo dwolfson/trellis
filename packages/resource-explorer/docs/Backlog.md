@@ -8845,3 +8845,50 @@ exactly the kind of check that would have caught the original bug immediately. S
 cleanup. **Sequencing:** do this after the native Egeria survey slice merges, since that slice
 also edits Survey & analyses in the same file — landing the cleanup first would create needless
 merge overlap.
+
+## No self-heal for a dead database/filesystem Egeria GUID (2026-09-30, native survey slice)
+
+Found tracing why coco_pharma's stale Egeria asset GUID didn't quietly show as "catalogued": it
+doesn't — `describe_publish_status` already reads the linkage row honestly ("published to
+Egeria · link stale since ... — element not found"). The status half of self-heal already works.
+The heal half doesn't exist for databases or filesystems:
+
+- `recheck_all_linkages` is CLI-only, no scheduled caller found.
+- `guard_linkage` only runs reactively, when a publish or survey happens to hit the dead GUID.
+- The scheduled `egeria_resync` scan (`clear_stale_assets`, `flag_vanished_publishes`) covers
+  **repos only** — its `stale_assets` scan reads the `projects` table, so it never looks at
+  databases or filesystems at all. It had been cycling for four days past coco_pharma's dead GUID
+  without ever seeing it.
+- `catalog_assets` is deliberately manual, and the outbox has no enqueue kind for a database or
+  filesystem asset publish at all — only repos have one.
+
+Same shape as this project's other "configured for one kind, never the other" bugs (E2's
+publish-hook finding earlier tonight is the same pattern). Fix: add an outbox enqueue kind for
+database/filesystem asset publishes, and extend `egeria_resync`'s stale-assets scan to cover
+databases and filesystems, not only the `projects` table. Until then, a dead database/filesystem
+GUID stays dead until someone manually republishes it.
+
+## Egeria's projected secrets file doesn't survive a redeploy (2026-09-30, native survey slice)
+
+A real submission on adventureworks failed with `FATAL: role "default" does not exist` — traced
+to `/deployments/secrets/resource-explorer.omsecrets` (RE's projection of credentials it already
+holds, via `omsecrets_store.py`, into the directory Egeria's YAMLFile secrets-store connector
+reads) being missing from both the container and the bind-mounted host directory. The three files
+that do survive are all stamped the same time as the 2026-09-29 redeploy — that redeploy reset
+`/deployments/secrets` to its shipped defaults and silently wiped RE's own projected file. With no
+secret, Egeria's JDBC connector falls back to the container's OS user, literally named "default",
+which doesn't exist as a Postgres role — hence the error. RE's own registry still holds the real
+credentials the whole time; nothing was lost, just not re-projected after the reset.
+
+Two follow-ups:
+1. Auto re-project the secrets file at RE startup, and again on each `egeria_resync` pass when a
+   database/filesystem's collection is found missing from the projected file — so a redeploy heals
+   itself instead of silently failing every native survey until someone notices and manually
+   re-projects (as was done once, by hand, the night this was found).
+2. Add a line to the setup docs noting that a quickstart redeploy resets `/deployments/secrets`,
+   so the next person who hits this recognizes it immediately instead of re-tracing it from an
+   opaque Postgres role error.
+
+A same-slice fix already adds a Run precondition that checks for the projected collection before
+submitting and refuses with a clear message if it's missing — this backlog item is only the two
+follow-ups beyond that (auto-heal, and the docs line), not the immediate symptom.
