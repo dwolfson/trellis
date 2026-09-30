@@ -66,7 +66,7 @@ import {
 // (still called from within it, via `context.js`'s shared pieces) even
 // though app.js itself no longer calls `renderEnrichment` directly.
 import { renderContext } from '/static/next/stages/context.js';
-import { nativeSurveysSectionHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
+import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
@@ -4232,17 +4232,31 @@ export function enrichmentAnalysisRowHtml(row) {
   </div>`;
 }
 
-/** Egeria-native survey rows for the resource in view, or null when the kind
- *  has none or the read failed. SHARED by every stage's Survey & analyses
- *  render (loadSurveyPane and, on Enrichment, loadEnrichmentAnalysesMapPane):
- *  the section lives on that tab on every stage, so no stage-special render
- *  path may skip it. */
+/** Egeria-native survey rows for the resource in view: `{rows}` on success,
+ *  `{rows: null}` when this kind has none (not applicable), `{failed: true}`
+ *  when the read failed -- which the caller must DRAW, not drop. SHARED by every
+ *  stage's Survey & analyses render (loadSurveyPane and, on Enrichment,
+ *  loadEnrichmentAnalysesMapPane): the section lives on that tab on every
+ *  stage, so no stage-special render path may skip it. */
 async function fetchNativeSurveyRows(slug) {
   const entityType = apiEntityType(state.resourceType);
-  if (entityType !== 'database' && entityType !== 'filesystem') return null;
+  if (entityType !== 'database' && entityType !== 'filesystem') return { rows: null };
   try {
-    return (await getNativeSurveys(slug, { entityType })).surveys;
-  } catch { return null; }
+    return { rows: (await getNativeSurveys(slug, { entityType })).surveys };
+  } catch { return { rows: null, failed: true }; }
+}
+
+/** The section's markup for a fetchNativeSurveyRows result, or '' when the kind
+ *  has no native surveys or has none to show. */
+function nativeSurveysPaneHtml(res) {
+  if (res.failed) return nativeSurveysUnreadableHtml();
+  return res.rows && res.rows.length ? nativeSurveysSectionHtml(res.rows) : '';
+}
+
+/** Wire a rendered section (rows or the unreadable line). `reload` re-runs the pane. */
+function bindNativeSurveysPane(root, slug, res, reload) {
+  root.querySelector('[data-native-recheck]')?.addEventListener('click', () => reload());
+  if (res.rows && res.rows.length) bindNativeSurveys(root, slug, res.rows);
 }
 
 /** Survey & analyses, on Enrichment: the amendment's map. */
@@ -4271,8 +4285,9 @@ async function loadEnrichmentAnalysesMapPane() {
   if (slug !== state.selectedSlug || state.subTab !== 'survey') return;
 
   // Egeria's own surveys are surveys: the section renders here too, beneath
-  // the map. A failed read leaves it absent, never blanks the map.
-  const nativeRows = await fetchNativeSurveyRows(slug);
+  // the map. A failed read is drawn (heading + "couldn't read"), and the map
+  // above it is untouched.
+  const nativeRes = await fetchNativeSurveyRows(slug);
   if (slug !== state.selectedSlug || state.subTab !== 'survey') return;
 
   const host = $('enrichment-analyses-map');
@@ -4284,9 +4299,9 @@ async function loadEnrichmentAnalysesMapPane() {
           ${esc(state.resourceType === 'db' ? 'databases' : state.resourceType)} yet.</div>`}`;
 
   const nativeHost = $('enrichment-native-surveys');
-  if (nativeHost && nativeRows && nativeRows.length) {
-    nativeHost.innerHTML = nativeSurveysSectionHtml(nativeRows);
-    bindNativeSurveys(nativeHost, slug, nativeRows);
+  if (nativeHost) {
+    nativeHost.innerHTML = nativeSurveysPaneHtml(nativeRes);
+    bindNativeSurveysPane(nativeHost, slug, nativeRes, () => loadEnrichmentAnalysesMapPane());
   }
 
   host.querySelectorAll('[data-run-enrichment-analysis]').forEach((b) => b.addEventListener('click', async () => {
@@ -4390,10 +4405,14 @@ export async function loadSurveyPane() {
   // the rest, and the state derived from persisted proof. If that read fails
   // the pane falls back to the informational block, so a failure of the new
   // read never blanks the list Egeria already reported.
-  const nativeRows = await fetchNativeSurveyRows(slug);
-  const nativeProcessesHtml = nativeRows && nativeRows.length
-    ? nativeSurveysSectionHtml(nativeRows)
-    : nativeProcessesSectionHtml(data.egeria_native_processes);
+  const nativeRes = await fetchNativeSurveyRows(slug);
+  // A failed read shows the unreadable line AND keeps the informational block
+  // Egeria already reported, so the new read's failure blanks nothing.
+  const nativeProcessesHtml = nativeRes.failed
+    ? nativeSurveysUnreadableHtml() + nativeProcessesSectionHtml(data.egeria_native_processes)
+    : nativeRes.rows && nativeRes.rows.length
+      ? nativeSurveysSectionHtml(nativeRes.rows)
+      : nativeProcessesSectionHtml(data.egeria_native_processes);
 
   const heavy = all.filter((c) => c.survey_kind === 'automate_full');
   const rest = all.filter((c) => c.survey_kind !== 'automate_full');
@@ -4470,7 +4489,7 @@ export async function loadSurveyPane() {
     </div>`;
   bindSubTabs();
 
-  bindNativeSurveys(el, slug, nativeRows);
+  bindNativeSurveysPane(el, slug, nativeRes, () => loadSurveyPane());
   el.querySelector('[data-act="rescope"]')?.addEventListener('click', () => loadSurveyPane());
   el.querySelectorAll('[data-defhist]').forEach((b) => b.addEventListener('click', () => {
     const c = all.find((x) => x.qualified_name === b.dataset.defhist);

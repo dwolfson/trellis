@@ -44,3 +44,16 @@ Red/green: with the Enrichment call removed (rows forced to null), tests 4 and 5
 (enrichment) FAIL and discovery/assessment/analysis pass; restored, all 5 pass.
 
 Full harness: 78/78 (Node 20.11). `pytest -k "next or tailwind or native"`: 786 passed.
+
+## Follow-up: a failed read is drawn, not dropped (design ruling)
+
+"Simply absent" on failure was absence drawn as nothing. `fetchNativeSurveyRows`
+now returns `{rows}` / `{rows: null}` (kind has none) / `{failed: true}`. On
+failure BOTH panes render the section heading plus
+"? couldn't read Egeria's surveys · re-check" (`nativeSurveysUnreadableHtml`,
+re-check re-runs the pane). On Enrichment the map is untouched above it; on the
+generic pane the candidates list AND the informational `egeria_native_processes`
+block stay (previously the generic pane silently fell back to the informational
+block only -- same silent-absence defect, fixed). Four more routing cases (one per
+stage) force the read to 500 and assert the heading, the line, no invented rows,
+and the map/candidates intact.

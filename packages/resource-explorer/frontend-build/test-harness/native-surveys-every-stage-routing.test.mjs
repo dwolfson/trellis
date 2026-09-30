@@ -24,22 +24,25 @@ const NATIVE_ROW = {
          report_at: '', report_guid: '', engine_action_guid: '', annotation_count: null, error: '' },
 };
 
-function stubServer(calls) {
+function stubServer(calls, { failNative = false } = {}) {
   globalThis.fetch = async (url) => {
     const u = String(url);
     calls.push(u);
     const ok = (body) => ({ ok: true, status: 200, statusText: 'OK', json: async () => body });
-    if (u.includes('/api/native-surveys')) return ok({ surveys: [NATIVE_ROW] });
-    if (u.includes('/candidates')) return ok({ candidates: [], egeria_native_processes: [] });
+    if (u.includes('/api/native-surveys')) {
+      if (failNative) return { ok: false, status: 500, statusText: 'boom', json: async () => ({ detail: 'boom' }) };
+      return ok({ surveys: [NATIVE_ROW] });
+    }
+    if (u.includes('/candidates')) return ok({ candidates: [{ qualified_name: 'Fixture::candidate', display_name: 'Fixture candidate survey', survey_kind: 'survey_existing', tier: 'discovery' }], egeria_native_processes: [] });
     if (u.includes('enrichment-analyses') || u.includes('analyses-map')) return ok({ analyses: [] });
     return ok({});
   };
 }
 
-async function routeToSurvey(stage) {
+async function routeToSurvey(stage, opts = {}) {
   const calls = [];
   const { document, window } = makeDomEnvironment();
-  stubServer(calls);   // after makeDomEnvironment(), which resets fetch
+  stubServer(calls, opts);   // after makeDomEnvironment(), which resets fetch
   ensureLoaderRegistered();
   globalThis.location = window.location;
   globalThis.history = window.history;
@@ -64,7 +67,7 @@ async function routeToSurvey(stage) {
   const btn = content.querySelector('[data-subtab="survey"]');
   assert.ok(btn, `the ${stage} stage strip must offer a Survey & analyses tab`);
   btn.click();
-  for (let i = 0; i < 100 && !document.getElementById('native-surveys'); i++) {
+  for (let i = 0; i < 100 && !document.getElementById('native-surveys') && !document.getElementById('native-surveys-unreadable'); i++) {
     await new Promise((r) => setTimeout(r, 10));
   }
   await new Promise((r) => setTimeout(r, 50));
@@ -92,3 +95,19 @@ test('routing: on Enrichment the unlock map stays first and native surveys sit b
     'native surveys must come after the map');
   assert.match(map.textContent, /unlocks/);
 });
+
+for (const stage of ['discovery', 'assessment', 'analysis', 'enrichment']) {
+  test(`routing: a FAILED native-survey read on ${stage} is drawn, and leaves the rest of the pane intact`, async () => {
+    const { document } = await routeToSurvey(stage, { failNative: true });
+    const text = document.getElementById('content').textContent.replace(/\s+/g, ' ');
+    assert.ok(document.getElementById('native-surveys-unreadable'), 'the unreadable section must be present');
+    assert.match(text, /Egeria's own surveys/);
+    assert.match(text, /\? couldn't read Egeria's surveys · re-check/);
+    assert.equal(document.getElementById('native-surveys'), null, 'no rows are invented on failure');
+    if (stage === 'enrichment') {
+      assert.match(document.getElementById('enrichment-analyses-map').textContent, /unlocks/);
+    } else {
+      assert.match(text, /Fixture candidate survey/, 'the candidates list is untouched');
+    }
+  });
+}

@@ -127,6 +127,16 @@ export function nativeSurveysSectionHtml(rows) {
   </div>`;
 }
 
+/** A failed native-survey read is not "no native surveys": the section keeps
+ *  its heading and says the read failed, with a re-check. Never drawn as nothing. */
+export function nativeSurveysUnreadableHtml() {
+  return `<div class="mt-s3 mb-s3" id="native-surveys-unreadable">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">Egeria's own surveys</div>
+    <div class="text-caveat text-state-warn">? couldn't read Egeria's surveys ·
+      <button type="button" data-native-recheck class="cursor-pointer bg-transparent underline">re-check</button></div>
+  </div>`;
+}
+
 const _timers = new WeakMap();
 
 /** Wire a rendered section: Run buttons, the annotations view, and the poll
