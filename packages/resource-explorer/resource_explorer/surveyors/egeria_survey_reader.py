@@ -68,15 +68,16 @@ def get_annotations_by_report_guid(asset_maker, report_guid: str) -> list[dict]:
     came back", NOT "the report has no annotations". Callers that must tell
     those apart (the native-survey read-back) call `annotations_from_report`
     on a `get_asset_by_guid` result they fetched themselves."""
+    annotations: list[dict] = []
     try:
         body = {"class": "GetRequestBody", "graphQueryDepth": 1}
         result = asset_maker.get_asset_by_guid(report_guid, body=body, output_format="JSON")
-        if not isinstance(result, dict):
-            return []
-        return annotations_from_report(result)
+        if isinstance(result, dict):
+            annotations = annotations_from_report(result)
     except Exception as exc:
         log.debug(f"get_annotations_by_report_guid failed for {report_guid}: {exc}")
-        return []
+
+    return annotations
 
 
 def annotations_from_report(result: dict) -> list[dict]:
