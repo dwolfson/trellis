@@ -8895,3 +8895,30 @@ Two follow-ups (project owner decision, 2026-09-30 — not this slice, not tonig
 A same-slice fix already adds a Run precondition that checks for the projected collection before
 submitting and refuses with a clear message if it's missing — this backlog item is only the two
 follow-ups beyond that (auto-heal, and the docs line), not the immediate symptom.
+
+## `database update-credentials` takes the password as a bare CLI argument (2026-09-30, native survey slice)
+
+Found while working out how Dan should safely run it tomorrow: `--password` is a required Typer
+option with no interactive prompt (`hide_input=True` never takes effect, since nothing prompts).
+Passing it plainly puts the password on the command line and in shell history unless the caller
+works around it (e.g. `read -rs PW; ... --password "$PW"; unset PW`). The `PATCH
+/api/databases/{slug}/credentials` route has the same exposure via its JSON body.
+
+Make `--password` optional with a hidden interactive prompt when omitted (Typer supports this
+directly), and document that the PATCH route's body can come from stdin/a file, so a credential
+never has to sit in a command line or a request made visible in a shell history or process list.
+
+## Gate servers must run under the served configuration (2026-09-30, native survey gate)
+
+**Decision (project owner's design session, 2026-09-30):** a gate server (8813, or whichever port
+serves a branch under test) must load the same `.env` the production/dev server (8810) reads, not
+whatever configuration happens to fall out of the worktree's own directory layout. Found live:
+8813 imports from a worktree with no `.env` of its own, so every 8813 gate to date silently ran
+with Prefect off, a different JWT secret, and no GitHub token — none of it chosen, all of it
+invisible until this slice's gate needed Prefect dispatch (item 6, whole-definition run storing a
+`flow_run_id`) to actually exercise the real path.
+
+Fixed for tonight by having the 8813 launch script explicitly load the main checkout's `.env`
+rather than symlinking (a symlink inside a worktree PR/CI recreates would silently vanish). Follow-up:
+the `/api/version` endpoint already logged above (see "Serve provenance") should show the env file
+path it loaded, next to the commit, so this stays visible rather than needing to be re-discovered.
