@@ -72,6 +72,24 @@ See the report for the exact output. Note: constructing `ProjectRegistry` from
 this branch runs its additive migration (three nullable columns on
 `database_surveys`) against the shared dev Postgres.
 
+## `--apply`, run 2026-09-30
+
+The dry run reviewed and approved before `--apply` showed 3 rows. By the time
+`--apply` actually ran (after coordinating with live peers, restarting 8810 on
+the merged fix, and a final pre-apply dry run), a 4th row had appeared —
+2026-09-30T12:48:15.979833, same slug, same `source='egeria-published'`, same
+empty-schema-info signature, its own correlated `activity_log` id — from another
+survey attempt on the still-pre-hotfix server in the window between the
+original 3 rows and the restart. All 4 were marked invalid in one `--apply` run;
+a fresh dry-run immediately after showed 0 rows remaining, confirmed
+independently rather than trusting the apply command's own success message.
+
+**This is why the repair is keyed on the damage's signature, not a hard-coded
+row count or list**: the count legitimately changed between review and
+execution, and the same query correctly caught the new instance without
+needing a second look. A repair tool that assumed "3 rows" instead of matching
+the pattern would have missed the 4th.
+
 ## Test evidence (import path confirmed above, inside this worktree)
 
 `uv run pytest packages/resource-explorer/tests`: 7158 passed, 103 skipped, 0 failed
