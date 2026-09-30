@@ -193,9 +193,19 @@ def get_enrichment_analyses(entity_type: str, slug: str) -> dict:
                     card_state = "measured"
             except Exception:
                 pass  # no results reader for a stub id — stays "unlocked"
+        # Whether the per-card Run route can dispatch this analysis. Computed
+        # from the run maps themselves (the same predicate the run route
+        # validates with), so a Run control is never offered for an analysis
+        # with no runner (doc_source_ingestion: slice 2 was never built).
+        if entity_type == "database":
+            from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
+            runnable = database_analysis_has_runner(entry["id"])
+        else:
+            runnable = False
         rows.append({
             "id": entry["id"],
             "name": entry["name"],
+            "runnable": runnable,
             "requires_input": requires_input,
             "unlocked": present,
             "reason": reason,

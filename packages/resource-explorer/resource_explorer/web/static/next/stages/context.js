@@ -58,13 +58,13 @@ function fixedFieldFeedsLine(def) {
 
 /** For a catalog human question: the analyses its own `answering` block
  *  names (`analysis_ids`) are the only declared consumers there are. With
- *  none, the honest line is "nothing reads this yet" -- NEVER the catalog's
+ *  none, the honest line is "feeds → nothing reads this yet" -- NEVER the catalog's
  *  free-text `note` / `answering_mechanism` (CSV prose such as "N/A —
  *  human-supplied ... may also be Agent over RAG content"), which describes
  *  how a question might be answered, not who consumes the answer. */
 function questionFeedsLine(entry) {
   const ids = entry.analysis_ids || [];
-  const text = ids.length ? `feeds → ${ids.join(', ')}` : 'nothing reads this yet';
+  const text = `feeds → ${ids.length ? ids.join(', ') : 'nothing reads this yet'}`;
   return `<div class="text-provenance text-ink-muted">${esc(text)}</div>`;
 }
 

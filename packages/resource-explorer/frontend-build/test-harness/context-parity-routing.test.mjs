@@ -105,6 +105,7 @@ test('routing: the Context tab mounts the Documentation sources block, and says 
   assert.doesNotMatch(block.textContent, /Documentation sources/);
   assert.match(block.textContent, /1<\/span> declared|1 declared/);
   assert.match(block.textContent, /Data dictionary/);
+  assert.match(block.textContent, /feeds → nothing reads this yet/, 'a supplied doc-source row gets a feeds line');
   assert.doesNotMatch(document.getElementById('context-form').textContent, /Documentation sources — not built/);
 });
 

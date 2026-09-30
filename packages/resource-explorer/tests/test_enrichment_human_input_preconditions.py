@@ -180,3 +180,44 @@ class TestPreconditionQueriesHitRealSchema:
             registry, "doc_sources", "adventureworks",
             where="ingested_at IS NOT NULL AND ingested_at != ''", slug_column="entity_slug")
         assert n == 0, "the ingested count query failed against the real schema"
+
+
+class TestRunControlsMatchRunners:
+    """A Run control must never be offered for an analysis the run route
+    would reject (doc_source_ingestion had a button and no runner: ingestion
+    slice 2 was never built). Computed FROM the run maps and the catalog, not
+    a hand-kept list, so this fails for ANY analysis added the same way."""
+
+    @pytest.fixture
+    def client(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            "resource_explorer.registry.ProjectRegistry.__init__",
+            lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None,
+        )
+        monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+        from resource_explorer.web.app import app
+        return TestClient(app)
+
+    def test_every_offered_run_control_has_a_runner_and_every_other_is_rejected(self, registry, client):
+        from resource_explorer.surveyors.database.database_surveyor import DATABASE_SURVEYOR_STEP_MAP
+        from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
+
+        # every enrichment-tier analysis the map lists, unlocked or not
+        registry.add_doc_source("database", "adventureworks", "https://example.org/docs")
+        rows = client.get("/api/context/database/adventureworks/enrichment-analyses").json()["analyses"]
+        assert rows, "the catalog declares enrichment-tier analyses for databases"
+
+        mapped = set(DB_DERIVED_ANALYSES) | set(DATABASE_SURVEYOR_STEP_MAP)
+        for row in rows:
+            # 1. the route's claim equals the run maps' own contents
+            assert row["runnable"] is (row["id"] in mapped), row["id"]
+            # 2. the run route agrees with the claim: a runnable analysis is
+            #    not rejected for lack of a runner; an unrunnable one is.
+            resp = client.post(f"/api/databases/adventureworks/analyses/{row['id']}/run")
+            no_runner = resp.status_code == 400 and "no local survey step" in resp.text
+            assert no_runner is (not row["runnable"]), (row["id"], resp.status_code, resp.text)
+
+    def test_doc_source_ingestion_specifically_has_no_runner_yet(self, registry, client):
+        rows = {r["id"]: r for r in client.get(
+            "/api/context/database/adventureworks/enrichment-analyses").json()["analyses"]}
+        assert rows["doc_source_ingestion"]["runnable"] is False

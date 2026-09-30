@@ -79,7 +79,7 @@ test('the five sections render in order, each row saying what it feeds', async (
   // The human question row (section 4): no declared consumer (no
   // `analysis_ids`), so the honest line -- never the catalog's prose.
   assert.match(html, /What does it cost to run\?/);
-  assert.match(html, /nothing reads this yet/);
+  assert.match(html, /feeds → nothing reads this yet/);
   assert.doesNotMatch(html, /feeds → Egeria Queries/);
 
   // Section 4 must NOT include the non-human ("gap") question -- Context's
@@ -217,12 +217,12 @@ test('no feeds line ever carries catalog note prose ("N/A", "may also"); a quest
 
   const feeds = [...document.querySelectorAll('#context-form .text-provenance')]
     .map((n) => n.textContent.trim())
-    .filter((t) => t.startsWith('feeds') || t.startsWith('nothing reads'));
+    .filter((t) => t.startsWith('feeds'));
   assert.ok(feeds.length >= 2, `expected feeds lines, got ${JSON.stringify(feeds)}`);
   for (const t of feeds) {
     assert.doesNotMatch(t, /N\/A/, `feeds line carries catalog prose: ${t}`);
     assert.doesNotMatch(t, /may also/i, `feeds line carries catalog prose: ${t}`);
   }
-  assert.ok(feeds.includes('nothing reads this yet'));
+  assert.ok(feeds.includes('feeds → nothing reads this yet'));
   assert.ok(feeds.includes('feeds → doc_evidence_check'));
 });

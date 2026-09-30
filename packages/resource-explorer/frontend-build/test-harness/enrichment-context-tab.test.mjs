@@ -63,7 +63,7 @@ test('Survey & analyses map: locked and unlocked rows render the existing glyph 
   const app = await loadAppModule();
 
   const unlockedRow = { id: 'doc_source_ingestion', name: 'Documentation Source Ingestion',
-    requires_input: 'documentation_source', unlocked: true, reason: '1 documentation source(s) declared', state: 'unlocked' };
+    requires_input: 'documentation_source', unlocked: true, reason: '1 documentation source(s) declared', state: 'unlocked', runnable: true };
   const lockedRow = { id: 'preliminary_fit', name: 'Preliminary Fit',
     requires_input: 'lens', unlocked: false, reason: 'declare a lens on the investigation', state: 'locked' };
 
@@ -91,5 +91,17 @@ test('a measured row (already run) does not offer Run', async () => {
     requires_input: 'lens', unlocked: true, reason: 'a lens is declared', state: 'measured' };
   assert.equal(app.enrichmentAnalysisCardStateKey(measuredRow), 'measured');
   const html = app.enrichmentAnalysisRowHtml(measuredRow);
+  assert.doesNotMatch(html, /data-run-enrichment-analysis=/);
+});
+
+test('an unlocked analysis with no runner shows "ingestion not built yet" and offers no Run control', async () => {
+  makeDomEnvironment();
+  const app = await loadAppModule();
+  const row = { id: 'doc_source_ingestion', name: 'Documentation Source Ingestion',
+    requires_input: 'documentation_source', unlocked: true, reason: '1 documentation source(s) declared',
+    state: 'unlocked', runnable: false };
+  assert.equal(app.enrichmentAnalysisCardStateKey(row), 'no-surveyor');
+  const html = app.enrichmentAnalysisRowHtml(row);
+  assert.match(html, /unlocked · ingestion not built yet/);
   assert.doesNotMatch(html, /data-run-enrichment-analysis=/);
 });

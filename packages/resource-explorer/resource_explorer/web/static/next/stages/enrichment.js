@@ -435,6 +435,7 @@ function docSourceRowHtml(src) {
     <div class="pl-[20px] text-provenance"${egeriaTitle}>
       <span class="${egeriaTone}" data-doc-egeria-state="${esc(src.id)}">${esc(egeriaText)}</span>
     </div>
+    <div class="pl-[20px] text-provenance text-ink-muted">feeds → nothing reads this yet</div>
     <div class="pl-[20px] mt-[2px] flex items-baseline gap-s3 text-provenance">
       <button type="button" data-doc-recheck="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button>
       <button type="button" disabled title="ingestion ships in a later slice" class="cursor-not-allowed bg-transparent p-0 text-ink-muted line-through decoration-dotted">ingest — coming soon</button>

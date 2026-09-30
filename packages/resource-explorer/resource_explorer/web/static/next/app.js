@@ -4200,6 +4200,10 @@ export function requiresInputInWords(requiresInput) {
  *  reads correctly for "unlocked, Run available". */
 export function enrichmentAnalysisCardStateKey(row) {
   if (row.state === 'measured') return 'measured';
+  // Unlocked, but no runner is mapped for it (`runnable === false`, computed
+  // server-side from the run maps): nothing can answer it yet, so ◌ -- not
+  // ○ "not run", which promises a runner exists.
+  if (row.unlocked && row.runnable === false) return 'no-surveyor';
   if (row.unlocked) return 'unrun';
   return 'no-surveyor';
 }
@@ -4207,7 +4211,7 @@ export function enrichmentAnalysisCardStateKey(row) {
 export function enrichmentAnalysisRowHtml(row) {
   const key = enrichmentAnalysisCardStateKey(row);
   const g = stateEntry(key);
-  const runBtn = row.unlocked && row.state !== 'measured'
+  const runBtn = row.unlocked && row.runnable !== false && row.state !== 'measured'
     ? `<button type="button" data-run-enrichment-analysis="${esc(row.id)}"
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Run</button>`
     : '';
@@ -4220,6 +4224,8 @@ export function enrichmentAnalysisRowHtml(row) {
     <div class="pl-[20px] text-provenance text-ink-muted">
       unlocked by: ${esc(requiresInputInWords(row.requires_input))} ·
       ${row.unlocked ? esc(row.reason) : `<span class="text-state-warn">${esc(row.reason)}</span>`}
+      ${row.unlocked && row.runnable === false
+        ? `<div class="text-ink-muted">unlocked · ${row.id === 'doc_source_ingestion' ? 'ingestion' : 'this analysis'} not built yet</div>` : ''}
     </div>
   </div>`;
 }
