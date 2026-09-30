@@ -9,7 +9,7 @@ posture and vocabulary), and when the resource is published each source
 becomes an `ExternalReference` on its Egeria asset (`doc_source_egeria.py`,
 reusing `egeria_publisher.py`'s `_publish_homepage_reference` pattern).
 
-Only `database` and `filesystem` entity types are wired — the brief allows
+Only `database`, `filesystem` and (E2) `repo` entity types are wired — the brief allows
 scoping filesystem out for time ("prioritize database first... note
 explicitly... if scoped out") but it turned out to need no extra code
 beyond the entity resolver below, since `FileSystemEntity` carries the same
@@ -47,7 +47,7 @@ from resource_explorer.registry import ProjectRegistry
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-_ENTITY_TABLES = ("database", "filesystem")
+_ENTITY_TABLES = ("database", "filesystem", "repo")
 
 
 def _registry() -> ProjectRegistry:

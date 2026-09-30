@@ -190,22 +190,23 @@ def test_blocked_on_5xx(monkeypatch):
     assert "503" in result.error
 
 
-def test_blocked_on_timeout(monkeypatch):
+def test_timed_out_is_its_own_state_not_blocked(monkeypatch):
     _patch_client(monkeypatch, raise_exc=httpx.TimeoutException("timed out"))
 
     result = m.probe("https://example.com/slow")
 
-    assert result.state == m.BLOCKED
+    assert result.state == m.TIMED_OUT
+    assert result.state != m.BLOCKED
     assert result.status_code is None
     assert "timed out" in result.error
 
 
-def test_blocked_on_connection_error(monkeypatch):
+def test_unreachable_on_connection_error(monkeypatch):
     _patch_client(monkeypatch, raise_exc=httpx.ConnectError("connection refused"))
 
     result = m.probe("https://nowhere.invalid/")
 
-    assert result.state == m.BLOCKED
+    assert result.state == m.UNREACHABLE
     assert result.status_code is None
 
 
@@ -214,7 +215,7 @@ def test_never_raises_on_unexpected_error(monkeypatch):
 
     result = m.probe("https://example.com/")
 
-    assert result.state == m.BLOCKED
+    assert result.state == m.UNREACHABLE
     assert "boom" in result.error
 
 

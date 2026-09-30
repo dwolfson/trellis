@@ -18,13 +18,13 @@ over the response, not a rung on a ladder.
   * `needs_sign_in`— 401/403, or a redirect that landed on something that
                       looks like a login page (`_looks_like_sign_in`).
   * `not_found`    — 404/410.
-  * `blocked`      — everything else: other 4xx/5xx, timeout, DNS failure,
-                      TLS failure, connection refused. Lumping these together
-                      is deliberate: the shared fact worth reporting is "we
-                      could not read this page", and the HTTP status code
-                      (when there is one) is carried alongside so a person
-                      can tell a 500 from a 403-that-wasn't-a-login-page
-                      without the module inventing a fifth state for it.
+  * `blocked`      — the site ANSWERED with a refusal: other 4xx/5xx. The
+                      HTTP status code is carried alongside.
+  * `timed_out`    — E2 (2026-09-29): no answer inside the budget. Split out
+                      of `blocked` because the owner saw a 4s timeout read
+                      "blocked", which claims the site refused us.
+  * `unreachable`  — E2: the site never answered at all (DNS, TLS,
+                      connection refused). Also not a refusal.
 
 **Nothing is stored from the page itself beyond title and byte count**
 (the brief's own words) — this module never writes to the registry; it
@@ -55,7 +55,9 @@ log = logging.getLogger(__name__)
 REACHABLE = "reachable"
 NEEDS_SIGN_IN = "needs_sign_in"
 NOT_FOUND = "not_found"
-BLOCKED = "blocked"
+BLOCKED = "blocked"          # the site ANSWERED with a refusal (4xx/5xx other than 404/410)
+TIMED_OUT = "timed_out"      # no answer inside the budget (httpx.TimeoutException)
+UNREACHABLE = "unreachable"  # never answered at all: DNS / TLS / connection failure
 
 # Gate: "each shows its state within five seconds with the status code."
 # Set below that so a slow/unreachable host is reported as `blocked` inside
@@ -172,11 +174,11 @@ def probe(url: str) -> ProbeResult:
                 )
     except httpx.TimeoutException as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        return ProbeResult(BLOCKED, None, elapsed_ms, error=f"timed out: {exc}")
+        return ProbeResult(TIMED_OUT, None, elapsed_ms, error=f"timed out: {exc}")
     except httpx.HTTPError as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        return ProbeResult(BLOCKED, None, elapsed_ms, error=str(exc)[:300])
+        return ProbeResult(UNREACHABLE, None, elapsed_ms, error=str(exc)[:300])
     except Exception as exc:  # pragma: no cover - defensive, see docstring
         elapsed_ms = int((time.monotonic() - started) * 1000)
         log.warning("doc source probe crashed for %s: %s", url, exc)
-        return ProbeResult(BLOCKED, None, elapsed_ms, error=str(exc)[:300])
+        return ProbeResult(UNREACHABLE, None, elapsed_ms, error=str(exc)[:300])

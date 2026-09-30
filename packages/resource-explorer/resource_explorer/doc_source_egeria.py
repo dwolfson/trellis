@@ -41,8 +41,50 @@ _SOURCE_TYPE_LABEL = {
 }
 
 
+class RepoEgeriaConnectionView:
+    """The Egeria connection a repo publishes doc sources through.
+
+    E2 (2026-09-29). `Project` (a repo) carries no per-entity Egeria
+    credentials the way `DatabaseEntity`/`FileSystemEntity` do — repo Egeria
+    code (`web/routes/egeria.py`) reads them from the environment
+    (`EGERIA_VIEW_SERVER`, `EGERIA_USER`, `EGERIA_USER_PASSWORD`,
+    `EGERIA_PLATFORM_URL`). This is a read-only VIEW of that connection plus
+    the repo's own asset GUID and display name, exposing the attribute names
+    every doc-source call site already reads, so those sites need no repo
+    special case. It is not a Project and does not pretend to be one.
+
+    The password is never included in `repr()`/`str()`, so an accidental
+    `log.info("%s", entity)` cannot leak it.
+    """
+
+    __slots__ = ("slug", "display_name", "egeria_asset_guid", "egeria_server",
+                 "egeria_url", "egeria_user", "_egeria_password")
+
+    def __init__(self, project, asset_guid: str = ""):
+        import os
+
+        self.slug = project.slug
+        self.display_name = project.display_name
+        self.egeria_asset_guid = asset_guid or getattr(project, "egeria_asset_guid", "") or ""
+        self.egeria_server = os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
+        self.egeria_url = os.getenv("EGERIA_PLATFORM_URL", "https://localhost:9443")
+        self.egeria_user = os.getenv("EGERIA_USER", "erinoverview")
+        self._egeria_password = os.getenv("EGERIA_USER_PASSWORD", "secret")
+
+    @property
+    def egeria_password(self) -> str:
+        return self._egeria_password
+
+    def __repr__(self) -> str:
+        return (f"RepoEgeriaConnectionView(slug={self.slug!r}, server={self.egeria_server!r}, "
+                f"url={self.egeria_url!r}, user={self.egeria_user!r}, "
+                f"asset_guid={self.egeria_asset_guid!r})")
+
+    __str__ = __repr__
+
+
 def resolve_entity_for_doc_source(registry, entity_type: str, entity_slug: str):
-    """The two entity tables this feature supports, resolved the same way
+    """The three entity kinds this feature supports (database, filesystem, repo), resolved the same way
     everywhere it's needed — `web/routes/doc_sources.py`'s `_resolve_entity`
     (which additionally turns a miss into an HTTP 404) and
     `egeria_outbox.py`'s `doc_source_publish`/`doc_source_unpublish`
@@ -58,6 +100,11 @@ def resolve_entity_for_doc_source(registry, entity_type: str, entity_slug: str):
         return registry.get_database(entity_slug)
     if entity_type == "filesystem":
         return registry.get_filesystem(entity_slug)
+    if entity_type == "repo":
+        project = registry.get(entity_slug)
+        if project is None:
+            return None
+        return RepoEgeriaConnectionView(project, registry.get_egeria_asset_guid(entity_slug) or "")
     return None
 
 

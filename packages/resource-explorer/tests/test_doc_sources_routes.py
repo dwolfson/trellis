@@ -92,8 +92,9 @@ class TestAddAndProbe:
 
     @pytest.mark.parametrize("state,status", [
         ("reachable", 200), ("needs_sign_in", 401), ("not_found", 404), ("blocked", 503),
+        ("timed_out", None), ("unreachable", None),
     ])
-    def test_all_four_probe_states_pass_through(self, client, monkeypatch, state, status):
+    def test_all_probe_states_pass_through(self, client, monkeypatch, state, status):
         monkeypatch.setattr("resource_explorer.web.routes.doc_sources.run_probe",
                              lambda url: _fake_probe(state, status))
         resp = client.post("/api/doc-sources/database/adventureworks",

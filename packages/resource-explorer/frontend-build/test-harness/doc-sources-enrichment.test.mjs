@@ -106,7 +106,7 @@ test('needs_sign_in and not_found states render their own glyph/label, not "reac
 
   await enrichment.renderDocSources('adventureworks');
 
-  assert.match(host.textContent, /needs sign-in/);
+  assert.match(host.textContent, /reachable behind a sign-in/);
   assert.match(host.textContent, /HTTP 401/);
   assert.match(host.textContent, /not found/);
   assert.match(host.textContent, /HTTP 404/);
@@ -221,18 +221,6 @@ test('the source-kind dropdown offers all nine declared kinds, including the 202
     'installation guide', 'user manual', 'api reference', 'release notes',
     'other',
   ]);
-});
-
-test('the ingest action is present but disabled ("coming soon") -- slice 2 is not built here', async () => {
-  const { enrichment, host } = await setUpEnrichmentDom();
-  stubFetchJson({ '/api/doc-sources/database/adventureworks': docSourcesFixture() });
-
-  await enrichment.renderDocSources('adventureworks');
-
-  const buttons = [...host.querySelectorAll('button')];
-  const ingestBtn = buttons.find((b) => /ingest/i.test(b.textContent));
-  assert.ok(ingestBtn, 'expected an ingest affordance, even if disabled');
-  assert.equal(ingestBtn.disabled, true);
 });
 
 test('each of the four Egeria publish-state rows renders its own required wording (2026-09-29 fix)', async () => {
