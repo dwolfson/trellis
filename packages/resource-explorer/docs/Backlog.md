@@ -8828,3 +8828,97 @@ Apply the same clear-on-change rule the Context fix uses (clear the rail's state
 loading frame) to every stage/tab transition and resource-slug change, not only Context renders
 — a rail showing another resource's evidence anywhere is a false claim on screen. Pre-existing on
 main; not part of E1's scope, follow-up PR after E1 merges.
+
+## Old Enrichment form is dead code (2026-09-30, found during E2)
+
+`renderEnrichmentForm`/`renderEnrichment` (`resource_explorer/web/static/next/stages/enrichment.js`,
+mount at line 246 as of E1) have no callers anywhere under `resource_explorer/web/static` — E1
+already rewired everything onto the Context tab, so the old form's own mount is unreachable. This
+is the same dead path that caused E1's own doc-sources-unreachable bug (design's own comments in
+`app.js` claimed the form "now lives on the Context tab instead," and that claim is what hid the
+bug until a fix agent traced call paths by hand).
+
+Delete `renderEnrichmentForm` and `renderEnrichment`, move anything still imported from them
+elsewhere in the module, and let the existing routing-level tests (the ones that go through real
+stage/tab navigation rather than calling render functions directly) prove nothing was lost —
+exactly the kind of check that would have caught the original bug immediately. Small, mechanical
+cleanup. **Sequencing:** do this after the native Egeria survey slice merges, since that slice
+also edits Survey & analyses in the same file — landing the cleanup first would create needless
+merge overlap.
+
+## No self-heal for a dead database/filesystem Egeria GUID (2026-09-30, native survey slice)
+
+Found tracing why coco_pharma's stale Egeria asset GUID didn't quietly show as "catalogued": it
+doesn't — `describe_publish_status` already reads the linkage row honestly ("published to
+Egeria · link stale since ... — element not found"). The status half of self-heal already works.
+The heal half doesn't exist for databases or filesystems:
+
+- `recheck_all_linkages` is CLI-only, no scheduled caller found.
+- `guard_linkage` only runs reactively, when a publish or survey happens to hit the dead GUID.
+- The scheduled `egeria_resync` scan (`clear_stale_assets`, `flag_vanished_publishes`) covers
+  **repos only** — its `stale_assets` scan reads the `projects` table, so it never looks at
+  databases or filesystems at all. It had been cycling for four days past coco_pharma's dead GUID
+  without ever seeing it.
+- `catalog_assets` is deliberately manual, and the outbox has no enqueue kind for a database or
+  filesystem asset publish at all — only repos have one.
+
+Same shape as this project's other "configured for one kind, never the other" bugs (E2's
+publish-hook finding earlier tonight is the same pattern). Fix: add an outbox enqueue kind for
+database/filesystem asset publishes, and extend `egeria_resync`'s stale-assets scan to cover
+databases and filesystems, not only the `projects` table. Until then, a dead database/filesystem
+GUID stays dead until someone manually republishes it.
+
+## Egeria's projected secrets file doesn't survive a redeploy (2026-09-30, native survey slice)
+
+A real submission on adventureworks failed with `FATAL: role "default" does not exist` — traced
+to `/deployments/secrets/resource-explorer.omsecrets` (RE's projection of credentials it already
+holds, via `omsecrets_store.py`, into the directory Egeria's YAMLFile secrets-store connector
+reads) being missing from both the container and the bind-mounted host directory. The three files
+that do survive are all stamped the same time as the 2026-09-29 redeploy — that redeploy reset
+`/deployments/secrets` to its shipped defaults and silently wiped RE's own projected file. With no
+secret, Egeria's JDBC connector falls back to the container's OS user, literally named "default",
+which doesn't exist as a Postgres role — hence the error. RE's own registry still holds the real
+credentials the whole time; nothing was lost, just not re-projected after the reset.
+
+Two follow-ups (project owner decision, 2026-09-30 — not this slice, not tonight):
+1. Add a `database reproject-secrets <slug>` command that projects the credentials RE already
+   holds — decrypted via RE's own existing decryption path, the same one the survey runner itself
+   uses when it connects — into the secrets file, so nobody has to type a password again to
+   recover from a redeploy. Call the same projection at RE startup and on each `egeria_resync`
+   pass whenever a database/filesystem's collection is found missing from the file, so a redeploy
+   heals itself instead of silently failing every native survey until someone re-traces it by
+   hand (as was done once, manually, the night this was found).
+2. Add a line to the setup docs noting that a quickstart redeploy resets `/deployments/secrets`,
+   so the next person who hits this recognizes it immediately instead of re-tracing it from an
+   opaque Postgres role error.
+
+A same-slice fix already adds a Run precondition that checks for the projected collection before
+submitting and refuses with a clear message if it's missing — this backlog item is only the two
+follow-ups beyond that (auto-heal, and the docs line), not the immediate symptom.
+
+## `database update-credentials` takes the password as a bare CLI argument (2026-09-30, native survey slice)
+
+Found while working out how Dan should safely run it tomorrow: `--password` is a required Typer
+option with no interactive prompt (`hide_input=True` never takes effect, since nothing prompts).
+Passing it plainly puts the password on the command line and in shell history unless the caller
+works around it (e.g. `read -rs PW; ... --password "$PW"; unset PW`). The `PATCH
+/api/databases/{slug}/credentials` route has the same exposure via its JSON body.
+
+Make `--password` optional with a hidden interactive prompt when omitted (Typer supports this
+directly), and document that the PATCH route's body can come from stdin/a file, so a credential
+never has to sit in a command line or a request made visible in a shell history or process list.
+
+## Gate servers must run under the served configuration (2026-09-30, native survey gate)
+
+**Decision (project owner's design session, 2026-09-30):** a gate server (8813, or whichever port
+serves a branch under test) must load the same `.env` the production/dev server (8810) reads, not
+whatever configuration happens to fall out of the worktree's own directory layout. Found live:
+8813 imports from a worktree with no `.env` of its own, so every 8813 gate to date silently ran
+with Prefect off, a different JWT secret, and no GitHub token — none of it chosen, all of it
+invisible until this slice's gate needed Prefect dispatch (item 6, whole-definition run storing a
+`flow_run_id`) to actually exercise the real path.
+
+Fixed for tonight by having the 8813 launch script explicitly load the main checkout's `.env`
+rather than symlinking (a symlink inside a worktree PR/CI recreates would silently vanish). Follow-up:
+the `/api/version` endpoint already logged above (see "Serve provenance") should show the env file
+path it loaded, next to the commit, so this stays visible rather than needing to be re-discovered.
