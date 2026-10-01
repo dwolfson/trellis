@@ -3924,9 +3924,23 @@ function _renderDeploymentEvidenceResults(data) {
     const items = groups[v];
     if (!items.length) return '';
     const rows = items.map(d => {
-      const evidenceKinds = (d.evidence || []).map(e => e.kind);
+      // Group by kind: a distribution with 50 [project.scripts] entries has 50
+      // console_script items, which used to print as 50 bare "console_script"
+      // strings (the kind where the name belonged). One entry per kind; when a
+      // kind has more than one item, show the count and the item names
+      // (EvidenceItem.detail — the script name for console_script).
+      const byKind = new Map();
+      for (const e of (d.evidence || [])) {
+        if (!byKind.has(e.kind)) byKind.set(e.kind, []);
+        byKind.get(e.kind).push(e);
+      }
+      const evidenceKinds = [...byKind.entries()].map(([kind, es]) => {
+        if (es.length === 1) return kind;
+        const names = es.map(e => e.detail).filter(Boolean);
+        return `${kind} · ${es.length}` + (names.length ? `: ${names.join(', ')}` : '');
+      });
       const evLine = evidenceKinds.length
-        ? `<div class="text-[11px] text-slate-500 mono">${_esc(evidenceKinds.join(', '))}</div>` : '';
+        ? `<div class="text-[11px] text-slate-500 mono">${_esc(evidenceKinds.join([...byKind.values()].some(es => es.length > 1) ? '; ' : ', '))}</div>` : '';
       const cnc = d.could_not_check || [];
       const cncLine = cnc.length
         ? `<div class="text-[11px] text-amber-400/80 leading-snug">${cnc.length} evidence item`
