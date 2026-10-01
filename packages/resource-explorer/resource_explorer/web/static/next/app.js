@@ -913,7 +913,7 @@ function navItemHtml(s, { number } = {}) {
     >${label}</button>`;
 }
 
-function renderIntentNav() {
+export function renderIntentNav() {
   const nav = $('intent-nav');
 
   // Three groups, read off `STAGES.class` — never a second hardcoded list of
@@ -6809,6 +6809,54 @@ async function loadPane() {
     return;
   }
 
+  // FRAME-CLASS STAGES ROUTE FIRST, before any subTab branch.
+  //
+  // Understanding, Automate and Investigation have no sub-tabs of their own,
+  // but a stage click deliberately leaves state.subTab alone (a subTab chosen
+  // on another real stage survives the switch). With these checks AFTER the
+  // subTab branches, Enrichment -> Context then a click on Investigation left
+  // state.subTab === 'context', loadContextPane() returned early, and the
+  // frame never rendered. Only the CHECK ORDER is the fix; state.subTab is
+  // intentionally not reset. Work-list branches above stay first: they replace
+  // the pane for any stage and a stage click does not clear them (unchanged).
+  // Understanding is CHARTS.
+  //
+  // It was marked "not built" on the strength of having zero rows in the
+  // analysis catalog and the activity log — both true, and both irrelevant
+  // to the seven Plotly figures `/api/stats/{slug}/charts/*` already serves
+  // for a repo. The catalog is empty; the data is not. Since the fix round
+  // puts "anything over time" in the pane as a chart, this is where charts
+  // live, and leaving the marker up would have been marking a surface as
+  // absent while its data sat one GET away.
+  if (state.stage === 'understanding') {
+    await loadChartsPane();
+    renderPerspectiveRow();
+    return;
+  }
+
+  // Automate is subscriptions/schedules, not questions -- its own two-tab
+  // subnav (renderAutomate(), next/stages/automate.js), same bypass shape as
+  // Understanding just above. Global by default, like the current UI's
+  // Schedules overview: it works with no resource selected, and filters to
+  // one via its own "Just <slug>" checkbox rather than requiring a selection.
+  if (state.stage === 'automate') {
+    await renderAutomate();
+    renderPerspectiveRow();
+    return;
+  }
+
+  // Investigation is the frame, not a Questions-checklist stage — same
+  // bypass shape as Understanding/Automate above, not the generic engine.
+  // stages/investigation.js's own renderer (list/create/detail: members,
+  // dispositions, next-steps, purposes, classification, Egeria binding)
+  // replaces the old "not in /next" placeholder this branch used to print
+  // for `class === 'frame'`; see that file's header comment.
+  if (state.stage === 'investigation') {
+    await renderInvestigation();
+    renderPerspectiveRow();
+    return;
+  }
+
   if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
   // ENRICHMENT-E1-CONTEXT-TAB: Context is its own pane, not a Questions-
   // engine variant — see loadContextPane() below.
@@ -6848,44 +6896,6 @@ async function loadPane() {
   // would have shipped a screen whose whole argument — that six states are
   // scannable as glyph plus sentence — could not be looked at.
   const stageDef = STAGES.find((s) => s.id === state.stage);
-
-  // Understanding is CHARTS.
-  //
-  // It was marked "not built" on the strength of having zero rows in the
-  // analysis catalog and the activity log — both true, and both irrelevant
-  // to the seven Plotly figures `/api/stats/{slug}/charts/*` already serves
-  // for a repo. The catalog is empty; the data is not. Since the fix round
-  // puts "anything over time" in the pane as a chart, this is where charts
-  // live, and leaving the marker up would have been marking a surface as
-  // absent while its data sat one GET away.
-  if (state.stage === 'understanding') {
-    await loadChartsPane();
-    renderPerspectiveRow();
-    return;
-  }
-
-  // Automate is subscriptions/schedules, not questions -- its own two-tab
-  // subnav (renderAutomate(), next/stages/automate.js), same bypass shape as
-  // Understanding just above. Global by default, like the current UI's
-  // Schedules overview: it works with no resource selected, and filters to
-  // one via its own "Just <slug>" checkbox rather than requiring a selection.
-  if (state.stage === 'automate') {
-    await renderAutomate();
-    renderPerspectiveRow();
-    return;
-  }
-
-  // Investigation is the frame, not a Questions-checklist stage — same
-  // bypass shape as Understanding/Automate above, not the generic engine.
-  // stages/investigation.js's own renderer (list/create/detail: members,
-  // dispositions, next-steps, purposes, classification, Egeria binding)
-  // replaces the old "not in /next" placeholder this branch used to print
-  // for `class === 'frame'`; see that file's header comment.
-  if (state.stage === 'investigation') {
-    await renderInvestigation();
-    renderPerspectiveRow();
-    return;
-  }
 
   // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: same read-vs-write gap as
   // the nav item above — inverted to read `built`, which actually exists.
