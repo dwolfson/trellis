@@ -1,6 +1,6 @@
 """Egeria-native surveys: list, run, read back.
 
-`docs/design-notes/BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md` is the brief and the
+`BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md` is the brief and the
 gate. Prefect is not in this path: a run here is a direct pyegeria submission
 whose proof lives on `step_runs` (see `native_survey_run.py`).
 

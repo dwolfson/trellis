@@ -283,8 +283,7 @@ def _needs_human_input(kind: str) -> Callable:
                 # The one real, already-stored signal is preliminary_fit's
                 # OWN last-read `lens_declared` flag — a resource-scoped
                 # proxy for what should be investigation-scoped. Documented
-                # limitation, not silently assumed: see ENRICHMENT-E1-
-                # CONTEXT-TAB-IMPLEMENTED.md.
+                # limitation, not silently assumed: see ENRICHMENT-E1-CONTEXT-TAB-IMPLEMENTED.md.
                 from resource_explorer.facts import FactLayer
 
                 fl = FactLayer(registry, resource_type="database")

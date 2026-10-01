@@ -16,7 +16,7 @@ it ("How much has changed since the last time this was surveyed…") is now
 subscriptions are managed, which is a different thing from a stage. This
 ruling is **contested** as of 2026-09-20 — a designer review raised
 `RULING-NAV-GROUPING.md`, which places Automate in the navigation; see
-`docs/design-notes/QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md` for the open
+`QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md` for the open
 question and exactly what would be reverted.
 
 **The CSV is no longer repo-only** (2026-09-20). A `Resource Types` column

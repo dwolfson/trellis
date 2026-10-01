@@ -19,7 +19,7 @@ like a genuinely unreachable server and fell back to local execution — while
 dispatch even attempted. Every `step_runs` row labelled `executor='prefect'`
 from an affected process was therefore not trustworthy evidence that
 anything had run through Prefect at all — see
-`docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md`.
+`PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md`.
 
 The fix: every module that needs a Prefect client goes through
 `resource_explorer.surveyors.prefect_adapter.re_prefect_client()`, which
@@ -100,7 +100,7 @@ def test_no_bare_get_client_call_outside_the_designated_helper():
         f"{ALLOWED_FILE}::{ALLOWED_FUNCTION} — this reads Prefect's ambient/"
         "frozen settings instead of RE's own configured PREFECT_API_URL "
         "(see this test's module docstring and "
-        "docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md). Use "
+        "PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md). Use "
         "`resource_explorer.surveyors.prefect_adapter.re_prefect_client()` "
         "instead:\n" + "\n".join(f"  {o}" for o in offenders)
     )

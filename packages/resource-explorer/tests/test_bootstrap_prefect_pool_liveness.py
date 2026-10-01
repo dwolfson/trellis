@@ -1,6 +1,6 @@
 """Prefect work-pool worker liveness in the bootstrap monitor (2026-09-28,
 part of the whole-definition-Prefect-default change — see
-docs/design-notes/PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md).
+PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md).
 
 Real problem earlier tonight: `prefect_up.sh` started a worker on the wrong
 work pool, and nobody noticed until a run silently degraded to local

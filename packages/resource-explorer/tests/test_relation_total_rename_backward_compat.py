@@ -1,7 +1,6 @@
 """Backward compatibility for the `table_total`/`table_select` ->
 `relation_total`/`relation_select` rename (REPLY-DESIGNER-ROUND2-DATABASE-
-SCREENS.md §2.3, see also `docs/design-notes/TABLE-COUNT-RENAME-
-IMPLEMENTED.md`).
+SCREENS.md §2.3, see also `TABLE-COUNT-RENAME-IMPLEMENTED.md`).
 
 Every `credential_capability` probe already stored under a survey's
 `survey_data` blob before this rename carries the OLD top-level key names.

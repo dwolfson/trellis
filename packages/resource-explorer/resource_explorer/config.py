@@ -269,8 +269,8 @@ class EgeriaConfig(BaseSettings):
     # need credentials. Confirmed live 2026-07-09: secrets are written via
     # AutomatedCuration.save_client_side_secret(secrets_store_guid, body) with
     # secret key names "userId"/"clearPassword" for Postgres resources — but
-    # this was never wired into a caller until docs/design-notes/
-    # PROBES-2026-09-21.md's investigation (2026-09-21) found the reason a
+    # this was never wired into a caller until PROBES-2026-09-21.md's investigation (2026-09-21)
+    # found the reason a
     # freshly-cataloged coco_pharma asset still failed its native survey with
     # a SCRAM/no-password error: its embedded SecretsStoreConnection carried
     # the literal unsubstituted template placeholders "~{secretsCollectionName}~"

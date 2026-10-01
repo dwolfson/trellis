@@ -281,4 +281,4 @@ the string):
 - `resource_explorer/web/static/next/envelope.js`
 - `resource_explorer/web/static/next/app.js`
 - `tests/test_next_renders_text_cross_check.py`
-- `docs/design-notes/G2-QUESTIONS-HEADLINE-SLOT-IMPLEMENTED.md` (this file)
+- `G2-QUESTIONS-HEADLINE-SLOT-IMPLEMENTED.md` (this file)

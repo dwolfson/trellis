@@ -2,7 +2,7 @@
  *  Preliminary Fit card/Shared-Names-block consistency bug, both found live
  *  on the owner's 2026-09-28 coco_pharma gate check (same round as
  *  by-analysis-headline-and-glyphs.test.mjs's two bugs) -- see
- *  docs/design-notes/BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md's
+ *  BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md's
  *  follow-up section.
  *
  *  BUG 1 -- the block's header read "N DISAGREE", which the owner could not

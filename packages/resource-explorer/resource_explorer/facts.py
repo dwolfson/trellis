@@ -789,7 +789,7 @@ _RESOURCE_STATE_HEADLINES: dict[str, "Callable[[dict, str], str]"] = {
 # The DATABASE resource-state table — porting #309's repository pattern
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# docs/design-notes/HEADLINE-GAPS-FINGERPRINT-AND-REPO-CARDS-IMPLEMENTED.md
+# HEADLINE-GAPS-FINGERPRINT-AND-REPO-CARDS-IMPLEMENTED.md
 # (#309) built this mechanism for repositories: a question answered from a
 # field ALREADY STORED on the resource, never from a survey step, read via
 # `RESOURCE_STATE_SOURCES` and given a one-sentence headline by

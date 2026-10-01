@@ -8,13 +8,13 @@ via the shared `oldUiHref()` helper.
 
 Discovery Sources was ported from a deferral to a full build under
 SPEC-ADMIN-THE-FOUR-GAPS.md §3 — see TestDiscoverySourcesPane below and
-docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md. Groups was ported
-under §2 — see TestGroupsPane below and docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md.
+DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md. Groups was ported
+under §2 — see TestGroupsPane below and GROUPS-ADMIN-IMPLEMENTED.md.
 Egeria Alignment (Resync) and Repair were ported under §1 — see
-TestResyncPane/TestRepairPane below and docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md.
+TestResyncPane/TestRepairPane below and RECONCILE-ADMIN-IMPLEMENTED.md.
 
 No browser verification of a signed-in session happened for this file — see
-docs/design-notes/ITEM-5-ADMIN-IMPLEMENTED.md for what was and was not
+ITEM-5-ADMIN-IMPLEMENTED.md for what was and was not
 checked live. These tests grep/slice function bodies out of the concatenated
 source, the established pattern for /next JS modules without a browser —
 see test_next_activity_pane.py and test_next_automate_pane.py's identical

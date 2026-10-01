@@ -1,8 +1,8 @@
 """Launching an Egeria-native survey from RE, and reading it back.
 
-Design brief: `docs/design-notes/BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md` (the
+Design brief: `BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md` (the
 authoritative source for the slice and its six-point gate). Implementation
-notes: `docs/design-notes/NATIVE-EGERIA-SURVEY-LAUNCH-IMPLEMENTED.md`.
+notes: `NATIVE-EGERIA-SURVEY-LAUNCH-IMPLEMENTED.md`.
 
 What this is: a *direct* pyegeria submission of the survey Egeria's own survey
 action engine already knows for a resource's technology type

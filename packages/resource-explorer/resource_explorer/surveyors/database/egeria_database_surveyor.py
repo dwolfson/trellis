@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 # survey tries to use it. _create_postgres_element_from_template below
 # bypasses the two broken wrappers the same way _initiate_native_survey
 # bypasses initiate_postgres_*_survey, adding "deepCopy": True to the raw
-# request body. See docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md for
+# request body. See CATALOG-AND-SURVEY-REFRESH-FIX.md for
 # the full investigation, including why this only helps *fresh* catalog runs
 # and not an already-broken existing asset (Egeria's own "reuse by
 # qualifiedName" match path never triggers deepCopy's child-copying at all —
@@ -68,7 +68,7 @@ class EgeriaDatabaseSurveyorError(RuntimeError):
 # native-survey time) correctly keeps YAMLSecretsStoreProvider, matching
 # Egeria's own documented pattern -- see
 # https://egeria-project.org/connectors/secrets/yaml-file-secrets-store-connector/.
-# See docs/design-notes/PROBES-2026-09-21.md for the full investigation.
+# See PROBES-2026-09-21.md for the full investigation.
 _YAML_SECRETS_FILE_PROVIDER_CLASS = (
     "org.odpi.openmetadata.adapters.connectors.secretsstore.yaml.YAMLSecretsFileProvider"
 )
@@ -224,7 +224,7 @@ class EgeriaDatabaseSurveyor:
         than creating a duplicate — so this is safe to call unconditionally —
         but that reuse path does NOT re-run deepCopy's child-copying, so it
         cannot repair an existing element that is already missing its
-        connection. See docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md.
+        connection. See CATALOG-AND-SURVEY-REFRESH-FIX.md.
         """
         template_guid = self._automated_curation.get_template_guid_for_technology_type(technology_type)
         body = {
@@ -390,7 +390,7 @@ class EgeriaDatabaseSurveyor:
         named collection, and return the two placeholder values
         ("secretsCollectionName", "secretsStorePathName") the PostgreSQL
         template's embedded SecretsStoreConnection needs bound -- see
-        docs/design-notes/PROBES-2026-09-21.md for why both were previously
+        PROBES-2026-09-21.md for why both were previously
         left as Egeria's own unsubstituted template placeholders.
 
         Non-fatal by design, matching this method's siblings in
@@ -421,7 +421,7 @@ class EgeriaDatabaseSurveyor:
         by-qualifiedName reuse path skipped past) needs delete-and-recatalog,
         which changes the asset's GUID and orphans its existing Survey Reports/
         annotations. That is a real, bigger decision than this bug fix's scope —
-        see docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md and the Backlog
+        see CATALOG-AND-SURVEY-REFRESH-FIX.md and the Backlog
         entry — so it is not automated here. This only makes the absence
         visible (at WARNING level) instead of letting it surface later as an
         opaque OPEN-SURVEY-0009 from the native survey engine, the same
@@ -447,8 +447,8 @@ class EgeriaDatabaseSurveyor:
                 "OPEN-SURVEY-0009. This element was cataloged before this fix, or via "
                 "Egeria's by-qualifiedName reuse path, which does not create one. Fixing "
                 "it requires delete-and-recatalog (changes the GUID, orphans existing "
-                "Survey Reports/annotations) — see "
-                "docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md."
+                "Survey Reports/annotations) — see the design note "
+                "CATALOG-AND-SURVEY-REFRESH-FIX.md."
             )
 
     def _catalog_and_survey(
@@ -464,7 +464,7 @@ class EgeriaDatabaseSurveyor:
         Egeria's template-based creation stores the connection details (including
         credentials) so that subsequent surveys can be initiated without supplying
         credentials again — for a *freshly-cataloged* element. See
-        docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md for what this does and
+        CATALOG-AND-SURVEY-REFRESH-FIX.md for what this does and
         does not fix for an already-cataloged element.
 
         Returns dict with keys: server_guid, database_guid, survey_action_guid.

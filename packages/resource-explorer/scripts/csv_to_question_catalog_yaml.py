@@ -61,7 +61,7 @@ the live registry. That is a deliberate choice, not an oversight:
     offending token named in the error -- not a silent, user-facing wrong
     answer. That is a different risk class from the runtime "confident wrong
     answer" bugs this codebase is otherwise careful about (see
-    docs/design-notes/*-IMPLEMENTED.md and the `find-absence-as-answer`
+    docs/design-notes/implemented/*-IMPLEMENTED.md and the `find-absence-as-answer`
     skill); a noisy, immediately-actionable build failure is the acceptable
     side of that tradeoff.
 """

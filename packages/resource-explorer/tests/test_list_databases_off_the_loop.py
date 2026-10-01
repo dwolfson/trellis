@@ -1,7 +1,6 @@
 """GET /api/databases/ must not block the event loop.
 
-Found live 2026-09-29 round 2 (docs/design-notes/PER-REQUEST-SERVER-
-LATENCY-ROUND-2-IMPLEMENTED.md), while measuring that round's gate numbers:
+Found live 2026-09-29 round 2 (PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md), while measuring that round's gate numbers:
 `list_databases`'s `_to_summary` calls several synchronous registry methods
 directly inside the `async def` handler, unwrapped — including the
 round-2 `find_latest_database_survey_with_key`, a real query. A concurrent

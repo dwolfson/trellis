@@ -160,8 +160,8 @@ class EgeriaAnnotationItem(BaseModel):
 def _to_summary(db) -> DatabaseSummary:
     """Convert DatabaseEntity to DatabaseSummary."""
     # Get latest survey data if available. `get_latest_database_survey`
-    # (2026-09-29 round 1, docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-    # IMPLEMENTED.md), not `get_database_surveys(...)[0]` — this route used
+    # (2026-09-29 round 1, PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md), not
+    # `get_database_surveys(...)[0]` — this route used
     # to pay the full unbounded "every historical survey's full blob" fetch
     # for a value that only ever needed the single newest row.
     import json
@@ -179,7 +179,7 @@ def _to_summary(db) -> DatabaseSummary:
     # ran would otherwise silently hide a still-current capability reading.
     #
     # Uses `find_latest_database_survey_with_key` (2026-09-29 round 2,
-    # docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md)
+    # PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md)
     # rather than looping `surveys` (already fetched above for
     # schema/table/column counts) — that method pushes the same
     # newest-first "has this key" search into Postgres instead of
@@ -238,7 +238,7 @@ def _list_databases_sync(db_type: str | None) -> list[DatabaseSummary]:
 async def list_databases(db_type: str | None = None) -> list[DatabaseSummary]:
     """List all registered databases, optionally filtered by type.
 
-    Wrapped in `asyncio.to_thread` (2026-09-29 round 2, docs/design-notes/
+    Wrapped in `asyncio.to_thread` (2026-09-29 round 2,
     PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md) — found live while
     measuring round 2's gate numbers: `_to_summary` calls several
     synchronous registry methods (including the round-2
@@ -249,8 +249,8 @@ async def list_databases(db_type: str | None = None) -> list[DatabaseSummary]:
     `/api/auth/me`, which touches no database at all, was caught at 871ms
     in a concurrent boot-sequence measurement, queued behind this same
     event-loop-thread block. Same bug class and same fix as `list_projects`
-    (round 1) and `/questions` (BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-
-    IMPLEMENTED.md §2a) — this is a third, independently-found instance.
+    (round 1) and `/questions` (BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md §2a) — this is a
+    third, independently-found instance.
     """
     return await asyncio.to_thread(_list_databases_sync, db_type)
 

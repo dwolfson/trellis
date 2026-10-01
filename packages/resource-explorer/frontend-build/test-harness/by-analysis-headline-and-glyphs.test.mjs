@@ -1,7 +1,7 @@
 /** Real-DOM regression tests for two By-analysis panel bugs found live on
  *  the owner's 2026-09-28 timed gate (8813), both fixed on this branch
  *  (`re/by-analysis-progressive-and-graph`) -- see
- *  docs/design-notes/BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md's
+ *  BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md's
  *  follow-up section for the full write-up.
  *
  *  BUG 1 -- the contents-board row's headline came ONLY from the board's own

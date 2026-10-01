@@ -1103,8 +1103,8 @@ def build_survey_results(
     just scoped to that one analysis_id's own annotation_types instead of a
     dashboard's union.
 
-    **The read-cost fix (2026-09-28, docs/design-notes/BOARD-SUMMARY-READ-
-    COST-IMPLEMENTED.md):** when `board_id` is given, this first tries
+    **The read-cost fix (2026-09-28, BOARD-SUMMARY-READ-COST-IMPLEMENTED.md):** when `board_id` is
+    **given, this first tries
     `registry.get_board_summary` — a single-row read of what a writer
     (`_refresh_board_summaries_after_run` below, called from
     `execute_and_record_analysis`/`execute_and_record_database_analysis` at

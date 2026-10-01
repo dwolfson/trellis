@@ -5,7 +5,7 @@ names to next/*.js or stages/*.js and never re-ran the build, so the new
 classes rendered as literally nothing: no error, no visual cue beyond the
 broken layout. See docs/Backlog.md, "tailwind-next.css has no build-freshness
 check and will silently go stale again", and
-docs/design-notes/TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md.
+TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md.
 
 This test rebuilds the stylesheet from a clean tree with the exact recorded
 build command and diffs it byte-for-byte against the committed file. It needs

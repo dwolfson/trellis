@@ -7,7 +7,7 @@ that finding/importing repos is corpus-level work, not a Discovery-stage
 affordance.
 
 No browser verification with a signed-in session is asserted by these
-tests -- see docs/design-notes/NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md
+tests -- see NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md
 for what was checked live. These tests grep/slice the concatenated source,
 the established pattern for /next JS modules without a browser -- see
 test_next_automate_pane.py / test_next_curate_pane.py's identical `_app()`

@@ -491,7 +491,7 @@ function leafRowHtml(l) {
 }
 
 /** A branch's leaves grouped by scope-hierarchy cluster (designer, 2026-09-17
- *  — see the addendum in docs/design-notes/ITEM-3-CURATE-IMPLEMENTED.md).
+ *  — see the addendum in ITEM-3-CURATE-IMPLEMENTED.md).
  *  `packages/` alone held 64 of 69 components as one flat list; the same
  *  clustering that already groups the blueprints panel's "scope-hierarchy ·
  *  collection" rows (`component_tree.group_leaves`, reading `scope_hierarchy.
@@ -563,8 +563,8 @@ async function renderComponentTree(slug, prefix = '') {
   // ordering by evidence puts the weakest clusters first without hiding
   // one. By size is the repository's own shape.
   //
-  // Agreement RAISES a branch's effective evidence (RULING-WHAT-A-VERDICT-
-  // IS-ABOUT.md §2b) — two independent extractors landing on the same path
+  // Agreement RAISES a branch's effective evidence (RULING-WHAT-A-VERDICT-IS-ABOUT.md §2b) — two
+  // independent extractors landing on the same path
   // is a better bet than one extractor at 90%. In a weakest-first queue
   // that means agreement must SINK a branch, the same direction lower
   // confidence already does — not outrank confidence by sorting to the

@@ -2520,7 +2520,7 @@ def prefect_worker(
         raise typer.Exit(1)
 
 
-# ── board_summary backfill (docs/design-notes/BOARD-SUMMARY-READ-COST-IMPLEMENTED.md) ──
+# ── board_summary backfill (BOARD-SUMMARY-READ-COST-IMPLEMENTED.md) ──
 
 @app.command(name="backfill-board-summaries")
 def backfill_board_summaries(

@@ -1,5 +1,5 @@
 """Engine-note persistence (2026-09-28,
-docs/design-notes/ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md).
+ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md).
 
 The bug: `launchSurvey()` (app.js) appended an `engine_note` div to the
 transient `#survey-note` node describing which engine actually ran a

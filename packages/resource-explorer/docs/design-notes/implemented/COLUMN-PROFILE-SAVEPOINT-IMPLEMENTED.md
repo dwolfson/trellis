@@ -3,7 +3,7 @@
 **Dispatch:** Section F of the ongoing multi-session brief work, from the
 "Resource Explorer expansion architecture" coordinator session, following
 directly from a defect found while live-verifying §E
-(`docs/design-notes/PREFECT-PREREQUISITE-RESOLUTION-IMPLEMENTED.md`) and
+(`PREFECT-PREREQUISITE-RESOLUTION-IMPLEMENTED.md`) and
 flagged as background task `task_3ce22015`.
 
 **Branch:** `re/column-profile-savepoint-fix`, off `origin/main` (`9bda025d`,

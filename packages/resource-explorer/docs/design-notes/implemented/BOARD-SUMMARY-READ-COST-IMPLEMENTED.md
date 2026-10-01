@@ -278,7 +278,7 @@ exactly those three rows, run immediately before each cold measurement).
 ## Harness test added (2026-09-28, closes gap 4 above)
 
 PR #346 landed a real node+jsdom render harness for `/next`
-(`frontend-build/test-harness/`, `docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md`)
+(`frontend-build/test-harness/`, `NEXT-RENDER-HARNESS-IMPLEMENTED.md`)
 in the meantime, with a project-owner rule (2026-09-28): every `/next` fix
 from here on adds its regression to the harness, not only a source-text
 test. Design flagged this branch's own gap 4 above as exactly the case that

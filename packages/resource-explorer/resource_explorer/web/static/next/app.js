@@ -51,7 +51,7 @@ import {
 // stage-specific code; Scouting for other reasons — see its own stub
 // header comment). Building one of them means adding real exports to its
 // stub file and one import line here — see
-// docs/design-notes/APP-JS-SPLIT-IMPLEMENTED.md. Investigation's stub
+// APP-JS-SPLIT-IMPLEMENTED.md. Investigation's stub
 // (`stages/investigation.js`) is no longer empty — it now ports classic's
 // Investigations tab (list/create/detail: members, dispositions,
 // next-steps, purposes, classification, Egeria bind/promote/sync/
@@ -268,8 +268,8 @@ export const state = {
  *  everywhere else) from this field rather than hardcoding a second list of
  *  which ids go where. The ruling is explicit that regrouping in the
  *  renderer while this array still called them "eight ordered intents"
- *  would be the same class of bug as `unbuilt` (DEFECT-UNBUILT-STAGES-
- *  RENDER-AS-BUILT.md — read in three places, set in none) and #130's
+ *  would be the same class of bug as `unbuilt` (DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md — read in
+ *  three places, set in none) and #130's
  *  dashed-styling-independent-of-its-flag bug: declare the fact once,
  *  derive appearance from it.
  *
@@ -2168,7 +2168,7 @@ async function switchResourceType(type) {
  * create/delete/assign, all real writes to group_slug) needs the sidebar's
  * grouping to reflect what it just changed rather than staying stale until
  * a full page reload, so it imports and calls this after each write. See
- * docs/design-notes/GROUPS-ADMIN-IMPLEMENTED.md. Admin → Groups assigns
+ * GROUPS-ADMIN-IMPLEMENTED.md. Admin → Groups assigns
  * groups to databases and filesystems too (admin/groups.js's own
  * listDatabases()/listFilesystems() calls), so this also refreshes
  * whichever of those two this session has already fetched -- not
@@ -3468,7 +3468,7 @@ const _TABLE_KIND_LABELS = {
 // the REAL functions directly, rather than re-extracting/re-executing their
 // source text as a string (the pattern every other app.js-adjacent test
 // uses -- see tests/test_next_schema_inventory_filter.py's own docstring).
-// See docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md.
+// See NEXT-RENDER-HARNESS-IMPLEMENTED.md.
 export function schemaTreeHtml(schemas) {
   if (!schemas.length) return `<div class="text-caveat text-ink-muted">No stored schema rows yet — run a survey first.</div>`;
   const parts = schemas.map((s) => {
@@ -4008,7 +4008,7 @@ function lastRunHtml(c) {
  *  survey_definitions.py), not from a page-lifetime DOM node.
  *
  *  Design bug this closes (2026-09-28,
- *  docs/design-notes/ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): launchSurvey()
+ *  ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): launchSurvey()
  *  used to append this as a transient `#survey-note` div and then, a few
  *  lines later, call loadSurveyPane() -- which re-renders the whole pane,
  *  including a fresh, empty `#survey-note`, wiping the note out right after
@@ -4859,7 +4859,7 @@ async function launchSurvey(slug, ref) {
         // note that never changes.
       }
       // Prefect dispatch honesty (2026-09-28,
-      // docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md): a step
+      // PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md): a step
       // that silently fell back to local execution still reports
       // status "ok" (the work genuinely got done) — so it would otherwise
       // look identical to a step that was always local-by-design. Its
@@ -4876,7 +4876,7 @@ async function launchSurvey(slug, ref) {
         // Whole-definition engine choice (which engine actually ran this
         // run — Prefect, or a local fallback and why) is NOT appended here
         // any more (engine-note persistence, 2026-09-28,
-        // docs/design-notes/ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): this
+        // ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): this
         // div is about to be replaced wholesale by loadSurveyPane() below,
         // which would wipe a transient append here right after writing it —
         // that was the bug. The engine line now renders on the definition's
@@ -6353,7 +6353,7 @@ export function renderByAnalysisContents(slug, boards, boardState, settled, tota
 // analysis pane -- including its 30s give-up timer and `retryBoard` click
 // handler -- against a stubbed fetch, rather than asserting against the
 // source text (BOARD-SUMMARY-READ-COST-IMPLEMENTED.md's own flagged gap).
-// See docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md for the pattern.
+// See NEXT-RENDER-HARNESS-IMPLEMENTED.md for the pattern.
 export async function loadByAnalysisPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -6693,8 +6693,8 @@ function deferredPaneHtml(tab) {
  */
 const LEGEND_ORDER = [
   'answered', 'automatic', 'nothing', 'partial', 'unrun', 'human', 'needs-lens', 'no-surveyor',
-  // `no_reader` counted separately from `unrun` -- DATABASE-DIRECT-FIELD-
-  // ROWS-IMPLEMENTED.md: the whole point of the vocabulary fix is that a
+  // `no_reader` counted separately from `unrun` -- DATABASE-DIRECT-FIELD-ROWS-IMPLEMENTED.md: the
+  // whole point of the vocabulary fix is that a
   // reader-less direct/chart row must not be folded into the "not run"
   // count, on the legend line same as on the row glyph.
   'no_reader',

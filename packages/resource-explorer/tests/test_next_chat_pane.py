@@ -6,7 +6,7 @@ per ASSESSMENT-CHAT.md §2), and the three follow-ups from that assessment's
 loop item 8 built.
 
 No browser verification of a signed-in session happened for this file — see
-docs/design-notes/ITEM-9-CHAT-IMPLEMENTED.md for what was and was not
+ITEM-9-CHAT-IMPLEMENTED.md for what was and was not
 checked live. These tests grep/slice function bodies out of the source, the
 established pattern for /next JS modules without a browser — see
 test_next_understanding_pane.py and test_next_admin_pane.py's identical

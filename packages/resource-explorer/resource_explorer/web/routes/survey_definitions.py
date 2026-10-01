@@ -357,8 +357,8 @@ async def list_candidates(
 
         _reg = ProjectRegistry()
         last_activity_by_ref = _reg.get_survey_definition_last_activity(entity_type, slug)
-        # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-
-        # GO-AHEAD.md §4 — repo-only: `flag_vanished_publishes` (egeria_
+        # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4 —
+        # repo-only: `flag_vanished_publishes` (egeria_
         # resync.py) resolves `project_egeria_surveys.egeria_report_guid`,
         # which is repo-scoped (databases/filesystems have their own separate
         # `*_surveys.egeria_report_guid` columns, not covered by this check yet).

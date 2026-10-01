@@ -245,7 +245,7 @@ class SurveyDefinitionExecutor:
         of this override, and a step that exists ONLY as a Prefect flow (see
         PREFECT_ONLY_STEPS below — it has no local implementation to force it
         onto) is likewise left alone by "resource-explorer". See
-        `docs/design-notes/ENGINE-CHOICE-IMPLEMENTED.md` for the full
+        `ENGINE-CHOICE-IMPLEMENTED.md` for the full
         reasoning.
 
         Raises ValueError for any other value, so a typo or a stale UI/API
@@ -412,8 +412,7 @@ class SurveyDefinitionExecutor:
         # paths differ only in who sequenced the steps.
         pending_steps = survey_def.steps
         #: Whole-definition Prefect default (2026-09-28, project owner
-        #: decision — see docs/design-notes/
-        #: PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md): tonight's
+        #: decision — see PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md): tonight's
         #: dispatch-honesty fix proved real end-to-end Prefect dispatch
         #: works, so Prefect is now what a default (`engine_override is
         #: None`) run attempts first for a whole definition — the +24-27%
@@ -700,7 +699,7 @@ class SurveyDefinitionExecutor:
                     # fix closes both.
                     #
                     # Dispatch honesty (2026-09-28,
-                    # docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md):
+                    # PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md):
                     # `executor` used to be baked in as `"prefect"` HERE, before
                     # `run_prefect_step` even attempted dispatch — so a silent
                     # fallback (see `re_prefect_client`'s docstring for the

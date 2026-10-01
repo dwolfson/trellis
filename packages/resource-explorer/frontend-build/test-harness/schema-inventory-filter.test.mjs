@@ -1,6 +1,6 @@
 /** Real-DOM regression test for the Schema Inventory filter-then-expand
  *  bug (Slice 22 follow-up, fixed 2026-09-27, commit 93e50e27,
- *  docs/design-notes/SLICE-22-SCHEMA-INVENTORY-VIEW-IMPLEMENTED.md,
+ *  SLICE-22-SCHEMA-INVENTORY-VIEW-IMPLEMENTED.md,
  *  tests/test_next_schema_inventory_filter.py).
  *
  *  RESEARCH (git log / design-notes, since the task brief said the harness

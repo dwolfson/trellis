@@ -319,8 +319,8 @@ def _has_measured_counter(rows: list[dict]) -> bool:
     engine capability is absent) — see `_survey_extended_statistics`'s
     `STATE_NOT_COLLECTED`/`STATE_NOT_SUPPORTED` branches. That is a real,
     honest "ran, found nothing" answer for THAT run, but it must not shadow
-    an earlier run that genuinely measured activity — BRIEF-KEYS-AND-
-    ACTIVITY-CLOBBER.md §B's exact finding on `laz_local_adventureworks`.
+    an earlier run that genuinely measured activity — BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B's exact
+    finding on `laz_local_adventureworks`.
     """
     return any(
         any(row.get(field) is not None for field in _ACTIVITY_COUNTER_FIELDS)
@@ -347,8 +347,8 @@ def _resolve_table_surveyed_at(
     `not_collected`/`not_supported`) — present-but-unmeasured must not count
     as "this run has the answer" either.
 
-    Set-based as of 2026-09-29 round 3 (docs/design-notes/PER-REQUEST-
-    SERVER-LATENCY-ROUND-3-IMPLEMENTED.md) — `registry.
+    Set-based as of 2026-09-29 round 3 (PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md) —
+    `registry.
     find_latest_detail_surveyed_at` answers this in ONE query
     (`MAX(surveyed_at)` on `table` itself, optionally requiring a non-NULL
     counter), then one more to fetch the winning row(s). This used to walk
@@ -1038,7 +1038,7 @@ def derive_relationship_graph(inputs: DerivedInputs) -> dict:
         )
 
     # Sorted by `referenced_by` descending, `table` ascending as a
-    # deterministic tiebreaker (2026-09-29 round 3, docs/design-notes/
+    # deterministic tiebreaker (2026-09-29 round 3,
     # PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md) — without the
     # tiebreaker, two tables with the SAME referenced_by count sort by
     # whatever order `in_degree.items()` happens to iterate in, which

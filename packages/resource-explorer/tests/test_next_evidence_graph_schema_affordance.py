@@ -19,7 +19,7 @@ for pure front-end JS behaviour (see test_next_sidebar_group_collapse.py,
 test_next_component_review.py, test_next_rail_states.py) -- there is no
 jsdom/browser harness here, so live rendering was verified manually in a
 browser instead; see
-docs/design-notes/RELATIONSHIP-GRAPH-SCHEMA-SELECT-AFFORDANCE-IMPLEMENTED.md.
+RELATIONSHIP-GRAPH-SCHEMA-SELECT-AFFORDANCE-IMPLEMENTED.md.
 
 First pass of this fix committed WITHOUT rebuilding `tailwind-next.css`
 (`frontend-build/npm run build:css:next`) -- `docs/Backlog.md`'s existing

@@ -178,8 +178,8 @@ class TestTheDatabaseAdapterNowDeclaresResults:
     `analysis_source_steps`/`analysis_kinds` are declared too, as of the
     follow-up below -- see TestTheDatabaseAdapterDeclaresLiveRead.
 
-    `state_sources` is declared too now (DATABASE-DIRECT-FIELD-ROWS-
-    IMPLEMENTED.md, 2026-09-29): 10 of the 11 database questions with no
+    `state_sources` is declared too now (DATABASE-DIRECT-FIELD-ROWS-IMPLEMENTED.md, 2026-09-29): 10
+    of the 11 database questions with no
     analysis behind them at all are now answered directly off a
     state-source table, the same way repo's "actively maintained?" is --
     see TestTheDatabaseAdapterDeclaresStateSources below.

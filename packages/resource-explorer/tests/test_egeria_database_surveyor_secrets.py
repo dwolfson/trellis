@@ -1,6 +1,6 @@
 """Tests for EgeriaDatabaseSurveyor's own secrets-store wiring.
 
-docs/design-notes/PROBES-2026-09-21.md found that a freshly-cataloged
+PROBES-2026-09-21.md found that a freshly-cataloged
 database's native PostgreSQL survey failed with a SCRAM/no-password error
 because the "secretsCollectionName"/"secretsStorePathName" placeholders on
 its templated Connection were never bound -- left as Egeria's own literal,

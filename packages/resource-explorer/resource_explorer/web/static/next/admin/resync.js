@@ -3,8 +3,8 @@
  * Port of classic's `loadAdminResyncPanel`/`renderAdminResyncPanel`/
  * `_applyResync` (index.html), against `resource_explorer/egeria_resync.py`'s
  * twelve scanners and nine repair actions — the backend is complete; this is
- * a UI-only port. See docs/design-notes/SPEC-ADMIN-THE-FOUR-GAPS.md §1 and
- * docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md.
+ * a UI-only port. See SPEC-ADMIN-THE-FOUR-GAPS.md §1 and
+ * RECONCILE-ADMIN-IMPLEMENTED.md.
  *
  * This is Resync, NOT Repair (admin/repair.js) — drift across the whole
  * store, not a correction to one repository. Classic has these as two
@@ -34,7 +34,7 @@
  * is the single source of truth for "is this one of SAFE_SCHEDULED_STEPS" —
  * this file used to keep its own hand-maintained copy (`SCHEDULED_STEPS`)
  * that had to be updated by hand whenever the Python set changed; see
- * docs/design-notes/RESYNC-STATUS-ROUTE-IMPLEMENTED.md for the history.
+ * RESYNC-STATUS-ROUTE-IMPLEMENTED.md for the history.
  * The scheduler's own run history (last_run_at/consecutive_failures/etc.)
  * comes from `/api/egeria/resync/scheduler-status` (egeria_resync.get_status()),
  * modeled on bootstrap.py's `/status` route — see loadStatus()/render()

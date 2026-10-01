@@ -248,4 +248,4 @@ for the Postgres-only clause the SQLite run can't exercise.
   original entry's reasoning about the asymmetric hazard (annotations
   survive a double-apply, annotation links do not) since that reasoning is
   still why the fix mattered.
-- `docs/design-notes/OUTBOX-DRAIN-RACE-FIXED.md` — this file.
+- `OUTBOX-DRAIN-RACE-FIXED.md` — this file.

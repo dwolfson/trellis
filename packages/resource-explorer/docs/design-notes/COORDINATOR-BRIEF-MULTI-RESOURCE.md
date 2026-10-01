@@ -62,8 +62,8 @@ In this order; each is one worktree, one PR, one `*-IMPLEMENTED.md`.
 | 9 | `db_derived` zero-fetch step: classification, grain, fingerprint, conventions checks, change rates, proposed scope as a measured annotation (design §5.3, §7 of the support doc for key names) | Opus | 3, 7 |
 | 10 | `postgres_column_profile` with sampling config (design §5.8), `data_class_match`, `reference_data_match`, RFA proposal convention (support doc §3) | Opus | probes 4, 5; 7 |
 | 11 | `postgres_nested_columns` | Sonnet | 10 (shares the inference core) |
-| 12 | Database survey definitions: `generate_database_survey_definition.py` cloned from the repo generator; `scouting`, `analysis`, `assessment` documents; publish through Dr.Egeria | Sonnet | 2, 4 — **built (#303, 2026-09-26)**, see `docs/design-notes/SLICE-12-DATABASE-SURVEY-DEFINITIONS-IMPLEMENTED.md` |
-| 13 | Reachability probe (`finalAnalysisStep=CHECK_ASSET` via `initiate_gov_action_type` directly), `resource_reachability` table, launcher sentence in the classic UI | Sonnet | probe 7 — **built 2026-09-22, filesystem-scoped**, see `docs/design-notes/RESOURCE-REACHABILITY-IMPLEMENTED.md` (this slice was deferred 2026-09-21, reversed by the project owner 2026-09-22) |
+| 12 | Database survey definitions: `generate_database_survey_definition.py` cloned from the repo generator; `scouting`, `analysis`, `assessment` documents; publish through Dr.Egeria | Sonnet | 2, 4 — **built (#303, 2026-09-26)**, see `SLICE-12-DATABASE-SURVEY-DEFINITIONS-IMPLEMENTED.md` |
+| 13 | Reachability probe (`finalAnalysisStep=CHECK_ASSET` via `initiate_gov_action_type` directly), `resource_reachability` table, launcher sentence in the classic UI | Sonnet | probe 7 — **built 2026-09-22, filesystem-scoped**, see `RESOURCE-REACHABILITY-IMPLEMENTED.md` (this slice was deferred 2026-09-21, reversed by the project owner 2026-09-22) |
 | 14 | Database change comparators on the local delivery path (design §9.1) | Sonnet | 3, 9 |
 | 15 | Designer round 2 — real drawings against the rows from 6 and 7 | designer | 6, 7 |
 

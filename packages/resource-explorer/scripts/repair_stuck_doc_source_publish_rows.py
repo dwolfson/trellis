@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """One-time repair for `doc_source_publish` outbox rows stuck `done` with a
 claim that never held — round 6 (2026-09-29),
-`docs/design-notes/DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md`'s "Silent
+`DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md`'s "Silent
 no-op self-heal loop" section.
 
 Why this exists, and why it is a SEPARATE script rather than only the

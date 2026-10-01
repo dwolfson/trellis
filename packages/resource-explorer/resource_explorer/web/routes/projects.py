@@ -94,7 +94,7 @@ def _list_projects_sync(include_ignored: bool, include_working_set_hidden: bool)
     registered project in three queries total, instead of `_to_summary`'s
     per-project reads (up to three real round trips EACH — 68 projects on
     the box this was profiled on). Round 2, 2026-09-29
-    (docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md):
+    (PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md):
     round 1 already moved this off the event loop (`asyncio.to_thread`,
     see `list_projects`'s own docstring), which stopped it blocking OTHER
     requests, but did nothing about its own wall-clock cost — this fix is
@@ -164,7 +164,7 @@ async def list_projects(include_ignored: bool = False, include_working_set_hidde
     redesign" plan, D3/D4).
 
     Wrapped in `asyncio.to_thread` (2026-09-29,
-    docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md) — this was
+    PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md) — this was
     calling `_to_summary(p, registry)` **once per registered project**
     (three registry reads each: `get_disposition`, `is_working_set_hidden`,
     `describe_publish_status`) directly on the event loop thread. A live
@@ -396,8 +396,8 @@ class ScoutingOverview(BaseModel):
     egeria_link_stale: bool = False
     egeria_link_stale_guid: str = ""
     # Set when the latest published SurveyReport's GUID no longer resolves in
-    # Egeria (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-
-    # STATE-GO-AHEAD.md) — a fourth publish-state reading distinct from
+    # Egeria (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md) — a
+    # fourth publish-state reading distinct from
     # egeria_link_stale above (that one is the ASSET GUID; this is the
     # REPORT GUID a publish claim points to). Flagged, never cleared
     # automatically — see egeria_resync.py's _do_flag_vanished_publishes.
@@ -1200,8 +1200,8 @@ async def get_analysis_trend(slug: str, analysis_id: str, entity_type: str = _RE
 async def get_survey_results_boards(slug: str, stage: str = "") -> dict:
     """The By-analysis contents board's cheap half — catalog metadata only,
     no results/headline reader called. See `workflows.analysis.
-    list_survey_result_boards`'s docstring (BRIEF-BY-ANALYSIS-PANEL-
-    USABILITY.md's "Progressive render" section). Registered before
+    list_survey_result_boards`'s docstring (BRIEF-BY-ANALYSIS-PANEL-USABILITY.md's "Progressive
+    render" section). Registered before
     `/survey-results` in this file so `/boards` cannot be captured by
     the `{slug}` path param of a route registered earlier — it isn't, since
     this is itself the first `/survey-results*` route, but see the sibling
@@ -1233,8 +1233,8 @@ async def get_survey_results(
     `board_id` (optional, added alongside `/survey-results/boards` above):
     scopes the read to exactly one board, so a caller (the /next By-analysis
     pane) can fetch boards one at a time and fill cards progressively
-    instead of waiting on the full sweep — see BRIEF-BY-ANALYSIS-PANEL-
-    USABILITY.md's "Progressive render" section.
+    instead of waiting on the full sweep — see BRIEF-BY-ANALYSIS-PANEL-USABILITY.md's "Progressive
+    render" section.
 
     Same fix, and same reason, as the `remove` route below it.
     """

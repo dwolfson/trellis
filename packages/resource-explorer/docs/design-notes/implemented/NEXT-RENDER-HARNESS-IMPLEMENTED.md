@@ -23,7 +23,7 @@ Two real bugs shipped this exact class of defect in one week
 (2026-09-27/28):
 
 1. **Engine-note persistence** (`re/engine-note-persist`,
-   `docs/design-notes/ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md`):
+   `ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md`):
    `launchSurvey()` appended the "which engine ran this" line as a
    transient DOM write, then called `loadSurveyPane()` a few lines later —
    which re-renders the whole pane and wipes it. The code called the right
@@ -36,7 +36,7 @@ Two real bugs shipped this exact class of defect in one week
    invisible to the query, even though its parent table was visibly open.
 
 A separate class of bug caught the same week (Tailwind class staleness,
-`docs/design-notes/TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md`) is a
+`TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md`) is a
 different failure mode — a *build* artifact going stale, not a render
 bug — and already has its own CI check; this harness is not trying to
 cover that too.

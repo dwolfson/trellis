@@ -142,8 +142,7 @@ class TestProjectsRouter:
     def test_list_projects_keeps_each_projects_disposition_and_hidden_flag_distinct(
         self, client, registry,
     ):
-        """2026-09-29 round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-        ROUND-2-IMPLEMENTED.md): `list_projects` now batch-fetches
+        """2026-09-29 round 2 (PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md): `list_projects` now batch-fetches
         disposition/working-set-hidden/Egeria-linkage for every project in
         three queries total instead of per-project round trips, joining in
         Python. The failure mode a batch-then-join refactor risks is

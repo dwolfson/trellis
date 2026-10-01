@@ -14,7 +14,7 @@ a terminal status, and reads back its real result — rather than being
 silently skipped (unlike auto-cataloging, which publish_step_annotations
 deliberately avoids). See egeria_async_survey_result.py for the poll/resolve/
 convert machinery this shares with the filesystem adapter, and
-docs/design-notes/EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md for the
+EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md for the
 report-attribution design.
 
 A step tagged executes_at="egeria-adaptive" is a third, separate
@@ -472,7 +472,7 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 #: sequenced with the DB steps rather than the repo ones.
 # ── requires_capability, per DATABASE-STEP-CAPABILITY-AUDIT.md ───────────
 #
-# The audit (`docs/design-notes/DATABASE-STEP-CAPABILITY-AUDIT.md`) traced
+# The audit (`DATABASE-STEP-CAPABILITY-AUDIT.md`) traced
 # every step here to its actual SQL and classified each sub-piece. It
 # deliberately stopped short of one decision, and said so: three of these
 # steps bundle several tiers under one step id, and "one step, one tier does
@@ -875,8 +875,8 @@ register_adapter(_ADAPTER)
 #: here owns exactly one step key of its own, so `last_run_partial` is never
 #: true for a database analysis today.
 #:
-#: **Slice 17 fix** (docs/design-notes/SLICE-17-RUNNABILITY-FROM-CATALOG-
-#: IMPLEMENTED.md; replying to REVIEW-SURVEY-PANE-285.md §5(a)). This used to
+#: **Slice 17 fix** (SLICE-17-RUNNABILITY-FROM-CATALOG-IMPLEMENTED.md; replying to
+#: REVIEW-SURVEY-PANE-285.md §5(a)). This used to
 #: be a second dict, hand-authored independently of `db_derived.py`'s own
 #: `DB_DERIVED_ANALYSES` tuple — the list of analysis_catalog ids the
 #: zero-fetch `db_derived` step backs. The two are supposed to agree (every
@@ -1199,8 +1199,8 @@ def _credential_capability_results(registry, slug: str) -> dict:
     `schema_inventory` headline's visibility clause) saw nothing and rendered
     no credential-visibility fraction at all for the exact same database.
 
-    **Round 2 (2026-09-29, docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-    ROUND-2-IMPLEMENTED.md):** prefers `registry.find_latest_database_survey_
+    **Round 2 (2026-09-29, PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md):** prefers
+    **`registry.find_latest_database_survey_
     with_key(slug, "credential_capability")` when the registry implements
     it — the query-pushed-to-Postgres version of the exact same "search
     every stored survey newest-first" scan below, ~2-3x faster on a
@@ -2098,7 +2098,7 @@ def _row_count_snapshot_headline(registry, slug: str) -> dict | None:
 def _merge_collector_errors(*sections: dict) -> dict:
     """Combine every `_errors` sub-dict a collector attached to its own
     section (collector-honesty rule, design ruling 2026-09-26 — see
-    `docs/design-notes/SLICE-17C-RENDERABLE-ANSWER-GATE-IMPLEMENTED.md`'s
+    `SLICE-17C-RENDERABLE-ANSWER-GATE-IMPLEMENTED.md`'s
     "Live gate follow-ups" section for the incident and the 26-site
     inventory) into one dict, so a headline built from several
     independently-collected sections can tell a real collection failure

@@ -143,7 +143,7 @@ count at the commit this shipped).
 ## Live verification
 
 Not exercised against a live signed-in session in this pass — no browser
-tool was available to this agent. `docs/design-notes/ITEM-5-ADMIN-IMPLEMENTED.md`
+tool was available to this agent. `ITEM-5-ADMIN-IMPLEMENTED.md`
 records the same limitation for the original Admin port; this is a static
 review only (source read in full, cross-checked against the live routes'
 Python source and the existing classic UI's exact behaviour). Flagging

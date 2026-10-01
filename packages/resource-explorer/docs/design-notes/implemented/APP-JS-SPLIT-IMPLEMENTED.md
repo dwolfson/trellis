@@ -150,8 +150,7 @@ moved out.
   for enrichment) are currently **unreachable dead code** under today's
   `STAGES` flags — neither stage is marked `built: true`, so `loadPane()`
   returns the "not in /next" placeholder before ever reaching them. That
-  looks like exactly the kind of read-vs-write gap `DEFECT-UNBUILT-STAGES-
-  RENDER-AS-BUILT.md` describes, but fixing it (flipping `built: true` for
+  looks like exactly the kind of read-vs-write gap `DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md` describes, but fixing it (flipping `built: true` for
   curate/enrichment) is a behavior change and Part 3 items 1 and 3 name
   Enrichment and Curate as separate, not-yet-done work items with their own
   done tests — so I moved the code as-is, dead branches and all, and did not

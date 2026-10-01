@@ -1,5 +1,5 @@
 """board_summary read-cost fix (2026-09-28,
-docs/design-notes/BOARD-SUMMARY-READ-COST-IMPLEMENTED.md).
+BOARD-SUMMARY-READ-COST-IMPLEMENTED.md).
 
 The problem: `build_survey_results(board_id=...)`, called once per board by
 the By-analysis pane's progressive-render fetch (PR #346), recomputes its
