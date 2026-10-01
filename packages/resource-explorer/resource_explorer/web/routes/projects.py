@@ -6,7 +6,7 @@ import json
 import re
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
@@ -1100,6 +1100,13 @@ _KIND_PLURAL = {"repo": "repositories", "database": "databases", "filesystem": "
 _KIND_NOUN = {"repo": "Project", "database": "Database", "filesystem": "Filesystem"}
 
 
+# `entity_type` is a REQUIRED query parameter on the routes below: omitting it is
+# a 422 ("Field required", loc query.entity_type), never a silent fall-back to
+# "repo". (Query(...) rather than a bare annotation only because some of these
+# signatures have defaulted params before it.)
+_REQUIRED_KIND = Query(..., description="Resource kind: repo, database or filesystem")
+
+
 def _require_known_kind(entity_type: str) -> None:
     if entity_type not in _KIND_PLURAL:
         raise HTTPException(
@@ -1144,7 +1151,7 @@ def _resolve_resource(registry, entity_type: str, slug: str):
 
 
 @router.get("/{slug}/analyses/{analysis_id}/trend")
-async def get_analysis_trend(slug: str, analysis_id: str, entity_type: str = "repo") -> dict:
+async def get_analysis_trend(slug: str, analysis_id: str, entity_type: str = _REQUIRED_KIND) -> dict:
     """Raw JSON trend data for one analysis — {runs: [{surveyed_at,
     value, ...}, ...]}, matching the existing survey_history endpoint's
     raw-JSON-not-Plotly-figure convention (D6) rather than building a new
@@ -1654,7 +1661,7 @@ async def get_analysis_measurements(slug: str, analysis_id: str,
 
 
 @router.get("/{slug}/analyses-index")
-async def get_analyses_index(slug: str, entity_type: str = "repo") -> dict:
+async def get_analyses_index(slug: str, entity_type: str = _REQUIRED_KIND) -> dict:
     """Every catalog analysis for this resource, with the questions that
     name it, last run, price, and what it serves — see
     resource_explorer/workflows/stage_page.py::build_analyses_index and the
@@ -1662,8 +1669,8 @@ async def get_analyses_index(slug: str, entity_type: str = "repo") -> dict:
     Thin wrapper; the route only translates the pure function's LookupError
     into a 404.
 
-    `entity_type` defaults to "repo", same convention and same fix date as
-    `get_analysis_measurements` above — `build_analyses_index()` carried the
+    `entity_type` is required (no default; omitting it is a 422), same convention
+    and same fix date as `get_analysis_measurements` above — `build_analyses_index()` carried the
     identical repo-only bug (its own docstring has the detail)."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.workflows.stage_page import build_analyses_index
@@ -1677,7 +1684,7 @@ async def get_analyses_index(slug: str, entity_type: str = "repo") -> dict:
 
 @router.get("/{slug}/members/{analysis_id}")
 async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str = "public",
-                      limit: int = 200, entity_type: str = "repo") -> dict:
+                      limit: int = 200, entity_type: str = _REQUIRED_KIND) -> dict:
     """The things a count counted — see resource_explorer/members.py.
 
     `scope` is `public` or `all`; the response says whether it was honoured,
@@ -1698,7 +1705,7 @@ async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str 
 
 @router.get("/{slug}/members/{analysis_id}/children")
 async def get_member_children(slug: str, analysis_id: str, key: str, scope: str = "public",
-                              limit: int = 200, entity_type: str = "repo") -> dict:
+                              limit: int = 200, entity_type: str = _REQUIRED_KIND) -> dict:
     """One level down a member tree. `key` is opaque — whatever the parent
     row's `children_key` said."""
     from resource_explorer.members import children_for
@@ -1727,7 +1734,7 @@ class PromoteSelection(BaseModel):
 
 @router.post("/{slug}/members/{analysis_id}/promote")
 def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request: Request,
-                    entity_type: str = "repo") -> dict:
+                    entity_type: str = _REQUIRED_KIND) -> dict:
     """Promote a member-list selection: to a work list (I will deal with
     this), an RFA (someone must), or the journal (worth knowing). One
     provenance line, composed here, travels with all three. See the
