@@ -280,10 +280,12 @@ function _currentSlug() {
 /** `#scope-slug`'s `data-entity-type`, set by app.js's `renderTopBar()`
  *  alongside the slug it already reads from that same element — a plain DOM
  *  read, not an app.js import, matching this module's stated independence
- *  above. Defaults to 'repo': existing pages predate this attribute. */
+ *  above. No default: a missing attribute throws rather than filing the vote against 'repo'. */
 function _currentEntityType() {
   const el = document.getElementById('scope-slug');
-  return (el && el.dataset.entityType) || 'repo';
+  const kind = el && el.dataset.entityType;
+  if (!kind) throw new Error('feedback: entityType is required (no data-entity-type on #scope-slug)');
+  return kind;
 }
 
 function _attachTo(row) {

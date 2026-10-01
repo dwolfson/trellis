@@ -177,7 +177,7 @@ async function confirmRetire(question) {
   if (!window.confirm(message)) return;
   try {
     await retireQuestionCatalogEntry(question);
-    _data = await listQuestionCatalog('repo');
+    _data = await listQuestionCatalog('repo'); // explicit: this admin editor edits the repo catalog only
     render();
   } catch (err) {
     window.alert(err.message || 'Failed to retire question.');
@@ -270,7 +270,7 @@ async function openAddModal() {
         answeringMechanism: f('answering_mechanism'),
       });
       closeAddModal();
-      _data = await listQuestionCatalog('repo');
+      _data = await listQuestionCatalog('repo'); // explicit: this admin editor edits the repo catalog only
       render();
     } catch (err) {
       errorEl.textContent = err.message || 'Save failed.';
@@ -283,6 +283,6 @@ export async function renderQuestionCatalog(host) {
   state.stage = '';
   state.perspectives = new Set();
   state.search = '';
-  _data = await listQuestionCatalog('repo');
+  _data = await listQuestionCatalog('repo'); // explicit: this admin editor edits the repo catalog only
   render();
 }

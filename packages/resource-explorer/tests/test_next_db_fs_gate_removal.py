@@ -171,7 +171,9 @@ class TestByAnalysisAndQuestionsNoLongerGatedToRepo:
         start = src.index("function _surveyResultsPath(")
         end = src.index("};", src.index("export const getSurveyDashboards"))
         body = src[start:end]
-        assert "entityType = 'repo'" in body
+        # no default: the kind is required (see test-harness/no-default-entity-type.test.mjs)
+        assert "entityType = 'repo'" not in body
+        assert "requireKind('getSurveyDashboards', entityType)" in body
         assert "/api/databases/" in body
         assert "/api/filesystems/" in body
 
@@ -206,5 +208,6 @@ class TestAutomateNoLongerHardcodesRepo:
 class TestWorklistNoLongerHardcodesRepo:
     def test_analysis_menu_reads_the_work_lists_own_entity_type(self):
         src = _worklist_src()
-        assert "listAnalyses(wl.entity_type || 'repo'" in src
+        assert "listAnalyses(kindOf(wl)" in src
+        assert "entity_type || 'repo'" not in src
         assert "listAnalyses('repo'" not in src

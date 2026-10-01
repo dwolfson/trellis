@@ -37,6 +37,7 @@ import {
   listWorkLists,
   promoteWorkList,
   publishWorkList,
+  requireKind,
   setDisposition,
 } from '/static/re-api.js';
 import { ago, daysSince, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
@@ -87,13 +88,27 @@ export const CELL = Object.fromEntries(Object.keys(CELL_TONE).map((k) => [
   k, { glyph: GLYPH_STATES[k].glyph, tone: CELL_TONE[k], label: GLYPH_STATES[k].word },
 ]));
 
+/** The open work list's own resource kind. The `entity_type` column is
+ *  authoritative (a work list is homogeneous by construction --
+ *  routes/work_lists.py `WorkListCreate.entity_type`), so a work list that
+ *  arrives without one is a bug to surface, never one to cover with 'repo':
+ *  that silent default is what sent a database work list's column read to the
+ *  repo catalog ("Project 'X' not found"). Throws, naming the work list. */
+function kindOf(wl) {
+  const k = wl && wl.entity_type;
+  if (typeof k !== 'string' || !k) {
+    throw new Error(`work list ${wl && wl.slug ? `'${wl.slug}' ` : ''}has no entity_type`);
+  }
+  return k;
+}
+
 /** A question Context records (context-recorded.js): the SAME state word the
  *  Questions pane and its KEY use, read from each member's own Context
  *  (`grid.contexts`, loaded once when the list opens). '' = not such a
  *  question; 'unknown' = this member's Context could not be read (never a
  *  guessed word). */
 function contextCellState(q, slug) {
-  const kind = grid.workList?.entity_type || 'repo';
+  const kind = kindOf(grid.workList);
   if (!contextRecordedSpec(q.question, kind)) return '';
   const enrichment = grid.contexts?.get(slug);
   return contextRecordedState(q.question, kind, enrichment) || 'unknown';
@@ -244,7 +259,7 @@ export async function renderWorkListPane(ctx) {
     // this used to hardcode 'repo' regardless, silently showing the repo
     // analysis catalog's menu on a database/filesystem work list rather than
     // an honest error or the right menu.
-    grid.analyses = await listAnalyses(wl.entity_type || 'repo', { intent: stage });
+    grid.analyses = await listAnalyses(kindOf(wl), { intent: stage });
   } catch (err) {
     grid.analyses = { error: err.message };
   }
@@ -347,14 +362,14 @@ async function loadGrid(ctx) {
     // cutting them down already exists and was simply not wired up.
     const held = [...(ctx.perspectives || [])];
     const checklist = await getQuestions(wl.members[0].entity_slug,
-                                         { phase: ctx.stage, perspectives: held });
+                                         { phase: ctx.stage, perspectives: held, entityType: kindOf(wl) });
     grid.questions = checklist.questions || [];
     grid.heldPerspectives = held;
     if (held.length) {
       // The residue, said out loud: a filtered grid that does not say what it
       // hid is a grid you cannot trust to be complete.
       try {
-        const all = await getQuestions(wl.members[0].entity_slug, { phase: ctx.stage });
+        const all = await getQuestions(wl.members[0].entity_slug, { phase: ctx.stage, entityType: kindOf(wl) });
         grid.questionsUnfiltered = (all.questions || []).length;
       } catch { grid.questionsUnfiltered = null; }
     } else {
@@ -413,7 +428,7 @@ async function loadGrid(ctx) {
   // `measured_at`, so the grid can say how current it is before it knows what
   // it says.
   try {
-    const proj = await getBulkStates(slugs, needed, wl.entity_type || 'repo');
+    const proj = await getBulkStates(slugs, needed, kindOf(wl));
     grid.states = proj.states || {};
     renderGrid();
   } catch (err) {
@@ -429,7 +444,7 @@ async function loadGrid(ctx) {
 
   // PASS 2 — the full read for the analyses that are cheap to read.
   try {
-    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick, wl.entity_type || 'repo')); }
+    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick, kindOf(wl))); }
   } catch (err) {
     grid.slowError = err.message;
   }
@@ -458,7 +473,7 @@ async function loadGrid(ctx) {
  *  reads `?` ("could not read"), never a guessed state. */
 async function loadMemberContexts(wl) {
   grid.contexts = new Map();
-  const kind = wl.entity_type || 'repo';
+  const kind = kindOf(wl);
   if (!grid.questions.some((q) => contextRecordedSpec(q.question, kind))) return;
   const slugs = wl.members.map((m) => m.entity_slug);
   for (let i = 0; i < slugs.length; i += 6) {
@@ -490,7 +505,7 @@ async function resolveInBackground(ctx, slugs, analyses) {
     const chunk = slugs.slice(i, i + CHUNK);
     const started = Date.now();
     try {
-      const bulk = await getBulkFacts(chunk, analyses, grid.workList?.entity_type || 'repo');
+      const bulk = await getBulkFacts(chunk, analyses, kindOf(grid.workList));
       if (token !== grid.bgToken) return;
       for (const slug of chunk) {
         const facts = bulk.subjects?.[slug];
@@ -1503,7 +1518,7 @@ async function reportPlanMovement(slotId, slug_pairs) {
   // this session's other fixes address — so skip the doomed requests and
   // say so, rather than let the catch block quietly stand in for an
   // honest "not available for this type yet".
-  const entityType = grid.workList?.entity_type || 'repo';
+  const entityType = kindOf(grid.workList);
   if (entityType !== 'repo') {
     slot.innerHTML = `<div class="mt-s2 text-caveat text-ink-muted">
       Whether any of these run(s) would repeat an unchanged measurement
@@ -1517,7 +1532,7 @@ async function reportPlanMovement(slotId, slug_pairs) {
   const sample = slug_pairs.slice(0, 12);
   const results = await Promise.all(sample.map(async ({ slug, analysis }) => {
     try {
-      const res = await getAnalysisTrend(slug, analysis);
+      const res = await getAnalysisTrend(slug, analysis, '', entityType);
       const series = (res.runs || res.series || []).filter((r) => r && r.surveyed_at);
       if (series.length < 2) return null;
       const values = new Set(series.map((r) => r.metric_value ?? r.value));
@@ -1545,7 +1560,7 @@ async function runRefresh(byAnalysis, ctx) {
   const done = [];
   for (const [aid, ss] of entries) {
     try {
-      last = await enqueueBatch(aid, ss, grid.workList.slug);
+      last = await enqueueBatch(aid, ss, grid.workList.slug, kindOf(grid.workList));
       done.push(`${aid} \u00d7 ${ss.length}`);
     } catch (err) {
       // Report what DID get queued. A failure on the fourth analysis does not
@@ -1595,7 +1610,7 @@ async function openCellDetail(slug, qi, ctx) {
   }
   let facts;
   try {
-    const res = await getBulkFacts([slug], ids, grid.workList?.entity_type || 'repo');
+    const res = await getBulkFacts([slug], ids, kindOf(grid.workList));
     facts = res.subjects?.[slug] || [];
   } catch (err) {
     body.innerHTML = why + `<p class="text-state-warn">Could not read the results:
@@ -1701,7 +1716,7 @@ async function rerunOne(slug, ids, ctx) {
     // One batch per analysis: enqueueBatch takes a single analysis id, and a
     // question can be answered by more than one.
     for (const aid of ids) {
-      last = await enqueueBatch(aid, [slug], grid.workList.slug);
+      last = await enqueueBatch(aid, [slug], grid.workList.slug, kindOf(grid.workList));
     }
   } catch (err) {
     const networkish = /load failed|failed to fetch|networkerror/i.test(err.message || '');
@@ -1786,7 +1801,7 @@ async function enqueueRun(ctx, analysisId, slugs) {
   note(`Enqueueing <span class="tnum">${slugs.length}</span> run(s)…`);
   let started;
   try {
-    started = await enqueueBatch(analysisId, slugs, grid.workList.slug);
+    started = await enqueueBatch(analysisId, slugs, grid.workList.slug, kindOf(grid.workList));
   } catch (err) {
     // `Load failed` / `Failed to fetch` is the browser's wording for a
     // network-level failure, not an application error — most often the
@@ -1954,7 +1969,7 @@ export async function openWorkList(ctx, slug) {
   await renderWorkListPane(ctx);
 }
 
-export async function saveAsWorkList(displayName, slugs, { investigation = '', rationale = '', entityType = 'repo' } = {}) {
+export async function saveAsWorkList(displayName, slugs, { investigation = '', rationale = '', entityType } = {}) {
   return createWorkList(displayName, slugs, { investigation, rationale, entityType });
 }
 

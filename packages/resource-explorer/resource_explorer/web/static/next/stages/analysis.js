@@ -71,6 +71,7 @@ export async function mountSubResourcePanel(slug, panel) {
     const [results, catalogedRows, catalog] = await Promise.all([
       getAnalysisResults(slug, 'sub_resource_survey').catch(() => ({})),
       listSubResources(slug).catch(() => []),
+      // Explicit 'repo': the Sub-resource survey pane is repo-only (sub_resource_survey is a repo analysis).
       listAnalyses('repo').catch(() => []),
     ]);
     s.findings = results.findings || [];

@@ -868,7 +868,7 @@ async function renderComponentDiagram(slug, host) {
   if (!host) return;
   let fact;
   try {
-    const res = await getBulkFacts([slug], ['architecture_diagram']);
+    const res = await getBulkFacts([slug], ['architecture_diagram'], apiEntityType(state.resourceType));
     fact = (((res.subjects || {})[slug]) || []).find((f) => f.analysis_id === 'architecture_diagram');
   } catch { fact = null; }
   if (slug !== state.selectedSlug) return;
