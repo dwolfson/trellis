@@ -8962,3 +8962,11 @@ both create and survey it in one step.
 Follow-up: map RE's already-stored connection fields (host, port, credentials via the existing
 secrets-projection mechanism) onto this process's expected template placeholder parameters, and
 wire it for one-click execution the same way "Survey PostgreSQL Database" already works.
+
+## Sidebar filter box doesn't clear on resource-type tab switch (2026-09-30, found during E3 gate)
+
+Found by the project owner while walking E3's gate: typing a search string into the left
+sidebar's filter box under one resource-type tab (Repos, DBs, FS) and then switching to a
+different tab leaves the old string in the box, filtering a list it was never typed against.
+Small UI fix: clear (or at least re-scope) the filter input's value when the active sidebar tab
+changes.
