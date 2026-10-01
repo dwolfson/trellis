@@ -148,6 +148,9 @@ def _children_of(components: list) -> dict[str, list]:
     return kids
 
 
+UNTYPED_LABEL = "type not assigned · boundary only"
+
+
 def _component_line(c, structural: bool, enclosing_blueprint: str = "") -> str:
     """One node. Structural grouping nodes must be visibly distinct from
     components — `scope_hierarchy` refuses to emit them as components because
@@ -156,8 +159,12 @@ def _component_line(c, structural: bool, enclosing_blueprint: str = "") -> str:
     if structural:
         # Rounded, no type, explicitly labelled as grouping.
         return f'{_nid(c.slug)}("{_label(c.name)}<br/><i>grouping only</i>")'
-    kind = _label(c.type or "unclassified")
-    conf = f"{c.confidence}%"
+    # No type means "boundary only": coupling proposes a boundary, never a
+    # SolutionComponentType (coupling.py leaves type=None by design), so this is
+    # not a failed classification. The percentage is per-node confidence, never
+    # a share of components — say so on every node.
+    kind = _label(c.type or UNTYPED_LABEL)
+    conf = f"confidence {c.confidence}%"
     marker = " ⚠" if c.confidence <= LOW_CONFIDENCE else ""
     # Blueprint membership is Collection membership, which is independent of
     # composition: a nested component may belong to a different blueprint from
