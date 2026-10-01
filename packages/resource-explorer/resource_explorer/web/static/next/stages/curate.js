@@ -198,10 +198,10 @@ function nonRepoCurateHtml(entityType) {
     <div class="mt-s2 text-caveat text-ink-muted">
       Curate's component-tree and branch-based curation actions are built
       against repositories today (git branches, architecture-recovery
-      components) — there is no database/filesystem equivalent yet. Search
-      tags, feedback and curator notes (this project's other Curate
-      capabilities) are reachable from the resource header regardless of
-      type; only this plan/commit view is repo-only.
+      components) — there is no database/filesystem equivalent yet. This
+      view also has no controls for search tags, resource feedback or
+      curator notes: the resource header here offers none of them for any
+      resource type.
     </div>`;
 }
 
