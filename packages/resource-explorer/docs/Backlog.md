@@ -12,6 +12,8 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ## A per-card database analysis run clobbers every OTHER table's row_count/size_bytes
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e22f9602`, `32409a83`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Found while gating** the enumeration-floor + collector-honesty PR
 (2026-09-26), while re-verifying the never-analyzed row-count fix live
 against `coco_pharma` after a stale-8811 report from the owner.
@@ -321,6 +323,8 @@ current selection if one exists.
 
 ## Path B3 — repo `executes_at: egeria` handler built (2026-09-20)
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `664e4013`, `128ecb1d`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Decision (project owner, 2026-09-20):** build the repo-side `executes_at: "egeria"`
 plumbing now, even though no live repo survey action service may exist in Egeria
 yet ("we will probably have some surveys that execute there at some point") —
@@ -367,6 +371,8 @@ generic failure mode against a synthetic adapter instead, since it's no longer
 true of repos.
 
 ## Cataloguing in layers — layer 1 evidence and consumed-Egeria-interfaces built
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `911ba73c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Decision (project owner, 2026-09-14):** catalogue in layers — coarse top-level
 components first (for egeria-trellis: RE, EA, Trellis core), a finer layer only
@@ -500,6 +506,8 @@ deferred wire-enqueueing follow-up**, whenever that's picked up. Backlog item 5 
 related `AnnotationReview` measurement gap a peer session surfaced reviewing Phase A.5, also not
 yet done.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `a059e01d`, `f958f3df`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **2. `security_features` should report `skipped_by_design` — DONE, already on `main`.** Picked up
 2026-09-03 and found already fully shipped, in two commits from before this Backlog entry was
 even opened: `a059e01` (2026-08-31, surveyor — emits a confidence-0 `skipped_by_design` annotation
@@ -513,6 +521,8 @@ the stated reason, not as a failure. `tests/test_security_features_visibility.py
 causes but is `pytest.mark.corpus`-gated (one of its 7 tests touches the real shared registry) —
 not re-run live this session per the coordinate-shared-writes convention; the code was read and
 independently confirmed correct rather than re-verified against the shared corpus.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `05466bbb`, `5fc8bbfd`, `3c995c4b`, `79f06abb`, `567770b`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **3. The silent field-allowlist pattern — partially closed, 2026-09-03.** Finding 118's other two
 named same-day instances checked and confirmed correct: `arch_recovery/persist.py`'s port/wire
@@ -601,6 +611,8 @@ Full suite green after every commit, confirmed with a final clean run at the end
 skipped (corpus/live-Egeria-gated), 0 failed — excluding the one test needing a currently-
 unreachable local Egeria platform (unrelated to this sweep).
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `6c044278`, `acaca131`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **4. Split `architecture-recovery.md` — DONE, 2026-09-03.** §5 *Extraction design* (913 of 2,720
 lines) moved verbatim to `architecture-recovery-extraction-design.md`, keeping its original §5.x
 numbering (not renumbered — every existing cross-reference still names the same subsection it
@@ -626,6 +638,8 @@ docstring says to re-measure before relying on that for *any other* relationship
 nothing currently calls it, so there's no live bug — but it's the next candidate for exactly the
 `scripts/arch-spike/measure_wire_multi_link.py` treatment (the return-value test, one call)
 **before** anything in Phase 3 adds it to the outbox, not after.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `690a552a`, `a86c31d4`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **6. `BlueprintMaterializer.materialize_blueprint_element` failed Egeria's request-body
 validation on a real accept — found 2026-09-03 live-verifying Phase C above against `sqlglot`
@@ -712,6 +726,8 @@ larger than a quick fix (touches detector design: is a benchmark harness a compo
 happens to be untyped, or a different KIND of thing that shouldn't be proposed as one?). Not
 scoped further here.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `fc729788`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **8. `SolutionArchitect` has no `create_solution_port` — real Egeria SolutionPort materialization
 is blocked at the SERVER, confirmed live, not just unmeasured on the client side — found
 2026-09-03, scoping the port/wire work named in the Curate redesign conversation.** Checked the
@@ -792,6 +808,8 @@ clearing has no data-loss risk. **Not fixed at the code level** — `_resolve_pr
 has no staleness check, so this can recur after any future full re-seed; worth a real fix
 (verify-before-trust, or a TTL) if platform re-seeds become routine rather than rare.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `48c789b7`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **11. Survey Results Dashboards — Security Overview's Discovery placement, project-owner decision
 2026-09-04: "both."** A dashboard's stage placement is derived (never hand-authored) from its
 input analyses' own catalog intents, and `security_overview` genuinely spans Discovery
@@ -810,6 +828,8 @@ scorecard renders exactly as before. `stage` is threaded down from `_loadSurveyR
 own request param through `renderSurveyResultsPanel`, not re-derived — the same value the server
 was already asked for.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `cc75f382`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **12. Dashboard trend charts — real feature, cheap because the plumbing already exists.**
 Every `AnalysisKindResults` already carries a `trend_reader` (`GET /{slug}/analyses/{analysis_id}
 /trend` already serves raw JSON, already consumed by Understanding's charts) — `SURVEY_RESULT_
@@ -818,6 +838,8 @@ Extending dashboards to also chart each input's trend (matching `loadRepoSurveyH
 existing client-side chart-building convention) is wiring existing infrastructure together, not
 building new plumbing. Not scoped or built yet — named here so the next pass doesn't have to
 rediscover that the hard part is already done.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b481c3dc`, `2b38e159`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **13. Detailed survey data reachable from chat — corrected scope, 2026-09-04 (an earlier claim
 in this session that chat has "zero access to structured findings" was wrong).** Chat already
@@ -848,6 +870,8 @@ filesystem question catalogs, or any other DB/FS-specific feature work, until Re
 signaled complete. Surfacing a DB/FS gap for the backlog (as this item already does) is fine;
 starting to build it is not.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `48c789b7`, `82e22231`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **14. "Run all &lt;Stage&gt;" — built 2026-09-04, direct feedback: "make it first and separate so
 a user can easily just select that and be confident that all the surveys are being run."** Not a
 re-labeling of the existing per-stage Egeria Survey Definitions (`RepoScoutingSurvey`/
@@ -874,6 +898,8 @@ click time, only whether the surrounding script is syntactically valid). Live-ve
 after the fix on a real repo: POST fired, toast showed correct step/analysis counts, run
 completed.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `48c789b7`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **15. Sub-Resources tab moved from Assessment to Analysis — built 2026-09-04, direct feedback.**
 `sub_resource_survey` is catalog-tagged `intent: analysis` ("produces a structural recommendation,
 not an evaluation against criteria") but its only interactive UI (select/catalog) lived in
@@ -883,6 +909,8 @@ affordance. Moved the whole sub-tab (view container, nav entry, dispatch) to Ana
 routes (`/api/projects/{slug}/sub-resources*`) are resource-type-generic and needed no changes.
 `docs/assessment-sub-resource-cataloging.md` keeps its old filename — the content moved, the name
 didn't (not worth a doc rename for this).
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `48c789b7`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **16. Curate blueprint accept blocked until every member is materialized, with a one-click fix —
 built 2026-09-04, direct feedback:** accepting a proposed blueprint could fail on unpublished
@@ -901,6 +929,8 @@ link. **Deliberately left the backend's permissive partial-accept (Decision 2) u
 UI now defaults to blocking the common accidental case, but the API still allows a genuinely
 intentional partial accept (e.g. a child that will never materialize because it was rejected) if
 called directly.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `7b237618`, `2f25f4f4`, `8758f248`, `a24aced9`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **17. Stale-Egeria-pointer scan-and-clear is now scheduled — built 2026-09-04, after the
 2026-09-04 full repository-store wipe.** The human-driven recovery path (`EgeriaResync.scan()`/
@@ -960,6 +990,8 @@ choosing what to dispatch:
 
 ### TIER 1 — FIXED 2026-09-19: whole-definition Prefect orchestration bypassed per-step `executes_at` routing
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `9615fc2c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Found live, the day `PREFECT_ENABLED` defaulted to `true` for the first time with a real
 reachable server** (`PLAN-PREFECT-OR-ALTERNATIVE.md` §5 phase 3): CI failed on a database Survey
 Definition fixture, tracing back to `SurveyDefinitionExecutor.run()`'s `_run_via_prefect` path —
@@ -1002,6 +1034,8 @@ observability for its Prefect-eligible steps instead of falling back to the loca
 Not scoped here; the guard above is the safe, correct behavior until it is.
 
 ### The outbox drain does not serialise, and its docstring says it does — FIXED 2026-09-19
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `472f83c5`, `9546afd1`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Resolved:** `claim_due_outbox_elements()` (`resource_explorer/registry.py`)
 now performs the select and the `status='running'` transition in one
@@ -1076,6 +1110,8 @@ Until then, stopping the web server is the mitigation, and it is a mitigation
 for one run rather than a fix.
 
 ### TIER 1 — `catalog_and_survey` never refreshes an existing element's credentials/connection
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `8fb2a6bb`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 > **Fixed for fresh catalogs, 2026-09-20 — see
 > `docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md` for the full investigation.**
@@ -1164,6 +1200,8 @@ The `0` annotation counts read back were independently confirmed accurate given 
 `INVALID` survey — a real absence, not a miscount.
 
 ### TIER 1 — "Three execution modes" don't map onto one verified mechanism, and two of the paths are untested
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `6fc82494`, `553c566a`, `4da212aa`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 > **Planned 2026-09-18 — see `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md`.** Two
 > corrections to this entry, found while planning against it: the global-override concern below
@@ -1281,6 +1319,8 @@ whether Prefect remains the right choice at all versus an equivalent tool, which
 not attempt to answer.
 
 ### Survey execution
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `2aa0296b`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 > **STATUS 2026-09-01, later the same day: the precondition half of this is BUILT and this entry is
 > stale where it says otherwise.** `survey_orchestrator.py:226-241` evaluates a step's
@@ -1577,6 +1617,8 @@ If it recurs, capture the assertion text — not a `tail` of the run, which buri
 Prefect's teardown logging.
 
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `5496dd89`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **`test_a_loop_that_loses_the_election_is_never_started` — FIXED 2026-09-08, and
 the diagnosis below was wrong.** The fix is fix (1): the test now polls for the
 `standby` line instead of sleeping a fixed 0.2s. Six consecutive runs pass.
@@ -1636,6 +1678,8 @@ repo `CLAUDE.md`.
 
 
 ### Private zoning — what Phase 5 left open
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `5496dd89`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Anchoring (design Phase 4) is DONE — 2026-09-08.** Annotations now anchor to
 their SurveyReport and inherit its zones. Measured: enforcement reads the LIVE
@@ -1704,6 +1748,8 @@ that turns out to bite:
 Nothing decided; the owner should pick. (3) is worth doing regardless.
 
 ### The Investigation marker — decided and BUILT 2026-09-08
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b182a309`, `8ac00832`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Approved by the project owner directly** ("RE should apply the Investigation
 marker itself") and built once the redeploy made the type available. RE stamps it
@@ -1798,6 +1844,8 @@ config file in another repo, so it is written down here rather than done.
 Existing zoned artifacts need no sweep: a metadata-store wipe removes the
 Projects and reports outright, and RE republishes and zones fresh.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `de1a576d`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **`test_the_real_egeria_checkout_yields_dependencies` asserts against a checkout
 that moves.** Started failing 2026-09-08 between two full-suite runs an hour
 apart, with only unrelated commits in between: *"only 36 of 72 gradle
@@ -1863,6 +1911,8 @@ disagree, and the span copy is the one that expires.
 
 #### ~~HIGH — take architecture results into Curate~~ — DECIDED AND BUILT 2026-08-30
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `6f3afeb4`, `2a22c99f`, `f34d3c50`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 *(Opened 2026-08-30 listing four candidate shapes and saying "none of this is designed yet".
 The project owner chose the first and S1 built it the same day. This entry was left stale for several hours and
 was still being reported as an open design question when it was neither — corrected on the project owner
@@ -1901,6 +1951,8 @@ See also the reflexion-vocabulary entry below: convergence/divergence/absence is
 for the verdict axis, and worth reading before the next slice invents its own.
 
 #### HIGH — `architecture_recovery` costs 110s to fetch and 5.9s to run — fix the acquisition
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `63e7ec60`, `f8710eff`, `a7e53645`, `79eaf5b9`, `9bdd7f6f`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 *(Opened 2026-08-30 as a tier question; **reframed the same day by profiling**, which killed three of
 the four options it originally listed. The project owner's steer: the work likely goes into the analysis
@@ -2046,6 +2098,8 @@ re-run against the full corpus).
 
 #### ~~MEDIUM — acquisition is now the whole cost~~ — SOLVED 2026-08-30
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `f8710eff`, `a7e53645`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 *(Restored: this entry and the one below were lost when a `--theirs` conflict resolution on this
 file during the `ui/architecture-focus` merge dropped both. Second casualty of the same
 cherry-pick-then-merge; found only by going looking for one of them.)*
@@ -2116,6 +2170,8 @@ differently. If anyone revisits this, a per-repo cap (that repo's own p90) is th
 a corpus that is not four repos from one family.
 
 #### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `a505d6e0`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 *(Opened 2026-08-30, live-reported: "pressing the architecture survey button does seem to start the
 task but it doesn't bring up the pop-up that asks if we should run this in the background so it's
@@ -2213,6 +2269,8 @@ Deliberately measured and not designed: presentation is a product decision, and 
 treats a symptom when the problem is that they are the wrong 20.
 
 #### MEDIUM — tombstoning step 4: backfill the orphans no run can ever withdraw
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `5ad469d5`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 *(Opened 2026-08-30. Steps 1–3 are built; see `architecture-recovery.md (§16)`.)*
 
@@ -2591,6 +2649,8 @@ directories containing a file called `main.go` — Kubernetes's are `scheduler.g
 
 #### Location-valued artifacts: 31% are NOT in the repo — the corpus number
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `144a9230`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Measured 2026-08-24, first full run of `repo_classification` across all 60 registered repos
 (26.7 min, 0 failures, on the post-`fd2e5a7` path). Recorded here because it answers a question
 the architecture-recovery design could previously only answer from five hand-picked projects,
@@ -2663,6 +2723,8 @@ Two things worth someone's attention:
 
 #### Repo classification — what the repo *represents*, before what its architecture is
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `c83bb5df`, `874a476b`, `870bc180`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Maintainer direction, 2026-08-22; design `architecture-recovery-extraction-design.md` §5.5b.** Classify a repo (or each member of a repo family)
 as library / application / middleware / tutorial / samples / documentation / tooling, **because the
 classification decides which analyses and which questions are relevant.** Recovering a blueprint from
@@ -2725,6 +2787,8 @@ location-valued lookup already produces the candidate list, so the question is "
 * **Classification first** — "missing" is only defined relative to role; a library is *expected* to
   have no deployment artifacts.
 * **Reuse RFA and `projects.parent_slug`/`group_slug`** — a new question, not new plumbing.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `144a9230`, `874a476b`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Built and verified: `resource_explorer/github/doc_locations.py`.** Resolution + location-valued
 lookup, checked live against all five measured topologies — Kubernetes `docs/` correctly reported as
@@ -2809,6 +2873,8 @@ dated a stale description at ~17 months old without reading any Go. Should run o
 architecture we consume *and on our own recovered blueprints*, with the dates carried in `architecture-recovery-extraction-design.md` §5.4
 evidence. Cheap to build; the only real design choice is where unresolvable paths surface, and the
 answer is probably "as their own outcome", never silently as detector misses.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `144a9230`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **2a. Resolving where the docs live is a PREREQUISITE for item 3, not a sibling of it.** Measured
 over twelve repos (spike finding 68), five of five checked keep documentation in a *separate,
@@ -2909,6 +2975,9 @@ adopter. Recording only — nothing routes on these labels.
 4. **`Produced Request Parameters` as the carrier if a cause ever needs to reach a *later*
    step** rather than only be recorded. Read in the docs, **not exercised** — do not build on
    it as verified.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b483e586`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 5. ~~**Adopting the vocabulary in the other 23 steps.**~~ **PARTLY RESOLVED 2026-08-22 — the
    file-inventory readers are done.** `step_outcome.from_upstream_table()` is the shared
    three-way derivation for a step that reads a table an earlier step was meant to fill:
@@ -2966,6 +3035,8 @@ adopter. Recording only — nothing routes on these labels.
 ---
 
 #### ~~Re-parent / persist ancestors to make depth control work~~ — BUILT, MEASURED, AND IT DOES NOT DELIVER THE COLLAPSE
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `927db5f6`, `082be2f6`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Live re-survey of milvus, 2026-08-24 (`repo_arch_detect`, 24.5s):**
 
@@ -3154,6 +3225,8 @@ contract for a run — and it is the one that touches surveyor output size.
 
 #### Build the Investigation tab — nothing tracks this, and the design assumes it
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `8cf4512a`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **The goal, in the design's own words** (`docs/investigation-framing-design.md` §Context, §1):
 
 > RE today has no concept of *the piece of work you are currently doing*. You land on a
@@ -3227,6 +3300,8 @@ not block this work.
 Full design: `docs/investigation-framing-design.md` (design only, nothing built). These are the
 pieces that design deliberately left out of its own first pass.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `bbbbee77`, `e050a7ca`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 1. **Promote a local investigation to an Egeria Project.** Create the `Project` (+ `ProjectCharter`),
    then replay each local membership row as a `ResourceList` relationship carrying its `resourceUse`.
    Design the local membership table shaped like the target relationships from day one so this stays
@@ -3255,12 +3330,16 @@ pieces that design deliberately left out of its own first pass.
    adding a verdict field to the `Certification` relationship (considered and rejected; see the
    design doc §4). Not a blocker: nothing in the failure path needs it.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `6caaf39c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 5. **Two undeclared scores.** `documentation.py:151-167` (`score = len(present) + len(found)`, then
    hardcoded thresholds to a quality label) and `health.py:118-159` ("Overall health score: X/100")
    both emit numbers RE authored, with no `GovernanceMetric` behind them. Under the rule agreed
    2026-08-24 — *no metric, no number* — each needs either a declared `GovernanceMetric` with
    `measurement`/`target` (following the Portal's Governance Metrics pattern) or removal.
    `sql_analyzer.py:145-153`'s `complexity_score` needs the same check.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `341d2f5`, `852955f`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 6. **~~Tag Purpose, and add the check-granularity join~~ — BOTH DONE; entry was stale.**
    `341d2f5` tagged all 41 questions with Purpose (not the ~10-question pilot this entry
@@ -3699,6 +3778,8 @@ listener is actually attached to the node the click lands on.
 
 #### MEDIUM — `tailwind-next.css` has no build-freshness check and will silently go stale again
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `7df0de0e`, `2efc7001`, `e816d92b`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Found 2026-09-17/18, live: the RFA drawer (`next/rfa.js`) rendered as an unstyled block at the
 bottom of the page instead of a fixed right-hand panel — `inset-y-0`/`z-[80]`/`w-[26rem]` were
 absent from the compiled `next/tailwind-next.css`, which hadn't been rebuilt
@@ -4076,6 +4157,8 @@ produced a finding for `dependabot_security_updates: enabled` and silently didn'
 
 #### Gradle versions come from the BOM, so CVE scanning still cannot answer for Egeria
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `46a77c28`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Follow-on from the entry below, which is now fixed: Gradle *is* parsed (2026-08-31), and
 `egeria_git` went from 0 dependency rows to 85. But **84 of those 85 have no version**, because
 Egeria resolves them through a BOM (`bom/build.gradle`) rather than inline. Measured, not assumed.
@@ -4105,6 +4188,8 @@ produces a *confident* CVE answer about the wrong version — which is worse tha
 "cannot answer".
 
 #### No Gradle support in the dependency parser — Egeria itself has zero dependency data, so CVE scanning cannot run on it
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `946a1b39`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Found 2026-08-31 while trying to take `egeria_git`'s security summary from 7 of 8 inputs to 8.
 
@@ -4198,6 +4283,8 @@ class and is exactly what the entry below already built the machinery for.
 
 #### FIXED — a server restart mid-survey left activity_log rows stuck at 'running' forever
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `4e91ba2`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Confirmed live 2026-08-26: restarting the web server to pick up a git pull killed two
 in-flight Survey Definition runs (`RepoFullSurvey` and `RepoArchitectureDiscovery` on
 `deep_causality`) mid-flight. Each survey's individual steps had genuinely completed and
@@ -4252,6 +4339,8 @@ off?), and if not, whether `docs/Architecture.md`/external-facing descriptions s
 to say "optional, off by default" rather than implying it's the normal execution path. This is a
 decision item, not a bug fix — record the review's outcome here once done, with a
 `**Decision (project owner, <date>):**` callout per this repo's convention.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `fe6242a3`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Measured 2026-09-18 — Prefect per-step dispatch overhead (`PLAN-PREFECT-OR-ALTERNATIVE.md` §5
 phase 4).** This section's headline (and the plan doc's own §6 risk item) called this "unmeasured."
@@ -4784,6 +4873,8 @@ there yet).
 
 #### HIGH — extract a shared query cache into a Trellis package; it fixes a live bug in Egeria Advisor
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e734241a`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Full detail: `docs/re-ea-consolidation-audit.md` item 1.
 
 RE's `query_cache.py` (124 lines) is genuine LRU (`OrderedDict` + `move_to_end()` on access) with
@@ -4863,6 +4954,17 @@ same commit.
 ## Closed
 
 Kept rather than deleted: a recorded negative — *we checked, and it genuinely isn't there* — is what stops the next person re-investigating. Three entries were re-derived from scratch on 2026-08-24 because nobody could tell a closed question from an unasked one. Entries here are fully closed; anything still carrying live work stayed above, however its heading reads.
+
+#### CLOSED 2026-10-01 — the night of 2026-09-30 / 2026-10-01
+
+Four slices merged to `main` overnight; each has its own IMPLEMENTED note under `docs/design-notes/`.
+
+- **Entity-type sweep on the repo-only routes** — PR #391, merge `739e16a8` (`REPO-ONLY-ROUTES-DROP-DEFAULT-IMPLEMENTED.md`; builds on `603015b5`, `REPO-ONLY-ROUTES-ENTITY-TYPE-IMPLEMENTED.md`).
+- **App entry-points grouped by kind** in the Application card, with the `console_script` display fix — PR #392, merge `0d116d50` (`APP-ENTRY-POINTS-GROUP-BY-KIND-IMPLEMENTED.md`).
+- **Architecture diagram relabelled for boundary confidence** — PR #393, merge `b29dc0fe` (`ARCH-DIAGRAM-RELABEL-BOUNDARY-CONFIDENCE-IMPLEMENTED.md`).
+- **Resync heal keyed on flagged rows** — PR #394, merge `72041e77` (`RESYNC-HEAL-KEYED-ON-FLAGGED-ROWS-IMPLEMENTED.md`).
+
+---
 
 #### ~~`project_dependencies` has no survey-step writer~~ — RESOLVED 2026-08-23
 
@@ -5357,6 +5459,8 @@ duplicate `qualifiedName` now means "already created", not "failed" — see
 
 ### 1. One Egeria element per finding, with no cap
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `26c5d953`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 `enqueue_annotations` writes one outbox row — and therefore one catalog
 element — per annotation. The secret scan produced **48,583 findings in a
 single run**, so 48,583 elements were queued for one repo. Two runs of it left
@@ -5381,6 +5485,8 @@ Worth considering together, not separately:
   the decision has already been made.
 
 ### 2. No purge path for queued work
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `bb3ee6cf`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 `registry.purge_outbox_completed()` deletes `done` rows past a retention
 window, and deliberately nothing else: *"'dead' rows are the ones a human still
@@ -5409,6 +5515,8 @@ live data. That is the part to fix.
 ---
 
 ## `architecture_recovery` answers `not_established` on 37 of 53 repos that have its findings — FIXED 2026-09-09 (re-measured first; the original example was a typo)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `dcb89de1`, `4db2cf99`, `701413cc`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Found 2026-09-08 while verifying the new verdict-coverage feature
 (`docs/curated-architecture-answers-design.md` §6 item 1) against
@@ -5536,6 +5644,8 @@ that found X missing.
 
 ## Phoenix: RE traces into its own project — FIXED 2026-09-09
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `31713df2`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Phoenix buckets spans by project and anything that does not name one lands in
 `default`, which is shared. Measured 2026-09-09: this machine's `default` held
 106 spans from an unrelated BeeAI **tutorial** run in December 2025
@@ -5550,6 +5660,8 @@ collector went from `['default']` to `['default', 'resource-explorer']`. Nobody'
 history is deleted; the two simply stop sharing a bucket.
 
 ## "Do we already support these dependencies?" — `dependency_support`, BUILT 2026-09-12
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e3ffab38`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 The first of the coverage audit's three gap questions to get an analytic, on
 the project owner's direction: Egeria may hold "a starting point that would
@@ -5621,6 +5733,8 @@ four under ruff, and one module-level line fixed them.
 
 ## Funnel tier vocabulary — resolved from the catalog, §2 and §4 answered 2026-09-10
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `004cb667`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **`activity_log.intent` cannot be used to tier a run.** It is stamped at write
 time and never revisited, so it holds what the catalog said that day; the
 catalog has been retagged twice (rule 17: three analyses `assessment` →
@@ -5680,6 +5794,8 @@ analysis/assessment depth. The spec's prediction about rationales is
 
 ## Source-acquisition accounting — cold vs warm per run, DONE 2026-09-10
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `5907a508`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 The cheap half of the funnel-cost spec's §6. That section asks for *bytes
 fetched*; the thing it actually needs bytes FOR — separating "slow because it
 downloaded" from "slow because it worked" — is settled by one bit, and
@@ -5724,6 +5840,8 @@ confounder it was wanted for is handled. It remains the honest answer if two
 tiers ever come out indistinguishable *within* the same acquisition state.
 
 ## LLM token accounting — complete() and streaming both counted
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `cb9ceefa`, `b35f6512`, `31713df2`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Built 2026-09-09 at the project owner's direction, closing half of the
 funnel-cost spec's §6 ("the instrumentation that doesn't exist").
@@ -5813,6 +5931,8 @@ itself, with a test pinning the ordering and another pinning the trap.
 
 ## Running a derived analysis refreshes its source's data but not its source's last-run, and nothing checks freshness first — ATTRIBUTION FIXED 2026-09-09, freshness still open
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `157c3ae5`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Raised 2026-09-09 by the project owner, after a `architecture_diagram` Run took
 ~90s: *"do we check to see if there was a recent architecture survey with the
 correct results before we redo that survey from architecture_diagram?"*
@@ -5874,6 +5994,9 @@ Three things, in dependency order, none done:
    owns and derives a key, so it passed with the guard removed; it now
    constructs the case via monkeypatch, with a separate test asserting the real
    catalogue has no such entry.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `cc5fb380`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 2. ~~**Consult the freshness that is already known** before dispatching~~ **DONE
    2026-09-10, skip-by-default, user-initiated runs only.** Two decisions from
    the project owner: *skip by default* (not warn-and-run), and *leave the
@@ -5978,6 +6101,8 @@ reference, not treat this as "copy admin.html."
 
 ## `architecture_diagram` collides with `architecture_recovery`'s steps, and has no dashboard — FIXED 2026-09-08
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `4db2cf99`, `5ec22da4`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Two tests have been failing since `b3b0500` added the read-time
 `architecture_diagram` AnalysisKind (2026-09-08), and both became easier to
 notice on 2026-09-08 when the kind finally reached the UI (`e20dd93` added its
@@ -6055,6 +6180,8 @@ survey attribution, so re-measure that entry now the ownership is correct
 before acting on it.
 
 ## The silent-success ratchet is red on one site — FIXED 2026-09-08 by `a254f29`, and better than this entry advised
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `a254f29c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 `tests/test_no_silent_success.py` has been failing since 2026-09-08. Three new
 sites appeared; two were fixed the same day (`egeria_identity.py::
@@ -6237,6 +6364,8 @@ Two things follow, and one decision:
 
 ### Question-GUID lookup fails on pool threads — pyegeria cross-loop bug (ISSUE-96 drafted)
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b7579928`, `2b7a9ec0`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 `SurveyDefinitionReader._lookup_question_guid` shares one pyegeria client across `run_sync` pool
 threads. pyegeria imports `nest_asyncio` at import time, so each thread silently gets its own event
 loop; the shared `httpx.AsyncClient`'s pool lock binds to the first loop and every other thread gets
@@ -6251,6 +6380,8 @@ patch) on branch `re/question-guid-client-per-thread`. The pyegeria issue text i
 not filed; filing is the owner's call per the pyegeria-gaps rule.
 
 ### Superseded Question term — unlinked and deleted 2026-09-13; the reconciler gap it exposed stays open
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `221dd665`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 "What is its internal architecture — what components exist and how do they relate?" was split into
 four questions in the CSV (2026-09-08); the four were created 2026-09-12. The old term stayed on the
@@ -6274,6 +6405,8 @@ Two things the enumeration taught, kept here so the next deletion is faster:
   own document's scope blocks (`docs/dr-egeria/questions/arch-discovery-scope-links-2026-09-13.md`,
   0 → 2). Verified through the app's own scoped lookup.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `ae4b7c23`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Still open — the reconciler does not see scope links.** `scripts/reconcile_survey_definition_links.py`
 compares step edges to STEP_REGISTRY order; nothing compares a definition's `ScopedBy` links to the
 Question terms its authored document names. This is the second silent scope drift (2026-08-19 was the
@@ -6285,6 +6418,8 @@ only write it would ever need.
 
 ### Question term descriptions on the platform now match the CSV (2026-09-13)
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `c3d6d841`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 19 of 52 terms had Description/Usage text from an older CSV. No "Update Term" command exists;
 `Create Glossary Term` is a verified upsert (tested on a throwaway term first — same GUID, fields
 updated in place). `docs/dr-egeria/questions/update-questions-2026-09-13.md` holds the 19 blocks,
@@ -6292,6 +6427,8 @@ executed once (19/19), all 52 verified matching afterwards, GUIDs unchanged. Con
 commands, so it cannot duplicate anything; not in `_batch.json`.
 
 ### Catalogue in layers — and two Egeria-type corrections (2026-09-14)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `c14d9fb9`, `911ba73c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Decision (project owner, 2026-09-14):** catalogue a repository in layers. Layer 1: the top-level
 components it delivers (for egeria-trellis: RE, EA, Trellis core — coarse). Layer 2, only when
@@ -6315,6 +6452,9 @@ Two things the current model gets wrong, both the same misreading of 0056 Resour
   labelling every distribution `SoftwareLibrary`. Not yet committed to Egeria either way: the
   `components` curate-commit step is still `skipped` (`workflows/curate_commit.py`), so this was a
   UI-only proposal never actually published — nothing to retract.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `d514c884`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 - **Repository-as-`SourceControlLibrary` is the same misreading one level up.** The publisher
   creates one `SourceControlLibrary` per repository (`egeria_publisher.py`, since August); the
   classification names the *service* (GitHub), and the repository is what the service manages.
@@ -6329,6 +6469,8 @@ Two things the current model gets wrong, both the same misreading of 0056 Resour
   "old SurveyReports move" questions entirely; the one thing that still must land *before* the
   redeploy is the publisher fix itself (`egeria_publisher.py`), or the fresh database is
   repopulated with the same wrong structure. Not yet fixed — still open.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `911ba73c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Two Discovery-tier, zero-fetch analyses to build (measuring session): `deployment_evidence` —
 which distributions carry a console entry point / Dockerfile / compose service, hence which are
@@ -6365,6 +6507,8 @@ LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
   a verdict keyed by scope lands on both, so an accepted component under one proposal reads as
   accepted under a proposal its curator never saw. Waiting on a SPEC from the designer, not on
   engineering capacity.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `c14d9fb9`, `d514c884`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Catalogue-in-layers round (`REPLY-CATALOGUE-IN-LAYERS.md`, 2026-09-14):**
 - `SoftwareLibrary`/package type error — **fixed**, this session (see the entry above).
@@ -6556,6 +6700,8 @@ deliberately scoped out rather than half-built:
    `postgres_operations` against it once and diffing the result against a
    hand-checked `psql` session would close this gap.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b0d678bc`, `7788990c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 4. **`docs/dr-egeria/resource_questions.csv`'s prose is now stale for the
    three rows this slice's `analysis_catalog.yaml` additions resolved.**
    Regenerating `question_catalog.yaml` (required — see
@@ -6566,6 +6712,8 @@ deliberately scoped out rather than half-built:
    `answering.kind` is still `gap`/`human`. The CSV is stream 4's ownership
    and not touched by this slice; whoever next edits it should reword those
    three rows' notes (and reconsider `kind`) now that the analyses exist.
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b0d678bc`, `7788990c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
    **Extended 2026-09-21 by Phase 1 slice 9 (`db_derived`), same shape, six
    more rows.** Regenerating the YAML again populated `analysis_ids` for
@@ -6765,6 +6913,8 @@ to import. **If slice 9 lands its own, reconcile the two to one** before both
 are in the tree — two copies of a sign-convention correction is exactly the
 shape that drifts.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `ef95e38e`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **5. Two live bugs in `bootstrap_data_classes.py`, deliberately not copied by
 slice 10.** (a) Its `create_data_class` body's `properties` omits the
 `"class": "DataClassProperties"` discriminator that every other create path in
@@ -6791,6 +6941,8 @@ exercised nowhere in either repo); and that
 never been called from Python**, so the evidence links are the least-verified
 part of the slice.
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b0d678bc`, `7788990c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Also:** the regenerated `question_catalog.yaml` rows for `data_class_match`
 and `reference_data_match` still carry `GAP: … (proposed)` prose although both
 analyses now exist — the same staleness slice 8 flagged for its own three ids.
@@ -6810,6 +6962,8 @@ already existed as a UI concept (`automate.py`'s `RESOURCE_ICON` includes
 `database`) with no way to ever fire. Fixed for `db_change_rates` only, by
 bridging `derive_change_rates`'s already-computed per-table deltas/schema
 churn into a `ChangeResult`. Logged, not fixed here:
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `82594932`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **1. Design §9.1's other six database comparators have no bridge yet:**
 `schema_diff` (column/constraint-level — today's fix only covers the
@@ -6897,6 +7051,8 @@ slice's changes, and this session did not touch that database or its
 Egeria elements.
 
 ## Database/filesystem Analyses cards: run attribution fixed, publish attribution still not established
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `6de4fd72`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Live-reproduced in classic (`coco_pharma @ local-docker`): running a real
 database survey (`POST /api/databases/{slug}/survey` -> 200 OK, confirmed via
@@ -7001,6 +7157,8 @@ touches the intent list should check this entry first.
 
 ## filesystem_inventory had zero question coverage in resource_questions.csv
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `b0d678bc`, `7788990c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Found while investigating a related but separate active review
 (`FALSE-GAPS-2026-09-22.md`, not authored by this session, tracking 18
 rows where `Answering Analysis` still says `GAP: ... (proposed)` for
@@ -7022,6 +7180,8 @@ there is permanent (see `coordinate-shared-writes` skill). Do the
 authoring as a separate, single, coordinated run once clear.
 
 ## Phase 1 done-test verification (2026-09-22): NOT satisfied — Phase 2 held
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `ef95e38e`, `e5e79ce7`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 `COORDINATOR-BRIEF-MULTI-RESOURCE.md`'s own gate for starting Phase 2
 (filesystems) is its done-test: "`coco_ods` answers 'which columns conform
@@ -7062,6 +7222,8 @@ needed to actually close Phase 1, tracked as separate slices: (a) fix the
 `grant_change` and a column-level `schema_diff` comparator.
 
 ## `data_class_match`'s "Run" button was wired to a `ReferenceCatalog` that no caller ever loaded, and the bootstrap script that seeds Data Classes never actually created any (2026-09-22)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `ef95e38e`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Two layered bugs, both on branch `re/data-class-seed-and-wiring`, found and
 fixed in the same session as a live check of whether "which columns conform
@@ -7160,6 +7322,8 @@ one of them, so whoever merges next should check for an overlapping edit to
 the same CSV row rather than assume this change is the only one in flight.
 
 ## grant_change and column-level schema_diff comparators, plus two real
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e5e79ce7`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 ## bugs found live-verifying them (2026-09-22)
 
 Phase 1 slice 14 follow-up (design §9.1). Built `grant_change` and the
@@ -7219,6 +7383,8 @@ already in `db_change_comparator.py`'s own module docstring.
 
 ## Decision reversal: DB and FS now in scope for `/next` (2026-09-22)
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `029c450b`, `b18886f2`, `51adf88c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Decision (project owner, 2026-09-22):** `/next` should reach parity with
 classic across all three resource types (repo, database, filesystem), not
 just repos — reversing the earlier ruling logged in
@@ -7244,6 +7410,11 @@ and filesystem-specific views — file inventory browsing, data-file
 profiling — stay out of scope, unchanged by this reversal).
 
 ## By analysis / scouting-questions were repo-only; Disposition's `github_url` keying is not fixed here (2026-09-22)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1); each cited commit checked present on `main`. Any residual the body below still describes is not closed by these lines:
+> - Server-side entity_type on the four repo-only routes: `739e16a8`, `603015b5`
+> - By analysis for database/filesystem (survey-results): `b18886f2`
+> - Questions checklist (scouting-questions) for database/filesystem: `b18886f2`
 
 Three more real, separate backend gaps found continuing the audit above (on
 `re/next-generalize-byanalysis-disposition-questions`) — all genuinely
@@ -7351,6 +7522,8 @@ can stay keyed as-is under a widened key) belongs to its own reviewed slice.
 therefore left exactly as the prior agent built it — unchanged by this PR.
 
 ## Disposition generalized to `(entity_type, entity_slug)` — the schema gap above is now closed (2026-09-22)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `51adf88c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 `re/generalize-disposition` picks up exactly the decision the entry above
 deliberately deferred. Investigated both options concretely before
@@ -7552,6 +7725,8 @@ do it) rather than have it applied ad hoc from a subagent session.
 
 ## Prefect-orchestrated survey definitions don't get §17.1's prerequisite resolution
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `87bb3161`, `ca4ff4aa`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Found while building** §17.1 (prerequisite auto-run, PR #241).
 
 The design doc says the Prefect path already expresses step dependencies as
@@ -7612,6 +7787,8 @@ panel's views meaningful rather than speculative.
 
 ## `/next`'s prerequisite-proposal UI doesn't exist yet — classic-only for now
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `cdb00fa2`, `c342b915`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Found while building** §17.1 (PR #241).
 
 `POST /api/prerequisites/plan`/`run` work over HTTP (verified live against a
@@ -7656,6 +7833,8 @@ visibly wherever `step_runs` metrics are displayed.
 ---
 
 ## `/next`'s "Survey & analyses" tab silently drops Egeria's own native, technology-specific survey processes — classic already shows them
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `9a075414`, `46653b28`, `5f152c74`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Found live** (project owner, 2026-09-24): opened `/next`'s "Survey & analyses"
 sub-tab on a real database (`coco_ods`, PostgreSQL) and got "No survey
@@ -7842,6 +8021,8 @@ framework-marker coverage together.
 
 ## Database credential-capability model — item 2 BUILT, items 1 and 3 still awaiting the project owner's ruling
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `450e7b91`, `280fa825`, `69d9871b`, `86dd8a0b`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 **Decision (project owner, 2026-09-24):** build item 2 below
 (`requires_capability` on `StepInfo` and the launcher gate) now, ahead of
 item 1, on the strength of §7.1 of the reply doc — which the architecture
@@ -8005,6 +8186,8 @@ don't need a second design pass.
 
 ## `stats` capability tier's `pg_monitor` premise was wrong for per-table/per-database counters — corrected (2026-09-24/25)
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `a56acf3f`, `dd44d6a8`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 `DATABASE-STEP-CAPABILITY-AUDIT.md`'s original classification (`#262`'s
 basis for the `requires_capability` field) said `pg_stat_user_tables`/`pg_
 stat_user_indexes` need `pg_monitor` membership. **Live-verified by the
@@ -8044,6 +8227,8 @@ wording — not edited here since that doc is a point-in-time transcript of
 what shipped, not living copy.
 
 ## Slice 22's per-schema VIEW should consume Slice 21a's `_schema_inventory_container_rows` (2026-09-26)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `da7cdefd`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Slice 21a (`re/slice21a-level-headlines`) built the per-schema classification
 (data/empty/staging/no-access/structure-only/system, ordered data-rows-desc
@@ -8297,6 +8482,8 @@ pins `statistics`/`views` the same way the operations test pins those two.
 
 ## The Scouting Survey Definition's own "Run"/"Re-run" button does not follow the analyses-list rule (found live, Slice 22 gate, `laz_local_adventureworks`, 2026-09-27)
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `76fbecfa`, `e6cde62c`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 After the Database Scouting Scan has run at least once, the analyses list
 further down the Survey pane correctly switches its own per-analysis
 button text from "Run" to "Re-run" — but the Survey Definition row's own
@@ -8355,6 +8542,8 @@ exactly the chart's inputs — no new backend read needed, just a small bar
 sorted the same data-first order the tree itself already uses.
 
 ## `database_table_activity` rows are clobbered at the STRUCTURED-TABLE layer by a multi-step survey run's later steps — FIXED (`re/structured-table-clobber`, BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B, 2026-09-28)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `32409a83`, `fa77116a`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **Root cause found**, more specific than "deferred, fix direction below" left
 it: `_store_results` (`database_surveyor.py`) stamped
@@ -8431,6 +8620,8 @@ ITS newer data; a table only an earlier run touched should fall back to
 that earlier row instead of reading NULL.
 
 ## PRIMARY-path PK/FK queries in `connection.py` drop real foreign/primary keys that a table is referenced from (or claims) MANY TIMES — not fixed here, deferred for a fresh session (found live, `adventureworks`, 2026-09-27)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `fe6ee5a8`, `85a359a0`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Verified against `pg_constraint`/ground truth via direct `psql` on the
 newly-registered `adventureworks` database (68 tables, dense FKs, full
@@ -8531,6 +8722,8 @@ is more than one table-level match.
 
 ## `/next` probes `scouting-overview` for database slugs and always gets a 404 (Section D agent's live-render check, 2026-09-28)
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `f46b769c`, `e0fe4e19`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+
 Every `/next` page load calls `GET /api/projects/{slug}/scouting-overview`
 regardless of resource type. For a database slug this 404s every time —
 `scouting-overview` is a repo-only endpoint. Same class of bug as the
@@ -8543,6 +8736,8 @@ probes are already gated elsewhere in `app.js`. No design question here —
 purely "don't call an endpoint that doesn't apply to this resource type."
 
 ## `postgres_column_profile` silently samples nothing on `laz_local_adventureworks` — an aborted-transaction cascade masked as `status: "ok"` (Section E agent, 2026-09-28)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `10d73930`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 The unchanged 468/768 `measured`/`not_collected` split in `database_column_profiles`
 across every run today (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md's original evidence, and
@@ -8569,6 +8764,8 @@ attempt failed — that's the same silent-success shape `test_no_silent_success.
 already guards other steps against.
 
 ## Three order-dependent flaky tests in `test_survey_definitions_routes.py` — root cause identified, fix on `re/tests-clear-candidates-cache` (found by Section E agent, bisected 2026-09-28)
+
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `ba223e2f`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 Pre-existing, unrelated to any of the BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md fixes.
 Confirmed to fail only under a specific run order and to pass individually — not
