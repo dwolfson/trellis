@@ -59,6 +59,10 @@
   {
    "id": "page-15",
    "name": "Work lists and scope"
+  },
+  {
+   "id": "page-16",
+   "name": "Curate, Understanding, Find (all kinds)"
   }
  ],
  "artboards": [
@@ -270,6 +274,22 @@
    "w": 1560,
    "h": 2120,
    "page": "page-15"
+  },
+  {
+   "file": "CurateAndUnderstanding.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 1220,
+   "page": "page-16"
+  },
+  {
+   "file": "FindAndImport.dc.html",
+   "x": 0,
+   "y": 1320,
+   "w": 1560,
+   "h": 1040,
+   "page": "page-16"
   }
  ],
  "annotations": [
@@ -408,10 +428,18 @@
    "w": 300,
    "page": "page-15",
    "text": "Reply to ASK-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS (#354), read against main at 8c6f1845.\n\nNot one mechanism: an investigation's scope is a Folio (working_sets); a work list is a separate table (work_lists), one resource type, published as a WorkingSet.\n\n'Work list' names four things: the bench, its shortlists, a one-resource list minted by 'add to work list' on reports and member lists (the owner's trigger), and the suggested-to-* inboxes.\n\nRuling: investigation = why; scope = which (any type; 'Members' becomes 'Scope'); work list = the bench only. 'Working set' never on screen.\n\nTwo actions on the list: add to <investigation>, start an investigation from this list. The list stays, linked, and says '7 of 9 in scope' live.\n\nThe investigation page carries the grid, one per resource type; a scope narrows by verdict, a list by shortlist.\n\nQuestions 5-8 (addendum, against fffcc3a0), lower artboard:\n5. A stage click: run stages keep the list and re-scope its questions; Investigation, Understanding and Automate close it into 'back to'; Investigation with a linked list opens that investigation.\n6. The data lens sits between purposes and scope; rows signed, literal-or-reference in words; undeclared dimensions on one line.\n7. Fit row = one equal-width cell per declared dimension. Fits \u2713, doesn't fit \u2205 (not \u2715), couldn't check ?, no reader yet \u25cc. Headline counts sum to the declared number. Verdicts are the existing dispositions; 'archive' is a finding, not a verdict.\n8. Pair questions in their own 'Between resources' section, one row per pair, both names bracketed; parity per question."
+  },
+  {
+   "id": "allkinds-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-16",
+   "text": "Replies to ASK-DESIGNER-CURATE-AND-UNDERSTANDING-ALL-KINDS and ASK-DESIGNER-DISCOVERY-SOURCES-ALL-KINDS, against main at 524f1c7f.\n\nCurate, every kind: Findable (group, tags) \u2192 the kind's own work \u2192 what people say (ratings as counts, never an average; the signed journal as notes, Classic's unsigned curator notes read-only beneath). Tags, feedback and notes record no author today: add one.\n\nUnderstanding, database: Now (schemas, largest tables by rows, column types) and Over time (since last run as a sentence, structure over runs, activity per table). The chart routes read the old blob and turn unestablished row counts into 0: rebuild on database_tables.\n\nChart kinds per kind; per-chart Save image with provenance in the image.\n\nFind: three surfaces and a CSV contract already exist (Admin sources, Find repos, Find databases, batch_io). One Find dialog per kind: Saved sources, one-off search/discover, From a file; one confirm that can add to an investigation. Non-connectable databases listed, not filtered. CSV rows name a server, never a credential."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-15"
+  "page": "page-16"
  }
 }
