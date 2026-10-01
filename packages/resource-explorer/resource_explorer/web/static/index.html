@@ -4324,7 +4324,7 @@ function _archRow(c, slug, rowUid) {
   }
   const evidenceHtml = (_archInteractiveMode && evidenceDeduped.length)
     ? `<div class="mt-1 pl-2 border-l-2 border-slate-700/50 space-y-0.5">
-        ${evidenceDeduped.map(e => `<div class="text-[11px] text-slate-500">🔍 <span class="text-slate-400">${_esc(e.approach || e.assertion)}</span>: ${_esc(e.summary)}${e.confidence ? ` <span class="text-slate-600">(${e.confidence}%)</span>` : ''}</div>`).join('')}
+        ${evidenceDeduped.map(e => `<div class="text-[11px] text-slate-500">🔍 <span class="text-slate-400">${_esc(e.approach || e.assertion)}</span>: ${_esc(e.summary)}${e.confidence ? ` <span class="text-slate-600">(confidence ${e.confidence}%)</span>` : ''}</div>`).join('')}
       </div>`
     : '';
   const blueprintLinksHtml = (_archInteractiveMode && (c.candidate_blueprints || []).length)

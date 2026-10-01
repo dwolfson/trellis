@@ -470,7 +470,7 @@ function branchRowHtml(b, selected) {
 function leafRowHtml(l) {
   const multi = (l.proposals || []).length >= 2;
   const proposalLines = multi ? l.proposals.map((p) => `
-    <div class="pl-s2 text-provenance text-ink-muted">found by ${esc(p.run_label)}${p.type ? ` — ${esc(p.type)}` : ''} · ${esc(p.perspective || 'physical')} reading · <span class="tnum">${p.confidence ?? 0}</span>%</div>
+    <div class="pl-s2 text-provenance text-ink-muted">found by ${esc(p.run_label)}${p.type ? ` — ${esc(p.type)}` : ''} · ${esc(p.perspective || 'physical')} reading · confidence <span class="tnum">${p.confidence ?? 0}</span>%</div>
   `).join('') : '';
   const agreementLine = l.agreement
     ? `<div class="pl-s2 text-provenance text-accent-ink">two extractors agree this is a component</div>` : '';

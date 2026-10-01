@@ -26,3 +26,17 @@ def test_next_curate_leaf_uses_boundary_and_confidence_wording():
     assert 'confidence <span class="tnum">${l.confidence ?? 0}</span>%' in src
     assert '· <span class="tnum">${l.confidence}</span>%' not in src
     assert '⚠ <span class="tnum">${l.confidence ?? 0}</span>%' not in src
+
+
+# Exhaustive sweep (2026-10-01): every remaining user-facing bare confidence
+# percentage. Each hit gets one line; revert the fix and the line fails.
+def test_next_curate_proposal_row_labels_confidence():
+    src = (STATIC / "next" / "stages" / "curate.js").read_text(encoding="utf-8")
+    assert "reading · confidence <span class=\"tnum\">${p.confidence ?? 0}</span>%" in src
+    assert "reading · <span class=\"tnum\">${p.confidence ?? 0}</span>%" not in src
+
+
+def test_classic_evidence_line_labels_confidence():
+    src = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert '(confidence ${e.confidence}%)' in src
+    assert '(${e.confidence}%)' not in src
