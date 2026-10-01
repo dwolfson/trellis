@@ -362,8 +362,11 @@ async def list_candidates(
         # resync.py) resolves `project_egeria_surveys.egeria_report_guid`,
         # which is repo-scoped (databases/filesystems have their own separate
         # `*_surveys.egeria_report_guid` columns, not covered by this check yet).
-        publish_stale = (entity_type == "repo"
-                         and (_reg.get_egeria_linkage("repo_publish", slug) or {}).get("status") == "stale")
+        _publish_status = ((_reg.get_egeria_linkage("repo_publish", slug) or {}).get("status")
+                           if entity_type == "repo" else None)
+        publish_stale = _publish_status == "stale"
+        # Set by the resync heal pass for a repo with no publish at all.
+        publish_uncatalogued = _publish_status == "uncatalogued"
         # The same gate the executor uses to decide whether to auto-publish, so
         # the button and the behaviour cannot disagree.
         auto_publishes = _reg.has_assigned_egeria_project(entity_type, slug)
@@ -469,6 +472,7 @@ async def list_candidates(
                 # is blank too.
                 "last_published_scope": last_activity.get("last_published_scope", ""),
                 "publish_stale": bool(last_activity.get("last_published_at")) and publish_stale,
+                "publish_uncatalogued": publish_uncatalogued,
                 # Matches the local Analyses catalog's own run_time field —
                 # see get_survey_definition_speed_tag's docstring for how
                 # it's derived (Survey Definitions have no such field of

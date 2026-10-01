@@ -403,6 +403,7 @@ class ScoutingOverview(BaseModel):
     # automatically — see egeria_resync.py's _do_flag_vanished_publishes.
     publish_stale: bool = False
     publish_stale_guid: str = ""
+    publish_uncatalogued: bool = False
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -443,6 +444,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         egeria_link_stale_guid=linkage.get("stale_guid", ""),
         publish_stale=publish_linkage.get("status") == "stale",
         publish_stale_guid=publish_linkage.get("stale_guid", ""),
+        publish_uncatalogued=publish_linkage.get("status") == "uncatalogued",
         slug=project.slug,
         display_name=project.display_name,
         github_url=project.github_url,

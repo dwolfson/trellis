@@ -232,6 +232,7 @@ class EgeriaResync:
         res.findings.append(self._scan_assets(res))
         res.findings.append(self._scan_orphan_publish_claims())
         res.findings.append(self._scan_vanished_publishes(res))
+        res.findings.append(self._scan_flagged_publish_rows())
         res.findings.append(self._scan_investigation_guids(res))
         res.findings.append(self._scan_contexts(res))
         res.findings.append(self._scan_unlinked_members(res))
@@ -374,6 +375,30 @@ class EgeriaResync:
             detail="The report these claims point to no longer resolves in Egeria "
                    "— flagged on the record, not deleted.",
             items=vanished,
+            repair_step="flag_vanished_publishes",
+        )
+
+    def _scan_flagged_publish_rows(self) -> Finding:
+        """Existing publish flags that need re-checking, keyed on the ROWS.
+
+        Exists because `scan()` drops empty findings: once a republish
+        resolves, `vanished_publishes` is empty and nothing would ever offer
+        (or schedule) the heal step. A flag that is still on the record is a
+        reason to run `flag_vanished_publishes` whatever the vanished finding
+        says. 'uncatalogued' rows count only once a report exists to re-read —
+        otherwise the pass has nothing to do for them.
+        """
+        latest = self._registry.get_latest_egeria_surveys_all_projects()
+        items = []
+        for row in self._registry.list_egeria_linkages("repo_publish"):
+            if row["status"] == "stale" or row["entity_slug"] in latest:
+                items.append({"slug": row["entity_slug"], "status": row["status"]})
+        return Finding(
+            key="flagged_publish_rows",
+            title="Publish flags awaiting re-check",
+            detail="These repos carry a publish flag. Re-checking reads each "
+                   "repo's latest report and clears the flag if it resolves.",
+            items=items,
             repair_step="flag_vanished_publishes",
         )
 
@@ -998,9 +1023,17 @@ class EgeriaResync:
 
     def _do_flag_vanished_publishes(self) -> dict:
         """Flag, never delete — the counterpart to `_do_clear_orphan_publish_
-        claims` for the row that IS locally coherent. Also self-heals: a
-        project whose latest publish now resolves has its flag cleared, so
-        a republish is not stuck showing "no longer in the store" forever.
+        claims` for the row that IS locally coherent.
+
+        Also self-heals, keyed on the FLAGGED ROWS themselves (not on whether
+        this scan happens to contain a vanished finding — `scan()` drops empty
+        findings, so a heal gated on one is unreachable exactly when the thing
+        it heals has resolved). Every pass, for each existing 'repo_publish'
+        flag (stale or uncatalogued), re-read that slug's CURRENT latest
+        report: resolves -> flag cleared; still absent -> flag kept with
+        `last_checked_at` advanced; no report at all -> 'uncatalogued'
+        ("not catalogued, publish needed"). A republish is therefore not stuck
+        showing "no longer in the store" forever.
         """
         res = ScanResult()
         finding = self._scan_vanished_publishes(res)
@@ -1010,14 +1043,41 @@ class EgeriaResync:
                 "repo_publish", item["slug"], stale_guid=item["guid"],
                 detail="the published report no longer resolves in Egeria",
             )
-        healed = 0
-        for slug in self._registry.get_latest_egeria_surveys_all_projects():
+        latest = self._registry.get_latest_egeria_surveys_all_projects()
+        ce = self._clients["classification"]
+        healed_slugs: list[str] = []
+        uncatalogued = 0
+        for row in self._registry.list_egeria_linkages("repo_publish"):
+            slug = row["entity_slug"]
             if slug in vanished_slugs:
+                continue  # just re-flagged above, last_checked_at already advanced
+            survey = latest.get(slug)
+            if not survey:
+                self._registry.mark_egeria_linkage_uncatalogued(
+                    "repo_publish", slug,
+                    detail="no survey report has been published for this repo",
+                )
+                uncatalogued += 1
                 continue
-            if self._registry.get_egeria_linkage("repo_publish", slug):
+            guid = survey["egeria_report_guid"]
+            v = self._resolves(
+                lambda g: ce.get_element_by_guid(g, graph_query_depth=0), guid)
+            if v is True:
                 self._registry.clear_egeria_linkage_status("repo_publish", slug)
-                healed += 1
-        return {"flagged": len(finding.items), "healed": healed,
+                healed_slugs.append(slug)
+                log.info("egeria_resync: cleared publish flag for %s at %s "
+                         "(latest report %s resolves)", slug, _now(), guid)
+            elif v is False:
+                self._registry.mark_egeria_linkage_stale(
+                    "repo_publish", slug, stale_guid=guid,
+                    detail="the published report no longer resolves in Egeria",
+                )
+            else:
+                res.undetermined.append(
+                    {"kind": "publish", "ref": slug, "reason": "lookup failed"})
+        return {"flagged": len(finding.items), "healed": len(healed_slugs),
+                "healed_slugs": healed_slugs, "healed_at": _now() if healed_slugs else "",
+                "uncatalogued": uncatalogued,
                 "undetermined": len(res.undetermined)}
 
     def _do_clear_stale_investigations(self) -> dict:

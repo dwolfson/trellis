@@ -137,9 +137,13 @@ def describe_publish_status(registry, entity_type: str, entity_slug: str, guid: 
     published; published and healthy), where a caller's existing 'not
     published to Egeria' / 'published to Egeria' text needs no help.
     """
+    linkage = registry.get_egeria_linkage(entity_type, entity_slug) or {}
+    if linkage.get("status") == "uncatalogued":
+        # No publish exists at all (set by the resync heal pass) — "stale"
+        # would claim something once resolved.
+        return {"is_published": False, "note": "not catalogued, publish needed"}
     if not guid:
         return {"is_published": False, "note": ""}
-    linkage = registry.get_egeria_linkage(entity_type, entity_slug) or {}
     if linkage.get("status") != "stale":
         return {"is_published": True, "note": ""}
     # `detected_at` is the FIRST detection (never overwritten while the row

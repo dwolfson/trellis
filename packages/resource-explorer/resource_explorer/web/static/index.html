@@ -2972,7 +2972,7 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
       ? la.last_published_scope && la.last_published_scope !== 'analysis'
         ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The resource was published at ${_esc(la.last_published_at)}.">☁ Resource published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
         : `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
-      : `<span class="text-slate-600">☁ Not published</span>`;
+      : `<span class="text-slate-600">☁ Not published</span>${la.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not catalogued, publish needed</span>` : ''}`;
     // Scheduling is a cross-cutting, per-analysis action — available from
     // whichever card surfaced it (Assessment, Analysis, or Discovery),
     // rather than a separate admin page. Reuses the same schedules backend
@@ -8521,7 +8521,7 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
     // (as nothing), while the local cards beside these said "Not published".
     : c.publishes_itself
       ? `<span class="text-slate-500" title="Every step of this survey runs natively in Egeria, so its annotations are written there as it runs — there is nothing held locally to publish">☁ Publishes itself</span>`
-      : `<span class="text-slate-600">☁ Not published</span>`;
+      : `<span class="text-slate-600">☁ Not published</span>${c.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not catalogued, publish needed</span>` : ''}`;
   const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
   const speedTag = c.run_time ? `<span class="analysis-tag ${speedTagClass[c.run_time] || ''}">${_esc(c.run_time)}</span>` : '';
   // Same tags the local cards carry. A Survey Definition declares none in
@@ -8773,7 +8773,7 @@ function _renderResultsCardStatusHtml(d) {
     ? `<span class="text-slate-500" title="Last published: ${_esc(d.last_published_at)}">☁ Published ${_relTime(d.last_published_at)}</span>${
         d.publish_stale ? ` <span class="text-amber-400">⚠ these elements are no longer in the store</span>` : ''}`
     : d.has_results
-      ? `<span class="text-slate-600">☁ Not published</span>`
+      ? `<span class="text-slate-600">☁ Not published</span>${d.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not catalogued, publish needed</span>` : ''}`
       : '';
   return `<div class="text-xs mb-1.5 flex flex-wrap gap-2.5">${statusHtml}${surveyedHtml}${publishedHtml}</div>`;
 }
