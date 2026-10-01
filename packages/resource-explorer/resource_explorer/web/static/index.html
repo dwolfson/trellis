@@ -4338,7 +4338,7 @@ function _archRow(c, slug, rowUid) {
   }
   const evidenceHtml = (_archInteractiveMode && evidenceDeduped.length)
     ? `<div class="mt-1 pl-2 border-l-2 border-slate-700/50 space-y-0.5">
-        ${evidenceDeduped.map(e => `<div class="text-[11px] text-slate-500">🔍 <span class="text-slate-400">${_esc(e.approach || e.assertion)}</span>: ${_esc(e.summary)}${e.confidence ? ` <span class="text-slate-600">(${e.confidence}%)</span>` : ''}</div>`).join('')}
+        ${evidenceDeduped.map(e => `<div class="text-[11px] text-slate-500">🔍 <span class="text-slate-400">${_esc(e.approach || e.assertion)}</span>: ${_esc(e.summary)}${e.confidence ? ` <span class="text-slate-600">(confidence ${e.confidence}%)</span>` : ''}</div>`).join('')}
       </div>`
     : '';
   const blueprintLinksHtml = (_archInteractiveMode && (c.candidate_blueprints || []).length)
@@ -4371,7 +4371,7 @@ function _archRow(c, slug, rowUid) {
         <div class="text-xs text-slate-300 mb-1"${anchorId}>
           <div class="flex justify-between gap-2">
             <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>
-            <span class="text-slate-500 shrink-0">${c.type ? _esc(c.type) : 'untyped'} · ${c.confidence}%</span>
+            <span class="text-slate-500 shrink-0">${c.type ? _esc(c.type) : 'type not assigned · boundary only'} · confidence ${c.confidence}%</span>
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
