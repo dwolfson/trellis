@@ -114,3 +114,50 @@ def test_exact_members_sentence(client):
     assert resp.json()["detail"] == (
         "Members aren't built for databases yet; today they list repository findings "
         "(advisories, dependencies, symbols, components).")
+
+
+# --- entity_type is REQUIRED (no server-side 'repo' default) -----------------
+
+# route label -> call WITHOUT entity_type
+_NO_KIND = {
+    "trend": lambda c, slug: c.get(f"/api/projects/{slug}/analyses/security_scan/trend"),
+    "members": lambda c, slug: c.get(f"/api/projects/{slug}/members/cve_scan"),
+    "children": lambda c, slug: c.get(
+        f"/api/projects/{slug}/members/api_structure/children?key=file:a.py"),
+    "promote": lambda c, slug: c.post(
+        f"/api/projects/{slug}/members/cve_scan/promote", json=_PROMOTE_BODY),
+    "analyses-index": lambda c, slug: c.get(f"/api/projects/{slug}/analyses-index"),
+}
+_WITH_KIND = {
+    **{k: v[0] for k, v in ROUTES.items()},
+    "analyses-index": lambda c, slug, kind: c.get(
+        f"/api/projects/{slug}/analyses-index?entity_type={kind}"),
+}
+
+
+@pytest.mark.parametrize("kind", ["repo", "database", "filesystem"])
+@pytest.mark.parametrize("route", sorted(_NO_KIND))
+def test_missing_entity_type_is_422_naming_the_parameter(client, route, kind):
+    resp = _NO_KIND[route](client, SLUG[kind])
+    assert resp.status_code == 422, resp.text
+    errs = resp.json()["detail"]
+    assert any(e["loc"] == ["query", "entity_type"] for e in errs), errs
+
+
+@pytest.mark.parametrize("route", sorted(_WITH_KIND))
+def test_with_entity_type_repo_still_works(client, route):
+    resp = _WITH_KIND[route](client, SLUG["repo"], "repo")
+    assert resp.status_code in ((401,) if route == "promote" else (200,)), resp.text
+
+
+@pytest.mark.parametrize("kind", ["database", "filesystem"])
+@pytest.mark.parametrize("route", ["trend", "members", "children", "promote"])
+def test_with_entity_type_non_repo_still_honest_400(client, route, kind):
+    resp = _WITH_KIND[route](client, SLUG[kind], kind)
+    assert resp.status_code == 400, resp.text
+
+
+@pytest.mark.parametrize("kind", ["database", "filesystem"])
+def test_analyses_index_with_kind_resolves(client, kind):
+    resp = _WITH_KIND["analyses-index"](client, SLUG[kind], kind)
+    assert resp.status_code == 200, resp.text
