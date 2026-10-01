@@ -10,6 +10,17 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Admin → Discovery Sources is repo-only by name and by behaviour; generalize or rename, and add CSV import/export (logged 2026-10-01, owner)
+
+**Observed (owner, 2026-10-01):** Admin has a panel called "Discovery Sources". It reads as general, but it only manages saved GitHub search and list configs. Per `resource_explorer/web/static/next/admin/discovery_sources.js` and `web/routes/discovery.py`: "Run" returns candidate `DiscoveredRepo` rows (read-only), and a second step, `POST /discovery/import`, imports repositories. The backing `discovery_sources` table has no link to `projects`; deleting a source removes only the saved config. Nothing in it can describe a database, file share, schema or any other resource kind. Classic (`index.html`, label "Discovery Sources" at the Admin tab list and in the Scouting → Discover view) shows the same name.
+
+**Two asks, not yet designed:**
+1. **Name vs scope.** Owner direction (2026-10-01): generalize. Similar discovery functionality is wanted for other resource kinds anyway, so the target is a source that says where candidates of kind K come from, "Run" yields candidates of that kind, and import creates the right resource. Renaming to "Repo discovery sources" is only a stopgap if the label has to be honest before the generalization lands. Overlaps the work-lists/investigations slice (W1) and the "Publish for every resource kind" parity row; the shape (one pane with a kind selector vs one pane per kind, and what a candidate row carries per kind) is a design question for the designer first.
+2. **CSV import and export** of the source list and of the candidate set, as a way to jump-start an investigation: export a source's candidates (and saved sources) to CSV, import a CSV of resources (and sources) to seed a work list or investigation without searching. Open questions: column set per resource kind; whether an imported row is a candidate (needs the preview-then-import confirmation the pane already enforces) or a direct import; how it ties to an investigation's scope; what a re-import of the same file does (idempotent by key, not a second set of rows).
+
+**Not checked:** how many saved sources exist in the live registry, whether any non-repo kind already has a discovery path elsewhere, and whether an import/export endpoint pair exists (none found in the files read above).
+**Status:** design question first (generalized discovery across resource kinds), then slice. Not scheduled.
+
 ## A per-card database analysis run clobbers every OTHER table's row_count/size_bytes
 
 > **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e22f9602`, `32409a83`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.

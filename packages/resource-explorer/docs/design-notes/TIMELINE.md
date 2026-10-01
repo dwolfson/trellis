@@ -198,5 +198,7 @@ Entry format: `date | title | what was decided or built | note file | introducin
 - 2026-10-01 | Repo-only routes drop the default | The entity_type query parameter becomes required, finishing the removal of the silent repo default. [unchecked] | REPO-ONLY-ROUTES-DROP-DEFAULT-IMPLEMENTED.md | 796a6994
 - 2026-10-01 | Resync apply proof and readiness | Resync publishes now write an activity-log entry as proof, plus a readiness check. [unchecked] | RESYNC-APPLY-PROOF-AND-READINESS-IMPLEMENTED.md | fb01b90e
 - 2026-10-01 | Resync heal keyed on flagged rows | Heal now keys on the flagged rows themselves, since empty findings were dropped and healing never ran. [unchecked] | RESYNC-HEAL-KEYED-ON-FLAGGED-ROWS-IMPLEMENTED.md | 244b4fc9
+- 2026-10-01 | Designer reply: design-notes reorganisation | Designer approves Option A and finds INBOX.md's answered column is hand-written, so the real work is rewriting code pointers to bare note names with a test that resolves names anywhere under the folder. [unchecked] | REPLY-DESIGNER-DESIGN-NOTES-REORG.md | 0ad169c5
+- 2026-10-01 | Design-notes move into implemented/ and evidence/ | 131 renames split the flat folder, 213 code pointers rewritten to bare names, and a permanent test now fails on any dangling note citation. [unchecked] | DESIGN-NOTES-MOVE-IMPLEMENTED.md | bd77de8e
 
 Not listed as entries: the `wireframes/` and `screenshots/` subfolders, and the three step_runs CSVs (`step_runs-2026-09-24.csv`, `step_runs-2026-09-28.csv`, `step_runs-2026-09-28-prefect-default-day.csv`).
