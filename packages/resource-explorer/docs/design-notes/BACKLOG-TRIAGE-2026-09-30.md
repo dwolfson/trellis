@@ -10,10 +10,27 @@ Read-only triage of `docs/Backlog.md` (8,972 lines on `origin/main` 7b0bb4c2; ev
 | 2. Small | 68 |
 | 3. Medium | 76 |
 | 4. Needs a design decision first | 80 |
-| 5. Stale or superseded | 21 |
-| **Total rows** | **357** |
+| 5. Stale or superseded | 22 |
+| **Total rows** | **358** |
 
-19 of the rows are the 2026-09-30 items; the section "Tonight's items" below lists them in one place, and they are marked **Tonight:** in the bucket tables. Where a Backlog section held several numbered follow-ups, each follow-up has its own row, so row count exceeds heading count. The existing `## Closed` block (about 430 lines) is summarised in one row and not re-triaged.
+20 of the rows are the 2026-09-30 items; the section "Tonight's items" below lists them in one place, and they are marked **Tonight:** in the bucket tables. Where a Backlog section held several numbered follow-ups, each follow-up has its own row, so row count exceeds heading count. The existing `## Closed` block (about 430 lines) is summarised in one row and not re-triaged.
+
+### Priority ahead of the small bucket's own order (ruled by design, 2026-09-30)
+
+Three rows from the parity inventory (`CLASSIC-VS-NEXT-PARITY-2026-09-30.md`) go into the small
+bucket ahead of everything else in it, since each is a false claim on screen or a dead control —
+not a missing feature, the same class as the hotfix-round proof-rule items already first in line:
+- The header **remove button** on a database/filesystem: calls `removeProject` for every resource
+  kind (`app.js:3277`), 404s on a non-repo kind, and on Schema Inventory specifically the header
+  renders unbound (`app.js:3402-3418`) — the button does nothing at all.
+- Two on-screen claims that are false: `curate.js:194-205` ("reachable from the resource header
+  regardless of type") and `app.js:2892` ("publish again from the Analysis pane"). Fix: each
+  should read "not built in /next yet · use Classic" until the capability actually exists.
+- The **discarded completion-time failure** on a per-analysis run — the same status-words-from-
+  proof-rows defect class as tonight's other proof-rule fixes, just found in a different surface.
+
+**Publish for every resource kind** (the largest single absent row in the parity table) is
+explicitly NOT a small item — it becomes its own slice with a gate, scoped separately.
 
 ## How to read this, and what it does not establish
 
@@ -425,6 +442,7 @@ Rows for these also appear in their bucket sections below. Bucket shown first.
 
 | Item | Source | Original wording | Superseded by |
 |---|---|---|---|
+| **Tonight:** INVENTORY-CLASSIC-TO-NEXT.md (2026-09-17) | `docs/design-notes/INVENTORY-CLASSIC-TO-NEXT.md` | A Classic-vs-/next inventory, written 2026-09-17. | Superseded by `docs/design-notes/CLASSIC-VS-NEXT-PARITY-2026-09-30.md` (branch `re/classic-vs-next-parity-inventory`, tip 05cf822d). The 2026-09-17 doc is out of date for everything shipped since (Admin, Activity, RFA drawer, Automate, Investigation, work lists, chat) — the new doc's own report says so explicitly rather than silently superseding it; **ruled by design, 2026-09-30:** the new doc formally supersedes it. |
 | Next up 9: duplicate slug-to-scope_locator maps, measured | Backlog.md L771 "9. Minor, measured-not-fixed: `_candidate_blueprints_results` and `_architecture_recovery_results` each build their own slug→scope_locator map independently" | "Measured ... 0.544s for the full call ... Not slow enough to be worth threading a shared map ... noted here as a measured fact, not acted on." | Not a work item: the entry itself records a decision not to act, with a measurement. Closed by decision rather than superseded by a commit; unsure this is "stale", suggest closing as won't-fix. Not re-measured. |
 | Deliberately closed list (measured) | Backlog.md L930 "**Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**" | "the LLM adjudicator ...; milvus site ingestion (302-loops ...); doc-kind chunking selection (0 of 20 collections ...); boilerplate stripping and version collapsing ...; misgrouped's emitter ...; Java src naming and cmd/X+pkg/X merge." | Already closed by the entry's own text, no work remaining; Milvus is also gone from the stack (migrated to pgvector per CLAUDE.md rule 9), which further moots the milvus items. Listed once for completeness; not individually verified. |
 | run_surveyor_step_task builds fresh ProjectRegistry (non-bug) | Backlog.md L990 "Left as a known, non-bug constraint, not fixed" (under L961 entry) | "run_surveyor_step_task always constructs a fresh ProjectRegistry() ... correct for a real distributed worker" | Self-declared not-a-bug; resolved by disabling orchestration in two tests, no code change pending. Nothing superseded it; close as won't-fix/documented constraint. Not independently verified in code. |
