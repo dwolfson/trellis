@@ -233,6 +233,7 @@ async function onApplySuggestion(index) {
   try {
     await createGroup(groupSlug, s.suggested_display_name, `Auto-suggested from shared GitHub org: ${s.org}`);
     for (const repoSlug of s.repo_slugs) {
+      // Explicit 'repo': suggested groups come from shared GitHub orgs, so every slug here is a repo.
       await assignGroup(repoSlug, groupSlug, 'repo');
     }
     await reload();

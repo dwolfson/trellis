@@ -29,6 +29,18 @@ export class ApiError extends Error {
   }
 }
 
+/** The resource kind is never defaulted. A helper that needs `entityType`
+ *  (or `resourceType`) throws, naming itself, when a caller omits it -- a
+ *  silent 'repo' once resolved database/filesystem slugs as repo Projects
+ *  ("Project 'X' not found") three separate times in one day. Returns the
+ *  value so it can be used inline. */
+export function requireKind(fnName, value, paramName = 'entityType') {
+  if (typeof value !== 'string' || !value) {
+    throw new Error(`${fnName}: ${paramName} is required`);
+  }
+  return value;
+}
+
 async function request(path, options = {}) {
   let res;
   try {
@@ -235,12 +247,13 @@ function _questionsPath(entityType, slug) {
  * default — do not send an empty `perspectives=` param, it is not the same
  * thing as omitting it.
  *
- * `entityType` defaults to 'repo' for every existing caller — pass the
+ * `entityType` is REQUIRED (no default; omitting it throws) — pass the
  * `apiEntityType(state.resourceType)`-translated value at every /next
  * boundary crossing, same as `getSurveyCandidates`/`runSurveyDefinition`
  * already do, so a database's 'db' never reaches here untranslated.
  */
-export function getQuestions(slug, { phase = 'scouting', perspectives = [], purposes = [], entityType = 'repo' } = {}) {
+export function getQuestions(slug, { phase = 'scouting', perspectives = [], purposes = [], entityType } = {}) {
+  requireKind('getQuestions', entityType);
   const qs = new URLSearchParams({ phase });
   const persp = [...perspectives];
   const purp = [...purposes];
@@ -262,7 +275,7 @@ export function getQuestions(slug, { phase = 'scouting', perspectives = [], purp
  * 41 catalogued questions that is the correct outcome, and inventing an
  * answer for them is exactly what this layer exists to prevent.
  *
- * `entityType` defaults to 'repo' for existing callers, same as
+ * `entityType` is REQUIRED (no default; omitting it throws), same as
  * `getQuestions()` above — pass `apiEntityType(state.resourceType)` at
  * every /next boundary crossing. Omitting it used to mean every lookup
  * silently searched the repo catalog regardless of the resource's real
@@ -271,9 +284,9 @@ export function getQuestions(slug, { phase = 'scouting', perspectives = [], purp
  * worded differently 404'd outright ("not in the catalog the answer layer
  * reads").
  */
-export const getAnswer = (slug, question, entityType = 'repo') =>
+export const getAnswer = (slug, question, entityType) =>
   get(`/api/analyses/facts/${encodeURIComponent(slug)}/answer`
-      + `?question=${encodeURIComponent(question)}&entity_type=${encodeURIComponent(entityType)}`);
+      + `?question=${encodeURIComponent(question)}&entity_type=${encodeURIComponent(requireKind('getAnswer', entityType))}`);
 
 /* ── Write paths ─────────────────────────────────────────────────────── */
 
@@ -328,7 +341,7 @@ export const getEntityDispositionHistory = (entityType, entitySlug) =>
  *  two fields do not clobber each other. 401 when anonymous: a judgement
  *  needs an author.
  *
- *  `entityType` defaults to 'repo' for existing callers — pass the
+ *  `entityType` is REQUIRED (no default; omitting it throws) — pass the
  *  `apiEntityType(state.resourceType)`-translated value for a database/
  *  filesystem, same as `getContext`/`saveContext` above. The backend route
  *  (`context.py`) is already generic (`PATCH /{entity_type}/{slug}/field`);
@@ -336,8 +349,8 @@ export const getEntityDispositionHistory = (entityType, entitySlug) =>
  *  being enriched, so a database/filesystem Enrichment save silently landed
  *  in the repo context bucket under that slug instead of its own bucket —
  *  a real write to the wrong place, not just a wrong read. */
-export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType = 'repo') =>
-  patch(`/api/context/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
+export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType) =>
+  patch(`/api/context/${encodeURIComponent(requireKind('saveEnrichmentField', entityType))}/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
 
 /* ── Documentation sources (Enrichment) ──────────────────────────────────
  * BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1, "Declare and probe".
@@ -358,16 +371,16 @@ export const removeDocSource = (entityType, slug, sourceId) =>
  * Append-only prose on a resource, with a server-stamped author. A
  * suggestion is routed by perspective or person and arrives as a work-list
  * entry for them — never a notification. */
-// `entityType` defaults to 'repo' for every existing caller — pass the
+// `entityType` is REQUIRED (no default; omitting it throws) — pass the
 // `apiEntityType(state.resourceType)`-translated value for a database/
 // filesystem, same as `getQuestions` above. The backend route was already
 // entity-generic (`/api/journal/{entity_type}/{slug}`); only this wrapper
 // was hardcoded to 'repo' (Backlog.md, "Disposition is NOT fixed here",
 // 2026-09-22).
-export const getJournal = (slug, entityType = 'repo') =>
-  get(`/api/journal/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`);
-export const writeJournal = (slug, body, suggestTo = [], entityType = 'repo') =>
-  post(`/api/journal/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
+export const getJournal = (slug, entityType) =>
+  get(`/api/journal/${encodeURIComponent(requireKind('getJournal', entityType))}/${encodeURIComponent(slug)}`);
+export const writeJournal = (slug, body, suggestTo = [], entityType) =>
+  post(`/api/journal/${encodeURIComponent(requireKind('writeJournal', entityType))}/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
 
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
@@ -487,9 +500,9 @@ export const createGroup = (slug, displayName, description = '') =>
 export const deleteGroup = (slug) =>
   request(`/api/projects/groups/${encodeURIComponent(slug)}`, { method: 'DELETE' });
 
-export const assignGroup = (slug, groupSlug, resourceType = 'repo') =>
+export const assignGroup = (slug, groupSlug, resourceType) =>
   post(`/api/projects/${encodeURIComponent(slug)}/group`,
-       { resource_type: resourceType, group_slug: groupSlug });
+       { resource_type: requireKind('assignGroup', resourceType, 'resourceType'), group_slug: groupSlug });
 
 /* ── Discovery sources ───────────────────────────────────────────────────
  *
@@ -663,7 +676,7 @@ export const getInvestigationNextSteps = (slug) =>
 /* ── Query ───────────────────────────────────────────────────────────── */
 
 /**
- * `entityType` defaults to 'repo' for existing callers, same convention as
+ * `entityType` is REQUIRED (no default; omitting it throws), same convention as
  * `getQuestions`/`getAnswer` above — pass the `apiEntityType(state.resourceType)`-
  * translated value at every /next boundary crossing. Omitting it used to mean
  * every chat/Ask turn silently compiled evidence from the repo catalog
@@ -671,11 +684,11 @@ export const getInvestigationNextSteps = (slug) =>
  * filesystem question always got repo-shaped sections (`foss_scorecard`,
  * `chaoss_metrics`, ...) and reported its real answer as a gap.
  */
-export const ask = (query, { resourceSlug, entityType = 'repo', perspectives = [], sessionId } = {}) =>
+export const ask = (query, { resourceSlug, entityType, perspectives = [], sessionId } = {}) =>
   post('/api/query/', {
     query,
     project_slug: resourceSlug || null,   // the wire key is still the old name
-    entity_type: entityType,
+    entity_type: requireKind('ask', entityType),
     perspectives: [...perspectives],
     session_id: sessionId || null,
   });
@@ -714,8 +727,8 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
  * the per-resource gaps collection. Callers should skip this call rather
  * than let it throw when `slug` is empty.
  */
-export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '', entityType = 'repo' }) =>
-  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page, entity_type: entityType });
+export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '', entityType }) =>
+  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page, entity_type: requireKind('submitAnswerFeedback', entityType) });
 
 /**
  * SSE variant of `ask()` — POST /api/query/stream, yielding one event per
@@ -733,7 +746,8 @@ export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', se
  * old browser, a proxy that buffers SSE) should catch and retry with the
  * plain `ask()` above rather than this function pretending to stream.
  */
-export async function* askStream(query, { resourceSlug, entityType = 'repo', perspectives = [], sessionId } = {}) {
+export async function* askStream(query, { resourceSlug, entityType, perspectives = [], sessionId } = {}) {
+  requireKind('askStream', entityType);
   const res = await fetch('/api/query/stream', {
     method: 'POST',
     headers: JSON_HEADERS,
@@ -829,8 +843,8 @@ export const getChart = (slug, kind) =>
  * render those differently — a full scan under a stage heading is the same
  * lie, one layer deeper.
  */
-export const getSurveyCandidates = (slug, { entityType = 'repo', phase = '' } = {}) =>
-  get(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/candidates${
+export const getSurveyCandidates = (slug, { entityType, phase = '' } = {}) =>
+  get(`/api/survey-definitions/${encodeURIComponent(requireKind('getSurveyCandidates', entityType))}/${encodeURIComponent(slug)}/candidates${
     phase ? `?phase=${encodeURIComponent(phase)}` : ''}`);
 
 /* ── Egeria-native surveys (BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md) ─────────
@@ -840,14 +854,14 @@ export const getSurveyCandidates = (slug, { entityType = 'repo', phase = '' } = 
  * registry read only when nothing is in flight. */
 const nativePath = (slug, entityType) =>
   `/api/native-surveys/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`;
-export const getNativeSurveys = (slug, { entityType = 'database' } = {}) =>
-  get(nativePath(slug, entityType));
-export const runNativeSurvey = (slug, processQualifiedName, { entityType = 'database' } = {}) =>
-  post(`${nativePath(slug, entityType)}/run`, { process_qualified_name: processQualifiedName });
-export const refreshNativeSurveys = (slug, { entityType = 'database' } = {}) =>
-  post(`${nativePath(slug, entityType)}/refresh`);
-export const getNativeSurveyReport = (slug, reportGuid, { entityType = 'database' } = {}) =>
-  get(`${nativePath(slug, entityType)}/reports/${encodeURIComponent(reportGuid)}`);
+export const getNativeSurveys = (slug, { entityType } = {}) =>
+  get(nativePath(slug, requireKind('getNativeSurveys', entityType)));
+export const runNativeSurvey = (slug, processQualifiedName, { entityType } = {}) =>
+  post(`${nativePath(slug, requireKind('runNativeSurvey', entityType))}/run`, { process_qualified_name: processQualifiedName });
+export const refreshNativeSurveys = (slug, { entityType } = {}) =>
+  post(`${nativePath(slug, requireKind('refreshNativeSurveys', entityType))}/refresh`);
+export const getNativeSurveyReport = (slug, reportGuid, { entityType } = {}) =>
+  get(`${nativePath(slug, requireKind('getNativeSurveyReport', entityType))}/reports/${encodeURIComponent(reportGuid)}`);
 
 /** Every authored Survey Definition, catalog-wide -- step_count/fetch_steps
  *  live here, not on a candidates row: the candidates route asks "which
@@ -857,8 +871,8 @@ export const getNativeSurveyReport = (slug, reportGuid, { entityType = 'database
 export const listSurveyDefinitions = () => cached('survey-definitions', () => get('/api/survey-definitions/definitions'));
 
 /** Launch one Survey Definition. `ref` is its qualified_name or guid. */
-export const runSurveyDefinition = (slug, ref, { entityType = 'repo' } = {}) =>
-  post(`/api/survey-definitions/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/run`,
+export const runSurveyDefinition = (slug, ref, { entityType } = {}) =>
+  post(`/api/survey-definitions/${encodeURIComponent(requireKind('runSurveyDefinition', entityType))}/${encodeURIComponent(slug)}/run`,
        { survey_definition_ref: ref });
 
 /**
@@ -881,7 +895,7 @@ function _surveyResultsPath(entityType, slug) {
   return `/api/projects/${enc}/survey-results`;
 }
 
-/** `entityType` defaults to 'repo' for every existing caller — pass
+/** `entityType` is REQUIRED (no default; omitting it throws) — pass
  *  `apiEntityType(state.resourceType)`-translated value at every /next
  *  boundary crossing, same as `getQuestions` above.
  *
@@ -889,7 +903,8 @@ function _surveyResultsPath(entityType, slug) {
  *  scope the read to exactly one board, so the By-analysis pane can fetch
  *  boards one at a time and fill cards as each lands instead of waiting on
  *  the full sweep — the same call this always was, one board at a time. */
-export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false, entityType = 'repo', boardId = '' } = {}) => {
+export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false, entityType, boardId = '' } = {}) => {
+  requireKind('getSurveyDashboards', entityType);
   const qs = new URLSearchParams();
   if (stage) qs.set('stage', stage);
   if (includeEmpty) qs.set('include_empty', 'true');
@@ -904,7 +919,8 @@ export const getSurveyDashboards = (slug, stage = '', { includeEmpty = false, en
  *  `getSurveyDashboards(..., { boardId })` read, so the contents board can
  *  paint immediately. See `workflows.analysis.list_survey_result_boards`'s
  *  docstring. */
-export const listSurveyResultBoards = (slug, stage = '', { entityType = 'repo' } = {}) => {
+export const listSurveyResultBoards = (slug, stage = '', { entityType } = {}) => {
+  requireKind('listSurveyResultBoards', entityType);
   const qs = new URLSearchParams();
   if (stage) qs.set('stage', stage);
   const q = qs.toString();
@@ -931,9 +947,11 @@ export const getSurveySummary = (slug, stage = '') =>
  *  generic route exists, but it is NOT sent — there is nowhere to send it —
  *  and this still always hits the repo-only path. Needs its own scoping
  *  pass: a per-type results-history reader, not just a routing fix. */
-export const getAnalysisTrend = (slug, analysisId, metric = '', entityType = 'repo') => // eslint-disable-line no-unused-vars
-  get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
-    encodeURIComponent(analysisId)}/trend${metric ? `?metric=${encodeURIComponent(metric)}` : ''}`);
+export const getAnalysisTrend = (slug, analysisId, metric = '', entityType) => {
+  const qs = new URLSearchParams({ entity_type: requireKind('getAnalysisTrend', entityType) });
+  if (metric) qs.set('metric', metric);
+  return get(`/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/trend?${qs}`);
+};
 
 /**
  * The fact behind a number (stage-page round, point 10): not the members a
@@ -942,7 +960,7 @@ export const getAnalysisTrend = (slug, analysisId, metric = '', entityType = 're
  * where a value opens (a members list, or nothing to open). One call fills
  * both the in-pane table and the "the numbers behind this N" link's count.
  */
-// `entityType` defaults to 'repo' for existing callers — pass
+// `entityType` is REQUIRED (no default; omitting it throws) — pass
 // `apiEntityType(state.resourceType)`-translated value at every /next
 // boundary crossing, same as `getAnswer`/`ask`/`askStream` above. Omitting
 // it used to mean this always 404'd for a database/filesystem slug (the
@@ -957,22 +975,22 @@ export const getAnalysisTrend = (slug, analysisId, metric = '', entityType = 're
 // found live, owner's question 2026-09-26: "Which schemas carry the
 // data...?"'s "numbers behind this" showed the same flat table/column/row
 // counts "How big is this database" does, un-broken-down by schema.
-export const getMeasurements = (slug, analysisId, entityType = 'repo', level = 'resource') =>
+export const getMeasurements = (slug, analysisId, entityType, level = 'resource') =>
   get(`/api/projects/${encodeURIComponent(slug)}/analyses/${
-    encodeURIComponent(analysisId)}/measurements?entity_type=${encodeURIComponent(entityType)}&level=${encodeURIComponent(level)}`);
+    encodeURIComponent(analysisId)}/measurements?entity_type=${encodeURIComponent(requireKind('getMeasurements', entityType))}&level=${encodeURIComponent(level)}`);
 
 /** Every analysis this repo could run — the row plus what feeds its popover
  *  (stage, declared run time, availability, perspectives, ruleset link, the
  *  full description) in one call, so a description popover needs no second
  *  fetch (stage-page round, points 1-3).
  *
- *  `entityType` defaults to 'repo', same reasoning and same fix date as
+ *  `entityType` is REQUIRED (no default), same reasoning and same fix date as
  *  `getMeasurements` above. Was this Tier 1 pass's own "found, not fixed"
  *  item — superseded here by `re/measurements-feedback-fix` (PR #237, merged
  *  ahead of this branch), which built the real `entity_type` dispatch into
  *  `build_analyses_index()` itself rather than routing per entity type. */
-export const getAnalysesIndex = (slug, stage = '', entityType = 'repo') =>
-  get(`/api/projects/${encodeURIComponent(slug)}/analyses-index?entity_type=${encodeURIComponent(entityType)}${
+export const getAnalysesIndex = (slug, stage = '', entityType) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/analyses-index?entity_type=${encodeURIComponent(requireKind('getAnalysesIndex', entityType))}${
     stage ? `&stage=${encodeURIComponent(stage)}` : ''}`);
 
 /** Latest structured results for one analysis -- a raw dict whose shape
@@ -1053,8 +1071,8 @@ export function isShapeCompatible(targetShape, kind) {
  *  path. `members.py`'s member model may or may not generalize cleanly to a
  *  database's rows/tables or a filesystem's files; that question is exactly
  *  why this needs its own scoping pass rather than being built here. */
-export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}, entityType = 'repo') => { // eslint-disable-line no-unused-vars
-  const qs = new URLSearchParams({ scope, limit: String(limit) });
+export const getMembers = (slug, analysisId, { metric = '', scope = 'public', limit = 200 } = {}, entityType) => {
+  const qs = new URLSearchParams({ scope, limit: String(limit), entity_type: requireKind('getMembers', entityType) });
   if (metric) qs.set('metric', metric);
   return get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}?${qs}`);
 };
@@ -1064,13 +1082,13 @@ export const getMembers = (slug, analysisId, { metric = '', scope = 'public', li
  *  must), journal (worth knowing). `members` is a snapshot of names, never
  *  a query. 401 when anonymous. See `getMembers`'s found-not-fixed note
  *  above — same gap, same reason. */
-export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }, entityType = 'repo') => // eslint-disable-line no-unused-vars
-  post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote`,
+export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }, entityType) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote?entity_type=${encodeURIComponent(requireKind('promoteMembers', entityType))}`,
     { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo });
 
-export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}, entityType = 'repo') => // eslint-disable-line no-unused-vars
+export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}, entityType) =>
   get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
-    new URLSearchParams({ key, scope, limit: String(limit) })}`);
+    new URLSearchParams({ key, scope, limit: String(limit), entity_type: requireKind('getMemberChildren', entityType) })}`);
 
 export const getResourceRuns = (slug, limit = 40) =>
   get(`/api/activity/?entity_slug=${encodeURIComponent(slug)}&limit=${limit}`);
@@ -1086,10 +1104,10 @@ export const listWorkLists = (investigation = '') =>
 
 export const getWorkList = (slug) => get(`/api/work-lists/${encodeURIComponent(slug)}`);
 
-export const createWorkList = (displayName, entitySlugs, { investigation = '', rationale = '', description = '', entityType = 'repo' } = {}) =>
+export const createWorkList = (displayName, entitySlugs, { investigation = '', rationale = '', description = '', entityType } = {}) =>
   post('/api/work-lists/', {
     display_name: displayName, entity_slugs: [...entitySlugs],
-    investigation, rationale, description, entity_type: entityType,
+    investigation, rationale, description, entity_type: requireKind('createWorkList', entityType),
   });
 
 export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
@@ -1117,27 +1135,16 @@ export const publishWorkList = (slug) =>
 /** `entityType` only matters when `entitySlugs` is given with no
  *  `workListSlug` — the server derives entity_type from the work list's own
  *  column when one is named, since a work list is homogeneous by
- *  construction (`WorkListCreate.entity_type`); it defaults to 'repo'
- *  otherwise, same as `BatchRunRequest.entity_type`. */
-export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '', entityType = 'repo') =>
+ *  construction (`WorkListCreate.entity_type`); the caller must still pass it (no default). */
+export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '', entityType) =>
   post('/api/work-lists/runs/batch', {
     analysis_id: analysisId, entity_slugs: [...entitySlugs], work_list_slug: workListSlug,
-    entity_type: entityType,
+    entity_type: requireKind('enqueueBatch', entityType),
   });
 
 /** Progress for one batch, derived from the run rows on every read. */
 export const getBatchProgress = (setId) =>
   get(`/api/work-lists/runs/sets/${encodeURIComponent(setId)}`);
-
-/** Every fact known about ONE resource, already judged. `entityType`
- *  defaults to 'repo' for existing callers — pass the
- *  `apiEntityType(state.resourceType)`-translated value for a database/
- *  filesystem work-list member (worklist.js already carries `wl.entity_type`
- *  per member), same convention as `getQuestions`/`getAnswer` above. Omitting
- *  it used to mean the backend always built its FactLayer against the repo's
- *  own maps regardless of the resource's real type. */
-export const getResourceFacts = (slug, entityType = 'repo') =>
-  get(`/api/analyses/facts/${encodeURIComponent(slug)}?entity_type=${encodeURIComponent(entityType)}`);
 
 /**
  * Facts for SEVERAL resources, in one call.
@@ -1164,18 +1171,18 @@ export const getResourceFacts = (slug, entityType = 'repo') =>
  * It cannot tell `measured` from `partial`; the response says so. Render the
  * difference as not-yet-read, never as a state nobody established.
  */
-/** `entityType` defaults to 'repo' — a work-list comparison grid mixing
+/** `entityType` is REQUIRED — a work-list comparison grid mixing
  *  resource types must call this once per entity type (the route builds one
  *  `FactLayer` for the whole batch), the same constraint `getMeasurements`'s
  *  fix already documented for the per-resource measurements route. */
-export const getBulkStates = (slugs, analysisIds = [], entityType = 'repo') => {
-  const qs = new URLSearchParams({ slugs: [...slugs].join(','), states_only: 'true', entity_type: entityType });
+export const getBulkStates = (slugs, analysisIds = [], entityType) => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(','), states_only: 'true', entity_type: requireKind('getBulkStates', entityType) });
   if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
   return get(`/api/analyses/facts?${qs}`);
 };
 
-export const getBulkFacts = (slugs, analysisIds = [], entityType = 'repo') => {
-  const qs = new URLSearchParams({ slugs: [...slugs].join(','), entity_type: entityType });
+export const getBulkFacts = (slugs, analysisIds = [], entityType) => {
+  const qs = new URLSearchParams({ slugs: [...slugs].join(','), entity_type: requireKind('getBulkFacts', entityType) });
   if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
   return get(`/api/analyses/facts?${qs}`);
 };
@@ -1206,14 +1213,14 @@ function _runAnalysisPath(entityType, slug, analysisId) {
   return `/api/projects/${enc}/analyses/${aid}/run`;
 }
 
-/** `entityType` defaults to 'repo' for every existing caller — pass
+/** `entityType` is REQUIRED (no default; omitting it throws) — pass
  *  `apiEntityType(state.resourceType)` at every /next boundary crossing,
  *  same convention as `getQuestions` above. Before this, EVERY caller
  *  (including a database/filesystem's own "Run"/"re-run" button on a
  *  Questions-checklist row) posted to the repo-only route regardless of the
  *  resource's real type. */
-export const runAnalysis = (slug, analysisId, entityType = 'repo') =>
-  post(_runAnalysisPath(entityType, slug, analysisId));
+export const runAnalysis = (slug, analysisId, entityType) =>
+  post(_runAnalysisPath(requireKind('runAnalysis', entityType), slug, analysisId));
 
 /* ── Prerequisite proposals (design §17.1, web/routes/prerequisites.py) ───
  *
@@ -1376,13 +1383,13 @@ export const saveReport = (slug, analysisId, { question = '', metric = '', membe
        { question, metric, members, facet, name, scope, corrects });
 
 /** Both kinds, newest first, reports carrying out_of_date. `entityType`
- *  defaults to 'repo' — pass the `apiEntityType()`-translated value for a
+ *  is REQUIRED — pass the `apiEntityType()`-translated value for a
  *  database/filesystem, routed to `list_entity_records`'s sibling endpoint
  *  (Backlog.md, "Disposition is NOT fixed here", 2026-09-22); the repo path
  *  is unchanged. `recordExportHref`/`getRecord` (a bare GET by record id)
  *  needed no sibling — that route never checked entity_type at all. */
-export const listRecords = (slug, entityType = 'repo') =>
-  entityType === 'repo'
+export const listRecords = (slug, entityType) =>
+  requireKind('listRecords', entityType) === 'repo'
     ? get(`/api/projects/${encodeURIComponent(slug)}/records`)
     : get(`/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records`);
 export const recordExportHref = (slug, id, fmt) =>
@@ -1391,9 +1398,9 @@ export const recordExportHref = (slug, id, fmt) =>
 /** The three acts on a report: work_list | rfa | journal. `rows` null = the
  *  whole report. The server acts on the stored snapshot. `entityType` as
  *  above. */
-export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}, entityType = 'repo') =>
+export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}, entityType) =>
   post(
-    entityType === 'repo'
+    requireKind('actOnRecord', entityType) === 'repo'
       ? `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`
       : `/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
     { action, rows, name, suggest_to: suggestTo, journal_id: journalId },
@@ -1530,8 +1537,8 @@ export const getAnnotationTypeUsage = (typeName) =>
 /** The full, unscoped Question catalog — every authored question with its
  *  funnel stage, perspectives and answering mechanism. Includes retired
  *  entries (flagged via `retired`, never hidden — see question_catalog.js). */
-export const listQuestionCatalog = (resourceType = 'repo') =>
-  get(`/api/analyses/question-catalog?resource_type=${encodeURIComponent(resourceType)}`);
+export const listQuestionCatalog = (resourceType) =>
+  get(`/api/analyses/question-catalog?resource_type=${encodeURIComponent(requireKind('listQuestionCatalog', resourceType, 'resourceType'))}`);
 
 /** Append-only writes (SPEC-ADMIN-THE-FOUR-GAPS.md §4, project owner
  *  decision 2026-09-20): add a new question, or retire an existing one.

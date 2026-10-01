@@ -181,6 +181,7 @@ import {
   getEnrichmentAnalysesMap,
   getJournal,
   questionKey,
+  requireKind,
   writeJournal,
   saveQuestionAnswer,
 } from '/static/re-api.js';
@@ -764,7 +765,7 @@ function renderTopBar() {
   // only) attribute an answer-feedback POST to the right resource type
   // without importing state itself. Kept alongside the slug it already reads
   // off this same element so the two can never fall out of sync.
-  $('scope-slug').dataset.entityType = apiEntityType(state.resourceType) || 'repo';
+  $('scope-slug').dataset.entityType = requireKind('renderTopBar', apiEntityType(state.resourceType));
   const inv = state.investigations.find((i) => i.slug === state.investigation);
   $('investigation-name').textContent = state.investigation
     ? (inv?.display_name || state.investigation)
@@ -2570,7 +2571,7 @@ async function loadWorkingSet() {
   try {
     const members = await listInvestigationMembers(state.investigation);
     state.workingSet = new Set(
-      (members || []).filter((m) => (m.entity_type || 'repo') === 'repo')
+      (members || []).filter((m) => requireKind('loadWorkingSet', m.entity_type, 'member.entity_type') === 'repo')
                      .map((m) => m.entity_slug));
   } catch {
     // Unknown, and kept unknown: an empty working set and an unreadable one
@@ -3082,7 +3083,7 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
   const finish = async (outcome, ids) => {
     const runIds = [];
     for (const id of ids) {
-      try { const started = await runAnalysis(p.slug, id); if (started?.run_id) runIds.push(started.run_id); }
+      try { const started = await runAnalysis(p.slug, id, 'repo' /* the depth offer is repo-only: renderDepthOffer gates on github_url */); if (started?.run_id) runIds.push(started.run_id); }
       catch (err) { status.innerHTML = `<span class="text-accent-ink">${esc(id)}: ${esc(err.message)}</span>`; }
     }
     try {
@@ -3118,7 +3119,8 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
 // (the header popover, and the pane before it took database/filesystem)
 // already uses. A database/filesystem caller passes both explicitly — its
 // slug IS its stable identity, unlike a repo's github_url-keyed write path.
-function wireDispositionPicker(host, p, { note, onSet }, entityType = 'repo', entitySlug = '') {
+function wireDispositionPicker(host, p, { note, onSet }, entityType, entitySlug = '') {
+  requireKind('wireDispositionPicker', entityType);
   const commit = async (value, reason = '') => {
     note('Saving…');
     try {
@@ -3678,7 +3680,8 @@ async function loadDispositionPane() {
  *  thirty-two-row table fights. A catalogue record shows its steps inline
  *  as Curate draws them; a report shows its header sentence. Same row
  *  grammar, same date, same author (REPORT-RECORD-AND-TWO-CALLS C4). */
-async function renderRecords(slug, entityType = 'repo') {
+async function renderRecords(slug, entityType) {
+  requireKind('renderRecords', entityType);
   const host = $('records');
   if (!host) return;
   let recs;
@@ -3769,7 +3772,8 @@ function recordUsesHtml(r) {
   return uses.length ? `<div class="mt-s1">${uses.join('')}</div>` : '';
 }
 
-function wireRecordActs(host, slug, recs, entityType = 'repo') {
+function wireRecordActs(host, slug, recs, entityType) {
+  requireKind('wireRecordActs', entityType);
   host.querySelectorAll('[data-record]').forEach((box) => {
     const id = box.dataset.record;
     const rec = recs.find((x) => x.id === id);
@@ -3830,7 +3834,8 @@ function wireRecordActs(host, slug, recs, entityType = 'repo') {
   });
 }
 
-function renderJournalWrite(slug, entityType = 'repo') {
+function renderJournalWrite(slug, entityType) {
+  requireKind('renderJournalWrite', entityType);
   const host = $('journal-write');
   if (!host) return;
   const who = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
@@ -3894,7 +3899,8 @@ function renderJournalWrite(slug, entityType = 'repo') {
   });
 }
 
-async function renderJournalEntries(slug, entityType = 'repo') {
+async function renderJournalEntries(slug, entityType) {
+  requireKind('renderJournalEntries', entityType);
   const host = $('journal-entries');
   if (!host) return;
   let data;
@@ -4938,7 +4944,7 @@ async function historyHtml(slug, analysisId, metric = '') {
 
   let series;
   try {
-    const res = await getAnalysisTrend(slug, analysisId, metric);
+    const res = await getAnalysisTrend(slug, analysisId, metric, apiEntityType(state.resourceType));
     series = (res.runs || res.series || []).filter((r) => r && r.surveyed_at);
   } catch (err) {
     // A 400 here is an ANSWER, not a failure: the endpoint says this analysis
@@ -4996,7 +5002,7 @@ async function historyHtml(slug, analysisId, metric = '') {
 async function deltaFor(slug, analysisId, metric = '') {
   if (trendSupport(analysisId) === 'not_tracked') return '';
   try {
-    const res = await getAnalysisTrend(slug, analysisId, metric);
+    const res = await getAnalysisTrend(slug, analysisId, metric, apiEntityType(state.resourceType));
     const series = (res.runs || res.series || []).filter((r) => r && r.surveyed_at);
     if (series.length < 2) return series.length === 1 ? 'first measurement' : '';
     series.sort((a, b) => String(a.surveyed_at).localeCompare(String(b.surveyed_at)));
@@ -5561,7 +5567,7 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
         const out2 = await promoteMembers(slug, analysisId, {
           action: b.dataset.promote, metric: metric || data.metric || '', members, total, facet: facetLabel(), runAt,
           name: nameEl.value.trim(),
-        });
+        }, apiEntityType(state.resourceType));
         // Say where it went, not "sent".
         const where = out2.work_list ? `work list ${out2.work_list}` : out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
         status.innerHTML = `<span class="text-state-ok-on-dark">→ ${esc(where)}</span>`;
@@ -5583,7 +5589,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
   railFrame('Members', slug, `<div class="text-caps text-chrome-muted">Reading the members of ${esc(title || analysisId)}…</div>`, { sub: 'loading' });
   let data;
   try {
-    data = await getMembers(slug, analysisId, { metric, scope });
+    data = await getMembers(slug, analysisId, { metric, scope }, apiEntityType(state.resourceType));
   } catch (err) {
     if (railStale(ticket)) return;   // a later click owns the slot now
     // A 400 is an ANSWER ("members aren't built for databases yet"), not a
@@ -5668,7 +5674,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     if (li.querySelector('ul')) { li.querySelector('ul').remove(); return; }
     b.textContent = `${b.textContent} …`;
     let rows;
-    try { rows = (await getMemberChildren(slug, analysisId, b.dataset.children, { scope })).members || []; }
+    try { rows = (await getMemberChildren(slug, analysisId, b.dataset.children, { scope }, apiEntityType(state.resourceType))).members || []; }
     catch (err) { rows = [{ name: `could not read: ${err.message}`, detail: '' }]; }
     b.textContent = b.textContent.replace(/ …$/, '');
     const ul = document.createElement('ul');
@@ -7846,7 +7852,7 @@ async function openNotifyDialog(entry) {
   // never blocks the dialog on this fetch failing.
   let namesById = {};
   try {
-    const idx = await getAnalysesIndex(slug);
+    const idx = await getAnalysesIndex(slug, '', apiEntityType(state.resourceType));
     namesById = Object.fromEntries(
       (idx.analyses || []).map((r) => [r.analysis_id, r.name || r.analysis_id]));
   } catch { /* names are a nicety; the ids alone still work */ }

@@ -294,15 +294,15 @@ class TestReApiAndWorklistGrowEntityTypeSupport:
         start = src.index("export const createWorkList = ")
         end = src.index(";", start)
         body = src[start:end]
-        assert "entityType = 'repo'" in body
-        assert "entity_type: entityType" in body
+        assert "entityType = 'repo'" not in body   # required, never defaulted
+        assert "entity_type: requireKind('createWorkList', entityType)" in body
 
     def test_save_as_work_list_forwards_entity_type(self):
         src = _worklist()
         start = src.index("export async function saveAsWorkList(")
         end = src.index("\n}", start)
         body = src[start:end]
-        assert "entityType = 'repo'" in body
+        assert "entityType = 'repo'" not in body   # required, never defaulted
         assert "entityType" in body[body.index("createWorkList("):]
 
 
