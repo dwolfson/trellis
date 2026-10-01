@@ -76,6 +76,45 @@ question is the first one, as a person experiences it.
    person explicitly exits it), or should navigating to a stage — especially
    a frame stage like Investigation — close an open work list first?
 
+## Addendum (2026-09-30): the investigation page also carries the ask
+
+Added after the owner's decision the same day
+(`DESIGN-FIND-AND-INTEGRATE-PURPOSES-AND-THE-DATA-LENS.md`). Two purposes
+join the list, **Find** and **Integrate**, and an investigation can now
+carry **a specification of what it is looking for**: a *data lens*,
+Egeria's DataLens, with named subject terms. Nothing on screen holds that
+today. Since this ask is already about what the investigation page is,
+these belong in the same reply rather than a second round. Three more
+questions; answer them with the five above.
+
+6. **"What we're looking for" on the investigation page.** The data lens is
+   a set of dimensions (subject terms, data classes, location, organisation,
+   time range, grain, currency, quality, terms of use), each holding a
+   literal, or a reference to an Egeria element, or nothing. Each row is
+   signed (who declared it, when) and says whether it is a literal or a
+   reference. Where does this section sit relative to the purposes, the
+   scope (the working set of §1), and the verdicts? The Context tab's
+   existing "declare it on the investigation ›" link (E1) will point here.
+   Keep the word **data lens**; `curation-lenses-design.md` already uses
+   bare "lens" for a cut over recovered architecture.
+7. **A candidate's fit, as a row.** Under Find, each resource in scope is
+   measured against the data lens one dimension at a time, with four states
+   kept distinct: fits, does not fit, could not check (the resource's own
+   input was not established), not measured (no reader exists for this
+   dimension on this kind). The headline is a count, "matched on 4 of 6
+   dimensions · 2 not measured", never a score. How does a ranked list of
+   candidates read with that headline, and where do the verdict controls
+   (adopt, archive, ignore) sit beside it? The honesty rule here is that two
+   strong dimensions must never hide four silent ones.
+8. **A question about a pair.** Integrate's questions are about two
+   resources ("do these share identifiers?", "are their grains
+   compatible?"), rendered once per pair in scope, each with a
+   precondition: both resources must have the same analyses run to
+   comparable depth, else the row reads "can't compare yet: *X* lacks column
+   profiles" and names what to run. How is a pair question drawn on the
+   investigation page so it reads as one row about two things, and not as a
+   question about either one?
+
 ## Constraints
 
 The data model does not change for this: one `working_sets` table, an
