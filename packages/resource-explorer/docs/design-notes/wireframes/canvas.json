@@ -55,6 +55,10 @@
   {
    "id": "page-14",
    "name": "Enrichment: the Context tab"
+  },
+  {
+   "id": "page-15",
+   "name": "Work lists and scope"
   }
  ],
  "artboards": [
@@ -250,6 +254,22 @@
    "w": 1400,
    "h": 2460,
    "page": "page-14"
+  },
+  {
+   "file": "WorkListsAndScope.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 1540,
+   "page": "page-15"
+  },
+  {
+   "file": "InvestigationLensFitPairs.dc.html",
+   "x": 0,
+   "y": 1640,
+   "w": 1560,
+   "h": 2120,
+   "page": "page-15"
   }
  ],
  "annotations": [
@@ -380,10 +400,18 @@
    "w": 300,
    "page": "page-14",
    "text": "Reply to ASK-DESIGNER-ENRICHMENT-STAGE-IA, read against main at 3d078072 and PR #348.\n\nEnrichment opens on a new Context tab: everything a person supplied, signed and dated, each row saying what it feeds. No separate 'What it changed' tab \u2014 cause and effect on one line.\n\nNo analysis in the catalog has intent: enrichment, so Survey & analyses is empty by construction; it stays, and becomes the map of which analyses elsewhere read what is supplied here.\n\nA survey may propose only an observation, and only when it measured the same fact the field asks for. Licence yes; last backup no (archiving isn't a tested restore). Judgements are never proposed.\n\nThe lens belongs to the investigation, not the resource.\n\nPrerequisite: answers to the human questions carry no author and are entered via window.prompt()."
+  },
+  {
+   "id": "worklists-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-15",
+   "text": "Reply to ASK-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS (#354), read against main at 8c6f1845.\n\nNot one mechanism: an investigation's scope is a Folio (working_sets); a work list is a separate table (work_lists), one resource type, published as a WorkingSet.\n\n'Work list' names four things: the bench, its shortlists, a one-resource list minted by 'add to work list' on reports and member lists (the owner's trigger), and the suggested-to-* inboxes.\n\nRuling: investigation = why; scope = which (any type; 'Members' becomes 'Scope'); work list = the bench only. 'Working set' never on screen.\n\nTwo actions on the list: add to <investigation>, start an investigation from this list. The list stays, linked, and says '7 of 9 in scope' live.\n\nThe investigation page carries the grid, one per resource type; a scope narrows by verdict, a list by shortlist.\n\nQuestions 5-8 (addendum, against fffcc3a0), lower artboard:\n5. A stage click: run stages keep the list and re-scope its questions; Investigation, Understanding and Automate close it into 'back to'; Investigation with a linked list opens that investigation.\n6. The data lens sits between purposes and scope; rows signed, literal-or-reference in words; undeclared dimensions on one line.\n7. Fit row = one equal-width cell per declared dimension. Fits \u2713, doesn't fit \u2205 (not \u2715), couldn't check ?, no reader yet \u25cc. Headline counts sum to the declared number. Verdicts are the existing dispositions; 'archive' is a finding, not a verdict.\n8. Pair questions in their own 'Between resources' section, one row per pair, both names bracketed; parity per question."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-14"
+  "page": "page-15"
  }
 }
