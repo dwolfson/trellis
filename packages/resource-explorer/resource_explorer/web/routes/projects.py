@@ -1093,21 +1093,74 @@ async def get_analysis_results(slug: str, analysis_id: str, depth: str | None = 
     return result
 
 
+#: Resource kinds a route can be asked about, and the plural noun the
+#: "not built yet" sentences use. A kind outside this dict is a 400 (the
+#: caller named something that is not a resource kind at all).
+_KIND_PLURAL = {"repo": "repositories", "database": "databases", "filesystem": "filesystems"}
+_KIND_NOUN = {"repo": "Project", "database": "Database", "filesystem": "Filesystem"}
+
+
+def _require_known_kind(entity_type: str) -> None:
+    if entity_type not in _KIND_PLURAL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown resource kind '{entity_type}' — expected one of {sorted(_KIND_PLURAL)}.",
+        )
+
+
+def _require_repo_built(entity_type: str, what: str) -> None:
+    """The honest 400 for a route whose only built readers are repository ones.
+
+    `what` is the subject of the sentence ("Members", "Member children",
+    "Promoting members", ...). Raised BEFORE auth (401) and validation (422)
+    so a request that can never work says so whoever asks. 400, not 404: the
+    resource may well exist; what is missing is the capability, and "not
+    found" would claim the opposite. The wording is "not built yet", not
+    "repository-only": members are a generic idea (a database's tables are
+    its member level) that only has repository readers today."""
+    _require_known_kind(entity_type)
+    if entity_type != "repo":
+        verb = "isn't" if what.endswith("members") and what.startswith("Promoting") else "aren't"
+        raise HTTPException(
+            status_code=400,
+            detail=f"{what} {verb} built for {_KIND_PLURAL[entity_type]} yet; "
+                   "today they list repository findings "
+                   "(advisories, dependencies, symbols, components).",
+        )
+
+
+def _resolve_resource(registry, entity_type: str, slug: str):
+    """Look the slug up as ITS kind (never assume repo); 404 names the kind."""
+    _require_known_kind(entity_type)
+    lookup = {
+        "repo": registry.get,
+        "database": registry.get_database,
+        "filesystem": registry.get_filesystem,
+    }[entity_type]
+    found = lookup(slug)
+    if not found:
+        raise HTTPException(status_code=404, detail=f"{_KIND_NOUN[entity_type]} '{slug}' not found")
+    return found
+
+
 @router.get("/{slug}/analyses/{analysis_id}/trend")
-async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
-    """Raw JSON trend data for one repo analysis — {runs: [{surveyed_at,
+async def get_analysis_trend(slug: str, analysis_id: str, entity_type: str = "repo") -> dict:
+    """Raw JSON trend data for one analysis — {runs: [{surveyed_at,
     value, ...}, ...]}, matching the existing survey_history endpoint's
     raw-JSON-not-Plotly-figure convention (D6) rather than building a new
-    server-side Plotly figure per analysis type."""
+    server-side Plotly figure per analysis type.
+
+    Resolves the slug as `entity_type`'s own kind and reads that kind's
+    results map. Database and filesystem maps exist but carry no trend
+    readers yet, so they answer 400 "not built yet" naming the kind — never
+    a "Project not found" for a resource that is simply not a repo."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_RESULTS_MAP
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
     registry = ProjectRegistry()
-    project = registry.get(slug)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    _resolve_resource(registry, entity_type, slug)
 
-    entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+    entry = get_adapter(entity_type).analysis_results_map().get(analysis_id)
     if not entry:
         raise HTTPException(
             status_code=400,
@@ -1115,6 +1168,12 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
                    "either it's scouting-tier (see Scouting instead) or an unknown id.",
         )
     _, trend_reader = entry
+    if trend_reader is None and entity_type != "repo":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Trend history isn't built for {_KIND_PLURAL[entity_type]} yet; "
+                   "today it covers repository analyses.",
+        )
     if trend_reader is None:
         # e.g. license_classification — a single current-state classification,
         # not a repeated-check story (license rarely changes), so it was
@@ -1618,7 +1677,7 @@ async def get_analyses_index(slug: str, entity_type: str = "repo") -> dict:
 
 @router.get("/{slug}/members/{analysis_id}")
 async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str = "public",
-                      limit: int = 200) -> dict:
+                      limit: int = 200, entity_type: str = "repo") -> dict:
     """The things a count counted — see resource_explorer/members.py.
 
     `scope` is `public` or `all`; the response says whether it was honoured,
@@ -1629,6 +1688,7 @@ async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str 
     from resource_explorer.members import members_for
     from resource_explorer.registry import ProjectRegistry
 
+    _require_repo_built(entity_type, "Members")
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
@@ -1638,12 +1698,13 @@ async def get_members(slug: str, analysis_id: str, metric: str = "", scope: str 
 
 @router.get("/{slug}/members/{analysis_id}/children")
 async def get_member_children(slug: str, analysis_id: str, key: str, scope: str = "public",
-                              limit: int = 200) -> dict:
+                              limit: int = 200, entity_type: str = "repo") -> dict:
     """One level down a member tree. `key` is opaque — whatever the parent
     row's `children_key` said."""
     from resource_explorer.members import children_for
     from resource_explorer.registry import ProjectRegistry
 
+    _require_repo_built(entity_type, "Member children")
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
@@ -1665,7 +1726,8 @@ class PromoteSelection(BaseModel):
 
 
 @router.post("/{slug}/members/{analysis_id}/promote")
-def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request: Request) -> dict:
+def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request: Request,
+                    entity_type: str = "repo") -> dict:
     """Promote a member-list selection: to a work list (I will deal with
     this), an RFA (someone must), or the journal (worth knowing). One
     provenance line, composed here, travels with all three. See the
@@ -1681,6 +1743,10 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.work_lists import WorkLists
 
+    # Kind first: before 401 and 422, so an anonymous caller on a database
+    # is told it is not built, not asked to sign in for something that
+    # could never work.
+    _require_repo_built(entity_type, "Promoting members")
     user = get_current_user(request)
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
     if not author:

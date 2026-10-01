@@ -5586,6 +5586,12 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     data = await getMembers(slug, analysisId, { metric, scope });
   } catch (err) {
     if (railStale(ticket)) return;   // a later click owns the slot now
+    // A 400 is an ANSWER ("members aren't built for databases yet"), not a
+    // fault in the reader: render the server's sentence as written.
+    if (err.status === 400) {
+      railFrame('Members', slug, `<div class="text-caps text-chrome-muted" data-members-not-built>${esc(err.message)}</div>`, { sub: 'not built yet' });
+      return;
+    }
     railFrame('Members', slug, `<div class="text-caps text-state-warn-on-dark">The members of ${esc(title || analysisId)} could not be read: ${esc(err.message)}</div>`, { sub: 'failed' });
     return;
   }
