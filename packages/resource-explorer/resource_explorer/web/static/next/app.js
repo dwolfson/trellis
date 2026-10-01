@@ -7044,7 +7044,15 @@ async function loadPane() {
   const rows = $('question-rows');
   // Curate's screen is a review-and-commit, not a question list; it renders
   // whether or not the catalog has rows for the stage (today it has none).
-  if (state.stage === 'curate') renderCurate(slug);
+  // A failed render must be visible, never an empty body: the pane used to
+  // go blank here when its host element had been deleted.
+  if (state.stage === 'curate') {
+    renderCurate(slug).catch((err) => {
+      if (slug !== state.selectedSlug) return;
+      const box = $('question-rows');
+      if (box) box.innerHTML = `<div class="py-s3 text-answer text-accent-ink">Curate could not be drawn: ${esc(err.message)}</div>`;
+    });
+  }
   // Analysis has real catalog rows (unlike Curate), so it renders through
   // the generic engine below like any other built stage, with no bypass
   // branch here -- classic's Sub-Resources sub-tab is now ported onto the

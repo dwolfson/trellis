@@ -20,7 +20,7 @@ def _app():
 class TestTheScreenHoldsTheDesignRules:
     def test_it_renders_whether_or_not_the_catalog_has_rows_for_the_stage(self):
         app = _app()
-        i = app.index("if (state.stage === 'curate') renderCurate(slug);")
+        i = app.index("renderCurate(slug).catch(")
         j = app.index("if (!state.questions.length) {", i)
         assert i < j, "Curate must render before the empty-question early return"
 
