@@ -198,6 +198,6 @@ Entry format: `date | title | what was decided or built | note file | introducin
 - 2026-10-01 | Repo-only routes drop the default | The entity_type query parameter becomes required, finishing the removal of the silent repo default. [unchecked] | REPO-ONLY-ROUTES-DROP-DEFAULT-IMPLEMENTED.md | 796a6994
 - 2026-10-01 | Resync apply proof and readiness | Resync publishes now write an activity-log entry as proof, plus a readiness check. [unchecked] | RESYNC-APPLY-PROOF-AND-READINESS-IMPLEMENTED.md | fb01b90e
 - 2026-10-01 | Resync heal keyed on flagged rows | Heal now keys on the flagged rows themselves, since empty findings were dropped and healing never ran. [unchecked] | RESYNC-HEAL-KEYED-ON-FLAGGED-ROWS-IMPLEMENTED.md | 244b4fc9
-- 2026-10-01 | Ask: discovery sources for every kind | Designer ask on generalizing Admin → Discovery Sources beyond repositories and adding CSV import/export to seed an investigation; six questions. | ASK-DESIGNER-DISCOVERY-SOURCES-ALL-KINDS.md | 452d3307
+- 2026-10-01 | Ask: discovery sources for every kind | Designer ask on generalizing Admin → Discovery Sources beyond repositories and adding CSV import/export to seed an investigation; six questions. | ASK-DESIGNER-DISCOVERY-SOURCES-ALL-KINDS.md | fe5071ee
 
 Not listed as entries: the `wireframes/` and `screenshots/` subfolders, and the three step_runs CSVs (`step_runs-2026-09-24.csv`, `step_runs-2026-09-28.csv`, `step_runs-2026-09-28-prefect-default-day.csv`).
