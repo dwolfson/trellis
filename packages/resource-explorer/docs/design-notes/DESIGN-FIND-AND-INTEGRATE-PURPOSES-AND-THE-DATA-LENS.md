@@ -328,3 +328,48 @@ with its own count, never counted as a fit; no new disposition for "keep but
 don't integrate" until a case needs one. Open with the architect (1–2): the
 WorkingSet-to-Project link in Egeria, and what to do with existing
 one-resource lists and suggestion inboxes.
+
+## 12. Every resource kind, not databases only (owner, 2026-10-01)
+
+**Decision (project owner, 2026-10-01):** Find and Integrate apply to every
+resource kind. The Coco scenarios made databases the running example, and
+the only fit analysis today (`preliminary_fit`) is catalogued
+`resource_types: ["database"]`, which made §4, §5.1 and the designer's §7
+("fit is measured for databases only") read as if the purposes were
+database features. They are not. The data lens is declared once on the
+investigation, and every candidate in scope is measured against it with the
+readers its kind has; a dimension with no reader for that kind shows
+◌ "no reader yet", exactly as the designer's fit row draws it.
+
+What each kind can fill in today, and what each needs (the resource side of
+the §3.2 table, by kind):
+
+| dimension | repository | database | filesystem |
+|---|---|---|---|
+| subject | README and documentation terms (RAG embeddings exist); topics; package names | `subject_signals`; `data_class_match` | path and file-name terms; document terms where ingested |
+| data classes | config and fixture files, secrets scan | `data_class_match` | file-content classes (new reader) |
+| time | first and last commit; release dates | date-column coverage (new reader) | file mtimes span (exists in the survey) |
+| grain | not applicable: the row says so, not ◌ | `grain_determination` | not applicable |
+| currency | last push, open activity (`repository_health`) | `db_activity_signals`, archive signals | last modified, write activity |
+| organisation | owner org, CODEOWNERS | `datdba` owner role, Context observations | share owner, ACLs |
+| terms | `license_classification` | licence observation | licence files found |
+| quality | `documentation_coverage`, `ci_quality` | profile completeness | checksum and readability coverage |
+
+Two consequences for the slices in §9:
+
+- `preliminary_fit` is re-catalogued for all three kinds (slice 3), one
+  pure function over `{dimension → reader result or none}`, with the per-kind
+  reader map declared in the catalog, not in code branches. "Not
+  applicable" (grain on a repository) is its own word on the cell, distinct
+  from "no reader yet"; the designer's four states gain that fifth, and it
+  never counts toward "of *n* fit" nor toward the denominator.
+- Integrate's offer (§2.1) and the parity precondition apply across kinds,
+  and so do pair questions: a repository paired with the database it reads
+  is the integration question most worth asking ("does this code's schema
+  expectation match that database's schema?"), so `subject_shape: pair`
+  must allow mixed-kind pairs, which the designer's §8 tabs ("Repos ×
+  databases · 8 pairs") already assume.
+
+The demo corpus (§7) gains the repositories and file shares that go with the
+regional databases: the forecasting code and the spreadsheet exports, so
+the mixed-kind pairs have something real to measure.
