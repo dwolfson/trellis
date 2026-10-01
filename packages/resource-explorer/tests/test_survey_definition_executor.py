@@ -1132,7 +1132,7 @@ class TestProposeProducerDefinition:
 # ── §4 item 3 (2026-09-28): a fresh stored producer answer must actually ───
 # route the run to Prefect, not merely make the resolver SAY "satisfied" ────
 #
-# docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md. Section E's own
+# PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md. Section E's own
 # PREFECT-PREREQUISITE-RESOLUTION-IMPLEMENTED.md already fixed the structural
 # half of this (`build_plan`'s `_add_produces_edges` short-circuits via
 # `step_preconditions.fresh_hit()` when `registry`/`entity` are passed) and

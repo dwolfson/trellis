@@ -1,5 +1,5 @@
 /** Real-DOM regression tests for Egeria-native survey launch on Survey &
- *  analyses (docs/design-notes/BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md, the owner's
+ *  analyses (BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md, the owner's
  *  gate points 1, 2, 3 and 5).
  *
  *  Per the project's harness rule ("every /next fix from here on adds its

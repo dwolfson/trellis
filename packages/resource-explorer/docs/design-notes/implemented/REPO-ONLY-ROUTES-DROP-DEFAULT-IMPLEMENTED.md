@@ -19,7 +19,7 @@ Not changed (flagged): `/{slug}/analyses/{id}/measurements` and `answer_question
 `routes/analyses.py` still default `entity_type` to "repo"; same bug class, out of this slice's list.
 
 Part 2: `IMPLEMENTED.md` (package root) moved with `git mv` to
-`docs/design-notes/REPO-ONLY-ROUTES-ENTITY-TYPE-IMPLEMENTED.md`.
+`REPO-ONLY-ROUTES-ENTITY-TYPE-IMPLEMENTED.md`.
 
 ## Tests
 `tests/test_repo_only_routes_entity_type.py`: route x kind tables — missing kind -> 422 naming

@@ -2961,8 +2961,7 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
     // means only shared types matched, so all that is known is that the
     // resource was published; shown dimmer and hedged rather than claiming a
     // precision the join cannot support.
-    // Fourth publish state, on top of the two tiers above (PUBLISH-STATE-
-    // AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4):
+    // Fourth publish state, on top of the two tiers above (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4):
     // the date stays — it is the only evidence a publish happened — and the
     // warning states what was observed (a failed resolve), never why.
     const staleSuffix = la.publish_stale

@@ -5,7 +5,7 @@
 Deferred by the project owner on 2026-09-21 ("defer the resource_
 reachability table until further tests -- do not build it yet"); un-deferred
 by the project owner on 2026-09-22, who asked for this slice to proceed
-now. See `docs/design-notes/RESOURCE-REACHABILITY-IMPLEMENTED.md` for the
+now. See `RESOURCE-REACHABILITY-IMPLEMENTED.md` for the
 full write-up, including the live probe 7/8 results this module's mapping
 is built from -- not guessed at.
 

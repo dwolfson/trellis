@@ -7,7 +7,7 @@
     the shared dev Egeria platform that other Claude Code sessions on this
     machine also use for real work. Per this project's `coordinate-shared-
     writes` discipline (see the skill of that name, and
-    `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md` phase 4), running
+    `PLAN-EXECUTION-MODES-VERIFICATION.md` phase 4), running
     any test that pulls in `live_egeria_write_target` (or any other fixture
     below) is NOT something you get to do unilaterally, even though the
     elements created are thrown away within the same test:

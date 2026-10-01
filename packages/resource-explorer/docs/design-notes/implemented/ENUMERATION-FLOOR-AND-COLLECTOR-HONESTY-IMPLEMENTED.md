@@ -3,10 +3,10 @@
 **Coordinator brief:** Phase 1b, next after slice 17c
 (`re/coordinator-brief-phase-1b`).
 **Replying to:** the Decision recorded in
-`docs/design-notes/SLICE-17B-RENDER-BOUND-LEVEL-GATE-IMPLEMENTED.md` (design
+`SLICE-17B-RENDER-BOUND-LEVEL-GATE-IMPLEMENTED.md` (design
 session, 2026-09-26, citing security-model.md §2.1/§3.4), and the
 collector-honesty ruling recorded in
-`docs/design-notes/SLICE-17C-RENDERABLE-ANSWER-GATE-IMPLEMENTED.md`'s "Live
+`SLICE-17C-RENDERABLE-ANSWER-GATE-IMPLEMENTED.md`'s "Live
 gate follow-ups" section (same date).
 **PR:** #TBD (`re/enumeration-floor-and-collector-honesty`).
 

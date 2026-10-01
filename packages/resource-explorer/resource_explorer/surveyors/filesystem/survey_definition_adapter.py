@@ -17,7 +17,7 @@ result-retrieval build, this now also waits for the triggered engine action
 to reach a terminal status and reads back its real result — see
 egeria_async_survey_result.py, shared with the database adapter's identical
 function above it, and
-docs/design-notes/EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md.
+EGERIA-ASYNC-RESULT-RETRIEVAL-IMPLEMENTED.md.
 
 A step tagged executes_at="egeria-adaptive" is a third, separate
 other_engine_handlers entry: the folded-in run_hybrid_filesystem_survey
@@ -274,8 +274,8 @@ register_adapter(_ADAPTER)
 #: analysis_id -> the re_analysis_step key(s) that produce it — the
 #: filesystem equivalent of database/survey_definition_adapter's
 #: DATABASE_ANALYSIS_RE_STEP_MAP (see that constant's docstring for the full
-#: reasoning, and slice 17's fix — docs/design-notes/SLICE-17-RUNNABILITY-
-#: FROM-CATALOG-IMPLEMENTED.md — for the bug a hand-maintained, un-derived
+#: reasoning, and slice 17's fix — SLICE-17-RUNNABILITY-FROM-CATALOG-IMPLEMENTED.md — for the bug a
+#: hand-maintained, un-derived
 #: copy of a map like this one can develop). Filesystem has exactly one
 #: local re_analysis_step and one analysis_catalog.yaml entry today, so this
 #: is a 1:1 map rather than a fan-out — kept as its own named constant

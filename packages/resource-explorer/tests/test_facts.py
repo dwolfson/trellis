@@ -415,7 +415,7 @@ class TestResourceStateSources:
             "commit -- these keys match on exact text. Four such rewordings are "
             "expected from the multi-resource question-authoring stream; the "
             "old -> new mapping is in RESOURCE_STATE_SOURCES' own docstring and "
-            "in docs/design-notes/QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md."
+            "in QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md."
         )
 
     def test_an_absent_value_is_a_measured_zero_not_an_unrun_analysis(self):

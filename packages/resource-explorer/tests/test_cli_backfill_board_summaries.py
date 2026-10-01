@@ -1,7 +1,7 @@
 """`resource-explorer backfill-board-summaries` — the CLI entry point that
 pre-populates `board_summary` rows for a resource (or every resource) before
 any real user pays the first-visit recompute cost live
-(docs/design-notes/BOARD-SUMMARY-READ-COST-IMPLEMENTED.md's "backfill CLI"
+(BOARD-SUMMARY-READ-COST-IMPLEMENTED.md's "backfill CLI"
 section).
 
 This suite mirrors `test_board_summary_read_cost.py`'s `_wire_one_analysis`

@@ -16,7 +16,7 @@ Same source-text-assertion pattern as test_next_sidebar_group_collapse.py and
 test_next_curate_section_nav.py -- there is no jsdom/browser harness here, so
 live rendering (actual chevron/middot glyphs, numbering on screen) was
 verified manually in a browser; see
-docs/design-notes/NAV-GROUPING-IMPLEMENTED.md.
+NAV-GROUPING-IMPLEMENTED.md.
 """
 from __future__ import annotations
 

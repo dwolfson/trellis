@@ -141,7 +141,7 @@ class Annotation:
     #: round-trips cleanly on both an element and an annotation — replacing
     #: the earlier plan to carry proposals as an RFA convention or to ask
     #: Egeria for new `candidate…Specification` fields. Verified live the same
-    #: day (probes 4/5, `docs/design-notes/PROBES-2026-09-21.md`):
+    #: day (probes 4/5, `PROBES-2026-09-21.md`):
     #: `contentStatus: DRAFT` inside `properties` round-trips as `DRAFT` on
     #: read-back, while the element's `ElementStatus` stays `ACTIVE`
     #: throughout — the two are independent.

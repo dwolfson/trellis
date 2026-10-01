@@ -69,8 +69,8 @@ class TestDatabaseResultsMapCoverage:
         # `db_derived` step and so all three with a reader from the start.
         #
         # `DATABASE_ANALYSIS_RE_STEP_MAP` (renamed from `DATABASE_ANALYSIS_
-        # STEP_MAP` — slice 17, docs/design-notes/SLICE-17-RUNNABILITY-FROM-
-        # CATALOG-IMPLEMENTED.md) maps an analysis id to a `re_analysis_step`
+        # STEP_MAP` — slice 17, SLICE-17-RUNNABILITY-FROM-CATALOG-IMPLEMENTED.md) maps an analysis
+        # id to a `re_analysis_step`
         # key, `db_derived` for all eleven zero-fetch ids including these
         # three — it is now DERIVED from `db_derived.DB_DERIVED_ANALYSES`
         # rather than hand-listed a second time, which is exactly the fix:

@@ -3,9 +3,9 @@
 **Status:** consolidated model, current as of 2026-09-25. This is the single
 place the strategy is stated; the design notes it draws on
 (`design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`,
-`design-notes/DATABASE-ENGINE-CATALOG-CAPABILITY-SURVEY.md`,
-`design-notes/DATABASE-STEP-CAPABILITY-AUDIT.md`,
-`design-notes/RESOURCE-REACHABILITY-IMPLEMENTED.md`) are the history and the
+`DATABASE-ENGINE-CATALOG-CAPABILITY-SURVEY.md`,
+`DATABASE-STEP-CAPABILITY-AUDIT.md`,
+`RESOURCE-REACHABILITY-IMPLEMENTED.md`) are the history and the
 evidence, and this document supersedes them where they differ.
 
 **Decision (project owner, 2026-09-25):** database access is modelled as

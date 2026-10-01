@@ -13,7 +13,7 @@
  * its ancestor table's re-filter) -- and no source-text test could have
  * caught either, because both are about what the DOM looks like AFTER a
  * second render, not about what the source says once. See
- * docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md.
+ * NEXT-RENDER-HARNESS-IMPLEMENTED.md.
  *
  * WHAT THIS LOADS: the REAL `app.js`, unmodified except that three of its
  * previously-module-private render functions (`surveyRowHtml`, `tableHtml`,

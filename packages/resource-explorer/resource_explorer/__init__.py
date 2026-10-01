@@ -20,7 +20,7 @@ import os
 os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")
 
 # Prefect dispatch honesty (2026-09-28,
-# docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md). A SECOND,
+# PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md). A SECOND,
 # distinct instance of the same "ambient settings, not RE's config" bug the
 # rest of that doc fixes — found live running the whole-definition Prefect
 # path (`_run_via_prefect` -> `re_survey_definition_flow`, a real `@flow`

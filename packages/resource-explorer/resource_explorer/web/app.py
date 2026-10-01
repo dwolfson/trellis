@@ -98,7 +98,7 @@ async def _phase_timing_middleware(request, call_next):
     """Per-request total wall time, logged at INFO as `phase_timing`.
 
     Diagnostic only — added for the 2026-09-29 per-request-latency
-    investigation (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
+    investigation (PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
     and left in place since it is cheap (one perf_counter pair, one log
     line) and the next regression in this class needs exactly this data.
     Registered ahead of `_identity_middleware` below, which — per

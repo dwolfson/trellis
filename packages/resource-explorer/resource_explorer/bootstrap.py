@@ -180,7 +180,7 @@ class BatchStatus:
 class PrefectPoolStatus:
     """Worker liveness for the `resource-explorer-pool` work pool (2026-09-28,
     part of the whole-definition-Prefect-default change — see
-    docs/design-notes/PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md).
+    PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md).
 
     Same tri-state shape as `BatchStatus`: `reachable` says whether the last
     attempt could actually reach the Prefect API at all, independent of
@@ -252,7 +252,7 @@ def check_prefect_pool_workers(pool: str | None = None) -> PrefectPoolStatus:
             log.warning(
                 "bootstrap: Prefect work pool %r has NO registered workers — a "
                 "default whole-definition run will find the API reachable but "
-                "have nothing to dispatch to; see docs/design-notes/"
+                "have nothing to dispatch to; see the design note "
                 "PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md", pool,
             )
         else:

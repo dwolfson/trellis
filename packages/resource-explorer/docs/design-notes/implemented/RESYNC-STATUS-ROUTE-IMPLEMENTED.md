@@ -2,7 +2,7 @@
 
 Closes two follow-ups a design-review session raised against the merged
 Admin "Egeria Alignment" (Resync) pane
-(`docs/design-notes/RECONCILE-ADMIN-IMPLEMENTED.md`,
+(`RECONCILE-ADMIN-IMPLEMENTED.md`,
 `resource_explorer/web/static/next/admin/resync.js`). Both were things the
 original implementer deliberately declined to build unasked — the pane's own
 header comment named them as a known gap. This closes both.

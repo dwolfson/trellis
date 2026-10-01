@@ -1,5 +1,5 @@
 """Whole-definition Prefect default (2026-09-28, project owner decision — see
-docs/design-notes/PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md).
+PREFECT-DEFAULT-WHOLE-DEFINITION-IMPLEMENTED.md).
 
 Tonight's dispatch-honesty fix proved real end-to-end Prefect dispatch works
 for a whole Survey Definition. This flips a default: an unforced run

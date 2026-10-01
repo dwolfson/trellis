@@ -278,8 +278,7 @@ class TestRealCatalogAgreesWithTheLiveBugReport(object):
 class TestRealCatalogAgreesWithTheSlice17bLiveBugReport:
     """Confirms, against the real catalog on disk, that the coco_pharma
     gate's original regression is now closed: `schema_inventory` was given
-    a real headline_reader (docs/design-notes/
-    ENUMERATION-FLOOR-AND-COLLECTOR-HONESTY-IMPLEMENTED.md's follow-up)
+    a real headline_reader (ENUMERATION-FLOOR-AND-COLLECTOR-HONESTY-IMPLEMENTED.md's follow-up)
     that names actual schemas, not just a count -- see
     `test_schema_inventory_headline.py` for the headline's own content
     tests. The mechanism test below (no headline at all -> gate fires) is

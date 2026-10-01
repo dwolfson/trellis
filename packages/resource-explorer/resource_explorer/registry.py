@@ -892,8 +892,8 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # the resource_reachability table until further tests -- do not build it
     # yet") pending live confirmation of probe 7's premise and of what a
     # CHECK_ASSET result actually looks like. Un-deferred by the project
-    # owner 2026-09-22 -- see docs/design-notes/RESOURCE-REACHABILITY-
-    # IMPLEMENTED.md and PROBES-2026-09-21.md's "Probes 7 and 8, run live"
+    # owner 2026-09-22 -- see RESOURCE-REACHABILITY-IMPLEMENTED.md and PROBES-2026-09-21.md's
+    # "Probes 7 and 8, run live"
     # section for the live evidence this table's shape is built from.
     #
     # Scoped to filesystem/folder resources only, per the same live evidence:
@@ -1178,7 +1178,7 @@ def is_false_zero_survey(row: dict) -> bool:
 class ProjectRegistry:
     # Process-wide cache: a Postgres `Engine` (connection pool) and whether
     # `_init_schema` has already run, keyed by `database_url`. Added
-    # 2026-09-29 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
+    # 2026-09-29 (PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md)
     # after live timing showed `ProjectRegistry()` costing 250-470ms on a
     # *warm* Postgres — every one of ~150 CREATE TABLE/ALTER TABLE/CREATE
     # INDEX statements in `_init_schema` round-tripping to Postgres, on
@@ -1324,7 +1324,7 @@ class ProjectRegistry:
             )
         # Per-INSTANCE, self-invalidating cache for `get_database_surveys` —
         # see that method's docstring
-        # (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md's
+        # (PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md's
         # "Registry cache staleness" addendum). Each entry is keyed on a
         # cheap freshness signature (`(max(surveyed_at), count(*))` for the
         # slug), not just the slug — so a stale entry is detected and
@@ -2342,7 +2342,7 @@ class ProjectRegistry:
                 # `source`/`executor` already say WHO ran it.
                 ("surveyed_as", "TEXT DEFAULT ''"),
                 # Prefect dispatch honesty (2026-09-28,
-                # docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md).
+                # PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md).
                 # ADD-only, existing rows untouched: `executor`/`executor_ref`
                 # keep their exact prior meaning ('local'/'prefect' strings).
                 # `flow_run_id` is the real Prefect flow-run id, populated
@@ -2358,7 +2358,7 @@ class ProjectRegistry:
                 ("flow_run_id", "TEXT DEFAULT ''"),
                 ("dispatch_failed", "TEXT DEFAULT ''"),
                 # Native Egeria survey launch (2026-09-30,
-                # docs/design-notes/NATIVE-EGERIA-SURVEY-LAUNCH-IMPLEMENTED.md).
+                # NATIVE-EGERIA-SURVEY-LAUNCH-IMPLEMENTED.md).
                 # ADD-only and entirely separate from the Prefect columns
                 # above: a whole-definition run still stores `flow_run_id`
                 # and never touches these. These are the PROOF a native
@@ -2437,7 +2437,7 @@ class ProjectRegistry:
             # ── board_summary — one row per (entity_type, slug, board_id):
             # the persisted headline/state/COUNTS a By-analysis board fetch
             # reads, instead of recomputing on every GET
-            # (docs/design-notes/BOARD-SUMMARY-READ-COST-IMPLEMENTED.md).
+            # (BOARD-SUMMARY-READ-COST-IMPLEMENTED.md).
             #
             # The problem this exists for: `build_survey_results(board_id=…)`
             # measured 10-26s PER BOARD on adventureworks discovery boards,
@@ -6496,7 +6496,7 @@ class ProjectRegistry:
         answers "why did Scouting take three minutes".
 
         `flow_run_id`/`dispatch_failed` (2026-09-28, Prefect dispatch
-        honesty — docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md):
+        honesty — PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md):
         `executor` must only ever be `'prefect'` when a real flow-run exists
         — `flow_run_id` then carries its id, checkable against Prefect's own
         `POST /api/flow_runs/filter`. A dispatch that was attempted and fell
@@ -6562,7 +6562,7 @@ class ProjectRegistry:
     #
     # Every method here is keyed on Egeria's engine-action GUID, never on which
     # branch of RE's code ran: the GUID is the proof the row exists on
-    # (docs/design-notes/BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md). Nothing in this
+    # (BRIEF-NATIVE-EGERIA-SURVEY-LAUNCH.md). Nothing in this
     # block touches `flow_run_id`/`dispatch_failed` -- the Prefect path.
 
     def record_native_survey_submission(
@@ -7213,7 +7213,7 @@ class ProjectRegistry:
         **This is a real claim.** Select and status transition happen in ONE
         transaction (`self._conn()` below), so two drainers cannot both take
         the same row — fixed 2026-09-19, see
-        `docs/design-notes/OUTBOX-DRAIN-RACE-FIXED.md`. A claimed row moves to
+        `OUTBOX-DRAIN-RACE-FIXED.md`. A claimed row moves to
         `status='running'` with `claimed_at` set to `now`; on Postgres the
         `SELECT` additionally carries `FOR UPDATE SKIP LOCKED`, so a second,
         concurrent transaction skips rows the first is mid-claim on rather
@@ -8369,8 +8369,8 @@ class ProjectRegistry:
         """Every current disposition for `entity_slugs`, in ONE query,
         keyed by entity_slug — the batch form of `get_disposition_for_entity`
         for a caller building many summaries at once. Added 2026-09-29
-        round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-
-        IMPLEMENTED.md) for `list_projects`, which used to call
+        round 2 (PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md) for `list_projects`, which used
+        to call
         `get_disposition(p.github_url)` — itself `resolve_repo_entity_slug`
         → `get_by_github_url`, a **full `SELECT * FROM projects` table
         scan searched in Python**, per project. Profiled directly: 0.93s
@@ -9985,7 +9985,7 @@ class ProjectRegistry:
         `include_invalid=True`, which bypasses the cache.
 
         Cached per-instance, keyed on a freshness signature (2026-09-29,
-        docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md; hardened
+        PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md; hardened
         2026-09-29 against cross-instance/cross-process staleness — see that
         doc's "Registry cache staleness" addendum): this fetches every
         historical survey's full `survey_data` blob — for
@@ -10046,7 +10046,7 @@ class ProjectRegistry:
         """Return the most recent survey record for a database, or None.
 
         A dedicated `LIMIT 1` query as of 2026-09-29
-        (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md) —
+        (PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md) —
         this used to delegate to `get_database_surveys` and take `[0]`,
         which fetches (and JSON-decodes) `survey_data` for EVERY historical
         survey of this database, not just the one actually used. Profiled
@@ -10173,7 +10173,7 @@ class ProjectRegistry:
         kept correct by `tests/test_schema_inventory_headline.py`'s
         `test_credential_totals_from_an_older_survey_still_show_when_the_latest_run_omits_the_probe`
         (the 2026-09-26 fix this exists not to regress). Added 2026-09-29
-        round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md)
+        round 2 (PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md)
         after the round-1 per-instance cache (`get_database_surveys`'s
         docstring) removed the *redundant* repeat fetches within one board
         read but left the one real fetch — 688-905ms on a 57-row/61MB
@@ -10435,8 +10435,7 @@ class ProjectRegistry:
         the set-based replacement for "walk survey history newest-first,
         calling `query_detail_rows` for each candidate until one comes back
         non-empty" (`db_derived.py`'s `_resolve_table_surveyed_at`, before
-        2026-09-29 round 3, docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-        ROUND-3-IMPLEMENTED.md).
+        2026-09-29 round 3, PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md).
 
         Provably equivalent to that walk, not just usually faster: the only
         `surveyed_at` values that can ever appear as a row in `table` are
@@ -11128,8 +11127,8 @@ class ProjectRegistry:
                 # clean run, never absent, so the frontend can tell
                 # "no errors" from "not fetched yet".
                 entry["last_run_errors"] = detail.get("errors") or []
-                # Engine-note persistence (2026-09-28, docs/design-notes/
-                # ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): SurveyDefinitionExecutor
+                # Engine-note persistence (2026-09-28, ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md):
+                # SurveyDefinitionExecutor
                 # already writes `engine_note` into this same `detail` JSON
                 # (which engine actually ran the definition — Prefect, or a
                 # local fallback and why). The /next pane used to render it as

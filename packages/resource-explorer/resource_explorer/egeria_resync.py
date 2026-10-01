@@ -188,8 +188,8 @@ class EgeriaResync:
             am = AssetMaker(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
             pm = ProjectManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
             cm = CollectionManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-            # ClassificationExplorer, not MetadataExpert — PUBLISH-STATE-AFTER-
-            # REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §1:
+            # ClassificationExplorer, not MetadataExpert —
+            # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §1:
             # MetadataExpert is for special situations with a differently-
             # shaped response; ClassificationExplorer.get_element_by_guid is
             # the plain existence check.

@@ -3,7 +3,7 @@
 **Status:** built and unit-verified; the one live write it exists to prove was cleared by every
 live peer but blocked by this environment's own sandbox before it could run. See §4.
 
-Implements `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md` phase 4: "a `live_egeria`
+Implements `PLAN-EXECUTION-MODES-VERIFICATION.md` phase 4: "a `live_egeria`
 pytest marker, a dev-Egeria fixture that catalogues and tears down a throwaway database/filesystem,
 and the coordination note for shared writes."
 

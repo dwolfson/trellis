@@ -118,8 +118,8 @@ async def alog_prefect_reachability_at_startup() -> None:
             "Prefect API NOT reachable at %s (%s) — steps declaring "
             "executes_at: prefect will silently fall back to local "
             "execution until this is fixed; step_runs.executor will "
-            "correctly say 'local' with a dispatch_failed reason (see "
-            "docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md), "
+            "correctly say 'local' with a dispatch_failed reason (see design note "
+            "PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md), "
             "but nothing will actually run through Prefect",
             config.prefect.api_url, detail,
         )
@@ -165,7 +165,7 @@ def log_prefect_reachability_at_startup() -> None:
 
     Exists because the 2026-09-28 silent-dispatch bug (see
     `re_prefect_client`'s own docstring and
-    `docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md`) was
+    `PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md`) was
     invisible on the log's first page: nothing failed loudly at process
     start, `step_runs.executor` still said `'prefect'`, and the only trace
     was a per-step WARNING inside `run_prefect_step`'s fallback, discovered
@@ -239,7 +239,7 @@ async def _run_prefect_step_api(
     Returns (result, flow_run_id) -- the id is what makes a step_runs row
     saying executor='prefect' checkable against Prefect's own
     POST /api/flow_runs/filter rather than merely asserted (see
-    docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md's live gate).
+    PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md's live gate).
     """
     config = get_config()
     deployment_name = "RE Survey Flow/re-survey-step-deployment"

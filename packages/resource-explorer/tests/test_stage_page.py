@@ -350,8 +350,7 @@ class TestRunnableAndReasonThreadsEntityType:
 
 
 class TestSlice17DbDerivedRunnabilityFromCatalog:
-    """Slice 17 (docs/design-notes/SLICE-17-RUNNABILITY-FROM-CATALOG-
-    IMPLEMENTED.md), replying to REVIEW-SURVEY-PANE-285.md §5(a).
+    """Slice 17 (SLICE-17-RUNNABILITY-FROM-CATALOG-IMPLEMENTED.md), replying to REVIEW-SURVEY-PANE-285.md §5(a).
 
     `subject_signals`, `coverage_signals` and `preliminary_fit` (design
     §16.3's Scouting/Discovery rows, added to `db_derived.DB_DERIVED_

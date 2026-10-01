@@ -65,7 +65,7 @@ from .connection import EngineCapabilities, NO_CAPABILITIES, database_connection
 # rather than hand-listed a second time, for exactly that reason).
 #
 # Renamed from `DATABASE_ANALYSIS_STEP_MAP` (slice 17,
-# docs/design-notes/SLICE-17-RUNNABILITY-FROM-CATALOG-IMPLEMENTED.md) — that
+# SLICE-17-RUNNABILITY-FROM-CATALOG-IMPLEMENTED.md) — that
 # name was shared, coincidentally, with a SEPARATE hand-maintained dict in
 # `survey_definition_adapter.py` with a different shape (re_analysis_step
 # keys, not DatabaseSurveyor.survey() step names) and a different set of

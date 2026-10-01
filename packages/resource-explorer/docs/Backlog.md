@@ -99,7 +99,7 @@ prior reading (before this bug fired on a fresh local re-survey) showed
 `n_live_tup` is zero AND no `ANALYZE` has ever run — a genuine nonzero
 count is still trusted regardless of `ANALYZE` history, since DML
 tracking alone would have produced it. See
-`docs/design-notes/ENUMERATION-FLOOR-AND-COLLECTOR-HONESTY-IMPLEMENTED.md`
+`ENUMERATION-FLOOR-AND-COLLECTOR-HONESTY-IMPLEMENTED.md`
 for the full trace and `tests/test_table_row_stats_never_analyzed.py` for
 coverage.
 
@@ -328,7 +328,7 @@ current selection if one exists.
 **Decision (project owner, 2026-09-20):** build the repo-side `executes_at: "egeria"`
 plumbing now, even though no live repo survey action service may exist in Egeria
 yet ("we will probably have some surveys that execute there at some point") —
-close `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md` §1 Path B /
+close `PLAN-EXECUTION-MODES-VERIFICATION.md` §1 Path B /
 item 8 (Path B3) rather than waiting for Egeria's side to be ready first.
 
 Built: `EgeriaPublisher.trigger_survey_by_guid` (+ `_initiate_survey`/
@@ -1041,7 +1041,7 @@ Not scoped here; the guard above is the safe, correct behavior until it is.
 now performs the select and the `status='running'` transition in one
 transaction, with `FOR UPDATE SKIP LOCKED` added to the `SELECT` on Postgres —
 so two concurrent drainers provably cannot claim the same row (see
-`docs/design-notes/OUTBOX-DRAIN-RACE-FIXED.md`). A stranded claim (drainer
+`OUTBOX-DRAIN-RACE-FIXED.md`). A stranded claim (drainer
 died before marking the row done/failed) self-heals via `CLAIM_LEASE_SECONDS`;
 a claim that could not even be attempted (no Egeria client reachable) is
 released immediately by `drain_outbox`'s no-client branch calling
@@ -1114,7 +1114,7 @@ for one run rather than a fix.
 > **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `8fb2a6bb`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 > **Fixed for fresh catalogs, 2026-09-20 — see
-> `docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md` for the full investigation.**
+> `CATALOG-AND-SURVEY-REFRESH-FIX.md` for the full investigation.**
 > The root cause was not the guard this entry originally suspected: Egeria's
 > create-from-template calls ARE upsert-safe by qualifiedName (confirmed live —
 > re-issuing one for an existing element returns the same GUID, not a
@@ -1203,7 +1203,7 @@ The `0` annotation counts read back were independently confirmed accurate given 
 
 > **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `6fc82494`, `553c566a`, `4da212aa`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
-> **Planned 2026-09-18 — see `docs/design-notes/PLAN-EXECUTION-MODES-VERIFICATION.md`.** Two
+> **Planned 2026-09-18 — see `PLAN-EXECUTION-MODES-VERIFICATION.md`.** Two
 > corrections to this entry, found while planning against it: the global-override concern below
 > (`config.prefect.enabled` rerouting every `resource-explorer` step) is already fixed —
 > `survey_definition_executor.py:317-332` honours `executes_at`, and rerouting needs the separate
@@ -3797,7 +3797,8 @@ Two ways to close it, not mutually exclusive:
    `test_every_findings_producing_analysis_has_a_dashboard` elsewhere in this backlog.
 2. **Make it part of the item-completion checklist** alongside the already-required
    `*-IMPLEMENTED.md` doc — a `/next` item isn't done until `build:css:next` has been re-run
-   against its own changes.
+   against its own changes. (Since 2026-10-01 the `*-IMPLEMENTED.md` notes live in
+   `docs/design-notes/implemented/`; the done-ness convention is unchanged, only the directory.)
 
 ---
 
@@ -4959,7 +4960,7 @@ Kept rather than deleted: a recorded negative — *we checked, and it genuinely 
 
 #### CLOSED 2026-10-01 — the night of 2026-09-30 / 2026-10-01
 
-Four slices merged to `main` overnight; each has its own IMPLEMENTED note under `docs/design-notes/`.
+Four slices merged to `main` overnight; each has its own IMPLEMENTED note under `docs/design-notes/implemented/`.
 
 - **Entity-type sweep on the repo-only routes** — PR #391, merge `739e16a8` (`REPO-ONLY-ROUTES-DROP-DEFAULT-IMPLEMENTED.md`; builds on `603015b5`, `REPO-ONLY-ROUTES-ENTITY-TYPE-IMPLEMENTED.md`).
 - **App entry-points grouped by kind** in the Application card, with the `console_script` display fix — PR #392, merge `0d116d50` (`APP-ENTRY-POINTS-GROUP-BY-KIND-IMPLEMENTED.md`).
@@ -6486,8 +6487,7 @@ DepthOffer pane offers deeper surveys, recorded on the catalogue record.
 ### Open /next items after the stage-page and layers rounds (2026-09-14)
 
 One place to find everything still open across the two most recent rounds, so nothing gets lost
-between sessions. Not new work — a consolidation of items already named in `REPLY-CATALOGUE-IN-
-LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
+between sessions. Not new work — a consolidation of items already named in `REPLY-CATALOGUE-IN-LAYERS.md`, `SPEC-THE-STAGE-PAGE.md`, and `REPLY-PORTS-SCARCITY-CORRECTED.md`.
 
 **Stage-page round (`#93`/`#90` shipped the spine; these are the deferred follow-ups):**
 - Survey & analyses' *analyses* listing — rows, description popovers (stage, declared run time,
@@ -6596,7 +6596,7 @@ blocker for probe 9 (a genuine native annotation-type/metric-key dump) and
 for Phase 1 more broadly, not a one-off.
 
 **Root-caused and fixed for fresh catalog runs, same day (PR #185,
-`docs/design-notes/PROBES-2026-09-21.md`):** the templated
+`PROBES-2026-09-21.md`):** the templated
 `SecretsStoreConnection`'s `secretsCollectionName`/`secretsStorePathName`
 configuration properties were themselves left as Egeria's own literal,
 unsubstituted placeholder text — nothing had ever supplied real values.
@@ -6664,7 +6664,7 @@ for rows whose source blob genuinely carries no success/failure signal.
 ## Phase 1 slice 8 (`postgres_operations`) — follow-ups logged, not fixed here
 
 Three items surfaced building the `postgres_operations` step (design
-§5.5/§5.7, `docs/design-notes/DB-OPERATIONS-STEP-IMPLEMENTED.md`), each
+§5.5/§5.7, `DB-OPERATIONS-STEP-IMPLEMENTED.md`), each
 deliberately scoped out rather than half-built:
 
 1. **Patroni-via-REST clustering detection is not attempted.** Design §5.5
@@ -6735,7 +6735,7 @@ deliberately scoped out rather than half-built:
 
 Found 2026-09-21, running Phase 1 slice #6 (probe 9, properly, against
 freshly-recatalogued `coco_ods`/`coco_pharma` post-redeploy —
-`docs/design-notes/PROBES-2026-09-21.md` has the full write-up under "Probe
+`PROBES-2026-09-21.md` has the full write-up under "Probe
 9 done properly"). Two separate `Connection` elements this session — RE's
 own admin secrets-store `Connection` and the per-database
 `SecretsStoreConnection` embedded by the PostgreSQL template — both came
@@ -6881,7 +6881,7 @@ this entry first.
 
 **Found while building** `postgres_column_profile` / `data_class_match` /
 `reference_data_match` (Phase 1 slice 10,
-`docs/design-notes/POSTGRES-COLUMN-PROFILE-IMPLEMENTED.md`). Logged, not
+`POSTGRES-COLUMN-PROFILE-IMPLEMENTED.md`). Logged, not
 fixed — each is outside that slice's scope.
 
 **1. No curator accept/reject surface for a DRAFT proposal — the largest gap.**
@@ -6953,7 +6953,7 @@ The CSV's prose is its owner's call (stream 4), not a consumer's.
 ## Slice 14 (database change comparators, design §9.1) — what remains open
 
 **Found while building** `db_change_comparator.py` (Phase 1 slice 14,
-`docs/design-notes/DB-CHANGE-RATES-DELIVERY-IMPLEMENTED.md`). The real gap
+`DB-CHANGE-RATES-DELIVERY-IMPLEMENTED.md`). The real gap
 this slice closed was structural, not computational: `db_derived`'s six
 checks (slice 9) never persisted through `project_analysis_findings`/
 `project_analysis_metrics` — both FK'd to `projects(slug)`, repos only — so
@@ -7012,7 +7012,7 @@ the same gap a third way.
 
 Filed while building the slice (`resource_explorer/reachability.py`,
 `resource_reachability` table, launcher sentence — see
-`docs/design-notes/RESOURCE-REACHABILITY-IMPLEMENTED.md`). This slice was
+`RESOURCE-REACHABILITY-IMPLEMENTED.md`). This slice was
 deferred by the project owner 2026-09-21 ("do not build it yet ... further
 tests") and the deferral was reversed by the project owner 2026-09-22, who
 asked for it to proceed.
@@ -8468,8 +8468,7 @@ already in place are each individually correct and this is a design
 change to the writer's contract, not a live-visible bug in its own right
 right now.
 
-**Partially closed** (`re/structured-table-clobber`, BRIEF-KEYS-AND-
-ACTIVITY-CLOBBER.md §B, 2026-09-28): the two remaining un-patched
+**Partially closed** (`re/structured-table-clobber`, BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §B, 2026-09-28): the two remaining un-patched
 `survey_data` sections, `statistics` and `views`, now use the identical
 preserve-prior fallback `operations`/`credential_capability` already had —
 `"statistics": statistics or prior_statistics` / `"views": results.get
@@ -8581,7 +8580,7 @@ counters, because `db_derived.load_inputs()` picked one global latest
    `signal_provenance`/explanation text ("activity from ..., structure from
    ...").
 
-See `docs/design-notes/STRUCTURED-TABLE-CLOBBER-IMPLEMENTED.md` for the
+See `STRUCTURED-TABLE-CLOBBER-IMPLEMENTED.md` for the
 before/after numbers and what was/wasn't live-verified.
 
 Original finding, kept for the record:
@@ -8877,8 +8876,7 @@ query (per-request-latency round 2) costs ~340-490ms on `laz_local_adventurework
 that slug) even with a purpose-built GIN index on the cast expression — measured directly with
 `EXPLAIN ANALYZE`, the index does not help, because Postgres always rechecks the jsonb condition
 against the actual heap tuple for a bitmap scan, which means re-parsing the same large `TEXT`
-value regardless of the index (full evidence in `docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-ROUND-3-IMPLEMENTED.md`, item 1).
+value regardless of the index (full evidence in `PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md`, item 1).
 
 **Measured the real fix directly, via a throwaway `TEMP TABLE`** — same data, same query, same
 slug filter, `survey_data` stored as native `jsonb` instead of `TEXT`: **47ms vs 342-391ms, ~8x
@@ -8969,7 +8967,7 @@ Measured directly against the fully-merged main before dispatching it: **0.8-1.3
 a ~25-65x improvement, even though nothing in rounds 1-3 targeted this endpoint directly. The
 48-52s was the PER-REQUEST cost (schema-verification-per-construction, an undersized connection
 pool, event-loop-blocking N+1 queries) that rounds 1-3 fixed, not a problem with the readers
-themselves. Full measurement: `docs/design-notes/QUESTIONS-TAB-COLD-LOAD-MEASUREMENT-2026-09-29.md`.
+themselves. Full measurement: `QUESTIONS-TAB-COLD-LOAD-MEASUREMENT-2026-09-29.md`.
 
 **One line kept open**: the Assessment-stage's first call (a larger question set) measured 4.1s
 in the same session — not part of the gate (not a controlled cold-restart), but worth watching.

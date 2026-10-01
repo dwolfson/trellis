@@ -948,7 +948,7 @@ its own sake against shared infrastructure. Reproducing the exact incident live 
 require deliberately deleting a real `ExternalReference` to recreate the "reused a
 just-deleted guid" condition and then cleaning up afterward — exactly the kind of
 manufactured mutation of shared infrastructure this project's own coordination posture
-(see `docs/design-notes/DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md`'s earlier rounds,
+(see `DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md`'s earlier rounds,
 and `feedback_coordinate_before_shared_writes`) weighs against when a test-level fix
 already meets the stated bar. This round's evidence is test-level: the
 `TestDocSourceOutbox` cases above reproduce the exact row/outbox shape from the live

@@ -474,8 +474,7 @@ class TestRelationshipGraph:
         assert len(result["dangling_references"]) == 1
 
     def test_most_referenced_ties_are_broken_deterministically_by_table_name(self, registry):
-        """2026-09-29 round 3 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-        ROUND-3-IMPLEMENTED.md): found live comparing round 3's fixture
+        """2026-09-29 round 3 (PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md): found live comparing round 3's fixture
         output against an UNMODIFIED baseline run twice — `most_referenced`
         sorted only by `referenced_by` descending, with no tiebreaker, so
         entries tied on that count ordered by `in_degree.items()`'s

@@ -323,8 +323,8 @@ class SurveyOrchestrator:
 
             #: The stored `credential_capability` probe, resolved AT MOST
             #: ONCE for this whole run rather than once per `resolve()` call.
-            #: 2026-09-29 round 3 (docs/design-notes/PER-REQUEST-SERVER-
-            #: LATENCY-ROUND-3-IMPLEMENTED.md) — `resolve()` already accepts
+            #: 2026-09-29 round 3 (PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md) — `resolve()`
+            #: already accepts
             #: `capability_probe` as a pass-in specifically so a caller that
             #: needs it more than once doesn't have to let `resolve()`
             #: re-fetch it each time (see that parameter's own docstring);

@@ -4,7 +4,7 @@ holds, and publish proposals for the ones it does not.
 Phase 1 slice 10. Backs `data_class_match` and `reference_data_match`
 (`docs/multi-resource-questions-design.md` §5.4) and the proposal convention
 in `docs/egeria-support-for-multi-resource.md` §3, as revised by the corrected
-probes 4 and 5 of 2026-09-21 (`docs/design-notes/PROBES-2026-09-21.md`).
+probes 4 and 5 of 2026-09-21 (`PROBES-2026-09-21.md`).
 
 **`contentStatus: DRAFT`, not `initialStatus`.** Probe 4's first pass tested
 `initialStatus`, which sets Egeria's generic *entity lifecycle* status

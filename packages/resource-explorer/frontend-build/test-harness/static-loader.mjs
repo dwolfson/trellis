@@ -12,7 +12,7 @@
  *  `format.js`, the `stages/*.js` and `admin/*.js` modules it pulls in) as
  *  the ACTUAL production module graph, unmodified, rather than re-typing or
  *  string-slicing pieces of it into a test fixture -- see this directory's
- *  README and docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md for why
+ *  README and NEXT-RENDER-HARNESS-IMPLEMENTED.md for why
  *  that distinction is the whole point of this harness.
  *
  *  Every other specifier (bare package names like `jsdom`, relative `./`

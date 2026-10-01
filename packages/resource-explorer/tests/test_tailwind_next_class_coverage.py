@@ -5,7 +5,7 @@ class is the wrong tool for, in index.html's own inline <style> block -- see
 its opening comment). An uncompiled/typo'd class name otherwise renders as
 literally nothing, silently, with no error and no visual cue -- exactly the
 bug this file exists to catch. See
-docs/design-notes/TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md for the full
+TAILWIND-NEXT-FRESHNESS-CHECK-IMPLEMENTED.md for the full
 design writeup, including why this check is independent of (not a
 replacement for) test_tailwind_next_freshness.py's rebuild-and-diff check.
 

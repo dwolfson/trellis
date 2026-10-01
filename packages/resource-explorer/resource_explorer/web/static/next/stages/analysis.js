@@ -10,8 +10,8 @@
  * This module exists for the one thing that DOES need bespoke code: classic's
  * Analysis pane also has a "Sub-Resources" sub-tab (index.html's
  * loadAnalysisSubResourcesView, ~380 lines across candidate discovery,
- * cataloguing and scoped-analysis dispatch). ITEM-11-DISCOVERY-ASSESSMENT-
- * ANALYSIS-IMPLEMENTED.md deferred it by name rather than build or drop it;
+ * cataloguing and scoped-analysis dispatch). ITEM-11-DISCOVERY-ASSESSMENT-ANALYSIS-IMPLEMENTED.md
+ * deferred it by name rather than build or drop it;
  * RULING-SUBRESOURCES-PLACEMENT.md (2026-09-22, docs/design-notes/) then
  * resolved WHERE it belongs, having found it is two features wearing one
  * tab's name:

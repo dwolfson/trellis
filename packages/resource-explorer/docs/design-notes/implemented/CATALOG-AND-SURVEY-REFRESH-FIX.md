@@ -224,7 +224,7 @@ at the end of this work.
    live** (see "Live verification" above) — worth confirming the next time a
    genuinely new database is cataloged through this path.
 
-4. **Resolved 2026-09-21** — `docs/design-notes/PROBES-2026-09-21.md` found
+4. **Resolved 2026-09-21** — `PROBES-2026-09-21.md` found
    why even a fresh, deepCopy'd catalog run still failed its native survey
    with a SCRAM/no-password error: the templated `SecretsStoreConnection`'s
    `secretsCollectionName`/`secretsStorePathName` configuration properties

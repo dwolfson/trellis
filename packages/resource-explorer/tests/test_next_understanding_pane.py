@@ -4,7 +4,7 @@ enforces, plus the no-data/error/stale messaging and chart selection, so a
 later edit that erodes one of these fails a test instead of a screenshot.
 
 No browser verification happened for this file — see
-docs/design-notes/ITEM-2-UNDERSTANDING-IMPLEMENTED.md for what was and was
+ITEM-2-UNDERSTANDING-IMPLEMENTED.md for what was and was
 not checked live. These tests grep/slice function bodies out of the
 concatenated source, the established pattern for /next JS modules without a
 browser -- see test_next_curate_pane.py, test_next_rail_states.py, and

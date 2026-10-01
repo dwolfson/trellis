@@ -1,6 +1,6 @@
 """Enumeration-floor design ruling (security-model.md §2.1/§3.4, 2026-09-26,
-recorded as a Decision in docs/design-notes/SLICE-17B-RENDER-BOUND-LEVEL-GATE-
-IMPLEMENTED.md): on an engine whose structural floor is unprivileged
+recorded as a Decision in SLICE-17B-RENDER-BOUND-LEVEL-GATE-IMPLEMENTED.md): on an engine whose
+structural floor is unprivileged
 (Postgres), every enumeration RE does -- the credential-capability probe,
 `get_schema_info()`'s inventory, row counts -- reads that floor
 (`pg_namespace`/`pg_class`), never a privilege-filtered view, so there is

@@ -1,6 +1,6 @@
 /** Real-DOM regression test for the By-analysis pane's 30-second give-up
  *  safety net (branch `re/board-summary-read-cost`,
- *  docs/design-notes/BOARD-SUMMARY-READ-COST-IMPLEMENTED.md).
+ *  BOARD-SUMMARY-READ-COST-IMPLEMENTED.md).
  *
  *  THE GAP THIS CLOSES: that branch's own writeup flagged its 30s safety
  *  net -- `BY_ANALYSIS_BOARD_TIMEOUT_MS`, the `'timeout'` board state, and

@@ -1,6 +1,6 @@
 /** Real-DOM regression test for the engine-note persistence bug (fixed
  *  2026-09-28, branch `re/engine-note-persist`,
- *  docs/design-notes/ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md).
+ *  ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md).
  *
  *  THE BUG: `launchSurvey()` used to append the "which engine ran this"
  *  line as a transient DOM write into a `#survey-note` div, then call

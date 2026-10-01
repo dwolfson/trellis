@@ -4,7 +4,7 @@ A node+jsdom test harness that actually loads `/next`'s real ES module
 graph (`app.js` and everything it imports) into a real DOM and renders it
 -- as opposed to every other JS-related test in this package
 (`tests/test_next_*.py`), which asserts only against app.js's *source
-text*. See `docs/design-notes/NEXT-RENDER-HARNESS-IMPLEMENTED.md` for the
+text*. See `NEXT-RENDER-HARNESS-IMPLEMENTED.md` for the
 full write-up: why this exists, the two regression tests built on it, and
 the red/green verification against the bugs they cover.
 

@@ -33,7 +33,7 @@ was built the other way round:
    `RA` and no direct `fetch` in `N/` cannot call that route.
 3. Where a row says "covered by a design note", the note was opened and read, not
    matched by keyword. Where it says **no note found**, that means keyword searches of
-   `docs/design-notes/*.md`, `docs/Backlog.md` and `docs/*.md` on the control's own
+   `docs/design-notes/**/*.md` (recursive: the root plus `implemented/` and `evidence/`), `docs/Backlog.md` and `docs/*.md` on the control's own
    vocabulary returned nothing relevant. It is absence of evidence, not proof.
 4. **Nothing was run.** No server, no registry, no database was touched, per the task's
    rules. So statements about runtime behaviour (what an error looks like on screen)

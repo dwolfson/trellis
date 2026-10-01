@@ -8,7 +8,7 @@ None of the 11 is backed by an analysis at all — their catalog `kind` is `dire
 and has simply not been triggered; that promise was false for all 11.
 
 Reference implementation: `#309`
-(`docs/design-notes/HEADLINE-GAPS-FINGERPRINT-AND-REPO-CARDS-IMPLEMENTED.md`),
+(`HEADLINE-GAPS-FINGERPRINT-AND-REPO-CARDS-IMPLEMENTED.md`),
 which built the "resource-state headline" mechanism for repositories —
 `facts.py`'s `RESOURCE_STATE_SOURCES` + `_RESOURCE_STATE_HEADLINES`, registered
 on the repo `ResourceTypeAdapter`. This slice ports the same mechanism to

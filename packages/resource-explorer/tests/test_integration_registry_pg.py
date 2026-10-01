@@ -222,7 +222,7 @@ class TestRenameProjectSlugOnRealPostgres:
 
 class TestRegistryConstructionIsCheapOnAWarmProcess:
     """2026-09-29 per-request-latency investigation
-    (docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md): every
+    (PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md): every
     `ProjectRegistry()` construction re-ran `_init_schema` — ~150
     CREATE TABLE/ALTER TABLE/CREATE INDEX statements — against Postgres,
     measured directly at 250-470ms EVERY time, not just cold. Almost every
@@ -395,7 +395,7 @@ class TestGetDatabaseSurveysCacheSurvivesTheRunQueueWorkerPattern:
     so every handler (`_handle_database_analysis_run` included) constructs
     its own fresh registry regardless. Neither of those is this fix's to
     make — they are separate, out-of-scope findings, logged in
-    `docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md`'s
+    `PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md`'s
     staleness-hardening addendum. This test still exercises the call chain
     `claim_and_execute_once`/`execute_run` genuinely support (both accept an
     explicit `registry=`) with one instance reused across iterations, which
@@ -478,8 +478,7 @@ class TestGetDatabaseSurveysCacheSurvivesTheRunQueueWorkerPattern:
 
 
 class TestFindLatestDatabaseSurveyWithKey:
-    """2026-09-29 round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-    ROUND-2-IMPLEMENTED.md): `find_latest_database_survey_with_key` replaces
+    """2026-09-29 round 2 (PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md): `find_latest_database_survey_with_key` replaces
     the "fetch every historical blob, loop in Python" pattern with a
     server-side `jsonb_exists` containment query on Postgres. This is the
     exact search shape the 2026-09-26 fix (`a0f28aec`, "Fix schema-count
@@ -641,8 +640,7 @@ class TestFindLatestDatabaseSurveyWithKey:
 
 
 class TestFindLatestDetailSurveyedAt:
-    """2026-09-29 round 3 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-    ROUND-3-IMPLEMENTED.md): `find_latest_detail_surveyed_at` replaces
+    """2026-09-29 round 3 (PER-REQUEST-SERVER-LATENCY-ROUND-3-IMPLEMENTED.md): `find_latest_detail_surveyed_at` replaces
     `db_derived.py`'s `_resolve_table_surveyed_at` walk (one `query_detail_
     rows` call per candidate `surveyed_at`, newest first, until one is
     non-empty) with a single `MAX(surveyed_at)` query — provably

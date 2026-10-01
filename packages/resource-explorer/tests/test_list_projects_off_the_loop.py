@@ -1,7 +1,7 @@
 """GET /api/projects/ must not block the event loop.
 
 2026-09-29 per-request-latency investigation
-(docs/design-notes/PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md): a live
+(PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md): a live
 SIGUSR1 thread dump during a concurrent by-analysis-pane load caught the
 main/event-loop thread itself parked inside `is_working_set_hidden` ->
 `ProjectRegistry._conn` -> a Postgres connection-pool checkout, called
@@ -13,8 +13,8 @@ the `/questions` fix in BY-ANALYSIS-PROGRESSIVE-AND-GRAPH-IMPLEMENTED.md
 Sec2a, and this test follows that fix's own regression test
 (test_ask_route_off_the_loop.py) line for line.
 
-Updated 2026-09-29 round 2 (docs/design-notes/PER-REQUEST-SERVER-LATENCY-
-ROUND-2-IMPLEMENTED.md): `_list_projects_sync` no longer calls the singular
+Updated 2026-09-29 round 2 (PER-REQUEST-SERVER-LATENCY-ROUND-2-IMPLEMENTED.md):
+`_list_projects_sync` no longer calls the singular
 `is_working_set_hidden` per project at all — it batch-fetches via
 `get_working_set_hidden_for_entities`, one call for the whole list. The
 event-loop-blocking property this test pins is about `asyncio.to_thread`

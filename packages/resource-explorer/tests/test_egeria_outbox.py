@@ -1176,7 +1176,7 @@ class TestCompletePublishRunIfDone:
 
 class TestDocSourceOutbox:
     """Egeria publish-state fix (2026-09-29,
-    docs/design-notes/DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md).
+    DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md).
 
     `doc_source_publish`/`doc_source_unpublish` reuse THIS outbox (not a new
     retry queue) for a documentation source declared/removed on a resource

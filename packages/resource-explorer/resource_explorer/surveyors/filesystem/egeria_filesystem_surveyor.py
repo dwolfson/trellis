@@ -18,8 +18,8 @@ class EgeriaFileSystemSurveyorError(RuntimeError):
 
 
 # Investigated 2026-09-20 alongside the database-side "catalog_and_survey never
-# refreshes an existing element's connection" fix (docs/design-notes/
-# CATALOG-AND-SURVEY-REFRESH-FIX.md) — this surveyor does NOT have the same
+# refreshes an existing element's connection" fix (CATALOG-AND-SURVEY-REFRESH-FIX.md) — this
+# surveyor does NOT have the same
 # bug, verified rather than assumed symmetric:
 #
 # catalog_and_survey() below takes no db_user/db_pwd (or any credential) at

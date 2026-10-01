@@ -1,6 +1,6 @@
 /** Real-DOM regression test for the definition-row "re-run" wording bug
  *  (Backlog.md, logged 2026-09-27, dispatched 2026-09-29,
- *  docs/design-notes/DEFINITION-ROW-RERUN-WORDING-IMPLEMENTED.md).
+ *  DEFINITION-ROW-RERUN-WORDING-IMPLEMENTED.md).
  *
  *  THE BUG: on the Survey & analyses pane, the SURVEY DEFINITION row's own
  *  run button (`surveyRowHtml(c)`) always read "Run", even once a run had

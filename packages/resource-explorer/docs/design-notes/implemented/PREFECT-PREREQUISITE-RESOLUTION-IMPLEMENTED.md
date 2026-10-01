@@ -1,6 +1,6 @@
 # Prefect prerequisite resolution — implemented (§E)
 
-**Brief:** `docs/design-notes/BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md` §E, "The
+**Brief:** `BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md` §E, "The
 Database Analysis Survey fails on the default engine."
 
 **Branch:** `re/prefect-prerequisite-resolution`, off `origin/main` (`019c2796`).

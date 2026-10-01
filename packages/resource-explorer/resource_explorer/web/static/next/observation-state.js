@@ -1,5 +1,5 @@
-/* The four observation row states (ENRICHMENT-E3, BRIEF-ENRICHMENT-E3-
- * OBSERVATION-STATES.md). One PURE function over persisted rows -- no DOM,
+/* The four observation row states (ENRICHMENT-E3, BRIEF-ENRICHMENT-E3-OBSERVATION-STATES.md). One
+PURE function over persisted rows -- no DOM,
  * no state, no imports -- so it is table-tested over every combination and
  * a status word on screen can only come from rows that prove it.
  *

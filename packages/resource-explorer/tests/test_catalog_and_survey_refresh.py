@@ -1,7 +1,7 @@
 """Tests for the "catalog_and_survey never refreshes an existing element's
 connection" fix — docs/Backlog.md "TIER 1 — catalog_and_survey never refreshes
 an existing element's credentials/connection" and
-docs/design-notes/CATALOG-AND-SURVEY-REFRESH-FIX.md.
+CATALOG-AND-SURVEY-REFRESH-FIX.md.
 
 Root cause (confirmed live against qs-view-server, see the design note):
 pyegeria's AutomatedCuration.create_postgres_server_element_from_template and

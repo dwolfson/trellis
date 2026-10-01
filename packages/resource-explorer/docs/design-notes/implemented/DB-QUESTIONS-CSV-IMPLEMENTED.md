@@ -197,7 +197,7 @@ reword would have cost another resolver for no gain in type-neutrality.
 
 **Resolution:** all four keys updated to the new wording in the same commit
 that merged this branch with Stream 2's. See
-`docs/design-notes/QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md`'s "HANDOVER"
+`QUESTION-CATALOG-MULTI-TYPE-IMPLEMENTED.md`'s "HANDOVER"
 section for the full before/after table and its own "Resolved" note.
 
 ### The Egeria join key

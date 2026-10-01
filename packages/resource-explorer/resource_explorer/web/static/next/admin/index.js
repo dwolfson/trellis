@@ -26,7 +26,7 @@
  * next/admin/groups.js and GROUPS-ADMIN-IMPLEMENTED.md); Discovery Sources
  * gained full CRUD + preview-then-apply refresh + preview-then-import run
  * (see discovery_sources.js's own header and
- * docs/design-notes/DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md); Egeria
+ * DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md); Egeria
  * Alignment and Repair (§1) are built as TWO separate panes because classic
  * has them as two separate screens doing different jobs — see
  * admin/resync.js and admin/repair.js's own header comments for why folding

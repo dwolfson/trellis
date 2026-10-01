@@ -1,7 +1,7 @@
 # Prefect default for whole-definition runs — implemented
 
 **Scope:** the payoff of `re/prefect-dispatch-honesty` (real end-to-end Prefect dispatch, live
-gate: `docs/design-notes/PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md`). Project owner decision (via the
+gate: `PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md`). Project owner decision (via the
 architecture session, 2026-09-28): Prefect becomes the DEFAULT engine for whole-definition runs —
 the measured +24-27% overhead for a four-step chain buys real run history, retries, and UI
 visibility. The per-step REST dispatch path (`run_prefect_step`, ~3-4x local from 1s-granularity
@@ -90,7 +90,7 @@ nothing will pick up dispatched work" — reported *before* a run hits it, not d
 
 ### 4. `step_runs` snapshot — first default-engine day
 
-`docs/design-notes/step_runs-2026-09-28-prefect-default-day.csv` — same convention PR #333
+`step_runs-2026-09-28-prefect-default-day.csv` — same convention PR #333
 established (`docs/design-notes/step_runs-YYYY-MM-DD.csv`). Contains the real rows already in the
 shared registry for the two genuine (flow_run_id-verified) Prefect-path runs
 `PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md`'s live gate recorded — pulled directly from
@@ -194,5 +194,5 @@ New:
 - `resource_explorer/web/static/next/app.js` — `launchSurvey()` renders `engine_note`.
 - `tests/test_prefect_default_whole_definition.py`, `tests/test_bootstrap_prefect_pool_liveness.py`
   — new.
-- `docs/design-notes/step_runs-2026-09-28-prefect-default-day.csv` — new, real rows pulled from the
+- `step_runs-2026-09-28-prefect-default-day.csv` — new, real rows pulled from the
   shared registry.
