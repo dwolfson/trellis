@@ -1065,6 +1065,7 @@ class EgeriaResync:
             if v is True:
                 self._registry.clear_egeria_linkage_status("repo_publish", slug)
                 healed_slugs.append(slug)
+                self._log_heal(slug, row, guid)
                 log.info("egeria_resync: cleared publish flag for %s at %s "
                          "(latest report %s resolves)", slug, _now(), guid)
             elif v is False:
@@ -1079,6 +1080,27 @@ class EgeriaResync:
                 "healed_slugs": healed_slugs, "healed_at": _now() if healed_slugs else "",
                 "uncatalogued": uncatalogued,
                 "undetermined": len(res.undetermined)}
+
+    def _log_heal(self, slug: str, row: dict, report_guid: str) -> None:
+        """Visible evidence that a publish flag was cleared (the row itself is
+        deleted — absence means healthy — so without this nothing shows it
+        happened). One activity-log entry per healed slug."""
+        import uuid
+        from resource_explorer.registry import ActivityEntry
+        try:
+            self._registry.write_activity(ActivityEntry(
+                id=str(uuid.uuid4()), ts=_now(), operation="refresh",
+                intent="enrichment", entity_type="repo", entity_slug=slug,
+                status="ok",
+                summary=f"Cleared the '{row.get('status', 'stale')}' publish flag: "
+                        f"latest report {report_guid} resolves in Egeria",
+                detail=f"Resync heal (flag_vanished_publishes). Flag had been set "
+                       f"{row.get('detected_at', '')}; previously flagged guid "
+                       f"{row.get('stale_guid', '')}.",
+                items=[{"report_guid": report_guid}],
+            ))
+        except Exception:
+            log.exception("egeria_resync: could not write heal activity for %s", slug)
 
     def _do_clear_stale_investigations(self) -> dict:
         res = ScanResult()

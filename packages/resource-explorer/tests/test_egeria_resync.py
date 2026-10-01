@@ -249,6 +249,11 @@ class TestHealKeyedOnFlaggedRows:
         mod.scan_and_clear(reg)
 
         assert reg.get_egeria_linkage("repo_publish", "egeria_python") is None
+        # The clear leaves visible evidence naming the report it resolved to.
+        entries = [a for a in reg.list_activity(entity_type="repo", entity_slug="egeria_python")
+                   if a["operation"] == "refresh"]
+        assert len(entries) == 1
+        assert "new-report" in entries[0]["summary"]
 
     def test_still_vanished_keeps_flag_and_advances_last_checked(self, tmp_path, monkeypatch):
         reg = self._registry(tmp_path)
@@ -273,9 +278,6 @@ class TestHealKeyedOnFlaggedRows:
 
         row = reg.get_egeria_linkage("repo_publish", "amundsen")
         assert row["status"] == "uncatalogued"
-        from resource_explorer.egeria_linkage import describe_publish_status
-        assert describe_publish_status(reg, "repo_publish", "amundsen", "x")["note"] \
-            == "not catalogued, publish needed"
 
     def test_uncatalogued_heals_once_a_resolvable_report_exists(self, tmp_path, monkeypatch):
         reg = self._registry(tmp_path)

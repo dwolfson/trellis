@@ -40,12 +40,31 @@ clear.
   Apply UI even when `vanished_publishes` is empty. Uncatalogued rows appear in
   it only once a report exists to re-read.
 - New registry methods `mark_egeria_linkage_uncatalogued`, `list_egeria_linkages`.
+- Activity log: each healed slug gets one `activity_log` entry (operation
+  `refresh`, entity_type `repo`) naming the report it resolved to, written by the
+  heal step (`_log_heal`), because the row is deleted on clear. Tested.
 - Surfaces: `publish_uncatalogued` added beside `publish_stale` in the analysis
   payloads, survey-definition candidates and ScoutingOverview; classic cards and
   /next show "not catalogued, publish needed". Every existing consumer tests
   `status == "stale"`, so the new status simply stops showing the stale warning.
 - Slug note: linkage rows for repos key on the normalized slug (underscores, e.g.
   `egeria_python`), because they are written from `project_egeria_surveys`.
+
+## 'repo' vs 'repo_publish' — resolved
+
+Two different rows. `describe_publish_status` is called ONLY with entity type
+`repo` (projects.py x3, plus databases/filesystems/doc_sources with their own
+types) — it reads the ASSET linkage row (`repo`), and feeds `is_published`.
+The wording "no longer in the store" is NOT produced there: it comes from
+`publish_stale` fields built directly from the `repo_publish` row in
+`workflows/analysis.py`, `survey_definitions.py` and `ScoutingOverview`
+(projects.py), rendered by index.html and next/app.js. Nothing writes
+`uncatalogued` to a `repo` row, so the branch I first added to
+`describe_publish_status` was dead code and has been REMOVED (egeria_linkage.py
+is unchanged from main). The `uncatalogued` status IS reachable from the cards,
+through the `publish_uncatalogued` fields above, which read `repo_publish`
+directly; no further wiring gap exists. (The initial test that asserted through
+`describe_publish_status` was exercising that dead path and was dropped.)
 
 ## Tests (`tests/test_egeria_resync.py::TestHealKeyedOnFlaggedRows`)
 
