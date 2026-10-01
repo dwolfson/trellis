@@ -1795,6 +1795,8 @@ marker before that redeploy would fail every create.
 
 ### The private zone does not survive a redeploy — FIXED 2026-09-08
 
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `egeria-workspaces-fs@e507cf16` (a commit in the `egeria-workspaces-fs` repo, not this one; checked present on its `main`). Any residual the body below still describes is not closed by this line.
+
 **Resolved:** the `resource-explorer-private` control is now in BOTH compose-config
 seeds, so it is recreated on any redeploy and exists on a fresh machine. This is
 what makes the feature work on **freshstart**, where RE cannot create the control
@@ -1844,7 +1846,7 @@ config file in another repo, so it is written down here rather than done.
 Existing zoned artifacts need no sweep: a metadata-store wipe removes the
 Projects and reports outright, and RE republishes and zones fresh.
 
-> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `de1a576d`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
+> **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `8fcb8760` (the sync merge `de1a576d` carried it onto this repo's main); each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
 
 **`test_the_real_egeria_checkout_yields_dependencies` asserts against a checkout
 that moves.** Started failing 2026-09-08 between two full-suite runs an hour
