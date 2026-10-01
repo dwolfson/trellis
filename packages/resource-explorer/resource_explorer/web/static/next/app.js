@@ -3302,10 +3302,31 @@ export function bindResourceHeader() {
  * dashed rule the unbuilt intent uses, and clicking one says so and links
  * out rather than doing nothing.
  */
+/** The sub-tabs the strip shows for the current resource type and stage.
+ *  The ONE list: subTabsHtml() renders it and loadPane()'s
+ *  reconcileSubTabForStage() validates against it, so the tab bar and the
+ *  router cannot disagree about which sub-tab exists where. */
+export function visibleSubTabs() {
+  return SUB_TABS.filter((t) => !t.resourceTypes || t.resourceTypes.includes(state.resourceType))
+    .filter((t) => !t.stages || t.stages.includes(state.stage));
+}
+
+/** A known sub-tab that is absent from the current strip (Context outside
+ *  Enrichment, Schema Inventory on a non-database) reverts to the stage's
+ *  default, the same default writeUrl() omits from the URL. Sub-tabs present
+ *  on the new stage survive a stage switch untouched; retired/unknown ids
+ *  are left for loadPane()'s own alias and not-built handling. Returns true
+ *  when it changed state.subTab. */
+export function reconcileSubTabForStage() {
+  const known = SUB_TABS.some((t) => t.id === state.subTab);
+  if (!known || visibleSubTabs().some((t) => t.id === state.subTab)) return false;
+  state.subTab = state.stage === 'enrichment' ? 'context' : 'questions';
+  return true;
+}
+
 export function subTabsHtml() {
   return `<div class="mb-s4 flex flex-wrap items-baseline gap-s3 font-heading text-subtab">
-    ${SUB_TABS.filter((t) => !t.resourceTypes || t.resourceTypes.includes(state.resourceType))
-      .filter((t) => !t.stages || t.stages.includes(state.stage)).map((t) => {
+    ${visibleSubTabs().map((t) => {
       if (t.id === state.subTab) {
         return `<span class="border-b border-accent pb-[2px] text-ink">${t.label}</span>`;
       }
@@ -6872,6 +6893,10 @@ async function loadPane() {
     return;
   }
 
+  // A sub-tab left over from a stage/resource where it exists (Context from
+  // Enrichment, Schema Inventory from a database) must not drive the pane
+  // here: revert it to this stage's default and make the URL say so.
+  if (reconcileSubTabForStage()) writeUrl();
   if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
   // ENRICHMENT-E1-CONTEXT-TAB: Context is its own pane, not a Questions-
   // engine variant — see loadContextPane() below.
