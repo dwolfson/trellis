@@ -17875,13 +17875,38 @@ async function _applyResync() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     out.classList.remove('hidden');
-    out.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-3 text-xs space-y-1">
+    const failures = [];
+    if (data.reachable === false) {
+      failures.push(`Egeria is unreachable — nothing was applied. ${data.unreachable_reason || ''}`.trim());
+    }
+    let ok = 0, failed = 0;
+    for (const [k, v] of Object.entries(data.applied || {})) {
+      // Publishing repairs count per repo; the others count as one step.
+      if (v && typeof v.published === 'number') ok += v.published; else ok += 1;
+      if (!v || !(v.failed > 0)) continue;
+      failed += v.failed;
+      const errs = v.errors || [];
+      errs.forEach(er => failures.push(`${k}: ${er.slug} — ${er.error}`));
+      if (v.failed > errs.length) failures.push(`${k}: ${v.failed - errs.length} more failed (not listed)`);
+    }
+    out.innerHTML = `<div class="bg-slate-950 border ${failures.length ? 'border-amber-600' : 'border-slate-800'} rounded p-3 text-xs space-y-1">
+      ${failures.length ? `<div id="resync-failures" class="text-amber-400 space-y-1">
+        <div>Not everything was applied:</div>
+        ${failures.map(f => `<div class="font-mono">${_esc(f)}</div>`).join('')}
+        <button type="button" id="resync-dismiss" class="mt-1 px-2 py-0.5 border border-slate-600 rounded text-slate-200">Dismiss and re-scan</button>
+      </div>` : ''}
       <div class="text-slate-300">Applied:</div>
       ${Object.entries(data.applied || {}).map(([k, v]) =>
         `<div class="font-mono text-slate-400">${_esc(k)} — ${_esc(JSON.stringify(v))}</div>`).join('')}
     </div>`;
-    showToast('success', 'Resync applied.', 3000);
-    await loadAdminResyncPanel();
+    if (failures.length) {
+      // Persistent: no auto-refresh, which would destroy this list.
+      showToast('error', `Resync applied: ${ok} ok · ${failed} failed`, 8000);
+      document.getElementById('resync-dismiss')?.addEventListener('click', () => loadAdminResyncPanel());
+    } else {
+      showToast('success', `Resync applied: ${ok} ok · 0 failed`, 3000);
+      await loadAdminResyncPanel();
+    }
   } catch (e) {
     showToast('error', `Resync failed: ${_esc(String(e.message || e))}`, 5000);
   } finally {
