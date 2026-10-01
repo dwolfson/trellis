@@ -286,3 +286,45 @@ Slices 1 to 3 need no new survey fetch and can start once the designer answers �
 - The ad-hoc per-resource lens (`lens_source: ad_hoc`) is deferred, not dropped.
 - Whether "currency" is a lens dimension or a ranking preference. Here it is both: a
   threshold on the lens when declared, a tie-breaker in Find's ordering otherwise.
+
+## 11. Designer rulings that supersede parts of this note (2026-10-01)
+
+`REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md` §6–§8 answered the addendum
+to #354 against this note. The design session adopts the following; where
+they differ from the text above, the reply wins.
+
+- **§3.4 placement:** the data lens sits between the purposes and the scope
+  on the investigation page; verdicts are the scope grid's left columns, not
+  a section; Next steps moves below; Egeria housekeeping last. Undeclared
+  dimensions are one line ("Not declared: location, organization, quality.
+  Find won't rank on these."), not empty rows. Literal-or-reference is written
+  in words as provenance, never a glyph.
+- **§4 fit states and headline:** the four states map onto existing glyph
+  families with no new glyph: fits ✓, doesn't fit ∅ (measured, nothing
+  asked for was there; never ✕, which means error), couldn't check ?, and the
+  fourth state's on-screen word is **"no reader yet" (◌)**, not "not
+  measured", because glyphs.js already uses `not_measured` in the ? family.
+  The headline names every nonzero state and its counts add up to the
+  number of *declared* dimensions: "3 of 6 fit · 1 doesn't · 1 couldn't
+  check · 1 no reader yet". The form "matched on 4 of 6 · 2 not measured" in
+  §4 above is withdrawn. Ranking: most fits, then fewest doesn't-fits, then
+  currency, ties by name; the order is stated in words above the list.
+- **§2.1 verdicts:** "adopt, archive, ignore" is not the vocabulary.
+  `VALID_DISPOSITIONS` (undecided, tracking, investigating, recommended,
+  using, abandoned, ignored) is, and "archive" is a finding in the currency
+  cell with its evidence, never a verdict, as §5.1 already says.
+- **§5.3 pair questions:** their own section, "Between resources", under the
+  scope grid, one row per pair with both names bracketed as the subject;
+  parity is a precondition per question, drawn as ○ "can't compare yet" with
+  the missing analysis named and a run link; pairs grouped by kind pairing,
+  "Comparable" before "Can't compare yet".
+- **Wording that ships with slice 2:** Context's "declare a lens on the
+  investigation" becomes a real link to `#data-lens`, and the `needs-lens`
+  word becomes "needs a person: declare a data lens".
+
+Open with the owner (reply's "Left open" 3–5): adding from the sidebar with
+no investigation current makes the chosen one current; partial fit as ◐
+with its own count, never counted as a fit; no new disposition for "keep but
+don't integrate" until a case needs one. Open with the architect (1–2): the
+WorkingSet-to-Project link in Egeria, and what to do with existing
+one-resource lists and suggestion inboxes.
