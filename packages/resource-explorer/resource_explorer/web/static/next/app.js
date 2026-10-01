@@ -2886,14 +2886,14 @@ export function resourceHeaderHtml(slug) {
   // evidence a publish happened — and the sentence states what was observed
   // (a failed resolve), never why (a wipe and an individual deletion look
   // identical from here). No "publish again" button here: /next has no
-  // publish trigger of its own yet to wire it to; the Analysis pane's
-  // existing publish action is where that stands until one exists.
+  // publish trigger of its own yet to wire it to, and its Analysis pane has
+  // no publish control either, so the sentence below must not point there.
   if (ov?.publish_uncatalogued) {
     published += ` <span class="text-accent-ink">⚠ not catalogued, publish needed</span>`;
   }
   if (ov?.publish_stale) {
     published += ` <span class="text-accent-ink">⚠ these elements are no longer in the store —`
-      + ` publish again from the Analysis pane</span>`;
+      + ` this view has no publish control, so they are not republished from here</span>`;
   }
 
   // Persistent credential-visibility banner (design REPLY-DATABASE-
