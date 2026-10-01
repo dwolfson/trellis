@@ -236,6 +236,6 @@ class TestTheRailScopeFollowsTheSelection:
         i = app.index("state.selectedSlug = b.dataset.slug;")
         assert "renderRailScope();" in app[i:i + 200]
         for anchor in ("if (state.selectedSlug === slug) state.selectedSlug = null;",
-                       "state.selectedSlug = state.projects[0]?.slug || null;"):
+                       "state.selectedSlug = state[listKey][0]?.slug || null;"):
             j = app.index(anchor)
             assert "renderRailScope();" in app[j:j + 260], anchor

@@ -170,7 +170,6 @@ import {
   runPrerequisites,
   raiseCapabilityRfa,
   removeInvestigationMember,
-  removeProject,
   removeEntity,
   runAnalysis,
   setDisposition,
@@ -3262,12 +3261,14 @@ export function bindResourceHeader() {
   });
 
   el.querySelector('[data-act="remove"]')?.addEventListener('click', () => {
+    // Dispatch by kind. This used to call `removeProject` for every kind,
+    // which hits the repo-only `DELETE /api/projects/{slug}` (404 for a
+    // database or filesystem). `removeEntity` picks the route that exists for
+    // each kind, and the confirmation says what THAT route does and does not
+    // touch.
+    const entityType = apiEntityType(state.resourceType);
     slot.innerHTML = `
-      <div class="text-caveat text-accent-ink">
-        Unregister <span class="font-mono">${esc(state.selectedSlug)}</span> and delete all its
-        local survey data? This cannot be undone, and it is not the same as marking it
-        <em>ignored</em> — an ignored repo stays registered and can come back.
-      </div>
+      <div class="text-caveat text-accent-ink">${removeConfirmationHtml(entityType, state.selectedSlug)}</div>
       <div class="mt-s2 flex gap-s3 text-caveat">
         <button data-act="remove-confirm"
           class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink">Remove</button>
@@ -3277,11 +3278,14 @@ export function bindResourceHeader() {
       .addEventListener('click', () => { slot.innerHTML = ''; });
     slot.querySelector('[data-act="remove-confirm"]').addEventListener('click', async () => {
       const slug = state.selectedSlug;
+      const listKey = state.resourceType === 'db' ? 'databases'
+        : state.resourceType === 'filesystem' ? 'filesystems' : 'projects';
       note('Removing…');
       try {
-        await removeProject(slug);
-        state.projects = state.projects.filter((x) => x.slug !== slug);
-        state.selectedSlug = state.projects[0]?.slug || null;
+        await removeEntity(entityType, slug);
+        state[listKey] = state[listKey].filter((x) => x.slug !== slug);
+        state.selected.delete(slug);
+        state.selectedSlug = state[listKey][0]?.slug || null;
         renderSidebar();
         renderTopBar();
         renderRailScope();
@@ -3291,6 +3295,31 @@ export function bindResourceHeader() {
       }
     });
   });
+}
+
+/** What the header's remove confirmation says, per kind. Worded from what
+ *  each DELETE route does: repo drops its pgvector collections and registry
+ *  row (projects.py `remove_project`); database and filesystem delete the
+ *  registry row and survey records only (`registry.remove_database` /
+ *  `remove_filesystem`) and make no Egeria call. */
+export function removeConfirmationHtml(entityType, slug) {
+  const name = `<span class="font-mono">${esc(slug)}</span>`;
+  const notIgnored = `It is not the same as marking it <em>ignored</em> — an ignored
+    resource stays registered and can come back.`;
+  if (entityType === 'database') {
+    return `Unregister the database ${name} and delete its local survey records
+      (surveys, schema, table and column detail, coverage)? This cannot be undone.
+      Not touched: the source database itself, anything already published to Egeria,
+      and the server registration it was discovered from. ${notIgnored}`;
+  }
+  if (entityType === 'filesystem') {
+    return `Unregister the filesystem ${name} and delete its local survey records?
+      This cannot be undone. Not touched: the files on disk and anything already
+      published to Egeria. ${notIgnored}`;
+  }
+  return `Unregister ${name} and delete all its local survey data? This cannot be
+    undone. Not touched: the GitHub repository and anything already published to
+    Egeria. ${notIgnored}`;
 }
 
 /**
@@ -3415,6 +3444,7 @@ async function loadSchemaInventoryPane() {
     </div>
     <div id="schema-tree">Reading the schema tree…</div>`;
   bindSubTabs();
+  bindResourceHeader();
 
   let tree;
   try {
