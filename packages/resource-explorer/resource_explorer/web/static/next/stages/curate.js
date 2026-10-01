@@ -479,8 +479,8 @@ function leafRowHtml(l) {
   return `<div class="flex flex-col gap-[1px] border-b border-rule py-[3px]">
     <div class="flex flex-wrap items-baseline gap-x-s2 text-provenance">
       <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
-      ${!multi && l.type ? `<span class="text-ink-muted">· ${esc(l.type)}</span>` : ''}
-      ${!multi && (l.low_confidence ? `<span class="text-state-warn">· ⚠ <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· <span class="tnum">${l.confidence}</span>%</span>` : '')}
+      ${!multi ? `<span class="text-ink-muted">· ${l.type ? esc(l.type) : 'type not assigned · boundary only'}</span>` : ''}
+      ${!multi && (l.low_confidence ? `<span class="text-state-warn">· ⚠ confidence <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· confidence <span class="tnum">${l.confidence}</span>%</span>` : '')}
       ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
       <span>· ${verdictBadge(l.verdict)}</span>
       <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
