@@ -239,6 +239,7 @@ class EgeriaResync:
         res.findings.append(self._scan_unpublished_but_expected())
         res.findings.append(self._scan_unpublishable())
         res.findings.append(self._scan_registration_only())
+        res.findings.append(self._scan_registration_blocked())
         res.findings.append(self._scan_local_investigations())
         res.findings.append(self._scan_definition_drift(res))
         res.findings.append(self._scan_specification_gap())
@@ -611,25 +612,29 @@ class EgeriaResync:
 
         # Inheritance is asked OUTSIDE the connection above: it opens its own.
         for item in out:
-            if item["context"] not in ("", "none", "unset"):
-                item["publish_ready"] = True
-                item["ready_via"] = f"context '{item['context']}'"
-                continue
-            try:
-                inherited = self._registry.inherited_egeria_project_context(
-                    "repo", item["slug"])
-            except Exception as exc:
-                # Could not ask is never "not ready" — the same rule the rest of
-                # this module runs on. A repo we cannot answer for is offered no
-                # button and says why.
-                item["publish_ready"] = None
-                item["ready_via"] = f"undetermined ({type(exc).__name__})"
-                continue
-            item["publish_ready"] = bool(inherited)
-            item["ready_via"] = (
-                f"inherits from '{inherited['_inherited_from_name']}'"
-                if inherited else "")
+            item["publish_ready"], item["ready_via"] = self._ready_via(
+                item["slug"], item["context"])
         return out
+
+    def _ready_via(self, slug: str, context: str) -> tuple:
+        """(publish_ready, ready_via) for one repo: the gate's own question.
+
+        `context` is the repo's own context status ('' / 'none' / 'unset' mean
+        none was decided). Shared by `_publish_readiness` and
+        `_scan_registration_only` so the two cannot answer differently.
+        """
+        if context not in ("", "none", "unset"):
+            return True, f"context '{context}'"
+        try:
+            inherited = self._registry.inherited_egeria_project_context("repo", slug)
+        except Exception as exc:
+            # Could not ask is never "not ready" — the same rule the rest of
+            # this module runs on. A repo we cannot answer for is offered no
+            # button and says why.
+            return None, f"undetermined ({type(exc).__name__})"
+        if inherited:
+            return True, f"inherits from '{inherited['_inherited_from_name']}'"
+        return False, ""
 
     def _scan_unpublished_but_expected(self) -> Finding:
         """Repos with no Egeria asset that CAN be catalogued now.
@@ -703,53 +708,28 @@ class EgeriaResync:
         )
 
     def _scan_registration_only(self) -> Finding:
-        """Assets that exist but carry no real survey report.
+        """Assets that exist but carry no real survey report, and CAN be published.
 
         The sequel to `catalog_assets`: cataloguing registers the asset with one
         cheap step, which is the right trade when the goal is to make relinking
         possible, but it leaves the catalog holding an asset and almost nothing
         about it. This finds those and offers the full survey publish.
 
-        Membership is a subset test against `REGISTRATION_ONLY_ANALYSES`, not a
-        row count. "Fewer than N published analyses" would be a threshold whose
-        meaning changes silently the next time the analysis catalog grows.
+        Two rules decide membership, both about proof rather than claims:
+
+        * READY. A repo the publish gate would refuse (no Egeria Project
+          context, none inherited) is NOT listed here: a tick-box over a row the
+          repair is guaranteed to fail on is what `_scan_unpublishable` exists
+          to prevent. Those go to `_scan_registration_blocked` as a sentence.
+        * PUBLISHED. A repo is published when `project_egeria_surveys` holds a
+          row for it — the real proof, written by EVERY publish path. It used
+          to be `project_published_analyses`, which only the full-survey path
+          writes, so the scheduled refresh published a repo and this scan kept
+          offering it (docling and egeria_docs, 2026-10-01). Where claims exist
+          they are still read, because a catalog-step publish also leaves a
+          survey row and only the claims say it covered nothing but
+          registration.
         """
-        items = []
-        with self._registry._conn() as conn:
-            rows = conn.execute(
-                "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') <> '' "
-                "ORDER BY slug").fetchall()
-            for r in rows:
-                # JOINed to project_egeria_surveys, not read on its own. A row
-                # in project_published_analyses is a CLAIM that something was
-                # published; it does not stop being a row when the report it
-                # names is destroyed. After the 2026-08-31 redeploy this table
-                # held 64 rows of which 36 pointed at SurveyReports that no
-                # longer existed — a record that outlived what it described,
-                # and indistinguishable from a live one by inspection.
-                #
-                # Read raw, it excluded 5 repos from this finding on the
-                # strength of claims dated 27-31 August: the scan said "these
-                # already have survey results" about repos whose results the
-                # redeploy had destroyed. The exclusion was silent, which is
-                # the dangerous part — a repo dropping out of a worklist looks
-                # exactly like a repo that did not need to be on it.
-                #
-                # The join is the whole fix: project_egeria_surveys is cleared
-                # alongside the asset by clear_egeria_registration, so a claim
-                # whose report_guid is absent from it is one nothing stands
-                # behind.
-                published = {x["analysis_id"] for x in conn.execute(
-                    "SELECT DISTINCT a.analysis_id FROM project_published_analyses a "
-                    "JOIN project_egeria_surveys s "
-                    "  ON s.egeria_report_guid = a.egeria_report_guid "
-                    "WHERE a.project_slug = ?", (r["slug"],)).fetchall()}
-                if published and not published <= REGISTRATION_ONLY_ANALYSES:
-                    continue
-                items.append({
-                    "slug": r["slug"],
-                    "published_analyses": ", ".join(sorted(published)) or "none",
-                })
         return Finding(
             key="registration_only",
             title=("Catalogued assets with no survey results published"),
@@ -760,8 +740,75 @@ class EgeriaResync:
                     "Left unticked for that reason. The assets are already registered "
                     "and investigation members can already be attached to them — this "
                     "adds what is known ABOUT each repo, and nothing depends on it."),
-            items=items, repair_step="republish_survey_results",
+            items=[i for i in self._registration_only_rows() if i["publish_ready"] is True],
+            repair_step="republish_survey_results",
         )
+
+    def _scan_registration_blocked(self) -> Finding:
+        """Catalogued repos that lack survey results but cannot be published.
+
+        Plain sentence, no tick-box: the publish gate refuses a repo with no
+        Egeria Project context, so offering the repair would only fail.
+        """
+        items = []
+        for i in self._registration_only_rows():
+            if i["publish_ready"] is True:
+                continue
+            i["blocked_reason"] = (
+                "could not determine whether an Egeria Project applies"
+                if i["publish_ready"] is None else
+                f"{i['slug']} has no Egeria Project, and no investigation supplies one, "
+                "so its survey results cannot be published until one is set")
+            items.append(i)
+        return Finding(
+            key="registration_blocked",
+            title="Catalogued assets with no survey results and no Project to publish under",
+            detail=("Assign an Egeria Project to these, or add them to an investigation "
+                    "that has one. No button: the publish is refused (428) until then."),
+            items=items, repair_step="", needs_decision=True,
+        )
+
+    def _registration_only_rows(self) -> list:
+        items = []
+        with self._registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT p.slug AS slug, coalesce(c.status, '') AS status "
+                "FROM projects p "
+                "LEFT JOIN entity_egeria_project_context c "
+                "  ON c.entity_type = 'repo' AND c.entity_slug = p.slug "
+                "WHERE coalesce(p.egeria_asset_guid, '') <> '' "
+                "ORDER BY p.slug").fetchall()
+            for r in rows:
+                # JOINed to project_egeria_surveys, not read on its own. A row
+                # in project_published_analyses is a CLAIM that something was
+                # published; it does not stop being a row when the report it
+                # names is destroyed (36 of 64 after the 2026-08-31 redeploy).
+                # Read raw, it silently excluded 5 repos from this finding.
+                # project_egeria_surveys is cleared alongside the asset by
+                # clear_egeria_registration, so a claim whose report_guid is
+                # absent from it is one nothing stands behind.
+                published = {x["analysis_id"] for x in conn.execute(
+                    "SELECT DISTINCT a.analysis_id FROM project_published_analyses a "
+                    "JOIN project_egeria_surveys s "
+                    "  ON s.egeria_report_guid = a.egeria_report_guid "
+                    "WHERE a.project_slug = ?", (r["slug"],)).fetchall()}
+                has_survey_row = conn.execute(
+                    "SELECT 1 FROM project_egeria_surveys WHERE project_slug = ? LIMIT 1",
+                    (r["slug"],)).fetchone() is not None
+                if published and not published <= REGISTRATION_ONLY_ANALYSES:
+                    continue
+                if not published and has_survey_row:
+                    # Published by a path that records no per-analysis claims
+                    # (the scheduled refresh). The survey row is the proof.
+                    continue
+                items.append({
+                    "slug": r["slug"], "context": r["status"] or "none",
+                    "published_analyses": ", ".join(sorted(published)) or "none",
+                })
+        for item in items:
+            item["publish_ready"], item["ready_via"] = self._ready_via(
+                item["slug"], item["context"])
+        return items
 
     def _scan_local_investigations(self) -> Finding:
         items = [
@@ -1136,6 +1183,34 @@ class EgeriaResync:
                 "undetermined": len(res.undetermined)}
 
     def _publish_one(self, slug: str, steps) -> dict:
+        """`_publish_one_unlogged`, plus a durable record of any failure.
+
+        Refusals at the gate and failures before the orchestrator runs never
+        reach the publisher, so nothing else writes an activity_log row for
+        them: an Apply that failed on every repo left no trace anywhere a
+        person looks (rule 16). Every not-ok outcome is logged here.
+        """
+        out = self._publish_one_unlogged(slug, steps)
+        if not out.get("ok"):
+            self._log_publish_failure(slug, out.get("error", "unknown error"))
+        return out
+
+    def _log_publish_failure(self, slug: str, error: str) -> None:
+        import uuid
+        from resource_explorer.registry import ActivityEntry
+        try:
+            self._registry.write_activity(ActivityEntry(
+                id=str(uuid.uuid4()), ts=_now(), operation="publish",
+                intent="enrichment", entity_type="repo", entity_slug=slug,
+                status="error",
+                summary=f"Resync publish failed: {error}",
+                detail="Resync apply (republish/catalog). The repo was not published.",
+                items=[{"error": error}],
+            ))
+        except Exception:
+            log.exception("egeria_resync: could not write failure activity for %s", slug)
+
+    def _publish_one_unlogged(self, slug: str, steps) -> dict:
         """Survey then publish one repo, mirroring the publish route's own order.
 
         Deliberately reimplements the route's sequence rather than calling it:
@@ -1157,9 +1232,10 @@ class EgeriaResync:
         if not context or context.get("status") == "unset":
             inherited = reg.inherited_egeria_project_context("repo", slug)
             if not inherited:
-                # The scan promised this would not happen — say so plainly
-                # rather than raising, so one repo that drifted between scan and
-                # apply cannot abort the other twenty-six.
+                # Reached only if the context changed between scan and apply:
+                # the scans no longer offer a repo the gate would refuse. Say
+                # so plainly rather than raising, so one repo that drifted
+                # cannot abort the other twenty-six.
                 return {"slug": slug, "ok": False,
                         "error": "no Egeria Project context (428) — re-scan"}
             reg.set_project_context(

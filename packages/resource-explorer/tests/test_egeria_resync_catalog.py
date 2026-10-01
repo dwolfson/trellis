@@ -35,7 +35,7 @@ from resource_explorer.egeria_resync import (
 
 
 def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(),
-              live_reports=("r-live",)):
+              live_reports=("r-live",), surveyed=()):
     """A registry whose _conn() serves a real in-memory SQLite.
 
     Real SQL rather than a mocked cursor: the scans under test are mostly SQL,
@@ -52,11 +52,16 @@ def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(
         "  (entity_slug TEXT, operation TEXT, status TEXT);"
         "CREATE TABLE project_published_analyses "
         "  (project_slug TEXT, analysis_id TEXT, egeria_report_guid TEXT);"
-        "CREATE TABLE project_egeria_surveys (egeria_report_guid TEXT);"
+        "CREATE TABLE project_egeria_surveys "
+        "  (project_slug TEXT, egeria_report_guid TEXT);"
         "CREATE TABLE project_published_annotation_types "
         "  (project_slug TEXT, annotation_type TEXT, egeria_report_guid TEXT);")
     for guid in live_reports:
-        conn.execute("INSERT INTO project_egeria_surveys VALUES (?)", (guid,))
+        conn.execute("INSERT INTO project_egeria_surveys VALUES (NULL, ?)", (guid,))
+    for slug in surveyed:
+        # A repo published by a path that writes no per-analysis claims.
+        conn.execute("INSERT INTO project_egeria_surveys VALUES (?, ?)",
+                     (slug, f"r-{slug}"))
     for slug, asset, ctx in rows:
         conn.execute("INSERT INTO projects VALUES (?,?)", (slug, asset))
         if ctx is not None:

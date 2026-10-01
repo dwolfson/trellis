@@ -299,12 +299,51 @@ function render() {
   bind();
 }
 
-function resultHtml(applied) {
-  return `<div class="mt-s3 rounded-sm border border-rule bg-paper-surface p-s3 text-caveat">
+/** Every way an apply can have not worked, as plain sentences.
+ *  HTTP 200 only means the request was handled — a repair that failed on
+ *  every repo, or could not reach Egeria, still returns 200. */
+export function applyFailures(data) {
+  const out = [];
+  if (data && data.reachable === false) {
+    out.push(`Egeria is unreachable — nothing was applied. ${data.unreachable_reason || ''}`.trim());
+  }
+  for (const [step, v] of Object.entries((data && data.applied) || {})) {
+    if (!v || !(v.failed > 0)) continue;
+    const errs = v.errors || [];
+    if (!errs.length) out.push(`${step}: ${v.failed} failed`);
+    for (const e of errs) out.push(`${step}: ${e.slug} — ${e.error}`);
+    if (v.failed > errs.length) out.push(`${step}: ${v.failed - errs.length} more failed (not listed)`);
+  }
+  return out;
+}
+
+function resultHtml(data) {
+  const applied = (data && data.applied) || {};
+  const failures = applyFailures(data);
+  return `<div class="mt-s3 rounded-sm border ${failures.length ? 'border-state-warn' : 'border-rule'} bg-paper-surface p-s3 text-caveat">
+    ${failures.length ? `<div data-resync-failures class="mb-s2 text-state-warn">
+      <div>Not everything was applied (${failures.length} problem(s)):</div>
+      ${failures.map((f) => `<div class="font-mono text-provenance">${esc(f)}</div>`).join('')}
+      <button type="button" data-resync-dismiss
+        class="mt-s2 cursor-pointer rounded-sm border border-rule-strong px-2 py-[2px] text-caveat text-ink hover:border-accent">Dismiss and re-scan</button>
+    </div>` : ''}
     <div class="text-ink">Applied:</div>
-    ${Object.entries(applied || {}).map(([k, v]) =>
+    ${Object.entries(applied).map(([k, v]) =>
       `<div class="font-mono text-provenance text-ink-muted">${esc(k)} — ${esc(JSON.stringify(v))}</div>`).join('')}
   </div>`;
+}
+
+/** Show the result. On any failure the result STAYS until dismissed —
+ *  load() would replace it within the same tick, which is how a failed
+ *  Apply used to look like nothing had happened. */
+async function showApplyResult(data) {
+  const out = _host.querySelector('[data-resync-result]');
+  if (out) out.innerHTML = resultHtml(data);
+  if (applyFailures(data).length) {
+    out?.querySelector('[data-resync-dismiss]')?.addEventListener('click', () => load());
+    return;
+  }
+  await load();
 }
 
 async function runNow(step, finding) {
@@ -314,9 +353,7 @@ async function runNow(step, finding) {
   if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
   try {
     const data = await applyResyncSteps([step]);
-    const out = _host.querySelector('[data-resync-result]');
-    if (out) out.innerHTML = resultHtml(data.applied);
-    await load();
+    await showApplyResult(data);
   } catch (err) {
     window.alert(`Run failed: ${err.message}`);
   } finally {
@@ -344,9 +381,10 @@ async function applySelected() {
   if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
   try {
     const data = await applyResyncSteps(steps);
-    const out = _host.querySelector('[data-resync-result]');
-    if (out) out.innerHTML = resultHtml(data.applied);
-    await load();
+    await showApplyResult(data);
+    _busy = false;
+    const b = _host.querySelector('[data-apply-selected]');
+    if (b) { b.disabled = false; b.textContent = 'Apply selected'; }
   } catch (err) {
     window.alert(`Resync failed: ${err.message}`);
     _busy = false;
