@@ -166,6 +166,8 @@ import {
   listRfas,
   clearCache,
   pollActivity,
+  activityFailure,
+  failureText,
   planPrerequisites,
   runPrerequisites,
   raiseCapabilityRfa,
@@ -225,6 +227,9 @@ export const state = {
   questions: [],              // the stage's questions AFTER perspective filtering
   allQuestions: null,         // the stage's questions UNFILTERED; null = unknown
   answers: new Map(),          // question text -> envelope | {error} | 'loading'
+  // `${slug}|${analysisId}` -> failure text persisted by the finished run's own
+  // activity row; shown in the Survey & analyses row until the next run.
+  analysisRunFailures: new Map(),
   runsInFlight: new Map(),     // question text -> {analysisId, activityId}
   // §17.1 prerequisite proposals -- a run the resolver would not let start
   // unasked because it crosses the budget's tier. question -> {analysisId,
@@ -4578,6 +4583,7 @@ function analysisRowPrice(cost) {
 const SUBRES_ANALYSIS_ID = 'sub_resource_survey';
 
 function analysisIndexRowHtml(row) {
+  const failed = state.analysisRunFailures.get(`${state.selectedSlug}|${row.analysis_id}`);
   const g = analysisRowGlyph(row);
   const qn = (row.questions || []).length;
   const isSubRes = row.analysis_id === SUBRES_ANALYSIS_ID;
@@ -4607,6 +4613,8 @@ function analysisIndexRowHtml(row) {
       >${row.last_run_at ? 're-run' : 'run'} →</button>
     <span data-analysis-run-error="${esc(row.analysis_id)}"
       class="hidden w-full text-provenance text-state-warn"></span>
+    ${failed ? `<span data-analysis-run-failed="${esc(row.analysis_id)}" role="alert"
+      class="w-full text-provenance text-state-warn">${esc(failed)}</span>` : ''}
   </div>
   ${isSubRes ? '<div id="subres-panel" class="hidden mb-s3 border-b border-rule pb-s3"></div>' : ''}`;
 }
@@ -4732,13 +4740,20 @@ async function renderAnalysesIndexSection(slug, stage) {
       // once so a slow run's real state (whatever it reaches) is on screen
       // instead of the stale pre-run row.
       b.textContent = 'Running…';
+      const failKey = `${slug}|${aid}`;
+      state.analysisRunFailures.delete(failKey);
       try {
-        await pollActivity(started.activity_id, {
+        const finished = await pollActivity(started.activity_id, {
           onTick: (e) => {
             const s = (e?.status || '').toLowerCase();
             b.textContent = s === 'queued' || s === 'pending' ? 'Queued…' : 'Running…';
           },
         });
+        // pollActivity resolves with the finished row whatever it ended as;
+        // keep a failure on screen (the redraw below would otherwise show
+        // only a glyph from last_run_status).
+        const failure = activityFailure(finished);
+        if (failure) state.analysisRunFailures.set(failKey, failureText(failure));
       } catch (err) {
         if (err.name !== 'PollTimeout') throw err;
         // Not a failure — this browser stopped watching, the run itself
@@ -8184,13 +8199,14 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false } = {
     return;
   }
 
+  let finishedRun = null;
   try {
     const started = await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
     const activityId = started.activity_id;
     state.runsInFlight.set(entry.question, { analysisId, activityId, label: `Running · ${analysisId}` });
     replaceRow(entry, i, state.answers.get(entry.question));
 
-    await pollActivity(activityId, {
+    finishedRun = await pollActivity(activityId, {
       onTick: (e) => {
         const s = (e?.status || '').toLowerCase();
         const label = s === 'running' ? `Running · ${analysisId}`
@@ -8218,6 +8234,17 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false } = {
   }
 
   state.runsInFlight.delete(entry.question);
+  // The finished row's own status decides, not the path taken to get here:
+  // a run that ended in error stays visible on this row instead of being
+  // replaced by a re-read of the previous answer.
+  const failure = activityFailure(finishedRun);
+  if (failure) {
+    state.answers.set(entry.question, { __error: failureText(failure).replace('Failed — ', 'The run failed: ') });
+    replaceRow(entry, i, state.answers.get(entry.question));
+    updateAnsweredCount();
+    renderLegend();
+    return;
+  }
   await loadAnswer(entry, i, state.selectedSlug);
 }
 

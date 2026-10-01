@@ -1328,6 +1328,33 @@ export async function pollActivity(entryId, {
   }
 }
 
+/**
+ * The failure a finished activity entry PERSISTED, or null when it did not
+ * fail. pollActivity resolves with the entry whatever its terminal status, so
+ * a caller that ignores the return value discards a failed run (the parity
+ * inventory's D-43). Derived from the row's own `status`, never from which
+ * branch the caller took.
+ *
+ * The reason is `detail.error` (what the analysis workflows write on failure;
+ * `detail` arrives as a JSON string), else the row's `summary`. When the
+ * backend recorded neither, `reason` is '' and the caller must say so rather
+ * than invent one.
+ */
+export function activityFailure(entry) {
+  const status = (entry?.status || '').toLowerCase();
+  if (status !== 'error' && status !== 'failed') return null;
+  let detail = entry.detail;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch { detail = null; }
+  }
+  const reason = String((detail && detail.error) || entry.summary || '').trim();
+  return { status, reason };
+}
+
+/** The sentence a row shows for a failure: the real reason, or the plain fact
+ *  that none was recorded. */
+export const failureText = (f) => `Failed — ${f.reason || 'no reason recorded'}`;
+
 /* ── Curate ─────────────────────────────────────────────────────────────── */
 
 /** The review-and-commit plan: three columns, the manifest, the record. A
