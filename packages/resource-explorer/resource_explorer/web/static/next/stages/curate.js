@@ -205,9 +205,26 @@ function nonRepoCurateHtml(entityType) {
     </div>`;
 }
 
+/** Curate owns its host. It used to borrow `#enrichment-form`, which E1
+ *  deleted from the Questions pane, and the `if (!host) return` below then
+ *  drew nothing for every resource kind. The host is a SIBLING of
+ *  `#question-rows`, not a child, so loadPane()'s `rows.innerHTML = ...`
+ *  (which always runs for Curate) cannot wipe it. A missing pane frame is a
+ *  bug and says so: it throws rather than drawing nothing. */
+export function mountCurateHost() {
+  const rows = $('question-rows');
+  if (!rows) throw new Error('Curate pane host missing: #question-rows is not in the document');
+  let host = $('curate-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'curate-host';
+    rows.insertAdjacentElement('afterend', host);
+  }
+  return host;
+}
+
 export async function renderCurate(slug) {
-  const host = $('enrichment-form');
-  if (!host) return;
+  const host = mountCurateHost();
   const entityType = apiEntityType(state.resourceType);
   if (entityType !== 'repo') {
     // Skip every repo-only /api/projects/{slug}/... call entirely rather

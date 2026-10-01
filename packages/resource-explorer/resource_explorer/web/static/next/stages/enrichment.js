@@ -261,7 +261,10 @@ function proposedFrom(analysisId) {
 
 export async function renderEnrichment(slug) {
   const host = $('enrichment-form');
-  if (!host) return;
+  // Nothing calls this since E1 moved the form to the Context tab, and the
+  // Questions pane no longer carries #enrichment-form. If something calls it
+  // again it must fail loudly, not draw nothing.
+  if (!host) throw new Error('Enrichment pane host missing: #enrichment-form is not in the document');
   host.innerHTML = `<div class="text-caveat text-ink-muted">Reading the evidence…</div>`;
   await fetchEnrichmentEvidence(slug);
   if (slug !== state.selectedSlug) return;
