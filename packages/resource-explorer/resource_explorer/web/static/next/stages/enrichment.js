@@ -21,7 +21,7 @@ import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntity
 // shared function instead so the Questions tab can call the exact same one.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import { glyphSpan } from '/static/next/glyphs.js';
-import { observationState } from '/static/next/observation-state.js';
+import { observationState, sameFact } from '/static/next/observation-state.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
  *
@@ -137,8 +137,16 @@ function observationStateHtml(def, field, st) {
         <button type="button" data-confirm="${def.key}" data-source="${esc(def.fromAnalysis)}" data-value="${esc(m)}"
           class="cursor-pointer bg-transparent p-0 text-accent-ink underline">accept</button></div>`;
     }
-    case 'confirmed':
-      return `<div data-observation-state="confirmed" class="text-provenance text-ink-muted">${signed('confirmed by')}</div>`;
+    case 'confirmed': {
+      // The person's value now equals what the survey measures, but the
+      // measurement their row was made against was different: say so, so the
+      // stale stored measurement is not silently invisible.
+      const meas = measurementFor(def);
+      const agrees = st.stored && m && !sameFact(st.stored, m);
+      return `<div data-observation-state="confirmed" class="text-provenance text-ink-muted">${signed('confirmed by')}</div>${
+        agrees ? `<div data-observation-agrees class="text-provenance text-ink-muted">survey now agrees${
+          meas?.at ? ` · <span class="tnum">${esc(ago(meas.at))}</span>` : ''}</div>` : ''}`;
+    }
     case 'overridden':
       return `<div data-observation-state="overridden" class="text-provenance text-ink-muted">${signed('set by')}</div>
         <div class="text-provenance text-ink-muted">${measuredBeside('measured:')}</div>`;
@@ -165,7 +173,9 @@ function observationStateHtml(def, field, st) {
  *  "not measured yet". */
 function ownerMaterialHtml() {
   if (state.resourceType !== 'db' || state.ownerMaterialFor !== state.selectedSlug) return '';
-  const owner = state.enrichmentFacts?.schema_inventory?.value?.database_owner?.owner;
+  // Its OWN fact (`database_owner`), never schema_inventory's tables list.
+  const fact = state.enrichmentFacts?.database_owner;
+  const owner = fact && fact.state === 'measured' ? fact.value?.owner : '';
   const body = owner
     ? `database owner role: <span class="text-ink">${esc(owner)}</span> (measured)`
     : 'database owner role: not measured yet · run a survey';

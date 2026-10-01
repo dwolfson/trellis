@@ -229,9 +229,9 @@ function docSourcesSlotHtml() {
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
-// preliminary_fit: the lens row. schema_inventory: the measured database owner
-// role (`value.database_owner`), material for the owner judgement row.
-const ENRICHMENT_EVIDENCE_FOR_LENS = ['preliminary_fit', 'schema_inventory'];
+// preliminary_fit: the lens row. database_owner: the measured database owner
+// role (its own fact, `value.owner`), material for the owner judgement row.
+const ENRICHMENT_EVIDENCE_FOR_LENS = ['preliminary_fit', 'database_owner'];
 
 // The slug the rail's facts currently belong to. A re-render of the SAME
 // resource (after a save) keeps its facts; a different resource clears them
