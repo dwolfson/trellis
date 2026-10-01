@@ -3396,7 +3396,7 @@ async function loadAnalysisResults(analysisId, slug) {
   try {
     const [resultsRes, trendRes] = await Promise.all([
       fetch(`/api/projects/${slug}/analyses/${analysisId}/results`),
-      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend`),
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend?entity_type=${encodeURIComponent('repo')}`),
     ]);
     if (!resultsRes.ok) throw new Error(`HTTP ${resultsRes.status}`);
     const data = await resultsRes.json();
@@ -8818,7 +8818,7 @@ function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml, 
     ${perspectiveRowHtml}
     <div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cardsHtml ||
       '<div class="text-slate-600 text-xs text-center py-8 col-span-2">No dashboards match the active Perspective filter.</div>'}</div>`;
-  _loadDashboardTrendCharts(visible, slug);
+  _loadDashboardTrendCharts(visible, slug, entityType);
   renderPendingArchDiagrams();
 }
 
@@ -8855,7 +8855,7 @@ function _renderDashboardTrendPlaceholder(dashboard) {
   </div>`;
 }
 
-async function _loadDashboardTrendCharts(dashboards, slug) {
+async function _loadDashboardTrendCharts(dashboards, slug, entityType) {
   for (const d of dashboards) {
     const cfg = _DASHBOARD_TREND_CONFIG[d.id];
     if (!cfg) continue;
@@ -8880,7 +8880,7 @@ async function _loadDashboardTrendCharts(dashboards, slug) {
     } else if (cfg.kind === 'analysis_trends') {
       for (const analysisId of cfg.analysis_ids) {
         try {
-          const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/${analysisId}/trend`);
+          const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/${analysisId}/trend?entity_type=${encodeURIComponent(entityType)}`);
           if (!res.ok) continue;
           const { runs } = await res.json();
           if (runs && runs.length > 1) {
@@ -14008,7 +14008,7 @@ async function _toggleInlineResults(analysisId, slug, containerId) {
   try {
     const [resultsRes, trendRes] = await Promise.all([
       fetch(`/api/projects/${slug}/analyses/${analysisId}/results`),
-      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend`),
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend?entity_type=${encodeURIComponent('repo')}`),
     ]);
     if (!resultsRes.ok) throw new Error(`HTTP ${resultsRes.status}`);
     const data = await resultsRes.json();

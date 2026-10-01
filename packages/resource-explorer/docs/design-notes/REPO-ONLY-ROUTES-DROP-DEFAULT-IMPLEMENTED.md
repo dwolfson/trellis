@@ -35,3 +35,25 @@ Still intact: trend with `entity_type=database` (and filesystem) still returns 4
 isn't built for databases yet; today it covers repository analyses." (asserted by
 `test_non_repo_kind_gets_honest_400_naming_the_kind[trend-*]`, and 404-for-unknown-slug names the
 kind). Only the missing-parameter case changed, to 422.
+
+## Fix commit: classic UI trend calls (found in PR review)
+`resource_explorer/web/static/index.html` called `/api/projects/{slug}/analyses/{id}/trend` WITHOUT
+`entity_type` in three places; with the default dropped each would 422 and the classic trend chart
+would silently go empty. Now:
+- ~3399 `loadAnalysisResults` and ~14011 `_toggleInlineResults`: `?entity_type=` + `encodeURIComponent('repo')`.
+  Repo is correct, not a guess: both sit beside the `/results` call (repo-only route; databases/filesystems
+  use `/sub-resources/.../results`), every caller is gated on `entityType === 'repo'` / `_REPO_RESULTS_RENDER_MODE`
+  (the Results button, `_openAnalysisResults`, chat `_inlineResultsToggleHtml`), and the code comment says "repo-only".
+- ~8883 `_loadDashboardTrendCharts`: now takes the `entityType` that `renderSurveyResultsPanel` already has in
+  scope and sends `encodeURIComponent(entityType)` (new third parameter; one caller).
+Other four routes (members/children/promote/analyses-index under `/api/projects/`): classic UI never calls them.
+(`/api/investigations/.../members` and `/promote` are the investigations router, untouched.)
+New test `tests/test_classic_ui_sends_entity_type.py` (source-text over index.html; scans every `/api/projects/...`
+URL literal matching the five routes, requires `entity_type=`; plus a guard that >=3 trend calls are found).
+Revert proof: removing it from the dashboard call fails; removing it from both repo calls fails; restored: passes.
+
+### Follow-up scouting (NOT fixed here): `measurements` and `answer_question` in index.html
+- `/analyses/{id}/measurements`: NO classic-UI callers (only prose mentions of "measurements").
+- `answer_question` (`GET /api/analyses/facts/{slug}/answer`): TWO callers, both WITHOUT entity_type:
+  `_answerQuestionInChat` (~11715) and `_chatReplaceAnswer` (~11740). Dropping that route's default would 422 the
+  classic chat; those two need the kind (slug's resource kind from chat context) added in the same dispatch.
