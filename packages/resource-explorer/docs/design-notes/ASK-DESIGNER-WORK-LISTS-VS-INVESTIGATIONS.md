@@ -67,6 +67,14 @@ question is the first one, as a person experiences it.
    action says "work list" while the person thinks "investigation". What
    should the row's add action read, and what happens when an investigation
    is selected versus none?
+5. **A stage click while a work list is open.** Found 2026-09-30 fixing an
+   unrelated routing bug: a work list replaces the main pane for whatever
+   stage is current, and clicking a different top-nav stage (including
+   Investigation, Understanding or Automate) does not close the work list —
+   it keeps showing, under the new stage's nav highlight. Is that the right
+   behavior (a work list is its own view, independent of stage, until the
+   person explicitly exits it), or should navigating to a stage — especially
+   a frame stage like Investigation — close an open work list first?
 
 ## Constraints
 
