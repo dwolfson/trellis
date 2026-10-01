@@ -94,7 +94,18 @@ the user reads".
   agent's commits once carried `Signed-off-by` but no signature. The branch
   was re-signed with `rebase --exec 'git commit --amend --no-edit -S -s'`
   and force-pushed; verify that the tree is unchanged with
-  `git diff <old> <new>`.
+  `git diff <old> <new>`. A one-line check for a whole branch is
+  `git log --format='%G? %h' base..head`, which must show `G` on every
+  commit. Three commits reached a PR on 2026-09-30 with the DCO trailer and no
+  signature, and the PR was held until they were re-signed.
+- **Agents test in their own worktree, after printing the import path.** Run
+  `uv sync` there (or set PYTHONPATH to the worktree's packages), then
+  `python -c "import resource_explorer; print(resource_explorer.__file__)"`
+  and put that line in the implemented note. The shared `trellis/.venv`
+  resolves the package to main's checkout, so a suite run without that line
+  tested main's code with the branch's tests.
+- **Anything that opens the shared registry migrates it, dry runs included.**
+  Do a peer check first, or point the command at a scratch database.
 - **The owner sometimes merges on green before the gate.** That is the
   owner's call. Report it as "merged without its gate", never as "passed",
   and keep the unwalked gate items listed until they are reported.
