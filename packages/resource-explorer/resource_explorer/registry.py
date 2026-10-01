@@ -7041,6 +7041,49 @@ class ProjectRegistry:
                 (entity_type, entity_slug, stale_guid, now, now, detail),
             )
 
+    def mark_egeria_linkage_uncatalogued(
+        self, entity_type: str, entity_slug: str, detail: str = "",
+    ) -> None:
+        """Re-word a flag for an entity that has NO publish at all.
+
+        'stale' says something once resolved and no longer does; for a slug
+        with no survey/report there was never anything to go stale. The honest
+        status is 'uncatalogued' ("not catalogued, publish needed").
+        `detected_at` is preserved while the row stays uncatalogued;
+        `last_checked_at` always advances.
+        """
+        from datetime import timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO egeria_linkage_status
+                       (entity_type, entity_slug, status, stale_guid, detected_at,
+                        last_checked_at, detail)
+                   VALUES (?, ?, 'uncatalogued', '', ?, ?, ?)
+                   ON CONFLICT (entity_type, entity_slug) DO UPDATE SET
+                       status='uncatalogued', stale_guid='',
+                       detected_at=CASE WHEN egeria_linkage_status.status='uncatalogued'
+                                        THEN egeria_linkage_status.detected_at
+                                        ELSE excluded.detected_at END,
+                       last_checked_at=excluded.last_checked_at,
+                       detail=excluded.detail""",
+                (entity_type, entity_slug, now, now, detail),
+            )
+
+    def list_egeria_linkages(
+        self, entity_type: str, statuses: tuple[str, ...] = ("stale", "uncatalogued"),
+    ) -> list[dict]:
+        """Every flagged row of one entity_type, whatever the current scan
+        happens to contain — the heal pass keys on THESE rows."""
+        placeholders = ",".join(["?"] * len(statuses))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM egeria_linkage_status WHERE entity_type=? "
+                f"AND status IN ({placeholders}) ORDER BY entity_slug",
+                (entity_type, *statuses),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_egeria_linkage(self, entity_type: str, entity_slug: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute(

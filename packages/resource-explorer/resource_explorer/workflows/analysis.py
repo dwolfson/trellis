@@ -964,6 +964,7 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
     published_by_analysis = registry.get_last_published_analyses(slug)
     publish_linkage = registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}
     publish_stale = publish_linkage.get("status") == "stale"
+    publish_uncatalogued = publish_linkage.get("status") == "uncatalogued"
 
     result: dict[str, dict] = {}
     for a in get_analyses(entity_type, include_egeria_live=False):
@@ -989,6 +990,7 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
             "last_published_at": pub_at,
             "last_published_scope": pub_scope,
             "publish_stale": bool(pub_at) and publish_stale,
+            "publish_uncatalogued": publish_uncatalogued,
         }
     result["__auto_publishes__"] = {
         "auto_publishes": registry.has_assigned_egeria_project(entity_type, slug),
@@ -1128,7 +1130,9 @@ def build_survey_results(
 
     results_map, headline_map = _results_map_for(entity_type)
     published_by_type = registry.get_last_published_annotation_types(slug)
-    publish_stale = (registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}).get("status") == "stale"
+    _publish_status = (registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}).get("status")
+    publish_stale = _publish_status == "stale"
+    publish_uncatalogued = _publish_status == "uncatalogued"
     last_surveyed_at = ""
     getter = {
         "repo": registry.get, "database": registry.get_database, "filesystem": registry.get_filesystem,
@@ -1174,6 +1178,7 @@ def build_survey_results(
                 "analyses": analyses,
                 "last_published_at": last_published_at,
                 "publish_stale": bool(last_published_at) and publish_stale,
+                "publish_uncatalogued": publish_uncatalogued,
                 "last_surveyed_at": last_surveyed_at,
             })
         if board_id and dashboards:
@@ -1224,6 +1229,7 @@ def build_survey_results(
             "analyses": analyses,
             "last_published_at": last_published_at,
             "publish_stale": bool(last_published_at) and publish_stale,
+            "publish_uncatalogued": publish_uncatalogued,
             "last_surveyed_at": last_surveyed_at,
         })
     if board_id and dashboards:

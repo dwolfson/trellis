@@ -2888,6 +2888,9 @@ export function resourceHeaderHtml(slug) {
   // identical from here). No "publish again" button here: /next has no
   // publish trigger of its own yet to wire it to; the Analysis pane's
   // existing publish action is where that stands until one exists.
+  if (ov?.publish_uncatalogued) {
+    published += ` <span class="text-accent-ink">⚠ not catalogued, publish needed</span>`;
+  }
   if (ov?.publish_stale) {
     published += ` <span class="text-accent-ink">⚠ these elements are no longer in the store —`
       + ` publish again from the Analysis pane</span>`;
