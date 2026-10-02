@@ -103,6 +103,36 @@ its annotations are *proposable* and for which observation field; it may
 not set a disposition, a classification or a verdict. The E3 observation
 states are the model for every proposal.
 
+*Amended 2026-10-02 (owner):* a curation action may also be proposed from a
+**signed judgement** made at Enrichment. The rule above is about what a
+*survey* may propose; a person's judgement is already a person's, so an
+action that follows from it (sensitivity = PII proposes a confidentiality
+classification, a governance zone, a retention rule) is a proposal with
+clear provenance, "proposed from your sensitivity judgement · *date*", and
+a person confirms it as with any other. A proposal may combine the two
+sources, measured PII columns plus a confirmed sensitivity, and names both.
+What stays out: a survey inferring the judgement itself, then proposing
+from it.
+
+**A10. There are two kinds of analytic function, and they need two names.**
+A **step** measures a resource: it needs a credential and an executor, runs
+asynchronously under RE's control, and emits annotations into the ODS. A
+**routine** computes over data already collected, the ODS or Egeria, for a
+presentation: it runs where the presentation runs, synchronously or near
+it, and returns a result set or a figure, not annotations. "Analysis" is
+not used for either, because RE's catalogue already means steps by it.
+Steps may call routines; routines never call steps. A routine declared once
+serves EA's report specs, the Portal's dashboard tiles and RE's boards.
+
+**A11. The execution environment for both is a library, not a service.** One
+shared Python runtime (a Trellis shared library) provides the data access,
+reading the ODS, reading Egeria through pyegeria, reading annotations by
+type, and the envelope types. It imports the same way from a plain Python
+script, the Portal's apps and Trellis. Steps add the executor harness
+(Prefect, the engine host) on top; routines need only the library. Which
+means a routine written against a script today runs unchanged in a Portal
+tile tomorrow, and the proof is that one routine is tested from all three.
+
 **A9. EA's report specs, user analytics routines and Portal dashboard tiles
 are the same eight points with a different input.** A report spec declares
 what to fetch; a routine is an executor over catalogue metadata rather than
@@ -152,6 +182,15 @@ Each needs an owner and a yes/no before architecture. Blank where unknown.
 - **R13 Cross-app.** Which of this is shared code (trellis shared
   libraries), which is RE's, which is the Portal's; how EA's report-spec
   model maps onto points 1–5.
+- **R15 Routine declaration.** How a routine is declared and found: the
+  report-spec mechanism naming a routine with parameters, or the same
+  manifest as steps with a `kind: routine`. What a routine returns (a
+  table, a figure spec, both) and how a renderer reads it.
+- **R16 One runtime, three hosts.** The shared library's surface, its
+  dependency footprint (pyegeria, psycopg, nothing heavier by default), how
+  it finds the ODS and Egeria from each host (env, config, the Portal's own
+  settings), and how a routine proves it runs from a script, the Portal and
+  RE.
 - **R14 Testing.** What a step author must supply: a fixture resource, an
   expected annotation set, and the absence case (the step on a resource
   where the thing isn't there), so the envelope is exercised before the
