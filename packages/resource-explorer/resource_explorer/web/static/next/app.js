@@ -1192,7 +1192,7 @@ export function tokens() {
 
 /** Load a vendored script once. Both are already in static/vendor. */
 const _scripts = new Map();
-function loadScript(src) {
+export function loadScript(src) {
   if (_scripts.has(src)) return _scripts.get(src);
   const p = new Promise((resolve, reject) => {
     const el = document.createElement('script');
@@ -1417,7 +1417,7 @@ export async function drawChart(entry) {
  * sits in. `template: undefined` drops that default rather than fighting it
  * property by property.
  */
-function chartLayout(layout = {}) {
+export function chartLayout(layout = {}) {
   const t = tokens();
   const axis = (a = {}) => Object.assign({
     gridcolor: t.rule, zerolinecolor: t.rule, linecolor: t.rule,
