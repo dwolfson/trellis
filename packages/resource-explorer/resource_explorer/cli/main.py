@@ -887,7 +887,7 @@ def group_assign(
             raise typer.Exit(1)
         registry.set_project_group(resource_slug, group_slug)
     elif resource_type == "database":
-        if not registry.get_database(resource_slug):
+        if not registry.get_database(resource_slug, allow_unreadable=True):
             console.print(f"[red]Database '{resource_slug}' not found.[/red]")
             raise typer.Exit(1)
         registry.set_database_group(resource_slug, group_slug)

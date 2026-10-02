@@ -320,7 +320,7 @@ async def assign_group(slug: str, body: GroupAssign) -> dict:
             raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
         registry.set_project_group(slug, body.group_slug)
     elif body.resource_type == "database":
-        if not registry.get_database(slug):
+        if not registry.get_database(slug, allow_unreadable=True):
             raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
         registry.set_database_group(slug, body.group_slug)
     elif body.resource_type == "filesystem":
@@ -2037,7 +2037,7 @@ def _entity_display_name(registry, entity_type: str, slug: str) -> str | None:
     entity-generic sibling routes below, the same role `registry.get(slug)`
     plays for the repo-only routes above."""
     if entity_type == "database":
-        d = registry.get_database(slug)
+        d = registry.get_database(slug, allow_unreadable=True)
         return d.display_name if d else None
     if entity_type == "filesystem":
         f = registry.get_filesystem(slug)

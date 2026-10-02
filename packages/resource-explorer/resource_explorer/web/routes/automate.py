@@ -67,7 +67,7 @@ class CreateSubscriptionRequest(BaseModel):
 #: has no "unknown entity_type passes through" exception to share).
 _RESOURCE_LOOKUP = {
     "repo": lambda reg, slug: reg.get(slug),
-    "database": lambda reg, slug: reg.get_database(slug),
+    "database": lambda reg, slug: reg.get_database(slug, allow_unreadable=True),
     "filesystem": lambda reg, slug: reg.get_filesystem(slug),
 }
 

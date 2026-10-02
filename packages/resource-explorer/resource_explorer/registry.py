@@ -122,6 +122,10 @@ class DatabaseServer:
     last_run_candidates: list[str] | None = None
 
 
+#: slugs already warned about this process (one WARNING per slug).
+_UNREADABLE_LOGGED: set[str] = set()
+
+
 @dataclass
 class DatabaseEntity:
     """Represents a database in the registry."""
@@ -152,6 +156,10 @@ class DatabaseEntity:
     server_slug: str = ""
     governance_state: str = "certified"
     group_slug: str = ""  # slug of the umbrella project group this database belongs to
+    # Derived on read, never stored: "ok" | "none" | "unreadable". "unreadable"
+    # = a stored password exists but cannot be decrypted (wrong/rotated key);
+    # db_password is then "" and MUST NOT be used to connect.
+    credential_status: str = "none"
 
 
 @dataclass
@@ -9786,12 +9794,27 @@ class ProjectRegistry:
                 data,
             )
 
-    def get_database(self, slug: str) -> DatabaseEntity | None:
-        """Retrieve a database entity by slug."""
+    def get_database(self, slug: str, *, allow_unreadable: bool = False) -> DatabaseEntity | None:
+        """Retrieve a database entity by slug.
+
+        A row whose stored password cannot be decrypted raises
+        `CredentialUnreadableError` (for THAT slug only) unless
+        `allow_unreadable=True`, which returns the row with
+        `credential_status == "unreadable"` and an empty `db_password`.
+        Callers that only need existence/metadata pass True; anything that
+        may connect with the credential must not, so it never connects with
+        an empty password.
+        """
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM databases WHERE slug = ?", (normalized,)).fetchone()
-        return self._row_to_database(row) if row else None
+        if not row:
+            return None
+        entity = self._row_to_database(row)
+        if entity.credential_status == "unreadable" and not allow_unreadable:
+            from resource_explorer.credential_crypto import CredentialUnreadableError
+            raise CredentialUnreadableError(entity.slug)
+        return entity
 
     def list_databases(self, db_type: str | None = None, server_slug: str | None = None, governance_state: str | None = None) -> list[DatabaseEntity]:
         """List all registered databases, optionally filtered by type, server slug, or governance state."""
@@ -10672,7 +10695,7 @@ class ProjectRegistry:
 
     def database_exists(self, slug: str) -> bool:
         """Check if a database entity exists."""
-        return self.get_database(slug) is not None
+        return self.get_database(slug, allow_unreadable=True) is not None
 
     def _row_to_database(self, row: sqlite3.Row) -> DatabaseEntity:
         """Convert a database row to a DatabaseEntity dataclass.
@@ -10726,8 +10749,23 @@ class ProjectRegistry:
                     "encrypted storage for database slug=%r: %s", d.get("slug"), exc
                 )
             d["db_password"] = plaintext
+            d["credential_status"] = "ok"
         else:
-            d["db_password"] = decrypt_db_password(raw_password)
+            try:
+                d["db_password"] = decrypt_db_password(raw_password)
+                d["credential_status"] = "ok" if raw_password else "none"
+            except ValueError as exc:
+                # Per-row tolerance: one undecryptable row must not take down
+                # every list. Never the password, ciphertext or exc text (it
+                # names the key env vars): slug and class name only, once.
+                d["db_password"] = ""
+                d["credential_status"] = "unreadable"
+                slug = d.get("slug") or ""
+                if slug not in _UNREADABLE_LOGGED:
+                    _UNREADABLE_LOGGED.add(slug)
+                    log.warning(
+                        "registry: stored credential for database slug=%r is unreadable (%s); "
+                        "listing it as 'credential unreadable'", slug, type(exc).__name__)
         # Filter to only known DatabaseEntity fields
         known = {f.name for f in dataclasses.fields(DatabaseEntity)}
         return DatabaseEntity(**{k: v for k, v in d.items() if k in known})

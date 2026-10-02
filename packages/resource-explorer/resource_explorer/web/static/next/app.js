@@ -186,6 +186,7 @@ import {
   writeJournal,
   saveQuestionAnswer,
 } from '/static/re-api.js';
+import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
 
 /* ════════════════════════════════════════════════════════════════════════
  * State
@@ -1941,6 +1942,12 @@ function visibleRows() {
   return state.resourceType === 'repo' ? visibleProjects() : visibleNonRepoRows();
 }
 
+/** True when the currently selected resource is a database whose stored
+ *  credential cannot be read: its survey/Run controls are disabled. */
+function selectedCredentialUnreadable() {
+  return state.resourceType === 'db' && isCredentialUnreadable(selectedProject());
+}
+
 export function renderSidebar() {
   const el = $('sidebar');
   const types = [
@@ -2108,7 +2115,7 @@ export function renderSidebar() {
             ${lifecycleMark(p)}${dispositionMark(p)}
             <button data-slug="${esc(p.slug)}"
               class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
-              >${esc(p.display_name || p.slug)}</button>
+              >${esc(p.display_name || p.slug)}${credentialMarkHtml(p, 'block text-provenance')}</button>
             ${p.working_set_hidden
               ? icon('eye-off', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list — a view preference, not a verdict' })
               : ''}
@@ -3001,6 +3008,7 @@ export function resourceHeaderHtml(slug) {
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
     ${credentialBanner}
+    ${isCredentialUnreadable(p) ? `<div class="mt-s1 text-provenance" data-credential-banner>${credentialMarkHtml(p)} — surveys and runs are disabled until the credential is re-entered.</div>` : ''}
     <div id="resource-action" class="mt-s2"></div>`;
 }
 
@@ -4191,9 +4199,13 @@ export function surveyRowHtml(c) {
       // than a false zero until it is.
       c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}</div>
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
-    <button data-run-survey="${esc(c.qualified_name || c.guid)}"
+    ${selectedCredentialUnreadable()
+      ? `<button data-run-survey="${esc(c.qualified_name || c.guid)}" disabled title="${CREDENTIAL_UNREADABLE_TEXT}"
+      class="shrink-0 cursor-not-allowed rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
+      >${c.last_run_at ? 're-run' : 'run'} →</button>`
+      : `<button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-      >${c.last_run_at ? 're-run' : 'run'} →</button>
+      >${c.last_run_at ? 're-run' : 'run'} →</button>`}
   </div>`;
 }
 
@@ -4324,7 +4336,7 @@ export function enrichmentAnalysisRowHtml(row) {
   const key = enrichmentAnalysisCardStateKey(row);
   const g = stateEntry(key);
   const runBtn = row.unlocked && row.runnable !== false && row.state !== 'measured'
-    ? `<button type="button" data-run-enrichment-analysis="${esc(row.id)}"
+    ? `<button type="button" data-run-enrichment-analysis="${esc(row.id)}" ${selectedCredentialUnreadable() ? `disabled title="${CREDENTIAL_UNREADABLE_TEXT}"` : ''}
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Run</button>`
     : '';
   return `<div class="border-b border-rule py-s2">
@@ -4580,7 +4592,7 @@ export async function loadSurveyPane() {
           <span class="text-answer text-ink">${esc(c.display_name)}</span>
           <span class="tnum rounded-sm border border-state-warn px-2 py-[1px] text-provenance text-state-warn"
             >${steps} steps · all tiers</span>
-          <button data-plan-survey="${esc(c.qualified_name)}"
+          <button data-plan-survey="${esc(c.qualified_name)}" ${selectedCredentialUnreadable() ? `disabled title="${CREDENTIAL_UNREADABLE_TEXT}"` : ''}
             class="ml-auto cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
             >Plan a run…</button>
         </div>
@@ -4877,6 +4889,7 @@ async function renderAnalysesIndexSection(slug, stage) {
  */
 function planSurveyRun(c, slug) {
   if (!c) return;
+  if (selectedCredentialUnreadable()) return;   // the buttons are disabled; this guards any other caller
   const steps = (c.steps || []).length;
   const el = openDialog(c.display_name || c.qualified_name, `${slug} · ${c.survey_kind || 'unclassified'}`);
   const body = el.querySelector('#wl-detail-body');

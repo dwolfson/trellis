@@ -9,9 +9,24 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from resource_explorer.credential_crypto import (
+    CREDENTIAL_UNREADABLE_REASON,
+    CredentialUnreadableError,
+)
+
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _get_database_for_use(registry, slug: str):
+    """get_database for a route that may CONNECT with the stored credential:
+    an unreadable credential is a clear 409 for this database only, never an
+    empty-password connect and never a pass-shaped result."""
+    try:
+        return registry.get_database(slug)
+    except CredentialUnreadableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 class DatabaseSummary(BaseModel):
@@ -37,6 +52,11 @@ class DatabaseSummary(BaseModel):
     egeria_server: str = ""
     egeria_user: str = ""
     group_slug: str = ""
+    # "ok" | "none" | "unreadable" — a real marker from the registry, never the
+    # password. "unreadable" = a credential is stored but cannot be decrypted;
+    # `credential_reason` is then the fixed, secret-free display string.
+    credential_status: str = "none"
+    credential_reason: str = ""
     # 'undecided' when nobody has ever decided, same convention
     # `ProjectSummary.disposition` (projects.py) already uses — populated
     # once `repo_dispositions`' PK generalized to (entity_type, entity_slug)
@@ -219,6 +239,9 @@ def _to_summary(db) -> DatabaseSummary:
         egeria_server=db.egeria_server or "",
         egeria_user=db.egeria_user or "",
         group_slug=getattr(db, "group_slug", "") or "",
+        credential_status=getattr(db, "credential_status", "none") or "none",
+        credential_reason=(CREDENTIAL_UNREADABLE_REASON
+                           if getattr(db, "credential_status", "") == "unreadable" else ""),
         disposition=disp.get("disposition", "undecided"),
         working_set_hidden=registry.is_working_set_hidden("database", db.slug),
         credential_capability=credential_capability,
@@ -260,7 +283,7 @@ async def get_database(slug: str) -> DatabaseSummary:
     """Get details for a specific database."""
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     return _to_summary(database)
@@ -287,7 +310,7 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     from resource_explorer.workflows.analysis import build_analysis_last_activity
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     return build_analysis_last_activity(registry, "database", slug)
@@ -302,7 +325,7 @@ async def get_database_survey_results_boards(slug: str, stage: str = "") -> dict
     from resource_explorer.workflows.analysis import list_survey_result_boards
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     return await asyncio.to_thread(list_survey_result_boards, registry, "database", slug, stage)
@@ -333,7 +356,7 @@ async def get_database_survey_results(
     from resource_explorer.workflows.analysis import build_survey_results
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     return await asyncio.to_thread(
@@ -358,7 +381,7 @@ async def get_database_schema_inventory_tree(slug: str) -> dict:
     )
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     tree = await asyncio.to_thread(schema_inventory_tree, registry, slug)
@@ -397,7 +420,7 @@ async def get_database_questions(
     from resource_explorer.workflows.scouting import build_question_checklist
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
@@ -418,7 +441,7 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     registry = ProjectRegistry()
 
     # Check if slug already exists
-    existing = registry.get_database(req.slug)
+    existing = registry.get_database(req.slug, allow_unreadable=True)
     if existing:
         raise HTTPException(status_code=400, detail=f"Database '{req.slug}' already exists")
     
@@ -484,14 +507,14 @@ async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate)
 
     registry = ProjectRegistry()
 
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     registry.update_database_credentials(slug, req.db_user, req.db_password)
     _project_credential_to_omsecrets(slug, req.db_user, req.db_password)
 
-    updated = registry.get_database(slug)
+    updated = registry.get_database(slug, allow_unreadable=True)
     return _to_summary(updated)
 
 
@@ -501,7 +524,7 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
     from resource_explorer.registry import ProjectRegistry, ProjectStatus
     
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = _get_database_for_use(registry, slug)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     
@@ -743,7 +766,7 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
     registry = ProjectRegistry()
-    db = registry.get_database(slug)
+    db = _get_database_for_use(registry, slug)
     if not db:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
@@ -790,7 +813,7 @@ async def remove_database(slug: str) -> dict:
     from resource_explorer.registry import ProjectRegistry
     
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     
@@ -809,7 +832,7 @@ async def get_database_surveys(slug: str, include_invalid: bool = False) -> list
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
@@ -829,7 +852,7 @@ async def get_database_egeria_surveys(slug: str) -> list[EgeriaSurveyReportRow]:
     )
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     if not database.egeria_asset_guid:
@@ -856,7 +879,7 @@ async def get_database_egeria_annotations(slug: str, report_guid: str) -> list[E
     )
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
@@ -904,7 +927,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
     validate_egeria_user(req.egeria_user or "")
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = _get_database_for_use(registry, slug)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 

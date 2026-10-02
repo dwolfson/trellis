@@ -512,7 +512,7 @@ def _run_scheduled_survey(
     )
 
     entity = (registry.get(entity_slug) if entity_type == "repo"
-              else registry.get_database(entity_slug))
+              else registry.get_database(entity_slug, allow_unreadable=True))
     name = getattr(entity, "display_name", "") or entity_slug
     location = getattr(entity, "github_url", "") or ""
     try:
@@ -656,7 +656,7 @@ def _run_repo_survey_definition(project, analysis_id: str, registry) -> tuple[st
 
 
 def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") -> tuple[str, str, list[str]]:
-    db = registry.get_database(slug)
+    db = registry.get_database(slug, allow_unreadable=True)
     if not db:
         return (slug, "", [f"Database '{slug}' not found — schedule may be stale"])
 
@@ -676,6 +676,11 @@ def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") ->
         DB_DERIVED_ANALYSES,
         run_db_derived,
     )
+
+    if analysis_id not in DB_DERIVED_ANALYSES and getattr(db, "credential_status", "") == "unreadable":
+        # One database with an undecryptable credential fails honestly for
+        # itself only; db_derived (no credentials) still runs above.
+        return (db.display_name, db.host, [f"credential unreadable: re-enter credentials for {slug}"])
 
     if analysis_id in DB_DERIVED_ANALYSES:
         try:
