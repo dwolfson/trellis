@@ -370,6 +370,6 @@ Two consequences for the slices in §9:
   must allow mixed-kind pairs, which the designer's §8 tabs ("Repos ×
   databases · 8 pairs") already assume.
 
-The demo corpus (§7) gains the repositories and file shares that go with the
+The demo corpus (§7) gains the repositories and file systems that go with the
 regional databases: the forecasting code and the spreadsheet exports, so
 the mixed-kind pairs have something real to measure.

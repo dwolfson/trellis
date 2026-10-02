@@ -46,7 +46,7 @@ Understanding as a schema-diff timeline.
 
 ## The questions for you
 
-1. **Curate on a database (and a file share).** With no component tree to
+1. **Curate on a database (and a file system).** With no component tree to
    curate, what is the stage? Candidates: the three generic controls (tags,
    feedback, curator notes) as the stage's body for every kind; the
    semantic-assignment and schema-matching rows for databases; group
