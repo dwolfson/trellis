@@ -9020,6 +9020,8 @@ E1 code-path regression; this is investigation infrastructure, not a fix for a k
 
 ## Stale evidence rail outside the Context tab (2026-09-30, E1 gate)
 
+**Status: fixed by branch `re/stale-rail-clear` (2026-10-01)** -- see `docs/design-notes/implemented/STALE-RAIL-CLEAR-IMPLEMENTED.md`. Not yet merged; the entry below is the original report.
+
 E1 fixed the Enrichment evidence rail (`#rail-evidence`) carrying over a previously-viewed
 resource's measurements when rendering the Context tab — it now clears on slug change and shows
 a loading frame until the new fetch lands. That fix only covers Context's own render path.

@@ -6469,7 +6469,14 @@ async function showDbChart(type) {
       container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-xs">No survey data — run a survey first</div>';
       return;
     }
-    const data = await res.json();
+    let data = await res.json();
+    // table_sizes ranks by ESTABLISHED row counts only (null is not 0). When none
+    // are established, ask for the size measure explicitly, as the old
+    // all-zero fallback did, instead of drawing nothing.
+    if (type === 'table_sizes' && !data.tables?.length && data.not_established_count > 0) {
+      const res2 = await fetch(`/api/stats/databases/${selectedDatabase}/table_sizes?measure=size`);
+      if (res2.ok) data = await res2.json();
+    }
     _renderDbChart(container, type, data);
   } catch(e) {
     container.innerHTML = `<div class="h-full flex items-center justify-center text-red-400 text-xs">${e.message}</div>`;
