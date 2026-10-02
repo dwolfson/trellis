@@ -73,7 +73,7 @@ import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurvey
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
 // function, called from both stores' rows rather than reimplemented here.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
-import { renderInvestigation, openInvestigationDetail } from '/static/next/stages/investigation.js';
+import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation } from '/static/next/stages/investigation.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
@@ -2388,6 +2388,8 @@ async function bulkScope(add) {
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
   await loadWorkingSet();
+  // The open investigation page lists these members too; re-fetch it.
+  await refreshOpenInvestigation(state.investigation);
   // Report per-resource, never "done": a bulk write where some calls failed
   // and the banner says success is how a partial write becomes invisible.
   sidebarNote(failed.length

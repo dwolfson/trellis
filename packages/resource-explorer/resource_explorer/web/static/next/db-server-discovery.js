@@ -38,6 +38,7 @@ import {
   addInvestigationMember, listInvestigations, listGroups,
 } from '/static/re-api.js';
 import { esc, refreshGroupsAndSidebar, state } from '/static/next/app.js';
+import { refreshOpenInvestigation } from '/static/next/stages/investigation.js';
 
 const emptyRegisterForm = () => ({
   slug: '', display_name: '', db_type: 'postgresql', host: '', port: 5432,
@@ -70,6 +71,7 @@ const view = {
   groups: [],
   investigations: [],
   busy: false,
+  loadFailureMsg: '',    // the exact status text a failed load set, so only it is cleared on success
   loadFailed: false,     // the saved sources could not be read: not the same as "there are none"
   status: '',
   statusIsError: false,
@@ -120,8 +122,16 @@ async function loadServers(el) {
     view.groups = groups || [];
     view.investigations = (invs || []).filter((i) => i.status !== 'closed');
     view.loadFailed = false;
+    // Clear the banner only if it IS the load-failure message; "Registered
+    // server X." and the like are not ours to wipe.
+    if (view.loadFailureMsg && view.status === view.loadFailureMsg) {
+      view.status = '';
+      view.statusIsError = false;
+    }
+    view.loadFailureMsg = '';
   } catch (err) {
     view.status = failure(err, 'load the saved sources');
+    view.loadFailureMsg = view.status;
     view.statusIsError = true;
     view.loadFailed = true;
     view.servers = [];
@@ -779,6 +789,8 @@ async function confirmAdd(el) {
   if (servers) view.servers = servers;
   render(el);
   refreshGroupsAndSidebar();
+  // If that investigation's page is the open pane, show the new members now.
+  if (c.investigation && scoped.length) refreshOpenInvestigation(c.investigation);
 }
 
 /* ── Wiring ─────────────────────────────────────────────────────────────── */
