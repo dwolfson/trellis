@@ -17,9 +17,12 @@ def _flat(s: str) -> str:
 
 
 def test_curate_does_not_claim_header_has_tags_feedback_notes():
+    # Superseded by CURATE-UI-DATABASES: the bands are now the real controls,
+    # so neither the false sentence nor the "has no controls" one may remain.
     assert "reachable from the resource header" not in _flat(CURATE)
     assert "regardless of type" not in _flat(CURATE)
-    assert "offers none of them" in _flat(CURATE)
+    assert "offers none of them" not in _flat(CURATE)
+    assert "no controls for search tags" not in _flat(CURATE)
 
 
 def test_publish_stale_does_not_point_at_a_missing_publish_control():
@@ -27,12 +30,18 @@ def test_publish_stale_does_not_point_at_a_missing_publish_control():
     assert "has no publish control" in _flat(APP)
 
 
-def test_known_negative_the_header_really_has_no_tag_note_feedback_control():
-    # If /next ever grows these controls, the honest wording must be revisited.
+def test_tag_note_feedback_calls_live_only_in_the_curate_bands_module():
+    # The controls exist now (stages/curate-bands.js, via re-api.js). The
+    # claim "the header has them" stays false: no other /next file may call
+    # the routes, so the controls are reached from Curate and nowhere implied.
     for f in NEXT.rglob("*.js"):
         if "admin" in f.parts:
-            continue  # admin/feedback.js is a cross-resource list, not the header
+            continue  # admin/feedback.js is a cross-resource list
+        if f.name == "curate-bands.js":
+            continue  # its comments name the routes; calls go through re-api.js
         t = f.read_text()
-        assert "/api/curate/tags" not in t, f
-        assert "/api/curate/notes" not in t, f
-        assert "/api/curate/feedback/" not in t, f
+        for route in ("/api/curate/tags", "/api/curate/notes", "/api/curate/feedback/"):
+            assert route not in t, (f, route)
+    bands = (NEXT / "stages" / "curate-bands.js").read_text()
+    for fn in ("addCurateTag", "removeCurateTag", "addCurateFeedback", "getCurateNotes"):
+        assert fn in bands

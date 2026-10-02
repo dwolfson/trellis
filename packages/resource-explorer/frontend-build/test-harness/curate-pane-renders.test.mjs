@@ -66,15 +66,20 @@ async function openCurate(document) {
 
 const bodyText = (document) => document.getElementById('content').textContent;
 
+// CURATE-UI-DATABASES-IMPLEMENTED.md: the old "Curate isn't available for ..."
+// body is gone; band 2 is the kind's own work (full coverage of the bands is
+// in curate-bands.test.mjs). What stays pinned here is that the pane is never blank.
+const KIND_TEXT = { db: /Glossary terms on tables and columns/, filesystem: /Nothing to review for file shares yet/ };
 for (const kind of ['db', 'filesystem']) {
-  test(`Curate on a non-repo (${kind}) shows the honest not-available text`, async () => {
+  test(`Curate on a non-repo (${kind}) draws its band-2 text, not an empty body`, async () => {
     const { document, app } = await setUp(kind);
     await openCurate(document);
     assert.equal(app.state.stage, 'curate');
     const host = document.getElementById('curate-host');
     assert.ok(host, 'Curate must have a host in the document');
-    assert.match(host.textContent, /Curate isn't available for/);
-    assert.match(bodyText(document), /Curate isn't available for/);
+    assert.match(host.textContent, KIND_TEXT[kind]);
+    assert.match(bodyText(document), KIND_TEXT[kind]);
+    assert.doesNotMatch(host.textContent, /Curate isn't available for/);
   });
 }
 
