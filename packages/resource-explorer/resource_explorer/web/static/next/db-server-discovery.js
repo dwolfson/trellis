@@ -1,40 +1,43 @@
-/* Database server discovery — the real port of classic's (index.html)
- * server-side introspection flow for databases, replacing the old-UI-link
- * stub `app.js`'s `find-repos` action used to show for
- * `state.resourceType === 'db'` (see that file's `FIND_TITLE` comment).
+/* Find databases — the sidebar's Find action for the Databases kind.
  *
- * Classic's mechanism, ported verbatim rather than reinvented: a Postgres
- * server is registered ONCE with stored credentials
- * (`POST /api/db-servers/register`); "Discover" connects to it right now
- * and lists what is actually there (`POST /api/db-servers/{slug}/discover`,
- * `DiscoveredDatabase` rows — each flags `is_registered` so an
- * already-added database shows greyed-out and pre-checked rather than
- * silently duplicable); a person selects which candidates to add and
- * `POST /api/db-servers/{slug}/add-database` registers each one as a real
- * `DatabaseEntity` — the same shape `listDatabases()` returns and the
- * sidebar already renders. See `web/routes/db_servers.py` for the exact
- * request/response shapes this file assumes.
+ * REPLY-DESIGNER-DISCOVERY-SOURCES-ALL-KINDS.md §1/§2/§5 and slice 1; drawing:
+ * wireframes/FindAndImport.dc.html. One dialog, three ways in, ONE candidate
+ * table and ONE confirm at the end of every way in:
+ *
+ *   Saved sources         the registered servers, each with Run. A source
+ *                         remembers its last run, so Run says "n new since
+ *                         <date>" (and "0 new since <time>" on an immediate
+ *                         re-run). Register/Test/Remove live here too:
+ *                         registering a server is configuration.
+ *   Discover on a server  the same listing, run once on connection details
+ *                         typed here, with "save as a source". The password is
+ *                         held in memory for this dialog only: never rendered
+ *                         into an attribute, never stored until saved.
+ *   From a file           a placeholder; slice 2 builds the CSV.
+ *
+ * The candidate table says what the source returned and nothing else: every
+ * fact is a measured value or a worded "not read" ("? not readable with this
+ * credential"), never a 0 or a blank. A database the credential cannot CONNECT
+ * to is LISTED with its mark, not filtered out. Already-registered rows are
+ * dimmed and pre-checked and cannot be re-added.
+ *
+ * The confirm offers the destination group and "Add these N to <investigation>"
+ * (POST /api/investigations/{slug}/members: the investigation scope API, the
+ * same act as the work-lists slice; work lists are not used here because the
+ * scope API exists). Registering is a local registry write; nothing is
+ * written to Egeria from this dialog.
  *
  * Chrome-level module, same placement rule as `discovery-import.js`
  * (SPEC-ACTIONABLE-AND-HONEST.md point 2): reached from the sidebar's
- * `find-repos` action, not a per-stage sub-tab, and not folded into
- * `stages/discovery.js`.
- *
- * Three views share one dialog, switched by `view.mode`:
- *   'servers'  — the registered-server list (or an honest empty state with
- *                a way to register one), each row offering Test/Discover/
- *                Remove — classic's `renderDatabaseList`'s servers section.
- *   'register' — the registration form — classic's `#register-server-modal`.
- *   'discover' — the discover-and-add flow for one server — classic's
- *                `#discover-db-modal` / `_fetchDiscoverDatabases` /
- *                `addSelectedDatabases`.
+ * `find-repos` action for `state.resourceType === 'db'`.
  */
 import { openDialog } from '/static/next/worklist.js';
 import {
   listDbServers, registerDbServer, deleteDbServer, testDbServer, testDbServerInline,
-  discoverDatabases, addDiscoveredDatabase, listGroups,
+  runDatabaseSource, discoverDatabasesInline, addDiscoveredDatabase, assignGroup,
+  addInvestigationMember, listInvestigations, listGroups,
 } from '/static/re-api.js';
-import { esc, icon, refreshGroupsAndSidebar } from '/static/next/app.js';
+import { esc, refreshGroupsAndSidebar, state } from '/static/next/app.js';
 
 const emptyRegisterForm = () => ({
   slug: '', display_name: '', db_type: 'postgresql', host: '', port: 5432,
@@ -42,51 +45,85 @@ const emptyRegisterForm = () => ({
   egeria_host: '', egeria_url: '', egeria_server: '', egeria_user: '', egeria_password: '',
 });
 
+const emptyOneOff = () => ({
+  host: '', port: 5432, db_user: '', db_password: '',   // db_password: memory only
+  slug: '', display_name: '', savedSlug: '',
+});
+
+const emptyCandidates = () => ({
+  source: null,        // { kind: 'saved'|'oneoff', slug, label, group_slug }
+  meta: null,          // the Run's own facts: run_at, previous_run_at, first_run, new_count, candidate_count
+  rows: [],            // DiscoveredDatabase[]
+  selected: new Set(), // indices into rows
+  loading: false,
+  error: '',
+  group: '',
+  investigation: '',
+  outcome: '',         // the confirm's own result line
+  outcomeIsError: false,
+});
+
 const view = {
-  mode: 'servers',       // 'servers' | 'register' | 'discover'
+  tab: 'saved',          // 'saved' | 'discover' | 'file'
+  mode: 'list',          // within 'saved': 'list' | 'register'
   servers: [],
   groups: [],
+  investigations: [],
   busy: false,
+  loadFailed: false,     // the saved sources could not be read: not the same as "there are none"
   status: '',
   statusIsError: false,
 
-  // 'register' mode
+  // register form
   form: emptyRegisterForm(),
   showEgeria: false,
   registerError: '',
-  testResult: null,      // { ok, message } | null
+  testResult: null,
 
-  // 'discover' mode
-  discoverSlug: null,
-  discoverResults: [],   // DiscoveredDatabase[]
-  discoverSelected: new Set(),
-  discoverError: '',
-  discoverLoading: false,
+  oneOff: emptyOneOff(),
+  cand: emptyCandidates(),
 };
 
 /** Opens the dialog and kicks off the first render. The only export. */
 export async function openFindDbServersDialog() {
-  const el = openDialog('Discover databases on a registered server',
-    'Register a Postgres server once, then discover and add the databases on it', { wide: true });
-  view.mode = 'servers';
+  const el = openDialog('Find databases',
+    'Run a saved source, or discover on a server once. Nothing is registered until you confirm.',
+    { wide: true });
+  view.tab = 'saved';
+  view.mode = 'list';
   view.status = '';
   view.statusIsError = false;
+  view.oneOff = emptyOneOff();
+  view.cand = emptyCandidates();
   await loadServers(el);
+}
+
+/** A message for a failed call. A 401 is said as what it is, so a signed-out
+ *  person is told to sign in rather than shown a raw status. */
+function failure(err, doing) {
+  if (err && err.status === 401) return `Sign in to ${doing}.`;
+  return `Could not ${doing}: ${err && err.message ? err.message : err}`;
 }
 
 async function loadServers(el) {
   view.busy = true;
   render(el);
   try {
-    const [servers, groups] = await Promise.all([
+    const [servers, groups, invs] = await Promise.all([
       listDbServers(),
       listGroups().catch(() => []),
+      state.investigations && state.investigations.length
+        ? Promise.resolve(state.investigations)
+        : listInvestigations({ includeClosed: true }).catch(() => []),
     ]);
     view.servers = servers || [];
     view.groups = groups || [];
+    view.investigations = (invs || []).filter((i) => i.status !== 'closed');
+    view.loadFailed = false;
   } catch (err) {
-    view.status = `Could not load registered servers: ${err.message}`;
+    view.status = failure(err, 'load the saved sources');
     view.statusIsError = true;
+    view.loadFailed = true;
     view.servers = [];
   } finally {
     view.busy = false;
@@ -94,15 +131,47 @@ async function loadServers(el) {
   }
 }
 
+/* ── Frame ─────────────────────────────────────────────────────────────── */
+
+function captureInputs(el) {
+  // The one-off tab's fields survive a re-render: the password goes to the
+  // module's memory and back onto the input as a PROPERTY, never an attribute.
+  el.querySelectorAll('[data-oo]').forEach((inp) => {
+    const key = inp.dataset.oo;
+    if (key === 'port') view.oneOff.port = parseInt(inp.value, 10) || 0;
+    else if (key === 'db_password') view.oneOff.db_password = inp.value;   // never trimmed, never an attribute
+    else view.oneOff[key] = inp.value.trim();
+  });
+}
+
 function render(el) {
   const body = el.querySelector('#wl-detail-body');
+  if (!body) return;
+  captureInputs(el);
+  const panel = view.tab === 'saved' ? (view.mode === 'register' ? registerFormHtml() : savedHtml())
+    : view.tab === 'discover' ? discoverHtml()
+    : fileHtml();
   body.innerHTML = `
+    ${tabsHtml()}
     ${statusLineHtml(view.status, view.statusIsError)}
-    ${view.mode === 'register' ? registerFormHtml()
-      : view.mode === 'discover' ? discoverHtml()
-      : serversHtml()}
+    ${panel}
+    ${view.tab !== 'file' && view.mode !== 'register' ? candidatesHtml() : ''}
   `;
+  const pw = body.querySelector('[data-oo="db_password"]');
+  if (pw) pw.value = view.oneOff.db_password;
   bind(el);
+}
+
+function tabsHtml() {
+  const tab = (id, label, badge = '') => `<button data-tab="${id}"
+    class="cursor-pointer border-0 bg-transparent pb-[2px] mr-s4 font-heading text-subtab ${
+      view.tab === id ? 'border-b border-accent text-ink' : 'text-ink-muted hover:text-ink'}"
+    >${esc(label)}${badge ? ` <span class="tnum text-provenance text-ink-muted">${esc(badge)}</span>` : ''}</button>`;
+  return `<div class="mb-s3 flex items-center gap-0 text-subtab">
+    ${tab('saved', 'Saved sources', view.servers.length ? String(view.servers.length) : '')}
+    ${tab('discover', 'Discover on a server')}
+    ${tab('file', 'From a file')}
+  </div>`;
 }
 
 function statusLineHtml(text, isError) {
@@ -110,52 +179,84 @@ function statusLineHtml(text, isError) {
   return `<p class="mb-s2 text-caveat ${isError ? 'text-state-warn' : 'text-ink-muted'}">${esc(text)}</p>`;
 }
 
-/* ── Servers list ───────────────────────────────────────────────────────── */
+/* ── Time words ────────────────────────────────────────────────────────── */
 
-function serversHtml() {
-  if (view.busy) return `<p class="text-caveat text-ink-muted">Loading…</p>`;
+const pad = (n) => String(n).padStart(2, '0');
+
+/** "MM-DD" for another day, "HH:MM" when the earlier run was the same (local)
+ *  day as the later one, so an immediate re-run reads "0 new since 14:05". */
+export function sinceLabel(earlierIso, laterIso) {
+  const a = new Date(/Z|[+-]\d\d:?\d\d$/.test(earlierIso) ? earlierIso : `${earlierIso}Z`);
+  const b = new Date(/Z|[+-]\d\d:?\d\d$/.test(laterIso) ? laterIso : `${laterIso}Z`);
+  if (Number.isNaN(a.getTime())) return String(earlierIso);
+  const sameDay = !Number.isNaN(b.getTime())
+    && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return sameDay ? `${pad(a.getHours())}:${pad(a.getMinutes())}` : `${pad(a.getMonth() + 1)}-${pad(a.getDate())}`;
+}
+
+const stamp = (iso) => {
+  const a = new Date(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
+  return Number.isNaN(a.getTime()) ? String(iso)
+    : `${pad(a.getMonth() + 1)}-${pad(a.getDate())} ${pad(a.getHours())}:${pad(a.getMinutes())}`;
+};
+
+/* ── Saved sources ─────────────────────────────────────────────────────── */
+
+function savedHtml() {
+  if (view.busy && !view.servers.length) return `<p class="text-caveat text-ink-muted">Loading…</p>`;
+  // A refusal is not an empty list: say nothing about "none" when we could not look.
+  if (view.loadFailed) {
+    return `<button data-act="reload" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-s3 py-[3px] text-caveat text-accent-ink">Try again</button>`;
+  }
 
   const header = `
     <div class="mb-s3 flex items-center justify-between">
-      <span class="text-caveat text-ink-muted">${view.servers.length} server(s) registered</span>
+      <span class="text-caveat text-ink-muted">${view.servers.length} saved source(s): the database servers registered once, with their credential</span>
       <button data-act="new-server" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
         >+ Register a server</button>
     </div>`;
 
   if (!view.servers.length) {
     return `${header}
-      <p class="max-w-[60ch] text-answer text-ink">No database servers are registered yet.</p>
+      <p class="max-w-[60ch] text-answer text-ink">No saved sources yet.</p>
       <p class="max-w-[60ch] text-caveat text-ink-muted">
-        Register a Postgres server's connection once, then Discover lists the databases actually on
-        it — nothing is added until you select which ones to bring in.
+        Register a Postgres server's connection once and it becomes a source you can Run again. Or use
+        "Discover on a server" to look once without saving anything.
       </p>`;
   }
 
-  const rows = view.servers.map((s) => `
-    <div class="mb-s2 rounded-sm border border-rule p-s2">
+  const rows = view.servers.map((s) => {
+    const noCred = !s.db_user;
+    const lastRun = s.last_run_at
+      ? `run ${esc(stamp(s.last_run_at))} · ${s.last_run_candidate_count} found`
+      : 'never run';
+    return `<div class="mb-s2 rounded-sm border border-rule p-s2" data-source="${esc(s.slug)}">
       <div class="flex items-start justify-between gap-s2">
         <div class="min-w-0">
           <div class="truncate font-heading text-caveat text-ink">${esc(s.display_name)}</div>
           <div class="font-mono text-provenance text-ink-muted">${esc(s.db_type)} · ${esc(s.host)}:${s.port}${
-            s.group_slug ? ` · ${esc(s.group_slug)}` : ''}</div>
-          ${!s.db_user ? `<div class="mt-[2px] text-provenance text-state-warn">⚠ no credentials stored</div>` : ''}
+            s.group_slug ? ` · ${esc(s.group_slug)}` : ''}${s.db_user ? ` · credential: ${esc(s.db_user)}` : ''}</div>
+          <div class="mt-[2px] text-provenance text-ink-muted" data-last-run>${lastRun}</div>
+          ${noCred ? `<div class="mt-[2px] text-provenance text-state-warn" data-no-credential>⚠ no credentials stored: this source cannot run until one is added</div>` : ''}
         </div>
         <div class="flex shrink-0 items-center gap-s2 text-caveat">
+          <button data-run="${esc(s.slug)}" ${noCred ? 'disabled title="No credentials stored"' : ''}
+            class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[2px] text-caveat text-accent-ink hover:border-rule-strong"
+            >${s.last_run_at ? 'Run again' : 'Run'}</button>
           <button data-test="${esc(s.slug)}" class="cursor-pointer bg-transparent text-accent-ink underline"
             >Test</button>
-          <button data-discover="${esc(s.slug)}" class="cursor-pointer bg-transparent text-accent-ink underline"
-            >Discover</button>
           <button data-remove="${esc(s.slug)}" class="cursor-pointer bg-transparent text-state-warn underline"
             >Remove</button>
         </div>
       </div>
       <div class="mt-s2 text-provenance text-ink-muted">
         ${(s.databases || []).length
-          ? `${s.databases.length} database(s): ${s.databases.map((d) => esc(d.display_name)).join(', ')}`
-          : 'No databases registered from this server yet — click Discover.'}
+          ? `${s.databases.length} registered from this server: ${s.databases.map((d) => esc(d.display_name)).join(', ')}`
+          : 'None registered from this server yet.'}
       </div>
       <div data-test-result="${esc(s.slug)}"></div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   return `${header}${rows}`;
 }
@@ -167,7 +268,8 @@ async function runServerTest(el, slug) {
     const data = await testDbServer(slug);
     if (resultEl) {
       resultEl.innerHTML = data.status === 'ok'
-        ? `<div class="mt-s1 text-provenance text-state-ok">✓ Connected to ${esc(data.host)}:${data.port} — ${data.database_count} database(s) visible.</div>`
+        ? `<div class="mt-s1 text-provenance text-state-ok">✓ Connected to ${esc(data.host)}:${data.port}. ${data.database_count} database(s) listed${
+          data.connectable_count != null ? `, ${data.connectable_count} this credential can connect to` : ''}.</div>`
         : `<div class="mt-s1 text-provenance text-state-warn">✗ ${esc(data.error || 'Connection failed')}</div>`;
     }
   } catch (err) {
@@ -181,11 +283,42 @@ async function removeServerRow(el, slug) {
     await deleteDbServer(slug);
     view.status = `Removed server "${slug}".`;
     view.statusIsError = false;
+    if (view.cand.source && view.cand.source.slug === slug) view.cand = emptyCandidates();
     await loadServers(el);
     refreshGroupsAndSidebar();
   } catch (err) {
-    view.status = `Could not remove "${slug}": ${err.message}`;
+    view.status = failure(err, `remove "${slug}"`);
     view.statusIsError = true;
+    render(el);
+  }
+}
+
+/** Run a saved source: the response carries what is new since its last run. */
+async function runSource(el, slug) {
+  const srv = view.servers.find((s) => s.slug === slug);
+  if (!srv) return;
+  view.cand = emptyCandidates();
+  view.cand.source = { kind: 'saved', slug, label: srv.display_name, group_slug: srv.group_slug || '' };
+  view.cand.group = srv.group_slug || '';
+  view.cand.investigation = state.investigation || '';
+  view.cand.loading = true;
+  view.status = '';
+  render(el);
+  try {
+    const run = await runDatabaseSource(slug);
+    view.cand.rows = run.candidates || [];
+    view.cand.meta = {
+      run_at: run.run_at, previous_run_at: run.previous_run_at, first_run: run.first_run,
+      new_count: run.new_count, candidate_count: run.candidate_count,
+    };
+    // The saved row now remembers THIS run; reflect the stored values.
+    srv.last_run_at = run.run_at;
+    srv.last_run_candidate_count = run.candidate_count;
+    view.cand.selected = new Set();
+  } catch (err) {
+    view.cand.error = failure(err, `run "${srv.display_name}"`);
+  } finally {
+    view.cand.loading = false;
     render(el);
   }
 }
@@ -323,7 +456,7 @@ async function submitRegister(el) {
     view.form = emptyRegisterForm();
     view.showEgeria = false;
     view.testResult = null;
-    view.mode = 'servers';
+    view.mode = 'list';
     view.status = `Registered server "${f.slug}".`;
     view.statusIsError = false;
     await loadServers(el);
@@ -336,99 +469,315 @@ async function submitRegister(el) {
   }
 }
 
-/* ── Discover & add databases ──────────────────────────────────────────── */
+
+/* ── Discover on a server (one-off) ────────────────────────────────────── */
 
 function discoverHtml() {
-  const srv = view.servers.find((s) => s.slug === view.discoverSlug);
-  const header = `
-    <div class="mb-s2 flex items-center gap-s2">
-      <button data-act="back-to-servers" class="cursor-pointer bg-transparent text-caveat text-accent-ink underline">← Servers</button>
-      <span class="font-heading text-caveat text-ink">Discover Databases — ${esc(srv ? srv.display_name : view.discoverSlug)}</span>
-    </div>`;
-
-  if (view.discoverLoading) {
-    return `${header}<p class="text-caveat text-ink-muted">Connecting to server…</p>`;
-  }
-  if (view.discoverError) {
-    return `${header}<p class="text-caveat text-state-warn">${esc(view.discoverError)}</p>`;
-  }
-  if (!view.discoverResults.length) {
-    return `${header}<p class="text-caveat text-ink-muted">No accessible databases found.</p>`;
-  }
-
-  const rows = view.discoverResults.map((db, i) => {
-    const disabled = db.is_registered;
-    return `<label class="mb-s1 flex cursor-pointer items-start gap-s2 rounded-sm border border-rule p-s2 ${disabled ? 'opacity-50' : 'hover:border-rule-strong'}">
-      <input type="checkbox" data-discover-row="${i}" ${disabled ? 'disabled checked' : ''} ${view.discoverSelected.has(i) ? 'checked' : ''}>
-      <div class="min-w-0 flex-1">
-        <div class="font-mono text-caveat text-ink">${esc(db.name)}${disabled ? ' <span class="text-ink-muted">(already registered)</span>' : ''}</div>
-        <div class="text-provenance text-ink-muted">${db.size_pretty ? esc(db.size_pretty) + ' · ' : ''}${esc(db.owner)}${db.description ? ' · ' + esc(db.description) : ''}</div>
-      </div>
-    </label>`;
-  }).join('');
-
-  return `${header}
-    <div class="max-h-[46vh] overflow-y-auto">${rows}</div>
-    <div class="mt-s3 flex items-center gap-s2 border-t border-rule pt-s2">
-      <button data-act="add-selected" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink" ${view.busy ? 'disabled' : ''}
-        >${view.busy ? 'Adding…' : 'Add Selected →'}</button>
-    </div>`;
+  const o = view.oneOff;
+  const field = (label, inner) => `<div>
+    <label class="mb-[2px] block text-caps uppercase tracking-caps text-ink-muted">${esc(label)}</label>${inner}</div>`;
+  const input = (key, placeholder, type = 'text', val = '') =>
+    `<input data-oo="${key}" type="${type}" placeholder="${esc(placeholder)}" ${type === 'password' ? '' : `value="${esc(val)}"`}
+       autocomplete="off" class="w-full rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">`;
+  const saved = !!o.savedSlug;
+  return `
+    <p class="mb-s2 max-w-[70ch] text-caveat text-ink-muted">
+      List the databases on a Postgres server once, without registering it. The password is used for this one
+      connection and kept in memory only. Save the server as a source if you want to Run it again or register
+      databases from it.
+    </p>
+    <div class="grid grid-cols-2 gap-s2 sm:grid-cols-4">
+      ${field('Host', input('host', 'pg.regional.example', 'text', o.host))}
+      ${field('Port', input('port', '5432', 'number', o.port || ''))}
+      ${field('Username', input('db_user', 'scout_ro', 'text', o.db_user))}
+      ${field('Password', input('db_password', '', 'password'))}
+    </div>
+    <div class="mt-s2 flex items-center gap-s2">
+      <button data-act="discover-inline" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
+        ${view.cand.loading ? 'disabled' : ''}>${view.cand.loading ? 'Connecting…' : 'Discover'}</button>
+    </div>
+    ${view.cand.rows.length && view.cand.source && view.cand.source.fromOneOff ? `
+    <div class="mt-s3 rounded-sm border border-rule p-s2" data-save-source>
+      ${saved
+        ? `<span class="text-caveat text-state-ok">✓ Saved as the source "${esc(o.savedSlug)}". Its candidates below can now be registered.</span>`
+        : `<div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">Save as a source <span class="normal-case">(stores the credential with it)</span></div>
+           <div class="flex flex-wrap items-center gap-s2">
+             <input data-oo="slug" placeholder="regional-pg" value="${esc(o.slug)}" autocomplete="off"
+               class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
+             <input data-oo="display_name" placeholder="Display name" value="${esc(o.display_name)}" autocomplete="off"
+               class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
+             <button data-act="save-source" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
+               ${view.busy ? 'disabled' : ''}>Save as a source</button>
+           </div>`}
+    </div>` : ''}`;
 }
 
-async function openDiscover(el, slug) {
-  view.mode = 'discover';
-  view.discoverSlug = slug;
-  view.discoverResults = [];
-  view.discoverSelected = new Set();
-  view.discoverError = '';
-  view.discoverLoading = true;
+async function discoverInline(el) {
+  captureInputs(el);
+  const o = view.oneOff;
+  if (!o.host || !o.db_user) {
+    view.status = 'Enter a host and a username first.';
+    view.statusIsError = true;
+    render(el);
+    return;
+  }
+  view.cand = emptyCandidates();
+  view.cand.source = { kind: 'oneoff', fromOneOff: true, slug: '', label: `${o.host}:${o.port || 5432}`, group_slug: '' };
+  view.cand.investigation = state.investigation || '';
+  view.cand.loading = true;
+  view.status = '';
+  o.savedSlug = '';
   render(el);
   try {
-    view.discoverResults = await discoverDatabases(slug);
+    const data = await discoverDatabasesInline({
+      host: o.host, port: o.port || 5432, db_user: o.db_user, db_password: o.db_password, db_type: 'postgresql',
+    });
+    view.cand.rows = data.candidates || [];
+    view.cand.meta = { run_at: null, previous_run_at: null, first_run: null, new_count: null,
+      candidate_count: view.cand.rows.length };
   } catch (err) {
-    view.discoverError = `Could not connect to server: ${err.message}`;
+    view.cand.error = failure(err, 'discover on this server');
   } finally {
-    view.discoverLoading = false;
+    view.cand.loading = false;
     render(el);
   }
 }
 
-async function addSelected(el) {
-  const slug = view.discoverSlug;
-  if (!slug) return;
-  const chosen = [...view.discoverSelected]
-    .map((i) => view.discoverResults[i])
-    .filter((db) => db && !db.is_registered);
-  if (!chosen.length) {
-    view.status = 'Select at least one database.';
+/** Save the one-off server as a source. The registration is the same call the
+ *  Register form makes; afterwards the listed candidates belong to a saved
+ *  source, so the confirm can register them. */
+async function saveSource(el) {
+  captureInputs(el);
+  const o = view.oneOff;
+  if (!o.slug || !o.display_name) {
+    view.status = 'A saved source needs a slug and a display name.';
     view.statusIsError = true;
     render(el);
     return;
   }
   view.busy = true;
   render(el);
-  let added = 0;
+  try {
+    const f = { ...emptyRegisterForm(), slug: o.slug, display_name: o.display_name, host: o.host,
+      port: o.port || 5432, db_user: o.db_user, db_password: o.db_password };
+    if (f.host === 'localhost' || f.host === '127.0.0.1') f.egeria_host = 'host.docker.internal';
+    await registerDbServer(f);
+    o.savedSlug = o.slug;
+    o.db_password = '';          // stored with the source now; drop the in-memory copy
+    const pwBox = el.querySelector('[data-oo="db_password"]');
+    if (pwBox) pwBox.value = '';  // render() reads the boxes back first, so clear the box too
+    view.cand.rows.forEach((r) => { r.server_slug = o.slug; });
+    view.cand.source = { kind: 'saved', fromOneOff: true, slug: o.slug, label: o.display_name, group_slug: '' };
+    view.status = `Saved "${o.display_name}" as a source.`;
+    view.statusIsError = false;
+    const servers = await listDbServers().catch(() => null);
+    if (servers) view.servers = servers;
+  } catch (err) {
+    view.status = failure(err, 'save this source');
+    view.statusIsError = true;
+  } finally {
+    view.busy = false;
+    render(el);
+  }
+}
+
+/* ── From a file ───────────────────────────────────────────────────────── */
+
+function fileHtml() {
+  return `<p class="max-w-[60ch] text-answer text-ink" data-file-placeholder>Loading databases from a file is coming in the next slice.</p>`;
+}
+
+/* ── The candidate table (shared by every tab) and the one confirm ─────── */
+
+const HIDDEN_VERDICTS = new Set(['abandoned', 'ignored']);
+
+const selectable = (r) => !r.is_registered && r.can_connect !== false;
+
+function mutedNote(text) { return `<span class="text-ink-muted">${esc(text)}</span>`; }
+
+/** One candidate row. Exported so the states it can be in are testable as a table. */
+export function candidateRowHtml(r, i, checked) {
+  const registered = !!r.is_registered;
+  const noConnect = r.can_connect === false;
+  const size = r.size_pretty != null && r.size_pretty !== ''
+    ? esc(r.size_pretty)
+    : '<span class="text-ink-muted" data-size-unread>? not readable with this credential</span>';
+  const owner = r.owner != null && r.owner !== '' ? esc(r.owner) : mutedNote('not read');
+  const desc = r.description == null ? mutedNote('not reported by this source')
+    : r.description === '' ? `<span class="text-ink-muted" data-desc-none>none set</span>`
+    : esc(r.description);
+  const connect = noConnect
+    ? `<span class="text-state-warn" data-connect="no">? can't connect with this credential</span>`
+    : `<span data-connect="yes">✓ yes</span>`;
+  const v = r.verdict;
+  const verdict = v
+    ? `<span title="${esc(v.reason || '')}">${esc(v.disposition)}${v.reason ? ` · “${esc(v.reason)}”` : ''}</span>`
+    : mutedNote('undecided');
+  const newMark = r.is_new === true ? ' <span class="text-state-ok" data-new>new</span>' : '';
+  return `<tr class="border-b border-rule ${registered ? 'opacity-50' : ''}" data-cand="${esc(r.key || r.name)}"
+      data-state="${registered ? 'registered' : noConnect ? 'no-connect' : 'new'}">
+    <td class="py-s1 pr-s2"><input type="checkbox" data-cand-row="${i}"
+      ${registered ? 'disabled checked' : (noConnect ? 'disabled' : (checked ? 'checked' : ''))}></td>
+    <td class="py-s1 pr-s2 max-w-[220px] truncate font-mono text-caveat text-ink" title="${esc(r.address || '')}">${esc(r.name)}${newMark}${
+      registered ? ' <span class="text-ink-muted" data-registered>already registered</span>' : ''}
+      ${r.server_slug ? `<div class="text-provenance text-ink-muted">${esc(r.server_slug)}</div>` : ''}</td>
+    <td class="py-s1 pr-s2 text-caveat text-ink-muted">${size}</td>
+    <td class="py-s1 pr-s2 text-caveat text-ink-muted">${owner}</td>
+    <td class="py-s1 pr-s2 max-w-[220px] truncate text-caveat text-ink-muted">${desc}</td>
+    <td class="py-s1 pr-s2 text-caveat text-ink-muted">${connect}</td>
+    <td class="py-s1 pr-s2 text-caveat">${verdict}</td>
+    <td class="py-s1 text-caveat text-ink-muted">after registration</td>
+  </tr>`;
+}
+
+function metaLineHtml() {
+  const m = view.cand.meta;
+  if (!m) return '';
+  const label = view.cand.source ? view.cand.source.label : '';
+  let words;
+  if (m.run_at == null) {
+    words = `${m.candidate_count} found on ${label}`;            // a one-off has no previous run to compare with
+  } else if (m.first_run) {
+    words = `First run of ${label}: ${m.candidate_count} found. Nothing to compare with yet.`;
+  } else {
+    words = `<span data-new-since>${m.new_count} new since ${esc(sinceLabel(m.previous_run_at, m.run_at))}</span> · ${m.candidate_count} found on ${esc(label)}`;
+  }
+  return `<p class="mb-s2 text-caveat text-ink" data-run-meta>${m.run_at == null ? esc(words) : words}</p>`;
+}
+
+function investigationName(slug) {
+  const inv = view.investigations.find((i) => i.slug === slug)
+    || (state.investigations || []).find((i) => i.slug === slug);
+  return inv ? (inv.display_name || inv.slug) : slug;
+}
+
+function candidatesHtml() {
+  const c = view.cand;
+  if (c.loading) return `<div class="my-s3 h-px bg-rule"></div><p class="text-caveat text-ink-muted">Connecting to the server…</p>`;
+  if (c.error) return `<div class="my-s3 h-px bg-rule"></div><p class="text-caveat text-state-warn" data-run-error>${esc(c.error)}</p>`;
+  if (!c.source) return '';
+  if (!c.rows.length) {
+    return `<div class="my-s3 h-px bg-rule"></div>${metaLineHtml()}<p class="text-caveat text-ink-muted">No databases were listed on this server.</p>`;
+  }
+
+  const rows = c.rows.map((r, i) => candidateRowHtml(r, i, c.selected.has(i))).join('');
+  const nSelected = [...c.selected].filter((i) => c.rows[i] && selectable(c.rows[i])).length;
+  const nRegistered = c.rows.filter((r) => r.is_registered).length;
+  const nNoConnect = c.rows.filter((r) => !r.is_registered && r.can_connect === false).length;
+  const selectableCount = c.rows.filter((r) => selectable(r) && !HIDDEN_VERDICTS.has(r.verdict && r.verdict.disposition)).length;
+  const groupOptions = view.groups.map((g) =>
+    `<option value="${esc(g.slug)}" ${c.group === g.slug ? 'selected' : ''}>${esc(g.display_name)}</option>`).join('');
+  const invOptions = view.investigations.map((i) =>
+    `<option value="${esc(i.slug)}" ${c.investigation === i.slug ? 'selected' : ''}>${esc(i.display_name || i.slug)}</option>`).join('');
+  const needsSave = !c.source.slug && c.source.kind === 'oneoff';
+  const buttonLabel = c.investigation
+    ? `Add these ${nSelected} to ${investigationName(c.investigation)}`
+    : `Register these ${nSelected}`;
+
+  return `
+    <div class="my-s3 h-px bg-rule"></div>
+    ${metaLineHtml()}
+    <div class="mb-s2 flex flex-wrap items-center gap-s2 text-caveat">
+      <button data-act="select-all-new" class="cursor-pointer bg-transparent text-accent-ink underline"
+        >Select all new${selectableCount ? ` (${selectableCount})` : ''}</button>
+      <button data-act="select-none" class="cursor-pointer bg-transparent text-ink-muted underline">Deselect all</button>
+      <span class="text-ink-muted" data-selection-count>${nSelected} selected · ${nRegistered} already registered${
+        nNoConnect ? ` · ${nNoConnect} can't connect with this credential` : ''}</span>
+    </div>
+    <div class="max-h-[40vh] overflow-auto rounded-sm border border-rule">
+      <table class="w-full text-left" data-candidate-table>
+        <thead class="sticky top-0 bg-paper text-caps uppercase tracking-caps text-ink-muted">
+          <tr class="border-b border-rule">
+            <th class="px-2 py-s1"></th>
+            <th class="px-2 py-s1 font-normal">Database</th>
+            <th class="px-2 py-s1 font-normal">Size</th>
+            <th class="px-2 py-s1 font-normal">Owner role</th>
+            <th class="px-2 py-s1 font-normal">Description</th>
+            <th class="px-2 py-s1 font-normal">Connect with this credential</th>
+            <th class="px-2 py-s1 font-normal">Prior verdict</th>
+            <th class="px-2 py-s1 font-normal">activity · after registration</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${nNoConnect ? `<p class="mt-s1 text-provenance text-ink-muted">A database marked "can't connect" stays a candidate until a credential that can connect is given; it cannot be registered with this one.</p>` : ''}
+    <div class="mt-s3 flex flex-wrap items-center gap-s2 border-t border-rule pt-s2" data-confirm>
+      <label class="text-caveat text-ink-muted">Group
+        <select data-act="group" class="ml-s2 rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">
+          <option value="">No group</option>${groupOptions}
+        </select></label>
+      <label class="text-caveat text-ink-muted">Investigation
+        <select data-act="investigation" class="ml-s2 rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">
+          <option value="">none</option>${invOptions}
+        </select></label>
+      <button data-act="confirm" class="ml-auto cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
+        ${view.busy || !nSelected || needsSave ? 'disabled' : ''}>${esc(view.busy ? 'Adding…' : buttonLabel)}</button>
+    </div>
+    ${needsSave ? `<p class="mt-s1 text-provenance text-ink-muted" data-needs-save>Save this server as a source above to register databases from it.</p>` : ''}
+    ${c.outcome ? `<p class="mt-s2 text-caveat ${c.outcomeIsError ? 'text-state-warn' : 'text-state-ok'}" data-outcome>${esc(c.outcome)}</p>` : ''}`;
+}
+
+/** The one confirm. Registers each selected database from its saved source (a
+ *  local registry write), puts it in the chosen group, and, when an
+ *  investigation is chosen, adds it to that investigation's scope. Nothing is
+ *  written to Egeria. */
+async function confirmAdd(el) {
+  const c = view.cand;
+  const slug = c.source && c.source.slug;
+  if (!slug) return;
+  const chosen = [...c.selected].map((i) => c.rows[i]).filter((r) => r && selectable(r));
+  if (!chosen.length) {
+    c.outcome = 'Select at least one database.';
+    c.outcomeIsError = true;
+    render(el);
+    return;
+  }
+  view.busy = true;
+  render(el);
+  const registered = [];
+  const scoped = [];
   const failures = [];
-  for (const db of chosen) {
+  const when = new Date().toISOString().slice(0, 10);
+  for (const r of chosen) {
+    let dbSlug;
     try {
-      await addDiscoveredDatabase(slug, db.name);
-      added++;
+      const res = await addDiscoveredDatabase(slug, r.name);
+      dbSlug = res.slug;
+      registered.push(r);
+      r.is_registered = true;
+      r.registered_slug = dbSlug;
     } catch (err) {
-      failures.push(`${db.name}: ${err.message}`);
+      failures.push(`${r.name}: ${err && err.status === 401 ? 'sign in to register' : err.message}`);
+      continue;
+    }
+    if (c.group) {
+      try { await assignGroup(dbSlug, c.group, 'database'); } catch (err) {
+        failures.push(`${r.name}: registered, but the group was not set (${err.message})`);
+      }
+    }
+    if (c.investigation) {
+      try {
+        await addInvestigationMember(c.investigation, 'database', dbSlug,
+          `Found by ${c.source.label} on ${when}`);
+        scoped.push(r);
+      } catch (err) {
+        failures.push(`${r.name}: registered, but not added to the investigation (${err && err.status === 401 ? 'sign in first' : err.message})`);
+      }
     }
   }
   view.busy = false;
-  view.mode = 'servers';
-  view.status = added
-    ? `Added ${added} database(s) from server "${slug}".${failures.length ? ` (${failures.length} failed: ${failures.join('; ')})` : ''}`
-    : `No databases were added.${failures.length ? ` ${failures.join('; ')}` : ''}`;
-  view.statusIsError = !added;
-  await loadServers(el);
-  // Bring the newly-added databases into the sidebar without a full reload
-  // -- mirrors discovery-import.js's post-import refresh. `state.databases`
-  // is already loaded by the time this dialog is reachable (the "+" action
-  // only shows for state.resourceType === 'db', which loads it on switch),
-  // so this actually re-fetches rather than being a no-op.
+  c.selected = new Set();
+  const parts = [];
+  if (registered.length) parts.push(`Registered ${registered.length} database(s) from "${c.source.label}".`);
+  if (c.investigation && scoped.length) parts.push(`Added ${scoped.length} to ${investigationName(c.investigation)}.`);
+  if (!registered.length) parts.push('No databases were registered.');
+  if (failures.length) parts.push(`${failures.length} failed: ${failures.join('; ')}`);
+  c.outcome = parts.join(' ');
+  c.outcomeIsError = !registered.length || failures.length > 0;
+  const servers = await listDbServers().catch(() => null);
+  if (servers) view.servers = servers;
+  render(el);
   refreshGroupsAndSidebar();
 }
 
@@ -439,6 +788,20 @@ function cssEsc(s) {
 }
 
 function bind(el) {
+  el.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => {
+    captureInputs(el);
+    if (view.tab !== b.dataset.tab) {
+      view.tab = b.dataset.tab;
+      view.mode = 'list';
+      view.status = '';
+      // A candidate set belongs to the source that produced it.
+      view.cand = emptyCandidates();
+      if (view.tab !== 'discover') { view.oneOff.db_password = ''; }
+    }
+    render(el);
+  }));
+
+  el.querySelector('[data-act="reload"]')?.addEventListener('click', () => loadServers(el));
   el.querySelector('[data-act="new-server"]')?.addEventListener('click', () => {
     view.mode = 'register';
     view.form = emptyRegisterForm();
@@ -448,7 +811,7 @@ function bind(el) {
     render(el);
   });
   el.querySelector('[data-act="back-to-servers"]')?.addEventListener('click', () => {
-    view.mode = 'servers';
+    view.mode = 'list';
     view.status = '';
     render(el);
   });
@@ -462,14 +825,33 @@ function bind(el) {
 
   el.querySelectorAll('[data-test]').forEach((b) =>
     b.addEventListener('click', () => runServerTest(el, b.dataset.test)));
-  el.querySelectorAll('[data-discover]').forEach((b) =>
-    b.addEventListener('click', () => openDiscover(el, b.dataset.discover)));
+  el.querySelectorAll('[data-run]').forEach((b) =>
+    b.addEventListener('click', () => { if (!b.disabled) runSource(el, b.dataset.run); }));
   el.querySelectorAll('[data-remove]').forEach((b) =>
     b.addEventListener('click', () => removeServerRow(el, b.dataset.remove)));
 
-  el.querySelectorAll('[data-discover-row]').forEach((cb) => cb.addEventListener('change', () => {
-    const i = Number(cb.dataset.discoverRow);
-    if (cb.checked) view.discoverSelected.add(i); else view.discoverSelected.delete(i);
+  el.querySelector('[data-act="discover-inline"]')?.addEventListener('click', () => discoverInline(el));
+  el.querySelector('[data-act="save-source"]')?.addEventListener('click', () => saveSource(el));
+
+  el.querySelectorAll('[data-cand-row]').forEach((cb) => cb.addEventListener('change', () => {
+    const i = Number(cb.dataset.candRow);
+    if (cb.checked) view.cand.selected.add(i); else view.cand.selected.delete(i);
+    render(el);
   }));
-  el.querySelector('[data-act="add-selected"]')?.addEventListener('click', () => addSelected(el));
+  el.querySelector('[data-act="select-all-new"]')?.addEventListener('click', () => {
+    view.cand.rows.forEach((r, i) => {
+      if (selectable(r) && !HIDDEN_VERDICTS.has(r.verdict && r.verdict.disposition)) view.cand.selected.add(i);
+    });
+    render(el);
+  });
+  el.querySelector('[data-act="select-none"]')?.addEventListener('click', () => {
+    view.cand.selected.clear();
+    render(el);
+  });
+  el.querySelector('[data-act="group"]')?.addEventListener('change', (e) => { view.cand.group = e.target.value; });
+  el.querySelector('[data-act="investigation"]')?.addEventListener('change', (e) => {
+    view.cand.investigation = e.target.value;
+    render(el);
+  });
+  el.querySelector('[data-act="confirm"]')?.addEventListener('click', () => confirmAdd(el));
 }

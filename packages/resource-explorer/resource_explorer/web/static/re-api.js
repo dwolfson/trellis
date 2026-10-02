@@ -195,6 +195,16 @@ export const testDbServerInline = (payload) => post('/api/db-servers/_test-inlin
 export const discoverDatabases = (slug) =>
   post(`/api/db-servers/${encodeURIComponent(slug)}/discover`);
 
+/** Run a SAVED source: discover on it, and the response says what is new since
+ *  its last run (`previous_run_at`, `new_count`, `first_run`) and remembers this
+ *  run's candidate set for the next one. */
+export const runDatabaseSource = (slug) =>
+  post(`/api/db-servers/${encodeURIComponent(slug)}/run`);
+
+/** One-off discover on connection details typed into the dialog, nothing
+ *  registered. The password is sent for this one connection only. */
+export const discoverDatabasesInline = (payload) => post('/api/db-servers/_discover-inline', payload);
+
 /** Registers one discovered database as a real `DatabaseEntity`. The route
  *  takes `database_name`/`display_name` as query params, not a JSON body
  *  (see db_servers.py's `add_database_from_server` signature) -- hence the

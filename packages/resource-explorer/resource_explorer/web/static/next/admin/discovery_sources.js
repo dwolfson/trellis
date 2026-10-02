@@ -1,4 +1,6 @@
-/* Admin → Discovery Sources — "where do we scout," as named, reusable
+/* Admin → Repository discovery sources (renamed 2026-10-01: it is GitHub-only
+ * and the label must not promise databases until the Find dialog's Saved
+ * sources tab takes over; REPLY-DESIGNER-DISCOVERY-SOURCES-ALL-KINDS.md §6) — "where do we scout," as named, reusable
  * configs (SPEC-ADMIN-THE-FOUR-GAPS.md §3).
  *
  * The central point of that spec section: web/routes/discovery.py already
@@ -285,7 +287,7 @@ function runPanelHtml() {
 function render() {
   if (!_host) return;
   _host.innerHTML = `
-    <h3 class="m-0 font-heading text-name font-normal text-ink">🔍 Discovery Sources</h3>
+    <h3 class="m-0 font-heading text-name font-normal text-ink">🔍 Repository discovery sources</h3>
     <p class="mt-[2px] max-w-[65ch] text-caveat text-ink-muted">Named, reusable "where do we scout" configs —
       a saved GitHub search, or a curated list of repos (for foundations that spread projects across many orgs,
       like Eclipse, or your own enterprise repos). Running a source only shows candidates for review here — it

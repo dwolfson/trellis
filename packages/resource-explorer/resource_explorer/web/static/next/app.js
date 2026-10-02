@@ -1852,7 +1852,7 @@ function markKeyHtml() {
 // to the old-UI-link stub below (see Backlog.md).
 const FIND_TITLE = {
   repo: 'Find and import candidate repos',
-  db: 'Discover databases on a registered server',
+  db: 'Find databases',
   filesystem: 'Register a filesystem path',
 };
 

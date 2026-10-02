@@ -1022,31 +1022,59 @@ class PostgreSQLConnection(DatabaseConnection):
         return columns
 
     def list_databases(self) -> list[dict]:
-        """List all databases on this server that the current user can connect to."""
+        """List every non-template database on this server, INCLUDING the ones
+        this credential cannot CONNECT to.
+
+        Design: REPLY-DESIGNER-DISCOVERY-SOURCES-ALL-KINDS.md §2 ("Two defects
+        to fix with it"). This used to filter with
+        `WHERE has_database_privilege(d.datname, 'CONNECT')`, so a steward
+        looking at a server saw fewer databases than exist and was never told,
+        and it defaulted `size_bytes` to 0 and `owner` to '' so a value that
+        was never read looked like a measured zero. Now:
+
+          * `can_connect` is the measured `has_database_privilege(..., 'CONNECT')`
+            for every row — shown, never used to drop the row.
+          * `size_bytes` / `size_pretty` are None when the credential cannot
+            read them. `pg_database_size()` raises "permission denied" without
+            CONNECT (or membership of `pg_read_all_stats`), so it is guarded in
+            SQL; None means "not read", never 0.
+          * `owner` is `pg_database.datdba`, readable by everyone; None only if
+            the row somehow carries none.
+          * `description` is `shobj_description()`, also readable by everyone,
+            so an empty value IS a measurement: '' means "none set" (NULL from
+            the server is normalised to '' on purpose — the caller renders it
+            as "none set", not "not reported").
+        """
         query = """
             SELECT
                 d.datname                                    AS name,
-                pg_size_pretty(pg_database_size(d.datname)) AS size_pretty,
-                pg_database_size(d.datname)                 AS size_bytes,
-                d.datdba::regrole::text                     AS owner,
+                has_database_privilege(d.datname, 'CONNECT') AS can_connect,
+                CASE WHEN has_database_privilege(d.datname, 'CONNECT')
+                       OR pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER')
+                     THEN pg_size_pretty(pg_database_size(d.datname)) END AS size_pretty,
+                CASE WHEN has_database_privilege(d.datname, 'CONNECT')
+                       OR pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER')
+                     THEN pg_database_size(d.datname) END    AS size_bytes,
+                d.datdba::regrole::text                      AS owner,
                 shobj_description(d.oid, 'pg_database')     AS description,
                 pg_encoding_to_char(d.encoding)             AS encoding
             FROM pg_database d
             WHERE d.datistemplate = false
-            AND has_database_privilege(d.datname, 'CONNECT')
             ORDER BY d.datname
         """
         try:
             rows = self.execute_query(query)
             result = []
             for r in rows:
+                size_bytes = r.get("size_bytes")
                 result.append({
                     "name": r["name"],
-                    "size_pretty": r.get("size_pretty") or "",
-                    "size_bytes": int(r.get("size_bytes") or 0),
-                    "owner": r.get("owner") or "",
+                    "can_connect": bool(r.get("can_connect")),
+                    "size_pretty": r.get("size_pretty") or None,
+                    "size_bytes": int(size_bytes) if size_bytes is not None else None,
+                    "owner": r.get("owner") or None,
                     "description": r.get("description") or "",
-                    "encoding": r.get("encoding") or "",
+                    "encoding": r.get("encoding") or None,
                 })
             return result
         except Exception as e:
