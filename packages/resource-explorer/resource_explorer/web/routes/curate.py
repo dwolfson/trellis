@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from resource_explorer.auth import get_current_user
 from resource_explorer.feedback_store import FeedbackStore
 from resource_explorer.registry import ProjectRegistry
 
@@ -48,6 +49,27 @@ def _require_admin(request: Request) -> None:
 
 
 router = APIRouter()
+
+
+def _require_author(request: Request, action: str) -> str:
+    """The signed-in user id, or 401. EVERY write route for tags, resource
+    feedback and curator notes calls this first (a test fails if one doesn't).
+
+    The author comes from the session, never from the request body: the write
+    models have no `author` field, and pydantic drops unknown keys. Mirrors
+    `routes/journal.py` and the report acts: anonymous is refused rather than
+    recorded as nobody's. Resolved here, in the request thread, and passed to
+    the registry as an explicit argument — never read from a ContextVar inside
+    a bare `threading.Thread`, which would drop the caller and write ''.
+    """
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Sign in to {action} — a tag, rating or note needs an author.",
+        )
+    return author
 
 
 def _registry() -> ProjectRegistry:
@@ -113,19 +135,51 @@ def list_tags(entity_type: str, slug: str) -> list[str]:
     return _registry().list_resource_tags(entity_type, slug)
 
 
+@router.get("/tags-detail/{entity_type}/{slug}")
+def list_tags_detail(entity_type: str, slug: str) -> list[dict]:
+    """Tags with who added them: [{tag, created_at, author, authored,
+    author_label}]. `author` is None for rows from before authors were
+    recorded (`authored` false, `author_label` the words to show)."""
+    return _registry().list_resource_tags_with_authors(entity_type, slug)
+
+
 @router.post("/tags/{entity_type}/{slug}")
-def add_tag(entity_type: str, slug: str, body: TagCreate) -> dict:
+def add_tag(entity_type: str, slug: str, body: TagCreate, request: Request) -> dict:
+    author = _require_author(request, "add a tag")
     tag = body.tag.strip().lower()
     if not tag:
         raise HTTPException(status_code=400, detail="tag must not be empty")
-    _registry().add_resource_tag(entity_type, slug, tag)
-    return {"status": "success", "tag": tag}
+    _registry().add_resource_tag(entity_type, slug, tag, author=author)
+    return {"status": "success", "tag": tag, "author": author}
 
 
 @router.delete("/tags/{entity_type}/{slug}/{tag}")
-def remove_tag(entity_type: str, slug: str, tag: str) -> dict:
-    _registry().remove_resource_tag(entity_type, slug, tag)
-    return {"status": "success"}
+def remove_tag(entity_type: str, slug: str, tag: str, request: Request) -> dict:
+    author = _require_author(request, "remove a tag")
+    reg = _registry()
+    reg.remove_resource_tag(entity_type, slug, tag)
+    # A removal leaves no row to carry an author, so who removed it is
+    # recorded in the activity log.
+    import uuid
+    from datetime import datetime, timezone
+    from resource_explorer.registry import ActivityEntry
+    reg.write_activity(ActivityEntry(
+        id=str(uuid.uuid4()), ts=datetime.now(timezone.utc).isoformat(),
+        operation="curate_tag_removed", intent="enrichment",
+        entity_type=entity_type, entity_slug=slug,
+        summary=f"tag {tag!r} removed by {author}",
+        annotations=[{"tag": tag, "removed_by": author}],
+    ))
+    return {"status": "success", "removed_by": author}
+
+
+# SEAM (not implemented, by owner ruling 2026-10-01): tags and journal entries
+# may later be published to Egeria (InformalTag / note log) when the resource is
+# already catalogued. Nothing in this module writes to Egeria; the future hook
+# is `_publish_curation_to_egeria` below, deliberately a no-op.
+def _publish_curation_to_egeria(entity_type: str, slug: str, kind: str, payload: dict) -> None:
+    """Placeholder for the later Egeria publish of a tag or journal entry."""
+    return None
 
 
 # ── Feedback ─────────────────────────────────────────────────────────────────
@@ -253,12 +307,14 @@ def list_feedback(entity_type: str, slug: str) -> list[dict]:
 
 
 @router.post("/feedback/{entity_type}/{slug}")
-def add_feedback(entity_type: str, slug: str, body: FeedbackCreate) -> dict:
+def add_feedback(entity_type: str, slug: str, body: FeedbackCreate, request: Request) -> dict:
+    author = _require_author(request, "leave feedback")
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
     if body.rating is not None and not (1 <= body.rating <= 5):
         raise HTTPException(status_code=400, detail="rating must be between 1 and 5")
-    return _registry().add_resource_feedback(entity_type, slug, body.rating, body.category, body.message)
+    return _registry().add_resource_feedback(entity_type, slug, body.rating, body.category, body.message,
+                                           author=author)
 
 
 # ── Curator notes ────────────────────────────────────────────────────────────
@@ -273,15 +329,29 @@ def list_notes(entity_type: str, slug: str) -> list[dict]:
 
 
 @router.post("/notes/{entity_type}/{slug}")
-def add_note(entity_type: str, slug: str, body: NoteCreate) -> dict:
+def add_note(entity_type: str, slug: str, body: NoteCreate, request: Request) -> dict:
+    author = _require_author(request, "add a note")
     if not body.note.strip():
         raise HTTPException(status_code=400, detail="note must not be empty")
-    return _registry().add_curator_note(entity_type, slug, body.note)
+    return _registry().add_curator_note(entity_type, slug, body.note, author=author)
 
 
 @router.delete("/notes/{note_id}")
-def delete_note(note_id: str) -> dict:
-    if not _registry().delete_curator_note(note_id):
+def delete_note(note_id: str, request: Request) -> dict:
+    """Delete a LEGACY unsigned note. Notes are append-only like the journal:
+    a signed note is refused (409), amended by adding a later note instead."""
+    _require_author(request, "delete a note")
+    reg = _registry()
+    note = reg.get_curator_note(note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if note["authored"]:
+        raise HTTPException(
+            status_code=409,
+            detail="A signed note cannot be deleted — notes are append-only. "
+                   "Add a later note to amend it.",
+        )
+    if not reg.delete_curator_note(note_id):
         raise HTTPException(status_code=404, detail="Note not found")
     return {"status": "success"}
 

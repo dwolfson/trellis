@@ -1941,7 +1941,7 @@ function visibleRows() {
   return state.resourceType === 'repo' ? visibleProjects() : visibleNonRepoRows();
 }
 
-function renderSidebar() {
+export function renderSidebar() {
   const el = $('sidebar');
   const types = [
     { id: 'repo', label: 'Repos' },
@@ -2718,9 +2718,50 @@ let railTicket = 0;
 export function railClaim() { return ++railTicket; }
 function railStale(ticket) { return ticket !== railTicket; }
 
+/* WHAT THE RAIL IS A FUNCTION OF. The evidence slot belongs to one
+ * (resource type, resource, stage, sub-tab, work list) at a time. Before this,
+ * only Context's own render cleared it, and only on a slug change; a plain
+ * stage, sub-tab or resource change left the previous pane's evidence on
+ * screen under the new pane -- owner screenshot, 8810: viewing egeria_git,
+ * the rail read "for laz_local_adventureworks".
+ *
+ * ONE place enforces it: `syncRailToSelection()`, called by loadPane() (every
+ * stage click, sub-tab click, resource click, URL restore and delete funnels
+ * through it). When the key changed it (1) takes a ticket, so any writer that
+ * was awaiting a fetch for the OLD key stands down, and (2) empties the slot.
+ * A writer that has no ticket (Context's) compares `railKeyOf()` itself before
+ * it writes. Same key => nothing happens, so a rail deliberately open on this
+ * resource's evidence survives a re-render of the same pane. */
+let railKey = null;
+export function railKeyOf() {
+  return [state.resourceType, state.selectedSlug || '', state.stage, state.subTab, state.workListSlug || ''].join('\u0001');
+}
+export function syncRailToSelection() {
+  const key = railKeyOf();
+  if (key === railKey) return false;
+  railKey = key;
+  railClaim();
+  const out = $('rail-evidence');
+  if (out) {
+    out.innerHTML = '';
+    delete out.dataset.railFor;
+    delete out.dataset.railKey;
+  }
+  renderRailScope();
+  return true;
+}
+/** Every rail writer tags what it wrote: the resource it is FOR and the key it
+ *  was written under, so "what does the rail claim" is checkable from the DOM. */
+export function railTag(out, forWhat) {
+  if (!out) return;
+  out.dataset.railFor = String(forWhat ?? '');
+  out.dataset.railKey = railKey ?? railKeyOf();
+}
+
 export function railFrame(kind, forWhat, bodyHtml, { sub = '', actions = '' } = {}) {
   const out = $('rail-evidence');
   if (!out) return null;
+  railTag(out, forWhat);
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">${esc(kind)}</span>
@@ -2732,6 +2773,7 @@ export function railFrame(kind, forWhat, bodyHtml, { sub = '', actions = '' } = 
   out.querySelector('[data-act="rail-clear"]')?.addEventListener('click', () => {
     railClaim();
     out.innerHTML = '';
+    delete out.dataset.railFor;
   });
   return out.querySelector('[data-rail-body]');
 }
@@ -5671,6 +5713,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     return;
   }
   if (railStale(ticket)) return;
+  railTag(out, slug);
   if (data.not_applicable) {
     // Metrics-only analysis (repository_health, and the like): the list
     // slot holds one sentence, not a zero from the wrong table — and no
@@ -6825,6 +6868,9 @@ export function paneMessage(title, body) {
 
 async function loadPane() {
   const el = $('content');
+  // The rail is a function of (resource, stage, sub-tab): empty it, and stand
+  // down its in-flight writers, the moment any of those changed.
+  syncRailToSelection();
 
   // The perspective row is re-rendered HERE, once, for every branch below.
   //
@@ -6942,6 +6988,7 @@ async function loadPane() {
   // Enrichment, Schema Inventory from a database) must not drive the pane
   // here: revert it to this stage's default and make the URL say so.
   if (reconcileSubTabForStage()) writeUrl();
+  syncRailToSelection();   // the reconcile may have moved the sub-tab
   if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
   // ENRICHMENT-E1-CONTEXT-TAB: Context is its own pane, not a Questions-
   // engine variant — see loadContextPane() below.
@@ -6956,7 +7003,7 @@ async function loadPane() {
   // 'dashboard' is a retired tab id -- a bookmarked/shared URL from before
   // the stage-page round lands on its nearest surviving surface rather than
   // the deferred-pane message a stranger id would get.
-  if (state.subTab === 'dashboard') { state.subTab = 'by_analysis'; writeUrl(); }
+  if (state.subTab === 'dashboard') { state.subTab = 'by_analysis'; writeUrl(); syncRailToSelection(); }
   // By analysis on Enrichment says the same thing as the map, in one line,
   // and links there (reply §1) — not the generic per-intent board.
   if (state.subTab === 'by_analysis' && state.stage === 'enrichment') { await loadEnrichmentByAnalysisSummaryPane(); return; }

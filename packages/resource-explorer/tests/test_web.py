@@ -548,7 +548,7 @@ def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_an
 # ── /api/curate — tags, resource feedback, curator notes ───────────────────────
 
 class TestCurateTagsRouter:
-    def test_add_list_remove_tag(self, client):
+    def test_add_list_remove_tag(self, client, signed_in_curator):
         resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "Gold-Tier"})
         assert resp.status_code == 200
         assert resp.json()["tag"] == "gold-tier"  # normalized lowercase
@@ -560,23 +560,23 @@ class TestCurateTagsRouter:
         assert resp.status_code == 200
         assert client.get("/api/curate/tags/repo/myproj").json() == []
 
-    def test_add_tag_rejects_empty(self, client):
+    def test_add_tag_rejects_empty(self, client, signed_in_curator):
         resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "   "})
         assert resp.status_code == 400
 
-    def test_list_all_tags_with_counts(self, client):
+    def test_list_all_tags_with_counts(self, client, signed_in_curator):
         client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
         client.post("/api/curate/tags/database/db-a", json={"tag": "gold-tier"})
         tags = {t["tag"]: t["count"] for t in client.get("/api/curate/tags").json()}
         assert tags["gold-tier"] == 2
 
-    def test_resources_by_tag(self, client):
+    def test_resources_by_tag(self, client, signed_in_curator):
         client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
         resp = client.get("/api/curate/tags/gold-tier/resources")
         assert resp.status_code == 200
         assert {"entity_type": "repo", "entity_slug": "proj-a"} in resp.json()
 
-    def test_resources_by_tag_route_does_not_shadow_list_tags_route(self, client):
+    def test_resources_by_tag_route_does_not_shadow_list_tags_route(self, client, signed_in_curator):
         # Regression guard: /tags/{tag}/resources and /tags/{entity_type}/{slug}
         # are both 2-segment paths — declaration order matters (see curate.py's
         # comment). A resource literally named "resources" would be the edge
@@ -588,7 +588,7 @@ class TestCurateTagsRouter:
 
 
 class TestCurateFeedbackRouter:
-    def test_add_and_list_feedback(self, client):
+    def test_add_and_list_feedback(self, client, signed_in_curator):
         resp = client.post("/api/curate/feedback/repo/myproj", json={
             "rating": 4, "category": "quality", "message": "Schema looks stale",
         })
@@ -597,38 +597,44 @@ class TestCurateFeedbackRouter:
         assert len(listed) == 1
         assert listed[0]["message"] == "Schema looks stale"
 
-    def test_rejects_empty_message(self, client):
+    def test_rejects_empty_message(self, client, signed_in_curator):
         resp = client.post("/api/curate/feedback/repo/myproj", json={"message": ""})
         assert resp.status_code == 400
 
-    def test_rejects_out_of_range_rating(self, client):
+    def test_rejects_out_of_range_rating(self, client, signed_in_curator):
         resp = client.post("/api/curate/feedback/repo/myproj", json={"rating": 9, "message": "x"})
         assert resp.status_code == 400
 
-    def test_feedback_without_rating_is_allowed(self, client):
+    def test_feedback_without_rating_is_allowed(self, client, signed_in_curator):
         resp = client.post("/api/curate/feedback/repo/myproj", json={"message": "just a note"})
         assert resp.status_code == 200
         assert resp.json()["rating"] is None
 
 
 class TestCurateNotesRouter:
-    def test_add_list_delete_note(self, client):
+    def test_add_list_note_and_signed_note_is_append_only(self, client, signed_in_curator):
         resp = client.post("/api/curate/notes/repo/myproj", json={"note": "Needs a better README"})
         assert resp.status_code == 200
         note_id = resp.json()["id"]
 
         listed = client.get("/api/curate/notes/repo/myproj").json()
-        assert len(listed) == 1
+        assert len(listed) == 1 and listed[0]["author"] == "dan"
 
+        # Signed notes are append-only (owner ruling 2026-10-01).
         resp = client.delete(f"/api/curate/notes/{note_id}")
-        assert resp.status_code == 200
+        assert resp.status_code == 409
+        assert len(client.get("/api/curate/notes/repo/myproj").json()) == 1
+
+    def test_delete_legacy_unsigned_note(self, client, registry, signed_in_curator):
+        note_id = registry.add_curator_note("repo", "myproj", "from before authors")["id"]
+        assert client.delete(f"/api/curate/notes/{note_id}").status_code == 200
         assert client.get("/api/curate/notes/repo/myproj").json() == []
 
-    def test_rejects_empty_note(self, client):
+    def test_rejects_empty_note(self, client, signed_in_curator):
         resp = client.post("/api/curate/notes/repo/myproj", json={"note": "  "})
         assert resp.status_code == 400
 
-    def test_delete_nonexistent_note_404s(self, client):
+    def test_delete_nonexistent_note_404s(self, client, signed_in_curator):
         resp = client.delete("/api/curate/notes/nonexistent-id")
         assert resp.status_code == 404
 

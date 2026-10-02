@@ -1367,6 +1367,19 @@ class ProjectRegistry:
         finally:
             conn.close()
 
+    def _add_author_column(self, conn, table_name: str) -> None:
+        """Idempotent `author TEXT DEFAULT NULL` on a Curate table.
+
+        Same SQL on SQLite and Postgres (`ADD COLUMN` with a NULL default is a
+        metadata-only change on Postgres, no table rewrite). NULL, never `''`:
+        rows written before authors were recorded have no author, and that must
+        stay distinguishable from a row someone signed. Re-runs are no-ops
+        because the column list is read first (`_get_table_columns`, same
+        transaction).
+        """
+        if "author" not in self._get_table_columns(conn, table_name):
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN author TEXT DEFAULT NULL")
+
     def _get_table_columns(self, conn, table_name: str) -> set[str]:
         """Columns currently on table_name, read through the SAME open
         transaction as the caller's CREATE TABLE — not a fresh connection via
@@ -2788,6 +2801,7 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag)"
             )
+            self._add_author_column(conn, "resource_tags")
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
             # `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`, slice 1 ("Declare
@@ -2858,6 +2872,7 @@ class ProjectRegistry:
                 conn.execute(
                     "ALTER TABLE resource_feedback ADD COLUMN compile_id TEXT DEFAULT NULL"
                 )
+            self._add_author_column(conn, "resource_feedback")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_feedback_entity "
                 "ON resource_feedback(entity_type, entity_slug)"
@@ -2871,6 +2886,7 @@ class ProjectRegistry:
                     created_at   TEXT NOT NULL
                 )
             """)
+            self._add_author_column(conn, "resource_curator_notes")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_curator_notes_entity "
                 "ON resource_curator_notes(entity_type, entity_slug)"
@@ -4312,15 +4328,45 @@ class ProjectRegistry:
     # Discoverability/reuse-readiness for a resource, distinct from Enrichment's
     # resource_context (facts about the resource). See web/routes/curate.py.
 
-    def add_resource_tag(self, entity_type: str, entity_slug: str, tag: str) -> None:
+    #: Shown wherever a Curate row has no author. Rows written before
+    #: 2026-10-01 carry NULL; the API says so in words instead of a blank.
+    UNSIGNED_AUTHOR_LABEL = "unsigned · from before authors were recorded"
+
+    @classmethod
+    def _with_author(cls, row: dict) -> dict:
+        """Normalise a Curate row's author: `author` is the user id or None
+        (NULL and '' both mean unsigned), `authored` says which, and
+        `author_label` is the text a UI shows (never blank)."""
+        out = dict(row)
+        author = out.get("author") or None
+        out["author"] = author
+        out["authored"] = author is not None
+        out["author_label"] = author if author else cls.UNSIGNED_AUTHOR_LABEL
+        return out
+
+    def add_resource_tag(self, entity_type: str, entity_slug: str, tag: str,
+                         *, author: str | None = None) -> None:
+        """Add a tag. `author` is the signed-in user id (the route supplies it
+        and refuses anonymous callers); None writes a legacy unsigned row.
+        Re-adding an existing tag keeps the original author."""
         from datetime import timezone
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO resource_tags (entity_type, entity_slug, tag, created_at)
-                   VALUES (?, ?, ?, ?)
+                """INSERT INTO resource_tags (entity_type, entity_slug, tag, created_at, author)
+                   VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(entity_type, entity_slug, tag) DO NOTHING""",
-                (entity_type, entity_slug, tag, datetime.now(timezone.utc).isoformat()),
+                (entity_type, entity_slug, tag, datetime.now(timezone.utc).isoformat(),
+                 author or None),
             )
+
+    def list_resource_tags_with_authors(self, entity_type: str, entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT tag, created_at, author FROM resource_tags "
+                "WHERE entity_type=? AND entity_slug=? ORDER BY tag",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [self._with_author(dict(r)) for r in rows]
 
     def remove_resource_tag(self, entity_type: str, entity_slug: str, tag: str) -> None:
         with self._conn() as conn:
@@ -4612,7 +4658,7 @@ class ProjectRegistry:
 
     def add_resource_feedback(
         self, entity_type: str, entity_slug: str, rating: int | None, category: str, message: str,
-        *, compile_id: str | None = None,
+        *, compile_id: str | None = None, author: str | None = None,
     ) -> dict:
         from datetime import timezone
         entry = {
@@ -4624,15 +4670,16 @@ class ProjectRegistry:
             "message": message,
             "compile_id": compile_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "author": author or None,
         }
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO resource_feedback
-                   (id, entity_type, entity_slug, rating, category, message, compile_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, entity_type, entity_slug, rating, category, message, compile_id, created_at, author)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
-        return entry
+        return self._with_author(entry)
 
     def list_resource_feedback(self, entity_type: str, entity_slug: str) -> list[dict]:
         with self._conn() as conn:
@@ -4641,7 +4688,7 @@ class ProjectRegistry:
                    ORDER BY created_at DESC""",
                 (entity_type, entity_slug),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._with_author(dict(r)) for r in rows]
 
     def list_all_resource_feedback(self, limit: int = 200,
                                    entity_type: str = "",
@@ -4674,7 +4721,7 @@ class ProjectRegistry:
                 "ORDER BY created_at DESC LIMIT ?",
                 tuple(params),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._with_author(dict(r)) for r in rows]
 
     def count_all_resource_feedback(self) -> dict:
         """Totals for the Admin header: how much feedback exists, and on how
@@ -4688,7 +4735,8 @@ class ProjectRegistry:
             ).fetchone()
         return {"total": row["total"] or 0, "resources": row["resources"] or 0}
 
-    def add_curator_note(self, entity_type: str, entity_slug: str, note: str) -> dict:
+    def add_curator_note(self, entity_type: str, entity_slug: str, note: str,
+                         *, author: str | None = None) -> dict:
         """Ongoing curator commentary (discoverability, quality, readiness) —
         deliberately a separate stream from resource_context's 'notes' field,
         which is a one-time context-gathering fact, not a running log."""
@@ -4699,14 +4747,15 @@ class ProjectRegistry:
             "entity_slug": entity_slug,
             "note": note,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "author": author or None,
         }
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO resource_curator_notes (id, entity_type, entity_slug, note, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                """INSERT INTO resource_curator_notes (id, entity_type, entity_slug, note, created_at, author)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
-        return entry
+        return self._with_author(entry)
 
     def list_curator_notes(self, entity_type: str, entity_slug: str) -> list[dict]:
         with self._conn() as conn:
@@ -4715,11 +4764,26 @@ class ProjectRegistry:
                    ORDER BY created_at DESC""",
                 (entity_type, entity_slug),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._with_author(dict(r)) for r in rows]
+
+    def get_curator_note(self, note_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM resource_curator_notes WHERE id=?", (note_id,)
+            ).fetchone()
+        return self._with_author(dict(row)) if row else None
 
     def delete_curator_note(self, note_id: str) -> bool:
+        """Delete a note. Only a legacy UNSIGNED note can be deleted: the
+        journal rule (append-only, amended by a later entry) applies to every
+        signed note, so the `author IS NULL` guard is in the SQL itself and a
+        caller that forgets to check cannot delete one."""
         with self._conn() as conn:
-            cur = conn.execute("DELETE FROM resource_curator_notes WHERE id=?", (note_id,))
+            cur = conn.execute(
+                "DELETE FROM resource_curator_notes "
+                "WHERE id=? AND (author IS NULL OR author = '')",
+                (note_id,),
+            )
         return cur.rowcount > 0
 
     #: Valid architecture_component_verdicts.verdict values — kept here
