@@ -69,7 +69,7 @@ const bodyText = (document) => document.getElementById('content').textContent;
 // CURATE-UI-DATABASES-IMPLEMENTED.md: the old "Curate isn't available for ..."
 // body is gone; band 2 is the kind's own work (full coverage of the bands is
 // in curate-bands.test.mjs). What stays pinned here is that the pane is never blank.
-const KIND_TEXT = { db: /Glossary terms on tables and columns/, filesystem: /Nothing to review for file shares yet/ };
+const KIND_TEXT = { db: /Glossary terms on tables and columns/, filesystem: /Nothing to review for file systems yet/ };
 for (const kind of ['db', 'filesystem']) {
   test(`Curate on a non-repo (${kind}) draws its band-2 text, not an empty body`, async () => {
     const { document, app } = await setUp(kind);

@@ -62,14 +62,14 @@ def test_render_curate_checks_entity_type_before_any_repo_only_call():
 def test_non_repo_curate_body_is_the_kinds_band_two_not_a_bare_404():
     """CURATE-UI-DATABASES: the old 'isn't available' body is replaced by the
     kind's own band 2 (database: two sections that say what they wait for;
-    file share: one sentence). The honest-about-what-is-unbuilt standard stays."""
+    file system: one sentence). The honest-about-what-is-unbuilt standard stays."""
     src = CURATE_JS.read_text()
     fn = _fn(src, "nonRepoCurateHtml")
     assert "databaseWorkHtml" in fn and "filesystemWorkHtml" in fn
     bands = (CURATE_JS.parent / "curate-bands.js").read_text()
     assert "needs data classes per column (data_class_match)" in bands
     assert "needs the logical schemas Egeria knows to be read" in bands
-    assert "Nothing to review for file shares yet. Group, tags, ratings and notes above and below apply." in bands
+    assert "Nothing to review for file systems yet. Group, tags, ratings and notes above and below apply." in bands
 
 
 def test_a_database_slug_never_reaches_getcurateplan():

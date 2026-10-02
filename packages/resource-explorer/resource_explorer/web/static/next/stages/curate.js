@@ -195,7 +195,7 @@ function curateRecordHtml(rec) {
  *  Scouting's `renderDepthOffer` (app.js, gated on `isRepo`) for other
  *  panes that are deliberately not generalized yet. */
 function nonRepoCurateHtml(entityType) {
-  // Band 2 for a database or a file share (REPLY-DESIGNER-CURATE-AND-
+  // Band 2 for a database or a file system (REPLY-DESIGNER-CURATE-AND-
   // UNDERSTANDING-ALL-KINDS.md §1). The component-tree and branch work is
   // repository-shaped and stays repo-only; the Findable and What-people-say
   // bands around this are the same on every kind. This replaces the old

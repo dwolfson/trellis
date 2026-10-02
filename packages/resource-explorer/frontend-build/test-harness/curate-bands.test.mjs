@@ -369,13 +369,13 @@ test('signed out: every write control is disabled and says why', async () => {
   assert.equal(server.calls.filter((c) => c.method !== 'GET').length, 0, 'no write is sent while signed out');
 });
 
-/* ── file share, repository ────────────────────────────────────────────── */
+/* ── file system, repository ────────────────────────────────────────────── */
 
-test('a file share gets the one honest sentence and the shared bands, no kind sections', async () => {
+test('a file system gets the one honest sentence and the shared bands, no kind sections', async () => {
   const { document } = await setUp('filesystem');
   await openCurate(document);
   assert.match(band(document, 'kind').textContent,
-    /Nothing to review for file shares yet\. Group, tags, ratings and notes above and below apply\./);
+    /Nothing to review for file systems yet\. Group, tags, ratings and notes above and below apply\./);
   assert.doesNotMatch(band(document, 'kind').textContent, /Glossary terms|Logical schema match/);
   assert.ok(band(document, 'findable').querySelector('[data-curate-tag-input]'));
   assert.ok(band(document, 'people').querySelector('[data-curate-fb-submit]'));
@@ -384,7 +384,7 @@ test('a file share gets the one honest sentence and the shared bands, no kind se
 test('a database does not get the file-share sentence', async () => {
   const { document } = await setUp('db');
   await openCurate(document);
-  assert.doesNotMatch(host(document).textContent, /Nothing to review for file shares/);
+  assert.doesNotMatch(host(document).textContent, /Nothing to review for file systems/);
 });
 
 test('a repository keeps its plan view in the middle, with the bands around it', async () => {

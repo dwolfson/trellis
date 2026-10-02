@@ -37,7 +37,7 @@ import { provenanceFromResponse, saveChartImage } from '/static/next/chart-expor
  * at all, so a "zero" cannot appear where nothing was measured.
  */
 export const FILE_SHARE_SENTENCE =
-  'No charts for file shares yet. Their survey isn\'t charted anywhere today.';
+  'No charts for file systems yet. Their survey isn\'t charted anywhere today.';
 
 //: The chart kinds a database has, in the order a person asks. `route` is
 //: the stats route that serves it; a kind with no route is listed and
@@ -440,7 +440,7 @@ export async function loadChartsPane() {
     : '<div id="understanding-host"></div>'}`;
   bindResourceHeader();
 
-  // A database has its own six charts (module section above); a file share
+  // A database has its own six charts (module section above); a file system
   // has none yet and says so. Neither goes through the repo probe.
   if (entityType !== 'repo') {
     if (entityType === 'database') {

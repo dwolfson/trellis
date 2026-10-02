@@ -7,7 +7,7 @@
  *                   autocomplete from GET /api/curate/tags). Local, not in Egeria.
  *   2. the kind's own work -- repo: the existing plan view (curate.js);
  *                   database: two sections that wait on readers, each saying
- *                   what for; file share: one sentence.
+ *                   what for; file system: one sentence.
  *   3. What people say -- ratings as COUNTS (never an average), and notes as
  *                   the signed append-only journal, with Classic's curator
  *                   notes read-only beneath it.
@@ -75,7 +75,7 @@ export function databaseWorkHtml() {
 }
 
 export const FILESYSTEM_WORK_SENTENCE =
-  'Nothing to review for file shares yet. Group, tags, ratings and notes above and below apply.';
+  'Nothing to review for file systems yet. Group, tags, ratings and notes above and below apply.';
 
 export function filesystemWorkHtml() {
   return `<div data-curate-work="filesystem" class="text-caveat text-ink-muted">${esc(FILESYSTEM_WORK_SENTENCE)}</div>`;
