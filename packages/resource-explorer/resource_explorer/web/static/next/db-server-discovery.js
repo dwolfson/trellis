@@ -39,6 +39,7 @@ import {
 } from '/static/re-api.js';
 import { esc, refreshGroupsAndSidebar, state } from '/static/next/app.js';
 import { refreshOpenInvestigation } from '/static/next/stages/investigation.js';
+import { credentialMarkHtml } from '/static/next/credential.js';
 
 const emptyRegisterForm = () => ({
   slug: '', display_name: '', db_type: 'postgresql', host: '', port: 5432,
@@ -629,7 +630,8 @@ export function candidateRowHtml(r, i, checked) {
     <td class="py-s1 pr-s2"><input type="checkbox" data-cand-row="${i}"
       ${registered ? 'disabled checked' : (noConnect ? 'disabled' : (checked ? 'checked' : ''))}></td>
     <td class="py-s1 pr-s2 max-w-[220px] truncate font-mono text-caveat text-ink" title="${esc(r.address || '')}">${esc(r.name)}${newMark}${
-      registered ? ' <span class="text-ink-muted" data-registered>already registered</span>' : ''}
+      registered ? ' <span class="text-ink-muted" data-registered>already registered</span>' : ''}${
+      registered ? credentialMarkHtml(r, 'block text-provenance') : ''}
       ${r.server_slug ? `<div class="text-provenance text-ink-muted">${esc(r.server_slug)}</div>` : ''}</td>
     <td class="py-s1 pr-s2 text-caveat text-ink-muted">${size}</td>
     <td class="py-s1 pr-s2 text-caveat text-ink-muted">${owner}</td>

@@ -227,7 +227,7 @@ class TestAScheduleMustNameAResourceThatExists:
 
     def test_an_unknown_database_is_refused(self, monkeypatch):
         from resource_explorer.web.routes import schedules as mod
-        monkeypatch.setattr(mod.ProjectRegistry, "get_database", lambda self, slug: None)
+        monkeypatch.setattr(mod.ProjectRegistry, "get_database", lambda self, slug, **kw: None)
         resp = self._client().post(
             "/api/schedules/database/nope",
             json={"analysis_id": "index_health", "schedule": "daily"},

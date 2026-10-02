@@ -83,7 +83,7 @@ class TestListSurveyResultBoardsIsCatalogOnly:
         )
 
         class _FakeRegistry:
-            def get_database(self, slug):
+            def get_database(self, slug, **kw):
                 return object()
 
             def get_last_published_annotation_types(self, slug):

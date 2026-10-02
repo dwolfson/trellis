@@ -666,7 +666,7 @@ def query_databases_raw(database_slug: str = "") -> str:
     registry = ProjectRegistry()
     if database_slug:
         normalized = registry._normalize_slug(database_slug)
-        db_entity = registry.get_database(normalized)
+        db_entity = registry.get_database(normalized, allow_unreadable=True)
         if not db_entity:
             return f"Database '{database_slug}' not found in registry."
         
@@ -736,7 +736,7 @@ def query_database_schema_raw(database_slug: str, schema_name: str = "", table_n
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     normalized = registry._normalize_slug(database_slug)
-    db_entity = registry.get_database(normalized)
+    db_entity = registry.get_database(normalized, allow_unreadable=True)
     if not db_entity:
         return f"Database '{database_slug}' not found."
         
