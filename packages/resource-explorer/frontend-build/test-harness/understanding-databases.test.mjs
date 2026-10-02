@@ -357,12 +357,12 @@ test('chart-export: no run in the response is written as unknown, and missing Pl
   await assert.rejects(() => saveChartImage({ Plotly: null, figure: {}, provenance: {} }), /Plotly is not loaded/);
 });
 
-test('a file share gets the not-charted sentence and fetches no chart', async () => {
+test('a file system gets the not-charted sentence and fetches no chart', async () => {
   const { document, calls } = await setUp({ resourceType: 'filesystem' });
   await openUnderstanding(document);
   assert.match(text(document.getElementById('content')),
-    /No charts for file shares yet\. Their survey isn't charted anywhere today\./);
-  assert.ok(!calls.some((u) => u.includes('/api/stats/')), 'nothing is fetched for a file share');
+    /No charts for file systems yet\. Their survey isn't charted anywhere today\./);
+  assert.ok(!calls.some((u) => u.includes('/api/stats/')), 'nothing is fetched for a file system');
   assert.equal(document.querySelectorAll('[data-chart]').length, 0);
 });
 

@@ -18,6 +18,9 @@ import {
   getComponentBlueprints, postBlueprintVerdict,
 } from '/static/re-api.js';
 import {
+  bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
+} from '/static/next/stages/curate-bands.js';
+import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
   apiEntityType,
@@ -192,17 +195,13 @@ function curateRecordHtml(rec) {
  *  Scouting's `renderDepthOffer` (app.js, gated on `isRepo`) for other
  *  panes that are deliberately not generalized yet. */
 function nonRepoCurateHtml(entityType) {
-  return `<div class="text-answer text-ink">
-      Curate isn't available for ${esc(entityType)}s yet.
-    </div>
-    <div class="mt-s2 text-caveat text-ink-muted">
-      Curate's component-tree and branch-based curation actions are built
-      against repositories today (git branches, architecture-recovery
-      components) — there is no database/filesystem equivalent yet. This
-      view also has no controls for search tags, resource feedback or
-      curator notes: the resource header here offers none of them for any
-      resource type.
-    </div>`;
+  // Band 2 for a database or a file system (REPLY-DESIGNER-CURATE-AND-
+  // UNDERSTANDING-ALL-KINDS.md §1). The component-tree and branch work is
+  // repository-shaped and stays repo-only; the Findable and What-people-say
+  // bands around this are the same on every kind. This replaces the old
+  // "Curate isn't available for ..." body and its false claim about the
+  // resource header.
+  return entityType === 'filesystem' ? filesystemWorkHtml() : databaseWorkHtml();
 }
 
 /** Curate owns its host. It used to borrow `#enrichment-form`, which E1
@@ -224,13 +223,28 @@ export function mountCurateHost() {
 }
 
 export async function renderCurate(slug) {
-  const host = mountCurateHost();
+  const frame = mountCurateHost();
   const entityType = apiEntityType(state.resourceType);
+  // Three bands on every kind (REPLY-DESIGNER-CURATE-AND-UNDERSTANDING-ALL-
+  // KINDS.md §1-2): Findable on top, the kind's own work in the middle,
+  // What people say below. `host` is the middle band: everything below that
+  // used to write into the whole pane now writes into it, so the repo's plan
+  // view is untouched apart from its container.
+  frame.innerHTML = bandFrameHtml();
+  const host = frame.querySelector('[data-curate-band="kind"]');
+  const bands = [
+    renderFindableBand(frame.querySelector('[data-curate-band="findable"]'), slug, entityType),
+    renderPeopleBand(frame.querySelector('[data-curate-band="people"]'), slug, entityType),
+  ].map((p) => p.catch((err) => {
+    // A band that fails says so in its own slot; it never takes the pane down.
+    const slot = frame.querySelector('[data-curate-band="people"]');
+    if (slot && slot.isConnected) slot.insertAdjacentHTML('beforeend', `<div class="text-caveat text-state-warn">A Curate band could not be drawn: ${esc(err.message)}</div>`);
+  }));
   if (entityType !== 'repo') {
     // Skip every repo-only /api/projects/{slug}/... call entirely rather
-    // than firing it and reporting whatever 404 comes back — the honest
-    // message doesn't depend on a failed round-trip to know it's not built.
+    // than firing it and reporting whatever 404 comes back.
     host.innerHTML = nonRepoCurateHtml(entityType);
+    await Promise.all(bands);
     return;
   }
   host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalogue would learn…</div>`;
