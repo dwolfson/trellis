@@ -1035,6 +1035,31 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: db_hub_tables
+    name: "Starting Tables"
+    description: >
+      Which tables would a consumer start with? A short ranking over four
+      signals already stored for the other zero-fetch checks: how many other
+      tables reference the table by foreign key, its row count, whether it
+      carries a comment, and its read counters. No connection is opened. A
+      signal that was never established for a table (keys not captured, no
+      row count, statistics never collected) is left out of the ranking and
+      named, never scored as zero — "no foreign keys captured" is not "nothing
+      depends on this table".
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Consumer", "App/AI Builder", "Data Expert"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: grain_determination
     name: "Table Grain"
     description: >

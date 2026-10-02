@@ -143,6 +143,10 @@ KNOWN_EXCLUSIVE = {
     #                                    measured under the same name.
     ("database/db_derived.py", "subject_signals"),
     ("database/db_derived.py", "coverage_signals_temporal"),
+    # Added 2026-10-02 with `db_hub_tables`. `_hub_annotations`' absence branch
+    # is the same early `return [...]` as `_subject_annotations`, verified by
+    # reading it rather than assumed.
+    ("database/db_derived.py", "db_hub_tables"),
 }
 
 

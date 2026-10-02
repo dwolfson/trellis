@@ -97,6 +97,13 @@ DB_DERIVED_ANALYSES: tuple[str, ...] = (
     "subject_signals",
     "coverage_signals",
     "preliminary_fit",
+    # Design §5.3's `db_hub_tables` (Backlog: "`db_hub_tables` is most of the
+    # way there for free"): which tables would a consumer start with. A
+    # ranking over four signals already stored for the checks above — FK
+    # in-degree (the same edges `db_relationship_graph` reads), row counts,
+    # table comments, and the read counters — so it opens no connection and
+    # belongs to this step rather than a new one.
+    "db_hub_tables",
 )
 
 #: NOTE on the two annotation sites that carry this check's name: they spell
@@ -1067,6 +1074,242 @@ def derive_relationship_graph(inputs: DerivedInputs) -> dict:
         "dangling_references": dangling,
         "most_referenced": hubs,
         "edges": edges,
+        "explanation": explanation,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2b. db_hub_tables  (design §5.3; Backlog "most of the way there for free")
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Weight of each signal in a table's hub score. FK in-degree counts most: it
+#: is a declared constraint, the strongest statement the schema makes that
+#: other tables depend on this one. Reads and rows are measures of use and
+#: size, a comment is the weakest (somebody wrote something down).
+_HUB_SIGNAL_WEIGHTS: dict[str, float] = {
+    "fk_in_degree": 3.0,
+    "reads": 2.0,
+    "rows": 2.0,
+    "comment": 1.0,
+}
+#: How many tables the starting list carries.
+_HUB_LIST_LENGTH = 10
+
+HUB_REASON_NO_ROWS = "no_schema_rows"
+HUB_REASON_NO_COMPARABLE_SIGNAL = "no_comparable_signal"
+
+
+def _log_scaled(value: float, ceiling: float) -> float:
+    """`log(1+value)/log(1+ceiling)` in [0, 1]; 0 when the ceiling is 0.
+    Counts span orders of magnitude, so a linear share would let one giant
+    table flatten every other table's score to nothing."""
+    if ceiling <= 0:
+        return 0.0
+    import math
+
+    return math.log1p(value) / math.log1p(ceiling)
+
+
+def derive_hub_tables(inputs: DerivedInputs) -> dict:
+    """Which tables would a consumer start with? Zero fetch.
+
+    A ranking over four per-table signals, every one read from rows already
+    stored: FK in-degree (distinct OTHER tables that reference this one, from
+    the same `foreign_key_json` edges `db_relationship_graph` reads), row
+    count, whether the table carries a comment, and its read counters
+    (`seq_scan + idx_scan`).
+
+    **NULL stays NULL.** A signal that was never established for a table is
+    not scored as zero for it:
+
+    - FK in-degree is established only when EVERY base table's own keys were
+      captured — a referencing table whose keys were never captured could be
+      referencing this one, so 0 is only a finding when nothing was left
+      unread.
+    - A comment signal exists only when some table or column anywhere carries
+      a description; a database where none does has most likely never had its
+      comments captured, and "undocumented" would be a guess.
+    - `row_count` NULL and counters NULL (never ANALYZEd, no stats row) are
+      unknown, not 0 rows and 0 reads.
+
+    Tables are only comparable on the same evidence, so a signal takes part in
+    the ranking only when it is established for ALL base tables. The signals
+    left out are named, with the number of tables that lacked them, in
+    `signals_not_used`; per-table values that were never established appear as
+    `None` in `hubs`, never `0`.
+    """
+    tables = [t for t in inputs.tables if _is_base_table(t)]
+    provenance = {
+        "read_snapshot": inputs.surveyed_at,
+        "table_surveyed_at": dict(inputs.table_surveyed_at),
+    }
+    if not tables:
+        return {
+            "state": STATE_NOT_MEASURED,
+            "reason": HUB_REASON_NO_ROWS,
+            "table_count": 0,
+            "hubs": [],
+            "provenance": provenance,
+            "explanation": (
+                "No stored table rows for this database, so no table can be "
+                "ranked. NOT a finding that no table stands out — run the "
+                "schema step."
+            ),
+        }
+
+    keys = [_table_key(t) for t in tables]
+    key_set = set(keys)
+
+    # ── FK in-degree: distinct other tables referencing each table ──────────
+    referencing: dict[tuple[str, str], set] = {k: set() for k in keys}
+    for edge in _foreign_key_edges(inputs.columns):
+        src = (edge["from_schema"], edge["from_table"])
+        dst = (edge["to_schema"], edge["to_table"])
+        if src in key_set and dst in key_set and src != dst:
+            referencing[dst].add(src)
+    fk_complete = all(inputs.keys_captured_for_table(k) for k in keys)
+    fk_values: dict[tuple[str, str], int | None] = {
+        k: (len(referencing[k]) if fk_complete else None) for k in keys
+    }
+
+    # ── rows ────────────────────────────────────────────────────────────────
+    row_values: dict[tuple[str, str], int | None] = {}
+    for t in tables:
+        rc = t.get("row_count")
+        row_values[_table_key(t)] = int(rc) if rc is not None else None
+
+    # ── comments ────────────────────────────────────────────────────────────
+    any_comment = any((t.get("description") or "").strip() for t in tables) or any(
+        (c.get("description") or "").strip() for c in inputs.columns
+    )
+    comment_values: dict[tuple[str, str], bool | None] = {
+        _table_key(t): (bool((t.get("description") or "").strip()) if any_comment else None)
+        for t in tables
+    }
+
+    # ── reads ───────────────────────────────────────────────────────────────
+    activity_by_table = {_table_key(a): a for a in inputs.activity}
+    read_values: dict[tuple[str, str], int | None] = {}
+    for k in keys:
+        row = activity_by_table.get(k) or {}
+        seq, idx = row.get("seq_scan"), row.get("idx_scan")
+        read_values[k] = (
+            None if seq is None and idx is None else int(seq or 0) + int(idx or 0)
+        )
+
+    raw = {
+        "fk_in_degree": fk_values, "reads": read_values,
+        "rows": row_values, "comment": comment_values,
+    }
+    reasons_missing = {
+        "fk_in_degree": (
+            "key information was not captured for every table"
+            if not fk_complete else ""
+        ),
+        "comment": "no table or column carries a comment, so comments look uncaptured",
+        "rows": "row counts are missing",
+        "reads": "read counters are missing (statistics never collected)",
+    }
+    used: list[str] = []
+    not_used: list[dict] = []
+    for name in _HUB_SIGNAL_WEIGHTS:
+        missing = sum(1 for k in keys if raw[name][k] is None)
+        if missing == 0:
+            used.append(name)
+        else:
+            not_used.append({
+                "signal": name,
+                "tables_without": missing,
+                "of": len(keys),
+                "why": reasons_missing[name],
+            })
+
+    if not used:
+        return {
+            "state": STATE_NOT_MEASURED,
+            "reason": HUB_REASON_NO_COMPARABLE_SIGNAL,
+            "table_count": len(tables),
+            "hubs": [],
+            "signals_used": [],
+            "signals_not_used": not_used,
+            "provenance": provenance,
+            "explanation": (
+                f"{len(tables)} tables are stored, but no ranking signal was "
+                "established for every one of them (" + "; ".join(
+                    f"{n['signal']}: {n['why']}" for n in not_used
+                ) + "), so the tables cannot be compared yet. NOT a finding "
+                "that none of them is a natural starting point."
+            ),
+        }
+
+    ceilings = {
+        "fk_in_degree": max((v for v in fk_values.values() if v is not None), default=0),
+        "reads": max((v for v in read_values.values() if v is not None), default=0),
+        "rows": max((v for v in row_values.values() if v is not None), default=0),
+    }
+
+    def _component(name: str, key) -> float:
+        value = raw[name][key]
+        if name == "comment":
+            return 1.0 if value else 0.0
+        if name == "fk_in_degree":
+            return (value / ceilings[name]) if ceilings[name] else 0.0
+        return _log_scaled(value, ceilings[name])
+
+    total_weight = sum(_HUB_SIGNAL_WEIGHTS[n] for n in used)
+    ranked: list[dict] = []
+    for t in tables:
+        key = _table_key(t)
+        score = sum(_HUB_SIGNAL_WEIGHTS[n] * _component(n, key) for n in used) / total_weight
+        ranked.append({
+            "table": f"{key[0]}.{key[1]}",
+            "score": round(score, 3),
+            "fk_in_degree": fk_values[key],
+            "row_count": row_values[key],
+            "has_comment": comment_values[key],
+            "reads": read_values[key],
+        })
+    ranked.sort(key=lambda h: (-h["score"], h["table"]))
+    hubs = [h for h in ranked if h["score"] > 0][:_HUB_LIST_LENGTH]
+
+    def _describe(h: dict) -> str:
+        bits = []
+        if "fk_in_degree" in used:
+            bits.append(f"referenced by {h['fk_in_degree']} table(s)")
+        if "rows" in used:
+            bits.append(f"{h['row_count']:,} rows")
+        if "reads" in used:
+            bits.append(f"{h['reads']:,} reads")
+        if "comment" in used:
+            bits.append("commented" if h["has_comment"] else "no comment")
+        return f"{h['table']} ({', '.join(bits)})"
+
+    left_out = ""
+    if not_used:
+        left_out = " Not used for ranking: " + "; ".join(
+            f"{n['signal']} ({n['tables_without']} of {n['of']} tables lack it — "
+            f"{n['why']})" for n in not_used
+        ) + "; they are left out, never counted as zero."
+    if hubs:
+        explanation = (
+            f"Start with: " + "; ".join(_describe(h) for h in hubs[:5])
+            + f". Ranked {len(tables)} table(s) on "
+            + ", ".join(used) + "." + left_out
+        )
+    else:
+        explanation = (
+            f"Measured: all {len(tables)} table(s) were compared on "
+            + ", ".join(used) + " and none stands out — every one scored zero "
+            "on every established signal." + left_out
+        )
+    return {
+        "state": STATE_MEASURED,
+        "table_count": len(tables),
+        "ranked_count": len(ranked),
+        "signals_used": used,
+        "signals_not_used": not_used,
+        "hubs": hubs,
+        "provenance": provenance,
         "explanation": explanation,
     }
 
@@ -4686,6 +4929,7 @@ def run_db_derived(
     fingerprint = fingerprint_database(registry, inputs)
     classification = classify_database(inputs, fingerprint)
     graph = derive_relationship_graph(inputs)
+    hub_tables = derive_hub_tables(inputs)
     grain = determine_grain(inputs)
     conventions = check_conventions(inputs)
     change_rates = derive_change_rates(registry, inputs)
@@ -4709,6 +4953,7 @@ def run_db_derived(
         "subject_signals": subject,
         "coverage_signals": coverage,
         "preliminary_fit": fit,
+        "db_hub_tables": hub_tables,
     }
 
     # REPLY-SCHEMA-AS-SUB-RESOURCE.md shape 1: the four structural checks above
@@ -4750,6 +4995,7 @@ def build_annotations(derived: dict) -> list:
     annotations.extend(_subject_annotations(derived["subject_signals"]))
     annotations.extend(_coverage_annotations(derived["coverage_signals"]))
     annotations.extend(_fit_annotations(derived["preliminary_fit"]))
+    annotations.extend(_hub_annotations(derived["db_hub_tables"]))
     return annotations
 
 
@@ -4825,6 +5071,46 @@ def _graph_annotations(result: dict) -> list:
             "isolated_tables": result["isolated_tables"],
             "most_referenced": result["most_referenced"],
             "dangling_references": result["dangling_references"],
+        },
+    )]
+
+
+def _hub_annotations(result: dict) -> list:
+    """One annotation for `db_hub_tables`. Two mutually exclusive branches (the
+    absence branch `return`s immediately), so it is in
+    `tests/test_annotation_check_names.py`'s `KNOWN_EXCLUSIVE` on the same
+    grounds as the checks above it."""
+    if result["state"] != STATE_MEASURED:
+        return [ResourceMeasureAnnotation(
+            summary="Starting tables not established",
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="db_hub_tables",
+            check_name="db_hub_tables",
+            label="unverified",
+            confidence=0,
+            explanation=result["explanation"],
+            resource_properties={"reason": result.get("reason") or ""},
+        )]
+    hubs = result["hubs"]
+    return [ResourceMeasureAnnotation(
+        summary=(
+            "Starting tables: " + ", ".join(h["table"] for h in hubs[:5])
+            if hubs else "No table stands out as a starting point"
+        ),
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="db_hub_tables",
+        check_name="db_hub_tables",
+        label="info",
+        # A ranking over stored measurements, not a measurement itself.
+        confidence=60,
+        explanation=result["explanation"],
+        resource_properties={
+            "table_count": result["table_count"],
+            "signals_used": ", ".join(result["signals_used"]),
+        },
+        json_properties={
+            "hubs": hubs,
+            "signals_not_used": result["signals_not_used"],
         },
     )]
 

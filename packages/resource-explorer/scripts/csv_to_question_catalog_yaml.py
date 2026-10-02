@@ -564,6 +564,121 @@ def _restrict_answering_to_type(answering: dict, resource_type: str) -> None:
         )
 
 
+#: Per-resource-type answering for a row whose one CSV line is shared by several
+#: types but whose answer is NOT the same mechanism for each
+#: (RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §1, "It's a schema decision").
+#:
+#: The ruling forbids splitting such a row into a repo copy and a non-repo copy
+#: (the writer assumes one row per question text: `add_question` rejects a
+#: duplicate and `retire_question` retires only the first match), and leaves
+#: "the exact shape to the implementer". This is that shape: the row stays one
+#: CSV line, and for the named (question, resource type) the generator replaces
+#: the answering note, mechanism, rationale and history with the override's, run
+#: through the SAME `_parse_answering` so every guard (gap guard, check refs,
+#: kind prefixes) still applies. The CSV text remains the repo's answer and the
+#: default for any type not named here.
+#:
+#: Keys are the CSV's own column names. `tests/test_per_type_answering_overrides.py`
+#: fails if a key names a question the CSV does not have, or a type the row does
+#: not apply to, so an override cannot outlive its row silently.
+_OWNER_Q = "Who owns this resource (accountable owner), and who administers it?"
+_LICENSE_Q = "What explicit license does this resource use, and are there non-standard or copyleft terms?"
+
+_OWNER_CLAUSE = (
+    "who owns it and who administers it are recorded in Enrichment; no survey "
+    "reads either"
+)
+_OWNER_HISTORY = (
+    "2026-10-02: answering reworded for this resource type per "
+    "RULING-DB-QUESTION-CATALOG-CONSISTENCY.md section 1; the CSV row is the "
+    "repository's answer and was being shown unchanged here."
+)
+
+
+def _human_only(question: str, noun: str, what: str, mech_rationale: str) -> dict:
+    # `what` is the whole clause ("the license is recorded in Enrichment; no
+    # survey reads it"), so subject/verb agreement is the caller's, not a
+    # template's.
+    return {
+        "Answering Analysis": f"Human-supplied: {what} for a {noun}.",
+        "Answering Mechanism": "Human-Supplied",
+        "Rationale/Source": mech_rationale,
+        "Catalog History": _OWNER_HISTORY if question == _OWNER_Q else (
+            "2026-10-02: answering reworded for this resource type per "
+            "RULING-DB-QUESTION-CATALOG-CONSISTENCY.md section 1 (license is "
+            "the same case as ownership); the CSV row is the repository's "
+            "answer and was being shown unchanged here."
+        ),
+    }
+
+
+PER_TYPE_ANSWERING_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {
+    _OWNER_Q: {
+        "database": {
+            "Answering Analysis": (
+                "MIXED: two halves, and neither is an analysis result on its "
+                "own. Who administers the database is measured: a survey reads "
+                "the owner role Postgres records for it (pg_database.datdba, "
+                "the database_owner fact shown in the Context tab). Who is "
+                "accountable for it is human-supplied: it is recorded in "
+                "Enrichment, not read from any survey."
+            ),
+            "Answering Mechanism": "Database Catalog Query + Human-Supplied",
+            "Rationale/Source": (
+                "Two halves. The administering role is a measured fact about "
+                "the database (the owner role in the Postgres catalog). The "
+                "accountable owner is a judgement no catalog holds, so it comes "
+                "from a person through Enrichment."
+            ),
+            "Catalog History": _OWNER_HISTORY,
+        },
+        "filesystem": _human_only(
+            _OWNER_Q, "file system", _OWNER_CLAUSE,
+            "Nothing in a survey of a file system reads who owns or administers "
+            "it, so the answer comes from a person through Enrichment.",
+        ),
+        "dataset": _human_only(
+            _OWNER_Q, "dataset", _OWNER_CLAUSE,
+            "Nothing in a survey of a dataset reads who owns or administers it, "
+            "so the answer comes from a person through Enrichment.",
+        ),
+        "model": _human_only(
+            _OWNER_Q, "model", _OWNER_CLAUSE,
+            "Nothing in a survey of a model reads who owns or administers it, "
+            "so the answer comes from a person through Enrichment.",
+        ),
+    },
+    _LICENSE_Q: {
+        rt: _human_only(
+            _LICENSE_Q, noun,
+            "the license is recorded in Enrichment; no survey reads it",
+            f"Nothing in a survey of a {noun} reads a license, so the answer "
+            "comes from a person through Enrichment, which is also where the "
+            "license is recorded when the resource is curated into Egeria.",
+        )
+        for rt, noun in (
+            ("database", "database"), ("filesystem", "file system"),
+            ("dataset", "dataset"), ("model", "model"),
+        )
+    },
+}
+
+
+def _apply_type_override(entry: dict, resource_type: str, known_checks: set[str]) -> None:
+    """Replace `entry`'s answering fields for `resource_type` when
+    `PER_TYPE_ANSWERING_OVERRIDES` names this question for this type. Runs
+    after `_restrict_answering_to_type`, so an override wins over the
+    automatic downgrade it exists to correct."""
+    override = PER_TYPE_ANSWERING_OVERRIDES.get(entry["question"], {}).get(resource_type)
+    if not override:
+        return
+    entry["answering"] = _parse_answering(override["Answering Analysis"], known_checks)
+    _restrict_answering_to_type(entry["answering"], resource_type)
+    entry["answering_mechanism"] = override["Answering Mechanism"]
+    entry["rationale"] = override["Rationale/Source"]
+    entry["catalog_history"] = override["Catalog History"]
+
+
 def generate(rows: list[dict]) -> str:
     known_checks = _load_known_checks()
     # resource_type -> entries, in first-seen order. A type appears as a key
@@ -604,6 +719,7 @@ def generate(rows: list[dict]) -> str:
             # YAML should read that way too.
             type_entry = copy.deepcopy(entry)
             _restrict_answering_to_type(type_entry["answering"], resource_type)
+            _apply_type_override(type_entry, resource_type, known_checks)
             by_type.setdefault(resource_type, []).append(type_entry)
 
     header = (

@@ -268,6 +268,10 @@ other three inputs (row counts, comments, read activity) are all in the same
 stored rows this step already reads. A later slice could add it as a seventh
 zero-fetch check for very little work rather than as a new step.
 
+**Done 2026-10-02** as `db_hub_tables` in `db_derived` (the step already had eleven
+other checks by then, so "seventh" is stale): see
+`docs/design-notes/implemented/DB-HUB-TABLES-AND-OWNER-TEXT-IMPLEMENTED.md`.
+
 ---
 
 ## Change rates difference two snapshots, and nothing charts the series

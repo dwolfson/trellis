@@ -1520,17 +1520,19 @@ database_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: mixed
     analysis_ids: []
     checks: []
-    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
-      + chaoss_metrics are not a real analysis for database resources (absent from analysis_catalog.yaml''s
-      database_analyses section).'
-  answering_mechanism: Git Statistics
-  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
-    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'MIXED: two halves, and neither is an analysis result on its own. Who administers the database
+      is measured: a survey reads the owner role Postgres records for it (pg_database.datdba, the database_owner
+      fact shown in the Context tab). Who is accountable for it is human-supplied: it is recorded in Enrichment,
+      not read from any survey.'
+  answering_mechanism: Database Catalog Query + Human-Supplied
+  rationale: Two halves. The administering role is a measured fact about the database (the owner role
+    in the Postgres catalog). The accountable owner is a judgement no catalog holds, so it comes from
+    a person through Enrichment.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1; the CSV row is the repository''s answer and was being shown unchanged here.'
   retired: false
 - question: Has this resource already been catalogued in Egeria, and when?
   stage: Discovery
@@ -1857,20 +1859,16 @@ database_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: human
     analysis_ids: []
     checks: []
-    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
-      is not a real analysis for database resources (absent from analysis_catalog.yaml''s database_analyses
-      section).'
-  answering_mechanism: Code Analysis
-  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
-    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
-    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
-    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
-    5962) is the standard schema this conforms to.'
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'Human-supplied: the license is recorded in Enrichment; no survey reads it for a database.'
+  answering_mechanism: Human-Supplied
+  rationale: Nothing in a survey of a database reads a license, so the answer comes from a person through
+    Enrichment, which is also where the license is recorded when the resource is curated into Egeria.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1 (license is the same case as ownership); the CSV row is the repository''s answer and was
+    being shown unchanged here.'
   retired: false
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery
@@ -2457,14 +2455,16 @@ database_questions:
   levels:
   - member
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - db_hub_tables
     checks: []
-    note: 'GAP: db_hub_tables (proposed) — every input exists; nothing combines them into a ranking.'
+    note: db_hub_tables
   answering_mechanism: Database Catalog Query
   rationale: 'A ranking rather than a measure: foreign-key in-degree, row counts, presence of comments
     and read activity from the scan counters, combined into a short starting list. Zero new fetch.'
-  catalog_history: ''
+  catalog_history: '2026-10-02: db_hub_tables built as a zero-fetch db_derived check (Backlog "db_hub_tables
+    is most of the way there for free"); the row said GAP: db_hub_tables (proposed) until then.'
   retired: false
 - question: Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much
     of the data sits in them?
@@ -3060,17 +3060,16 @@ filesystem_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: human
     analysis_ids: []
     checks: []
-    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
-      + chaoss_metrics are not a real analysis for filesystem resources (absent from analysis_catalog.yaml''s
-      filesystem_analyses section).'
-  answering_mechanism: Git Statistics
-  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
-    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'Human-supplied: who owns it and who administers it are recorded in Enrichment; no survey reads
+      either for a file system.'
+  answering_mechanism: Human-Supplied
+  rationale: Nothing in a survey of a file system reads who owns or administers it, so the answer comes
+    from a person through Enrichment.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1; the CSV row is the repository''s answer and was being shown unchanged here.'
   retired: false
 - question: Has this resource already been catalogued in Egeria, and when?
   stage: Discovery
@@ -3393,20 +3392,16 @@ filesystem_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: human
     analysis_ids: []
     checks: []
-    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
-      is not a real analysis for filesystem resources (absent from analysis_catalog.yaml''s filesystem_analyses
-      section).'
-  answering_mechanism: Code Analysis
-  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
-    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
-    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
-    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
-    5962) is the standard schema this conforms to.'
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'Human-supplied: the license is recorded in Enrichment; no survey reads it for a file system.'
+  answering_mechanism: Human-Supplied
+  rationale: Nothing in a survey of a file system reads a license, so the answer comes from a person through
+    Enrichment, which is also where the license is recorded when the resource is curated into Egeria.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1 (license is the same case as ownership); the CSV row is the repository''s answer and was
+    being shown unchanged here.'
   retired: false
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery
@@ -3935,17 +3930,16 @@ dataset_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: human
     analysis_ids: []
     checks: []
-    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
-      + chaoss_metrics are not a real analysis for dataset resources (absent from analysis_catalog.yaml''s
-      dataset_analyses section).'
-  answering_mechanism: Git Statistics
-  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
-    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'Human-supplied: who owns it and who administers it are recorded in Enrichment; no survey reads
+      either for a dataset.'
+  answering_mechanism: Human-Supplied
+  rationale: Nothing in a survey of a dataset reads who owns or administers it, so the answer comes from
+    a person through Enrichment.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1; the CSV row is the repository''s answer and was being shown unchanged here.'
   retired: false
 - question: Has this resource already been catalogued in Egeria, and when?
   stage: Discovery
@@ -4268,20 +4262,16 @@ dataset_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: human
     analysis_ids: []
     checks: []
-    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
-      is not a real analysis for dataset resources (absent from analysis_catalog.yaml''s dataset_analyses
-      section).'
-  answering_mechanism: Code Analysis
-  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
-    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
-    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
-    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
-    5962) is the standard schema this conforms to.'
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'Human-supplied: the license is recorded in Enrichment; no survey reads it for a dataset.'
+  answering_mechanism: Human-Supplied
+  rationale: Nothing in a survey of a dataset reads a license, so the answer comes from a person through
+    Enrichment, which is also where the license is recorded when the resource is curated into Egeria.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1 (license is the same case as ownership); the CSV row is the repository''s answer and was
+    being shown unchanged here.'
   retired: false
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery
@@ -4612,17 +4602,16 @@ model_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: human
     analysis_ids: []
     checks: []
-    note: 'GAP: repository_health + chaoss_metrics (contributor identities and concentration) -- repository_health
-      + chaoss_metrics are not a real analysis for model resources (absent from analysis_catalog.yaml''s
-      model_analyses section).'
-  answering_mechanism: Git Statistics
-  rationale: repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned
-    the same text until chaoss_metrics, built on project_commits, gave this one its own source.
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'Human-supplied: who owns it and who administers it are recorded in Enrichment; no survey reads
+      either for a model.'
+  answering_mechanism: Human-Supplied
+  rationale: Nothing in a survey of a model reads who owns or administers it, so the answer comes from
+    a person through Enrichment.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1; the CSV row is the repository''s answer and was being shown unchanged here.'
   retired: false
 - question: Has this resource already been catalogued in Egeria, and when?
   stage: Discovery
@@ -4910,20 +4899,16 @@ model_questions:
   levels:
   - resource
   answering:
-    kind: gap
+    kind: human
     analysis_ids: []
     checks: []
-    note: 'GAP: license_classification [checks: license_classification:license_risk_tier] -- license_classification
-      is not a real analysis for model resources (absent from analysis_catalog.yaml''s model_analyses
-      section).'
-  answering_mechanism: Code Analysis
-  rationale: 'GitHub API license field gives the SPDX id cheaply (Scouting); license_classification (Assessment)
-    categorizes it into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)
-    — candidate reference tools for deeper provenance: FOSSology (Linux Foundation compliance workspace),
-    LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC
-    5962) is the standard schema this conforms to.'
-  catalog_history: '2026-09-21: reworded from repo-only to cross-type wording (multi-resource-questions-design.md
-    §4) as part of the re/db-questions-csv authoring stream.'
+    note: 'Human-supplied: the license is recorded in Enrichment; no survey reads it for a model.'
+  answering_mechanism: Human-Supplied
+  rationale: Nothing in a survey of a model reads a license, so the answer comes from a person through
+    Enrichment, which is also where the license is recorded when the resource is curated into Egeria.
+  catalog_history: '2026-10-02: answering reworded for this resource type per RULING-DB-QUESTION-CATALOG-CONSISTENCY.md
+    section 1 (license is the same case as ownership); the CSV row is the repository''s answer and was
+    being shown unchanged here.'
   retired: false
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery

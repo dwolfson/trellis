@@ -91,7 +91,9 @@ class TestDatabaseResultsMapCoverage:
         assert set(DATABASE_ANALYSIS_RE_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
         # Nineteen: ENRICHMENT-E3 added `database_owner` (the measured datdba,
         # its own fact with its own measured_at).
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 19
+        # Twenty: `db_hub_tables` (2026-10-02), a `db_derived` check with the
+        # same shared reader as the others.
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 20
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (

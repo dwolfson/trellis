@@ -1571,6 +1571,20 @@ class FactLayer:
                 return env
 
         ids = answering.get("analysis_ids") or []
+        if not ids and kind in ("mixed", "partial"):
+            # Not "declares no analysis": these kinds say part of the answer
+            # exists somewhere other than an analysis result (a person's
+            # Enrichment input, a fact shown elsewhere). The note, written for
+            # this resource type, says where -- so it is shown, as it is for
+            # `gap`/`human`, rather than a generic "nothing to read".
+            env.blocked_reason = (
+                "No single analysis answers this: part of it is not an "
+                "analysis result."
+            )
+            note = (answering.get("note") or "").strip()
+            if note:
+                env.blocked_reason += f" ({note[:400]})"
+            return env
         if not ids:
             env.blocked_reason = (
                 "This question declares no analysis that answers it, so there is "
