@@ -969,7 +969,9 @@ DATABASE_ANALYSIS_RE_STEP_MAP: dict[str, list[str]] = _build_database_analysis_r
 #   four yet — reading the blob is the honest way to reach data that is
 #   already there rather than re-deriving it). Wrapping either read is a thin
 #   pass-through, again not new domain logic.
-# * data_class_match, reference_data_match and nested_column_profile are NOT
+# * (HISTORICAL — D1, DB-RESULTS-READERS, now has readers; see the block
+#   above `_SCHEMA_INVENTORY_HEADLINE_NAME_LIMIT`.) data_class_match,
+#   reference_data_match and nested_column_profile were NOT
 #   included. Their verdicts are built (column_matching.py /
 #   nested_columns_step.py) but only ever turned into Egeria annotations —
 #   there is no local table a reader could query, and `upsert_finding()` (the
@@ -1546,6 +1548,329 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
     if status:
         value["_status"] = status
     return value
+
+
+# ── D1 (DB-RESULTS-READERS): the three value-reading analyses ────────────────
+#
+# `data_class_match`, `reference_data_match` and `nested_column_profile` read
+# their own detail tables (`database_data_class_matches`,
+# `database_reference_data_matches`, `database_nested_columns`), written by
+# `column_match_store.store_column_match_results` from the step's own output —
+# the same shape `schema_inventory` has over `database_tables`.
+#
+# Four outcomes a reader must keep apart, each a stored fact rather than a
+# branch the code happened to take:
+#
+# * never produced — no coverage row for the section. `_results_not_stored()`:
+#   an envelope-only dict, which `results_have_data` and `_has_content` both
+#   read as "nothing here", so a never-run database reads not-run (the facts
+#   layer's run gate answers first) and a database that ran BEFORE results were
+#   stored reads "not established", never a measured zero.
+# * tried and could not, or established nothing — coverage `not_collected`, or
+#   rows whose every verdict is a not-established one. NOT_ESTABLISHED, with
+#   the reason; the count of matches is never drawn as a zero.
+# * ran, looked, found nothing — a real zero (`NOTHING_FOUND`).
+# * found something — measured, with the counts.
+#
+# Credential scope wins over a bare zero: "0 matched" over the 3 of 26 tables
+# the credential could see is not a database-wide zero (same third state
+# `schema_inventory` carries).
+
+def _results_not_stored() -> dict:
+    from resource_explorer.surveyors.result_status import NOT_ESTABLISHED
+
+    return {"_status": {
+        "state": NOT_ESTABLISHED,
+        "reason": "no_stored_result",
+        "detail": ("no stored result for this analysis: it has not run against "
+                   "this database, or it ran before its results were stored — "
+                   "run it again to read them"),
+    }}
+
+
+def _latest_stored_run(registry, slug: str, section: str, table: str):
+    """(coverage row, detail rows) of the newest run that recorded `section`,
+    or (None, []) when none did. A registry stub with no coverage reader has
+    simply never recorded one."""
+    getter = getattr(registry, "get_latest_section_coverage", None)
+    if not callable(getter):
+        return None, []
+    cov = getter("database", slug, section)
+    if not cov:
+        return None, []
+    rows = registry.query_detail_rows(
+        table, slug, surveyed_at=cov["surveyed_at"], source=cov["source"],
+    )
+    return cov, rows
+
+
+def _not_established_value(cov: dict, rows: list[dict], detail: str, **counts) -> dict:
+    from resource_explorer.surveyors.result_status import NOT_ESTABLISHED
+
+    return {
+        "surveyed_at": cov["surveyed_at"],
+        "state": NOT_ESTABLISHED,
+        "explanation": detail,
+        "column_count": len(rows),
+        **counts,
+        "_status": {"state": NOT_ESTABLISHED, "reason": "nothing_established", "detail": detail},
+    }
+
+
+def _apply_scope_or_zero(value: dict, registry, slug: str, *, found: int, partial: bool) -> None:
+    """Set `_status` / `partial` on a measured value, in this order: a
+    credential-scope shortfall (it bounds what any zero can mean), then an
+    explicit zero (`NOTHING_FOUND`) when everything was established and nothing
+    was found, then the partial flag when only some columns were established."""
+    from resource_explorer.surveyors.result_status import NOTHING_FOUND
+
+    scope = _credential_scope_status(registry, slug)
+    if scope:
+        value["_status"] = scope
+    elif not found and not partial:
+        value["_status"] = {"state": NOTHING_FOUND}
+    elif partial:
+        value["partial"] = True
+
+
+def _column_match_results(table: str, section: str, question: str):
+    """A results_reader for `data_class_match` / `reference_data_match`."""
+    from resource_explorer.surveyors.database.column_matching import (
+        ESTABLISHED_VERDICTS, MATCH_MATCHED, MATCH_NO_MATCH, MATCH_NOT_APPLICABLE,
+        MATCH_PARTIAL, MATCH_UNMATCHED_PATTERNED,
+    )
+
+    def _read(registry, slug: str) -> dict:
+        cov, rows = _latest_stored_run(registry, slug, section, table)
+        if cov is None:
+            return _results_not_stored()
+        if not rows:
+            if cov.get("state") == "not_collected":
+                return _not_established_value(
+                    cov, rows, cov.get("detail") or "the step could not measure"
+                )
+            value = {
+                "surveyed_at": cov["surveyed_at"], "column_count": 0,
+                "explanation": ("the run examined no columns, so there was nothing "
+                                "to compare"),
+            }
+            _apply_scope_or_zero(value, registry, slug, found=0, partial=False)
+            return value
+
+        verdicts: dict[str, int] = {}
+        for r in rows:
+            verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+        established = sum(n for v, n in verdicts.items() if v in ESTABLISHED_VERDICTS)
+        not_applicable = verdicts.get(MATCH_NOT_APPLICABLE, 0)
+        not_established = len(rows) - established - not_applicable
+        counts = {
+            "established_count": established,
+            "not_established_count": not_established,
+            "not_applicable_count": not_applicable,
+            "matched_count": verdicts.get(MATCH_MATCHED, 0),
+            "no_match_count": verdicts.get(MATCH_NO_MATCH, 0),
+            "proposed_count": verdicts.get(MATCH_UNMATCHED_PATTERNED, 0),
+        }
+        if question == "reference_data_match":
+            counts["partial_count"] = verdicts.get(MATCH_PARTIAL, 0)
+        else:
+            counts["privacy_relevant_count"] = sum(
+                1 for r in rows if r.get("privacy_relevant") and r["verdict"] == MATCH_MATCHED
+            )
+        if not established:
+            reasons: dict[str, int] = {}
+            for r in rows:
+                if r["verdict"] != MATCH_NOT_APPLICABLE and r.get("not_established_reason"):
+                    reasons[r["not_established_reason"]] = (
+                        reasons.get(r["not_established_reason"], 0) + 1)
+            top = max(reasons.items(), key=lambda kv: kv[1])[0] if reasons else (
+                cov.get("detail") or "no verdict could be reached")
+            return _not_established_value(
+                cov, rows,
+                f"{not_established} of {len(rows)} column(s) could not be tested: {top}",
+                verdict_counts=verdicts,
+                # Only the counts that are real. matched/no_match/proposed are
+                # NOT carried: nothing was established, so a 0 there would be
+                # "not measured" drawn as a measured zero (the COUNTS table
+                # prints every numeric field it is given).
+                not_established_count=not_established,
+                not_applicable_count=not_applicable,
+            )
+
+        found = counts["matched_count"] + counts["proposed_count"] + counts.get("partial_count", 0)
+        value = {
+            "surveyed_at": cov["surveyed_at"],
+            "column_count": len(rows),
+            **counts,
+            "verdict_counts": verdicts,
+            "sample_strategies": sorted({r["sample_strategy"] for r in rows if r.get("sample_strategy")}),
+            "columns": [
+                {k: r.get(k) for k in (
+                    "schema_name", "table_name", "column_name", "verdict", "confidence",
+                    "evidence", "matched_display_name", "matched_qualified_name",
+                    "not_established_reason", "sample_rows", "sample_total_rows",
+                    "sample_strategy", "state", "statement",
+                    *(("value_coverage", "unmatched_values_json", "proposed_values_json")
+                      if question == "reference_data_match"
+                      else ("sampled_conformance", "privacy_relevant",
+                            "proposed_specification", "detected_patterns_json")))}
+                for r in rows
+            ],
+        }
+        _apply_scope_or_zero(value, registry, slug, found=found, partial=bool(not_established))
+        return value
+
+    return _read
+
+
+def _data_class_match_results(registry, slug: str) -> dict:
+    from resource_explorer.registry import SECTION_DATA_CLASS_MATCHES
+
+    return _column_match_results(
+        "database_data_class_matches", SECTION_DATA_CLASS_MATCHES, "data_class_match"
+    )(registry, slug)
+
+
+def _reference_data_match_results(registry, slug: str) -> dict:
+    from resource_explorer.registry import SECTION_REFERENCE_DATA_MATCHES
+
+    return _column_match_results(
+        "database_reference_data_matches", SECTION_REFERENCE_DATA_MATCHES,
+        "reference_data_match",
+    )(registry, slug)
+
+
+def _nested_column_profile_results(registry, slug: str) -> dict:
+    """Results reader for `nested_column_profile`, from `database_nested_columns`."""
+    from resource_explorer.registry import (
+        SECTION_NESTED_COLUMNS, STATE_EMPTY, STATE_MEASURED,
+    )
+
+    cov, rows = _latest_stored_run(
+        registry, slug, SECTION_NESTED_COLUMNS, "database_nested_columns")
+    if cov is None:
+        return _results_not_stored()
+    if not rows:
+        if cov.get("state") in ("not_collected", "not_supported"):
+            return _not_established_value(
+                cov, rows, cov.get("detail") or "the step could not measure")
+        value = {
+            "surveyed_at": cov["surveyed_at"], "column_count": 0,
+            "explanation": ("the run found no JSON, JSONB or XML columns in the tables "
+                            "it read"),
+        }
+        _apply_scope_or_zero(value, registry, slug, found=0, partial=False)
+        return value
+
+    established_states = {STATE_MEASURED, STATE_EMPTY}
+    established = [r for r in rows if r.get("state") in established_states]
+    not_established = len(rows) - len(established)
+    labels: dict[str, int] = {}
+    for r in established:
+        labels[r["label"]] = labels.get(r["label"], 0) + 1
+    counts = {
+        "established_count": len(established),
+        "not_established_count": not_established,
+        "structured_count": labels.get("structured", 0),
+        "scalar_only_count": labels.get("scalar_only", 0),
+        "mixed_count": labels.get("mixed", 0),
+        "unparseable_count": labels.get("unparseable", 0),
+        "empty_count": labels.get("empty", 0),
+    }
+    if not established:
+        top: dict[str, int] = {}
+        for r in rows:
+            reason = r.get("not_established_reason") or ""
+            if reason:
+                top[reason] = top.get(reason, 0) + 1
+        reason = max(top.items(), key=lambda kv: kv[1])[0] if top else (
+            cov.get("detail") or "no column could be sampled")
+        return _not_established_value(
+            cov, rows,
+            f"{len(rows)} JSON, JSONB or XML column(s) found, none could be profiled: {reason}",
+            not_established_count=not_established,
+        )
+    value = {
+        "surveyed_at": cov["surveyed_at"],
+        "column_count": len(rows),
+        **counts,
+        "label_counts": labels,
+        "columns": [
+            {k: r.get(k) for k in (
+                "schema_name", "table_name", "column_name", "column_family", "label",
+                "key_count", "max_depth", "schema_json", "not_established_reason",
+                "sample_strategy", "sample_rows", "sample_total_rows", "state")}
+            for r in rows
+        ],
+    }
+    _apply_scope_or_zero(
+        value, registry, slug,
+        found=len(established), partial=bool(not_established))
+    return value
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _column_match_headline(results_fn, kind_noun: str, tested_noun: str):
+    """Headline reader factory for the two matching analyses. One sentence, no
+    internal full stops (the board keeps only the first sentence)."""
+
+    def _headline(registry, slug: str) -> dict | None:
+        value = results_fn(registry, slug)
+        if not value or not (value.get("column_count") or value.get("explanation")):
+            return None
+        if (value.get("state") == "not_established"
+                or (value.get("_status") or {}).get("reason") == "nothing_established"):
+            return {"label": f"Not established — {value.get('explanation', '')}",
+                    "status": "info"}
+        if not value.get("column_count"):
+            return {"label": f"0 columns matched — {value['explanation']}", "status": "info"}
+        tested = value["established_count"]
+        parts = [f"{value['matched_count']} of {_plural(tested, tested_noun)} tested matched a known {kind_noun}"]
+        if value.get("partial_count"):
+            parts.append(f"{value['partial_count']} partly")
+        parts.append(f"{value['no_match_count']} had no match")
+        if value["proposed_count"]:
+            parts.append(f"{value['proposed_count']} look like a new {kind_noun}")
+        if value["not_established_count"]:
+            parts.append(f"{value['not_established_count']} could not be tested")
+        if value["not_applicable_count"]:
+            parts.append(f"{value['not_applicable_count']} not applicable")
+        return {"label": " — ".join([parts[0], ", ".join(parts[1:])]), "status": "info"}
+
+    return _headline
+
+
+_data_class_match_headline = _column_match_headline(
+    _data_class_match_results, "Data Class", "column")
+_reference_data_match_headline = _column_match_headline(
+    _reference_data_match_results, "Valid Value Set", "low-cardinality column")
+
+
+def _nested_column_profile_headline(registry, slug: str) -> dict | None:
+    value = _nested_column_profile_results(registry, slug)
+    if not value or not (value.get("column_count") or value.get("explanation")):
+        return None
+    if (value.get("state") == "not_established"
+            or (value.get("_status") or {}).get("reason") == "nothing_established"):
+        return {"label": f"Not established — {value.get('explanation', '')}", "status": "info"}
+    if not value.get("column_count"):
+        return {"label": f"0 JSON, JSONB or XML columns — {value['explanation']}",
+                "status": "info"}
+    parts = [f"{value['structured_count']} structured", f"{value['scalar_only_count']} scalar-only"]
+    for key, word in (("mixed_count", "mixed"), ("unparseable_count", "unparseable"),
+                      ("empty_count", "empty")):
+        if value[key]:
+            parts.append(f"{value[key]} {word}")
+    if value["not_established_count"]:
+        parts.append(f"{value['not_established_count']} could not be profiled")
+    return {
+        "label": (f"{_plural(value['column_count'], 'JSON, JSONB or XML column')} — "
+                  + ", ".join(parts)),
+        "status": "info",
+    }
 
 
 #: Above this many distinct schemas, the headline names a count instead of
@@ -2606,6 +2931,12 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "coverage_signals": (_db_derived_field_reader("coverage_signals"), None),
     "preliminary_fit": (_db_derived_field_reader("preliminary_fit"), None),
     "credential_capability": (_credential_capability_results, None),
+    # D1 (DB-RESULTS-READERS): readers over their own detail tables (written by
+    # `column_match_store`), no longer a gap. See the block above the headline
+    # limit constant for the four outcomes each keeps apart.
+    "data_class_match": (_data_class_match_results, None),
+    "reference_data_match": (_reference_data_match_results, None),
+    "nested_column_profile": (_nested_column_profile_results, None),
     # ENRICHMENT-E3: the measured `datdba`, its own fact (see the reader).
     "database_owner": (_database_owner_fact_results, None),
 }
@@ -2641,6 +2972,9 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
 #: here rather than a bespoke per-field summary.
 DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "schema_inventory": _schema_inventory_headline,
+    "data_class_match": _data_class_match_headline,
+    "reference_data_match": _reference_data_match_headline,
+    "nested_column_profile": _nested_column_profile_headline,
     "database_owner": _database_owner_headline,
     "row_count_snapshot": _row_count_snapshot_headline,
     "db_resilience": _db_resilience_headline,

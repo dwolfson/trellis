@@ -163,7 +163,14 @@ def question_has_data(registry, slug: str, analysis_ids: list[str], entity_type:
             data = results_reader(registry, slug)
         except Exception:
             continue
-        if data and (not isinstance(data, dict) or any(v for v in data.values())):
+        # `_status` is an ENVELOPE (why a payload is empty), not content --
+        # `results_have_data` and `facts._has_content` both exclude it. A reader
+        # that answers only `{"_status": {...not established...}}` (D1's three
+        # value-reading analyses before anything is stored) has no data, and
+        # counting its truthy envelope would tick the question for a database
+        # that never ran the analysis.
+        if data and (not isinstance(data, dict)
+                     or any(v for k, v in data.items() if k != "_status")):
             return True
     return False
 

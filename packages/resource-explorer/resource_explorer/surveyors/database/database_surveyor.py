@@ -578,6 +578,9 @@ class DatabaseSurveyor:
                         results["errors"].append(
                             f"Column profiling failed (non-fatal): {profile_err}"
                         )
+                        # D1: kept so the results store records "tried and
+                        # could not" rather than leaving no trace.
+                        results["column_profile_failed"] = str(profile_err)
 
                 # postgres_nested_columns: JSONB/JSON/XML value sampling and
                 # nested-schema inference (design §5.4, §5.7 — Phase 1 slice
@@ -606,6 +609,7 @@ class DatabaseSurveyor:
                         results["errors"].append(
                             f"Nested column profiling failed (non-fatal): {nested_err}"
                         )
+                        results["nested_columns_failed"] = str(nested_err)
 
         except Exception as e:
             error_msg = str(e)
@@ -1865,6 +1869,18 @@ class DatabaseSurveyor:
                 rows=table_activity_rows,
                 coverage_section=SECTION_TABLE_ACTIVITY,
             )
+
+        # D1 (DB-RESULTS-READERS): the value-reading steps' own verdicts. Only
+        # written when the step actually ran (or failed trying) in THIS call;
+        # a run that never requested them leaves no coverage row, which is how
+        # "never ran" stays distinguishable from "ran and found nothing".
+        from resource_explorer.surveyors.database.column_match_store import (
+            store_column_match_results,
+        )
+
+        store_column_match_results(
+            self.registry, self.db_entity.slug, surveyed_at, results,
+        )
 
     def _survey_views(self, conn, schema_info: dict) -> list[dict]:
         """Fetch view definitions and perform static analysis using SQLGlot."""

@@ -326,6 +326,13 @@ def run_nested_columns(
             columns_result.append({
                 "column": column_path, "family": family, "state": state,
                 "label": LABEL_EMPTY, "schema": None,
+                # D1: the three parts and the sample basis, kept apart so the
+                # results store does not have to re-split a dotted path (a
+                # schema or table name may itself contain a dot).
+                "schema_name": schema_name, "table_name": table_name,
+                "column_name": column_name, "sample": provenance.as_dict(),
+                "not_established_reason": (
+                    provenance.reason_not_sampled or "no values were sampled"),
             })
             continue
 
@@ -348,6 +355,9 @@ def run_nested_columns(
         columns_result.append({
             "column": column_path, "family": family, "state": state,
             "label": label, "schema": schema.as_dict(),
+            "schema_name": schema_name, "table_name": table_name,
+            "column_name": column_name, "sample": provenance.as_dict(),
+            "not_established_reason": "",
         })
 
     return {

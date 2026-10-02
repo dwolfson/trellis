@@ -526,6 +526,14 @@ SECTION_TABLES = "tables"
 SECTION_COLUMNS = "columns"
 SECTION_COLUMN_PROFILES = "column_profiles"
 SECTION_TABLE_ACTIVITY = "table_activity"
+#: D1 (DB-RESULTS-READERS): the three value-reading analyses' own sections.
+#: One coverage row per run per section is what lets a reader tell "this run
+#: never looked" (no row) from "looked, found nothing" (a row with state
+#: `empty`, or a measured row with zero matches) from "tried and could not"
+#: (state `not_collected`, the reason in `detail`).
+SECTION_DATA_CLASS_MATCHES = "data_class_matches"
+SECTION_REFERENCE_DATA_MATCHES = "reference_data_matches"
+SECTION_NESTED_COLUMNS = "nested_columns"
 SECTION_GRANTS = "grants"
 SECTION_SQL_OBJECTS = "sql_objects"
 SECTION_SETTINGS = "settings"
@@ -737,6 +745,114 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         stats_reset       TEXT DEFAULT NULL,
         state             TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name, table_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # ── D1: results of the three value-reading analyses ────────────────────
+    # `data_class_match`, `reference_data_match` and `nested_column_profile`
+    # were built and ran, but their verdicts only ever became Egeria
+    # annotations — nothing local a reader could query (docs/Backlog.md,
+    # "Database per-column match results have no local store"). One table per
+    # analysis, one row per column per run, keyed like every other detail
+    # table so two runs are two sets of rows and re-materialising one run
+    # replaces its own rows (write_detail_rows is delete-then-insert per
+    # (slug, surveyed_at, source)).
+    #
+    # `verdict` is column_matching's own vocabulary and is NOT collapsed: the
+    # reader must be able to tell "no known class matched" (a finding) from
+    # "not_sampled"/"no_candidates"/"inconclusive"/"not_applicable" (nothing
+    # established). `state` repeats that split in the registry's own
+    # vocabulary: measured for an established verdict, not_applicable,
+    # otherwise not_collected. NULL numerics mean "not measured".
+    """
+    CREATE TABLE IF NOT EXISTS database_data_class_matches (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug            TEXT NOT NULL,
+        surveyed_at              TEXT NOT NULL,
+        source                   TEXT NOT NULL DEFAULT 'local',
+        schema_name              TEXT NOT NULL,
+        table_name               TEXT NOT NULL,
+        column_name              TEXT NOT NULL,
+        verdict                  TEXT NOT NULL,
+        confidence               INTEGER DEFAULT NULL,
+        evidence                 TEXT DEFAULT '',
+        matched_display_name     TEXT DEFAULT '',
+        matched_qualified_name   TEXT DEFAULT '',
+        matched_guid             TEXT DEFAULT '',
+        matched_element_is_draft INTEGER DEFAULT NULL,
+        sampled_conformance      REAL DEFAULT NULL,
+        privacy_relevant         INTEGER DEFAULT NULL,
+        proposed_specification   TEXT DEFAULT '',
+        detected_patterns_json   TEXT DEFAULT NULL,
+        not_established_reason   TEXT DEFAULT '',
+        sample_strategy          TEXT DEFAULT '',
+        sample_rows              INTEGER DEFAULT NULL,
+        sample_total_rows        INTEGER DEFAULT NULL,
+        sample_seed              INTEGER DEFAULT NULL,
+        statement                TEXT DEFAULT '',
+        state                    TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS database_reference_data_matches (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug            TEXT NOT NULL,
+        surveyed_at              TEXT NOT NULL,
+        source                   TEXT NOT NULL DEFAULT 'local',
+        schema_name              TEXT NOT NULL,
+        table_name               TEXT NOT NULL,
+        column_name              TEXT NOT NULL,
+        verdict                  TEXT NOT NULL,
+        confidence               INTEGER DEFAULT NULL,
+        evidence                 TEXT DEFAULT '',
+        matched_display_name     TEXT DEFAULT '',
+        matched_qualified_name   TEXT DEFAULT '',
+        matched_guid             TEXT DEFAULT '',
+        matched_element_is_draft INTEGER DEFAULT NULL,
+        value_coverage           REAL DEFAULT NULL,
+        unmatched_values_json    TEXT DEFAULT NULL,
+        proposed_values_json     TEXT DEFAULT NULL,
+        not_established_reason   TEXT DEFAULT '',
+        sample_strategy          TEXT DEFAULT '',
+        sample_rows              INTEGER DEFAULT NULL,
+        sample_total_rows        INTEGER DEFAULT NULL,
+        sample_seed              INTEGER DEFAULT NULL,
+        statement                TEXT DEFAULT '',
+        state                    TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # One row per JSON/JSONB/XML column. `label` is nested_schema_inference's
+    # classification (structured / scalar_only / mixed / unparseable) or
+    # `empty` when no value could be read; `state` says why a row has no
+    # inferred schema (not_collected: sampling failed or was skipped;
+    # not_supported: the engine declares no value_sampling). `schema_json` is
+    # the whole inferred schema (keys with presence fractions and observed
+    # types for JSON; element names for XML), NULL when nothing was inferred.
+    """
+    CREATE TABLE IF NOT EXISTS database_nested_columns (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug          TEXT NOT NULL,
+        surveyed_at            TEXT NOT NULL,
+        source                 TEXT NOT NULL DEFAULT 'local',
+        schema_name            TEXT NOT NULL,
+        table_name             TEXT NOT NULL,
+        column_name            TEXT NOT NULL,
+        column_family          TEXT DEFAULT '',
+        label                  TEXT NOT NULL,
+        key_count              INTEGER DEFAULT NULL,
+        max_depth              INTEGER DEFAULT NULL,
+        schema_json            TEXT DEFAULT NULL,
+        not_established_reason TEXT DEFAULT '',
+        sample_strategy        TEXT DEFAULT '',
+        sample_rows            INTEGER DEFAULT NULL,
+        sample_total_rows      INTEGER DEFAULT NULL,
+        sample_seed            INTEGER DEFAULT NULL,
+        state                  TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
     )
     """,
@@ -960,6 +1076,9 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_db_columns_table ON database_columns(database_slug, schema_name, table_name)",
     "CREATE INDEX IF NOT EXISTS idx_db_col_profiles_slug ON database_column_profiles(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_table_activity_slug ON database_table_activity(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_dc_matches_slug ON database_data_class_matches(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_rd_matches_slug ON database_reference_data_matches(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_nested_cols_slug ON database_nested_columns(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_grants_slug ON database_grants(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_grants_grantee ON database_grants(database_slug, grantee)",
     "CREATE INDEX IF NOT EXISTS idx_db_sql_objects_slug ON database_sql_objects(database_slug, surveyed_at)",
@@ -1001,6 +1120,10 @@ _DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], .
     ("database_table_activity", (
         ("stats_reset", "TEXT DEFAULT NULL"),
     )),
+    # D1: new tables, created whole by the DDL above; no column to add yet.
+    ("database_data_class_matches", ()),
+    ("database_reference_data_matches", ()),
+    ("database_nested_columns", ()),
     ("database_grants", ()),
     ("database_sql_objects", ()),
     ("database_settings", ()),
@@ -1043,6 +1166,9 @@ _DETAIL_TABLE_ORDER: dict[str, str] = {
     "database_columns": "schema_name, table_name, ordinal_position, column_name",
     "database_column_profiles": "schema_name, table_name, column_name",
     "database_table_activity": "schema_name, table_name",
+    "database_data_class_matches": "schema_name, table_name, column_name",
+    "database_reference_data_matches": "schema_name, table_name, column_name",
+    "database_nested_columns": "schema_name, table_name, column_name",
     "database_grants": "schema_name, object_name, grantee, privilege_type",
     "database_sql_objects": "schema_name, object_type, object_name",
     "database_settings": "setting_name",
@@ -10642,6 +10768,29 @@ class ProjectRegistry:
                 tuple(params),
             ).fetchall()
         return {dict(r)["section"]: dict(r) for r in rows}
+
+    def get_latest_section_coverage(
+        self, resource_type: str, slug: str, section: str,
+    ) -> dict | None:
+        """The newest coverage row for ONE section, across every run and source
+        (None when no run ever recorded that section).
+
+        `get_section_coverage` answers for the single newest RUN, which is the
+        wrong question for an analysis whose step is run on its own: a later
+        schema-only survey has its own `surveyed_at` and never mentions this
+        section, so asking about "the latest run" would see nothing. The section
+        itself is the key here, which is also what makes "no row" mean exactly
+        "no run ever tried this", the thing a reader reports as not run.
+        """
+        table, slug_column = self._coverage_table(resource_type)
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT * FROM {table} WHERE {slug_column} = ? AND section = ? "
+                f"ORDER BY surveyed_at DESC LIMIT 1",
+                (slug, section),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_detail_run_timestamps(
         self, table: str, slug: str, source: str | None = None
