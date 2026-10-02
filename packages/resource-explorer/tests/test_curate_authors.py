@@ -35,7 +35,23 @@ def client(registry, monkeypatch):
         "resource_explorer.registry.ProjectRegistry.__init__",
         lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None,
     )
+    from resource_explorer import auth
     from resource_explorer.web.app import app
+    from resource_explorer.web.routes import curate as curate_routes
+
+    # Isolation. routes/curate.py does `from resource_explorer.auth import
+    # get_current_user`, binding the name ONCE, at the first import of the app.
+    # Several earlier test files (test_curate.py, test_curate_blueprints_route.py,
+    # test_reports.py, ...) monkeypatch `resource_explorer.auth.get_current_user`
+    # to a fixed signed-in user *before* their first `from ...web.app import
+    # app`, so when they run first the app is imported under that patch and
+    # curate.py keeps the stub for the rest of the process (monkeypatch undoes
+    # the auth attribute, never the already-bound name). Every signed-out case
+    # here then saw "peterprofile" and the guard never fired. Rebind the route's
+    # name to the real resolver for this test, and undo it afterwards.
+    # `auth.get_current_user` is the real function here: any patch of it by a
+    # previous test was reverted by that test's own monkeypatch teardown.
+    monkeypatch.setattr(curate_routes, "get_current_user", auth.get_current_user)
     return TestClient(app)
 
 
