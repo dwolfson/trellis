@@ -32,6 +32,20 @@ Not affected (checked): `state.analysisRunFailures`, `state.overview`, the doc-s
 
 Status: logged, not scheduled. The behaviour test should use the harness the stale-rail fix added (`rail-clears-on-change.test.mjs`) as its pattern.
 
+## Small items logged 2026-10-02 (from the Compliance trial, the incidents and the gates)
+
+Each is small and none is scheduled; the owner's decisions are marked.
+
+* **`step_runs` executor label.** On the egeria_docs trial the row for `repo_secret_scan` said executor `local` with an empty `flow_run_id`, although a real Prefect flow run executed it (the inverse of the earlier "prefect means attempted" issue). A real dispatch must be recorded as one, with its flow run id.
+* **The /next Run button gives no feedback**, so the owner clicked it twice and queued a duplicate full Compliance run. Disable it after the click and show queued or running.
+* **No cancel control for a queued run in /next** (only `POST /api/runs/{id}/cancel`, unclaimed rows only).
+* **`/next/` and `/next/index.html` answer with raw 401 JSON.** `RE_PUBLIC_PATHS` lists `/next` as an exact match on purpose (auth.py:108); redirect the two to `/next`, never add a `/next/` prefix.
+* **Stale schedule.** `localhost_docker_coco_ods` has an `index_health` schedule but is not in `databases`, so the scheduler errors on it every cycle. Owner decision: remove it.
+* **A foreign Egeria SurveyReport is invisible in RE.** "Also known to Egeria" lists only RE's own proof rows, so a failed survey run by another client vanishes. Read back Egeria's SurveyReports for the asset and mark each "submitted elsewhere" with Egeria's status and time (design ruling 2026-10-02, medium).
+* **Republish `RepoAssessmentSurvey` to Egeria** after #431: Admin, Egeria Alignment, `reauthor_survey_definitions`, then the link reconciler (not by hand; the link command is not idempotent). A shared Egeria write: peer check and the owner's go first.
+* **A repo-wide guard so no test reaches the shared registry** (branch `re/test-registry-guard`, held: its red evidence is tainted, it exempts CI by `GITHUB_ACTIONS`, and a raw connection with no `search_path` is allowed). Two test runs on 2026-10-02 touched the shared registry or live Egeria by accident; every test command should exclude `requires_egeria` and `live_egeria_writes`.
+* **The Egeria secrets file went missing again** (second time in three days; `resource-explorer.omsecrets` did not exist). `re/reproject-secrets` now rebuilds it at startup; check after the next restart that the collections exist.
+
 ## A per-card database analysis run clobbers every OTHER table's row_count/size_bytes
 
 > **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e22f9602`, `32409a83`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
