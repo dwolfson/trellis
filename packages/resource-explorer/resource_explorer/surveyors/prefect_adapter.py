@@ -34,9 +34,10 @@ os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")
 
 import asyncio
 import logging
-from typing import Any
+import time
+from typing import Any, Awaitable, Callable
 from prefect.client.orchestration import PrefectClient
-from resource_explorer.config import get_config
+from resource_explorer.config import DEFAULT_PREFECT_STEP_TIMEOUT_SECONDS, get_config
 from resource_explorer.prefect.flows import run_surveyor_step_task
 
 log = logging.getLogger(__name__)
@@ -228,11 +229,60 @@ class PrefectFlowRunCancelled(Exception):
     should not."""
 
 
+class PrefectFlowRunTimeout(Exception):
+    """A dispatched flow run did not reach a terminal state before the
+    configured deadline (`PrefectConfig.step_timeout_seconds`). Carries the
+    flow run id so a person can find it in Prefect.
+
+    Like `PrefectFlowRunCancelled`, deliberately NOT caught by
+    `run_prefect_step`'s fall-back-to-local branch: the run may still be live
+    (cancel is best-effort), and re-running the step's work locally would
+    duplicate it. The caller records an honest error step instead.
+    Found 2026-10-02: the poll loop had no deadline, so a pool with no online
+    worker left the run Scheduled forever and hung the survey thread."""
+
+    def __init__(self, message: str, flow_run_id: str = "") -> None:
+        super().__init__(message)
+        self.flow_run_id = flow_run_id
+
+
+def _step_timeout_seconds() -> float:
+    cfg = getattr(get_config(), "prefect", None)
+    value = getattr(cfg, "step_timeout_seconds", None)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_PREFECT_STEP_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_PREFECT_STEP_TIMEOUT_SECONDS
+
+
+def _is_online(worker: Any) -> bool:
+    status = getattr(worker, "status", None)
+    return str(getattr(status, "value", status) or "").upper() == "ONLINE"
+
+
+async def _cancel_flow_run_best_effort(client: Any, flow_run_id: Any) -> str:
+    """Try to cancel `flow_run_id`; return "" on success or a short failure
+    description. Never raises."""
+    try:
+        from prefect.states import Cancelled
+
+        await client.set_flow_run_state(flow_run_id=flow_run_id, state=Cancelled(), force=True)
+        return ""
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
 async def _run_prefect_step_api(
     entity_type: str,
     slug: str,
     step_name: str,
     runner_kwargs: dict[str, Any],
+    *,
+    timeout_seconds: float | None = None,
+    poll_interval: float = 1.0,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
 ) -> tuple[dict[str, Any], str]:
     """Trigger a flow run via Prefect REST API and wait for it to complete.
 
@@ -240,8 +290,19 @@ async def _run_prefect_step_api(
     saying executor='prefect' checkable against Prefect's own
     POST /api/flow_runs/filter rather than merely asserted (see
     PREFECT-DISPATCH-HONESTY-IMPLEMENTED.md's live gate).
+
+    Two guards against the hang found 2026-10-02 (see
+    PREFECT-POLL-TIMEOUT-IMPLEMENTED.md): (1) before creating a flow run,
+    require >= 1 ONLINE worker on the deployment's work pool, else raise
+    RuntimeError (run_prefect_step's existing policy then falls back to local
+    and records the cause); (2) the poll loop has a deadline
+    (`timeout_seconds`, default `PrefectConfig.step_timeout_seconds`) and on
+    expiry cancels the run best-effort and raises PrefectFlowRunTimeout.
+    `poll_interval`, `clock` and `sleep` are injectable so tests never sleep.
     """
     config = get_config()
+    if timeout_seconds is None:
+        timeout_seconds = _step_timeout_seconds()
     deployment_name = "RE Survey Flow/re-survey-step-deployment"
 
     async with re_prefect_client() as client:
@@ -252,6 +313,15 @@ async def _run_prefect_step_api(
             raise RuntimeError(
                 f"Prefect deployment '{deployment_name}' not found. "
                 "Did you run 'resource-explorer prefect deploy'? Error: {e}"
+            )
+
+        # 1b. Fail fast: a pool with no ONLINE worker would leave the run
+        # Scheduled forever. Read-only; nothing is created yet.
+        pool = getattr(deployment, "work_pool_name", None) or config.prefect.work_pool
+        workers = await client.read_workers_for_work_pool(pool)
+        if not any(_is_online(w) for w in workers):
+            raise RuntimeError(
+                f"no online Prefect worker for pool {pool}; run `make prefect-up`"
             )
 
         # 2. Trigger the flow run — tagged so the admin "⚡ Prefect" panel can
@@ -272,7 +342,8 @@ async def _run_prefect_step_api(
         )
         flow_run_id = str(flow_run.id)
 
-        # 3. Poll for the flow run to complete
+        # 3. Poll for the flow run to complete, bounded by a deadline
+        deadline = clock() + timeout_seconds
         while True:
             run = await client.read_flow_run(flow_run.id)
             state = run.state
@@ -295,7 +366,19 @@ async def _run_prefect_step_api(
             elif state.is_cancelled():
                 raise PrefectFlowRunCancelled(f"Prefect flow run '{flow_run.id}' was cancelled.")
 
-            await asyncio.sleep(1.0)
+            if clock() >= deadline:
+                cancel_failure = await _cancel_flow_run_best_effort(client, flow_run.id)
+                msg = (
+                    f"timed out after {timeout_seconds:g} s waiting for Prefect flow run "
+                    f"{flow_run_id} (state {getattr(state, 'name', None) or state.type})"
+                )
+                msg += (
+                    f"; cancel attempt FAILED ({cancel_failure}) - the run may still be live"
+                    if cancel_failure else "; the run was cancelled"
+                )
+                raise PrefectFlowRunTimeout(msg, flow_run_id=flow_run_id)
+
+            await sleep(poll_interval)
 
 
 def run_prefect_step(
@@ -365,8 +448,9 @@ def run_prefect_step(
                     _run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
             _fill("prefect", flow_run_id=flow_run_id)
             return result
-        except PrefectFlowRunCancelled:
-            # Must NOT fall through to local execution — that would silently
+        except (PrefectFlowRunCancelled, PrefectFlowRunTimeout):
+            # (A timeout is the same shape: the run may still be live, and a
+            # local re-run would duplicate its work.) Must NOT fall through to local execution — that would silently
             # redo the step's work outside Prefect, defeating the cancel.
             # Re-raise so the caller (and whatever activity_log entry is
             # tracking this) sees a real cancellation, not a quiet success.
