@@ -848,6 +848,20 @@ export const REPO_CHARTS = [
 export const getChart = (slug, kind) =>
   get(`/api/stats/${encodeURIComponent(slug)}/charts/${encodeURIComponent(kind)}`);
 
+/** A database's Understanding chart: schema_distribution | table_sizes |
+ *  column_types | survey_history | table_growth. Each answers a figure plus
+ *  `run`, `state` (measured | partial | not_measured), `reasons` and `scope`
+ *  (UNDERSTANDING-DB-CHARTS-IMPLEMENTED.md). `params` is a plain object
+ *  (e.g. {measure: 'size'}). */
+export const getDbChart = (slug, kind, params = {}) => {
+  const qs = new URLSearchParams(params).toString();
+  return get(`/api/stats/databases/${encodeURIComponent(slug)}/${encodeURIComponent(kind)}${qs ? `?${qs}` : ''}`);
+};
+
+/** The two latest survey runs compared; `{}` with fewer than two runs. */
+export const getDatabaseDiff = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/diff`);
+
 /* ── Surveys and dashboards ──────────────────────────────────────────── */
 
 /**
