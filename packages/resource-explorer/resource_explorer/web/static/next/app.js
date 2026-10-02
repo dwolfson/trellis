@@ -3935,7 +3935,7 @@ function wireRecordActs(host, slug, recs, entityType) {
   });
 }
 
-function renderJournalWrite(slug, entityType) {
+export function renderJournalWrite(slug, entityType) {
   requireKind('renderJournalWrite', entityType);
   const host = $('journal-write');
   if (!host) return;
@@ -3956,8 +3956,8 @@ function renderJournalWrite(slug, entityType) {
         class="w-[12ch] rounded-sm border border-rule-strong bg-transparent px-[4px] text-caveat text-ink placeholder:text-ink-muted"></label>
     </div>
     <div class="mt-s2 flex items-baseline gap-s3">
-      <button id="journal-save" type="button"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-answer text-accent-ink">Write</button>
+      <button id="journal-save" type="button" ${who ? '' : 'disabled title="sign in to write — an entry needs an author"'}
+        class="${who ? 'cursor-pointer' : 'opacity-60'} rounded-sm border border-accent bg-transparent px-2 py-[2px] text-answer text-accent-ink">Write</button>
       <span class="text-provenance text-ink-muted">${who ? `as ${esc(who)}` : 'sign in to write — an entry needs an author'}
         · a suggestion is a work-list entry for them, not a notification</span>
     </div>`;
@@ -4000,7 +4000,7 @@ function renderJournalWrite(slug, entityType) {
   });
 }
 
-async function renderJournalEntries(slug, entityType) {
+export async function renderJournalEntries(slug, entityType) {
   requireKind('renderJournalEntries', entityType);
   const host = $('journal-entries');
   if (!host) return;
@@ -4020,7 +4020,7 @@ async function renderJournalEntries(slug, entityType) {
       data.suggested_to?.length ? ` · suggested to ${esc(data.suggested_to.join(', '))}` : ''}</div>
     ${entries.map((e) => `<div class="border-t border-rule py-s2">
       <p class="m-0 max-w-[70ch] text-answer text-ink">${tnum(esc(e.body))}</p>
-      <div class="text-provenance text-ink-muted">${esc(e.author)} · <span class="tnum">${esc(ago(e.written_at))}</span>${
+      <div class="text-provenance text-ink-muted">${esc(e.author || 'unsigned · from before authors were recorded')} · <span class="tnum">${esc(ago(e.written_at))}</span>${
         e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}</div>
     </div>`).join('')}`;
 }

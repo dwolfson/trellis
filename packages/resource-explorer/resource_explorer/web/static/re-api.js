@@ -382,6 +382,29 @@ export const getJournal = (slug, entityType) =>
 export const writeJournal = (slug, body, suggestTo = [], entityType) =>
   post(`/api/journal/${encodeURIComponent(requireKind('writeJournal', entityType))}/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
 
+/* ── Curate: tags, ratings (resource feedback) and Classic's curator notes ─
+ * CURATE-UI-DATABASES-IMPLEMENTED.md. Every row from tags-detail, feedback
+ * and notes carries `author`, `authored` and `author_label` (never blank).
+ * Writes return 401 when nobody is signed in; deleting a signed note is a
+ * 409 (append-only). All of it is local: nothing here reaches Egeria. */
+const curatePath = (kind, fn, entityType, slug) =>
+  `/api/curate/${kind}/${encodeURIComponent(requireKind(fn, entityType))}/${encodeURIComponent(slug)}`;
+export const getCurateAllTags = () => get('/api/curate/tags');
+export const getCurateTagsDetail = (entityType, slug) =>
+  get(curatePath('tags-detail', 'getCurateTagsDetail', entityType, slug));
+export const addCurateTag = (entityType, slug, tag) =>
+  post(curatePath('tags', 'addCurateTag', entityType, slug), { tag });
+export const removeCurateTag = (entityType, slug, tag) =>
+  del(`${curatePath('tags', 'removeCurateTag', entityType, slug)}/${encodeURIComponent(tag)}`);
+export const getCurateFeedback = (entityType, slug) =>
+  get(curatePath('feedback', 'getCurateFeedback', entityType, slug));
+export const addCurateFeedback = (entityType, slug, { rating = null, category = '', message }) =>
+  post(curatePath('feedback', 'addCurateFeedback', entityType, slug), { rating, category, message });
+export const getCurateNotes = (entityType, slug) =>
+  get(curatePath('notes', 'getCurateNotes', entityType, slug));
+export const deleteCurateNote = (noteId) =>
+  del(`/api/curate/notes/${encodeURIComponent(noteId)}`);
+
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
 
