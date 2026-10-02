@@ -552,7 +552,9 @@ class SurveyDefinitionExecutor:
             return True, ""
 
         from resource_explorer.config import get_config
-        from resource_explorer.surveyors.prefect_adapter import PrefectFlowRunCancelled, run_prefect_step
+        from resource_explorer.surveyors.prefect_adapter import (
+            PrefectFlowRunCancelled, PrefectFlowRunTimeout, run_prefect_step,
+        )
 
         # Steps that exist only as Prefect flows (resource_explorer/prefect/flows.py)
         # and have no STEP_REGISTRY entry, so there is nothing local to run them
@@ -756,6 +758,19 @@ class SurveyDefinitionExecutor:
                     log.info(msg)
                     errors.append(msg)
                     steps_report.append({"step": step.qualified_name, "re_analysis_step": _step_key(step), "status": "cancelled", "engine": "prefect"})
+                except PrefectFlowRunTimeout as exc:
+                    # An honest error, never a pass: no output was produced, so
+                    # no cost row and no findings are written for this step
+                    # (both happen only after run_prefect_step returns), and the
+                    # message carries the flow run id.
+                    msg = f"Prefect step '{step.re_analysis_step}' failed: {exc}"
+                    log.error(msg)
+                    errors.append(msg)
+                    steps_report.append({
+                        "step": step.qualified_name, "re_analysis_step": _step_key(step),
+                        "status": "error", "engine": "prefect",
+                        "flow_run_id": exc.flow_run_id, "detail": str(exc),
+                    })
                 except Exception as exc:
                     msg = f"Prefect step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)

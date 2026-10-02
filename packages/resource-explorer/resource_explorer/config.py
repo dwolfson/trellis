@@ -353,6 +353,15 @@ class KrokiConfig(BaseSettings):
     model_config = _ENV_FILE_CONFIG
 
 
+#: Default ceiling (seconds) on waiting for ONE Prefect-dispatched step's flow
+#: run to reach a terminal state. 1200 s = 20 min. Basis: the slowest measured
+#: Prefect-eligible step, assessment/secret_scan (repo_secret_scan), has median
+#: 330.8 s (n=1) in docs/funnel-cost-measured.md (the PR/CI session's own
+#: measurement quoted 277 s / median 331 s), declared compute_cost "minutes";
+#: 1200 s is ~3.6x that median — generous for a slow repo, yet bounded.
+DEFAULT_PREFECT_STEP_TIMEOUT_SECONDS = 1200.0
+
+
 class PrefectConfig(BaseSettings):
     api_url: str = Field(default="http://localhost:4200/api", alias="PREFECT_API_URL")
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
@@ -389,6 +398,11 @@ class PrefectConfig(BaseSettings):
     # of this setting (see route_local_steps).
     enabled: bool = Field(default=True, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
+    # Deadline for a dispatched step's flow run (seconds); see
+    # DEFAULT_PREFECT_STEP_TIMEOUT_SECONDS for the basis of the default.
+    step_timeout_seconds: float = Field(
+        default=DEFAULT_PREFECT_STEP_TIMEOUT_SECONDS, gt=0,
+        alias="PREFECT_STEP_TIMEOUT_SECONDS")
     # Route steps that explicitly declare executes_at="resource-explorer" through
     # Prefect as well. Off by default, and deliberately its own setting rather
     # than a second meaning for `enabled`.
