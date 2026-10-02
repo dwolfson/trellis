@@ -133,6 +133,34 @@ script, the Portal's apps and Trellis. Steps add the executor harness
 means a routine written against a script today runs unchanged in a Portal
 tile tomorrow, and the proof is that one routine is tested from all three.
 
+**A12. Derived values are steps whose inputs are annotations, and their
+envelope is inherited.** The owner's grey area (2026-10-02): scorecards and
+other values derived from several steps or several surveys, and the ad hoc
+questions people ask in chat. A scorecard is a **step** with no resource
+fetch: its inputs are prior annotations, it is catalogued, repeatable and
+stored, and it emits an annotation like any other. RE already has this
+tier (the Discovery-tier zero-fetch analyses, `preliminary_fit`, the
+licence classification), so the rule is a generalisation, not a new kind.
+Three properties make a derived step honest:
+
+- **Provenance**: the annotation names every input annotation and its run,
+  so "scored 7 of 10" can be opened to the measurements behind it.
+- **Envelope propagation**: a derived value computed from an input that is
+  *not established* is itself not established, with the input named; it
+  never averages a silence into a number. Partial inputs make a partial
+  output, marked.
+- **Perishability**: the derived annotation records the inputs' run times,
+  so a newer input run marks it "inputs changed since computed", the same
+  mechanism as E1's evidence snapshot on judgements.
+
+A **chat answer is a routine**: computed on demand over annotations, with
+an LLM in the loop, returning an answer with the provenance of what it
+read, and stored nowhere. The bridge between the two is a person's act:
+**"save as a question"** promotes an ad hoc answer to a declared routine,
+and, if it should recur and be kept, to a derived step with a schedule.
+What is stored and published is always a step's output; what is shown on
+demand is a routine's; nothing crosses without a person saving it.
+
 **A9. EA's report specs, user analytics routines and Portal dashboard tiles
 are the same eight points with a different input.** A report spec declares
 what to fetch; a routine is an executor over catalogue metadata rather than
@@ -191,6 +219,11 @@ Each needs an owner and a yes/no before architecture. Blank where unknown.
   it finds the ODS and Egeria from each host (env, config, the Portal's own
   settings), and how a routine proves it runs from a script, the Portal and
   RE.
+- **R17 Derivation.** How a derived step declares its input annotation
+  types and the envelope rule it applies; how the chat's "save as a
+  question" is declared and where the saved routine lives; what a
+  scorecard publishes (the score, its inputs, or both) and under which
+  annotation type.
 - **R14 Testing.** What a step author must supply: a fixture resource, an
   expected annotation set, and the absence case (the step on a resource
   where the thing isn't there), so the envelope is exercised before the
