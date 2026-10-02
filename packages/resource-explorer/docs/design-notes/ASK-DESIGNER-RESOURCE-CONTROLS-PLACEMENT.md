@@ -43,6 +43,11 @@ Facts checked in the code (`next/app.js` on main `09eeb010`):
   kind, and says what it does **not** touch (the source database, files on
   disk, Egeria publications). The two should not disagree about what
   "remove" does.
+- The sidebar's **Find** action is a bare **⊕ circle-plus icon** at the right end of the Repos / DBs / FS
+  button row, next to the **?** icon, with no text label; only the tooltip says what it does, and the
+  tooltip changes by kind ("Find and import candidate repos", "Find databases", "Register a filesystem
+  path"). The owner (2026-10-02) could not find the database Find dialog or its Saved sources tab and had
+  to be told where it was. It is the same kind of miss as the remove control.
 - The Select toggle is a small text control at the top of the list. Nothing
   in the list suggests rows can be selected until it is on.
 - `hide` means two things on screen: a view preference in both places, and
@@ -69,6 +74,11 @@ Facts checked in the code (`next/app.js` on main `09eeb010`):
    disposition)? Disposition is a judgement about the resource; hide is a
    view preference; remove is an unregister. Are three different weights of
    action sharing one line right?
+
+6. **Should Find carry a word, not only an icon?** The Find dialog (databases: Saved sources, Discover on
+   a server, From a file) is where servers and sources live, and it is behind an unlabeled ⊕. Does it want
+   a text label ("Find"), a place nearer the list's heading, or is the icon right once people know it?
+   The same icon opens a different dialog per kind, so should the kind show on the control?
 
 ## Out of scope
 
