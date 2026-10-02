@@ -133,6 +133,82 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Assessment Survey — Repo Secret Scan
+
+### Qualified Name
+GovActionProcessStep::RepoAssessmentSurvey::repo_secret_scan
+
+### Description
+Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (222 rules, MIT, provenance recorded). Reports what it matched AND which ruleset version it matched with — never 'no secrets', only 'no matches against this ruleset in HEAD'.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | prefect |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_secret_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Assessment Survey — Repo Telemetry Scan
+
+### Qualified Name
+GovActionProcessStep::RepoAssessmentSurvey::repo_telemetry_scan
+
+### Description
+Telemetry / phone-home indicators: known SDK imports and literal outbound endpoints, paired with whether the project discloses them. Never labels an ordinary API client as telemetry.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_telemetry_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Assessment Survey — Repo Contribution Provenance
+
+### Qualified Name
+GovActionProcessStep::RepoAssessmentSurvey::repo_contribution_provenance
+
+### Description
+CLA/DCO provenance, kept as two separate questions: whether sign-off is STATED, and whether it is ENFORCED. Config presence alone is reported `partial`, never `pass`.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_contribution_provenance |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Assessment Survey — Repo Sla Content
+
+### Qualified Name
+GovActionProcessStep::RepoAssessmentSurvey::repo_sla_content
+
+### Description
+Whether the project publishes support or service-level commitments. Deliberately NEUTRAL (present/absent, not pass/gap): most repositories legitimately publish none, and absence alone never raises an action.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_sla_content |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Assessment Survey — Repo Foss Scorecard
 
 ### Qualified Name
@@ -196,7 +272,7 @@ Assessment Survey
 GovActionProcess::RepoAssessmentSurvey
 
 ### Description
-Everything Assessment evaluates: documentation coverage, security-policy hygiene, GitHub's native security-feature toggles and CI quality. Prefixed by the two prerequisite refresh steps — every step here reads project_stats and documentation also reads project_file_inventory, and neither table is written by an assessment-tier step, so without them the run scores whatever an earlier, unrelated survey left behind. Cheap apart from those prerequisites: the four evaluative steps are all zero-fetch/low-compute, so the survey's cost is almost entirely repo_git_statistics (api_heavy) and repo_file_inventory (download). Run with max_fetch_cost='none' to score against stored data instead.
+Everything Assessment evaluates: documentation coverage, security-policy hygiene, GitHub's native security-feature toggles, CI quality, dependency advisories, and the four compliance and disclosure analyses — committed secrets, telemetry/phone-home, CLA/DCO contribution provenance and published SLA/support content (added 2026-10-02 on the project owner's decision, so a repo that is assessed gets them rather than only a repo someone separately ran the Compliance Survey on). Prefixed by the two prerequisite refresh steps — every step here reads project_stats and documentation also reads project_file_inventory, and the four compliance steps each declare has_file_inventory and read the SAME zipball repo_file_inventory already downloads (one download per run, shared), so they add no new fetch, no clone and no new credential — without the prefix the run scores whatever an earlier, unrelated survey left behind. The four sit after repo_cve_scan and before the two reducers (repo_foss_scorecard, repo_security_summary), which stay at the end. No longer cheap: repo_secret_scan is compute_cost='high' (222 regex rules over every tracked file; 277.3s measured on egeria_git, 330.8s median in docs/funnel-cost-measured.md) and Prefect-routed, repo_telemetry_scan is medium (24.1s median, n=3), repo_sla_content measured 20.2s (n=3) and repo_contribution_provenance is declared low and unmeasured. Run with max_compute_cost='medium' to leave out the secret scan, or max_fetch_cost='none' to score against stored data instead.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -290,6 +366,54 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_secret_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_secret_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_telemetry_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_telemetry_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_contribution_provenance
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_contribution_provenance
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_sla_content
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_sla_content
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoAssessmentSurvey::repo_foss_scorecard
@@ -392,6 +516,33 @@ Assessment Survey
 
 ### Scope Reference
 Are there outstanding CVEs?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+How does the repository handle secrets, credentials, and sensitive configurations?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+Is intellectual property (IP) provenance managed via CLA or DCO?
 
 ___
 
