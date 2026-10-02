@@ -21,6 +21,17 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 **Not checked:** how many saved sources exist in the live registry, whether any non-repo kind already has a discovery path elsewhere, and whether an import/export endpoint pair exists (none found in the files read above).
 **Status:** design question first (generalized discovery across resource kinds), then slice. Not scheduled.
 
+## Two more per-resource screen-state slots are not reset when the resource or stage changes (found 2026-10-01 while fixing the stale evidence rail)
+
+Same bug shape as the stale rail (`STALE-RAIL-CLEAR-IMPLEMENTED.md`): state keyed to the wrong thing, so it survives a change it should not. Read from the code in `next/app.js`, not reproduced in a browser:
+
+* `state.runsInFlight`, `pendingProposals` and `autoRanNotes` (`app.js` ~231-253) are keyed by **question text**, not by resource. Only `state.answers.clear()` resets anything on a resource change. A run in flight for resource A's "Q1" would show B's identical "Q1" row as running. Not a one-line fix: the keys need the resource slug (and stage) in them, and a test that goes through the real router.
+* `loadAnswer` (~7764-7785) guards a late answer by slug only, then `replaceRow` writes to `qrow-<i>` by **row index**. After a same-resource stage change, a response that belongs to one stage's Questions pane can land in the new pane's row `i`.
+
+Not affected (checked): `state.analysisRunFailures`, `state.overview`, the doc-sources poll, the RFA drawer scope, the chat transcript, `state.promoted`, `state.enrichment`/`contextAnswers`/`_humanQuestions`, and `investigation.js` `_detailSlug`.
+
+Status: logged, not scheduled. The behaviour test should use the harness the stale-rail fix added (`rail-clears-on-change.test.mjs`) as its pattern.
+
 ## A per-card database analysis run clobbers every OTHER table's row_count/size_bytes
 
 > **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e22f9602`, `32409a83`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
