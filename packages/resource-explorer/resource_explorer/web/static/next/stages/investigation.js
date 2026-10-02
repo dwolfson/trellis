@@ -43,6 +43,9 @@ import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 // whether the list includes closed ones. Not on `state`: nothing outside
 // this pane reads it, same reasoning as automate.js's `_tab`.
 let _detailSlug = null;
+// Bumped by every renderDetail(); a response that arrives after a newer
+// render, a different investigation, or leaving the stage is dropped.
+let _detailSeq = 0;
 let _includeClosed = false;
 
 // Vocabularies are server-served (registry.py's PROJECT_CLASSIFICATIONS /
@@ -71,6 +74,19 @@ async function vocab() {
 export async function renderInvestigation() {
   if (_detailSlug) return renderDetail(_detailSlug);
   return renderList();
+}
+
+/** THE refresh mechanism for the open investigation page. Every writer that
+ *  changes an investigation's members from outside this pane (the Find
+ *  databases dialog's confirm, the sidebar's "＋ scope" / "− scope") calls
+ *  this once after its writes. It re-fetches and re-renders only when that
+ *  investigation's detail is the pane the person is looking at; otherwise it
+ *  does nothing, and the next open fetches fresh (this file caches nothing). */
+export function refreshOpenInvestigation(slug) {
+  if (state.stage === 'investigation' && _detailSlug && _detailSlug === slug) {
+    return renderDetail(slug);
+  }
+  return Promise.resolve();
 }
 
 /** Called from app.js's resource header ("Open Investigation →", the /next
@@ -272,6 +288,8 @@ function detailHeaderHtml(inv) {
 
 async function renderDetail(slug) {
   const el = $('content');
+  const seq = ++_detailSeq;
+  const stale = () => seq !== _detailSeq || _detailSlug !== slug || state.stage !== 'investigation';
   el.innerHTML = `<p class="text-answer text-ink-muted">Loading…</p>`;
 
   let inv, members, dispositions, nextSteps;
@@ -283,6 +301,7 @@ async function renderDetail(slug) {
       getInvestigationNextSteps(slug),
     ]);
   } catch (err) {
+    if (stale()) return;
     el.innerHTML = `<button data-act="inv-back" type="button"
         class="mb-s3 cursor-pointer bg-transparent text-caveat text-accent-ink underline">← Investigations</button>
       <p class="max-w-[70ch] text-answer text-state-warn">Could not load '${esc(slug)}': ${esc(err.message)}</p>`;
@@ -290,7 +309,9 @@ async function renderDetail(slug) {
     return;
   }
 
+  if (stale()) return;
   const { classifications } = await vocab();
+  if (stale()) return;
   const classLabel = classifications.classifications.find((c) => c.name === inv.project_classification)?.label
     || inv.project_classification;
 
