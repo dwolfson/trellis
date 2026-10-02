@@ -50,7 +50,7 @@ Understanding slice should rebuild them on `database_tables` /
 figure, plus the run it came from, plus a state. That's backend work, not
 only UI.
 
-## 1. Curate on a database or a file share
+## 1. Curate on a database or a file system
 
 **Curate is "make it findable and reusable", so it is the same three bands on
 every kind:**
@@ -69,7 +69,7 @@ every kind:**
      present with one sentence naming what it waits for: "No proposals yet:
      needs data classes per column (`data_class_match`) and a glossary to
      match against." No empty table.
-   - **File share:** one sentence: "Nothing to review for file shares yet.
+   - **File system:** one sentence: "Nothing to review for file systems yet.
      Group, tags, ratings and notes above and below apply." Being honest
      doesn't need a placeholder section here.
 3. **What people say**: **ratings** and **notes** (below).
@@ -185,7 +185,7 @@ every time and learns nothing from.
 
 So a database sees the six database charts above. Any it can't draw yet
 are **present and explained** in its own list ("Activity per table · not
-wired up yet"), because those are gaps in *its* catalog. A file share
+wired up yet"), because those are gaps in *its* catalog. A file system
 gets one sentence until its charts are designed: "No charts for file
 shares yet. Their survey isn't charted anywhere today." Which file-share
 charts to build is a separate ask.

@@ -39,10 +39,10 @@ the sidebar's `Repos · DBs · FS` switcher is what scopes it. Each kind's
 Find dialog gets the same three tabs:
 
 1. **Saved sources**: the places to look again. For repos, GitHub searches
-   and lists. For databases, the **registered servers**. For file shares,
+   and lists. For databases, the **registered servers**. For file systems,
    mount roots, once a lister exists. Each row has **Run**.
 2. **New search** (repos) / **Discover on a server** (databases) / **List a
-   mount root** (file shares): the same thing, run once, with "save as a
+   mount root** (file systems): the same thing, run once, with "save as a
    source".
 3. **From a file**: a CSV (§3).
 
@@ -107,7 +107,7 @@ doesn't exist until registration. Key on `resource_key("database",
 "host:port/name")` so "ignored" is remembered across discover runs, as it
 is for repos.
 
-**File share** (from a mount-root listing, when one exists): path,
+**File system** (from a mount-root listing, when one exists): path,
 reachable from the RE host (exists and readable), last modified of the
 root, already registered. File counts and sizes: "counted after
 registration". Walking a share to count it *is* the survey, and a

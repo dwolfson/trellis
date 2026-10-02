@@ -25,7 +25,7 @@ CSV should be able to seed an investigation without searching.*
 - The `discovery_sources` table has `slug, display_name, source_type,
   config_json, created_at` and no link to `projects`; deleting a source
   removes only the saved config.
-- Nothing in it can describe where databases or file shares come from. For
+- Nothing in it can describe where databases or file systems come from. For
   databases, the nearest thing is server discovery: `connection.py`'s
   `server_connection()` lists the databases on a registered Postgres server,
   which is a "list" source in all but name, and registration is the import.
@@ -48,7 +48,7 @@ CSV should be able to seed an investigation without searching.*
 2. **What a candidate row carries, per kind.** A repository candidate shows
    name, owner, stars, language, last push. What does a database candidate
    show before it is registered (server, name, size, owner role, last
-   activity, reachable or not), and a file share? The honesty rules hold: a
+   activity, reachable or not), and a file system? The honesty rules hold: a
    fact the source didn't return is "not reported by this source", never
    blank. Which facts does a person need to decide "import this one"?
 3. **CSV in.** A CSV of resources (and optionally of sources) imported to
