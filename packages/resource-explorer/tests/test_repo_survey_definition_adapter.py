@@ -457,10 +457,13 @@ def test_assessment_and_analysis_surveys_are_self_sufficient():
         assert steps[1] == "repo_file_inventory", f"{group} must refresh the inventory second"
 
 
-def test_analysis_survey_carries_the_expensive_steps_and_assessment_does_not():
-    """Assessment is cheap apart from its prerequisites; Analysis is deliberately
-    the expensive tier. If that inverts, the cost tiers are telling us the
-    membership is wrong."""
+def test_analysis_survey_carries_the_expensive_steps_and_assessment_only_the_owner_decided_ones():
+    """Analysis is deliberately the expensive tier. Assessment was all-low until
+    2026-10-02, when the project owner decided it should also include the four
+    compliance steps (secret_scan is compute_cost=high, telemetry_scan medium).
+    Those two are the ONLY exceptions: any other step above `low` entering
+    Assessment is a different decision and fails here. See
+    tests/test_assessment_includes_compliance.py for the membership itself."""
     import csv
     from pathlib import Path
 
@@ -475,7 +478,9 @@ def test_analysis_survey_carries_the_expensive_steps_and_assessment_does_not():
             steps = steps[2:]
         return {s: STEP_REGISTRY[s].compute_cost for s in steps}
 
-    assert set(costs("RepoAssessmentSurvey").values()) == {"low"}
+    assessment = costs("RepoAssessmentSurvey")
+    assert {k for k, v in assessment.items() if v != "low"} == {
+        "repo_secret_scan", "repo_telemetry_scan"}
     assert "high" in costs("RepoAnalysisSurvey").values()
 
 

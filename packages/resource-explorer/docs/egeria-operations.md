@@ -92,7 +92,7 @@ Four checks, and all four must pass:
 
 ```
 questions              49/49 resolve
-RepoAssessmentSurvey   10 steps · reducer present · runs after all 8 inputs
+RepoAssessmentSurvey   14 steps · reducer present · runs after all 8 inputs
 RepoFullSurvey         35 steps · reducer present · runs after all 8 inputs
 reconciler --dry-run   0 duplicate / 0 stale across all EIGHT definitions
 ```
