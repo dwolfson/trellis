@@ -62,6 +62,12 @@ async def _lifespan(app: FastAPI):
 
     await alog_prefect_reachability_at_startup()
 
+    # Re-project stored credentials if a redeploy deleted the secrets file.
+    # Non-fatal by construction (heal_missing never raises) and no network.
+    from resource_explorer.omsecrets_reproject import heal_missing
+
+    heal_missing()
+
     worker_stop = None
     if _embed_worker_enabled():
         from resource_explorer.worker import start_embedded_worker

@@ -1686,6 +1686,54 @@ def database_update_credentials(
     console.print(f"  User: {user}")
 
 
+@database_app.command(name="reproject-secrets")
+def database_reproject_secrets(
+    slug: str = typer.Argument(None, help="Database slug to project (omit with --all)"),
+    all_databases: bool = typer.Option(False, "--all", help="Project every registered database"),
+):
+    """Re-project stored credentials into the Egeria secrets file.
+
+    Uses the credentials RE already holds (decrypted the way the survey runner
+    decrypts them); nothing is typed or printed. One collection per database.
+    A database with no stored credential is skipped and said. Idempotent.
+    Use after a redeploy recreated the secrets directory.
+
+    Example:
+        resource-explorer database reproject-secrets --all
+    """
+    from resource_explorer import omsecrets_reproject, omsecrets_store
+    from resource_explorer.registry import ProjectRegistry
+
+    if bool(slug) == bool(all_databases):
+        console.print("[red]Give exactly one of <slug> or --all.[/red]")
+        raise typer.Exit(2)
+    path = omsecrets_store.local_path()
+    if not path:
+        console.print("[red]EGERIA_SECRETS_STORE_LOCAL_PATH is not set; there is no secrets file to project to.[/red]")
+        raise typer.Exit(1)
+    registry = ProjectRegistry()
+    if slug and not registry.database_exists(slug):
+        console.print(f"[red]Database '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    outcomes = omsecrets_reproject.reproject(
+        registry, [registry._normalize_slug(slug)] if slug else None, path=path)
+    failed = False
+    for o in outcomes:
+        if o.status == omsecrets_reproject.WRITTEN:
+            console.print(f"[green]written[/green]   {o.collection}")
+        elif o.status == omsecrets_reproject.UNCHANGED:
+            console.print(f"unchanged  {o.collection}")
+        elif o.status == omsecrets_reproject.SKIPPED:
+            console.print(f"[yellow]skipped[/yellow]   {o.slug}: {o.message}")
+        else:
+            failed = True
+            console.print(f"[red]error[/red]     {o.slug}: {o.message}")
+    if not outcomes:
+        console.print("No registered databases.")
+    if failed:
+        raise typer.Exit(1)
+
+
 @database_app.command(name="check-credential-drift")
 def database_check_credential_drift(
     slug: str = typer.Argument(help="Database slug to check"),

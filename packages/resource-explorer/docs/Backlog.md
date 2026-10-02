@@ -9121,6 +9121,8 @@ A same-slice fix already adds a Run precondition that checks for the projected c
 submitting and refuses with a clear message if it's missing — this backlog item is only the two
 follow-ups beyond that (auto-heal, and the docs line), not the immediate symptom.
 
+**Done 2026-10-02:** follow-up 1 (`database reproject-secrets`, plus automatic projection at startup and on each resync pass) — `docs/design-notes/implemented/REPROJECT-SECRETS-IMPLEMENTED.md`. Follow-up 2 (the setup-docs line) is not done.
+
 ## `database update-credentials` takes the password as a bare CLI argument (2026-09-30, native survey slice)
 
 Found while working out how Dan should safely run it tomorrow: `--password` is a required Typer

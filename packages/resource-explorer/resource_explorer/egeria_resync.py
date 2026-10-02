@@ -1476,6 +1476,10 @@ def scan_and_clear(registry: "ProjectRegistry | None" = None) -> dict:
 
 def _loop(interval: int, stop: threading.Event) -> None:
     while not stop.is_set():
+        # Before the scan and outside every lock: heal a missing secrets file.
+        from resource_explorer.omsecrets_reproject import heal_missing
+
+        heal_missing()
         try:
             result = scan_and_clear()
             with _status_lock:
