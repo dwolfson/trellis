@@ -27,7 +27,7 @@
  */
 import { ago } from '/static/next/format.js';
 import { getContext, getBulkFacts, saveQuestionAnswer, questionKey } from '/static/re-api.js';
-import { state, esc, $, apiEntityType } from '/static/next/app.js';
+import { state, esc, $, apiEntityType, railKeyOf } from '/static/next/app.js';
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import {
   JUDGEMENTS, OBSERVATIONS, fieldRowHtml, wireEnrichmentFieldControls,
@@ -242,10 +242,19 @@ let _railFactsSlug = null;
 export async function renderContext(slug) {
   const host = $('context-form');
   if (!host) return;
+  // The rail is keyed to (resource, stage, sub-tab) -- see syncRailToSelection().
+  // Every await below can land after the person moved on, so remember the key
+  // this render belongs to and write nothing under a different one.
+  const railKey = railKeyOf();
+  const railEmpty = !$('rail-evidence')?.firstElementChild;
   if (_railFactsSlug !== slug) {
     state.enrichmentFacts = {};
-    renderEnrichmentEvidenceLoading(slug);
     _railFactsSlug = slug;
+    renderEnrichmentEvidenceLoading(slug);
+  } else if (railEmpty) {
+    // Same resource, but the rail was emptied because the pane was left and
+    // re-entered: say it is loading rather than leave the slot blank.
+    renderEnrichmentEvidenceLoading(slug);
   }
   host.innerHTML = `<div class="text-caveat text-ink-muted">Reading what's been supplied…</div>`;
 
@@ -286,7 +295,7 @@ export async function renderContext(slug) {
 
   _humanQuestions = (state.questions || []).filter((q) => q.kind === 'human');
 
-  if (slug !== state.selectedSlug) return;
+  if (slug !== state.selectedSlug || railKeyOf() !== railKey) return;
 
   const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
   host.innerHTML = `

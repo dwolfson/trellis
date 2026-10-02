@@ -13,7 +13,7 @@
  */
 import { ago, whenMs } from '/static/next/format.js';
 import { getBulkFacts, listAnalyses, saveEnrichmentField, getDocSources, addDocSource, recheckDocSource, removeDocSource } from '/static/re-api.js';
-import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, apiEntityType } from '/static/next/app.js';
+import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, railTag, apiEntityType } from '/static/next/app.js';
 // The row anatomy (who + when + "⚠ review — evidence moved: X") shared with
 // the Questions tab's human-question answer rows — see row-anatomy.js's own
 // header comment (ENRICHMENT-E0-ROW-ANATOMY). This is the row anatomy's
@@ -316,6 +316,7 @@ function kindNoun() { return KIND_NOUN[apiEntityType(state.resourceType)] || 'th
 export function renderEnrichmentEvidenceLoading(slug) {
   const out = $('rail-evidence');
   if (!out) return;
+  railTag(out, slug);
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Evidence · enrichment</span>
@@ -742,6 +743,7 @@ export function renderEnrichmentEvidence(slug) {
   // not the preference, says whether it is showing.
   ensureRailShowing();
   railClaim();
+  railTag(out, slug);
   const judged = Object.values(state.enrichment || {}).filter((f) => f.kind === 'judgement' && f.set_at);
   const items = ENRICHMENT_EVIDENCE.map((id) => state.enrichmentFacts?.[id]).filter(Boolean);
   const applicable = state.enrichmentApplicable;
