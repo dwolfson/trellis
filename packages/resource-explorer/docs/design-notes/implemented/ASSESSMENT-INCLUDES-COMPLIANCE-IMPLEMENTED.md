@@ -50,7 +50,7 @@ Dependencies, read from the step registry (`StepInfo`):
   pinned "Assessment is all `low`" and would fail by design. Renamed and changed to pin that the only non-low
   Assessment steps (after the two prerequisites) are exactly `repo_secret_scan` (high) and `repo_telemetry_scan`
   (medium).
-- `tests/test_assessment_includes_compliance.py` (new, 20 tests; see below).
+- `tests/test_assessment_includes_compliance.py` (new, 14 tests; see below).
 - `docs/egeria-operations.md` line 95: the verification block said `RepoAssessmentSurvey 10 steps`; now 14.
 - Not changed, deliberately: `test_every_intent_can_run_its_analyses.py` (it checks that each intent has a pane
   control, independent of survey membership), `test_step_execution_order.py` (the four are not security-summary
