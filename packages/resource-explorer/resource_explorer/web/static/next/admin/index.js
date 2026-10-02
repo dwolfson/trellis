@@ -9,7 +9,7 @@
  * SCOPE. Classic's Admin (index.html, `_ADMIN_GROUPS`) groups eleven panes
  * into three groups by "what a person came to do" (commit 4fb48071/26320f89):
  *
- *   Configure  Annotation Types, Groups, Discovery Sources, Question Catalog
+ *   Configure  Annotation Types, Groups, Repository discovery sources, Question Catalog
  *   Reconcile  Egeria Alignment, Egeria Links, Publish Queue, Repair
  *   Observe    Prefect, Feedback, Logs
  *
@@ -65,7 +65,7 @@ const GROUPS = [
   { name: 'Configure', tabs: [
     { id: 'annotations', label: '📝 Annotation Types', render: renderAnnotationTypes },
     { id: 'admin-groups', label: '🗂 Groups', render: renderGroups },
-    { id: 'admin-discovery-sources', label: '🔍 Discovery Sources', render: renderDiscoverySources },
+    { id: 'admin-discovery-sources', label: '🔍 Repository discovery sources', render: renderDiscoverySources },
     { id: 'admin-question-catalog', label: '❓ Question Catalog', render: renderQuestionCatalog },
   ]},
   { name: 'Reconcile', tabs: [

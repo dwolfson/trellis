@@ -114,6 +114,12 @@ class DatabaseServer:
     registered_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     error_message: str = ""
     group_slug: str = ""  # slug of the umbrella project group this server belongs to
+    # A saved source remembers its last run (owner ruling 2026-10-01, FIND-
+    # DATABASES-DIALOG-IMPLEMENTED.md): when it ran, and the resource_keys
+    # ('host:port/name') it returned, so the next Run can say "n new since".
+    # None = never run, which is NOT the same as "ran and found nothing" ([]).
+    last_run_at: str | None = None
+    last_run_candidates: list[str] | None = None
 
 
 @dataclass
@@ -1380,6 +1386,20 @@ class ProjectRegistry:
         if "author" not in self._get_table_columns(conn, table_name):
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN author TEXT DEFAULT NULL")
 
+    def _add_server_last_run_columns(self, conn) -> None:
+        """Idempotent, additive, nullable `last_run_at` / `last_run_candidates`
+        on `db_servers` (a saved database source remembers its last run).
+
+        Same pattern and same SQL on SQLite and Postgres as `_add_author_column`:
+        `ADD COLUMN ... DEFAULT NULL` is metadata-only on Postgres, NULL (never
+        '') keeps "never run" distinct from "ran, found nothing" (a stored
+        '[]'), and the column list is read first so a re-run is a no-op.
+        """
+        existing = self._get_table_columns(conn, "db_servers")
+        for col in ("last_run_at", "last_run_candidates"):
+            if col not in existing:
+                conn.execute(f"ALTER TABLE db_servers ADD COLUMN {col} TEXT DEFAULT NULL")
+
     def _get_table_columns(self, conn, table_name: str) -> set[str]:
         """Columns currently on table_name, read through the SAME open
         transaction as the caller's CREATE TABLE — not a fresh connection via
@@ -2598,6 +2618,7 @@ class ProjectRegistry:
             existing_srv = self._get_table_columns(conn, "db_servers")
             if "group_slug" not in existing_srv:
                 conn.execute("ALTER TABLE db_servers ADD COLUMN group_slug TEXT DEFAULT ''")
+            self._add_server_last_run_columns(conn)
             # Database survey results table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS database_surveys (
@@ -10718,6 +10739,9 @@ class ProjectRegistry:
         data = asdict(server)
         data["slug"] = self._normalize_slug(data["slug"])
         data["status"] = data["status"] if isinstance(data["status"], str) else data["status"]
+        # A new registration has never run; the INSERT leaves both columns NULL.
+        data.pop("last_run_at", None)
+        data.pop("last_run_candidates", None)
         with self._conn() as conn:
             conn.execute("""INSERT INTO db_servers (
                 slug, display_name, db_type, host, port, description,
@@ -10744,6 +10768,18 @@ class ProjectRegistry:
             rows = conn.execute("SELECT * FROM db_servers ORDER BY display_name").fetchall()
         return [self._row_to_server(r) for r in rows]
 
+    def record_server_run(self, slug: str, run_at: str, candidate_keys: list[str]) -> None:
+        """Remember this run's candidate set (resource_keys) and when it ran,
+        replacing the previous run's. Called by the Run route AFTER it has
+        compared against the previous set, so "n new since" always means "since
+        the run before this one"."""
+        import json
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE db_servers SET last_run_at = ?, last_run_candidates = ? WHERE slug = ?",
+                (run_at, json.dumps(sorted(set(candidate_keys))), self._normalize_slug(slug)),
+            )
+
     def remove_server(self, slug: str) -> None:
         """Remove a database server and all its linked databases."""
         normalized = self._normalize_slug(slug)
@@ -10761,6 +10797,16 @@ class ProjectRegistry:
         import dataclasses
         d = dict(row)
         d["status"] = ProjectStatus(d.get("status", "active"))
+        raw = d.get("last_run_candidates")
+        if raw is None or raw == "":
+            d["last_run_candidates"] = None
+        else:
+            import json
+            try:
+                d["last_run_candidates"] = [str(k) for k in json.loads(raw)]
+            except (TypeError, ValueError):
+                d["last_run_candidates"] = None
+        d["last_run_at"] = d.get("last_run_at") or None
         known = {f.name for f in dataclasses.fields(DatabaseServer)}
         return DatabaseServer(**{k: v for k, v in d.items() if k in known})
 
