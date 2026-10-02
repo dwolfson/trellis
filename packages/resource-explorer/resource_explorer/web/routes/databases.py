@@ -1051,7 +1051,7 @@ async def get_database_diff(slug: str) -> dict:
     `table_diff_state`, rather than claiming nothing changed.
     """
     from resource_explorer.registry import (
-        ProjectRegistry, STATE_MEASURED, STATE_EMPTY, STATES_WITHOUT_A_MEASUREMENT,
+        ProjectRegistry, STATE_MEASURED, STATE_EMPTY,
     )
     registry = ProjectRegistry()
     surveys = registry.get_database_surveys(slug)
@@ -1067,36 +1067,20 @@ async def get_database_diff(slug: str) -> dict:
         Returns (names, state, note). `state` is STATE_MEASURED only when
         this run actually has structured rows; anything else means the set is
         not a usable basis for a diff, and the caller must not present it as
-        one.
+        one. The state logic is shared with the database chart routes
+        (`db_chart_data.section_state`) so the two cannot disagree.
         """
-        surveyed_at = survey.get("surveyed_at") or ""
-        source = survey.get("source") or None
+        from resource_explorer.db_chart_data import section_state
         rows = registry.query_detail_rows(
-            "database_tables", slug, surveyed_at, source
+            "database_tables", slug,
+            survey.get("surveyed_at") or "", survey.get("source") or None,
         )
-        coverage = registry.get_section_coverage(
-            "database", slug, surveyed_at, source
-        ).get("tables")
-
         names = {
             f"{r.get('schema_name') or ''}.{r.get('table_name') or ''}"
             for r in rows
         }
-        if rows:
-            return names, STATE_MEASURED, ""
-        if coverage is None:
-            # No rows and no coverage record: this run predates the
-            # structured tables and has not been back-filled. Distinct from
-            # "surveyed and found nothing", and actionable.
-            return names, "not_materialized", (
-                "This run has no structured rows yet — run "
-                "scripts/backfill_structured_tables.py to convert its stored "
-                "survey_data."
-            )
-        state = coverage.get("state") or STATE_EMPTY
-        if state in STATES_WITHOUT_A_MEASUREMENT:
-            return names, state, coverage.get("detail") or ""
-        return names, STATE_EMPTY, coverage.get("detail") or ""
+        state, note = section_state(registry, slug, survey, "tables", len(rows))
+        return names, state, note
 
     curr_tables, curr_state, curr_note = _tables_for(curr)
     prev_tables, prev_state, prev_note = _tables_for(prev)
