@@ -219,3 +219,52 @@ class TestThePerTypeOverridesAreAnchoredToTheCsv:
         )
         with pytest.raises(ValueError, match="names something that exists"):
             mod._apply_type_override(entry, "database", set())
+
+
+class TestMixedRowsHaveARealHasData:
+    """Regression: the owner row became `mixed` with no analysis id, so
+    `question_has_data` returned None ("nothing to check") and
+    `TestBuildQuestionChecklistIsGeneralized` failed on `None in (True, False)`.
+    The row has a measured half (the `database_owner` fact), so has_data must be
+    a real True/False that follows it."""
+
+    def _registry(self, tmp_path):
+        from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+
+        r = ProjectRegistry(db_path=str(tmp_path / "m.db"))
+        r.register_database(DatabaseEntity(
+            slug="d", display_name="D", db_type="postgresql", host="h",
+            port=1, database_name="d"))
+        return r
+
+    def _owner_entry(self, registry):
+        from resource_explorer.workflows.scouting import build_question_checklist
+
+        got = build_question_checklist(registry, "database", "d", phase="scouting")
+        return next((q for q in got["questions"] if q["question"] == OWNER_Q), None)
+
+    def test_false_when_no_owner_was_measured(self, tmp_path):
+        entry = self._owner_entry(self._registry(tmp_path))
+        if entry is None:
+            pytest.skip("owner question not in the scouting phase")
+        assert entry["kind"] == "mixed"
+        assert entry["has_data"] is False
+
+    def test_true_when_the_owner_role_was_measured(self, tmp_path, monkeypatch):
+        registry = self._registry(tmp_path)
+        monkeypatch.setattr(
+            registry, "find_latest_database_survey_with_key",
+            lambda slug, key: {"survey_data": '{"database_owner": {"owner": "postgres"}}'},
+            raising=False)
+        entry = self._owner_entry(registry)
+        if entry is None:
+            pytest.skip("owner question not in the scouting phase")
+        assert entry["has_data"] is True
+
+    def test_every_mixed_or_partial_database_row_is_true_or_false(self, tmp_path):
+        from resource_explorer.workflows.scouting import build_question_checklist
+
+        got = build_question_checklist(self._registry(tmp_path), "database", "d", phase="scouting")
+        for q in got["questions"]:
+            if q["kind"] in ("analysis", "partial", "mixed"):
+                assert q["has_data"] in (True, False), q["question"]

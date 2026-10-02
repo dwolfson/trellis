@@ -168,6 +168,30 @@ def question_has_data(registry, slug: str, analysis_ids: list[str], entity_type:
     return False
 
 
+#: The measured half of a `mixed`/`partial` row that names no analysis id,
+#: keyed by (resource type, question text). The database owner question is
+#: `mixed` (RULING-DB-QUESTION-CATALOG-CONSISTENCY.md): the administering role
+#: is the `database_owner` fact (`pg_database.datdba`), which has a results
+#: reader but is not an analysis-catalog id, so the row cannot cite it in
+#: `analysis_ids`. Without this the row's has_data was None ("nothing to
+#: check"), which is false: there IS something to check.
+_MEASURED_HALF_FOR_MIXED: dict[tuple[str, str], list[str]] = {
+    ("database", "Who owns this resource (accountable owner), and who administers it?"):
+        ["database_owner"],
+}
+
+
+def _mixed_has_data(registry, slug: str, entity_type: str, question: str) -> bool:
+    """has_data for a `mixed`/`partial` row with no analysis ids: a real
+    True/False, never None. True when its declared measured half has data;
+    False when it has none, or declares no measured source (nothing measured
+    exists for it, so nothing has been run)."""
+    ids = _MEASURED_HALF_FOR_MIXED.get((entity_type, question), [])
+    if not ids:
+        return False
+    return bool(question_has_data(registry, slug, ids, entity_type=entity_type))
+
+
 def build_question_checklist(
     registry, entity_type: str, slug: str,
     phase: str = "scouting", perspectives: list[str] | None = None, purposes: list[str] | None = None,
@@ -195,6 +219,8 @@ def build_question_checklist(
             if answering["kind"] in ("analysis", "partial", "mixed")
             else None
         )
+        if has_data is None and answering["kind"] in ("partial", "mixed"):
+            has_data = _mixed_has_data(registry, slug, entity_type, e["question"])
         questions.append({
             "question": e["question"],
             "stage": e["stage"],
