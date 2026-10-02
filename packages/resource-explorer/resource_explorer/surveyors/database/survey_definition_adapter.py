@@ -2605,6 +2605,8 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "subject_signals": (_db_derived_field_reader("subject_signals"), None),
     "coverage_signals": (_db_derived_field_reader("coverage_signals"), None),
     "preliminary_fit": (_db_derived_field_reader("preliminary_fit"), None),
+    # Design §5.3's "which tables would a consumer start with" — same reader.
+    "db_hub_tables": (_db_derived_field_reader("db_hub_tables"), None),
     "credential_capability": (_credential_capability_results, None),
     # ENRICHMENT-E3: the measured `datdba`, its own fact (see the reader).
     "database_owner": (_database_owner_fact_results, None),
@@ -2654,6 +2656,7 @@ DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "subject_signals": _db_derived_explanation_headline("subject_signals"),
     "coverage_signals": _db_derived_explanation_headline("coverage_signals"),
     "preliminary_fit": _db_derived_explanation_headline("preliminary_fit"),
+    "db_hub_tables": _db_derived_explanation_headline("db_hub_tables"),
     #: Owner's gate follow-up (2026-09-27): the last `db_derived` analysis
     #: with no headline — `fingerprint_database()` already writes a real
     #: `explanation` for every branch (no schema rows; measured, no
@@ -2686,6 +2689,11 @@ DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP: dict = {
     "schema_inventory": _schema_inventory_container_headline,
     "db_relationship_graph": _db_relationship_graph_container_headline,
     "grain_determination": _grain_determination_container_headline,
+    # The answer to "which tables would a consumer start with" IS a list of
+    # tables (a member-level question), so the relayed `explanation` — which
+    # names the top tables with the evidence for each — is a genuine
+    # member-level reading, not the resource-level fallback text.
+    "db_hub_tables": _db_derived_explanation_headline("db_hub_tables"),
 }
 
 

@@ -95,6 +95,7 @@ class TestDatabaseStepMapFansOutCorrectly:
             "db_fingerprint", "schema_conventions", "db_change_rates",
             "schema_diff", "grant_change",
             "subject_signals", "coverage_signals", "preliminary_fit",
+            "db_hub_tables",
         }
 
     def test_sql_analysis_has_no_analysis_catalog_entry(self):
