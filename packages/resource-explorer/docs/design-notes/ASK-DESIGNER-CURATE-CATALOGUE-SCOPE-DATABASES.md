@@ -29,11 +29,22 @@ today nothing on screen lets them make it.
   one per table at summary level, none per column, plus statistics, views
   and operations annotations), and LineageMapping relationships for views.
 - **What RE does not create:** DatabaseSchema, RelationalTable or
-  RelationalColumn elements, anywhere. The only path that would is Egeria's
-  own native survey service, which RE can start ("Catalog and Survey" in
-  Egeria's own surveys, today locked for want of template parameters); what
-  that survey creates, and whether its depth is configurable, was not read
-  and is a question for the Egeria side.
+  RelationalColumn elements, anywhere.
+- **What Egeria's native database survey creates (read from the Egeria
+  source at df82f4fe, 2026-10-03):** also no schema, table or column
+  elements. Its only output is annotations on a SurveyReport, as
+  ResourceMeasureAnnotations with JSON measurements: one for the database,
+  one per schema, one per table, view or materialised view, and one per
+  column (from `pg_stats`, so only columns of analysed tables). It has no
+  scope or depth control: every non-system schema, table and column is
+  surveyed, and each run makes a new report, not a diff. The only
+  include/exclude lever on the Egeria side is on the *server* survey, at
+  whole-database granularity. So today **nobody** in the RE-plus-Egeria
+  path creates schema, table or column elements; Egeria holds the server
+  and database assets, the SurveyReport and annotations only. Not checked:
+  whether Egeria's PostgreSQL *catalog integration connector*, a third
+  mechanism, creates those elements; it is the one that would, and it is
+  a question for the Egeria leads.
 - **Depth control: none.** The publish takes whatever the latest measured
   schema set holds, every schema and every table. The request carries only
   connection and credential fields; there is no include or exclude list.
@@ -47,7 +58,13 @@ today nothing on screen lets them make it.
   Nothing per schema or table.
 
 So the premise is: a database is catalogued whole or not at all, with
-nothing between, and nothing a steward chooses.
+nothing between, nothing a steward chooses, and no schema or table element
+in Egeria to attach a choice to. "Decide what gets catalogued" therefore
+means one of two things, and the reply should say which it designs for:
+RE creates the schema, table and column elements itself for the chosen
+scope, as the repository's sub-resource publish does; or RE keeps and
+publishes only the chosen subset of what the surveys measured, and the
+elements come from Egeria's catalog connector when it is configured.
 
 ## The questions for you
 
@@ -72,13 +89,14 @@ nothing between, and nothing a steward chooses.
    progress (an outbox row), failed (Egeria's word). How is that drawn on
    the tree after commit, and on re-commit when the scope changes? What
    does a steward see for a table that was catalogued and later left out?
-4. **RE's publish versus Egeria's native survey.** Two mechanisms can put a
-   database into Egeria: RE's publish (assets and annotations, no schema
-   elements) and Egeria's own survey service (which may create schema
-   elements). Should the commit choose between them, run RE's then offer
-   Egeria's, or should the screen name both as what will happen? The
-   steward should never have to know the mechanism, but they must be able
-   to see which one produced what.
+4. **Three mechanisms, one commit.** RE's publish (assets and
+   annotations), Egeria's native survey (annotations per schema, table and
+   column, no scope control), and Egeria's catalog integration connector
+   (the element creator, not yet checked). Should the commit choose, run
+   RE's then offer Egeria's, or name all that will happen? The steward
+   should never have to know the mechanism, but they must see which one
+   produced each state on the tree, and a table whose only evidence is an
+   Egeria column measurement reads differently from one with an element.
 5. **Ties to Find and the investigation.** A database in an investigation's
    scope with a verdict of recommended or using is the one a steward
    catalogues. Should the Curate scope tree be reachable from the
