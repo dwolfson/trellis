@@ -41,30 +41,35 @@ today nothing on screen lets them make it.
   include/exclude lever on the Egeria side is on the *server* survey, at
   whole-database granularity. So today **nobody** in the RE-plus-Egeria
   path creates schema, table or column elements; Egeria holds the server
-  and database assets, the SurveyReport and annotations only. Not checked:
-  whether Egeria's PostgreSQL *catalog integration connector*, a third
-  mechanism, creates those elements; it is the one that would, and it is
-  a question for the Egeria leads.
-- **Depth control: none.** The publish takes whatever the latest measured
-  schema set holds, every schema and every table. The request carries only
-  connection and credential fields; there is no include or exclude list.
-- **The repository counterpart** is repo-only by construction: the curation
-  plan, the SubResource row, locator selection, `publish_sub_resources`,
-  and the depth offer all read the repository table; no database or file
-  system path exists.
-- **Proof rows a database has:** `published_at` and the report GUID on the
-  survey row, an `egeria_publish` step run on the Survey Definition path,
-  the asset GUID, and a catalogue log row naming the server and database.
-  Nothing per schema or table.
+  and database assets, the SurveyReport and annotations only.
+- **The third mechanism exists and is deployed (read from the Egeria
+  source, 2026-10-03):** Egeria's PostgreSQL cataloguing is two connectors
+  in sequence. The *server cataloguer* creates one RelationalDatabase per
+  database on a server attached to it as a catalog target, with
+  `includeDatabaseList` / `excludeDatabaseList` at whole-database
+  granularity, and registers each database as a target of the second. The
+  generic *JDBC cataloguer* then creates DeployedDatabaseSchema,
+  RelationalTable (views as RelationalTable with a CalculatedValue
+  classification) and RelationalColumn elements, with include and exclude
+  lists for schema, table, view and column names. Re-runs upsert by a
+  deterministic qualified name and **delete elements that have gone stale**,
+  so a table left out on a later refresh is removed from Egeria. The
+  quickstart loads and hosts both in its integration daemon at boot.
+  Nothing in RE sets any of those lists or attaches a server as a target.
+  Three constraints come with it: the name filters match **plain names,
+  not schema-qualified ones**, so "table X in schema A but not in B" cannot
+  be expressed; the filters cover names only, with no row, size or depth
+  option; and whether the cataloguer adopts the server and database assets
+  RE already creates from templates, or makes its own by name, was not
+  checked.
 
-So the premise is: a database is catalogued whole or not at all, with
-nothing between, nothing a steward chooses, and no schema or table element
-in Egeria to attach a choice to. "Decide what gets catalogued" therefore
-means one of two things, and the reply should say which it designs for:
-RE creates the schema, table and column elements itself for the chosen
-scope, as the repository's sub-resource publish does; or RE keeps and
-publishes only the chosen subset of what the surveys measured, and the
-elements come from Egeria's catalog connector when it is configured.
+So the premise is: a database is catalogued whole or not at all today, and
+the lever a steward's choice would pull already exists on the Egeria side,
+unused: attach the server as a catalog target, and compile the confirmed
+scope into the cataloguer's include and exclude lists. Per-node states then
+come from reading the created elements back by qualified name. What the
+lever cannot express (a per-schema table choice, a depth below "columns
+on or off") the screen has to say rather than pretend.
 
 ## The questions for you
 
@@ -89,14 +94,21 @@ elements come from Egeria's catalog connector when it is configured.
    progress (an outbox row), failed (Egeria's word). How is that drawn on
    the tree after commit, and on re-commit when the scope changes? What
    does a steward see for a table that was catalogued and later left out?
-4. **Three mechanisms, one commit.** RE's publish (assets and
-   annotations), Egeria's native survey (annotations per schema, table and
-   column, no scope control), and Egeria's catalog integration connector
-   (the element creator, not yet checked). Should the commit choose, run
-   RE's then offer Egeria's, or name all that will happen? The steward
-   should never have to know the mechanism, but they must see which one
-   produced each state on the tree, and a table whose only evidence is an
-   Egeria column measurement reads differently from one with an element.
+4. **Three mechanisms, one commit.** RE's publish (assets, report and
+   annotations), Egeria's native survey (measurements per schema, table and
+   column, no scope control) and Egeria's cataloguer (the element creator,
+   with name filters). The commit's job is to set the cataloguer's lists
+   from the confirmed scope and attach the target; the native survey and
+   RE's publish add measurements. Should the screen name all three as what
+   will happen, and how does a node show which mechanism produced its
+   state: an element read back, a measurement only, or RE's annotation
+   only? And two consequences of the lever need a drawing: a selection the
+   plain-name filter cannot express ("orders" in sales but not in archive)
+   must say so on the tree before commit, not fail after; and leaving a
+   catalogued table out deletes its element on Egeria's next refresh, so
+   the tree must say "will be removed from Egeria", with whatever hangs off
+   that element named, before the person confirms.
+
 5. **Ties to Find and the investigation.** A database in an investigation's
    scope with a verdict of recommended or using is the one a steward
    catalogues. Should the Curate scope tree be reachable from the
