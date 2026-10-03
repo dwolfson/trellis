@@ -414,6 +414,12 @@ TARGET_SURVEY = "survey"
 #: keep answering "who proposed what, ever" after the current answer changes.
 WITHDRAWN_LABEL = "withdrawn"
 
+#: Findings kinds that are read ACROSS runs on purpose (several independent
+#: steps contribute rows at different times, via query_findings_all_runs), so
+#: "latest run wins" must not be applied to their counts. Everything else is
+#: current-run-only. See FINDINGS-SUPERSESSION-IMPLEMENTED.md.
+ALL_RUNS_FINDING_KINDS = ("architecture_recovery", "architecture_decisions")
+
 
 # ── Structured DB/FS detail tables: provenance and measurement state ────────
 
@@ -6502,10 +6508,41 @@ class ProjectRegistry:
                     f"GROUP BY project_slug, kind",
                     (*slugs, *kinds, "____-__-__%"),
                 ).fetchall()
+                current = None
+                if table == "project_analysis_findings":
+                    # CURRENT rows only: the newest run per (resource, kind,
+                    # scope), and not superseded. A bare COUNT(*) here added
+                    # every run ever written, so a resource surveyed six times
+                    # reported six runs' findings as the current answer
+                    # (FINDINGS-SUPERSESSION-IMPLEMENTED.md). Same rule as
+                    # query_findings(). Kinds in ALL_RUNS_FINDING_KINDS are read
+                    # across runs by design, so only the superseded filter
+                    # applies to them.
+                    all_runs = tuple(ALL_RUNS_FINDING_KINDS)
+                    current = {}
+                    for c in conn.execute(
+                        f"SELECT f.project_slug, f.kind, COUNT(*) AS n "
+                        f"FROM {table} f "
+                        f"JOIN (SELECT project_slug, kind, COALESCE(scope_locator, '') AS sl, "
+                        f"             MAX(surveyed_at) AS ts "
+                        f"      FROM {table} "
+                        f"      WHERE project_slug IN ({','.join('?' * len(slugs))}) "
+                        f"        AND kind IN ({','.join('?' * len(kinds))}) "
+                        f"        AND surveyed_at LIKE ? "
+                        f"      GROUP BY project_slug, kind, COALESCE(scope_locator, '')) l "
+                        f"  ON f.project_slug = l.project_slug AND f.kind = l.kind "
+                        f"  AND COALESCE(f.scope_locator, '') = l.sl "
+                        f"WHERE f.superseded_at IS NULL "
+                        f"  AND (f.surveyed_at = l.ts OR f.kind IN ({','.join('?' * len(all_runs))})) "
+                        f"GROUP BY f.project_slug, f.kind",
+                        (*slugs, *kinds, "____-__-__%", *all_runs),
+                    ).fetchall():
+                        current[(c["project_slug"], c["kind"])] = c["n"] or 0
                 for r in rows:
                     key = (r["project_slug"], r["kind"])
                     prev = out.get(key) or {"rows": 0, "measured_at": ""}
-                    prev["rows"] += r["n"] or 0
+                    prev["rows"] += (current.get(key, 0) if current is not None
+                                     else (r["n"] or 0))
                     # The LATER of the two tables' timestamps: an analysis that
                     # wrote metrics after findings was measured at the later
                     # moment, and reporting the earlier one would age it.
