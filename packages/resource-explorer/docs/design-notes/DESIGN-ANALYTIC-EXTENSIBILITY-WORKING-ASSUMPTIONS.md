@@ -45,6 +45,55 @@ absence survives, publication decides what Egeria believes, curation
 decides what a person may conclude. Keeping them out of the step keeps a
 user-written step from deciding any of them.
 
+## 1a. Corrections from the inventory (2026-10-03)
+
+`docs/analytic-extension-points-inventory-2026-10-02.md` (#438) read the
+code and found six places where §1 and §2 said what the code does not.
+Each is recorded here, dated, and the assumption it touches is amended
+below rather than rewritten.
+
+1. **The catalogue carries less than §1 says.** `analysis_catalog.yaml` has
+   no `executes_at`, cost, prerequisite or `produces` field. `executes_at`
+   is on the Egeria-side `SurveyStep`; `native_process_ref` sits under
+   `egeria_registration` on one entry of 66; `requires_input` on four.
+   Cost, `produces` and `requires_context` live on the Python `StepInfo`
+   (43 repo steps, 7 database steps). So "declaration" is today split
+   across three places: the YAML menu, the Python step registry, and the
+   Egeria survey definition. A1/A3 assume one; the architecture must say
+   which of the three becomes the declaration and how the others derive.
+2. **`trellis-context` has no resolver.** It holds `spec.py` and
+   `packer.py` only; resolution lives in RE's `context_compile.py`, and
+   **sections bind to analysis ids today**, not annotation types (R18 and
+   C4 answered: no). A13's "the compiler is the shared resolver" is the
+   target, not the state.
+3. **Annotation construction is per annotation type**, not per analysis
+   (`annotation_props.py`, 10 types), but each of 42 sub-surveyors builds
+   its own `Annotation` objects (119 constructions). §1's "per-analysis
+   annotation construction" was half right: the mapping is typed, the
+   emission is scattered.
+4. **"Envelope" already means something else in RE** (`facts.py`'s
+   `Envelope`, an answer wrapper). The absence vocabulary this note wants
+   exists as `result_status.py` and `Fact.state`, and it is **derived at
+   read time, not stored with the result rows**. A2's envelope therefore
+   needs a different name on the wire, and A4's ODS needs the state
+   persisted, not recomputed.
+5. **The E3 observation states live in `/next` JavaScript**
+   (`observation-state.js`), not in a Python table. A8's "model for every
+   proposal" is a front-end state function today; the ODS and the
+   publisher cannot read it.
+6. **EA has no analysis engine, annotation engine or results store.** Its
+   reports are pyegeria report specs. A9 stands, but "EA's routine runner"
+   in the inventory brief did not exist; EA contributes the spec lifecycle
+   and the ranker, nothing on the execution side.
+
+Also from the inventory, for the architecture rather than the
+assumptions: the only things a user can add today without app code are an
+RE question row (unbound), an RE annotation-type metadata row (not
+publishable), an Egeria survey definition over existing step keys, a
+Portal dashboard or saved query, a pyegeria report spec by JSON drop, and a
+pyegeria analytic function by dotted path, which runs unsandboxed in the
+Portal's web process (against A6). An RE step is not user-addable.
+
 ## 2. Working assumptions
 
 Each is stated so it can be argued with. A changed assumption gets a dated
@@ -79,6 +128,8 @@ cross-resource analysis stay cheap; nothing is computed from Egeria's graph
 that the ODS can answer. The ODS schema follows the annotation envelope,
 one table family per annotation type, which is what the queued reader
 consolidation wants anyway. EA and the Portal read the same Postgres.
+*Amended 2026-10-03:* the ODS persists the result state per row
+(correction 4); a derived state is a cache, not a record.
 
 **A5. Git holds declarations, code and dashboard definitions, never
 results.** Steps as packages, report specs and Dr.Egeria documents as
