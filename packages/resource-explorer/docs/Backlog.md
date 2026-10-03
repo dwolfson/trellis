@@ -9211,3 +9211,26 @@ sidebar's filter box under one resource-type tab (Repos, DBs, FS) and then switc
 different tab leaves the old string in the box, filtering a list it was never typed against.
 Small UI fix: clear (or at least re-scope) the filter input's value when the active sidebar tab
 changes.
+
+## `DatabaseAssessmentSurvey` has no authored document, so its reconciler checks it against a guessed chain (2026-10-03, post-reset checks)
+
+After the 2026-10-03 Egeria reset, `scripts/reconcile_database_survey_definition_links.py --dry-run` printed
+"no authored document found for DatabaseAssessmentSurvey — reconciling against a linear chain derived from
+its step list, which would treat any branch as stale" (`survey_definition_reader.py` ~:1125) and reported
+`kept 0 edge(s)` for it, while `DatabaseScoutingSurvey` and `DatabaseAnalysisSurvey` kept 2 and 3. The
+dry run removes nothing; the risk is a real run on a definition that does branch, which would delete the
+branch's edges as stale. Not diagnosed: whether this predates the reset (it reads like a standing gap, not a
+heal failure), and whether a definition with 0 edges is a single step or a missing chain.
+
+Fix: author the `DatabaseAssessmentSurvey` document so the reconciler diffs against what was authored, or have
+the reconciler refuse to remove anything on a definition with no authored document.
+
+## `sql_analysis` has no Survey Type in `database_survey_types.csv` (2026-10-03, post-reset checks)
+
+Both database reconcilers warn: "DATABASE_STEP_REGISTRY step(s) with no Survey Type reference in
+database_survey_types.csv: ['sql_analysis']". The step is registered in
+`surveyors/database/survey_definition_adapter.py` (~:644, with no Survey Type) and runs RE's own SQL analysis,
+but the CSV that the database survey definitions are generated from (`generate_database_survey_definition.py`,
+"edit the CSV and regenerate") has no row for it, so it is in no authored definition and no Question term
+scopes it. Decide whether it needs a row (and which Question it answers) or is deliberately outside the
+generated definitions, and say so in the CSV's header if the latter. Likely the same gap as the item above.
