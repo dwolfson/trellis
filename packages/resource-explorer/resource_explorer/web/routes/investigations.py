@@ -208,6 +208,25 @@ async def get_members(slug: str) -> list[dict]:
     return reg.list_investigation_members(slug)
 
 
+@router.get("/{slug}/scope.csv")
+async def export_scope(slug: str):
+    """The investigation's in-scope members as the shared CSV contract, named
+    `re-scope-<investigation>-<date>.csv`. Importing it into a second
+    investigation adds the resources; `status_in_scope` and `status_fit` are
+    words for a reader and are never read back."""
+    from fastapi.responses import Response
+
+    from resource_explorer.batch_io import export_filename, rows_to_csv_text, scope_export_rows
+
+    reg = _registry()
+    inv = reg.get_investigation(slug)
+    if not inv:
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    name = export_filename("scope", inv.get("slug") or slug)
+    return Response(content=rows_to_csv_text(scope_export_rows(reg, slug)), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 @router.post("/{slug}/members")
 async def add_member(slug: str, req: MemberAdd) -> list[dict]:
     """Add one resource to this investigation's working set.

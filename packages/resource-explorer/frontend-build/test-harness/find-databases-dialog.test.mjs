@@ -131,15 +131,14 @@ test('Find on databases opens a three-tab dialog: Saved sources, Discover on a s
   assert.doesNotMatch(text(dlg), /file share/i, 'the kind is "file system", never "file share"');
 });
 
-test('From a file is one sentence saying it is coming, with no table and no confirm', async () => {
+test('From a file is the real door now (slice 2): a file chooser, no placeholder sentence, no table until a file is read', async () => {
   const ctx = await setUp();
   const dlg = await openFind(ctx);
   await clickTab(dlg, 'file');
-  const ph = dlg.querySelector('[data-file-placeholder]');
-  assert.ok(ph);
-  assert.match(text(ph), /coming in the next slice/);
+  assert.equal(dlg.querySelector('[data-file-placeholder]'), null, 'the "coming in the next slice" sentence is gone');
+  assert.ok(dlg.querySelector('[data-file-input]'), 'there is a file chooser');
   assert.equal(dlg.querySelector('[data-candidate-table]'), null);
-  assert.equal(dlg.querySelector('[data-confirm]'), null);
+  assert.equal(dlg.querySelector('[data-confirm]'), null, 'no confirm until a file has been read');
 });
 
 test('every tab that produces candidates ends in the same table and the same confirm', async () => {

@@ -167,6 +167,24 @@ async def get_work_list(slug: str) -> dict:
     return wl
 
 
+@router.get("/{slug}/export.csv")
+async def export_work_list(slug: str):
+    """A work list's members as the shared CSV contract, named
+    `re-work-list-<name>-<date>.csv`."""
+    from fastapi.responses import Response
+
+    from resource_explorer.batch_io import export_filename, rows_to_csv_text, work_list_export_rows
+
+    wls = WorkLists()
+    wl = wls.get(slug)
+    if not wl:
+        raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    name = export_filename("work-list", wl.get("display_name") or slug)
+    return Response(content=rows_to_csv_text(work_list_export_rows(wls.registry, wl)),
+                    media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 @router.delete("/{slug}")
 async def delete_work_list(slug: str) -> dict:
     """Remove the list locally. Any Egeria Collection it published stays."""

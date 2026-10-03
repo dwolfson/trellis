@@ -261,27 +261,19 @@ def export_inventory() -> Response:
     scorecard that looks authoritative is the failure mode this format is most
     likely to produce.
     """
-    import csv as _csv
-    import io as _io
-
-    from resource_explorer.batch_io import ALL_COLUMNS, export_rows
+    from resource_explorer.batch_io import export_filename, export_rows, rows_to_csv_text
     from resource_explorer.registry import ProjectRegistry
 
     rows = export_rows(ProjectRegistry())
-    buf = _io.StringIO()
-    writer = _csv.DictWriter(buf, fieldnames=list(ALL_COLUMNS))
-    writer.writeheader()
-    for r in rows:
-        writer.writerow({c: r.get(c, "") for c in ALL_COLUMNS})
 
     return Response(
-        content=buf.getvalue(),
+        content=rows_to_csv_text(rows),
         media_type="text/csv",
         # Dated filename: the point of the scorecard is diffing one against
         # another, and "inventory.csv (3)" in a downloads folder makes that
-        # needlessly hard.
+        # needlessly hard. `re-<what>-<name>-<date>.csv`, shared by every export.
         headers={"Content-Disposition":
-                 f'attachment; filename="re-inventory-{_today()}.csv"'},
+                 f'attachment; filename="{export_filename("inventory", date=_today())}"'},
     )
 
 
@@ -320,6 +312,84 @@ class ListLoadResult(BaseModel):
     # than silently folded in, because "I gave you 3 lines and got 214 repos"
     # needs an explanation attached to it.
     expanded_orgs: list[dict] = []
+
+
+class FromFileRequest(BaseModel):
+    """A CSV, as text (the browser reads the file), and the db servers a person
+    chose in the preview for rows that named none: {"<line>": "<server slug>"}."""
+    text: str
+    server_choices: dict[str, str] = {}
+
+
+class FromFileImport(FromFileRequest):
+    lines: list[int] | None = None      # file lines the person ticked; None = all
+    group: str = ""
+    investigation: str = ""
+    #: [{"line": 7, "field": "group"}]: proposed changes the person accepted.
+    accept_changes: list[dict] = []
+
+
+def _server_choices(raw: dict[str, str]) -> dict[int, str]:
+    try:
+        return {int(k): v for k, v in raw.items() if v}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="server_choices keys must be line numbers") from exc
+
+
+@router.post("/from-file/preview")
+def preview_from_file(body: FromFileRequest) -> dict:
+    """The five-count preview of a CSV (batch_io.plan_import). Writes nothing.
+
+    A file missing `resource_type` or `address` is refused (`refused` is set,
+    `missing` names the column, `header` is the row found) with HTTP 200: it is
+    a result the dialog shows, not a server fault.
+    """
+    from resource_explorer.batch_io import preview_file
+    from resource_explorer.registry import ProjectRegistry
+
+    return preview_file(ProjectRegistry(), body.text,
+                        server_choices=_server_choices(body.server_choices))
+
+
+@router.post("/from-file/import")
+def import_from_file(body: FromFileImport) -> dict:
+    """Apply a confirmed preview. The file is re-planned here from its text; the
+    browser never sends rows. Local registry writes only: nothing goes to Egeria
+    and no credential is read from the file (there is no way to: see
+    batch_io.parse_csv_strict)."""
+    from datetime import datetime, timezone
+
+    from resource_explorer.batch_io import import_file
+    from resource_explorer.registry import ProjectRegistry
+
+    when = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        return import_file(
+            ProjectRegistry(), body.text, lines=body.lines,
+            server_choices=_server_choices(body.server_choices), group=body.group,
+            investigation=body.investigation, accept_changes=body.accept_changes,
+            rationale=f"Loaded from a file on {when}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class CandidateExport(BaseModel):
+    label: str = ""
+    server_slug: str = ""
+    candidates: list[dict] = []
+
+
+@router.post("/candidates.csv")
+def export_candidates(body: CandidateExport) -> Response:
+    """A source's candidates, as the dialog's table shows them, in the shared
+    column contract. POST because the rows are the dialog's, not a stored set."""
+    from resource_explorer.batch_io import candidate_export_rows, export_filename, rows_to_csv_text
+    from resource_explorer.registry import ProjectRegistry
+
+    rows = candidate_export_rows(ProjectRegistry(), body.candidates, body.server_slug)
+    name = export_filename("candidates", body.label or body.server_slug or "", date=_today())
+    return Response(content=rows_to_csv_text(rows), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.post("/from-list", response_model=ListLoadResult)
