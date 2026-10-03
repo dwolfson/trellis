@@ -1652,17 +1652,19 @@ def database_register(
 def database_update_credentials(
     slug: str = typer.Argument(help="Database slug to update"),
     user: str = typer.Option(..., "--user", "-u", help="New database username"),
-    password: str = typer.Option(..., "--password", "-p", help="New database password", hide_input=True),
+    password: str = typer.Option(..., "--password", "-p", prompt=True, help="New database password (prompted, not echoed, when omitted)", hide_input=True),
 ):
     """Update the stored db_user/db_password for an already-registered database.
 
     The registration itself (slug, egeria_asset_guid, survey history) is
     untouched -- this only repoints which role/password future surveys connect
-    with.
+    with. The new credential is tested against the database first; if the
+    connection fails nothing is stored and the exit code is non-zero.
 
     Example:
-        resource-explorer database update-credentials my-postgres \\
-            --user surveyor --password secret
+        resource-explorer database update-credentials <slug> --user <role>
+
+    The password is prompted for.
     """
     from resource_explorer.registry import ProjectRegistry
 
@@ -1670,6 +1672,19 @@ def database_update_credentials(
 
     if not registry.database_exists(slug):
         console.print(f"[red]Database '{slug}' not found. Register it first with 'database register'.[/red]")
+        raise typer.Exit(1)
+
+    from rich.markup import escape
+
+    from resource_explorer.credential_check import (
+        CredentialCheckError,
+        check_database_credential,
+    )
+
+    try:
+        check_database_credential(registry.get_database(slug, allow_unreadable=True), user, password)
+    except CredentialCheckError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
     registry.update_database_credentials(slug, user, password)
