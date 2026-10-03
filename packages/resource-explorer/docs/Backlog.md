@@ -9211,3 +9211,71 @@ sidebar's filter box under one resource-type tab (Repos, DBs, FS) and then switc
 different tab leaves the old string in the box, filtering a list it was never typed against.
 Small UI fix: clear (or at least re-scope) the filter input's value when the active sidebar tab
 changes.
+
+## The outbox retries a permanent "target not found" eight times before dead-lettering it (2026-10-03, owner's pre-reset check)
+
+Before an Egeria reset the owner's Publish Queue showed 10 dead rows, all the same error: attaching a
+member to a collection whose GUID Egeria no longer holds (HTTP 404, `OMAG-REPOSITORY-HANDLER-404-007`,
+wrapped by pyegeria as a 400 `PyegeriaNotFoundException`). The outbox cannot tell that from an outage,
+so each row burned its 8 attempts with exponential backoff and then needed a human. A 404 on the
+*referent* is permanent: the investigation's stored Egeria GUID is stale, which is exactly what
+`egeria_resync`'s `stale_investigation_guids` finding reports.
+
+Fix, in `egeria_outbox.drain_outbox`: classify a not-found on the referent as non-retryable, dead-letter
+it on the first attempt with a plain-language reason, and flag the owning investigation's linkage as stale
+(`flag_vanished_publishes` already writes that kind of flag). Open points: confirm all 10 rows named the
+same collection GUID, and whether the purge removes dead rows (the retention purge only removes `done`).
+
+## Run the resync scan, and read the Publish Queue, before and after every Egeria reset (2026-10-03, runbook)
+
+The owner resets Egeria every few days. `egeria-operations.md` §8 now has a "before the reset" checklist
+(stop RE, empty the outbox, read any dead rows' errors) because the reset erases the Egeria state that
+explains them. Its §2.3 repair table lists 8 steps; `REPAIR_STEPS` in `egeria_resync.py` has 9
+(`flag_vanished_publishes` is missing from the table). Bring the table back in line with the code, ideally
+by a test that fails when they differ.
+
+## Resource controls: scope buttons still read "＋ scope" / "− scope" (2026-10-03, #445 walk)
+
+The owner's walk of #445 passed five of design's six checks. Check 5 (the grouped Select bar) is partial:
+`app.js` `selectActionsHtml` (~:2272, :2275) still says "＋ scope" / "− scope", where
+`REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md` §5 rules "＋ add to <investigation>" / "− remove from
+<investigation>". "save as work list" also lacks the ruled ellipsis and keeps the accent border. The
+ruling does not say what the buttons read when no investigation is selected (they are disabled then):
+ask design for that one line before the slice.
+
+## CSV import: the confirm re-offers rows already in the investigation, and re-confirming overwrites their state (2026-10-03, #441 walk)
+
+Re-importing the same file previews "0 new · 3 already registered", which is right, but the confirm still
+offers "Add these 3 to <investigation>". `fileSelection()` (`db-server-discovery.js` ~:794) counts every
+already-registered line whenever an investigation is chosen, deliberately, so a scope export can be
+imported into a second investigation (the walk's check 4 passed). It never subtracts rows already in
+*that* investigation. Clicking is not a duplicate (`add_working_set_member`, `registry.py` ~:9182, is an
+upsert) but its `DO UPDATE` overwrites `membership_rationale` and `state`, silently resetting anything the
+owner set since.
+
+Fix: split the preview into "already in <investigation>" (not counted, not offered) and "registered, not
+yet in it" (counted). Also consider making `add_working_set_member` keep an existing member's rationale and
+state, which fixes it for every caller but touches shared registry code.
+
+## Findings supersession: what is not done (2026-10-03, `FINDINGS-SUPERSESSION-IMPLEMENTED.md`)
+
+- `scripts/repair_findings_supersession.py` exists and has not been run against anything real; applying
+  it to the shared registry is the owner's decision after a peer check (64, 91 and 50 stale rows were
+  counted for telemetry, provenance and SLA on 2026-10-02).
+- 15 single-call finding kinds are still not opted in (the audit table in that note).
+- `architecture_recovery` needs run-keyed supersession using `run_label`; a plain flag would retire sibling
+  calls' still-valid rows.
+
+## Deployment docs say nothing about `RE_DB_CREDENTIAL_KEY` (2026-10-03, credential-safety slice)
+
+Stored database passwords are encrypted with a key from the environment, and a registry restored or
+moved without the same key cannot read them: the list marks those rows "credential unreadable" and
+disables their runs (`LIST-TOLERATES-BAD-CREDENTIAL`). No deployment document names the variable, where
+it must live, or that losing it makes every stored password unrecoverable. Add that to the deployment
+guide and to the reset checklist in `egeria-operations.md`. (The code reads `RE_DB_CREDENTIAL_KEY`, then falls back to
+`TRELLIS_DB_CREDENTIAL_KEY`: `credential_crypto.py` ~:36.)
+
+Also after the next Egeria reset: the first bullet of the small-items list above ("Republish
+`RepoAssessmentSurvey`") is covered by bootstrap's unattended heal, which re-authors every definition
+whose canary is missing; do not also run `reauthor_survey_definitions` by hand (`egeria-operations.md`
+§2.1).
