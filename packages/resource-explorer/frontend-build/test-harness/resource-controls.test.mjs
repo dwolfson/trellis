@@ -631,6 +631,7 @@ test('source scan: no resource-removal label or tooltip in static/next says "del
   ];
   const ALLOW_LINES = [
     /\bdelete (out|host|layout|\$\()/,         // `delete x.dataset...`
+    /\bdelete [\w$]+(\.[\w$]+|\[[^\]]+\])+\s*;/,   // the JS `delete` OPERATOR on a property: `delete a.b[c];` (a label has no `.`/`[` after its first word)
     /\.delete\(/,                              // Map/Set methods
     /data-delete[\w-]*/,                       // attribute names
     /delete: 'deletes a catalog entry'/,       // Egeria process-kind label (a different object)
