@@ -155,7 +155,7 @@ class TestInvestigationHeaderScopeVisibility:
 
     def test_render_top_bar_sets_scope_text_from_egeria_binding(self):
         app = _app()
-        fn = app[app.index("function renderTopBar()") : app.index("function renderTopBar()") + 2000]
+        fn = app[app.index("function renderTopBar()") : app.index("function renderTopBar()") + 4000]
         assert "investigation-scope" in fn
         # registry.py's ProjectRegistry.BINDING_LOCAL/BINDING_EGERIA: "egeria"
         # means "has [a Project], or is meant to" -- so this must key off

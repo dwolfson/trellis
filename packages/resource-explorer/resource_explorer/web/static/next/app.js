@@ -763,8 +763,21 @@ const tone = (st, ground = 'paper') =>
  * Chrome
  * ════════════════════════════════════════════════════════════════════════ */
 
-function renderTopBar() {
-  $('scope-slug').textContent = state.selectedSlug || 'no resource selected';
+export function renderTopBar() {
+  // The name is the resource's menu button (REPLY-DESIGNER-RESOURCE-CONTROLS-
+  // PLACEMENT.md §1). `data-slug` carries the bare slug for feedback.js, which
+  // used to read it from the text; the text now also shows the "▾".
+  const slugEl = $('scope-slug');
+  slugEl.dataset.slug = state.selectedSlug || '';
+  slugEl.textContent = state.selectedSlug ? `${state.selectedSlug} ▾` : 'no resource selected';
+  slugEl.disabled = !state.selectedSlug;
+  slugEl.onclick = state.selectedSlug ? (e) => { e.stopPropagation(); toggleResourceMenu(); } : null;
+  // Whatever the menu or its panel was about is no longer on screen once the
+  // selection moves: a confirmation naming resource A must never outlive the
+  // switch to B.
+  if (!state.selectedSlug || $('resource-menu')?.dataset.slug !== state.selectedSlug) closeResourceMenu();
+  const panel = $('resource-controls-panel');
+  if (panel && panel.dataset.slug !== (state.selectedSlug || '')) panel.remove();
   // `data-entity-type` lets feedback.js's Questions-checklist "Was this
   // right?" bar (deliberately independent of this module, plain DOM reads
   // only) attribute an answer-feedback POST to the right resource type
@@ -1857,6 +1870,23 @@ const FIND_TITLE = {
   filesystem: 'Register a filesystem path',
 };
 
+/** The Find action's visible words, by the kind shown (REPLY-DESIGNER-
+ *  RESOURCE-CONTROLS-PLACEMENT.md §6). Find is rare and its meaning changes
+ *  with the chip beside it, so it carries a label. "File system", never "file
+ *  share". File systems have no discovery yet, so the button says what it does
+ *  today: add one by hand. */
+const FIND_LABEL = {
+  repo: '＋ Find repos',
+  db: '＋ Find databases',
+  filesystem: '＋ Add a file system',
+};
+function findButtonHtml(inRow = false) {
+  const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
+  return `<button data-act="find-repos" title="${esc(title)}"
+    class="${inRow ? 'ml-auto' : ''} cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-on-dark"
+    >${esc(FIND_LABEL[state.resourceType] || FIND_LABEL.repo)}</button>`;
+}
+
 // Sidebar group collapse — persisted the same way classic's does (a JSON
 // array of collapsed group slugs in localStorage), but under its own key so
 // the two surfaces (classic's `index.html` and /next) never fight over one
@@ -1984,6 +2014,12 @@ export function renderSidebar() {
   const loaded = state.resourceType === 'repo' ? true
     : state.resourceType === 'db' ? state.databasesLoaded : state.filesystemsLoaded;
   const nonRepoLabel = state.resourceType === 'db' ? 'database' : 'filesystem';
+  // The list is narrowed to a facet (a disposition chip, "In scope") or a text
+  // filter: the most common reason to act on many is "everything I marked
+  // ignored", so the count line offers to select exactly those.
+  const facetFiltered = state.dispositionFacet !== 'all'
+    || !!state.filter.trim()
+    || (state.resourceType === 'repo' && !!state.scope);
 
   // Grouped by the resource's group. Group display names come from the
   // groups endpoint; a resource with no group lands in Ungrouped. Generic
@@ -2011,10 +2047,7 @@ export function renderSidebar() {
   el.innerHTML = `
     <div class="mb-s2 flex items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
-      <button data-act="find-repos" title="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
-        aria-label="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
-        class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
-        >${icon('circle-plus', { size: 14 })}</button>
+      ${findButtonHtml(true)}
       <button data-act="mark-key" title="What the marks in this list mean"
         aria-label="What the marks in this list mean"
         class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
@@ -2058,13 +2091,17 @@ export function renderSidebar() {
     </div>
 
     <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
-      <button data-act="select-mode" class="cursor-pointer bg-transparent ${
-        state.selectMode ? 'text-accent-on-dark' : 'text-chrome-muted hover:text-chrome-ink'}"
-        >${state.selectMode ? '☑ Selecting' : '☐ Select'}</button>
+      <button data-act="select-mode" class="cursor-pointer rounded-sm border bg-transparent px-2 py-[1px] ${
+        state.selectMode ? 'border-accent text-accent-on-dark' : 'border-chrome-line text-chrome-ink hover:border-accent'}"
+        title="Tick several resources and act on all of them. Shift-click or ⌘/Ctrl-click a row to start."
+        >${state.selectMode ? 'Done selecting' : 'Select several…'}</button>
       ${hiddenCount ? `<button data-act="show-hidden" class="cursor-pointer bg-transparent ${
         state.showHidden ? 'text-accent-on-dark' : 'text-chrome-muted hover:text-chrome-ink'}"
         >Show hidden <span class="tnum">${hiddenCount}</span></button>` : ''}
-      <span class="ml-auto"><span class="tnum">${visible.length}</span> shown</span>
+      <span class="ml-auto"><span class="tnum">${visible.length}</span> shown${
+        facetFiltered && visible.length
+          ? ` · <button data-act="select-these" class="cursor-pointer bg-transparent p-0 text-chrome-ink underline"
+              >select these <span class="tnum">${visible.length}</span></button>` : ''}</span>
     </div>
 
     ${state.selectMode ? selectActionsHtml() : ''}
@@ -2089,7 +2126,8 @@ export function renderSidebar() {
       <div class="text-chip text-chrome-ink">${
         currentResourceRows().length
           ? 'Nothing matches these filters.'
-          : state.resourceType === 'repo' ? 'Nothing matches these filters.' : `No ${nonRepoLabel}s registered.`}</div>`
+          : state.resourceType === 'repo' ? 'Nothing matches these filters.'
+          : `No ${nonRepoLabel}s registered. ${findButtonHtml()}`}</div>`
     : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => {
         const memberSlugs = rows.map((p) => p.slug);
         const selectedHere = memberSlugs.filter((sl) => state.selected.has(sl)).length;
@@ -2200,28 +2238,45 @@ export async function refreshGroupsAndSidebar() {
   renderSidebar();
 }
 
-/** The Select-mode action bar. Every action here is a bulk write, so each
- *  says plainly what it touches — "remove from scope" and "delete" differ by
- *  everything, and the current UI's own tooltips are the wording. */
+/** What a kind is called on screen, singular and plural (REPLY-DESIGNER-
+ *  RESOURCE-CONTROLS-PLACEMENT.md §4/§6). "File system", never "file share". */
+const KIND_NOUN = {
+  repo: ['repo', 'repos'],
+  database: ['database', 'databases'],
+  filesystem: ['file system', 'file systems'],
+};
+function kindNoun(entityType, n = 1) {
+  const [one, many] = KIND_NOUN[entityType] || KIND_NOUN.repo;
+  return n === 1 ? one : many;
+}
+
+/** The Select-mode action bar, grouped by weight, one group per line
+ *  (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §5): scope; judgement and
+ *  lists; view; then a rule and "remove…". Every action is a bulk write, so
+ *  each says plainly what it touches. Removal is the quiet last control; only
+ *  the confirmation's commit button carries the accent. */
 function selectActionsHtml() {
   const n = state.selected.size;
-  return `<div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps">
-    <button data-act="sel-all" class="cursor-pointer bg-transparent text-chrome-ink underline">All shown</button>
-    <button data-act="sel-none" class="cursor-pointer bg-transparent text-chrome-ink underline">None</button>
-    <span class="text-chrome-muted"><span class="tnum">${n}</span> selected</span>
-    <div class="flex w-full flex-wrap gap-s2 pt-s1">
+  const entityType = apiEntityType(state.resourceType);
+  return `<div class="mb-s3 text-caps" data-select-bar>
+    <div class="flex flex-wrap items-baseline gap-s2">
+      <button data-act="sel-all" class="cursor-pointer bg-transparent text-chrome-ink underline">All shown</button>
+      <button data-act="sel-none" class="cursor-pointer bg-transparent text-chrome-ink underline">None</button>
+      <span class="text-chrome-muted"><span class="tnum">${n}</span> selected</span>
+    </div>
+    <div class="mt-[2px] text-chrome-muted" data-select-hint>Tick resources, then act on all of them.</div>
+    <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="scope">
       <button data-act="sel-scope-add" ${state.investigation ? '' : 'disabled'}
         title="${state.investigation ? 'Add to the current investigation’s scope' : 'Needs a current investigation'}"
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark ${
           state.investigation ? '' : 'border-dashed opacity-100'}">＋ scope</button>
       <button data-act="sel-scope-remove" ${state.investigation ? '' : 'disabled'}
-        title="Remove from scope — the repo itself is untouched"
+        title="Remove from scope — the ${kindNoun(entityType)} itself is untouched"
         class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">− scope</button>
-      <button data-act="sel-hide"
-        title="Hide from your own list. A view preference, not a judgement"
-        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">hide</button>
+    </div>
+    <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="judgement">
       <select data-act="sel-disposition"
-        title="Set the disposition on every selected repo"
+        title="Set the disposition on every selected ${kindNoun(entityType)}"
         class="rounded-sm border border-chrome-line bg-chrome px-2 py-[2px] text-chrome-ink">
         <option value="">mark as…</option>
         ${VALID_DISPOSITIONS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
@@ -2229,9 +2284,19 @@ function selectActionsHtml() {
       <button data-act="sel-worklist"
         title="Save the selected resources as a work list you can run, compare and narrow"
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">save as work list</button>
-      <button data-act="sel-delete"
-        title="Unregister entirely and delete all local survey data"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">delete…</button>
+    </div>
+    <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="view">
+      <button data-act="sel-hide"
+        title="Hide from your own list. A view preference, not a judgement"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">hide</button>
+    </div>
+    <div class="mt-s2 flex flex-wrap items-baseline gap-s2 border-t border-chrome-line pt-s2" data-bar-group="remove">
+      <button data-act="sel-remove" ${n ? '' : 'disabled'}
+        title="${n ? 'Remove from Resource Explorer: unregisters these and drops RE’s own records about them. The sources themselves are not touched.'
+          : 'Tick resources first'}"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink ${n ? '' : 'opacity-60'}">${n
+          ? `Remove <span class="tnum">${n}</span> ${kindNoun(entityType, n)}…` : 'remove…'}</button>
+      <span class="text-chrome-muted">from Resource Explorer</span>
     </div>
     <div id="sidebar-action" class="w-full"></div>
   </div>`;
@@ -2300,7 +2365,20 @@ function bindSidebar() {
     renderSidebar();
     loadPane();
   }));
-  el.querySelectorAll('button[data-slug]').forEach((b) => b.addEventListener('click', () => {
+  el.querySelectorAll('button[data-slug]').forEach((b) => b.addEventListener('click', (e) => {
+    // Shift-click or ⌘/Ctrl-click is the convention every list teaches: it
+    // turns Select mode on with that row ticked (and, once on, toggles the
+    // row) instead of opening it.
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      const slug = b.dataset.slug;
+      const wasOn = state.selectMode;
+      state.selectMode = true;
+      if (wasOn && state.selected.has(slug)) state.selected.delete(slug);
+      else state.selected.add(slug);
+      renderSidebar();
+      return;
+    }
     // Leaving the matrix is remembered, so the way back is one click rather
     // than a hunt. Losing a 12x27 grid to a stray click on a repo, with no
     // visible route back, is what "I somehow got off the matrix view and
@@ -2354,16 +2432,24 @@ function bindSidebar() {
       if (!state.selectMode) state.selected.clear();
       renderSidebar();
     },
+    // "select these N" on a facet-filtered list: enters Select mode with
+    // exactly the rows the filters leave visible ticked.
+    'select-these': () => {
+      state.selectMode = true;
+      visibleRows().forEach((p) => state.selected.add(p.slug));
+      renderSidebar();
+    },
     'sel-all': () => { visibleRows().forEach((p) => state.selected.add(p.slug)); renderSidebar(); },
     'sel-none': () => { state.selected.clear(); renderSidebar(); },
     'sel-scope-add': () => bulkScope(true),
     'sel-scope-remove': () => bulkScope(false),
     'sel-hide': () => bulkHide(),
-    'sel-delete': () => confirmBulkDelete(),
+    'sel-remove': () => confirmBulkRemove(),
     'sel-worklist': () => saveSelectionAsWorkList(),
   };
   for (const [name, fn] of Object.entries(acts)) {
-    el.querySelector(`[data-act="${name}"]`)?.addEventListener('click', fn);
+    // All, not first: "find-repos" is also offered inline in an empty list.
+    el.querySelectorAll(`[data-act="${name}"]`).forEach((b) => b.addEventListener('click', fn));
   }
 
   const filter = el.querySelector('#resource-filter');
@@ -2458,40 +2544,43 @@ async function bulkDisposition(disposition) {
 }
 
 /**
- * Delete is the one action with no undo anywhere in the stack: the endpoint
+ * Removal is the one action with no undo anywhere in the stack: the endpoint
  * takes no confirmation flag, drops the resource's pgvector collections and
  * removes the registry row. So the confirmation has to be here, it has to
- * name what is going, and it must not be a one-click button.
+ * name what is going, and it must not be a one-click button. One word
+ * everywhere: "Remove from Resource Explorer" (REPLY-DESIGNER-RESOURCE-CONTROLS-
+ * PLACEMENT.md §4) -- nothing here deletes a database or a file.
  *
- * Repo/database/filesystem deletion are three genuinely different registry
+ * Repo/database/filesystem removal are three genuinely different registry
  * operations (`removeProject`/`removeDatabase`/`removeFilesystem` in
- * re-api.js, each hitting its own DELETE route) — `removeEntity()` dispatches
+ * re-api.js, each hitting its own HTTP route) -- `removeEntity()` dispatches
  * by `apiEntityType()`-translated type, the same pattern `POST /{slug}/group`
- * already uses server-side (projects.py).
+ * already uses server-side (projects.py). The sentence is the single
+ * resource's, worded for N (`removeConfirmationHtml` takes a list); the sidebar
+ * is scoped to one kind, so a bulk removal is always one kind.
  */
-function confirmBulkDelete() {
+function confirmBulkRemove() {
   const slugs = [...state.selected];
   if (!slugs.length) return;
-  const noun = state.resourceType === 'repo' ? 'repo'
-    : state.resourceType === 'db' ? 'database' : 'filesystem';
+  const entityType = apiEntityType(state.resourceType);
+  const n = slugs.length;
   sidebarNote(`
-    <div class="text-accent-on-dark">Unregister <span class="tnum">${slugs.length}</span>
-      ${noun}${slugs.length === 1 ? '' : 's'} and delete all local survey data?
-      This cannot be undone.</div>
+    <div class="text-chrome-ink" data-remove-sentence>${removeConfirmationHtml(entityType, slugs)}</div>
     <div class="mt-s1 break-words text-chrome-muted">${esc(slugs.join(', '))}</div>
     <div class="mt-s2 flex gap-s2">
-      <button data-act="sel-delete-confirm"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">Delete</button>
-      <button data-act="sel-delete-cancel"
+      <button data-act="sel-remove-confirm"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark"
+        >Remove ${n} ${kindNoun(entityType, n)}</button>
+      <button data-act="sel-remove-cancel"
         class="cursor-pointer bg-transparent text-chrome-ink underline">Cancel</button>
     </div>`);
-  $('sidebar-action').querySelector('[data-act="sel-delete-confirm"]')
-    .addEventListener('click', () => bulkDelete(slugs));
-  $('sidebar-action').querySelector('[data-act="sel-delete-cancel"]')
+  $('sidebar-action').querySelector('[data-act="sel-remove-confirm"]')
+    .addEventListener('click', () => bulkRemove(slugs));
+  $('sidebar-action').querySelector('[data-act="sel-remove-cancel"]')
     .addEventListener('click', () => { $('sidebar-action').innerHTML = ''; });
 }
 
-async function bulkDelete(slugs) {
+async function bulkRemove(slugs) {
   const entityType = apiEntityType(state.resourceType);
   const listKey = state.resourceType === 'repo' ? 'projects'
     : state.resourceType === 'db' ? 'databases' : 'filesystems';
@@ -2880,7 +2969,11 @@ function selectedProject() {
 }
 
 /**
- * Name, external links, provenance, and the write paths.
+ * Name, external links, provenance and the disposition pill. Hide and Remove
+ * are NOT here any more: they live in the resource's menu on its name in the
+ * top bar (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §1) -- a verdict
+ * belongs beside the content it judges, a view preference and an unregister do
+ * not.
  *
  * The external links are here because they were missing, and they are marked
  * as external (`↗`, `rel="noopener"`, a new tab) so they read differently
@@ -3000,10 +3093,6 @@ export function resourceHeaderHtml(slug) {
         <button data-act="disposition" class="cursor-pointer rounded-pill border border-rule-strong bg-transparent px-2 py-[1px] text-ink hover:border-accent">
           ${esc(p?.disposition || 'undecided')} ▾
         </button>
-        <button data-act="hide" class="cursor-pointer bg-transparent text-accent-ink underline">
-          ${p?.working_set_hidden ? 'unhide' : 'hide'}
-        </button>
-        <button data-act="remove" class="cursor-pointer bg-transparent text-accent-ink underline">remove</button>
       </span>
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
@@ -3231,8 +3320,8 @@ function wireDispositionPicker(host, p, { note, onSet }, entityType, entitySlug 
   }));
 }
 
-/** The header's three write paths. `hide` is reversible, `disposition` is a
- *  judgement, `remove` is neither — so only one of them asks. */
+/** The header's write path: the disposition pill. (`hide` and `remove` moved
+ *  to the resource menu, `toggleResourceMenu` below.) */
 export function bindResourceHeader() {
   const el = $('resource-header') || $('content');
   const slot = $('resource-action');
@@ -3293,88 +3382,192 @@ export function bindResourceHeader() {
         `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
     } }, entityType, state.selectedSlug);
   });
-
-  el.querySelector('[data-act="hide"]')?.addEventListener('click', async () => {
-    const hiding = !p?.working_set_hidden;
-    note(hiding ? 'Hiding…' : 'Unhiding…');
-    try {
-      // Generalized alongside the sidebar's bulk "hide" action -- this used
-      // to hard-code 'repo' regardless of the selected resource type, which
-      // silently hid the WRONG row whenever a database/filesystem happened
-      // to share a slug with a repo (`resource_working_set` is keyed on
-      // (entity_type, entity_slug), so a wrong entity_type is a wrong key,
-      // not a 404).
-      await setWorkingSetHidden(apiEntityType(state.resourceType), state.selectedSlug, hiding);
-      if (p) p.working_set_hidden = hiding;
-      renderSidebar();
-      await loadPane();
-      $('resource-action').innerHTML = `<div class="text-caveat text-ink">${
-        hiding
-          ? 'Hidden from your list. Still registered, and nothing was deleted — “Show hidden” in the sidebar brings it back.'
-          : 'Back in your list.'}</div>`;
-    } catch (err) {
-      note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
-    }
-  });
-
-  el.querySelector('[data-act="remove"]')?.addEventListener('click', () => {
-    // Dispatch by kind. This used to call `removeProject` for every kind,
-    // which hits the repo-only `DELETE /api/projects/{slug}` (404 for a
-    // database or filesystem). `removeEntity` picks the route that exists for
-    // each kind, and the confirmation says what THAT route does and does not
-    // touch.
-    const entityType = apiEntityType(state.resourceType);
-    slot.innerHTML = `
-      <div class="text-caveat text-accent-ink">${removeConfirmationHtml(entityType, state.selectedSlug)}</div>
-      <div class="mt-s2 flex gap-s3 text-caveat">
-        <button data-act="remove-confirm"
-          class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink">Remove</button>
-        <button data-act="remove-cancel" class="cursor-pointer bg-transparent text-ink underline">Cancel</button>
-      </div>`;
-    slot.querySelector('[data-act="remove-cancel"]')
-      .addEventListener('click', () => { slot.innerHTML = ''; });
-    slot.querySelector('[data-act="remove-confirm"]').addEventListener('click', async () => {
-      const slug = state.selectedSlug;
-      const listKey = state.resourceType === 'db' ? 'databases'
-        : state.resourceType === 'filesystem' ? 'filesystems' : 'projects';
-      note('Removing…');
-      try {
-        await removeEntity(entityType, slug);
-        state[listKey] = state[listKey].filter((x) => x.slug !== slug);
-        state.selected.delete(slug);
-        state.selectedSlug = state[listKey][0]?.slug || null;
-        renderSidebar();
-        renderTopBar();
-        renderRailScope();
-        await loadPane();
-      } catch (err) {
-        note(`<span class="text-accent-ink">Not removed: ${esc(err.message)}</span>`);
-      }
-    });
-  });
 }
 
-/** What the header's remove confirmation says, per kind. Worded from what
- *  each DELETE route does: repo drops its pgvector collections and registry
- *  row (projects.py `remove_project`); database and filesystem delete the
- *  registry row and survey records only (`registry.remove_database` /
- *  `remove_filesystem`) and make no Egeria call. */
-export function removeConfirmationHtml(entityType, slug) {
-  const name = `<span class="font-mono">${esc(slug)}</span>`;
-  const notIgnored = `It is not the same as marking it <em>ignored</em> — an ignored
+/* ────────────────────────────────────────────────────────────────────────
+ * The resource's menu (hide, remove) and the panel under the top bar
+ * ──────────────────────────────────────────────────────────────────────── */
+
+function closeResourceMenu() {
+  const menu = $('resource-menu');
+  if (menu) menu.remove();
+  const btn = $('scope-slug');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('click', onDocClickCloseMenu, true);
+  document.removeEventListener('keydown', onKeyCloseMenu, true);
+}
+function onDocClickCloseMenu(e) {
+  const menu = $('resource-menu');
+  if (menu && !menu.contains(e.target) && !$('scope-slug')?.contains(e.target)) closeResourceMenu();
+}
+function onKeyCloseMenu(e) {
+  if (e.key === 'Escape') { closeResourceMenu(); $('scope-slug')?.focus(); }
+}
+
+/** The menu on the top bar's resource name. It sits there because the bar is
+ *  the one place that names the current resource on every stage and sub-tab
+ *  (the content header is redrawn per pane). Hide/Unhide first, a rule, then
+ *  Remove last, in ink: the accent is reserved for the control that commits. */
+function toggleResourceMenu() {
+  if ($('resource-menu')) { closeResourceMenu(); return; }
+  const btn = $('scope-slug');
+  const slug = state.selectedSlug;
+  if (!btn || !slug) return;
+  const hidden = !!selectedProject()?.working_set_hidden;
+  const menu = document.createElement('div');
+  menu.id = 'resource-menu';
+  menu.dataset.slug = slug;
+  menu.setAttribute('role', 'menu');
+  menu.className = 'absolute z-20 w-[290px] rounded-sm border border-rule-strong bg-paper text-caveat text-ink shadow-lg';
+  menu.style.left = `${btn.offsetLeft || 0}px`;
+  menu.style.top = `${(btn.offsetTop || 0) + (btn.offsetHeight || 0) + 4}px`;
+  menu.innerHTML = `
+    <button type="button" role="menuitem" data-act="menu-hide" class="block w-full cursor-pointer bg-transparent px-3 py-2 text-left text-ink hover:bg-chrome-surface hover:text-chrome-ink">
+      ${hidden ? 'Unhide' : 'Hide from my list'}
+      <span class="mt-[2px] block text-provenance text-ink-muted">${hidden
+        ? 'Put it back in your list. It was only ever hidden from your view.'
+        : 'A view preference: it changes only your list. The resource stays registered.'}</span>
+    </button>
+    <div class="border-t border-rule" role="separator"></div>
+    <button type="button" role="menuitem" data-act="menu-remove" class="block w-full cursor-pointer bg-transparent px-3 py-2 text-left text-ink hover:bg-chrome-surface hover:text-chrome-ink">Remove from Resource Explorer…</button>`;
+  (btn.closest('header') || btn.parentElement || document.body).appendChild(menu);
+  btn.setAttribute('aria-expanded', 'true');
+  menu.querySelector('[data-act="menu-hide"]').addEventListener('click', () => { closeResourceMenu(); toggleHiddenFromMenu(); });
+  menu.querySelector('[data-act="menu-remove"]').addEventListener('click', () => { closeResourceMenu(); openRemovePanel(); });
+  document.addEventListener('click', onDocClickCloseMenu, true);
+  document.addEventListener('keydown', onKeyCloseMenu, true);
+  menu.querySelector('[data-act="menu-hide"]').focus();
+}
+
+/** The panel directly under the top bar. Both the removal confirmation and the
+ *  one-line outcome of a hide land here, never in the content pane's
+ *  `#resource-action` slot, which can be scrolled off-screen. Stamped with the
+ *  resource it is about so `renderTopBar` can drop it when the selection moves. */
+function showControlsPanel(html, slug = state.selectedSlug) {
+  let panel = $('resource-controls-panel');
+  if (!panel) {
+    panel = document.createElement('section');
+    panel.id = 'resource-controls-panel';
+    panel.className = 'border-b border-rule-strong bg-paper px-4 py-s3 text-caveat text-ink';
+    const header = $('scope-slug')?.closest('header');
+    if (header) header.after(panel);
+    else ($('scope-slug')?.parentElement || document.body).appendChild(panel);
+  }
+  panel.dataset.slug = slug || '';
+  panel.innerHTML = html;
+  return panel;
+}
+function closeControlsPanel() { $('resource-controls-panel')?.remove(); }
+
+async function toggleHiddenFromMenu() {
+  const slug = state.selectedSlug;
+  const p = selectedProject();
+  const hiding = !p?.working_set_hidden;
+  const panel = showControlsPanel(hiding ? 'Hiding…' : 'Unhiding…', slug);
+  try {
+    // `resource_working_set` is keyed on (entity_type, entity_slug): the
+    // entity type must follow the selected kind, or a database sharing a slug
+    // with a repo hides the wrong row.
+    await setWorkingSetHidden(apiEntityType(state.resourceType), slug, hiding);
+    if (p) p.working_set_hidden = hiding;
+    renderSidebar();
+    await loadPane();
+    showControlsPanel(`${hiding
+      ? 'Hidden from your list. Still registered, and nothing was lost — “Show hidden” in the sidebar brings it back.'
+      : 'Back in your list.'} <button type="button" data-act="panel-close" class="cursor-pointer bg-transparent text-ink underline">Close</button>`, slug)
+      .querySelector('[data-act="panel-close"]').addEventListener('click', closeControlsPanel);
+  } catch (err) {
+    panel.innerHTML = `<span class="text-state-warn">Not saved: ${esc(err.message)}</span>`;
+  }
+}
+
+/** Remove from Resource Explorer: the per-kind confirmation as a panel under
+ *  the top bar. Its commit button is the only accent in it and names what goes. */
+function openRemovePanel() {
+  const entityType = apiEntityType(state.resourceType);
+  const slug = state.selectedSlug;
+  if (!slug) return;
+  const panel = showControlsPanel(`
+    <div class="text-ink" data-remove-sentence>${removeConfirmationHtml(entityType, slug)}</div>
+    <div class="mt-s3 flex items-baseline gap-s3">
+      <button type="button" data-act="remove-confirm"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink"
+        >Remove the ${kindNoun(entityType)} ${esc(slug)}</button>
+      <button type="button" data-act="remove-cancel" class="cursor-pointer bg-transparent text-ink underline">Cancel</button>
+    </div>`, slug);
+  panel.querySelector('[data-act="remove-cancel"]').addEventListener('click', closeControlsPanel);
+  panel.querySelector('[data-act="remove-confirm"]').addEventListener('click', () => commitResourceRemoval(entityType, slug));
+}
+
+async function commitResourceRemoval(entityType, slug) {
+  // Dispatch by kind (DB-REMOVE-BUTTON-IMPLEMENTED.md). This used to call
+  // `removeProject` for every kind, which hits the repo-only
+  // `DELETE /api/projects/{slug}` (404 for a database or filesystem).
+  // `removeEntity` picks the route that exists for each kind.
+  const listKey = state.resourceType === 'db' ? 'databases'
+    : state.resourceType === 'filesystem' ? 'filesystems' : 'projects';
+  const panel = showControlsPanel('Removing…', slug);
+  try {
+    await removeEntity(entityType, slug);
+    state[listKey] = state[listKey].filter((x) => x.slug !== slug);
+    state.selected.delete(slug);
+    state.selectedSlug = state[listKey][0]?.slug || null;
+    renderSidebar();
+    renderTopBar();
+    renderRailScope();
+    await loadPane();
+    showControlsPanel(`Removed the ${kindNoun(entityType)} ${esc(slug)} from Resource Explorer. <button type="button" data-act="panel-close" class="cursor-pointer bg-transparent text-ink underline">Close</button>`,
+      state.selectedSlug)
+      .querySelector('[data-act="panel-close"]').addEventListener('click', closeControlsPanel);
+  } catch (err) {
+    panel.innerHTML = `<span class="text-state-warn">Not removed: ${esc(err.message)}</span>`;
+  }
+}
+
+/** What the remove confirmation says, per kind, for one resource or for a list
+ *  (the Select bar's bulk removal uses the same sentence; the sidebar is scoped
+ *  to one kind, so a list is always one kind). Worded from what each DELETE
+ *  route does: repo drops its pgvector collections and registry row
+ *  (projects.py `remove_project`); database and filesystem delete the registry
+ *  row and survey records only (`registry.remove_database` / `remove_filesystem`)
+ *  and make no Egeria call. Plain ink: the accent is for the control that
+ *  commits, never for a sentence. "This cannot be undone" is said in words. */
+export function removeConfirmationHtml(entityType, target) {
+  const slugs = Array.isArray(target) ? target : [target];
+  const many = slugs.length > 1;
+  const name = many
+    ? `these <span class="tnum">${slugs.length}</span> ${kindNoun(entityType, slugs.length)}`
+    : `<span class="font-mono">${esc(slugs[0])}</span>`;
+  const notIgnored = many
+    ? `It is not the same as marking them <em>ignored</em> — an ignored
+    resource stays registered and can come back.`
+    : `It is not the same as marking it <em>ignored</em> — an ignored
     resource stays registered and can come back.`;
   if (entityType === 'database') {
-    return `Unregister the database ${name} and delete its local survey records
+    return many
+      ? `Unregister ${name} and delete their local survey records
+      (surveys, schema, table and column detail, coverage)? This cannot be undone.
+      Not touched: the source databases themselves, anything already published to Egeria,
+      and the server registrations they were discovered from. ${notIgnored}`
+      : `Unregister the database ${name} and delete its local survey records
       (surveys, schema, table and column detail, coverage)? This cannot be undone.
       Not touched: the source database itself, anything already published to Egeria,
       and the server registration it was discovered from. ${notIgnored}`;
   }
   if (entityType === 'filesystem') {
-    return `Unregister the filesystem ${name} and delete its local survey records?
+    return many
+      ? `Unregister ${name} and delete their local survey records?
+      This cannot be undone. Not touched: the files on disk and anything already
+      published to Egeria. ${notIgnored}`
+      : `Unregister the file system ${name} and delete its local survey records?
       This cannot be undone. Not touched: the files on disk and anything already
       published to Egeria. ${notIgnored}`;
   }
-  return `Unregister ${name} and delete all its local survey data? This cannot be
+  return many
+    ? `Unregister ${name} and delete all their local survey data? This cannot be
+    undone. Not touched: the GitHub repositories and anything already published to
+    Egeria. ${notIgnored}`
+    : `Unregister ${name} and delete all its local survey data? This cannot be
     undone. Not touched: the GitHub repository and anything already published to
     Egeria. ${notIgnored}`;
 }

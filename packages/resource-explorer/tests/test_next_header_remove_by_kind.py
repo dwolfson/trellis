@@ -25,9 +25,14 @@ def _bind_src() -> str:
 
 
 def _remove_click_src() -> str:
-    src = _bind_src()
-    start = src.index("[data-act=\"remove\"]")
-    return src[start:]
+    """The removal commit. It left bindResourceHeader() for the resource menu on
+    the top-bar name (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md): the same
+    dispatch by kind, now in commitResourceRemoval()."""
+    return _fn_decl(APP_JS.read_text(), "async function commitResourceRemoval(")
+
+
+def _remove_panel_src() -> str:
+    return _fn_decl(APP_JS.read_text(), "function openRemovePanel(")
 
 
 def _confirm_src() -> str:
@@ -38,7 +43,9 @@ class TestRemoveDispatchesByKind:
     def test_handler_uses_removeEntity_with_translated_type(self):
         src = _remove_click_src()
         assert "removeEntity(entityType, slug)" in src
-        assert "apiEntityType(state.resourceType)" in src
+        # the panel translates the type once and hands it to the commit
+        assert "apiEntityType(state.resourceType)" in _remove_panel_src()
+        assert "commitResourceRemoval(entityType, slug)" in _remove_panel_src()
 
     def test_handler_no_longer_hardwires_the_repo_route(self):
         # known negative: the unfixed handler called removeProject directly
@@ -96,4 +103,4 @@ class TestConfirmationNamesWhatItDoesAndDoesNotTouch:
         assert "repo" not in db.lower()
 
     def test_handler_renders_the_per_kind_helper(self):
-        assert "removeConfirmationHtml(entityType, state.selectedSlug)" in _remove_click_src()
+        assert "removeConfirmationHtml(entityType, slug)" in _remove_panel_src()
