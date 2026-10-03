@@ -160,6 +160,9 @@ class DatabaseEntity:
     # = a stored password exists but cannot be decrypted (wrong/rotated key);
     # db_password is then "" and MUST NOT be used to connect.
     credential_status: str = "none"
+    # UTC ISO seconds of the last recorded credential CHANGE (db_user or
+    # password differing from what was stored). None = before this was recorded.
+    credential_changed_at: str | None = None
 
 
 @dataclass
@@ -1400,6 +1403,16 @@ class ProjectRegistry:
         if "author" not in self._get_table_columns(conn, table_name):
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN author TEXT DEFAULT NULL")
 
+    def _add_credential_changed_at_column(self, conn) -> None:
+        """Idempotent, additive, nullable `credential_changed_at` on `databases`.
+
+        Same pattern and same SQL on SQLite and Postgres as `_add_author_column`
+        (metadata-only on Postgres; column list read first so a re-run is a
+        no-op). NULL = "before this was recorded", never ''.
+        """
+        if "credential_changed_at" not in self._get_table_columns(conn, "databases"):
+            conn.execute("ALTER TABLE databases ADD COLUMN credential_changed_at TEXT DEFAULT NULL")
+
     def _add_server_last_run_columns(self, conn) -> None:
         """Idempotent, additive, nullable `last_run_at` / `last_run_candidates`
         on `db_servers` (a saved database source remembers its last run).
@@ -2606,6 +2619,7 @@ class ProjectRegistry:
                 if col not in existing_db:
                     deftype = "INTEGER" if defval == "0" else "TEXT"
                     conn.execute(f"ALTER TABLE databases ADD COLUMN {col} {deftype} DEFAULT {defval}")
+            self._add_credential_changed_at_column(conn)
             # Database servers table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS db_servers (
@@ -9899,16 +9913,57 @@ class ProjectRegistry:
         cli/main.py) via `omsecrets_store.write_credential`, since this
         method only knows about the registry, not the deployment's
         `.omsecrets` path.
+
+        Every change is recorded: an activity-log row naming the slug and the
+        NEW user name (never the password or any value of it), and
+        `credential_changed_at` set to now (UTC, seconds). A call that
+        rewrites the same user and the same plaintext (the lazy re-encrypt in
+        `_row_to_database`) still stores the new ciphertext but writes no row
+        and leaves `credential_changed_at` alone: nothing changed.
         """
-        from resource_explorer.credential_crypto import encrypt_db_password
+        from resource_explorer.credential_crypto import (
+            decrypt_db_password,
+            encrypt_db_password,
+        )
 
         slug = self._normalize_slug(slug)
         encrypted = encrypt_db_password(db_password or "")
         with self._conn() as conn:
-            conn.execute(
-                "UPDATE databases SET db_user = ?, db_password = ? WHERE slug = ?",
-                (db_user, encrypted, slug),
-            )
+            prev = conn.execute(
+                "SELECT db_user, db_password, display_name FROM databases WHERE slug = ?",
+                (slug,),
+            ).fetchone()
+            changed = True
+            display_name = ""
+            if prev is not None:
+                display_name = prev["display_name"] or ""
+                try:
+                    prev_plain = decrypt_db_password(prev["db_password"] or "")
+                except ValueError:
+                    prev_plain = None  # unreadable: cannot be "the same"
+                changed = not (
+                    (prev["db_user"] or "") == (db_user or "")
+                    and prev_plain == (db_password or "")
+                )
+            if changed:
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                conn.execute(
+                    "UPDATE databases SET db_user = ?, db_password = ?, "
+                    "credential_changed_at = ? WHERE slug = ?",
+                    (db_user, encrypted, now, slug),
+                )
+            else:
+                conn.execute(
+                    "UPDATE databases SET db_user = ?, db_password = ? WHERE slug = ?",
+                    (db_user, encrypted, slug),
+                )
+        if changed and prev is not None:
+            self.write_activity(ActivityEntry(
+                id=str(uuid.uuid4()), ts=now, operation="credential_change",
+                intent="enrichment", entity_type="database", entity_slug=slug,
+                entity_name=display_name, status="ok",
+                summary=f"Credentials for {slug} changed: user is now {db_user}",
+            ))
 
     def check_credential_drift(self, slug: str) -> dict:
         """Compare RE's registry against the `.omsecrets` file for one

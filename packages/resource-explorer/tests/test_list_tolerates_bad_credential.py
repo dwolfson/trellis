@@ -168,7 +168,16 @@ def test_survey_route_refuses_for_the_bad_database_and_never_connects(client, re
     assert client.post("/api/databases/no_pw/survey", json={}).status_code == 400
 
 
-def test_credentials_route_lets_the_user_re_enter(client):
+def test_credentials_route_lets_the_user_re_enter(client, monkeypatch):
+    import psycopg2
+
+    from resource_explorer.surveyors.database.connection import PostgreSQLConnection
+
+    def _no_driver(*a, **k):
+        raise AssertionError("real psycopg2.connect reached")
+
+    monkeypatch.setattr(psycopg2, "connect", _no_driver)
+    monkeypatch.setattr(PostgreSQLConnection, "connect", lambda self: None)
     r = client.patch("/api/databases/bad_one/credentials",
                      json={"db_user": "fake_user", "db_password": "fresh-fake-pw"})
     assert r.status_code == 200 and r.json()["credential_status"] == "ok"

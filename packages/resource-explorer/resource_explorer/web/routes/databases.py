@@ -57,6 +57,9 @@ class DatabaseSummary(BaseModel):
     # `credential_reason` is then the fixed, secret-free display string.
     credential_status: str = "none"
     credential_reason: str = ""
+    # UTC ISO seconds of the last recorded credential change; None = before
+    # this was recorded.
+    credential_changed_at: str | None = None
     # 'undecided' when nobody has ever decided, same convention
     # `ProjectSummary.disposition` (projects.py) already uses — populated
     # once `repo_dispositions`' PK generalized to (entity_type, entity_slug)
@@ -240,6 +243,7 @@ def _to_summary(db) -> DatabaseSummary:
         egeria_user=db.egeria_user or "",
         group_slug=getattr(db, "group_slug", "") or "",
         credential_status=getattr(db, "credential_status", "none") or "none",
+        credential_changed_at=getattr(db, "credential_changed_at", None),
         credential_reason=(CREDENTIAL_UNREADABLE_REASON
                            if getattr(db, "credential_status", "") == "unreadable" else ""),
         disposition=disp.get("disposition", "undecided"),
@@ -510,6 +514,19 @@ async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate)
     database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    # Connect test BEFORE anything is stored or projected, against this
+    # database's own host/port/database_name; off the event loop. No bypass.
+    from resource_explorer.credential_check import (
+        CredentialCheckError,
+        check_database_credential,
+    )
+
+    try:
+        await asyncio.to_thread(
+            check_database_credential, database, req.db_user, req.db_password)
+    except CredentialCheckError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
     registry.update_database_credentials(slug, req.db_user, req.db_password)
     _project_credential_to_omsecrets(slug, req.db_user, req.db_password)

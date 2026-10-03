@@ -419,12 +419,14 @@ class PostgreSQLConnection(DatabaseConnection):
         database: str,
         user: str,
         password: str,
+        connect_timeout: int | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.database = database
         self.user = user
         self.password = password
+        self.connect_timeout = connect_timeout
         self._conn = None
 
     def connect(self) -> Any:
@@ -437,12 +439,16 @@ class PostgreSQLConnection(DatabaseConnection):
                 "Install it with: pip install psycopg2-binary"
             ) from e
 
+        kwargs = {}
+        if self.connect_timeout is not None:
+            kwargs["connect_timeout"] = self.connect_timeout
         self._conn = psycopg2.connect(
             host=self.host,
             port=self.port,
             database=self.database,
             user=self.user,
             password=self.password,
+            **kwargs,
         )
         return self._conn
 
@@ -1836,7 +1842,8 @@ def server_connection(host: str, port: int, user: str, password: str, db_type: s
 
 
 @contextmanager
-def database_connection(db_entity: DatabaseEntity, credentials: dict):
+def database_connection(db_entity: DatabaseEntity, credentials: dict,
+                        connect_timeout: int | None = None):
     """Context manager for database connections.
     
     Args:
@@ -1864,6 +1871,7 @@ def database_connection(db_entity: DatabaseEntity, credentials: dict):
             database=db_entity.database_name,
             user=credentials["user"],
             password=credentials["password"],
+            connect_timeout=connect_timeout,
         )
     else:
         raise ValueError(f"Unsupported database type: {db_entity.db_type}")
