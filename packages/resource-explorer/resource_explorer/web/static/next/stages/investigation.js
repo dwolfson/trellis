@@ -32,12 +32,14 @@ import {
   bindInvestigationEgeriaProject, promoteInvestigation, reclassifyInvestigation,
   relinkInvestigationMembers, syncInvestigationEgeria,
   getInvestigationDispositions, setInvestigationDisposition, getInvestigationNextSteps,
+  fetchScopeCsv,
 } from '/static/re-api.js';
 import {
   state, esc, $, icon, setInvestigation, refreshInvestigationsAndSidebar,
   ensureResourceListLoaded,
 } from '/static/next/app.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
+import { saveCsv } from '/static/next/download.js';
 
 // Module-local view state — which investigation (if any) is open, and
 // whether the list includes closed ones. Not on `state`: nothing outside
@@ -360,7 +362,16 @@ async function renderDetail(slug) {
     <div id="inv-egeria-form"></div>
 
     <div class="my-s3 h-px bg-rule"></div>
-    <h4 class="m-0 mb-s2 font-heading text-subtab font-normal text-ink">Members (${members.length})</h4>
+    <div class="mb-s2 flex items-center gap-s3">
+      <h4 class="m-0 font-heading text-subtab font-normal text-ink">Members (${members.length})</h4>
+      <button data-act="inv-add-menu" type="button" class="${btnCls()}">＋ add…</button>
+      <button data-act="inv-export-scope" type="button"
+        class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
+        title="Download the in-scope members as CSV. Loading it into another investigation adds the resources; the status_ columns are for a reader and are never read back."
+        >Export CSV</button>
+      <span id="inv-scope-note" class="text-caveat text-ink-muted"></span>
+    </div>
+    <div id="inv-add-menu"></div>
     ${addMemberFormHtml()}
     ${membersTableHtml(inv, members, dispositions)}`;
 
@@ -474,6 +485,36 @@ function bindDetail(inv, members) {
   const el = $('content');
   const back = () => { _detailSlug = null; renderInvestigation(); };
   el.querySelectorAll('[data-act="inv-back"]').forEach((b) => b.addEventListener('click', back));
+
+  // Scope's "＋ add…": the ways to put resources in scope other than the slug
+  // form below. "from a file" opens the Find dialog on its From-a-file tab with
+  // THIS investigation already chosen as the destination: one dialog, two doors.
+  el.querySelector('[data-act="inv-add-menu"]')?.addEventListener('click', () => {
+    const host = $('inv-add-menu');
+    if (host.innerHTML.trim()) { host.innerHTML = ''; return; }
+    host.innerHTML = `<div class="mb-s2 flex flex-wrap items-center gap-s3 text-caveat" data-add-menu>
+      <button data-act="inv-add-from-file" type="button"
+        class="cursor-pointer bg-transparent text-accent-ink underline">from a file</button>
+      <span class="text-ink-muted">or by slug, in the form below</span>
+    </div>`;
+    host.querySelector('[data-act="inv-add-from-file"]').addEventListener('click', async () => {
+      host.innerHTML = '';
+      // Imported on use: the Find dialog imports this module (to refresh the
+      // open page after a confirm), and a static import here would be a cycle.
+      const mod = await import('/static/next/db-server-discovery.js');
+      mod.openFindDbServersDialog({ tab: 'file', investigation: inv.slug });
+    });
+  });
+  el.querySelector('[data-act="inv-export-scope"]')?.addEventListener('click', async () => {
+    const note = $('inv-scope-note');
+    try {
+      const { text, filename } = await fetchScopeCsv(inv.slug);
+      saveCsv(text, filename);
+      note.textContent = `Downloaded ${filename}.`;
+    } catch (err) {
+      note.textContent = `Could not export: ${err.message}`;
+    }
+  });
 
   el.querySelector('[data-act="inv-make-current"]')?.addEventListener('click', async () => {
     await setInvestigation(inv.slug);

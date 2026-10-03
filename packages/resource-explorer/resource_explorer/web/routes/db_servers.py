@@ -470,32 +470,23 @@ async def get_server(slug: str) -> ServerSummary:
 @router.post("/{slug}/add-database")
 async def add_database_from_server(slug: str, database_name: str, display_name: str = ""):
     """Register a specific database from this server into the databases table."""
-    from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+    from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     server = registry.get_server(slug)
     if not server:
         raise HTTPException(404, f"Server '{slug}' not found")
 
-    db_slug = f"{slug}-{database_name}".replace("_", "-")
+    from resource_explorer.batch_io import build_database_entity
+
+    # One builder shared with the CSV import (batch_io.apply_import), so a
+    # database registered from a file is the same row as one registered here.
+    db = build_database_entity(server, database_name, display_name)
+    db_slug = db.slug
     if registry.get_database(db_slug, allow_unreadable=True):
         raise HTTPException(400, f"Database '{db_slug}' already registered")
-
-    db = DatabaseEntity(
-        slug=db_slug,
-        display_name=display_name or f"{database_name} @ {server.display_name}",
-        db_type=server.db_type,
-        host=server.host,
-        port=server.port,
-        database_name=database_name,
-        server_slug=slug,
-        group_slug=server.group_slug,
-        db_user=server.db_user,
-        db_password=server.db_password,
-        egeria_host=server.egeria_host,
-        egeria_url=server.egeria_url,
-        egeria_server=server.egeria_server,
-        egeria_user=server.egeria_user,
-        egeria_password=server.egeria_password,
-    )
     registry.register_database(db)
-    return {"slug": db_slug, "database_name": database_name, "server_slug": slug}
+    # The slug the registry STORED ('_' for '-'), not the one asked for. The
+    # dialog puts this into an investigation's scope and a group assignment, and
+    # a scope member under 'a-b' points at nothing when the database is 'a_b'.
+    return {"slug": registry._normalize_slug(db_slug), "database_name": database_name,
+            "server_slug": slug}

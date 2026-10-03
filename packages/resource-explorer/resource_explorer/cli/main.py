@@ -2745,7 +2745,9 @@ def import_resources(
         console.print("[yellow]No rows found.[/yellow]")
         raise typer.Exit(0)
 
-    plan = plan_import(registry, rows)
+    # The command line registers repos only; database rows are registered from
+    # the web Find databases dialog (they need a server chosen by a person).
+    plan = plan_import(registry, rows, importable=("repo",))
     console.print(f"[bold]{plan.total} row(s) in {path}[/bold]")
     console.print(f"  [green]{len(plan.to_register)}[/green] to register")
     console.print(f"  [dim]{len(plan.already_registered)} already registered[/dim]")

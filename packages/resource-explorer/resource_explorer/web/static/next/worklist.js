@@ -37,9 +37,11 @@ import {
   listWorkLists,
   promoteWorkList,
   publishWorkList,
+  fetchWorkListCsv,
   requireKind,
   setDisposition,
 } from '/static/re-api.js';
+import { saveCsv } from '/static/next/download.js';
 import { ago, daysSince, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
@@ -316,6 +318,9 @@ function renderActions(ctx) {
       </select>
       <button data-act="promote" ${n ? '' : 'disabled'}
         class="cursor-pointer bg-transparent text-accent-ink underline">promote <span class="tnum">${n}</span> →</button>
+      <button data-act="export-csv" class="cursor-pointer bg-transparent text-accent-ink underline"
+        title="Download this work list as CSV: the same columns the Find dialog reads, status_ columns for a reader only"
+        >export CSV</button>
       <button data-act="publish" class="cursor-pointer bg-transparent text-accent-ink underline"
         >${grid.workList.egeria_guid ? 're-publish' : 'publish to Egeria'}</button>
     </span>`;
@@ -324,6 +329,7 @@ function renderActions(ctx) {
   host.querySelector('[data-act="refresh"]')?.addEventListener('click', () => openRefreshPlan(ctx));
   host.querySelector('[data-act="promote"]')?.addEventListener('click', () => promote(ctx));
   host.querySelector('[data-act="publish"]')?.addEventListener('click', () => publish(ctx));
+  host.querySelector('[data-act="export-csv"]')?.addEventListener('click', () => exportCsv());
   host.querySelector('#wl-disposition')?.addEventListener('change', (e) => {
     const value = e.target.value;
     e.target.value = '';
@@ -1914,6 +1920,16 @@ async function promote(ctx) {
     await renderWorkListPane(ctx);
   } catch (err) {
     note(`<span class="text-state-warn">Could not promote: ${esc(err.message)}</span>`);
+  }
+}
+
+async function exportCsv() {
+  try {
+    const { text, filename } = await fetchWorkListCsv(grid.workList.slug);
+    saveCsv(text, filename);
+    note(`Downloaded <span class="font-mono">${esc(filename)}</span>.`);
+  } catch (err) {
+    note(`<span class="text-state-warn">Could not export: ${esc(err.message)}</span>`);
   }
 }
 
