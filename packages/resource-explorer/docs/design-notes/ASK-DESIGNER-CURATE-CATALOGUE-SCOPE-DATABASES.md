@@ -65,6 +65,23 @@ today nothing on screen lets them make it.
   our databases; the only such elements are templates and one content-pack
   sample. So the cataloguer has never run for us, and the premise below is
   established at runtime, not only from source.
+- **How a target gets attached (read from the content pack, 2026-10-03):**
+  Egeria ships two separate process families for PostgreSQL and no process
+  that does both. *CreateAndSurvey* creates the server or database element
+  from its template and runs the survey; it attaches no target, and its
+  own description says schemas, tables and columns are not catalogued.
+  *CreateAsCatalogTarget* creates the element and then runs
+  `catalog-postgres-database` (or `-server`, `-schema`), which creates the
+  CatalogTarget relationship from the cataloguer to the new element with
+  the request parameters as the target's configuration, including the JDBC
+  include and exclude lists; the daemon's next cycle then creates the
+  schema, table and column elements. "Catalog and Survey" is **RE's own
+  name** for RE's own method, which replicates part of CreateAndSurvey by
+  hand (the two assets from templates, then the surveys) and never
+  attaches a target. The template placeholders a caller supplies are
+  databaseName, databaseDescription, serverName, hostIdentifier,
+  portNumber, databaseUserId, databasePassword, secretsStorePathName and
+  secretsCollectionName; which are required was not checked.
   Three constraints come with it: the name filters match **plain names,
   not schema-qualified ones**, so "table X in schema A but not in B" cannot
   be expressed; the filters cover names only, with no row, size or depth
@@ -74,8 +91,10 @@ today nothing on screen lets them make it.
 
 So the premise is: a database is catalogued whole or not at all today, and
 the lever a steward's choice would pull already exists on the Egeria side,
-unused: attach the server as a catalog target, and compile the confirmed
-scope into the cataloguer's include and exclude lists. Per-node states then
+unused: run `catalog-postgres-database` for the element RE already created
+(or create the CatalogTarget relationship to the JDBC cataloguer directly),
+with the confirmed scope compiled into the target's include and exclude
+lists, and let the daemon's cycle create the elements. Per-node states then
 come from reading the created elements back by qualified name. What the
 lever cannot express (a per-schema table choice, a depth below "columns
 on or off") the screen has to say rather than pretend.
@@ -106,9 +125,13 @@ on or off") the screen has to say rather than pretend.
 4. **Three mechanisms, one commit.** RE's publish (assets, report and
    annotations), Egeria's native survey (measurements per schema, table and
    column, no scope control) and Egeria's cataloguer (the element creator,
-   with name filters). The commit's job is to set the cataloguer's lists
-   from the confirmed scope and attach the target; the native survey and
-   RE's publish add measurements. Should the screen name all three as what
+   with name filters, reached through `catalog-postgres-database`, which
+   attaches the target). The commit's job is to attach the target with the
+   confirmed scope as its lists; the native survey and RE's publish add
+   measurements. The elements arrive on the daemon's next cycle, not at
+   commit, so the tree needs an "attached · waiting for Egeria's next
+   refresh" state between confirmed and catalogued, with the time of the
+   last cycle. Should the screen name all three as what
    will happen, and how does a node show which mechanism produced its
    state: an element read back, a measurement only, or RE's annotation
    only? And two consequences of the lever need a drawing: a selection the
