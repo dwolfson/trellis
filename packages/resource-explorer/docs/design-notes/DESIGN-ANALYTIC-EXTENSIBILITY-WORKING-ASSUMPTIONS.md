@@ -161,6 +161,43 @@ and, if it should recur and be kept, to a derived step with a schedule.
 What is stored and published is always a step's output; what is shown on
 demand is a routine's; nothing crosses without a person saving it.
 
+**A13. Context compilation is the shared resolver, and it already encodes the
+envelope.** RE's compiled-context path (`context_compile.py`,
+`trellis-context`; `docs/context-compilation-design.md`) turns a question
+into a spec: the question catalogue's analyses become *sections*, stored
+results become *candidates* resolved through the fact layer, and the packer
+fits a budget and returns a **manifest** (what was packed, dropped, and
+*missing*, with "never ran" kept distinct from "ran and found nothing") and
+a **derivation** (why each section is there). A compile never executes a
+step to fill a gap. In the terms of this note:
+
+- The compiler is a **routine** (A10): it computes over the ODS for a
+  consumer, returns a pack with provenance, stores nothing, and runs in the
+  caller's process, which is why `trellis-context` is already a shared
+  package and the natural core of A11's one runtime.
+- Its resolver registry **is** the generic reader registry of R7. Sections
+  bind to annotation types; candidates are annotations with their envelope;
+  the manifest's "missing" is the envelope's *not established* surfacing at
+  the pack. A user-added step that emits typed annotations bound to a
+  question is compilable with no compiler change. That is the strongest
+  argument for A2.
+- **One resolver, three callers.** The chat packs for an LLM; a derived
+  step (A12) resolves the same sections deterministically and emits an
+  annotation; a dashboard tile or board resolves them for presentation.
+  Section resolution is written once, in the runtime, and the three callers
+  differ only in what they do with the candidates.
+- **Identity and staleness.** The compile cache is keyed on investigation,
+  purpose, intent and as-of time, never on perspective (the design's
+  invariant). A step's version (A5) joins the candidates' identity, so a
+  changed step invalidates every pack that carried its annotations; a
+  derived annotation's "inputs changed since computed" is the same test at
+  the step.
+- **Report specs and context specs are siblings.** EA's spec lifecycle and
+  cache-key discipline were the parts the compiler design borrowed; a report
+  spec declares what to fetch for a tile the way a context spec declares
+  what to pack for an answer. R15's routine declaration should be one spec
+  model with two consumers, not two spec languages.
+
 **A9. EA's report specs, user analytics routines and Portal dashboard tiles
 are the same eight points with a different input.** A report spec declares
 what to fetch; a routine is an executor over catalogue metadata rather than
@@ -224,6 +261,11 @@ Each needs an owner and a yes/no before architecture. Blank where unknown.
   question" is declared and where the saved routine lives; what a
   scorecard publishes (the score, its inputs, or both) and under which
   annotation type.
+- **R18 The resolver as runtime core.** What `trellis-context`'s resolver
+  needs from the envelope and the ODS to serve all three callers (chat,
+  derived steps, tiles); whether sections bind to annotation types today or
+  still to analysis ids; what the manifest must carry for a derived step's
+  provenance; how a step's version enters the cache key.
 - **R14 Testing.** What a step author must supply: a fixture resource, an
   expected annotation set, and the absence case (the step on a resource
   where the thing isn't there), so the envelope is exercised before the
