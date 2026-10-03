@@ -56,6 +56,15 @@ today nothing on screen lets them make it.
   so a table left out on a later refresh is removed from Egeria. The
   quickstart loads and hosts both in its integration daemon at boot.
   Nothing in RE sets any of those lists or attaches a server as a target.
+  **Runtime, checked 2026-10-03 against the dev platform with a demo
+  login:** both integration groups (PostgreSQL, Database) are RUNNING in
+  `qs-integration-daemon`, both cataloguers are WAITING with **zero catalog
+  targets**, and the repository holds RelationalDatabase elements for
+  coco_pharma and adventureworks (RE's template publish) but no
+  DeployedDatabaseSchema, RelationalTable or RelationalColumn for any of
+  our databases; the only such elements are templates and one content-pack
+  sample. So the cataloguer has never run for us, and the premise below is
+  established at runtime, not only from source.
   Three constraints come with it: the name filters match **plain names,
   not schema-qualified ones**, so "table X in schema A but not in B" cannot
   be expressed; the filters cover names only, with no row, size or depth
