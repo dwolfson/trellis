@@ -223,8 +223,8 @@ export const addDiscoveredDatabase = (slug, databaseName, displayName = '') =>
 
 /** The five-count preview. Writes nothing. `serverChoices` is {line: serverSlug}
  *  for rows that named no server. A refused file comes back 200 with `refused`. */
-export const previewDiscoveryFile = (text, serverChoices = {}) =>
-  post('/api/discovery/from-file/preview', { text, server_choices: serverChoices });
+export const previewDiscoveryFile = (text, serverChoices = {}, investigation = '') =>
+  post('/api/discovery/from-file/preview', { text, server_choices: serverChoices, investigation });
 
 /** Apply a confirmed preview: {text, lines, server_choices, group, investigation,
  *  accept_changes: [{line, field}]}. */
