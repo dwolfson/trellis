@@ -2851,6 +2851,65 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag)"
             )
             self._add_author_column(conn, "resource_tags")
+            # ── Catalogue scope (Curate for a database: what gets catalogued) ──
+            #
+            # A declared, signed, dated choice stored in RE, not in Egeria.
+            # Slice A of CURATE-CATALOGUE-SCOPE: nothing here is ever sent to
+            # Egeria. Two APPEND-ONLY tables, additive and idempotent (CREATE
+            # TABLE IF NOT EXISTS), no foreign keys, no colons in this text
+            # because the Postgres translator rewrites colon-name tokens.
+            #
+            # catalogue_scope_events: one row per change. The current state of
+            # a node is its newest row (highest id); a cleared choice is a row
+            # with choice = '' so who cleared it and when is kept. node_kind is
+            # schema, table or depth (a depth change carries the depth id in
+            # choice). source is person, or the id of the proposal rule that
+            # was confirmed; proposal_rule/proposal_choice/reason/measured_at/
+            # measured_json keep the proposal and the measurement under it, so
+            # an overridden proposal can still be shown struck through and a
+            # survey that now disagrees can be detected.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_scope_events (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug   TEXT NOT NULL,
+                    node_kind       TEXT NOT NULL,
+                    schema_name     TEXT NOT NULL DEFAULT '',
+                    table_name      TEXT NOT NULL DEFAULT '',
+                    choice          TEXT NOT NULL DEFAULT '',
+                    action          TEXT NOT NULL DEFAULT 'set',
+                    source          TEXT NOT NULL DEFAULT 'person',
+                    proposal_rule   TEXT NOT NULL DEFAULT '',
+                    proposal_choice TEXT NOT NULL DEFAULT '',
+                    reason          TEXT NOT NULL DEFAULT '',
+                    measured_at     TEXT NOT NULL DEFAULT '',
+                    measured_json   TEXT NOT NULL DEFAULT '{}',
+                    author          TEXT NOT NULL,
+                    changed_at      TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalogue_scope_events_node "
+                "ON catalogue_scope_events(database_slug, node_kind, schema_name, table_name, id)"
+            )
+            # catalogue_scope_baselines: the set of schema and table node keys
+            # the latest survey knew when the scope was first declared and on
+            # each re-declaration. The newest row is the baseline "new since
+            # your scope was declared" is measured against.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_scope_baselines (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug   TEXT NOT NULL,
+                    kind            TEXT NOT NULL DEFAULT 'first',
+                    baseline_json   TEXT NOT NULL DEFAULT '{}',
+                    survey_at       TEXT NOT NULL DEFAULT '',
+                    declared_by     TEXT NOT NULL,
+                    declared_at     TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalogue_scope_baselines_slug "
+                "ON catalogue_scope_baselines(database_slug, id)"
+            )
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
             # `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`, slice 1 ("Declare
@@ -10063,6 +10122,8 @@ class ProjectRegistry:
             # databases.slug; SQLite silently allows the reverse order
             # (foreign_keys pragma off by default), Postgres does not.
             conn.execute("DELETE FROM database_surveys WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM catalogue_scope_events WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM catalogue_scope_baselines WHERE database_slug = ?", (normalized,))
             # The structured detail tables are children too, and every one of
             # them has a real FK. Missing them here does not strand rows — it
             # makes the parent delete fail outright, on Postgres and on
@@ -10287,6 +10348,88 @@ class ProjectRegistry:
                 (slug,),
             ).fetchall()
         return dict(rows[0]) if rows else None
+
+    # ── Catalogue scope storage (append-only; see the DDL for the shape) ──
+
+    def append_catalogue_scope_event(self, slug: str, *, node_kind: str, author: str,
+                                     schema_name: str = "", table_name: str = "",
+                                     choice: str = "", action: str = "set",
+                                     source: str = "person", proposal_rule: str = "",
+                                     proposal_choice: str = "", reason: str = "",
+                                     measured_at: str = "", measured: dict | None = None,
+                                     changed_at: str | None = None) -> None:
+        """Append one scope change. Never updates or removes a row."""
+        slug = self._normalize_slug(slug)
+        if not author:
+            raise ValueError("a catalogue scope change needs an author")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO catalogue_scope_events
+                   (database_slug, node_kind, schema_name, table_name, choice, action,
+                    source, proposal_rule, proposal_choice, reason, measured_at,
+                    measured_json, author, changed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (slug, node_kind, schema_name or "", table_name or "", choice or "", action,
+                 source, proposal_rule, proposal_choice, reason, measured_at or "",
+                 json.dumps(measured or {}), author,
+                 changed_at or datetime.utcnow().isoformat()),
+            )
+
+    def list_catalogue_scope_events(self, slug: str) -> list[dict]:
+        """Every scope change for a database, oldest first."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, database_slug, node_kind, schema_name, table_name, choice,
+                          action, source, proposal_rule, proposal_choice, reason,
+                          measured_at, measured_json, author, changed_at
+                   FROM catalogue_scope_events WHERE database_slug = ? ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["measured"] = json.loads(d.pop("measured_json") or "{}")
+            except (ValueError, TypeError):
+                d["measured"] = {}
+            out.append(d)
+        return out
+
+    def append_catalogue_scope_baseline(self, slug: str, *, baseline: dict, survey_at: str,
+                                        author: str, kind: str = "first",
+                                        declared_at: str | None = None) -> None:
+        slug = self._normalize_slug(slug)
+        if not author:
+            raise ValueError("a catalogue scope declaration needs an author")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO catalogue_scope_baselines
+                   (database_slug, kind, baseline_json, survey_at, declared_by, declared_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (slug, kind, json.dumps(baseline), survey_at or "", author,
+                 declared_at or datetime.utcnow().isoformat()),
+            )
+
+    def list_catalogue_scope_baselines(self, slug: str) -> list[dict]:
+        """Every declaration baseline for a database, oldest first."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, database_slug, kind, baseline_json, survey_at,
+                          declared_by, declared_at
+                   FROM catalogue_scope_baselines WHERE database_slug = ? ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["baseline"] = json.loads(d.pop("baseline_json") or "{}")
+            except (ValueError, TypeError):
+                d["baseline"] = {}
+            out.append(d)
+        return out
 
     def latest_measured_database_survey(self, slug: str) -> dict | None:
         """Newest row of `slug` that `is_measured_survey` accepts, or None.
