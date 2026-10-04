@@ -412,19 +412,24 @@ Consequences for the slices in §9 and for the Curate scope work:
   2026-10-04, refining the above): RE measures the mechanism and proposes
   "this repository loads that database" as a row with the four observation
   states, naming the files behind it; a person confirms, overrides or
-  leaves it; only a confirmed relation is published. In Egeria it is
-  lineage between the repository's process and the database asset, which
-  the existing LineageMapping path can carry; published one-way,
-  idempotent, as every publish.
+  leaves it; only a confirmed relation is published. **It is not lineage**
+  (owner, 2026-10-04): lineage implies information flow, and a repository
+  that defines or loads a database is not a flow of information into it.
+  It is closer to a dependency, and which Egeria relationship type carries
+  it (a dependency, an implementation, a "defines" relation) is the Egeria
+  leads' choice; the existing LineageMapping path is the wrong one for this.
+  Until that type is chosen, RE keeps the confirmed relation locally with
+  its mechanism and publishes nothing for it. One-way and idempotent when it
+  does, as every publish.
 - **Once published, Egeria can watch it.** The owner's further point: with
   the relation in the catalogue, Egeria's own mechanisms (watchdog
   governance actions, the Notification Manager that Automate is meant to
   grow into) can detect a change on one end and raise it on the other, so
   RE need not be the only detector. RE then reads those notifications back
   as the proof behind the "the database this code defines has changed"
-  row, with the source named as Egeria's. Which Egeria mechanism, and what
-  it needs from RE's publish, is a question for the Egeria leads alongside
-  the annotation-type extension.
+  row, with the source named as Egeria's. Which Egeria mechanism, which
+  relationship type, and what each needs from RE's publish are questions
+  for the Egeria leads alongside the annotation-type extension.
 
 The demo corpus (§7) already contains the first instance: egeria-workspaces
 informs coco_pharma.
