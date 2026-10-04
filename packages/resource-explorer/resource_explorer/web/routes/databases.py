@@ -932,6 +932,10 @@ class PublishResult(BaseModel):
     annotation_count: int | None = None
     server_display_name: str | None = None
     database_display_name: str | None = None
+    # Native Egeria surveys this publish started, each backed by a persisted
+    # step_runs proof row (registry.record_native_survey_submission). Empty
+    # means NO survey was recorded; clients must not claim one started.
+    survey_submissions: list[dict[str, Any]] = []
     error: str | None = None
 
 
@@ -956,6 +960,9 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
         raise HTTPException(
             status_code=404,
             detail=f"No measured survey data for '{slug}' — run a survey first")
+
+    from resource_explorer.run_queue import requested_by
+    submitted_by = requested_by()      # read HERE, in the request; threads get it passed
 
     def _do_publish() -> dict[str, Any]:
         import asyncio as _aio
@@ -999,6 +1006,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
                 db_user=resolved_db_user,
                 db_pwd=resolved_db_pwd,
                 statistics=statistics,
+                submitted_by=submitted_by,
             )
         finally:
             loop.close()
@@ -1050,6 +1058,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
             asset_guid=result.get("asset_guid"),
             report_guid=result.get("report_guid"),
             annotation_count=result.get("annotation_count"),
+            survey_submissions=result.get("survey_submissions") or [],
             server_display_name=server_dn,
             database_display_name=database.database_name,
         )
