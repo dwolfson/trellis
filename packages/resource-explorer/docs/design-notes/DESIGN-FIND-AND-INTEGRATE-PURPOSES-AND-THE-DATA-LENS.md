@@ -408,10 +408,23 @@ Consequences for the slices in §9 and for the Curate scope work:
   views of change in the Curate scope ask (the scope tree, Understanding's
   "since the last run", Automate's subscriptions) gain this fourth,
   cross-kind one, and all cite the source commit when there is one (A5).
-- In Egeria the relation is lineage between the repository's process and
-  the database asset, which the existing LineageMapping path can carry
-  once the mechanism is measured; it is published as a measured relation,
-  never as a judgement.
+- **The relation is detected and proposed, then confirmed** (owner,
+  2026-10-04, refining the above): RE measures the mechanism and proposes
+  "this repository loads that database" as a row with the four observation
+  states, naming the files behind it; a person confirms, overrides or
+  leaves it; only a confirmed relation is published. In Egeria it is
+  lineage between the repository's process and the database asset, which
+  the existing LineageMapping path can carry; published one-way,
+  idempotent, as every publish.
+- **Once published, Egeria can watch it.** The owner's further point: with
+  the relation in the catalogue, Egeria's own mechanisms (watchdog
+  governance actions, the Notification Manager that Automate is meant to
+  grow into) can detect a change on one end and raise it on the other, so
+  RE need not be the only detector. RE then reads those notifications back
+  as the proof behind the "the database this code defines has changed"
+  row, with the source named as Egeria's. Which Egeria mechanism, and what
+  it needs from RE's publish, is a question for the Egeria leads alongside
+  the annotation-type extension.
 
 The demo corpus (§7) already contains the first instance: egeria-workspaces
 informs coco_pharma.
