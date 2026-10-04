@@ -9339,3 +9339,42 @@ but the CSV that the database survey definitions are generated from (`generate_d
 "edit the CSV and regenerate") has no row for it, so it is in no authored definition and no Question term
 scopes it. Decide whether it needs a row (and which Question it answers) or is deliberately outside the
 generated definitions, and say so in the CSV's header if the latter. Likely the same gap as the item above.
+
+## Publish starts Egeria surveys and records no proof row (2026-10-04, post-reset watch by the PR/CI session)
+
+The database "Catalog & Survey in Egeria" path (`POST /api/databases/{slug}/publish`) calls
+`_initiate_survey` for the server and the database (`egeria_database_surveyor.py` ~:562-585) and only
+`log.info`s the engine-action GUIDs. `record_native_survey_submission` (`registry.py` ~:6712) is called only from
+`native_survey_run.py` (~:640, ~:645), so a survey started from Publish has no row, never shows in the
+native-survey list, and the UI can say it started with nothing to prove it. Fix dispatched 2026-10-04
+(`re/publish-records-survey-actions`): record the initiated actions through the same proof path, and make the
+"started" wording derive from what was recorded.
+
+## The classic "Run Survey" confirm does nothing when browser dialogs are suppressed (2026-10-04, owner's marquez walk)
+
+The owner's first click on Run Survey for the never-surveyed `marquez` did nothing: no request reached 8810, and
+the likely cause is the `window.confirm()` under "Try Egeria first" being suppressed or dismissed without a
+visible sign. The retry worked (local survey ok, then publish and catalog ok). A `confirm()` that silently
+no-ops is invisible: replace it with an in-page confirmation (as /next does) or at least show a message when the
+call is skipped. Found only because the PR/CI session was watching requests; not diagnosed beyond that.
+
+## The first classic publish of `coco_pharma` after the reset did not write a GUID; cause unknown (2026-10-04)
+
+The owner reported "published coco_pharma from classic, it worked" on 2026-10-03 evening, but read-only checks at
+~02:20Z showed `egeria_asset_guid` still the dead `651d96af…`, no new native survey run and no activity row. The
+next publish (15:22Z) did work: a "link is stale" row, then the GUID moved to `17f0a963…` (exists) and the catalog
+write succeeded, so the stale-GUID path is fine. What the first attempt did is unknown (the UI reported success
+with no proof row, the failure this repo keeps hitting). Separately, `databases.status` stays `error` from RE's
+LOCAL connect ("password authentication failed for user surveyor" on `localhost (::1):5442`) although Egeria's own
+survey with the same projected credential via `host.docker.internal:5442` succeeded. Owner's rule: the Postgres
+on 5442 should accept the surveyor credentials and the one on 5432 uses `dwolfson`. So suspect an IPv6/`pg_hba`
+difference for RE's local connect, not a wrong password; unverified.
+
+## `/next` has no database Publish control (2026-10-04, parity gap, tagged for design)
+
+The database "Catalog & Survey in Egeria" / "Re-survey in Egeria" Publish button exists only in the classic UI
+(`static/index.html` ~:13379-13391 and its modal ~:1127, posting to `/api/databases/{slug}/publish`); nothing in
+`static/next` calls it. After a platform reset it is the only way to re-catalogue a database, so `/next` cannot
+yet do what a reset requires. Related to "Wire Catalog and Survey for one-click execution" above. Design
+question: where the control lives in /next (Curate's catalogue scope tree, the header, Survey & analyses), and
+what it says while publishing, with the Publish-proof-row fix above as the source of its status words.
