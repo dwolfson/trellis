@@ -9284,6 +9284,8 @@ ask design for that one line before the slice.
 
 **Status 2026-10-04: mostly fixed, PR #451** (`SCOPE-WORDING-IMPLEMENTED.md`). Wording, truncation, the ellipsis and the visible 'no investigation selected' text are in and walked. Still open: with no investigation selected design wants '＋ add to an investigation…' ENABLED and opening a picker (open investigations plus 'start a new one', REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS §4); no picker exists, so it stays disabled. That picker is design's W1 item 4.
 
+**Status 2026-10-04: the picker is built, PR #458** (`W1-PICKER-AND-ACTS-IMPLEMENTED.md`): with no investigation selected the add button is enabled and opens the picker, as design ruled; W1-C (#459) and W1-B (#460) finished the rest of work-lists-vs-investigations §1, §2, §4 and §5. Design's W1 item 4 is done.
+
 ## CSV import: the confirm re-offers rows already in the investigation, and re-confirming overwrites their state (2026-10-03, #441 walk)
 
 Re-importing the same file previews "0 new · 3 already registered", which is right, but the confirm still
@@ -9445,3 +9447,39 @@ was looked into. This is the concrete example for `ASK-DESIGNER-CURATE-CATALOGUE
 owner chooses on a database's Curate should become the `databaseSchema` filter, so a republish after a reset keeps it.
 Owner's decision pending: survey `coco_pharma` at the 7 schemas it had, or at all 29. Setting a filter is a write to
 Egeria.
+
+## W1 is built; what is left of the work-lists-vs-investigations ruling (2026-10-04)
+
+W1-A (#458), W1-C (#459) and W1-B (#460) cover design's §1, §2, §4 and §5. Left: §3, the investigation page's
+comparison grid and its "work lists: …" link back to its benches (design's W2). Known limits recorded by the builders:
+`work_lists.investigation` holds ONE investigation, so a list links to one at a time; there is no UI to tag an existing
+list by hand (only "Start an investigation from this list…" and the new PUT route do it); W1-C's special case (clicking
+Investigation on a linked list opens that investigation's Scope) therefore fires only for lists saved while an
+investigation was current; the sidebar's "Scope · N" counts every kind but the In scope chip it sets filters repos only,
+so on a database view the click changes nothing visible; the server still accepts the old `work_list` act action though
+no UI offers it, and the old report and member-list acts' to-do belongs in `WorkItemList` (design: separate ask, not
+built); `SPEC-REPORT-ACTS.md`, `ReportActs.dc.html` and `Report.dc.html` still say "add to work list". None of W1 has
+been run in a browser by its builders; the owner walked A and C on 8810 (pass), B is not walked yet.
+
+## "Add these to <investigation>" is hard to find from a finding's numbers (2026-10-04, design row for the next designer round)
+
+Owner's walk of W1-A on 8810: the member-list act "add to <investigation>" works, but it is reachable only through
+Assessment or Analysis "the numbers behind this ›", the right-column count link, then the Members rail, and only
+`cve_scan`, `manifest_parse`, `architecture_*`, symbol and data-file analyses have readers (`stage_page._opens_for`).
+The owner first looked under By analysis and in Scouting answers, where no member lists exist; Scouting's "numbers
+behind this" tables never open members. Not a build defect. Design's framing (the four-level model: resource,
+container, member, field): a count on any stage that counts members should open the same Members rail with the same
+acts, and a database's schema and table counts on Scouting are member counts too, which is also what the Curate scope
+tree wants to show. Design is folding it into its reply handling for
+`ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md` instead of a new ask. (`BACKLOG-TRIAGE-2026-09-30.md` is a dated
+snapshot with fixed counts, so this row lives here, not there.)
+
+## The CI `test` job's 30-minute cap cancelled two otherwise-green runs on 2026-10-04 (2026-10-04)
+
+`.github/workflows/resource-explorer.yml:50` sets `timeout-minutes: 30`. Of the 22 most recent push-run `test` jobs,
+20 took 15 to 22 minutes (the full-suite step 12.7 to 19.6), and two ran to the cap: main `974ac3e0` (01:48Z, 27.8 min
+in the suite step) and W1-A's `547110b4` (19:23Z, 27.4 min; 7626 passed, 0 failed, cancelled during Prefect
+temporary-server teardown, "Stopping temporary server on http://127.0.0.1:8101"). A re-run passed. No steady slowdown
+shows, so it reads as an intermittently slow runner or a slow teardown; which one is not known (the logs need
+authentication, per-test durations were not compared). A false red costs a re-run of about 20 minutes. Options:
+raise the cap to 45; or investigate whether teardown hangs. Owner's call pending.
