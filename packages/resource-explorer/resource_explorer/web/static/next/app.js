@@ -75,6 +75,7 @@ import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurvey
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation, openCreateDialog as openNewInvestigationDialog } from '/static/next/stages/investigation.js';
 import { openInvestigationPicker, scopeActWording } from '/static/next/investigation-picker.js';
+import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
@@ -253,6 +254,7 @@ export const state = {
   workListSlug: null,          // the open one; the pane takes over when set
   lastWorkListSlug: null,      // the one you were last in, for the way back
   workListIndex: false,        // showing the list OF work lists
+  workListIndexNote: '',       // what the last add/start on the index said, shown once
   lastRunStage: 'scouting',    // the run stage a list re-opens on after a frame-stage click closed it
   scopeCount: null,            // members in the current investigation's scope, ALL kinds; null = unknown
   // The question (its full text, the same key `wireHumanAnswers` already
@@ -1027,6 +1029,46 @@ const WORK_LIST_DEFINITION =
   + 'a work list is a bench: one kind of resource, laid out against one stage’s '
   + 'questions, so you can decide which belong in a scope.';
 
+/** An investigation's name for display; the slug only when it is not loaded. */
+function investigationName(slug) {
+  if (!slug) return '';
+  return (state.investigations.find((i) => i.slug === slug) || {}).display_name || slug;
+}
+
+/** What the work-list actions need from the shell (worklist-actions.js). */
+function workListHost() {
+  return {
+    currentInvestigation: () => state.investigation,
+    investigations: () => state.investigations,
+    investigationName,
+    chooseInvestigationThen,
+    makeCurrent: (slug) => setInvestigation(slug),
+    refreshScope: async () => { await loadWorkingSet(); await refreshOpenInvestigation(state.investigation); renderSidebar(); },
+    refreshAfterStart: async () => {
+      await refreshInvestigationsAndSidebar();
+      try { state.workLists = await listWorkLists(); } catch { /* the sidebar keeps what it had */ }
+    },
+  };
+}
+
+/** The index's row actions: add the list's members, or start an investigation from it. */
+function bindWorkListIndexActions(el) {
+  const done = async (out) => {
+    try { state.workLists = await listWorkLists(); } catch { /* keep */ }
+    state.workListIndexNote = out.noteHtml;
+    renderSidebar();
+    await loadPane();
+  };
+  el.querySelectorAll('[data-wl-add]').forEach((b) => b.addEventListener('click', () => {
+    const list = state.workLists.find((w) => w.slug === b.dataset.wlAdd);
+    if (list) addListToInvestigation({ list, host: workListHost(), onDone: done });
+  }));
+  el.querySelectorAll('[data-wl-start]').forEach((b) => b.addEventListener('click', () => {
+    const list = state.workLists.find((w) => w.slug === b.dataset.wlStart);
+    if (list) openStartFromList({ list, host: workListHost(), onDone: done });
+  }));
+}
+
 function workListIndexHtml() {
   const { benches } = splitWorkLists();
   const definition = `<p class="mb-s3 max-w-[70ch] text-answer text-ink" data-wl-definition>${esc(WORK_LIST_DEFINITION)}</p>`;
@@ -1044,17 +1086,29 @@ function workListIndexHtml() {
     <h3 class="m-0 font-heading text-name font-normal">Work lists</h3>
     <div class="my-s3 h-px bg-rule"></div>
     ${definition}
+    <div id="wl-index-note" class="mb-s2 text-caveat text-ink">${state.workListIndexNote || ''}</div>
     <div class="flex flex-col">
-      ${benches.map((w) => `<button data-open-wl="${esc(w.slug)}"
-        class="cursor-pointer border-b border-rule bg-transparent py-s3 text-left hover:bg-accent-tint">
-        <div class="font-heading text-question font-semibold text-ink">${esc(w.display_name)}</div>
-        <div class="text-provenance text-ink-muted">
-          <span class="tnum">${w.member_count}</span> resources
-          ${w.investigation ? ` · ${esc(w.investigation)}` : ''}
-          ${w.derived_from ? ` · narrowed from ${esc(w.derived_from)}` : ''}
-          · ${w.egeria_guid ? 'published to Egeria' : 'not published'}
+      ${benches.map((w) => {
+        const wording = addActWording({ invName: investigationName(state.investigation), count: w.member_count });
+        return `<div class="border-b border-rule py-s3 hover:bg-accent-tint">
+        <button data-open-wl="${esc(w.slug)}"
+          class="block w-full cursor-pointer bg-transparent p-0 text-left">
+          <div class="font-heading text-question font-semibold text-ink">${esc(w.display_name)}</div>
+          <div class="text-provenance text-ink-muted">
+            <span class="tnum">${w.member_count}</span> resources
+            ${w.investigation ? ` · ${esc(investigationName(w.investigation))}` : ''}
+            ${w.derived_from ? ` · narrowed from ${esc(w.derived_from)}` : ''}
+            · ${w.egeria_guid ? 'published to Egeria' : 'not published'}
+          </div>
+        </button>
+        <div class="mt-s2 flex flex-wrap gap-s3 text-caveat">
+          <button data-wl-add="${esc(w.slug)}" title="${esc(wording.title)}"
+            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(wording.label)}</button>
+          <button data-wl-start="${esc(w.slug)}"
+            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(START_LABEL)}</button>
         </div>
-      </button>`).join('')}
+      </div>`;
+      }).join('')}
     </div>`;
 }
 
@@ -7316,7 +7370,9 @@ async function loadPane() {
   // resource at a time; this is the one surface that does not.
   if (state.workListIndex && !state.workListSlug) {
     el.innerHTML = workListIndexHtml();
+    state.workListIndexNote = '';
     bindSubTabs();
+    bindWorkListIndexActions(el);
     el.querySelectorAll('[data-open-wl]').forEach((b) => b.addEventListener('click', () => {
       state.workListSlug = b.dataset.openWl;
       state.workListIndex = false;
@@ -7361,6 +7417,7 @@ async function loadPane() {
         perspectives: state.activePerspectives,
         projects: state.projects,
         analyses: state.analyses || [],
+        host: workListHost(),
         onExit: () => {
           state.lastWorkListSlug = state.workListSlug;
           state.workListSlug = null;

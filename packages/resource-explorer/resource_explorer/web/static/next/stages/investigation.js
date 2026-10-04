@@ -61,7 +61,7 @@ const DISPOSITION_GLYPH = {
   using: '✅', abandoned: '🪦', ignored: '🚫',
 };
 
-async function vocab() {
+export async function investigationVocab() {
   if (!_purposes) {
     try { _purposes = (await getInvestigationPurposes()).purposes || []; } catch { _purposes = []; }
   }
@@ -198,7 +198,7 @@ function bindListHeader() {
  *  picker.js) passes `onCreated(inv)` instead, so "start a new one" reuses this
  *  form and carries on with whatever the person was doing, not a page change. */
 export async function openCreateDialog({ onCreated = null } = {}) {
-  const { purposes, classifications } = await vocab();
+  const { purposes, classifications } = await investigationVocab();
   const d = openDialog('New investigation', '');
   const body = d.querySelector('#wl-detail-body');
   body.innerHTML = `
@@ -317,7 +317,7 @@ async function renderDetail(slug) {
   }
 
   if (stale()) return;
-  const { classifications } = await vocab();
+  const { classifications } = await investigationVocab();
   if (stale()) return;
   const classLabel = classifications.classifications.find((c) => c.name === inv.project_classification)?.label
     || inv.project_classification;
@@ -560,7 +560,7 @@ function bindDetail(inv, members) {
   });
 
   el.querySelector('[data-act="inv-reclassify"]')?.addEventListener('click', async () => {
-    const { classifications } = await vocab();
+    const { classifications } = await investigationVocab();
     const host = $('inv-reclass-form');
     host.innerHTML = `<div class="mb-s3 rounded-sm border border-rule p-s2">
       <label class="mb-[3px] block text-caveat text-ink-muted">New kind</label>

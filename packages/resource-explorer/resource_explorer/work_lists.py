@@ -246,6 +246,17 @@ class WorkLists:
                 out.append(d)
         return out
 
+    def set_investigation(self, slug: str, investigation: str) -> None:
+        """Link a saved list to an investigation (or, with '', unlink it).
+
+        Only `create()` ever set `work_lists.investigation`, and only when an
+        investigation was current at save time; this is the one later write.
+        The caller checks that the investigation exists."""
+        with self._conn() as conn:
+            _ensure_schema(conn)
+            conn.execute("UPDATE work_lists SET investigation = ? WHERE slug = ?",
+                         (investigation, slug))
+
     def set_member(self, slug: str, entity_slug: str, *,
                    rationale: str = "", confidence: int | None = None) -> None:
         """Add a member, or update the reason it is there."""
