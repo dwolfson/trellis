@@ -9107,6 +9107,43 @@ database/filesystem asset publishes, and extend `egeria_resync`'s stale-assets s
 databases and filesystems, not only the `projects` table. Until then, a dead database/filesystem
 GUID stays dead until someone manually republishes it.
 
+**Update 2026-10-03, after the Egeria reset: this moves up.** Two databases (`laz_local_adventureworks`,
+`localhost_docker_coco_pharma`) kept reading `is_published: True` against asset GUIDs Egeria no longer held;
+the Alignment scan reported nothing for them because `stale_assets` covers repos only. Only a manual
+`recheck_all_linkages` (databases only, owner-approved, after a peer check) flagged them stale. Design's ask
+(2026-10-03): the resync pass should re-verify flagged and published database rows against Egeria on every
+pass, as it now does for repositories, and the same for filesystems.
+
+## A failed "Find databases" load shows "Try again" and no reason (2026-10-03, post-reset walk)
+
+Right after the Egeria reset, opening Find databases showed the Saved sources tab with no count and only a
+"Try again" button; the second try loaded both saved sources and all 15 of their registered databases (13 and
+2). So nothing was lost and the first failure was transient. The defect is that nothing said why: `loadServers`
+(`db-server-discovery.js`) sets `view.status` to the failure text and `render` prints it under the tabs, yet the
+screenshot showed no line there. Not diagnosed: whether the text was cleared by another handler, or the call
+failed in a way that produced an empty message. Reproduce by making `/api/db-servers/` fail once, check the
+message appears, and keep the failure text until the next successful load.
+
+## Dead outbox rows cannot be purged, and the retention purge never touches them (2026-10-03, post-reset check)
+
+After the reset the Publish Queue held 10 dead rows, all `collection_membership` for the investigation
+`egeria-understanding`, all the same "collection not found" error (see the "outbox retries a permanent target
+not found" entry). `purge_outbox_completed` deletes only `status='done'` rows (`registry.py` ~:7900), so these
+stay until a person acts, and the only control found is per-row retry, which would fail again. Needed: a way to
+discard a dead row deliberately (with a reason, and a visible record that it was discarded), or have the repair
+that clears a stale investigation GUID also close the dead rows that named it. The investigation itself now has
+no Egeria Project, which is the owner's decision (Alignment, "Investigations with no Egeria Project").
+
+## Do the 1,880 `done` outbox rows hold pre-reset GUIDs that a republish would trust? (2026-10-03, open question)
+
+`egeria-operations.md` §8 says a `done` row asserts a completed publish, `apply_element` short-circuits on a
+recorded GUID and a `done` row is never claimed again, so after a reset those rows point at elements that are
+gone. On 2026-10-03 the outbox held 1,880 `done` rows. `registry.reopen_outbox_row` (~:4614) exists to reopen a
+row instead of minting a second one, but who calls it, and whether it fires for these rows when a repo is
+republished, is not checked. Answer before the next republish: republish ONE repo and prove, from Egeria, that
+its annotations were written (not just that the outbox says `done`). If they were not, the fix is to reopen or
+retire `done` rows whose recorded GUID no longer resolves, in the same pass that clears stale assets.
+
 ## Egeria's projected secrets file doesn't survive a redeploy (2026-09-30, native survey slice)
 
 A real submission on adventureworks failed with `FATAL: role "default" does not exist` — traced
