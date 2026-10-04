@@ -220,7 +220,11 @@ class TestGroupsAndSelectModeAreNoLongerRepoOnly:
         end = src.index("\n}", start)
         body = src[start:end]
         assert "apiEntityType(state.resourceType)" in body
-        assert "addInvestigationMember(state.investigation, entityType, slug)" in body
+        # W1-A: the investigation is a parameter (the picker passes the one it
+        # just chose), defaulting to the current one, so "add" still scopes
+        # into the current investigation when nobody passes one.
+        assert "invSlug = state.investigation" in src[start - 40:start + 120]
+        assert "addInvestigationMember(invSlug, entityType, slug)" in body
 
     def test_bulk_hide_uses_api_entity_type(self):
         src = _app()
