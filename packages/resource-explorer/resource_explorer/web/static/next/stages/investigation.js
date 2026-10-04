@@ -188,12 +188,16 @@ function bindListHeader() {
     _includeClosed = e.target.checked;
     renderList();
   });
-  el.querySelector('[data-act="inv-new"]')?.addEventListener('click', openCreateDialog);
+  el.querySelector('[data-act="inv-new"]')?.addEventListener('click', () => openCreateDialog());
 }
 
 /* ── Create ───────────────────────────────────────────────────────────── */
 
-async function openCreateDialog() {
+/** The one "New investigation" dialog. From the Investigations list it
+ *  navigates to the new investigation's page. The picker (investigation-
+ *  picker.js) passes `onCreated(inv)` instead, so "start a new one" reuses this
+ *  form and carries on with whatever the person was doing, not a page change. */
+export async function openCreateDialog({ onCreated = null } = {}) {
   const { purposes, classifications } = await vocab();
   const d = openDialog('New investigation', '');
   const body = d.querySelector('#wl-detail-body');
@@ -267,6 +271,7 @@ async function openCreateDialog() {
       });
       closeCellDetail();
       await refreshInvestigationsAndSidebar();
+      if (onCreated) { await onCreated(inv); return; }
       _detailSlug = inv.slug;
       await renderInvestigation();
     } catch (err) {

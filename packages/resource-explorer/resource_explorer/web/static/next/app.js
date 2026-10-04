@@ -73,7 +73,8 @@ import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurvey
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
 // function, called from both stores' rows rather than reimplemented here.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
-import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation } from '/static/next/stages/investigation.js';
+import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation, openCreateDialog as openNewInvestigationDialog } from '/static/next/stages/investigation.js';
+import { openInvestigationPicker, scopeActWording } from '/static/next/investigation-picker.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
@@ -2253,13 +2254,13 @@ function kindNoun(entityType, n = 1) {
 /** Select-bar scope wording (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §5,
  *  WORK-LISTS-VS-INVESTIGATIONS §4). Current investigation: "＋ add to <name>" /
  *  "− remove from <name>" (name cut at 24 chars, full name in the title). None
- *  current: add reads "add to an investigation…" (design wants it ENABLED and
- *  opening a picker; that picker is W1 item 4, not built, so it stays disabled
- *  until then); remove stays visible, disabled, with the reason as visible text. */
+ *  current: add reads "add to an investigation…", ENABLED, and opens the
+ *  investigation picker (investigation-picker.js); remove stays visible,
+ *  disabled, with the reason as visible text. */
 const SCOPE_WORDING = {
   add: (name) => `＋ add to ${name}`,
   remove: (name) => `− remove from ${name}`,
-  addNone: { label: '＋ add to an investigation…', title: 'Choose an investigation first' },
+  addNone: { label: '＋ add to an investigation…', title: 'Choose an investigation, or start a new one' },
   removeNone: { label: '− remove from investigation', title: 'Choose an investigation first' },
   noneReason: 'no investigation selected',
 };
@@ -2283,10 +2284,9 @@ function selectActionsHtml() {
     </div>
     <div class="mt-[2px] text-chrome-muted" data-select-hint>Tick resources, then act on all of them.</div>
     <div class="mt-s1 flex flex-wrap items-baseline gap-s2" data-bar-group="scope">
-      <button data-act="sel-scope-add" ${invName ? '' : 'disabled'}
+      <button data-act="sel-scope-add"
         title="${esc(invName ? `Add to ${invName}’s scope` : SCOPE_WORDING.addNone.title)}"
-        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink ${
-          invName ? '' : 'border-dashed opacity-100'}">${esc(invName ? SCOPE_WORDING.add(shortInv) : SCOPE_WORDING.addNone.label)}</button>
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">${esc(invName ? SCOPE_WORDING.add(shortInv) : SCOPE_WORDING.addNone.label)}</button>
       <button data-act="sel-scope-remove" ${invName ? '' : 'disabled'}
         title="${esc(invName ? `Remove from ${invName}’s scope — the ${kindNoun(entityType)} itself is untouched` : SCOPE_WORDING.removeNone.title)}"
         class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink ${
@@ -2488,28 +2488,56 @@ function sidebarNote(html) {
   if (el) el.innerHTML = `<div class="mt-s2 text-chip text-chrome-ink">${html}</div>`;
 }
 
-async function bulkScope(add) {
-  if (!state.investigation || !state.selected.size) return;
+/** Open the investigation picker and run `then(slug)` with the chosen one.
+ *  "Start a new one…" reuses the existing New investigation dialog; the new
+ *  investigation is handed straight on, and the person is not moved to its
+ *  page (they were in the middle of something else). */
+function chooseInvestigationThen(then) {
+  openInvestigationPicker({
+    investigations: state.investigations,
+    onChoose: (slug) => then(slug),
+    onNew: () => openNewInvestigationDialog({ onCreated: (inv) => then(inv.slug) }),
+  });
+}
+
+async function bulkScope(add, invSlug = state.investigation) {
+  if (!state.selected.size) { sidebarNote('Tick resources first.'); return; }
+  if (!invSlug) {
+    // None current: only "add" can be offered, and it asks which one first.
+    if (add) chooseInvestigationThen((slug) => bulkScope(true, slug));
+    return;
+  }
   const slugs = [...state.selected];
   const entityType = apiEntityType(state.resourceType);
   const failed = [];
   for (const slug of slugs) {
     try {
-      if (add) await addInvestigationMember(state.investigation, entityType, slug);
-      else await removeInvestigationMember(state.investigation, entityType, slug);
+      if (add) await addInvestigationMember(invSlug, entityType, slug);
+      else await removeInvestigationMember(invSlug, entityType, slug);
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
-  await loadWorkingSet();
+  // The chosen investigation becomes the current one (it is the one the person
+  // just worked in); setInvestigation also reloads its scope and repaints.
+  const becameCurrent = invSlug !== state.investigation;
+  if (becameCurrent) await setInvestigation(invSlug);
+  else await loadWorkingSet();
   // The open investigation page lists these members too; re-fetch it.
-  await refreshOpenInvestigation(state.investigation);
+  await refreshOpenInvestigation(invSlug);
+  // Repaint first, THEN write the note: renderSidebar rebuilds the bar and
+  // the note's host with it, so a note written before it is wiped at once.
+  renderSidebar();
+  const inv = state.investigations.find((i) => i.slug === invSlug);
+  const invName = inv?.display_name || invSlug;
+  const done = slugs.length - failed.length;
   // Report per-resource, never "done": a bulk write where some calls failed
   // and the banner says success is how a partial write becomes invisible.
   sidebarNote(failed.length
-    ? `<span class="text-accent-on-dark"><span class="tnum">${slugs.length - failed.length}</span>
+    ? `<span class="text-accent-on-dark"><span class="tnum">${done}</span>
        of <span class="tnum">${slugs.length}</span> ${add ? 'added' : 'removed'};
        ${esc(failed.join('; '))}</span>`
-    : `<span class="tnum">${slugs.length}</span> ${add ? 'added to' : 'removed from'} scope.`);
-  renderSidebar();
+    : add && becameCurrent
+      ? `Added <span class="tnum">${slugs.length}</span> to ${esc(invName)}, now your current investigation.`
+      : `<span class="tnum">${slugs.length}</span> ${add ? 'added to' : 'removed from'} scope.`);
 }
 
 async function bulkHide() {
@@ -4003,7 +4031,7 @@ async function loadDispositionPane() {
  *  thirty-two-row table fights. A catalogue record shows its steps inline
  *  as Curate draws them; a report shows its header sentence. Same row
  *  grammar, same date, same author (REPORT-RECORD-AND-TWO-CALLS C4). */
-async function renderRecords(slug, entityType) {
+export async function renderRecords(slug, entityType) {
   requireKind('renderRecords', entityType);
   const host = $('records');
   if (!host) return;
@@ -4012,6 +4040,8 @@ async function renderRecords(slug, entityType) {
   catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing catalogued, nothing written down.'; return; }
+  const scopeAct = await scopeActState(entityType, slug);
+  if (slug !== state.selectedSlug) return;
   host.innerHTML = recs.map((r) => {
     const when = `<span class="tnum">${esc(ago(r.requested_at))}</span> <span class="tnum">(${esc(String(r.requested_at).slice(0, 10))})</span>`;
     if (r.kind === 'report') {
@@ -4031,7 +4061,7 @@ async function renderRecords(slug, entityType) {
           <ul class="m-0 list-none p-0 pl-s2">${g.rows.map((row) => `<li class="flex items-baseline gap-s2 font-mono text-ink">
             <input type="checkbox" data-record-row="${esc(row.name)}" class="shrink-0">${esc(row.name)}${row.detail ? ` <span class="font-body text-ink-muted">${esc(row.detail)}</span>` : ''}</li>`).join('')}${
             g.truncated ? `<li class="text-ink-muted">and more — the first ${g.rows.length} are shown</li>` : ''}</ul>`).join('')}</div>
-        ${recordActsHtml(r, rowCount(rep))}
+        ${recordActsHtml(r, rowCount(rep), scopeAct)}
         ${recordUsesHtml(r)}
       </div>`;
     }
@@ -4063,13 +4093,44 @@ function rowCount(rep) {
  * acts on the snapshot and never re-derives; the journal opens seeded with
  * a citation, not a sentence; a stale record keeps all three live and what
  * they create carries the staleness; the record learns it was used. */
-function recordActsHtml(r, n) {
+/** What the "add to <investigation>" act should say for this resource: which
+ *  investigation is current and whether the resource is already in its scope.
+ *  The scope is read from the server (it holds every kind; `state.workingSet`
+ *  holds repos only). If it cannot be read the act is offered as "add" -- the
+ *  server refuses to overwrite an existing member's reason either way. */
+async function scopeActState(entityType, slug) {
+  const invSlug = state.investigation;
+  if (!invSlug) return { invName: '', inScope: false };
+  const inv = state.investigations.find((i) => i.slug === invSlug);
+  const invName = inv?.display_name || invSlug;
+  let inScope = false;
+  try {
+    inScope = ((await listInvestigationMembers(invSlug)) || [])
+      .some((m) => m.entity_type === entityType && m.entity_slug === slug);
+  } catch { /* unknown: offer the act */ }
+  return { invName, inScope };
+}
+
+/** The current investigation's display name, '' when none is current. */
+function curInvName() {
+  if (!state.investigation) return '';
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  return inv?.display_name || state.investigation;
+}
+
+function scopeActHtml(scopeAct, attr, cls) {
+  const w = scopeActWording(scopeAct.invName, scopeAct.inScope);
+  if (w.mode === 'text') return `<span data-scope-act-text class="text-ink-muted" title="${esc(w.title)}">${esc(w.label)}</span>`;
+  return `<button ${attr} title="${esc(w.title)}" class="${cls}">${esc(w.label)}</button>`;
+}
+
+function recordActsHtml(r, n, scopeAct = { invName: '', inScope: false }) {
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   return `<div data-record-acts class="mt-s2 text-caveat">
     <div class="text-ink"><span data-record-scope>The whole report · <span class="tnum">${n}</span> row${n === 1 ? '' : 's'}</span>
       <span class="text-ink-muted">· as recorded ${esc(String(r.requested_at).slice(0, 10))}${r.out_of_date ? ' · its evidence has since moved — what these create will say so' : ''}</span></div>
     <div class="mt-[3px] flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-provenance">
-      <button data-record-act="work_list" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">add to work list</button>
+      ${scopeActHtml(scopeAct, `data-record-act="scope" ${me ? '' : 'disabled'}`, 'cursor-pointer bg-transparent p-0 text-accent-ink underline')}
       <button data-record-act="rfa" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">raise RFA</button>
       <button data-record-act="journal" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">note in journal</button>
       ${r.out_of_date && !r.corrected_by?.id ? `<button data-record-correct ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">write a correction</button>` : ''}
@@ -4084,7 +4145,8 @@ function recordActsHtml(r, n) {
  *  in the same place. */
 function recordUsesHtml(r) {
   const uses = (r.uses || []).map((u) => {
-    const what = u.act === 'work_list' ? `added to work list “${esc(u.target_name)}”`
+    const what = u.act === 'scope' ? `added to ${esc(u.target_name)}’s scope`
+      : u.act === 'work_list' ? `added to work list “${esc(u.target_name)}”`
       : u.act === 'rfa' ? `raised RFA “${esc(u.target_name)}”`
       : u.act === 'journal' ? 'cited in the journal' : esc(u.act);
     return `<div class="text-provenance text-ink-muted">Used · ${what} · <span class="tnum">${esc(String(u.at).slice(5, 16).replace('T', ' '))}</span> · ${esc(u.by)}</div>`;
@@ -4125,16 +4187,39 @@ function wireRecordActs(host, slug, recs, entityType) {
         status.textContent = '→ the journal, below — write the thought after the citation';
         return;
       }
-      b.disabled = true; status.textContent = '…';
-      try {
-        const out = await actOnRecord(slug, id, { action, rows }, entityType);
-        const where = action === 'work_list' ? `now in “${out.name}”` : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
-        status.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
-        await renderRecords(slug, entityType);
-      } catch (err) {
-        b.disabled = false;
-        status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
+      const perform = async (investigation = '') => {
+        b.disabled = true; status.textContent = '…';
+        try {
+          const out = await actOnRecord(slug, id, { action, rows, investigation }, entityType);
+          let becameCurrent = false;
+          if (action === 'scope') {
+            // The chosen investigation becomes the current one, as in the
+            // Select bar; either way its scope is re-read for the member count.
+            becameCurrent = investigation !== state.investigation;
+            if (becameCurrent) await setInvestigation(investigation);
+            else await loadWorkingSet();
+            await refreshOpenInvestigation(investigation);
+          }
+          await renderRecords(slug, entityType);
+          // renderRecords rebuilt the box; say where it went in the new one.
+          const fresh = $('records')?.querySelector(`[data-record="${id}"] [data-record-status]`);
+          const where = action === 'scope'
+            ? (out.already_in_scope ? `already in ${out.investigation_name}’s scope, left as it was` : `added to ${out.investigation_name}’s scope${becameCurrent ? ', now your current investigation' : ''}`)
+            : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
+          if (fresh) fresh.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
+        } catch (err) {
+          b.disabled = false;
+          status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
+        }
+      };
+      if (action === 'scope') {
+        // With none current, ask which investigation first; the act continues
+        // in the picker's callback.
+        if (state.investigation) await perform(state.investigation);
+        else chooseInvestigationThen((chosen) => perform(chosen));
+        return;
       }
+      await perform();
     }));
     box.querySelector('[data-record-correct]')?.addEventListener('click', async (ev) => {
       // A correction is save-as-report with the superseded record's id
@@ -5743,8 +5828,9 @@ function memberScope() {
  * fix" is not one here — cve_scan does not record fix availability, and a
  * facet the data cannot back would select nothing and look broken.
  *
- * Three acts, and they are different: add to work list (I will deal with
- * this), raise RFA (someone must), note in journal (worth knowing — no
+ * Three acts, and they are different: add to <investigation> (this belongs
+ * in my investigation's scope; W1-A, it used to mint a one-resource work
+ * list), raise RFA (someone must), note in journal (worth knowing — no
  * obligation, so the likeliest used). One provenance line, composed on the
  * server, travels with all three. The selection is a SNAPSHOT of names,
  * never a query: a work item that changes what it refers to when the scan
@@ -5788,7 +5874,7 @@ function facetsHtml(groups, data) {
   </div>`;
 }
 
-function wireSelection(out, { slug, analysisId, metric, data }) {
+export function wireSelection(out, { slug, analysisId, metric, data }) {
   const picks = () => [...out.querySelectorAll('[data-pick]:checked')];
   const footer = out.querySelector('#member-selection');
   const project = state.projects.find((x) => x.slug === slug);
@@ -5887,7 +5973,8 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
       <input id="promote-name" type="text" value="${esc(touched && typed ? typed : proposed(sel.length))}"
         class="mb-[4px] w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-caps text-chrome-ink">
       <div class="flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caps">
-        <button data-promote="work_list" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">add to work list</button>
+        ${scopeActHtml({ invName: curInvName(), inScope: !!state.investigation && state.workingSet.has(slug) },
+          'data-promote="scope"', 'cursor-pointer bg-transparent p-0 text-accent-on-dark underline').replace('text-ink-muted', 'text-chrome-muted')}
         <button data-promote="rfa" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">raise RFA</button>
         <button data-promote="journal" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">note in journal</button>
         <button data-report-sel class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">save as report</button>
@@ -5898,21 +5985,41 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
       save(picks().map((c) => c.dataset.pick), facetLabel(), nameEl.value.trim(), footer.querySelector('#promote-status')));
     nameEl.addEventListener('input', () => { typed = nameEl.value; touched = typed.trim().length > 0; });
     footer.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', async () => {
-      const status = footer.querySelector('#promote-status');
-      const members = picks().map((c) => c.dataset.pick);
-      b.disabled = true; status.textContent = '…';
-      try {
-        const out2 = await promoteMembers(slug, analysisId, {
-          action: b.dataset.promote, metric: metric || data.metric || '', members, total, facet: facetLabel(), runAt,
-          name: nameEl.value.trim(),
-        }, apiEntityType(state.resourceType));
-        // Say where it went, not "sent".
-        const where = out2.work_list ? `work list ${out2.work_list}` : out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
-        status.innerHTML = `<span class="text-state-ok-on-dark">→ ${esc(where)}</span>`;
-      } catch (err) {
-        b.disabled = false;
-        status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'sign in to promote' : err.message)}</span>`;
+      const action = b.dataset.promote;
+      const perform = async (investigation = '') => {
+        const status = footer.querySelector('#promote-status');
+        const members = picks().map((c) => c.dataset.pick);
+        b.disabled = true; status.textContent = '…';
+        try {
+          const out2 = await promoteMembers(slug, analysisId, {
+            action, metric: metric || data.metric || '', members, total, facet: facetLabel(), runAt,
+            name: nameEl.value.trim(), investigation,
+          }, apiEntityType(state.resourceType));
+          // Say where it went, not "sent".
+          let where = out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
+          if (action === 'scope') {
+            const becameCurrent = investigation !== state.investigation;
+            if (becameCurrent) await setInvestigation(investigation);
+            else await loadWorkingSet();
+            await refreshOpenInvestigation(investigation);
+            where = out2.already_in_scope
+              ? `already in ${out2.investigation_name}’s scope, left as it was`
+              : `added to ${out2.investigation_name}’s scope${becameCurrent ? ', now your current investigation' : ''}`;
+            render();   // the act now reads "already in …’s scope"
+          }
+          const st = footer.querySelector('#promote-status');
+          if (st) st.innerHTML = `<span class="text-state-ok-on-dark">→ ${esc(where)}</span>`;
+        } catch (err) {
+          b.disabled = false;
+          status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'sign in to promote' : err.message)}</span>`;
+        }
+      };
+      if (action === 'scope') {
+        if (state.investigation) await perform(state.investigation);
+        else chooseInvestigationThen((chosen) => perform(chosen));
+        return;
       }
+      await perform();
     }));
   }
   render();   // the whole-list state, before any pick
