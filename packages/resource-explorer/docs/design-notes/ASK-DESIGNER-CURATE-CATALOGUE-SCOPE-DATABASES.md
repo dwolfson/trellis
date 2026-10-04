@@ -99,22 +99,29 @@ come from reading the created elements back by qualified name. What the
 lever cannot express (a per-schema table choice, a depth below "columns
 on or off") the screen has to say rather than pretend.
 
-## A concrete case, measured 2026-10-04
+## A concrete case, measured 2026-10-04 (corrected the same day)
 
-Before the Egeria reset of 2026-10-03, Egeria's native survey of
-coco_pharma covered exactly 7 schemas and 61 tables (coco_sus 30, coco_ods
-23, demo_auth 4, and one table each in demo, target_sales, us_sales and
-eu_sales). After the reset and republish it covers all 29 user schemas and
-266 tables, which matches Postgres directly (263 base tables and 3 views).
-The republished element's connection carries only the database name, no
-schema filter, so **the old scope did not survive the reset**: it lived in
-a connection property nobody could see on screen, and it was lost with the
-element. That is the defect this ask is about, in one database: a scope
-that is not a declared, stored choice in RE is a scope that vanishes. The
-owner's pending decision, survey coco_pharma at 7 or 29 schemas, is the
-first use of whatever you design: the choice must end up as the filter on
-the connection or as the cataloguer target's include and exclude lists, so
-a republish after a reset keeps it.
+Before the Egeria reset of 2026-10-03, every survey of coco_pharma, 79
+rows since 2026-09-02 under four different credentials including a
+superuser, recorded at most 8 schemas and 61 tables (58 base tables and 3
+views). After the reset, Egeria's native survey covers 29 schemas and 266
+tables. The first explanation offered, a schema filter on the old
+connection that the reset erased, was **wrong**, and so was the second, a
+credential that could see only some schemas: the table files show that 22
+schemas with 205 base tables were loaded into coco_pharma between 20:29
+and 20:51 UTC on 2026-10-03, during the redeploy window, and the old 58
+tables were last written in July to September. Nothing was lost. **The
+database grew, and nobody chose the new schemas.** Egeria's survey covered
+them because it covers everything, and the cataloguer, once attached,
+would create elements for all of them for the same reason.
+
+That is the defect this ask is about, in one database, on better evidence
+than a lost filter: without a declared, stored scope, what gets catalogued
+is decided by whatever the database happens to contain on the day. The
+reply's "survey now disagrees" state is exactly this moment: the measured
+set changed under a confirmed choice. The owner's pending decision, 7 or
+29 schemas, is therefore a **new choice** to leave out the 22 that
+appeared, not a restoration, and it is the first scope record either way.
 
 **The commit is also /next's Publish for databases.** Classic's publish
 button is today the only way to catalogue a database, and /next has no
