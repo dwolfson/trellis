@@ -111,17 +111,25 @@ credential that could see only some schemas: the table files show that 22
 schemas with 205 base tables were loaded into coco_pharma between 20:29
 and 20:51 UTC on 2026-10-03, during the redeploy window, and the old 58
 tables were last written in July to September. Nothing was lost. **The
-database grew, and nobody chose the new schemas.** Egeria's survey covered
-them because it covers everything, and the cataloguer, once attached,
-would create elements for all of them for the same reason.
+database grew, on purpose:** the Egeria lead extended coco_pharma with new
+schemas as the Coco scenarios expanded. RE surveyed the result and said
+nothing about the change; Egeria's survey covered the new schemas because
+it covers everything, and the cataloguer, once attached, would have created
+elements for all of them for the same reason.
 
 That is the defect this ask is about, in one database, on better evidence
-than a lost filter: without a declared, stored scope, what gets catalogued
-is decided by whatever the database happens to contain on the day. The
-reply's "survey now disagrees" state is exactly this moment: the measured
-set changed under a confirmed choice. The owner's pending decision, 7 or
-29 schemas, is therefore a **new choice** to leave out the 22 that
-appeared, not a restoration, and it is the first scope record either way.
+than a lost filter, and it adds a requirement: **an intentional extension
+of a database is something RE should be looking for and surfacing**, not
+something it silently absorbs. Without a declared, stored scope, what
+gets catalogued is decided by whatever the database contains on the day;
+with one, the 22 new schemas read "new since your scope was declared ·
+undecided" on the tree and the person chooses. The reply's "survey now
+disagrees" state is this moment seen from the scope's side; Understanding's
+"since the last run" sentence and Automate's change subscriptions are the
+same moment seen from the survey's side, and the three should agree. The
+owner's pending decision, 7 or 29 schemas, is therefore a **new choice**
+about the extension, not a restoration, and it is the first scope record
+either way.
 
 **The commit is also /next's Publish for databases.** Classic's publish
 button is today the only way to catalogue a database, and /next has no
