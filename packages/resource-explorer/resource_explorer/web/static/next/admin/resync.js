@@ -67,6 +67,10 @@ const BLAST_RADIUS = {
     `WRITES a flag (egeria_linkage_status) on ${n} record(s) whose published survey vanished `
     + `from Egeria — it does not delete anything. A false positive here costs one wrong badge `
     + `state until the next scan corrects it, never a decision silently unmade.`,
+  flag_stale_dbfs_assets: (n) =>
+    `WRITES a stale flag (egeria_linkage_status) on ${n} database/filesystem record(s) whose `
+    + `asset no longer resolves in Egeria, and clears the flag on any that resolve again. It `
+    + `never deletes the GUID and writes nothing to Egeria.`,
   clear_stale_investigations: (n) =>
     `⚠ Clears the Egeria Project/working-set binding on ${n} investigation(s)/working set(s) `
     + `whose target no longer resolves in Egeria. THIS CAN UNBIND A REAL EGERIA PROJECT A `
