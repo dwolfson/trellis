@@ -13844,9 +13844,16 @@ async function submitPublishDb() {
       const items = [];
       if (data.server_guid) items.push({ kind:'PostgreSQL Server', name: data.server_display_name || '', guid: data.server_guid });
       if (data.asset_guid)  items.push({ kind:'PostgreSQL Database', name: data.database_display_name || slug, guid: data.asset_guid });
-      if (data.report_guid) items.push({ kind:'Survey Action (async)', name:'Egeria native survey initiated', guid: data.report_guid });
-      const detail = 'Egeria is running the native PostgreSQL survey — annotations will appear in Asset Catalog asynchronously.';
-      updateOp(opId, 'ok', `Cataloged & surveyed ${slug} in Egeria`, detail, items);
+      // The "survey started" claim derives from the persisted proof rows the
+      // server reports (data.survey_submissions), never from report_guid, which
+      // is the SurveyReport RE itself created and proves no survey ran.
+      const subs = Array.isArray(data.survey_submissions) ? data.survey_submissions : [];
+      subs.forEach(s => items.push({ kind:'Survey Action (async)', name: `Egeria survey submitted: ${s.technology_type}`, guid: s.engine_action_guid }));
+      if (data.report_guid) items.push({ kind:'Survey Report', name:'Published survey report', guid: data.report_guid });
+      const detail = subs.length
+        ? 'Egeria accepted the native survey — its status and annotations are read back into RE as it runs.'
+        : 'Cataloged and published. No Egeria survey was started or recorded (see the server log if one was expected).';
+      updateOp(opId, 'ok', subs.length ? `Cataloged & survey submitted for ${slug} in Egeria` : `Cataloged ${slug} in Egeria (no survey recorded)`, detail, items);
       showToast('success', `<strong>${_esc(slug)}</strong> cataloged in Egeria ✓ — click 📋 Activity for GUIDs`, 8000);
       await loadDatabases();
     } else {
