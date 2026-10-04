@@ -2250,6 +2250,20 @@ function kindNoun(entityType, n = 1) {
   return n === 1 ? one : many;
 }
 
+/** Select-bar scope wording (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §5,
+ *  WORK-LISTS-VS-INVESTIGATIONS §4). Current investigation: "＋ add to <name>" /
+ *  "− remove from <name>" (name cut at 24 chars, full name in the title). None
+ *  current: add reads "add to an investigation…" (design wants it ENABLED and
+ *  opening a picker; that picker is W1 item 4, not built, so it stays disabled
+ *  until then); remove stays visible, disabled, with the reason as visible text. */
+const SCOPE_WORDING = {
+  add: (name) => `＋ add to ${name}`,
+  remove: (name) => `− remove from ${name}`,
+  addNone: { label: '＋ add to an investigation…', title: 'Choose an investigation first' },
+  removeNone: { label: '− remove from investigation', title: 'Choose an investigation first' },
+  noneReason: 'no investigation selected',
+};
+
 /** The Select-mode action bar, grouped by weight, one group per line
  *  (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §5): scope; judgement and
  *  lists; view; then a rule and "remove…". Every action is a bulk write, so
@@ -2258,6 +2272,9 @@ function kindNoun(entityType, n = 1) {
 function selectActionsHtml() {
   const n = state.selected.size;
   const entityType = apiEntityType(state.resourceType);
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  const invName = state.investigation ? (inv?.display_name || state.investigation) : '';
+  const shortInv = invName.length > 24 ? `${invName.slice(0, 23)}…` : invName;
   return `<div class="mb-s3 text-caps" data-select-bar>
     <div class="flex flex-wrap items-baseline gap-s2">
       <button data-act="sel-all" class="cursor-pointer bg-transparent text-chrome-ink underline">All shown</button>
@@ -2265,14 +2282,16 @@ function selectActionsHtml() {
       <span class="text-chrome-muted"><span class="tnum">${n}</span> selected</span>
     </div>
     <div class="mt-[2px] text-chrome-muted" data-select-hint>Tick resources, then act on all of them.</div>
-    <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="scope">
-      <button data-act="sel-scope-add" ${state.investigation ? '' : 'disabled'}
-        title="${state.investigation ? 'Add to the current investigation’s scope' : 'Needs a current investigation'}"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark ${
-          state.investigation ? '' : 'border-dashed opacity-100'}">＋ scope</button>
-      <button data-act="sel-scope-remove" ${state.investigation ? '' : 'disabled'}
-        title="Remove from scope — the ${kindNoun(entityType)} itself is untouched"
-        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">− scope</button>
+    <div class="mt-s1 flex flex-wrap items-baseline gap-s2" data-bar-group="scope">
+      <button data-act="sel-scope-add" ${invName ? '' : 'disabled'}
+        title="${esc(invName ? `Add to ${invName}’s scope` : SCOPE_WORDING.addNone.title)}"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink ${
+          invName ? '' : 'border-dashed opacity-100'}">${esc(invName ? SCOPE_WORDING.add(shortInv) : SCOPE_WORDING.addNone.label)}</button>
+      <button data-act="sel-scope-remove" ${invName ? '' : 'disabled'}
+        title="${esc(invName ? `Remove from ${invName}’s scope — the ${kindNoun(entityType)} itself is untouched` : SCOPE_WORDING.removeNone.title)}"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink ${
+          invName ? '' : 'border-dashed'}">${esc(invName ? SCOPE_WORDING.remove(shortInv) : SCOPE_WORDING.removeNone.label)}</button>
+      ${invName ? '' : `<span class="text-chrome-muted" data-scope-reason>${SCOPE_WORDING.noneReason}</span>`}
     </div>
     <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="judgement">
       <select data-act="sel-disposition"
@@ -2283,7 +2302,7 @@ function selectActionsHtml() {
       </select>
       <button data-act="sel-worklist"
         title="Save the selected resources as a work list you can run, compare and narrow"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">save as work list</button>
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">save as work list…</button>
     </div>
     <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="view">
       <button data-act="sel-hide"
