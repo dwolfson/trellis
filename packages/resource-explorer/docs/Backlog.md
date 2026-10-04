@@ -9428,25 +9428,31 @@ associated annotations, which is two surveys of 318 each with nothing reused. Ch
 reused annotations) is therefore still untested because the case never occurred; check (3) is answered by the next
 entry, not by reuse. To pin the build down, record the commit the image was built from.
 
-## `coco_pharma` is now surveyed across all 29 schemas instead of 7 — a real case for the catalogue scope tree (2026-10-04)
+## `coco_pharma` grew from 7 schemas to 29 during the 2026-10-03 redeploy; the survey scope did not change (2026-10-04, CORRECTED same day)
 
-The pre-reset Egeria survey covered 61 tables in exactly 7 schemas (`coco_sus` 30, `coco_ods` 23, `demo_auth` 4, and
-`demo`, `target_sales`, `us_sales`, `eu_sales` 1 each); RE's own local survey and its SurveyReport on the element agree
-(61 tables, 8 schemas, 479 columns). After the reset and the republish, the native survey reports 29 schemas and 266
-tables (318 annotations: 266 table, 29 schema, 22 column, 1 database). Checked against Postgres directly (read-only, as
-`postgres` through the container on 5442): the database has 29 user schemas holding 263 base tables plus 3 views, 266
-relations, so the new survey is complete. The old 7 are a strict subset of the new 29 with identical table counts, and
-the 22 added schemas include `aus_inventory`, `ca_payroll`, `coco_inventory`, `coco_ledgers`, `global_crm`,
-`mfctrl9482` and `procurement01`. The live element's connection is configured with only `databaseName`;
-`databaseSchema` is a recognised property and nothing sets it. So either the old element carried a schema filter naming
-those 7 schemas (gone with the reset, unprovable now) or the 22 schemas were added after 2026-10-03 18:07 (unlikely for
-a Coco sample database, but nothing in Postgres dates a schema). Two follow-ups: RE's catalogue now holds two different
-table counts for one database (61 in RE's own report, 266 in Egeria's), and the `surveyor` role can SELECT only 208 of
-the 266 relations (25 of 29 schemas), which may limit column profiling (22 column annotations in both surveys); neither
-was looked into. This is the concrete example for `ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md`: the scope an
-owner chooses on a database's Curate should become the `databaseSchema` filter, so a republish after a reset keeps it.
-Owner's decision pending: survey `coco_pharma` at the 7 schemas it had, or at all 29. Setting a filter is a write to
-Egeria.
+**Correction.** An earlier version of this entry (PR #457) and the architect's addendum read the jump from 61 to 266
+tables as a schema filter that the reset erased. That was an inference and it was wrong. Measured read-only afterwards:
+all 79 recorded surveys of `localhost_docker_coco_pharma` (2026-09-02 to 10-03) saw at most 8 schemas, 61 tables and 479
+columns, including four run as the superuser `egeria_admin` (which sees all 29 schemas today), so credential visibility
+does not explain it; `surveyor` has USAGE on 28 schemas and none on `demo` and `demo_auth`, which the old set included,
+so the old set does not track its grants either; and the table files of the 22 added schemas (205 base tables) were
+last written 2026-10-03 20:29:57 to 20:51:26 UTC, during the redeploy (the Egeria container was recreated 20:36Z and
+started 20:42:36Z), while the 58 base tables of the old 7 date from 2026-07-05 to 2026-09-14. 58 + 205 = 263 base tables
+plus 3 views = 266, which is exactly what the post-reset native survey reports (29 schemas, 266 tables, 318
+annotations: 266 table, 29 schema, 22 column, 1 database). The old 61 was 58 tables plus 3 views. So the database
+itself gained 22 schemas and 205 tables; nothing was lost and no filter existed to lose. What loaded them is not known
+(the rebuilt quickstart's Coco data load is the likeliest; unverified).
+
+What it still shows, and why the stored scope matters: a database that gains schemas silently changes what Egeria's
+survey measures (it cannot be limited, every non-system schema is surveyed) and what the JDBC cataloguer would create,
+and nobody chose that. The live element's connection is configured with only `databaseName`; `databaseSchema` is a
+recognised property that nothing sets. Egeria's catalogue also holds two table counts for this one database (61 in RE's
+own SurveyReport on the element, 266 from the native survey), and `surveyor` can SELECT only 208 of the 266 relations
+(25 of 29 schemas), which may limit column profiling (22 column annotations in both surveys); neither was looked into.
+For the owner's pending 7-versus-29 question: 29 is the status quo; declaring 7 would be a NEW decision to leave out
+the 22 newly loaded schemas, not a restoration. This remains the concrete example for
+`ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md` and `REPLY-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md`, with the
+corrected premise: "22 schemas appeared and nobody chose them", not "a scope was lost".
 
 ## W1 is built; what is left of the work-lists-vs-investigations ruling (2026-10-04)
 
