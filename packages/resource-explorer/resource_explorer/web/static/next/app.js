@@ -253,6 +253,8 @@ export const state = {
   workListSlug: null,          // the open one; the pane takes over when set
   lastWorkListSlug: null,      // the one you were last in, for the way back
   workListIndex: false,        // showing the list OF work lists
+  lastRunStage: 'scouting',    // the run stage a list re-opens on after a frame-stage click closed it
+  scopeCount: null,            // members in the current investigation's scope, ALL kinds; null = unknown
   // The question (its full text, the same key `wireHumanAnswers` already
   // uses to look up `contextAnswers`) currently open for inline editing on
   // the Questions tab -- '' means none. Replaces `window.prompt()`
@@ -989,6 +991,7 @@ export function renderIntentNav() {
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
       state.stage = b.dataset.stage;
+      if (stageClassOf(state.stage) === 'run') state.lastRunStage = state.stage;
       // ENRICHMENT-E1-CONTEXT-TAB: "Enrichment opens on Context, Context tab
       // is the default." Only redirects the module-level default
       // ('questions') — a subTab the person deliberately chose on another
@@ -1002,23 +1005,47 @@ export function renderIntentNav() {
   });
 }
 
+/** A stage's class, read from `STAGES` — the one place it is declared. */
+function stageClassOf(id) {
+  return STAGES.find((s) => s.id === id)?.class;
+}
+
+/** A work list is a bench against one STAGE's questions, so it can only be
+ *  open on a run stage (REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md §5).
+ *  Opening one while a frame or cross-cutting stage is showing moves to the
+ *  last run stage first; without that, `loadPane()` would close the list
+ *  again the moment it opened. */
+function ensureRunStageForList() {
+  if (stageClassOf(state.stage) === 'run') return;
+  state.stage = state.lastRunStage || 'scouting';
+  renderIntentNav();
+}
+
 /** The list OF work lists — the front door the matrix never had. */
+const WORK_LIST_DEFINITION =
+  'An investigation says why, and its scope says which resources, of any kind; '
+  + 'a work list is a bench: one kind of resource, laid out against one stage’s '
+  + 'questions, so you can decide which belong in a scope.';
+
 function workListIndexHtml() {
-  if (!state.workLists.length) {
+  const { benches } = splitWorkLists();
+  const definition = `<p class="mb-s3 max-w-[70ch] text-answer text-ink" data-wl-definition>${esc(WORK_LIST_DEFINITION)}</p>`;
+  if (!benches.length) {
     return `${subTabsHtml()}
       <h3 class="m-0 font-heading text-name font-normal">No work lists yet</h3>
       <div class="my-s3 h-px bg-rule"></div>
+      ${definition}
       <p class="max-w-[70ch] text-answer text-ink">
-        A work list is a set of resources you compare as rows x questions, run a
-        survey across, and narrow down. Make one from the sidebar:
-        <strong>Select</strong>, tick some repos, then <strong>save as work list</strong>.
+        Make one from the sidebar:
+        <strong>Select</strong>, tick some resources, then <strong>save as work list</strong>.
       </p>`;
   }
   return `${subTabsHtml()}
     <h3 class="m-0 font-heading text-name font-normal">Work lists</h3>
     <div class="my-s3 h-px bg-rule"></div>
+    ${definition}
     <div class="flex flex-col">
-      ${state.workLists.map((w) => `<button data-open-wl="${esc(w.slug)}"
+      ${benches.map((w) => `<button data-open-wl="${esc(w.slug)}"
         class="cursor-pointer border-b border-rule bg-transparent py-s3 text-left hover:bg-accent-tint">
         <div class="font-heading text-question font-semibold text-ink">${esc(w.display_name)}</div>
         <div class="text-provenance text-ink-muted">
@@ -1051,7 +1078,7 @@ function renderWorkListNav() {
   const byslug = (sl) => state.workLists.find((w) => w.slug === sl);
   const open = state.workListSlug ? byslug(state.workListSlug) : null;
   const last = !open && state.lastWorkListSlug ? byslug(state.lastWorkListSlug) : null;
-  const n = state.workLists.length;
+  const n = splitWorkLists().benches.length;
   const active = Boolean(state.workListSlug || state.workListIndex);
 
   // TWO controls, because they are two jobs — not one control with two
@@ -1077,6 +1104,7 @@ function renderWorkListNav() {
   el.querySelector('[data-act="back-to-matrix"]')?.addEventListener('click', () => {
     state.workListSlug = state.lastWorkListSlug;
     state.workListIndex = false;
+    ensureRunStageForList();
     writeUrl(); renderSidebar(); loadPane();
   });
 }
@@ -2057,6 +2085,7 @@ export function renderSidebar() {
     ${state.showMarkKey ? markKeyHtml() : ''}
 
     ${investigationBarHtml()}
+    ${workListsSidebarHtml()}
 
     <input id="resource-filter" placeholder="Filter ${
       state.resourceType === 'repo' ? 'repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}…" value="${esc(state.filter)}"
@@ -2107,19 +2136,6 @@ export function renderSidebar() {
 
     ${state.selectMode ? selectActionsHtml() : ''}
 
-    ${state.workLists.length ? `
-      <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
-        Work lists · <span class="tnum">${state.workLists.length}</span>
-      </div>
-      <div class="mb-s4 flex flex-col gap-[1px]">
-        ${state.workLists.map((w) => `<button data-worklist="${esc(w.slug)}"
-          class="cursor-pointer truncate bg-transparent px-2 py-[5px] text-left ${
-            w.slug === state.workListSlug
-              ? 'border-l-2 border-accent bg-chrome-surface text-chrome-ink'
-              : 'border-l-2 border-transparent text-chrome-ink hover:bg-chrome-surface'}"
-          >${esc(w.display_name)} <span class="tnum text-chrome-muted">${w.member_count}</span>${
-            w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`).join('')}
-      </div>` : ''}
 
     ${!loaded ? `
       <div class="text-chip text-chrome-ink">Loading ${nonRepoLabel}s…</div>`
@@ -2341,6 +2357,74 @@ function investigationBarHtml() {
   </div>`;
 }
 
+/** A saved list that is somebody's inbox, not a bench: the journal's
+ *  "suggest to…" writes one `suggested-to-<audience>` list per audience
+ *  (`journal.py` SUGGESTION_PREFIX). Same prefix, one place. */
+const SUGGESTION_PREFIX = 'suggested-to-';
+
+/** The saved lists, split into the two things they are
+ *  (REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md §1). `linked` is the
+ *  benches tagged to the current investigation: the same rows
+ *  `list_all(investigation=)` would return, filtered here because the page
+ *  already holds every row and each carries its `investigation`, so a second
+ *  request could only disagree with this one. Counts are `.length` of these
+ *  arrays, never a stored number. */
+export function splitWorkLists() {
+  const benches = state.workLists.filter((w) => !String(w.slug).startsWith(SUGGESTION_PREFIX));
+  const suggestions = state.workLists.filter((w) => String(w.slug).startsWith(SUGGESTION_PREFIX));
+  const linked = state.investigation ? benches.filter((w) => w.investigation === state.investigation) : [];
+  const other = state.investigation ? benches.filter((w) => w.investigation !== state.investigation) : benches;
+  return { benches, suggestions, linked, other };
+}
+
+function workListRowHtml(w) {
+  return `<button data-worklist="${esc(w.slug)}"
+    class="cursor-pointer truncate bg-transparent px-2 py-[5px] text-left ${
+      w.slug === state.workListSlug
+        ? 'border-l-2 border-accent bg-chrome-surface text-chrome-ink'
+        : 'border-l-2 border-transparent text-chrome-ink hover:bg-chrome-surface'}"
+    >${esc(w.display_name)} <span class="tnum text-chrome-muted">${w.member_count}</span>${
+      w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`;
+}
+
+/** Panel A of the work-lists reply: under the investigation selector,
+ *  top to bottom, the scope line and the lists for this investigation; the
+ *  other lists folded to one line; the suggestions on their own line. With
+ *  no investigation current the section reads "Work lists · N" and lists
+ *  them all. */
+function workListsSidebarHtml() {
+  const { benches, suggestions, linked, other } = splitWorkLists();
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  const invName = state.investigation ? (inv?.display_name || state.investigation) : '';
+  const rows = (arr) => `<div class="mb-s2 flex flex-col gap-[1px]">${arr.map(workListRowHtml).join('')}</div>`;
+  let html = '';
+  if (invName) {
+    html += `<button data-act="sidebar-scope" type="button"
+        title="Show the repos in ${esc(invName)}’s scope (the In scope filter). The count is every kind of resource in the scope."
+        class="mb-[7px] block w-full cursor-pointer bg-transparent px-0 text-left font-heading uppercase tracking-caps text-caps text-chrome-muted"
+        >Scope · <span class="tnum" data-scope-count>${state.scopeCount === null ? '–' : state.scopeCount}</span></button>
+      <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted" data-linked-lists-head>Work lists for ${esc(invName)} · <span class="tnum">${linked.length}</span></div>
+      ${linked.length ? rows(linked) : ''}`;
+    if (other.length) {
+      html += `<details class="mb-s2" data-other-lists>
+        <summary class="mb-[7px] cursor-pointer font-heading uppercase tracking-caps text-caps text-chrome-muted">Other work lists · <span class="tnum">${other.length}</span></summary>
+        ${rows(other)}
+      </details>`;
+    }
+  } else if (benches.length) {
+    html += `<div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted" data-all-lists-head>Work lists · <span class="tnum">${benches.length}</span></div>
+      ${rows(benches)}`;
+  }
+  if (suggestions.length) {
+    html += `<details class="mb-s2" data-suggestions>
+        <summary class="mb-[7px] cursor-pointer font-heading uppercase tracking-caps text-caps text-chrome-muted">Suggestions · <span class="tnum">${suggestions.length}</span></summary>
+        <div class="mb-s2 px-2 text-provenance text-chrome-muted">Entries other people were pointed at from the journal’s “suggest to…”. They are inboxes, not work lists.</div>
+        ${rows(suggestions)}
+      </details>`;
+  }
+  return html ? `<div class="mb-s3">${html}</div>` : '';
+}
+
 function bindSidebar() {
   const el = $('sidebar');
   const rerender = () => { renderSidebar(); writeUrl(); };
@@ -2379,8 +2463,13 @@ function bindSidebar() {
       toggleGroupCollapsed(summary.closest('details').dataset.group);
     });
   });
+  el.querySelector('[data-act="sidebar-scope"]')?.addEventListener('click', () => {
+    state.scope = 'working-set';
+    rerender();
+  });
   el.querySelectorAll('button[data-worklist]').forEach((b) => b.addEventListener('click', () => {
     state.workListSlug = b.dataset.worklist;
+    ensureRunStageForList();
     renderSidebar();
     loadPane();
   }));
@@ -2669,6 +2758,7 @@ async function saveSelectionAsWorkList() {
     });
     state.workLists = await listWorkLists();
     state.workListSlug = wl.slug;
+    ensureRunStageForList();
     state.selectMode = false;
     state.selected.clear();
     renderSidebar();
@@ -2693,6 +2783,7 @@ export async function setInvestigation(slug) {
   if (!slug) {
     try { localStorage.removeItem(INVESTIGATION_KEY); } catch { /* private mode */ }
     state.workingSet = new Set();
+    state.scopeCount = null;
     if (state.scope === 'working-set') state.scope = '';
   } else {
     await loadWorkingSet();
@@ -2716,9 +2807,10 @@ export async function refreshInvestigationsAndSidebar() {
 }
 
 async function loadWorkingSet() {
-  if (!state.investigation) { state.workingSet = new Set(); return; }
+  if (!state.investigation) { state.workingSet = new Set(); state.scopeCount = null; return; }
   try {
     const members = await listInvestigationMembers(state.investigation);
+    state.scopeCount = (members || []).length;
     state.workingSet = new Set(
       (members || []).filter((m) => requireKind('loadWorkingSet', m.entity_type, 'member.entity_type') === 'repo')
                      .map((m) => m.entity_slug));
@@ -2727,6 +2819,7 @@ async function loadWorkingSet() {
     // are different, and "In scope" showing nothing because a call failed
     // would read as "this investigation has no members".
     state.workingSet = new Set();
+    state.scopeCount = null;
     state.workingSetUnknown = true;
   }
 }
@@ -7202,6 +7295,7 @@ export function paneMessage(title, body) {
 
 async function loadPane() {
   const el = $('content');
+  let scopeIntoView = false;
   // The rail is a function of (resource, stage, sub-tab): empty it, and stand
   // down its in-flight writers, the moment any of those changed.
   syncRailToSelection();
@@ -7226,19 +7320,44 @@ async function loadPane() {
     el.querySelectorAll('[data-open-wl]').forEach((b) => b.addEventListener('click', () => {
       state.workListSlug = b.dataset.openWl;
       state.workListIndex = false;
+      ensureRunStageForList();
       writeUrl(); renderSidebar(); loadPane();
     }));
     writeUrl();
     return;
   }
 
+  // §5 of REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md: a work list is a
+  // bench against one stage's questions. On a RUN stage it stays open and
+  // re-scopes to that stage (the branch below). A FRAME or CROSS-CUTTING
+  // stage (Investigation, Understanding, Automate) asks no questions, so the
+  // click goes to the stage and the list closes into the "↩ <list>" link
+  // `lastWorkListSlug` drives. The class is read from `STAGES`.
+  if (state.workListSlug && stageClassOf(state.stage) !== 'run') {
+    const closing = state.workLists.find((w) => w.slug === state.workListSlug);
+    state.lastWorkListSlug = state.workListSlug;
+    state.workListSlug = null;
+    state.workListIndex = false;
+    // Special case: Investigation while the list is linked to an
+    // investigation opens THAT investigation, its Scope section in view,
+    // current or not. Only `work_lists.investigation` links them today.
+    if (state.stage === 'investigation' && closing?.investigation
+        && state.investigations.some((i) => i.slug === closing.investigation)) {
+      openInvestigationDetail(closing.investigation);
+      scopeIntoView = true;
+    }
+    writeUrl(); renderSidebar(); renderWorkListNav();
+  }
+
   if (state.workListSlug) {
     state.workListIndex = false;
+    if (stageClassOf(state.stage) === 'run') state.lastRunStage = state.stage;
     try {
       await openWorkList({
         el,
         subTabs: SUB_TABS.map((t) => ({ id: t.id, label: t.label })),
         stage: state.stage,
+        stageLabel: STAGES.find((s) => s.id === state.stage)?.label || state.stage,
         perspectives: state.activePerspectives,
         projects: state.projects,
         analyses: state.analyses || [],
@@ -7315,6 +7434,7 @@ async function loadPane() {
   if (state.stage === 'investigation') {
     await renderInvestigation();
     renderPerspectiveRow();
+    if (scopeIntoView) $('inv-scope')?.scrollIntoView?.({ block: 'start' });
     return;
   }
 

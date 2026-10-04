@@ -137,7 +137,7 @@ async function renderList() {
         <th class="pb-s2 pr-s3 font-normal">Investigation</th>
         <th class="pb-s2 pr-s3 font-normal">Purposes</th>
         <th class="pb-s2 pr-s3 font-normal">Status</th>
-        <th class="pb-s2 pr-s3 font-normal">Members</th>
+        <th class="pb-s2 pr-s3 font-normal">Scope</th>
         <th class="pb-s2 font-normal">Egeria</th>
       </tr></thead>
       <tbody>${rows.map((inv) => `
@@ -367,8 +367,8 @@ async function renderDetail(slug) {
     <div id="inv-egeria-form"></div>
 
     <div class="my-s3 h-px bg-rule"></div>
-    <div class="mb-s2 flex items-center gap-s3">
-      <h4 class="m-0 font-heading text-subtab font-normal text-ink">Members (${members.length})</h4>
+    <div id="inv-scope" class="mb-s2 flex items-center gap-s3">
+      <h4 class="m-0 font-heading text-subtab font-normal text-ink">Scope · <span class="tnum">${members.length}</span></h4>
       <button data-act="inv-add-menu" type="button" class="${btnCls()}">＋ add…</button>
       <button data-act="inv-export-scope" type="button"
         class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
