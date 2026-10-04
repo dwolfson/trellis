@@ -1175,13 +1175,13 @@ export const getMembers = (slug, analysisId, { metric = '', scope = 'public', li
 };
 
 /** Promote a member-list selection. Three acts, one provenance line
- *  composed on the server: work_list (I will deal with this), rfa (someone
- *  must), journal (worth knowing). `members` is a snapshot of names, never
+ *  composed on the server: scope (put the repo in `investigation`'s scope),
+ *  rfa (someone must), journal (worth knowing). `members` is a snapshot of names, never
  *  a query. 401 when anonymous. See `getMembers`'s found-not-fixed note
  *  above — same gap, same reason. */
-export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }, entityType) =>
+export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [], investigation = '' }, entityType) =>
   post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote?entity_type=${encodeURIComponent(requireKind('promoteMembers', entityType))}`,
-    { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo });
+    { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo, investigation });
 
 export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}, entityType) =>
   get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
@@ -1519,15 +1519,16 @@ export const listRecords = (slug, entityType) =>
 export const recordExportHref = (slug, id, fmt) =>
   `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}?fmt=${fmt}`;
 
-/** The three acts on a report: work_list | rfa | journal. `rows` null = the
- *  whole report. The server acts on the stored snapshot. `entityType` as
- *  above. */
-export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}, entityType) =>
+/** The three acts on a report: scope | rfa | journal (`work_list` is legacy
+ *  and no longer offered). `scope` puts the resource in `investigation`'s
+ *  scope. `rows` null = the whole report. The server acts on the stored
+ *  snapshot. `entityType` as above. */
+export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '', investigation = '' } = {}, entityType) =>
   post(
     requireKind('actOnRecord', entityType) === 'repo'
       ? `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`
       : `/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
-    { action, rows, name, suggest_to: suggestTo, journal_id: journalId },
+    { action, rows, name, suggest_to: suggestTo, journal_id: journalId, investigation },
   );
 
 /* ── Component review ───────────────────────────────────────────────────── */

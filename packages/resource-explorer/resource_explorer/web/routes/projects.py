@@ -1721,10 +1721,36 @@ async def get_member_children(slug: str, analysis_id: str, key: str, scope: str 
     return {"key": key, "members": rows}
 
 
+def _add_to_investigation_scope(registry, investigation: str, entity_type: str, entity_slug: str, rationale: str) -> dict:
+    """The "add to <investigation>" act on a report or a member list: put the
+    resource in the investigation's SCOPE (the Folio), never mint a one-resource
+    work list (REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS §4). A resource that
+    is already in scope is left exactly as it is: re-adding would overwrite the
+    reason it was added for, so this reports it and writes nothing (and the
+    registry call is `keep_existing` besides, as a second guard against a race).
+    Returns {"investigation", "investigation_name", "already_in_scope"}."""
+    if not investigation:
+        raise HTTPException(status_code=422, detail="action scope needs an investigation")
+    inv = registry.get_investigation(investigation)
+    if not inv:
+        raise HTTPException(status_code=404, detail=f"Investigation '{investigation}' not found")
+    if inv.get("status") not in (None, "", "open"):
+        raise HTTPException(status_code=409, detail=f"Investigation '{inv.get('display_name') or investigation}' is {inv.get('status')}, not open")
+    name = inv.get("display_name") or investigation
+    if any(m["entity_type"] == entity_type and m["entity_slug"] == entity_slug
+           for m in registry.list_investigation_members(investigation)):
+        return {"investigation": investigation, "investigation_name": name, "already_in_scope": True}
+    ws = registry.get_or_create_working_set(investigation)
+    registry.add_working_set_member(ws["slug"], entity_type, entity_slug,
+                                    membership_rationale=rationale, state="in-scope", keep_existing=True)
+    return {"investigation": investigation, "investigation_name": name, "already_in_scope": False}
+
+
 class PromoteSelection(BaseModel):
     """A selection from a member list, with its provenance. `members` are the
     names as they were when selected — a snapshot, never a query."""
-    action: str                      # work_list | rfa | journal
+    action: str                      # scope | rfa | journal (work_list: legacy, no longer offered)
+    investigation: str = ""          # scope only: the investigation whose scope gets the repo
     metric: str = ""
     members: list[str] = Field(default_factory=list)
     total: int = 0
@@ -1760,8 +1786,8 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
     if not author:
         raise HTTPException(status_code=401, detail="Sign in to promote a selection — it needs someone to have made it.")
-    if body.action not in ("work_list", "rfa", "journal"):
-        raise HTTPException(status_code=422, detail="action must be work_list, rfa or journal")
+    if body.action not in ("scope", "work_list", "rfa", "journal"):
+        raise HTTPException(status_code=422, detail="action must be scope, rfa or journal")
     if not body.members:
         raise HTTPException(status_code=422, detail="nothing is selected")
 
@@ -1785,6 +1811,10 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
                            members=body.members, facet=body.facet, metric=body.metric)
     name = body.name.strip() or proposed_name(project.display_name or slug, total=body.total,
                                               members=body.members, facet=body.facet, metric=body.metric)
+
+    if body.action == "scope":
+        out = _add_to_investigation_scope(registry, body.investigation, "repo", slug, line)
+        return {"action": "scope", "name": project.display_name or slug, "provenance": line, **out}
 
     if body.action == "work_list":
         wl = WorkLists(registry).create(name, [slug], entity_type="repo", created_by=author,
@@ -1950,11 +1980,26 @@ def save_report(slug: str, analysis_id: str, body: SaveReport, request: Request)
 
 
 class RecordAct(BaseModel):
-    action: str                        # work_list | rfa | journal
+    action: str                        # scope | rfa | journal (work_list: legacy, no longer offered)
+    investigation: str = ""            # scope only: the investigation whose scope gets the resource
     rows: list[str] | None = None      # None = the whole report; a subset of the frozen snapshot otherwise
     name: str = ""                     # the work list's / RFA's name; defaults to the record's
     suggest_to: list[str] = Field(default_factory=list)
     journal_id: str = ""               # journal: the entry the client wrote, so its use is recorded
+
+
+def _record_scope_act(registry, cur, record_id: str, investigation: str, entity_type: str, slug: str,
+                      line: str, author: str) -> dict:
+    """`_add_to_investigation_scope` plus the report's own bookkeeping: the
+    record learns the act was used (act `scope`) only when something was
+    actually added -- "already in scope" is not a use."""
+    out = _add_to_investigation_scope(registry, investigation, entity_type, slug, line)
+    if out["already_in_scope"]:
+        out["record"] = cur.get(record_id)
+    else:
+        out["record"] = cur.add_use(record_id, act="scope", target=investigation,
+                                    target_name=out["investigation_name"], by=author)
+    return out
 
 
 @router.post("/{slug}/records/{record_id}/act")
@@ -1977,8 +2022,8 @@ def act_on_record(slug: str, record_id: str, body: RecordAct, request: Request) 
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
     if not author:
         raise HTTPException(status_code=401, detail="Sign in to act on a report — a work item needs someone who raised it.")
-    if body.action not in ("work_list", "rfa", "journal"):
-        raise HTTPException(status_code=400, detail="action must be work_list, rfa or journal")
+    if body.action not in ("scope", "work_list", "rfa", "journal"):
+        raise HTTPException(status_code=400, detail="action must be scope, rfa or journal")
     registry = ProjectRegistry()
     project = registry.get(slug)
     cur = Curations(registry)
@@ -1989,6 +2034,9 @@ def act_on_record(slug: str, record_id: str, body: RecordAct, request: Request) 
     stale = out_of_date(rep, last_run_at(registry, slug, rep.get("analysis_id", "")))
     line = act_line(rec, rows=body.rows, out_of_date_sentence=stale)
     name = body.name.strip() or rec["name"]
+    if body.action == "scope":
+        out = _record_scope_act(registry, cur, record_id, body.investigation, "repo", slug, line, author)
+        return {"action": "scope", "name": project.display_name or slug, "provenance": line, **out}
     if body.action == "work_list":
         wl = WorkLists(registry).create(name, [slug], entity_type="repo", created_by=author,
                                         derived_from=f"record:{record_id}", rationale=line,
@@ -2091,8 +2139,8 @@ def act_on_entity_record(entity_type: str, slug: str, record_id: str, body: Reco
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
     if not author:
         raise HTTPException(status_code=401, detail="Sign in to act on a report — a work item needs someone who raised it.")
-    if body.action not in ("work_list", "rfa", "journal"):
-        raise HTTPException(status_code=400, detail="action must be work_list, rfa or journal")
+    if body.action not in ("scope", "work_list", "rfa", "journal"):
+        raise HTTPException(status_code=400, detail="action must be scope, rfa or journal")
     registry = ProjectRegistry()
     display_name = _entity_display_name(registry, entity_type, slug)
     cur = Curations(registry)
@@ -2103,6 +2151,9 @@ def act_on_entity_record(entity_type: str, slug: str, record_id: str, body: Reco
     stale = out_of_date(rep, last_run_at(registry, slug, rep.get("analysis_id", "")))
     line = act_line(rec, rows=body.rows, out_of_date_sentence=stale)
     name = body.name.strip() or rec["name"]
+    if body.action == "scope":
+        out = _record_scope_act(registry, cur, record_id, body.investigation, entity_type, slug, line, author)
+        return {"action": "scope", "name": display_name or slug, "provenance": line, **out}
     if body.action == "work_list":
         wl = WorkLists(registry).create(name, [slug], entity_type=entity_type, created_by=author,
                                         derived_from=f"record:{record_id}", rationale=line,
