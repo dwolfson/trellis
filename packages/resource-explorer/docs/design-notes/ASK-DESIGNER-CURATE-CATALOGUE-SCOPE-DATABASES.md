@@ -99,6 +99,49 @@ come from reading the created elements back by qualified name. What the
 lever cannot express (a per-schema table choice, a depth below "columns
 on or off") the screen has to say rather than pretend.
 
+## A concrete case, measured 2026-10-04 (corrected the same day)
+
+Before the Egeria reset of 2026-10-03, every survey of coco_pharma, 79
+rows since 2026-09-02 under four different credentials including a
+superuser, recorded at most 8 schemas and 61 tables (58 base tables and 3
+views). After the reset, Egeria's native survey covers 29 schemas and 266
+tables. The first explanation offered, a schema filter on the old
+connection that the reset erased, was **wrong**, and so was the second, a
+credential that could see only some schemas: the table files show that 22
+schemas with 205 base tables were loaded into coco_pharma between 20:29
+and 20:51 UTC on 2026-10-03, during the redeploy window, and the old 58
+tables were last written in July to September. Nothing was lost. **The
+database grew, on purpose:** the Egeria lead extended coco_pharma with new
+schemas as the Coco scenarios expanded. RE surveyed the result and said
+nothing about the change; Egeria's survey covered the new schemas because
+it covers everything, and the cataloguer, once attached, would have created
+elements for all of them for the same reason.
+
+That is the defect this ask is about, in one database, on better evidence
+than a lost filter, and it adds a requirement: **an intentional extension
+of a database is something RE should be looking for and surfacing**, not
+something it silently absorbs. Without a declared, stored scope, what
+gets catalogued is decided by whatever the database contains on the day;
+with one, the 22 new schemas read "new since your scope was declared ·
+undecided" on the tree and the person chooses. The reply's "survey now
+disagrees" state is this moment seen from the scope's side; Understanding's
+"since the last run" sentence and Automate's change subscriptions are the
+same moment seen from the survey's side, and the three should agree. The
+owner's pending decision, 7 or 29 schemas, is therefore a **new choice**
+about the extension, not a restoration, and it is the first scope record
+either way. The extension itself is traceable: it coincides with pull
+requests in egeria-workspaces that carry the Coco data, which the rebuilt
+quickstart loaded. A change RE surfaces can therefore point at a source
+commit when one exists, the git-as-provenance idea from the extensibility
+assumptions (A5) applied to data rather than code.
+
+**The commit is also /next's Publish for databases.** Classic's publish
+button is today the only way to catalogue a database, and /next has no
+publish control for one. Question 3's commit replaces it: there is no
+separate Publish, and Classic's button retires into the commit when the
+slice lands. Every state word on the tree after commit comes from the proof
+rows RE now records for the surveys Publish starts.
+
 ## The questions for you
 
 1. **The scope decision.** A tree of schemas and tables with what is known
