@@ -1207,6 +1207,16 @@ export const createWorkList = (displayName, entitySlugs, { investigation = '', r
     investigation, rationale, description, entity_type: requireKind('createWorkList', entityType),
   });
 
+/** Tag a saved list with its investigation ('' unlinks). 404 for an unknown investigation. */
+export const linkWorkListInvestigation = (slug, investigation) =>
+  put(`/api/work-lists/${encodeURIComponent(slug)}/investigation`, { investigation });
+
+/** Put a list's members (or the ticked subset) in an investigation's scope. The server
+ *  skips members already in scope and reports them: {added, already_in_scope, ...}. */
+export const addWorkListToInvestigation = (slug, investigation, entitySlugs = null) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/add-to-investigation`,
+       { investigation, ...(entitySlugs ? { entity_slugs: [...entitySlugs] } : {}) });
+
 export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
   post(`/api/work-lists/${encodeURIComponent(slug)}/promote`,
        { survivors: [...survivors], display_name: displayName, rationale });
