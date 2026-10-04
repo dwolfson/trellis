@@ -9114,6 +9114,8 @@ the Alignment scan reported nothing for them because `stale_assets` covers repos
 (2026-10-03): the resync pass should re-verify flagged and published database rows against Egeria on every
 pass, as it now does for repositories, and the same for filesystems.
 
+**Status 2026-10-04: scan and flag fixed, PR #453** (`DB-FS-ASSET-SELFHEAL-IMPLEMENTED.md`). The scheduled pass re-verifies and flags (never deletes) database and filesystem GUIDs. Still not built: the outbox enqueue kind for database and filesystem asset publishes, and live proof that `ClassificationExplorer.get_element_by_guid` returns the expected shape for those asset types (a surprise shape fails safe as 'undetermined'). The registry held no filesystems on 2026-10-03, so the filesystem half has only stub tests.
+
 ## A failed "Find databases" load shows "Try again" and no reason (2026-10-03, post-reset walk)
 
 Right after the Egeria reset, opening Find databases showed the Saved sources tab with no count and only a
@@ -9280,6 +9282,8 @@ The owner's walk of #445 passed five of design's six checks. Check 5 (the groupe
 ruling does not say what the buttons read when no investigation is selected (they are disabled then):
 ask design for that one line before the slice.
 
+**Status 2026-10-04: mostly fixed, PR #451** (`SCOPE-WORDING-IMPLEMENTED.md`). Wording, truncation, the ellipsis and the visible 'no investigation selected' text are in and walked. Still open: with no investigation selected design wants '＋ add to an investigation…' ENABLED and opening a picker (open investigations plus 'start a new one', REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS §4); no picker exists, so it stays disabled. That picker is design's W1 item 4.
+
 ## CSV import: the confirm re-offers rows already in the investigation, and re-confirming overwrites their state (2026-10-03, #441 walk)
 
 Re-importing the same file previews "0 new · 3 already registered", which is right, but the confirm still
@@ -9293,6 +9297,8 @@ owner set since.
 Fix: split the preview into "already in <investigation>" (not counted, not offered) and "registered, not
 yet in it" (counted). Also consider making `add_working_set_member` keep an existing member's rationale and
 state, which fixes it for every caller but touches shared registry code.
+
+**Status 2026-10-04: fixed, PR #452** (`CSV-RECONFIRM-MEMBERS-IMPLEMENTED.md`), walked on 8810. Only the CSV import passes the new `keep_existing`; the other callers of `add_working_set_member` still overwrite, deliberately.
 
 ## Findings supersession: what is not done (2026-10-03, `FINDINGS-SUPERSESSION-IMPLEMENTED.md`)
 
@@ -9350,6 +9356,8 @@ native-survey list, and the UI can say it started with nothing to prove it. Fix 
 (`re/publish-records-survey-actions`): record the initiated actions through the same proof path, and make the
 "started" wording derive from what was recorded.
 
+**Status 2026-10-04: fixed, PR #455** (`PUBLISH-RECORDS-SURVEY-ACTIONS-IMPLEMENTED.md`). Not covered: see "Other Egeria surveys are started without a proof row" below.
+
 ## The classic "Run Survey" confirm does nothing when browser dialogs are suppressed (2026-10-04, owner's marquez walk)
 
 The owner's first click on Run Survey for the never-surveyed `marquez` did nothing: no request reached 8810, and
@@ -9378,3 +9386,32 @@ The database "Catalog & Survey in Egeria" / "Re-survey in Egeria" Publish button
 yet do what a reset requires. Related to "Wire Catalog and Survey for one-click execution" above. Design
 question: where the control lives in /next (Curate's catalogue scope tree, the header, Survey & analyses), and
 what it says while publishing, with the Publish-proof-row fix above as the source of its status words.
+
+## Other Egeria surveys are started without a proof row, and the native-survey list hides the server survey (2026-10-04, #455 builder)
+
+PR #455 records the surveys that Publish starts. These still start surveys and record nothing:
+`scheduler.py` ~:780 (`trigger_survey_by_guid` for a database, no `step_runs` row),
+`surveyors/database/survey_definition_adapter.py` ~:275 (what it persists was not checked), the repo equivalents
+(`repo_survey_definition_adapter.py` ~:5150 and `egeria_publisher.py` ~:480-515), `EgeriaDatabaseSurveyor.trigger_survey_by_guid`
+(~:592, takes no registry), and `hybrid_filesystem_surveyor.py` ~:66 (a different class, not inspected). The hybrid
+database surveyor now records but passes no `submitted_by`, so those rows carry an empty identity. Separately,
+`native_survey_rows` lists only the "PostgreSQL Relational Database" process, so the server-survey row Publish now
+records (and a discovered Survey Definition process row) is stored and swept but never listed. Also seen, not
+changed: `_initiate_native_survey` calls `asyncio.get_event_loop()` inside a worker thread and works only because the
+route sets a loop.
+
+## Egeria 6.2 reuses survey annotations: what it means for RE (2026-10-04, from the egeria-workspaces PR notice)
+
+A coming egeria-workspaces PR says Egeria 6.2 reuses annotations when a repeat survey finds an unchanged resource, so
+one annotation is reported by many survey reports, and the annotation bean's single `fromSurveyReport` property
+becomes the list `fromSurveyReports` (the Portal's Tech Catalog handler is being switched to it). RE does not read
+that property: a grep of `packages/resource-explorer` finds no `fromSurveyReport`, and the read-back takes
+annotations from the report side (`egeria_survey_reader.annotations_from_report` reads `reportedAnnotations` of
+`get_asset_by_guid(report_guid, graphQueryDepth=1)`; `native_survey_annotations` is keyed on report GUID plus
+annotation GUID). So the rename needs no RE change. Not checked, and worth one look after the first repeat native
+survey of an unchanged database on a 6.2 Egeria: (1) the new report's `reportedAnnotations` still lists the reused
+annotations (if it lists only NEW ones, RE would store 0 and `derive_native_state` could read a clean repeat as
+empty); (2) any RE code that counts or de-duplicates by annotation GUID alone, not by report plus GUID; (3) whether
+the recreated Egeria is already 6.2: the jump from 91 to 318 annotations on `coco_pharma` after the reset
+(2026-10-03) may be the content pack or this change, and nobody has compared the types. pyegeria's reading of
+`fromSurveyReports` is a separate question for the egeria-python repo.
