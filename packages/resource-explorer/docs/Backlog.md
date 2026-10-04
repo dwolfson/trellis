@@ -9415,3 +9415,33 @@ empty); (2) any RE code that counts or de-duplicates by annotation GUID alone, n
 the recreated Egeria is already 6.2: the jump from 91 to 318 annotations on `coco_pharma` after the reset
 (2026-10-03) may be the content pack or this change, and nobody has compared the types. pyegeria's reading of
 `fromSurveyReports` is a separate question for the egeria-python repo.
+
+**Update 2026-10-04: measured, annotation reuse did not fire.** The platform reports "Egeria OMAG Server Platform
+(version 6.2-SNAPSHOT)" and runs the local image `egeria-quickstart-platform:local`, built 2026-10-03 13:46 CDT, about
+two hours before the reset; the previous image was overwritten, so what ran before is unknown. A repeat native survey
+of the unchanged `marquez` (report `d66412c4`, 17:50Z) against the first (`ba7634bb`, 15:29Z) produced 49 stored
+annotations in both, identical type, summary and step, with ZERO shared annotation GUIDs: Egeria created 49 new
+annotations and reused none. RE read back the full report (stored equals recorded). The `coco_pharma` element holds 636
+associated annotations, which is two surveys of 318 each with nothing reused. Check (1) above (a report listing only
+reused annotations) is therefore still untested because the case never occurred; check (3) is answered by the next
+entry, not by reuse. To pin the build down, record the commit the image was built from.
+
+## `coco_pharma` is now surveyed across all 29 schemas instead of 7 — a real case for the catalogue scope tree (2026-10-04)
+
+The pre-reset Egeria survey covered 61 tables in exactly 7 schemas (`coco_sus` 30, `coco_ods` 23, `demo_auth` 4, and
+`demo`, `target_sales`, `us_sales`, `eu_sales` 1 each); RE's own local survey and its SurveyReport on the element agree
+(61 tables, 8 schemas, 479 columns). After the reset and the republish, the native survey reports 29 schemas and 266
+tables (318 annotations: 266 table, 29 schema, 22 column, 1 database). Checked against Postgres directly (read-only, as
+`postgres` through the container on 5442): the database has 29 user schemas holding 263 base tables plus 3 views, 266
+relations, so the new survey is complete. The old 7 are a strict subset of the new 29 with identical table counts, and
+the 22 added schemas include `aus_inventory`, `ca_payroll`, `coco_inventory`, `coco_ledgers`, `global_crm`,
+`mfctrl9482` and `procurement01`. The live element's connection is configured with only `databaseName`;
+`databaseSchema` is a recognised property and nothing sets it. So either the old element carried a schema filter naming
+those 7 schemas (gone with the reset, unprovable now) or the 22 schemas were added after 2026-10-03 18:07 (unlikely for
+a Coco sample database, but nothing in Postgres dates a schema). Two follow-ups: RE's catalogue now holds two different
+table counts for one database (61 in RE's own report, 266 in Egeria's), and the `surveyor` role can SELECT only 208 of
+the 266 relations (25 of 29 schemas), which may limit column profiling (22 column annotations in both surveys); neither
+was looked into. This is the concrete example for `ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md`: the scope an
+owner chooses on a database's Curate should become the `databaseSchema` filter, so a republish after a reset keeps it.
+Owner's decision pending: survey `coco_pharma` at the 7 schemas it had, or at all 29. Setting a filter is a write to
+Egeria.
