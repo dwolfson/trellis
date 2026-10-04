@@ -104,6 +104,15 @@ function kindOf(wl) {
   return k;
 }
 
+/** The open list's kind, in words, for the title line ("9 databases"). An
+ *  unknown kind says "resources" rather than guessing one. */
+function kindPlural(wl, n) {
+  const names = { repo: ['repo', 'repos'], database: ['database', 'databases'],
+                  filesystem: ['file system', 'file systems'] }[wl && wl.entity_type];
+  if (!names) return n === 1 ? 'resource' : 'resources';
+  return n === 1 ? names[0] : names[1];
+}
+
 /** A question Context records (context-recorded.js): the SAME state word the
  *  Questions pane and its KEY use, read from each member's own Context
  *  (`grid.contexts`, loaded once when the list opens). '' = not such a
@@ -230,7 +239,7 @@ export async function renderWorkListPane(ctx) {
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(wl.display_name)}</h3>
       <span class="tnum text-caveat text-ink-muted">
-        <span class="tnum">${wl.members.length}</span> resources · ${esc(stage)}
+        <span class="tnum">${wl.members.length}</span> ${esc(kindPlural(wl, wl.members.length))} · <span data-wl-stage-line>${esc(ctx.stageLabel || stage)}’s questions</span>
         ${wl.derived_from ? ` · narrowed from <span class="font-mono">${esc(wl.derived_from)}</span>` : ''}
         ${wl.egeria_guid ? ' · published to Egeria' : ' · not published'}
       </span>
@@ -308,7 +317,7 @@ function renderActions(ctx) {
     <span class="text-ink-muted">${
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
-      : !runnable ? `<span class="text-accent-ink">No analyses are catalogued for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, Understanding and Automate, which are served elsewhere</span>`
+      : !runnable ? `<span class="text-accent-ink">No analyses are catalogued for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
       : n ? `${n} selected` : 'all rows'}</span>
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
       <select id="wl-disposition" ${n ? '' : 'disabled'}

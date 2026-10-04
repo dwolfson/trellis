@@ -199,7 +199,7 @@ test('B: confirm in the Find dialog adds members and the OPEN investigation pane
   assert.deepEqual(memberSlugs(ctx), ['old-db']);
   await runAndConfirm(ctx, ['a_db', 'b_db']);
   assert.deepEqual(memberSlugs(ctx).sort(), ['a-db', 'b-db', 'old-db']);
-  assert.match(text(ctx.content), /Members \(3\)/);
+  assert.match(text(ctx.content), /Scope · 3/);
 });
 
 test('B: known-negative: confirm into an investigation that is not the open one leaves the open pane alone and does not refetch it', async () => {
