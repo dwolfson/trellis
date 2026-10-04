@@ -319,12 +319,14 @@ class FromFileRequest(BaseModel):
     chose in the preview for rows that named none: {"<line>": "<server slug>"}."""
     text: str
     server_choices: dict[str, str] = {}
+    #: The investigation chosen (preview only reads it: which already-registered
+    #: rows are already members of it).
+    investigation: str = ""
 
 
 class FromFileImport(FromFileRequest):
     lines: list[int] | None = None      # file lines the person ticked; None = all
     group: str = ""
-    investigation: str = ""
     #: [{"line": 7, "field": "group"}]: proposed changes the person accepted.
     accept_changes: list[dict] = []
 
@@ -348,7 +350,8 @@ def preview_from_file(body: FromFileRequest) -> dict:
     from resource_explorer.registry import ProjectRegistry
 
     return preview_file(ProjectRegistry(), body.text,
-                        server_choices=_server_choices(body.server_choices))
+                        server_choices=_server_choices(body.server_choices),
+                        investigation=body.investigation)
 
 
 @router.post("/from-file/import")

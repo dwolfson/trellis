@@ -38,6 +38,8 @@ function previewFor(body) {
   if (!body.text.includes('resource_type') || !body.text.includes('address')) return FX.refused;
   if (body.text.startsWith('resource_type,address,group,disposition')) return FX.proposed;
   if (body.server_choices && Object.keys(body.server_choices).length) return FX.chosen;
+  // c360 already holds the orders database (FX.reconfirm is the server's own payload for it)
+  if (body.investigation === 'c360') return FX.reconfirm;
   return FX.preview;
 }
 
@@ -298,22 +300,22 @@ test('confirm: "Add these N to <investigation>" through the shared confirm; the 
 
   const dlg = await openFileTab(ctx);
   await chooseFile(ctx, dlg, FX.csv);
-  // 2 ready new rows + 1 already registered (scope only); the needs-a-person row is not counted
+  // 2 ready new rows; the 1 already-registered row is ALREADY in Customer 360, so it is not offered
   const btn = dlg.querySelector('[data-act="confirm"]');
-  assert.match(text(btn), /^Add these 3 to Customer 360$/);
+  assert.match(text(btn), /^Add these 2 to Customer 360$/);
   assert.equal(dlg.querySelector('[data-act="investigation"]').value, 'c360', 'the sidebar investigation is the default destination');
 
   btn.click();
   await tick(120);
   const imp = imports(ctx);
   assert.equal(imp.length, 1);
-  assert.deepEqual(imp[0].body.lines.sort((a, b) => a - b), [2, 3, 8]);
+  assert.deepEqual(imp[0].body.lines.sort((a, b) => a - b), [2, 8]);
   assert.equal(imp[0].body.investigation, 'c360');
   for (const c of ctx.calls) assert.ok(!c.raw.includes(CELL_SECRET), 'no request carried the credential cell');
-  assert.match(text(dlg.querySelector('[data-outcome]')), /Registered 2 database\(s\)\. Added 3 to Customer 360\./);
+  assert.match(text(dlg.querySelector('[data-outcome]')), /Registered 2 database\(s\)\. Added 2 to Customer 360\./);
   // the open page shows them, with no navigation
   const shown = [...ctx.content.querySelectorAll('[data-remove-member]')].map((b) => b.dataset.removeMember.split('|')[1]).sort();
-  assert.deepEqual(shown, ['pg_regional_5432_ref_only', 'regional_pg_orders', 'regional_pg_sales']);
+  assert.deepEqual(shown, ['pg_regional_5432_ref_only', 'regional_pg_sales']);
 });
 
 test('known-negative: with no investigation chosen the button says Register and no investigation is sent', async () => {
@@ -334,10 +336,10 @@ test('unticking a row removes it from N and from the lines sent', async () => {
   await chooseFile(ctx, dlg, FX.csv);
   dlg.querySelector('[data-file-line="8"]').click();
   await tick(5);
-  assert.match(text(dlg.querySelector('[data-act="confirm"]')), /^Add these 2 to Customer 360$/);
+  assert.match(text(dlg.querySelector('[data-act="confirm"]')), /^Add these 1 to Customer 360$/);
   dlg.querySelector('[data-act="confirm"]').click();
   await tick(80);
-  assert.deepEqual(imports(ctx)[0].body.lines.sort((a, b) => a - b), [2, 3]);
+  assert.deepEqual(imports(ctx)[0].body.lines.sort((a, b) => a - b), [2]);
 });
 
 test('proposed changes on already-registered rows are shown, unticked, and applied only if ticked at confirm', async () => {
@@ -352,7 +354,7 @@ test('proposed changes on already-registered rows are shown, unticked, and appli
   const boxes = [...box.querySelectorAll('[data-accept-change]')];
   assert.equal(boxes.length, 2);
   assert.ok(boxes.every((b) => !b.checked), 'nothing is applied unless the person ticks it');
-  assert.match(text(dlg.querySelector('[data-act="confirm"]')), /^Register these 0$/);
+  assert.match(text(dlg.querySelector('[data-act="confirm"]')), /^Nothing to add$/);
   assert.equal(dlg.querySelector('[data-act="confirm"]').disabled, true);
 
   box.querySelector('[data-accept-change="2|group"]').click();
@@ -433,4 +435,56 @@ test('the investigation page exports its scope as CSV under the server-named fil
   assert.ok(ctx.calls.find((c) => c.method === 'GET' && c.url === '/api/investigations/c360/scope.csv'));
   assert.equal(ctx.downloads[0].name, 're-scope-c360-2026-10-02.csv');
   assert.match(text(ctx.content.querySelector('#inv-scope-note')), /Downloaded re-scope-c360-2026-10-02\.csv\./);
+});
+
+/* ── re-confirming a file into the investigation it is already in ───────── */
+
+test('re-confirm: rows already in the chosen investigation are said so, not counted, not offered', async () => {
+  const ctx = await setUp({}, { investigation: 'c360' });
+  const dlg = await openFileTab(ctx);
+  await chooseFile(ctx, dlg, FX.csv);
+  assert.equal(previews(ctx)[0].body.investigation, 'c360', 'the preview is asked about the chosen investigation');
+  assert.match(text(dlg.querySelector('[data-counts]')), /1 already registered \(1 already in Customer 360\)/);
+  dlg.querySelector('[data-count="already_registered"]').click();
+  await tick(5);
+  const row = dlg.querySelector('[data-lines="already_registered"] [data-file-row="3"]');
+  assert.equal(row.querySelector('[data-file-line]'), null, 'no tick box: there is nothing to add for it');
+  assert.match(text(row), /already in Customer 360, nothing to add/);
+  assert.match(text(dlg.querySelector('[data-act="confirm"]')), /^Add these 2 to Customer 360$/);
+  dlg.querySelector('[data-act="confirm"]').click();
+  await tick(80);
+  assert.ok(!imports(ctx)[0].body.lines.includes(3), 'the already-member line is not sent');
+});
+
+test('re-confirm: when every row is already there the confirm says "Nothing to add" and is disabled', async () => {
+  const ctx = await setUp({}, { investigation: 'c360' });
+  const dlg = await openFileTab(ctx);
+  const allThere = JSON.parse(JSON.stringify(FX.reconfirm));
+  allThere.lines.new = []; allThere.counts.new = 0; allThere.counts.ready = 0; allThere.counts.needs_person = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, o) => (String(url).endsWith('/from-file/preview')
+    ? { ok: true, status: 200, json: async () => allThere } : real(url, o));
+  await chooseFile(ctx, dlg, FX.csv);
+  const btn = dlg.querySelector('[data-act="confirm"]');
+  assert.equal(text(btn), 'Nothing to add');
+  assert.equal(btn.disabled, true);
+  assert.doesNotMatch(text(dlg.querySelector('[data-confirm]')), /Add these/);
+});
+
+test('known-negative: a scope export into a SECOND investigation still offers its already-registered rows', async () => {
+  const ctx = await setUp({}, { investigation: 'c360' });
+  const dlg = await openFileTab(ctx);
+  await chooseFile(ctx, dlg, FX.csv);
+  assert.match(text(dlg.querySelector('[data-act="confirm"]')), /^Add these 2 to Customer 360$/);
+  // choose the other investigation: the file is planned again against it
+  const sel = dlg.querySelector('[data-act="investigation"]');
+  sel.value = 'other';
+  sel.dispatchEvent(new ctx.window.Event('change', { bubbles: true }));
+  await tick(80);
+  assert.equal(previews(ctx).at(-1).body.investigation, 'other');
+  assert.doesNotMatch(text(dlg.querySelector('[data-counts]')), /already in/);
+  assert.match(text(dlg.querySelector('[data-act="confirm"]')), /^Add these 3 to Other one$/);
+  dlg.querySelector('[data-act="confirm"]').click();
+  await tick(80);
+  assert.deepEqual(imports(ctx)[0].body.lines.sort((a, b) => a - b), [2, 3, 8]);
 });

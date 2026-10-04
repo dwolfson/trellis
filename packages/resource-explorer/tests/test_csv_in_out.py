@@ -120,7 +120,8 @@ def test_the_preview_is_the_five_counts_each_opening_its_lines(registry):
     assert p["rows"] == 9
     assert p["counts"] == {
         "new": 3, "ready": 2, "needs_person": 1,
-        "already_registered": 1, "duplicate_in_file": 1, "invalid": 2, "not_importable": 2,
+        "already_registered": 1, "already_in_investigation": 0,
+        "duplicate_in_file": 1, "invalid": 2, "not_importable": 2,
     }
     by = lambda k: sorted(i["line"] for i in p["lines"][k])        # noqa: E731
     assert by("new") == [2, 4, 8]
@@ -519,3 +520,90 @@ def test_add_database_returns_the_stored_slug_so_scope_points_at_something(clien
     assert r.status_code == 200, r.text
     assert r.json()["slug"] == "regional_pg_fresh_one"
     assert registry.get_database(r.json()["slug"], allow_unreadable=True)
+
+
+# ── re-confirming a file into the investigation it is already in ─────────────
+
+def _members(registry, inv_slug):
+    return {(m["entity_type"], m["entity_slug"]): m for m in registry.list_investigation_members(inv_slug)}
+
+
+def test_reimporting_into_the_same_investigation_offers_nothing_to_add(registry):
+    inv = registry.create_investigation("Customer 360", egeria_binding="local")
+    import_file(registry, FIXTURE, server_choices={4: "regional-pg"}, investigation=inv["slug"])
+    assert len(_members(registry, inv["slug"])) == 4
+    p = preview_file(registry, FIXTURE, investigation=inv["slug"])
+    assert p["counts"]["already_registered"] == 4
+    assert p["counts"]["already_in_investigation"] == 4
+    assert all(i["in_investigation"] for i in p["lines"]["already_registered"])
+    # a preview with no investigation chosen says nothing about membership
+    p0 = preview_file(registry, FIXTURE)
+    assert p0["counts"]["already_in_investigation"] == 0
+    assert not any(i["in_investigation"] for i in p0["lines"]["already_registered"])
+
+
+def test_a_scope_export_into_a_second_investigation_still_offers_its_rows(registry):
+    a = _investigation_with(registry, "Customer 360", [
+        ("database", "regional_pg_orders", "in-scope"), ("repo", "sqlglot", "in-scope")])
+    b = registry.create_investigation("Second look", egeria_binding="local")
+    text = rows_to_csv_text(scope_export_rows(registry, a["slug"]))
+    # B has no working set yet: nothing is a member, nothing is created by looking
+    p = preview_file(registry, text, investigation=b["slug"])
+    assert p["counts"]["already_registered"] == 2 and p["counts"]["already_in_investigation"] == 0
+    assert not any(i["in_investigation"] for i in p["lines"]["already_registered"])
+    assert registry.investigation_working_set_slug(b["slug"]) == ""
+    # the same file previewed against A: both are already there
+    pa = preview_file(registry, text, investigation=a["slug"])
+    assert pa["counts"]["already_in_investigation"] == 2
+    # one member of B now: only that row flips
+    import_file(registry, text, lines=[2], investigation=b["slug"])
+    pb = preview_file(registry, text, investigation=b["slug"])
+    assert pb["counts"]["already_in_investigation"] == 1
+    assert sorted(i["line"] for i in pb["lines"]["already_registered"] if i["in_investigation"]) == [2]
+
+
+def test_the_preview_route_takes_the_investigation(client, registry):
+    inv = registry.create_investigation("Customer 360", egeria_binding="local")
+    import_file(registry, FIXTURE, server_choices={4: "regional-pg"}, investigation=inv["slug"])
+    r = client.post("/api/discovery/from-file/preview", json={"text": FIXTURE, "investigation": inv["slug"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["counts"]["already_in_investigation"] == 4
+    r = client.post("/api/discovery/from-file/preview", json={"text": FIXTURE})
+    assert r.json()["counts"]["already_in_investigation"] == 0
+
+
+def test_reconfirming_keeps_the_rationale_and_state_the_owner_set(registry):
+    inv = registry.create_investigation("Customer 360", egeria_binding="local")
+    import_file(registry, FIXTURE, server_choices={4: "regional-pg"}, investigation=inv["slug"],
+                rationale="Loaded from a file on 2026-10-01")
+    ws = registry.investigation_working_set_slug(inv["slug"])
+    registry.add_working_set_member(ws, "database", "regional_pg_orders",
+                                    membership_rationale="the system of record for orders", state="excluded")
+    import_file(registry, FIXTURE, investigation=inv["slug"], rationale="Loaded from a file on 2026-10-03")
+    m = _members(registry, inv["slug"])[("database", "regional_pg_orders")]
+    assert m["membership_rationale"] == "the system of record for orders"
+    assert m["state"] == "excluded"
+    # an untouched member keeps its first import's words too
+    other = _members(registry, inv["slug"])[("database", "regional_pg_sales")]
+    assert other["membership_rationale"] == "Loaded from a file on 2026-10-01"
+
+
+def test_a_first_time_add_still_writes_the_imports_rationale_and_state(registry):
+    inv = registry.create_investigation("Customer 360", egeria_binding="local")
+    import_file(registry, FIXTURE, investigation=inv["slug"], rationale="Loaded from a file on 2026-10-01")
+    m = _members(registry, inv["slug"])[("database", "regional_pg_orders")]
+    assert m["membership_rationale"] == "Loaded from a file on 2026-10-01"
+    assert m["state"] == "in-scope"
+
+
+def test_keep_existing_fills_an_empty_rationale_and_default_add_still_overwrites(registry):
+    ws = registry.get_or_create_working_set(
+        registry.create_investigation("Customer 360", egeria_binding="local")["slug"])["slug"]
+    registry.add_working_set_member(ws, "repo", "sqlglot")                      # rationale empty
+    registry.add_working_set_member(ws, "repo", "sqlglot", membership_rationale="filled", keep_existing=True)
+    row = [m for m in registry.list_working_set_members(ws) if m["entity_slug"] == "sqlglot"][0]
+    assert row["membership_rationale"] == "filled"
+    # the explicit edit path (default) is unchanged: it overwrites
+    registry.add_working_set_member(ws, "repo", "sqlglot", membership_rationale="edited", state="excluded")
+    row = [m for m in registry.list_working_set_members(ws) if m["entity_slug"] == "sqlglot"][0]
+    assert (row["membership_rationale"], row["state"]) == ("edited", "excluded")

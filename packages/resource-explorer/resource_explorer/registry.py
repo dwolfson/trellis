@@ -9176,15 +9176,29 @@ class ProjectRegistry:
 
     def add_working_set_member(self, ws_slug: str, entity_type: str, entity_slug: str,
                                *, membership_rationale: str = "",
-                               state: str = "in-scope") -> list[dict]:
+                               state: str = "in-scope",
+                               keep_existing: bool = False) -> list[dict]:
+        """Add a member (an upsert). By default a repeat add overwrites the
+        member's rationale and state with the arguments (an explicit edit).
+        With `keep_existing=True` a member that is already there keeps what it
+        has: the arguments only fill a rationale or state that is empty. A
+        first-time add writes the arguments either way."""
+        if keep_existing:
+            conflict = """DO UPDATE SET
+                   membership_rationale = CASE WHEN COALESCE(working_set_members.membership_rationale, '') = ''
+                       THEN EXCLUDED.membership_rationale ELSE working_set_members.membership_rationale END,
+                   state = CASE WHEN COALESCE(working_set_members.state, '') = ''
+                       THEN EXCLUDED.state ELSE working_set_members.state END"""
+        else:
+            conflict = """DO UPDATE SET membership_rationale = EXCLUDED.membership_rationale,
+                                 state = EXCLUDED.state"""
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO working_set_members
                    (working_set_slug, entity_type, entity_slug, membership_rationale, state, added_at)
                    VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT (working_set_slug, entity_type, entity_slug)
-                   DO UPDATE SET membership_rationale = EXCLUDED.membership_rationale,
-                                 state = EXCLUDED.state""",
+                   """ + conflict,
                 (ws_slug, entity_type, entity_slug, membership_rationale, state,
                  datetime.utcnow().isoformat()),
             )

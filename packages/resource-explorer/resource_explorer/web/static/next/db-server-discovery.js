@@ -666,7 +666,7 @@ async function runPreview(el) {
   f.error = '';
   render(el);
   try {
-    f.preview = await previewDiscoveryFile(f.text, f.serverChoices);
+    f.preview = await previewDiscoveryFile(f.text, f.serverChoices, f.investigation);
   } catch (err) {
     f.error = failure(err, 'read this file');
     f.preview = null;
@@ -714,12 +714,14 @@ function fileHtml() {
 function countsHtml(p) {
   const items = COUNT_LABELS.map(([key, label]) => {
     const n = p.counts[key];
+    const inInv = key === 'already_registered' ? alreadyInCount(p) : 0;
     const extra = key === 'new' && p.counts.needs_person
       ? ` <span class="text-state-warn" data-needs-person-count>(⚠ ${p.counts.needs_person} need a person)</span>` : '';
-    if (!n) return `<span class="text-ink-muted" data-count-zero="${key}">${esc(label(n))}</span>`;
+    const words = label(n) + (inInv ? ` (${inInv} already in ${investigationName(view.file.investigation)})` : '');
+    if (!n) return `<span class="text-ink-muted" data-count-zero="${key}">${esc(words)}</span>`;
     const open = view.file.open === key;
     return `<button data-count="${key}" class="cursor-pointer border-0 bg-transparent p-0 text-caveat underline ${
-      open ? 'text-ink' : 'text-accent-ink'}">${esc(label(n))}</button>${extra}`;
+      open ? 'text-ink' : 'text-accent-ink'}">${esc(words)}</button>${extra}`;
   });
   return `<p class="mb-s2 text-caveat text-ink" data-counts><span class="font-heading">${p.rows} row${
     p.rows === 1 ? '' : 's'}</span> · ${items.join(' · ')}</p>`;
@@ -759,9 +761,15 @@ function openLinesHtml(p) {
       what = `<span class="text-ink-muted">${i.server ? `on ${esc(i.server)}` : `reference ${esc(i.connection_ref)}`}${
         i.group ? ` · group ${esc(i.group)}` : ''}</span>`;
     } else if (key === 'already_registered') {
-      lead = `<td class="py-s1 pr-s2"><input type="checkbox" data-file-line="${i.line}" ${
-        f.deselected.has(i.line) ? '' : 'checked'}></td>`;
-      what = `<span class="text-ink-muted">already registered${i.slug ? ` as ${esc(i.slug)}` : ''}; only added to the investigation's scope</span>`;
+      if (isAlreadyIn(p, i)) {
+        lead = '<td class="py-s1 pr-s2"></td>';
+        what = `<span class="text-ink-muted" data-already-in>already registered${i.slug ? ` as ${esc(i.slug)}` : ''}; already in ${
+          esc(investigationName(f.investigation))}, nothing to add</span>`;
+      } else {
+        lead = `<td class="py-s1 pr-s2"><input type="checkbox" data-file-line="${i.line}" ${
+          f.deselected.has(i.line) ? '' : 'checked'}></td>`;
+        what = `<span class="text-ink-muted">already registered${i.slug ? ` as ${esc(i.slug)}` : ''}; only added to the investigation's scope</span>`;
+      }
     }
     return `<tr class="border-b border-rule" data-file-row="${i.line}">${lead}${lineCell(i)}${addrCell(i)}<td class="py-s1 text-caveat">${what}</td></tr>`;
   }).join('');
@@ -790,11 +798,26 @@ function proposedHtml(p) {
     <ul class="m-0 list-none p-0">${rows}</ul></div>`;
 }
 
-/** The lines a confirm would act on, and how many of them count toward "Add these N". */
+/** True when the server says this already-registered row is already a member of
+ *  the investigation now chosen. The flag is only trusted for the investigation
+ *  the preview was planned against: a preview still showing the previous choice
+ *  must not suppress rows for the new one. */
+function isAlreadyIn(p, i) {
+  const f = view.file;
+  return !!f.investigation && (p.investigation || '') === f.investigation && i.in_investigation === true;
+}
+
+const alreadyInCount = (p) => ((p.lines && p.lines.already_registered) || []).filter((i) => isAlreadyIn(p, i)).length;
+
+/** The lines a confirm would act on, and how many of them count toward "Add these N".
+ *  An already-registered row counts only if it is not yet in the chosen investigation
+ *  (a scope export imported into a second investigation adds them; re-importing into
+ *  the same one adds nothing, and must not offer to). */
 function fileSelection(p) {
   const f = view.file;
   const ready = ((p.lines && p.lines.new) || []).filter((i) => !i.needs_person && !f.deselected.has(i.line));
-  const known = ((p.lines && p.lines.already_registered) || []).filter((i) => !f.deselected.has(i.line));
+  const known = ((p.lines && p.lines.already_registered) || [])
+    .filter((i) => !f.deselected.has(i.line) && !isAlreadyIn(p, i));
   const lines = [...ready.map((i) => i.line), ...(f.investigation ? known.map((i) => i.line) : [])];
   const n = ready.length + (f.investigation ? known.length : 0);
   return { lines, n, ready: ready.length, known: known.length };
@@ -804,7 +827,9 @@ function fileConfirmHtml(p) {
   const f = view.file;
   const sel = fileSelection(p);
   const nChanges = f.accept.size;
-  const label = !sel.n && nChanges ? `Apply these ${nChanges} change${nChanges === 1 ? '' : 's'}` : '';
+  const label = !sel.n
+    ? (nChanges ? `Apply these ${nChanges} change${nChanges === 1 ? '' : 's'}` : 'Nothing to add')
+    : '';
   return `<div class="my-s3 h-px bg-rule"></div>
     ${confirmBarHtml(f, sel.n, { disabled: view.busy || (!sel.n && !nChanges), label })}
     ${f.outcome ? `<p class="mt-s2 text-caveat ${f.outcomeIsError ? 'text-state-warn' : 'text-state-ok'}" data-outcome>${esc(f.outcome)}</p>` : ''}`;
@@ -1151,7 +1176,10 @@ function bind(el) {
   el.querySelector('[data-act="group"]')?.addEventListener('change', (e) => { target().group = e.target.value; });
   el.querySelector('[data-act="investigation"]')?.addEventListener('change', (e) => {
     target().investigation = e.target.value;
-    render(el);
+    // The file's already-in-this-investigation facts belong to the investigation
+    // it was planned against: ask the server again for the one now chosen.
+    if (view.tab === 'file' && view.file.text && view.file.preview && !view.file.preview.refused) runPreview(el);
+    else render(el);
   });
   el.querySelector('[data-act="confirm"]')?.addEventListener('click', () =>
     (view.tab === 'file' ? confirmFile(el) : confirmAdd(el)));

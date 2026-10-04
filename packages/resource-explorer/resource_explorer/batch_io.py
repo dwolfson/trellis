@@ -934,7 +934,8 @@ def _line_item(row: ImportRow, message: str = "") -> dict:
     }
 
 
-def preview_file(registry, text: str, *, server_choices: dict[int, str] | None = None) -> dict:
+def preview_file(registry, text: str, *, server_choices: dict[int, str] | None = None,
+                 investigation: str = "") -> dict:
     """What a file would do, for the web preview: the five counts, each with its
     lines; the columns that were ignored, said once; or a refusal.
 
@@ -975,6 +976,7 @@ def preview_file(registry, text: str, *, server_choices: dict[int, str] | None =
         "ready": len(plan.to_register),
         "needs_person": len(plan.needs_person),
         "already_registered": len(plan.already_registered),
+        "already_in_investigation": 0,
         "duplicate_in_file": len(plan.duplicate_in_file),
         "invalid": len(plan.invalid),
         "not_importable": len(plan.unsupported_type),
@@ -990,12 +992,26 @@ def preview_file(registry, text: str, *, server_choices: dict[int, str] | None =
             == resource_key("database", f"{parsed_addr[0]}:{parsed_addr[1]}")]
         needs.append(item)
     existing = _existing(registry)
+    # Which already-registered rows are ALREADY members of the chosen
+    # investigation, from its real member rows (read only; nothing is created).
+    members: set[tuple[str, str]] = set()
+    if investigation:
+        ws_slug = registry.investigation_working_set_slug(investigation)
+        if ws_slug:
+            members = {(m["entity_type"], m["entity_slug"])
+                       for m in registry.list_working_set_members(ws_slug)}
+    already = []
+    for r in plan.already_registered:
+        info = existing.get(r.key) or {}
+        item = dict(_line_item(r, "already registered"), slug=info.get("slug", ""),
+                    resource_type=r.resource_type)
+        item["in_investigation"] = bool(investigation) and (info.get("type"), info.get("slug")) in members
+        already.append(item)
+    out["counts"]["already_in_investigation"] = sum(1 for i in already if i["in_investigation"])
+    out["investigation"] = investigation or None
     out["lines"] = {
         "new": [_line_item(r, "ready to register") for r in plan.to_register] + needs,
-        "already_registered": [
-            dict(_line_item(r, "already registered"), slug=(existing.get(r.key) or {}).get("slug", ""),
-                 resource_type=r.resource_type)
-            for r in plan.already_registered],
+        "already_registered": already,
         "duplicate_in_file": [_line_item(r) for r in plan.duplicate_in_file],
         "invalid": [_line_item(r) for r in plan.invalid],
         "not_importable": [_line_item(r) for r in plan.unsupported_type],
@@ -1104,7 +1120,10 @@ def apply_import(registry, plan: ImportPlan, *, lines: set[int] | None = None,
         if not investigation:
             return
         try:
-            registry.add_working_set_member(ws_slug, kind, slug, membership_rationale=rationale)
+            # keep_existing: re-confirming a file must not reset a rationale or
+            # state the owner has set on a member since the first import.
+            registry.add_working_set_member(ws_slug, kind, slug, membership_rationale=rationale,
+                                            keep_existing=True)
             result["scoped"].append({"line": line, "resource_type": kind, "slug": slug})
         except Exception as exc:        # noqa: BLE001 - per-row isolation
             result["failures"].append(
