@@ -531,6 +531,42 @@ test('the bulk hide still calls the same route; "− scope"/"＋ scope" still re
     [{ entity_type: 'database', entity_slug: 'alpha', hidden: true }]);
 });
 
+test('the Select bar scope wording: three states, and "save as work list…" is quiet', async () => {
+  const ctx = await setUp('db');
+  const d = ctx.document;
+  const longName = 'Customer 360 quarterly governance review programme';
+  $(d, '#sidebar [data-act="select-mode"]').click();
+  const add = () => $(d, '[data-act="sel-scope-add"]');
+  const rem = () => $(d, '[data-act="sel-scope-remove"]');
+  // None current.
+  assert.equal(text(add()), '＋ add to an investigation…');
+  assert.equal(text(rem()), '− remove from investigation');
+  assert.equal(rem().disabled, true);
+  assert.match(text($(d, '[data-scope-reason]')), /no investigation selected/);
+  assert.equal(rem().title, 'Choose an investigation first');
+  // One current.
+  ctx.s.investigations = [{ slug: 'c360', display_name: 'Customer 360', status: 'open' },
+    { slug: 'long', display_name: longName, status: 'open' }];
+  ctx.s.investigation = 'c360';
+  $(d, '#sidebar [data-act="select-mode"]').click();
+  $(d, '#sidebar [data-act="select-mode"]').click();
+  assert.equal(text(add()), '＋ add to Customer 360');
+  assert.equal(text(rem()), '− remove from Customer 360');
+  assert.equal(d.querySelector('[data-scope-reason]'), null);
+  // Long name: cut at 24 chars, full name in the title.
+  ctx.s.investigation = 'long';
+  $(d, '#sidebar [data-act="select-mode"]').click();
+  $(d, '#sidebar [data-act="select-mode"]').click();
+  assert.equal(text(add()), `＋ add to ${longName.slice(0, 23)}…`);
+  assert.ok(add().title.includes(longName));
+  assert.ok(rem().title.includes(longName));
+  // Work list: ellipsis, no accent border.
+  const wl = $(d, '[data-act="sel-worklist"]');
+  assert.equal(text(wl), 'save as work list…');
+  assert.doesNotMatch(wl.className, /border-accent/);
+  assert.doesNotMatch(text($(d, '[data-select-bar]')), /delete/i);
+});
+
 /* ── 7. Find carries a word ──────────────────────────────────────────────── */
 
 for (const [kind, label] of [['repo', '＋ Find repos'], ['db', '＋ Find databases'], ['filesystem', '＋ Add a file system']]) {
