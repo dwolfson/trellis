@@ -9428,31 +9428,47 @@ associated annotations, which is two surveys of 318 each with nothing reused. Ch
 reused annotations) is therefore still untested because the case never occurred; check (3) is answered by the next
 entry, not by reuse. To pin the build down, record the commit the image was built from.
 
-## `coco_pharma` grew from 7 schemas to 29 during the 2026-10-03 redeploy; the survey scope did not change (2026-10-04, CORRECTED same day)
+## `coco_pharma` was deliberately extended from 7 schemas to 29; RE should have surfaced the change and did not (2026-10-04, CORRECTED twice the same day)
 
-**Correction.** An earlier version of this entry (PR #457) and the architect's addendum read the jump from 61 to 266
-tables as a schema filter that the reset erased. That was an inference and it was wrong. Measured read-only afterwards:
-all 79 recorded surveys of `localhost_docker_coco_pharma` (2026-09-02 to 10-03) saw at most 8 schemas, 61 tables and 479
-columns, including four run as the superuser `egeria_admin` (which sees all 29 schemas today), so credential visibility
+**Corrections.** This entry first read the jump from 61 to 266 tables as a schema filter the reset erased (PR #457), then
+as a change "nobody chose". Both were inferences and both were wrong. Cause, from the owner and read-only evidence: the
+Coco data owner (Mandy Chessell) extended `coco_pharma` deliberately as the Coco scenarios grew. Her commit `250cb8a8`
+("Add databases and Airflow DAGs for Coco data mesh", 2026-10-03 19:33 +0100, 602 files) adds 22 schema SQL files under
+`compose-configs/egeria-quickstart/docker-entrypoint-initdb.d/data/coco_systems/coco_pharma/` (`aus_inventory`,
+`austin_haz_mat`, `ca_payroll`, `coco_expenses`, `coco_haz_mat`, `coco_hrim`, `coco_inventory`, `coco_ledgers`,
+`coco_products`, `cocopages`, `ed_mfg_control`, `eddepot01`, `global_crm`, `kcdepot01`, `manufacturing_planning`,
+`mfctrl9482`, `nl_payroll`, `procurement01`, `sec_admin`, `uk_payroll`, `winch_mfg_control`, `winchdepot01`: exactly the
+22 schemas the survey gained), and arrived in dwolfson/egeria-workspaces as PR #598 (`mandy-chessell/oak2026`), merged
+2026-10-03 13:36 CDT. The platform image was built 13:46 CDT, the container recreated 15:36 CDT, and the new tables'
+files in Postgres were written 20:29 to 20:51 UTC the same day. An earlier commit `f4c6725d` (2026-09-27, "New Coco
+database fore digital products") is a different set of databases.
+
+What the measurements establish: all 79 recorded surveys of `localhost_docker_coco_pharma` (2026-09-02 to 10-03) saw at
+most 8 schemas, 61 tables and 479 columns, including four run as the superuser `egeria_admin`, so credential visibility
 does not explain it; `surveyor` has USAGE on 28 schemas and none on `demo` and `demo_auth`, which the old set included,
-so the old set does not track its grants either; and the table files of the 22 added schemas (205 base tables) were
-last written 2026-10-03 20:29:57 to 20:51:26 UTC, during the redeploy (the Egeria container was recreated 20:36Z and
-started 20:42:36Z), while the 58 base tables of the old 7 date from 2026-07-05 to 2026-09-14. 58 + 205 = 263 base tables
-plus 3 views = 266, which is exactly what the post-reset native survey reports (29 schemas, 266 tables, 318
-annotations: 266 table, 29 schema, 22 column, 1 database). The old 61 was 58 tables plus 3 views. So the database
-itself gained 22 schemas and 205 tables; nothing was lost and no filter existed to lose. What loaded them is not known
-(the rebuilt quickstart's Coco data load is the likeliest; unverified).
+so the old set does not track its grants; the old 61 was 58 base tables plus 3 views, the new 266 is 263 base tables
+plus 3 views (58 + 205), matching the native survey (29 schemas, 266 tables, 318 annotations: 266 table, 29 schema, 22
+column, 1 database).
 
-What it still shows, and why the stored scope matters: a database that gains schemas silently changes what Egeria's
-survey measures (it cannot be limited, every non-system schema is surveyed) and what the JDBC cataloguer would create,
-and nobody chose that. The live element's connection is configured with only `databaseName`; `databaseSchema` is a
-recognised property that nothing sets. Egeria's catalogue also holds two table counts for this one database (61 in RE's
-own SurveyReport on the element, 266 from the native survey), and `surveyor` can SELECT only 208 of the 266 relations
-(25 of 29 schemas), which may limit column profiling (22 column annotations in both surveys); neither was looked into.
-For the owner's pending 7-versus-29 question: 29 is the status quo; declaring 7 would be a NEW decision to leave out
-the 22 newly loaded schemas, not a restoration. This remains the concrete example for
-`ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md` and `REPLY-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md`, with the
-corrected premise: "22 schemas appeared and nobody chose them", not "a scope was lost".
+What it shows for RE: an intentional extension of a database RE tracks changed what Egeria's survey measures (it cannot
+be limited: every non-system schema is surveyed) and what the JDBC cataloguer would create, and RE did not surface it.
+Nothing on screen said "22 schemas are new since you last looked". The live element's connection is configured with only
+`databaseName`; `databaseSchema` is a recognised property that nothing sets. Egeria's catalogue also holds two table
+counts for this one database (61 in RE's own SurveyReport on the element, 266 from the native survey), and `surveyor` can
+SELECT only 208 of the 266 relations (25 of 29 schemas), which may limit column profiling (22 column annotations in both
+surveys); neither was looked into. Owner's pending 7-versus-29 question: 29 is the status quo and now the intended
+state; declaring a smaller scope would be a new decision to leave some of the new schemas out.
+
+Design consequences, recorded for the Curate scope slice and the next designer round:
+1. Nodes that appear after a scope was declared read "new since your scope was declared · undecided" on the scope tree,
+   and the commit's manifest lists them as "N new schemas not in your scope" (in the slice).
+2. A medium design row, not in the slice: the three views of the same change should agree, the scope tree's "new since",
+   Understanding's "since the last run" sentence, and Automate's change subscriptions, citing the source commit when
+   the change traces to one (the A5 git-as-provenance idea applied to data).
+3. Process lesson (the architect's): when a measurement shows a change in something people own, the next step is to ask
+   who changed it, not to name a cause.
+This remains the concrete example for `ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md` and
+`REPLY-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md`.
 
 ## W1 is built; what is left of the work-lists-vs-investigations ruling (2026-10-04)
 
