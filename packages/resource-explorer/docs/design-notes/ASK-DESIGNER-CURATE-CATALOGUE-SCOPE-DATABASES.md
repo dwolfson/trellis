@@ -99,6 +99,30 @@ come from reading the created elements back by qualified name. What the
 lever cannot express (a per-schema table choice, a depth below "columns
 on or off") the screen has to say rather than pretend.
 
+## A concrete case, measured 2026-10-04
+
+Before the Egeria reset of 2026-10-03, Egeria's native survey of
+coco_pharma covered exactly 7 schemas and 61 tables (coco_sus 30, coco_ods
+23, demo_auth 4, and one table each in demo, target_sales, us_sales and
+eu_sales). After the reset and republish it covers all 29 user schemas and
+266 tables, which matches Postgres directly (263 base tables and 3 views).
+The republished element's connection carries only the database name, no
+schema filter, so **the old scope did not survive the reset**: it lived in
+a connection property nobody could see on screen, and it was lost with the
+element. That is the defect this ask is about, in one database: a scope
+that is not a declared, stored choice in RE is a scope that vanishes. The
+owner's pending decision, survey coco_pharma at 7 or 29 schemas, is the
+first use of whatever you design: the choice must end up as the filter on
+the connection or as the cataloguer target's include and exclude lists, so
+a republish after a reset keeps it.
+
+**The commit is also /next's Publish for databases.** Classic's publish
+button is today the only way to catalogue a database, and /next has no
+publish control for one. Question 3's commit replaces it: there is no
+separate Publish, and Classic's button retires into the commit when the
+slice lands. Every state word on the tree after commit comes from the proof
+rows RE now records for the surveys Publish starts.
+
 ## The questions for you
 
 1. **The scope decision.** A tree of schemas and tables with what is known
