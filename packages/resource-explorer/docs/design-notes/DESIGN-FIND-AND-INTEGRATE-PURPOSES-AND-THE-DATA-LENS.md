@@ -373,3 +373,45 @@ Two consequences for the slices in §9:
 The demo corpus (§7) gains the repositories and file systems that go with the
 regional databases: the forecasting code and the spreadsheet exports, so
 the mixed-kind pairs have something real to measure.
+
+## 13. A repository can inform a database, and the other way round (owner, 2026-10-04)
+
+**Decision (project owner, 2026-10-04):** *"there can often be a link
+between repos and dbs where one informs the other."* The occasion: the 22
+schemas that appeared in coco_pharma on 2026-10-03 were loaded by the
+rebuilt quickstart from Coco data carried in egeria-workspaces pull
+requests. The repository changed first; the database followed; RE surveyed
+both and connected neither.
+
+This is §12's mixed-kind pair made specific. The relation to model is
+**informs**, with its direction and its mechanism named, never guessed:
+
+| mechanism (measured in the repository) | what it says about the database |
+|---|---|
+| DDL and migration files naming schemas and tables | the repository **defines** the database's structure; a new migration predicts a schema change |
+| seed data, CSV loads, fixtures matching table names | the repository **loads** the database; a new data file predicts new rows or tables |
+| connection strings, DSNs, ORM models naming the database | the repository **reads or writes** it; a model change predicts a schema expectation |
+| a survey definition or Dr.Egeria document naming the database | the repository **governs** it |
+
+Consequences for the slices in §9 and for the Curate scope work:
+
+- An **Integrate pair question** for a repository and a database:
+  "does this repository define, load or read that database, and do they
+  agree today?" The answer carries the mechanism and the files, and the
+  parity precondition applies (the repository's file inventory and the
+  database's schema inventory both current).
+- **Change in one is a signal on the other.** A new migration or data
+  file in a repository that informs a database marks the database's scope
+  tree "the repository that loads this database changed · N new files
+  since your scope", and a schema change in the database marks the
+  repository "the database this code defines has changed". The three
+  views of change in the Curate scope ask (the scope tree, Understanding's
+  "since the last run", Automate's subscriptions) gain this fourth,
+  cross-kind one, and all cite the source commit when there is one (A5).
+- In Egeria the relation is lineage between the repository's process and
+  the database asset, which the existing LineageMapping path can carry
+  once the mechanism is measured; it is published as a measured relation,
+  never as a judgement.
+
+The demo corpus (§7) already contains the first instance: egeria-workspaces
+informs coco_pharma.
