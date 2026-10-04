@@ -42,6 +42,7 @@ REPAIR_STEPS = (
     "clear_stale_assets",
     "clear_orphan_publish_claims",
     "flag_vanished_publishes",
+    "flag_stale_dbfs_assets",
     "clear_stale_investigations",
     "clear_stale_contexts",
     "catalog_assets",
@@ -102,10 +103,23 @@ REGISTRATION_ONLY_ANALYSES = frozenset({"repository_health"})
 #: it was (§4's "flag, do not delete"). A false positive here costs a reader
 #: one wrong badge state until the next pass corrects it, not a decision
 #: silently unmade.
+#:
+#: `flag_stale_dbfs_assets` added 2026-10-03 for the same reason as
+#: `flag_vanished_publishes`: it only WRITES a flag, and never deletes. It is
+#: the databases/filesystems half of what `clear_stale_assets` does for repos,
+#: but deliberately weaker — `clear_stale_assets` clears a repo's GUID, whereas
+#: this flags a database/filesystem row in `egeria_linkage_status` and leaves
+#: `egeria_asset_guid` alone, so "published once" history survives and a row
+#: that resolves again has its flag cleared. Found live 2026-10-03: two
+#: databases kept GUIDs Egeria no longer held and read as published, because
+#: no scheduled step looked at anything but the `projects` table. Clearing a
+#: database/filesystem GUID stays a human's call (republish / re-survey /
+#: discard from Admin > Egeria Links). Writes nothing to Egeria.
 SAFE_SCHEDULED_STEPS = (
     "clear_stale_assets",
     "clear_orphan_publish_claims",
     "flag_vanished_publishes",
+    "flag_stale_dbfs_assets",
 )
 
 
@@ -233,6 +247,8 @@ class EgeriaResync:
         res.findings.append(self._scan_orphan_publish_claims())
         res.findings.append(self._scan_vanished_publishes(res))
         res.findings.append(self._scan_flagged_publish_rows())
+        res.findings.append(self._scan_dbfs_assets(res))
+        res.findings.append(self._scan_flagged_dbfs_rows())
         res.findings.append(self._scan_investigation_guids(res))
         res.findings.append(self._scan_contexts(res))
         res.findings.append(self._scan_unlinked_members(res))
@@ -401,6 +417,71 @@ class EgeriaResync:
                    "repo's latest report and clears the flag if it resolves.",
             items=items,
             repair_step="flag_vanished_publishes",
+        )
+
+    #: entity_type -> registry lister, for the databases/filesystems scan.
+    _DBFS_TYPES = (("database", "list_databases"), ("filesystem", "list_filesystems"))
+
+    def _dbfs_with_guid(self):
+        """(entity_type, slug, guid) for every database/filesystem that carries
+        a cached GUID. One with NO GUID is never yielded: there is nothing to
+        verify, and flagging it would claim it was published once."""
+        for etype, lister in self._DBFS_TYPES:
+            for ent in getattr(self._registry, lister)():
+                guid = getattr(ent, "egeria_asset_guid", "") or ""
+                if guid:
+                    yield etype, ent.slug, guid
+
+    def _resolve_dbfs(self, guid: str) -> bool | None:
+        ce = self._clients["classification"]
+        return self._resolves(
+            lambda g: ce.get_element_by_guid(g, graph_query_depth=0), guid)
+
+    def _scan_dbfs_assets(self, res: ScanResult) -> Finding:
+        """Databases and filesystems whose cached asset GUID no longer resolves.
+
+        The databases/filesystems counterpart of `_scan_assets` (which reads the
+        `projects` table only, and so never saw these). Uses the type-agnostic
+        element read, as `_scan_vanished_publishes` does. Re-verifies every
+        cached GUID every pass — flagged AND published — so a flag can also be
+        cleared. Undetermined is never gone.
+        """
+        dead = []
+        for etype, slug, guid in self._dbfs_with_guid():
+            v = self._resolve_dbfs(guid)
+            if v is False:
+                dead.append({"entity_type": etype, "slug": slug, "guid": guid})
+            elif v is None:
+                res.undetermined.append({
+                    "kind": etype, "ref": slug, "reason": "lookup failed"})
+        return Finding(
+            key="stale_dbfs_assets",
+            title="Database/filesystem asset GUIDs pointing at nothing",
+            detail="These render as published while their catalog entry is gone. "
+                   "Flagged stale in the linkage table, never cleared: the GUID "
+                   "stays so the history survives, and the flag is removed if the "
+                   "element resolves again.",
+            items=dead, repair_step="flag_stale_dbfs_assets",
+        )
+
+    def _scan_flagged_dbfs_rows(self) -> Finding:
+        """Existing database/filesystem stale flags, keyed on the ROWS.
+
+        `scan()` drops empty findings, so once a flagged GUID resolves again
+        `stale_dbfs_assets` is empty and nothing would offer (or schedule) the
+        step that clears the flag. Same shape as `_scan_flagged_publish_rows`.
+        """
+        items = []
+        for etype, _ in self._DBFS_TYPES:
+            for row in self._registry.list_egeria_linkages(etype, statuses=("stale",)):
+                items.append({"entity_type": etype, "slug": row["entity_slug"],
+                              "status": row["status"]})
+        return Finding(
+            key="flagged_dbfs_rows",
+            title="Database/filesystem stale flags awaiting re-check",
+            detail="These carry a stale flag. Re-checking clears it if the "
+                   "asset resolves again.",
+            items=items, repair_step="flag_stale_dbfs_assets",
         )
 
     def _scan_investigation_guids(self, res: ScanResult) -> Finding:
@@ -1127,6 +1208,39 @@ class EgeriaResync:
                 "healed_slugs": healed_slugs, "healed_at": _now() if healed_slugs else "",
                 "uncatalogued": uncatalogued,
                 "undetermined": len(res.undetermined)}
+
+    def _do_flag_stale_dbfs_assets(self) -> dict:
+        """Flag, never delete — the databases/filesystems counterpart of
+        `_do_flag_vanished_publishes`.
+
+        Re-verifies every database/filesystem that has a cached GUID against
+        Egeria. Gone -> `egeria_linkage_status` flagged stale (GUID untouched).
+        Resolves -> any flag cleared. Undetermined (unreachable, auth, missing
+        method) -> row left exactly as it was and counted. No GUID -> skipped.
+        Writes nothing to Egeria and deletes no GUID. The write half is
+        `egeria_linkage.record_linkage_verdict`, shared with
+        `recheck_all_linkages`.
+        """
+        from resource_explorer.egeria_linkage import record_linkage_verdict
+
+        flagged, cleared, undetermined = [], [], []
+        for etype, slug, guid in self._dbfs_with_guid():
+            v = self._resolve_dbfs(guid)
+            if v is None:
+                undetermined.append({"entity_type": etype, "slug": slug})
+                continue
+            outcome = record_linkage_verdict(
+                self._registry, etype, slug, guid, v,
+                detail="the cached asset no longer resolves in Egeria")
+            if outcome == "flagged":
+                flagged.append({"entity_type": etype, "slug": slug})
+            elif outcome == "cleared":
+                cleared.append({"entity_type": etype, "slug": slug})
+                log.info("egeria_resync: cleared %s stale flag for %s at %s "
+                         "(asset %s resolves)", etype, slug, _now(), guid)
+        return {"flagged": len(flagged), "flagged_items": flagged,
+                "healed": len(cleared), "healed_items": cleared,
+                "undetermined": len(undetermined)}
 
     def _log_heal(self, slug: str, row: dict, report_guid: str) -> None:
         """Visible evidence that a publish flag was cleared (the row itself is

@@ -240,6 +240,27 @@ def guard_linkage(registry, entity_type: str, entity_slug: str, entity_name: str
             registry, entity_type, entity_slug, entity_name, stale_guid, exc) from exc
 
 
+def record_linkage_verdict(registry, entity_type: str, entity_slug: str, guid: str,
+                           resolves: bool, detail: str = "") -> str:
+    """Write the linkage-table half of a live check, in both directions.
+
+    The one place that turns "does this cached GUID resolve?" into the
+    `egeria_linkage_status` row, shared by `recheck_all_linkages` (CLI sweep)
+    and the scheduled resync pass (`egeria_resync._do_flag_stale_dbfs_assets`)
+    so the two cannot drift apart.
+
+    `resolves=False` flags the row stale and NEVER touches the GUID ("published
+    once" history survives). `resolves=True` clears any recorded flag. There is
+    deliberately no third value: an undetermined lookup (unreachable Egeria,
+    auth failure) must not reach this function at all — callers skip it.
+    Writes nothing to Egeria. Returns "flagged", "cleared" or "unchanged".
+    """
+    if not resolves:
+        registry.mark_egeria_linkage_stale(entity_type, entity_slug, guid, detail)
+        return "flagged"
+    return "cleared" if registry.clear_egeria_linkage_status(entity_type, entity_slug) else "unchanged"
+
+
 def _iter_linked_resources(registry, entity_types):
     """Yield (entity_type, slug, display_name, guid) for every registered
     resource that carries a cached Egeria GUID, restricted to `entity_types`
@@ -381,8 +402,8 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
                     # there — the drawer is a queue of things a human should act
                     # on, and twenty rows describing one event is one thing to
                     # act on, not twenty. A single summary RFA is raised below.
-                    registry.mark_egeria_linkage_stale(
-                        entity_type, slug, guid, str(exc)[:2000])
+                    record_linkage_verdict(
+                        registry, entity_type, slug, guid, False, str(exc)[:2000])
             else:
                 counts["errors"] += 1
                 detail["result"] = "error"
@@ -397,7 +418,7 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
                 # fixed (republish/resurvey/manual repair, or Egeria's own
                 # recovery). Without this half, the sweep can only ever add
                 # rows, never remove ones that no longer apply.
-                registry.clear_egeria_linkage_status(entity_type, slug)
+                record_linkage_verdict(registry, entity_type, slug, guid, True)
 
         counts["checked"] += 1
         counts["details"].append(detail)
