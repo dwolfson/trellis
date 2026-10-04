@@ -129,7 +129,11 @@ disagrees" state is this moment seen from the scope's side; Understanding's
 same moment seen from the survey's side, and the three should agree. The
 owner's pending decision, 7 or 29 schemas, is therefore a **new choice**
 about the extension, not a restoration, and it is the first scope record
-either way.
+either way. The extension itself is traceable: it coincides with pull
+requests in egeria-workspaces that carry the Coco data, which the rebuilt
+quickstart loaded. A change RE surfaces can therefore point at a source
+commit when one exists, the git-as-provenance idea from the extensibility
+assumptions (A5) applied to data rather than code.
 
 **The commit is also /next's Publish for databases.** Classic's publish
 button is today the only way to catalogue a database, and /next has no
