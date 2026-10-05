@@ -273,7 +273,9 @@ function _rowQuestion(row) {
 
 function _currentSlug() {
   const el = document.getElementById('scope-slug');
-  const s = el ? el.textContent.trim() : '';
+  // `data-slug` first: #scope-slug is the resource's menu button and its text
+  // reads "<slug> ▾", so the text is no longer the bare slug.
+  const s = el ? (el.dataset.slug !== undefined ? el.dataset.slug : el.textContent).trim() : '';
   return s && s !== 'no resource selected' ? s : '';
 }
 

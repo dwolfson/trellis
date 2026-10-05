@@ -13,7 +13,14 @@
  *                         typed here, with "save as a source". The password is
  *                         held in memory for this dialog only: never rendered
  *                         into an attribute, never stored until saved.
- *   From a file           a placeholder; slice 2 builds the CSV.
+ *   From a file           a CSV (batch_io.py's contract): choose a file, see the
+ *                         five-count preview (new, already registered, duplicates
+ *                         in the file, invalid, of a kind not importable here),
+ *                         each count opening its lines, then confirm into a group
+ *                         and "Add these N to <investigation>". A database row
+ *                         names WHERE its credential comes from (server, a saved
+ *                         source; or connection_ref, a reference name), never the
+ *                         credential: nothing in this tab sends or shows one.
  *
  * The candidate table says what the source returned and nothing else: every
  * fact is a measured value or a worded "not read" ("? not readable with this
@@ -36,9 +43,13 @@ import {
   listDbServers, registerDbServer, deleteDbServer, testDbServer, testDbServerInline,
   runDatabaseSource, discoverDatabasesInline, addDiscoveredDatabase, assignGroup,
   addInvestigationMember, listInvestigations, listGroups,
+  previewDiscoveryFile, importDiscoveryFile, fetchCandidatesCsv,
 } from '/static/re-api.js';
 import { esc, refreshGroupsAndSidebar, state } from '/static/next/app.js';
 import { refreshOpenInvestigation } from '/static/next/stages/investigation.js';
+import { credentialMarkHtml } from '/static/next/credential.js';
+import { saveCsv } from '/static/next/download.js';
+import { blankCredentialCells } from '/static/next/csv-guard.js';
 
 const emptyRegisterForm = () => ({
   slug: '', display_name: '', db_type: 'postgresql', host: '', port: 5432,
@@ -64,6 +75,22 @@ const emptyCandidates = () => ({
   outcomeIsError: false,
 });
 
+const emptyFile = () => ({
+  name: '',
+  text: '',               // the file's text; the server re-plans it on every call
+  preview: null,          // batch_io.preview_file's payload
+  loading: false,
+  error: '',
+  open: 'new',            // which count is open
+  serverChoices: {},      // {line: server slug} chosen in the preview for rows that named none
+  deselected: new Set(),  // lines the person unticked (everything importable starts ticked)
+  accept: new Set(),      // "line|field": proposed changes the person ticked (none by default)
+  group: '',
+  investigation: '',
+  outcome: '',
+  outcomeIsError: false,
+});
+
 const view = {
   tab: 'saved',          // 'saved' | 'discover' | 'file'
   mode: 'list',          // within 'saved': 'list' | 'register'
@@ -84,19 +111,26 @@ const view = {
 
   oneOff: emptyOneOff(),
   cand: emptyCandidates(),
+  file: emptyFile(),
 };
 
-/** Opens the dialog and kicks off the first render. The only export. */
-export async function openFindDbServersDialog() {
+/** Opens the dialog and kicks off the first render.
+ *
+ *  `{ tab: 'file', investigation: slug }` is the investigation page's "＋ add…
+ *  from a file" door: the same dialog on its From-a-file tab with the
+ *  destination already chosen. */
+export async function openFindDbServersDialog(opts = {}) {
   const el = openDialog('Find databases',
     'Run a saved source, or discover on a server once. Nothing is registered until you confirm.',
     { wide: true });
-  view.tab = 'saved';
+  view.tab = opts.tab === 'file' ? 'file' : 'saved';
   view.mode = 'list';
   view.status = '';
   view.statusIsError = false;
   view.oneOff = emptyOneOff();
   view.cand = emptyCandidates();
+  view.file = emptyFile();
+  view.file.investigation = opts.investigation || state.investigation || '';
   await loadServers(el);
 }
 
@@ -593,8 +627,254 @@ async function saveSource(el) {
 
 /* ── From a file ───────────────────────────────────────────────────────── */
 
+/** Read a chosen file's text. `File.text()` where it exists, FileReader otherwise. */
+async function readFileText(file) {
+  if (typeof file.text === 'function') return file.text();
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ''));
+    r.onerror = () => reject(r.error || new Error('could not read the file'));
+    r.readAsText(file);
+  });
+}
+
+async function loadFile(el, file) {
+  const prev = view.file;
+  view.file = emptyFile();
+  view.file.name = file.name || 'the file';
+  view.file.group = prev.group;
+  view.file.investigation = prev.investigation;
+  view.file.loading = true;
+  render(el);
+  try {
+    // A credential never leaves the browser: cells under a credential-like
+    // header are blanked before the text is kept or posted (csv-guard.js).
+    view.file.text = blankCredentialCells(await readFileText(file)).text;
+  } catch (err) {
+    view.file.error = failure(err, 'read that file');
+    view.file.loading = false;
+    render(el);
+    return;
+  }
+  await runPreview(el);
+}
+
+/** (Re)plan the file on the server. Nothing is written. Keeps the outcome line. */
+async function runPreview(el) {
+  const f = view.file;
+  f.loading = true;
+  f.error = '';
+  render(el);
+  try {
+    f.preview = await previewDiscoveryFile(f.text, f.serverChoices, f.investigation);
+  } catch (err) {
+    f.error = failure(err, 'read this file');
+    f.preview = null;
+  } finally {
+    f.loading = false;
+    render(el);
+  }
+}
+
+const COUNT_LABELS = [
+  ['new', (n) => `${n} new`],
+  ['already_registered', (n) => `${n} already registered`],
+  ['duplicate_in_file', (n) => `${n} duplicate${n === 1 ? '' : 's'} in the file`],
+  ['invalid', (n) => `${n} invalid`],
+  ['not_importable', (n) => `${n} of a kind not importable here`],
+];
+
 function fileHtml() {
-  return `<p class="max-w-[60ch] text-answer text-ink" data-file-placeholder>Loading databases from a file is coming in the next slice.</p>`;
+  const f = view.file;
+  const chooser = `
+    <p class="mb-s2 max-w-[70ch] text-caveat text-ink-muted">
+      A CSV with a resource_type and an address on every row. A database row names where its credential comes
+      from: <span class="font-mono">server</span> (a saved source) or <span class="font-mono">connection_ref</span>
+      (a reference name). A credential is never read from a file.
+    </p>
+    <div class="mb-s2 flex flex-wrap items-center gap-s2">
+      <label class="text-caveat text-ink-muted">Choose a CSV file
+        <input type="file" data-file-input accept=".csv,text/csv,text/plain" class="ml-s2 text-caveat text-ink"></label>
+      ${f.name ? `<span class="font-mono text-provenance text-ink-muted" data-file-name>${esc(f.name)}</span>` : ''}
+    </div>`;
+  if (f.loading) return `${chooser}<p class="text-caveat text-ink-muted">Reading the file…</p>`;
+  if (f.error) return `${chooser}<p class="text-caveat text-state-warn" data-file-error>${esc(f.error)}</p>`;
+  const p = f.preview;
+  if (!p) return chooser;
+  if (p.refused) {
+    return `${chooser}<div class="rounded-sm border border-rule p-s2" data-file-refused>
+      <p class="text-caveat text-state-warn">${esc(p.refused)}</p>
+      <p class="mt-s1 text-provenance text-ink-muted">Header row found</p>
+      <p class="font-mono text-caveat text-ink" data-file-header>${esc((p.header || []).join(', '))}</p>
+    </div>`;
+  }
+  return `${chooser}${previewHtml(p)}${fileConfirmHtml(p)}`;
+}
+
+function countsHtml(p) {
+  const items = COUNT_LABELS.map(([key, label]) => {
+    const n = p.counts[key];
+    const inInv = key === 'already_registered' ? alreadyInCount(p) : 0;
+    const extra = key === 'new' && p.counts.needs_person
+      ? ` <span class="text-state-warn" data-needs-person-count>(⚠ ${p.counts.needs_person} need a person)</span>` : '';
+    const words = label(n) + (inInv ? ` (${inInv} already in ${investigationName(view.file.investigation)})` : '');
+    if (!n) return `<span class="text-ink-muted" data-count-zero="${key}">${esc(words)}</span>`;
+    const open = view.file.open === key;
+    return `<button data-count="${key}" class="cursor-pointer border-0 bg-transparent p-0 text-caveat underline ${
+      open ? 'text-ink' : 'text-accent-ink'}">${esc(words)}</button>${extra}`;
+  });
+  return `<p class="mb-s2 text-caveat text-ink" data-counts><span class="font-heading">${p.rows} row${
+    p.rows === 1 ? '' : 's'}</span> · ${items.join(' · ')}</p>`;
+}
+
+function previewHtml(p) {
+  const messages = (p.messages || []).map((m) =>
+    `<p class="mb-s1 text-provenance text-ink-muted" data-file-message>${esc(m)}</p>`).join('');
+  return `${countsHtml(p)}${messages}${openLinesHtml(p)}${proposedHtml(p)}`;
+}
+
+const lineCell = (i) => `<td class="py-s1 pr-s2 font-mono text-provenance text-ink-muted">line ${i.line}</td>`;
+const addrCell = (i) => `<td class="py-s1 pr-s2 max-w-[260px] truncate font-mono text-caveat text-ink" title="${esc(i.address)}">${
+  esc(i.address || '(no address)')}<span class="text-ink-muted"> · ${esc(i.resource_type)}</span></td>`;
+
+function openLinesHtml(p) {
+  const key = view.file.open;
+  const list = p.lines && p.lines[key];
+  if (!key || !list || !list.length) return '';
+  const f = view.file;
+  const rows = list.map((i) => {
+    let lead = '<td class="py-s1 pr-s2"></td>';
+    let what = `<span class="text-ink-muted">${esc(i.message)}</span>`;
+    if (key === 'new' && i.needs_person) {
+      const chosen = f.serverChoices[i.line] || '';
+      const opts = (p.servers || []).map((sv) => {
+        const match = (i.matching_servers || []).includes(sv.slug);
+        return `<option value="${esc(sv.slug)}" ${chosen === sv.slug ? 'selected' : ''}>${esc(sv.display_name)} (${
+          esc(sv.host)}:${sv.port})${match ? ' · same host' : ''}</option>`;
+      }).join('');
+      what = `<span class="text-state-warn">⚠ needs a person: name a server or a credential</span>
+        <select data-choose-server="${i.line}" class="ml-s2 rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">
+          <option value="">choose a server…</option>${opts}</select>`;
+    } else if (key === 'new') {
+      lead = `<td class="py-s1 pr-s2"><input type="checkbox" data-file-line="${i.line}" ${
+        f.deselected.has(i.line) ? '' : 'checked'}></td>`;
+      what = `<span class="text-ink-muted">${i.server ? `on ${esc(i.server)}` : `reference ${esc(i.connection_ref)}`}${
+        i.group ? ` · group ${esc(i.group)}` : ''}</span>`;
+    } else if (key === 'already_registered') {
+      if (isAlreadyIn(p, i)) {
+        lead = '<td class="py-s1 pr-s2"></td>';
+        what = `<span class="text-ink-muted" data-already-in>already registered${i.slug ? ` as ${esc(i.slug)}` : ''}; already in ${
+          esc(investigationName(f.investigation))}, nothing to add</span>`;
+      } else {
+        lead = `<td class="py-s1 pr-s2"><input type="checkbox" data-file-line="${i.line}" ${
+          f.deselected.has(i.line) ? '' : 'checked'}></td>`;
+        what = `<span class="text-ink-muted">already registered${i.slug ? ` as ${esc(i.slug)}` : ''}; only added to the investigation's scope</span>`;
+      }
+    }
+    return `<tr class="border-b border-rule" data-file-row="${i.line}">${lead}${lineCell(i)}${addrCell(i)}<td class="py-s1 text-caveat">${what}</td></tr>`;
+  }).join('');
+  return `<div class="mb-s2 max-h-[30vh] overflow-auto rounded-sm border border-rule" data-lines="${key}">
+    <table class="w-full text-left"><tbody>${rows}</tbody></table></div>`;
+}
+
+function proposedHtml(p) {
+  const ch = p.proposed_changes || [];
+  if (!ch.length) return '';
+  const f = view.file;
+  const byField = {};
+  ch.forEach((c) => { byField[c.field] = (byField[c.field] || 0) + 1; });
+  const head = Object.entries(byField).map(([k, n]) => `${n} row${n === 1 ? '' : 's'} would change ${k}`).join(' · ');
+  const rows = ch.map((c) => {
+    const id = `${c.line}|${c.field}`;
+    return `<li class="mb-s1 text-caveat"><label>
+      <input type="checkbox" data-accept-change="${esc(id)}" ${c.blocked ? 'disabled' : ''} ${f.accept.has(id) ? 'checked' : ''}>
+      <span class="font-mono text-provenance text-ink-muted">line ${c.line}</span>
+      ${esc(c.slug)}: ${esc(c.field)} <span class="text-ink-muted">${esc(c.current || '(none)')}</span> → ${esc(c.proposed)}
+      ${c.blocked ? `<span class="text-state-warn"> · ${esc(c.blocked)}</span>` : ''}</label></li>`;
+  }).join('');
+  return `<div class="mb-s2 rounded-sm border border-rule p-s2" data-proposed>
+    <p class="mb-s1 text-caveat text-ink">${esc(head)}</p>
+    <p class="mb-s1 text-provenance text-ink-muted">Proposed, not applied. Tick the ones to apply when you confirm.</p>
+    <ul class="m-0 list-none p-0">${rows}</ul></div>`;
+}
+
+/** True when the server says this already-registered row is already a member of
+ *  the investigation now chosen. The flag is only trusted for the investigation
+ *  the preview was planned against: a preview still showing the previous choice
+ *  must not suppress rows for the new one. */
+function isAlreadyIn(p, i) {
+  const f = view.file;
+  return !!f.investigation && (p.investigation || '') === f.investigation && i.in_investigation === true;
+}
+
+const alreadyInCount = (p) => ((p.lines && p.lines.already_registered) || []).filter((i) => isAlreadyIn(p, i)).length;
+
+/** The lines a confirm would act on, and how many of them count toward "Add these N".
+ *  An already-registered row counts only if it is not yet in the chosen investigation
+ *  (a scope export imported into a second investigation adds them; re-importing into
+ *  the same one adds nothing, and must not offer to). */
+function fileSelection(p) {
+  const f = view.file;
+  const ready = ((p.lines && p.lines.new) || []).filter((i) => !i.needs_person && !f.deselected.has(i.line));
+  const known = ((p.lines && p.lines.already_registered) || [])
+    .filter((i) => !f.deselected.has(i.line) && !isAlreadyIn(p, i));
+  const lines = [...ready.map((i) => i.line), ...(f.investigation ? known.map((i) => i.line) : [])];
+  const n = ready.length + (f.investigation ? known.length : 0);
+  return { lines, n, ready: ready.length, known: known.length };
+}
+
+function fileConfirmHtml(p) {
+  const f = view.file;
+  const sel = fileSelection(p);
+  const nChanges = f.accept.size;
+  const label = !sel.n
+    ? (nChanges ? `Apply these ${nChanges} change${nChanges === 1 ? '' : 's'}` : 'Nothing to add')
+    : '';
+  return `<div class="my-s3 h-px bg-rule"></div>
+    ${confirmBarHtml(f, sel.n, { disabled: view.busy || (!sel.n && !nChanges), label })}
+    ${f.outcome ? `<p class="mt-s2 text-caveat ${f.outcomeIsError ? 'text-state-warn' : 'text-state-ok'}" data-outcome>${esc(f.outcome)}</p>` : ''}`;
+}
+
+/** The confirm for a file: re-plans on the server from the text, then applies
+ *  the ticked lines. Local registry writes only; nothing goes to Egeria. */
+async function confirmFile(el) {
+  const f = view.file;
+  if (!f.preview || f.preview.refused) return;
+  const sel = fileSelection(f.preview);
+  const accept = [...f.accept].map((k) => { const [line, field] = k.split('|'); return { line: Number(line), field }; });
+  view.busy = true;
+  render(el);
+  let res;
+  try {
+    res = await importDiscoveryFile({
+      text: f.text, lines: sel.lines, server_choices: f.serverChoices, group: f.group,
+      investigation: f.investigation, accept_changes: accept,
+    });
+  } catch (err) {
+    view.busy = false;
+    f.outcome = err && err.status === 401 ? 'Sign in to add these.' : `Could not add these: ${err && err.message ? err.message : err}`;
+    f.outcomeIsError = true;
+    render(el);
+    return;
+  }
+  view.busy = false;
+  const c = res.counts || {};
+  const parts = [];
+  if (c.registered) parts.push(`Registered ${c.registered} database(s).`);
+  if (f.investigation && c.scoped) parts.push(`Added ${c.scoped} to ${investigationName(f.investigation)}.`);
+  if (c.changed) parts.push(`Changed ${c.changed} row(s).`);
+  if (!c.registered && !c.scoped && !c.changed) parts.push('Nothing was added.');
+  const failures = res.failures || [];
+  if (failures.length) parts.push(`${failures.length} failed: ${failures.map((x) => `line ${x.line}: ${x.message}`).join('; ')}`);
+  f.outcome = parts.join(' ');
+  f.outcomeIsError = failures.length > 0;
+  f.accept = new Set();
+  const servers = await listDbServers().catch(() => null);
+  if (servers) view.servers = servers;
+  await runPreview(el);          // the counts now reflect what was just added
+  refreshGroupsAndSidebar();
+  // If that investigation's page is the open pane, show the new members now.
+  if (f.investigation && c.scoped) refreshOpenInvestigation(f.investigation);
 }
 
 /* ── The candidate table (shared by every tab) and the one confirm ─────── */
@@ -629,7 +909,8 @@ export function candidateRowHtml(r, i, checked) {
     <td class="py-s1 pr-s2"><input type="checkbox" data-cand-row="${i}"
       ${registered ? 'disabled checked' : (noConnect ? 'disabled' : (checked ? 'checked' : ''))}></td>
     <td class="py-s1 pr-s2 max-w-[220px] truncate font-mono text-caveat text-ink" title="${esc(r.address || '')}">${esc(r.name)}${newMark}${
-      registered ? ' <span class="text-ink-muted" data-registered>already registered</span>' : ''}
+      registered ? ' <span class="text-ink-muted" data-registered>already registered</span>' : ''}${
+      registered ? credentialMarkHtml(r, 'block text-provenance') : ''}
       ${r.server_slug ? `<div class="text-provenance text-ink-muted">${esc(r.server_slug)}</div>` : ''}</td>
     <td class="py-s1 pr-s2 text-caveat text-ink-muted">${size}</td>
     <td class="py-s1 pr-s2 text-caveat text-ink-muted">${owner}</td>
@@ -661,6 +942,32 @@ function investigationName(slug) {
   return inv ? (inv.display_name || inv.slug) : slug;
 }
 
+/** The ONE confirm bar: destination group, investigation, and the button. Both
+ *  the candidate table and the From-a-file preview end in it, so "Add these N to
+ *  <investigation>" reads and behaves the same wherever the candidates came from.
+ *  `t` is the state it edits (view.cand or view.file). */
+function confirmBarHtml(t, nSelected, { disabled = false, label = '' } = {}) {
+  const groupOptions = view.groups.map((g) =>
+    `<option value="${esc(g.slug)}" ${t.group === g.slug ? 'selected' : ''}>${esc(g.display_name)}</option>`).join('');
+  const invOptions = view.investigations.map((i) =>
+    `<option value="${esc(i.slug)}" ${t.investigation === i.slug ? 'selected' : ''}>${esc(i.display_name || i.slug)}</option>`).join('');
+  const buttonLabel = label || (t.investigation
+    ? `Add these ${nSelected} to ${investigationName(t.investigation)}`
+    : `Register these ${nSelected}`);
+  return `<div class="mt-s3 flex flex-wrap items-center gap-s2 border-t border-rule pt-s2" data-confirm>
+      <label class="text-caveat text-ink-muted">Group
+        <select data-act="group" class="ml-s2 rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">
+          <option value="">No group</option>${groupOptions}
+        </select></label>
+      <label class="text-caveat text-ink-muted">Investigation
+        <select data-act="investigation" class="ml-s2 rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">
+          <option value="">none</option>${invOptions}
+        </select></label>
+      <button data-act="confirm" class="ml-auto cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
+        ${disabled ? 'disabled' : ''}>${esc(view.busy ? 'Adding…' : buttonLabel)}</button>
+    </div>`;
+}
+
 function candidatesHtml() {
   const c = view.cand;
   if (c.loading) return `<div class="my-s3 h-px bg-rule"></div><p class="text-caveat text-ink-muted">Connecting to the server…</p>`;
@@ -675,14 +982,7 @@ function candidatesHtml() {
   const nRegistered = c.rows.filter((r) => r.is_registered).length;
   const nNoConnect = c.rows.filter((r) => !r.is_registered && r.can_connect === false).length;
   const selectableCount = c.rows.filter((r) => selectable(r) && !HIDDEN_VERDICTS.has(r.verdict && r.verdict.disposition)).length;
-  const groupOptions = view.groups.map((g) =>
-    `<option value="${esc(g.slug)}" ${c.group === g.slug ? 'selected' : ''}>${esc(g.display_name)}</option>`).join('');
-  const invOptions = view.investigations.map((i) =>
-    `<option value="${esc(i.slug)}" ${c.investigation === i.slug ? 'selected' : ''}>${esc(i.display_name || i.slug)}</option>`).join('');
   const needsSave = !c.source.slug && c.source.kind === 'oneoff';
-  const buttonLabel = c.investigation
-    ? `Add these ${nSelected} to ${investigationName(c.investigation)}`
-    : `Register these ${nSelected}`;
 
   return `
     <div class="my-s3 h-px bg-rule"></div>
@@ -691,6 +991,8 @@ function candidatesHtml() {
       <button data-act="select-all-new" class="cursor-pointer bg-transparent text-accent-ink underline"
         >Select all new${selectableCount ? ` (${selectableCount})` : ''}</button>
       <button data-act="select-none" class="cursor-pointer bg-transparent text-ink-muted underline">Deselect all</button>
+      <button data-act="export-candidates" class="cursor-pointer bg-transparent text-accent-ink underline"
+        >Export CSV</button>
       <span class="text-ink-muted" data-selection-count>${nSelected} selected · ${nRegistered} already registered${
         nNoConnect ? ` · ${nNoConnect} can't connect with this credential` : ''}</span>
     </div>
@@ -712,18 +1014,7 @@ function candidatesHtml() {
       </table>
     </div>
     ${nNoConnect ? `<p class="mt-s1 text-provenance text-ink-muted">A database marked "can't connect" stays a candidate until a credential that can connect is given; it cannot be registered with this one.</p>` : ''}
-    <div class="mt-s3 flex flex-wrap items-center gap-s2 border-t border-rule pt-s2" data-confirm>
-      <label class="text-caveat text-ink-muted">Group
-        <select data-act="group" class="ml-s2 rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">
-          <option value="">No group</option>${groupOptions}
-        </select></label>
-      <label class="text-caveat text-ink-muted">Investigation
-        <select data-act="investigation" class="ml-s2 rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">
-          <option value="">none</option>${invOptions}
-        </select></label>
-      <button data-act="confirm" class="ml-auto cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
-        ${view.busy || !nSelected || needsSave ? 'disabled' : ''}>${esc(view.busy ? 'Adding…' : buttonLabel)}</button>
-    </div>
+    ${confirmBarHtml(c, nSelected, { disabled: view.busy || !nSelected || needsSave, label: '' })}
     ${needsSave ? `<p class="mt-s1 text-provenance text-ink-muted" data-needs-save>Save this server as a source above to register databases from it.</p>` : ''}
     ${c.outcome ? `<p class="mt-s2 text-caveat ${c.outcomeIsError ? 'text-state-warn' : 'text-state-ok'}" data-outcome>${esc(c.outcome)}</p>` : ''}`;
 }
@@ -793,6 +1084,26 @@ async function confirmAdd(el) {
   if (c.investigation && scoped.length) refreshOpenInvestigation(c.investigation);
 }
 
+/** Download the candidate table as CSV (the shared column contract). The rows sent
+ *  are the ones on screen; none carries a credential. */
+async function exportCandidates(el) {
+  const c = view.cand;
+  if (!c.source || !c.rows.length) return;
+  try {
+    const { text, filename } = await fetchCandidatesCsv({
+      label: c.source.label || '', server_slug: c.source.slug || '',
+      candidates: c.rows.map((r) => ({ name: r.name, address: r.address, server_slug: r.server_slug, verdict: r.verdict })),
+    });
+    saveCsv(text, filename);
+    c.outcome = `Exported ${c.rows.length} candidate(s) as ${filename}.`;
+    c.outcomeIsError = false;
+  } catch (err) {
+    c.outcome = failure(err, 'export the candidates');
+    c.outcomeIsError = true;
+  }
+  render(el);
+}
+
 /* ── Wiring ─────────────────────────────────────────────────────────────── */
 
 function cssEsc(s) {
@@ -860,10 +1171,41 @@ function bind(el) {
     view.cand.selected.clear();
     render(el);
   });
-  el.querySelector('[data-act="group"]')?.addEventListener('change', (e) => { view.cand.group = e.target.value; });
+  // The confirm bar edits whichever state the visible tab owns.
+  const target = () => (view.tab === 'file' ? view.file : view.cand);
+  el.querySelector('[data-act="group"]')?.addEventListener('change', (e) => { target().group = e.target.value; });
   el.querySelector('[data-act="investigation"]')?.addEventListener('change', (e) => {
-    view.cand.investigation = e.target.value;
-    render(el);
+    target().investigation = e.target.value;
+    // The file's already-in-this-investigation facts belong to the investigation
+    // it was planned against: ask the server again for the one now chosen.
+    if (view.tab === 'file' && view.file.text && view.file.preview && !view.file.preview.refused) runPreview(el);
+    else render(el);
   });
-  el.querySelector('[data-act="confirm"]')?.addEventListener('click', () => confirmAdd(el));
+  el.querySelector('[data-act="confirm"]')?.addEventListener('click', () =>
+    (view.tab === 'file' ? confirmFile(el) : confirmAdd(el)));
+  el.querySelector('[data-act="export-candidates"]')?.addEventListener('click', () => exportCandidates(el));
+
+  // From a file
+  el.querySelector('[data-file-input]')?.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) loadFile(el, file);
+  });
+  el.querySelectorAll('[data-count]').forEach((b) => b.addEventListener('click', () => {
+    view.file.open = view.file.open === b.dataset.count ? '' : b.dataset.count;
+    render(el);
+  }));
+  el.querySelectorAll('[data-file-line]').forEach((cb) => cb.addEventListener('change', () => {
+    const line = Number(cb.dataset.fileLine);
+    if (cb.checked) view.file.deselected.delete(line); else view.file.deselected.add(line);
+    render(el);
+  }));
+  el.querySelectorAll('[data-accept-change]').forEach((cb) => cb.addEventListener('change', () => {
+    if (cb.checked) view.file.accept.add(cb.dataset.acceptChange); else view.file.accept.delete(cb.dataset.acceptChange);
+    render(el);
+  }));
+  el.querySelectorAll('[data-choose-server]').forEach((sel) => sel.addEventListener('change', () => {
+    const line = Number(sel.dataset.chooseServer);
+    if (sel.value) view.file.serverChoices[line] = sel.value; else delete view.file.serverChoices[line];
+    runPreview(el);        // the server re-plans: the row becomes importable (or not)
+  }));
 }

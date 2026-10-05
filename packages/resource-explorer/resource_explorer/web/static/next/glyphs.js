@@ -179,6 +179,17 @@ export const STATES = {
   proposal:     { glyph: '⏵', family: 'proposal',     word: 'proposal',     tone: 'text-state-warn' },
   unclassified: { glyph: '·', family: 'unclassified', word: 'unclassified', tone: 'text-ink-muted' },
 
+  // ── the catalogue commit's states on a schema or table row (Curate slice B) ──
+  // Each of these is only ever drawn from a persisted proof row (the catalogue
+  // commit's read-back, or an outbox row): see catalogue_commit.derive_commit_state.
+  // They reuse the families above instead of inventing a seventh.
+  catalogued:       { glyph: '✓', family: 'measured', word: 'catalogued', tone: 'text-state-ok' },
+  attached_waiting: { glyph: '◔', family: 'running',  word: 'attached, waiting', tone: 'text-ink-muted' },
+  queued:           { glyph: '◔', family: 'running',  word: 'queued', tone: 'text-ink-muted' },
+  catalogue_failed: { glyph: '✕', family: 'failed',   word: 'failed', tone: 'text-state-warn' },
+  removed:          { glyph: '∅', family: 'measured-nothing', word: 'removed', tone: 'text-ink-muted' },
+  archived:         { glyph: '□', family: 'stored',   word: 'archived', tone: 'text-ink-muted' },
+
   // □ stored -- not one of the reply's merged families (it names a fifth
   // condition the design brief doesn't cover: "results exist, not yet
   // read"), so it keeps its own glyph. Still declared here, and only here,

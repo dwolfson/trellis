@@ -148,6 +148,30 @@ def is_encrypted(stored: str) -> bool:
     return bool(stored) and stored.startswith(ENCRYPTED_PREFIX)
 
 
+class CredentialUnreadableError(ValueError):
+    """A stored credential exists but cannot be decrypted (wrong/rotated key).
+
+    The message is fixed and names only the slug: the underlying decrypt
+    error names the key env vars and is never carried here. Subclasses
+    ValueError so existing `except ValueError` callers keep working.
+    """
+
+    def __init__(self, slug: str = ""):
+        self.slug = slug
+        super().__init__(
+            f"credential unreadable: re-enter credentials for {slug}"
+            if slug else "credential unreadable: re-enter credentials"
+        )
+
+
+#: `DatabaseEntity.credential_status` values.
+CREDENTIAL_OK = "ok"
+CREDENTIAL_NONE = "none"
+CREDENTIAL_UNREADABLE = "unreadable"
+#: Fixed, secret-free reason string shown beside an unreadable credential.
+CREDENTIAL_UNREADABLE_REASON = "credential unreadable · re-enter credentials"
+
+
 def decrypt_db_password(stored: str) -> str:
     """Recover the plaintext `db_password` from a stored column value.
 

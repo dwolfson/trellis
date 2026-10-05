@@ -73,9 +73,12 @@ import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurvey
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
 // function, called from both stores' rows rather than reimplemented here.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
-import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation } from '/static/next/stages/investigation.js';
+import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation, openCreateDialog as openNewInvestigationDialog } from '/static/next/stages/investigation.js';
+import { openInvestigationPicker, scopeActWording } from '/static/next/investigation-picker.js';
+import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
+import { inventoryHeaderText, nodeSourceLine, credentialLineText } from '/static/next/stages/scope-sources.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
 // candidate-selection/catalogue UI, attached to sub_resource_survey's own
 // row in the Survey & analyses list below (analysisIndexRowHtml /
@@ -186,6 +189,7 @@ import {
   writeJournal,
   saveQuestionAnswer,
 } from '/static/re-api.js';
+import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
 
 /* ════════════════════════════════════════════════════════════════════════
  * State
@@ -251,6 +255,9 @@ export const state = {
   workListSlug: null,          // the open one; the pane takes over when set
   lastWorkListSlug: null,      // the one you were last in, for the way back
   workListIndex: false,        // showing the list OF work lists
+  workListIndexNote: '',       // what the last add/start on the index said, shown once
+  lastRunStage: 'scouting',    // the run stage a list re-opens on after a frame-stage click closed it
+  scopeCount: null,            // members in the current investigation's scope, ALL kinds; null = unknown
   // The question (its full text, the same key `wireHumanAnswers` already
   // uses to look up `contextAnswers`) currently open for inline editing on
   // the Questions tab -- '' means none. Replaces `window.prompt()`
@@ -762,8 +769,21 @@ const tone = (st, ground = 'paper') =>
  * Chrome
  * ════════════════════════════════════════════════════════════════════════ */
 
-function renderTopBar() {
-  $('scope-slug').textContent = state.selectedSlug || 'no resource selected';
+export function renderTopBar() {
+  // The name is the resource's menu button (REPLY-DESIGNER-RESOURCE-CONTROLS-
+  // PLACEMENT.md §1). `data-slug` carries the bare slug for feedback.js, which
+  // used to read it from the text; the text now also shows the "▾".
+  const slugEl = $('scope-slug');
+  slugEl.dataset.slug = state.selectedSlug || '';
+  slugEl.textContent = state.selectedSlug ? `${state.selectedSlug} ▾` : 'no resource selected';
+  slugEl.disabled = !state.selectedSlug;
+  slugEl.onclick = state.selectedSlug ? (e) => { e.stopPropagation(); toggleResourceMenu(); } : null;
+  // Whatever the menu or its panel was about is no longer on screen once the
+  // selection moves: a confirmation naming resource A must never outlive the
+  // switch to B.
+  if (!state.selectedSlug || $('resource-menu')?.dataset.slug !== state.selectedSlug) closeResourceMenu();
+  const panel = $('resource-controls-panel');
+  if (panel && panel.dataset.slug !== (state.selectedSlug || '')) panel.remove();
   // `data-entity-type` lets feedback.js's Questions-checklist "Was this
   // right?" bar (deliberately independent of this module, plain DOM reads
   // only) attribute an answer-feedback POST to the right resource type
@@ -974,6 +994,7 @@ export function renderIntentNav() {
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
       state.stage = b.dataset.stage;
+      if (stageClassOf(state.stage) === 'run') state.lastRunStage = state.stage;
       // ENRICHMENT-E1-CONTEXT-TAB: "Enrichment opens on Context, Context tab
       // is the default." Only redirects the module-level default
       // ('questions') — a subTab the person deliberately chose on another
@@ -987,32 +1008,108 @@ export function renderIntentNav() {
   });
 }
 
+/** A stage's class, read from `STAGES` — the one place it is declared. */
+function stageClassOf(id) {
+  return STAGES.find((s) => s.id === id)?.class;
+}
+
+/** A work list is a bench against one STAGE's questions, so it can only be
+ *  open on a run stage (REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md §5).
+ *  Opening one while a frame or cross-cutting stage is showing moves to the
+ *  last run stage first; without that, `loadPane()` would close the list
+ *  again the moment it opened. */
+function ensureRunStageForList() {
+  if (stageClassOf(state.stage) === 'run') return;
+  state.stage = state.lastRunStage || 'scouting';
+  renderIntentNav();
+}
+
 /** The list OF work lists — the front door the matrix never had. */
+const WORK_LIST_DEFINITION =
+  'An investigation says why, and its scope says which resources, of any kind; '
+  + 'a work list is a bench: one kind of resource, laid out against one stage’s '
+  + 'questions, so you can decide which belong in a scope.';
+
+/** An investigation's name for display; the slug only when it is not loaded. */
+function investigationName(slug) {
+  if (!slug) return '';
+  return (state.investigations.find((i) => i.slug === slug) || {}).display_name || slug;
+}
+
+/** What the work-list actions need from the shell (worklist-actions.js). */
+function workListHost() {
+  return {
+    currentInvestigation: () => state.investigation,
+    investigations: () => state.investigations,
+    investigationName,
+    chooseInvestigationThen,
+    makeCurrent: (slug) => setInvestigation(slug),
+    refreshScope: async () => { await loadWorkingSet(); await refreshOpenInvestigation(state.investigation); renderSidebar(); },
+    refreshAfterStart: async () => {
+      await refreshInvestigationsAndSidebar();
+      try { state.workLists = await listWorkLists(); } catch { /* the sidebar keeps what it had */ }
+    },
+  };
+}
+
+/** The index's row actions: add the list's members, or start an investigation from it. */
+function bindWorkListIndexActions(el) {
+  const done = async (out) => {
+    try { state.workLists = await listWorkLists(); } catch { /* keep */ }
+    state.workListIndexNote = out.noteHtml;
+    renderSidebar();
+    await loadPane();
+  };
+  el.querySelectorAll('[data-wl-add]').forEach((b) => b.addEventListener('click', () => {
+    const list = state.workLists.find((w) => w.slug === b.dataset.wlAdd);
+    if (list) addListToInvestigation({ list, host: workListHost(), onDone: done });
+  }));
+  el.querySelectorAll('[data-wl-start]').forEach((b) => b.addEventListener('click', () => {
+    const list = state.workLists.find((w) => w.slug === b.dataset.wlStart);
+    if (list) openStartFromList({ list, host: workListHost(), onDone: done });
+  }));
+}
+
 function workListIndexHtml() {
-  if (!state.workLists.length) {
+  const { benches } = splitWorkLists();
+  const definition = `<p class="mb-s3 max-w-[70ch] text-answer text-ink" data-wl-definition>${esc(WORK_LIST_DEFINITION)}</p>`;
+  if (!benches.length) {
     return `${subTabsHtml()}
       <h3 class="m-0 font-heading text-name font-normal">No work lists yet</h3>
       <div class="my-s3 h-px bg-rule"></div>
+      ${definition}
       <p class="max-w-[70ch] text-answer text-ink">
-        A work list is a set of resources you compare as rows x questions, run a
-        survey across, and narrow down. Make one from the sidebar:
-        <strong>Select</strong>, tick some repos, then <strong>save as work list</strong>.
+        Make one from the sidebar:
+        <strong>Select</strong>, tick some resources, then <strong>save as work list</strong>.
       </p>`;
   }
   return `${subTabsHtml()}
     <h3 class="m-0 font-heading text-name font-normal">Work lists</h3>
     <div class="my-s3 h-px bg-rule"></div>
+    ${definition}
+    <div id="wl-index-note" class="mb-s2 text-caveat text-ink">${state.workListIndexNote || ''}</div>
     <div class="flex flex-col">
-      ${state.workLists.map((w) => `<button data-open-wl="${esc(w.slug)}"
-        class="cursor-pointer border-b border-rule bg-transparent py-s3 text-left hover:bg-accent-tint">
-        <div class="font-heading text-question font-semibold text-ink">${esc(w.display_name)}</div>
-        <div class="text-provenance text-ink-muted">
-          <span class="tnum">${w.member_count}</span> resources
-          ${w.investigation ? ` · ${esc(w.investigation)}` : ''}
-          ${w.derived_from ? ` · narrowed from ${esc(w.derived_from)}` : ''}
-          · ${w.egeria_guid ? 'published to Egeria' : 'not published'}
+      ${benches.map((w) => {
+        const wording = addActWording({ invName: investigationName(state.investigation), count: w.member_count });
+        return `<div class="border-b border-rule py-s3 hover:bg-accent-tint">
+        <button data-open-wl="${esc(w.slug)}"
+          class="block w-full cursor-pointer bg-transparent p-0 text-left">
+          <div class="font-heading text-question font-semibold text-ink">${esc(w.display_name)}</div>
+          <div class="text-provenance text-ink-muted">
+            <span class="tnum">${w.member_count}</span> resources
+            ${w.investigation ? ` · ${esc(investigationName(w.investigation))}` : ''}
+            ${w.derived_from ? ` · narrowed from ${esc(w.derived_from)}` : ''}
+            · ${w.egeria_guid ? 'published to Egeria' : 'not published'}
+          </div>
+        </button>
+        <div class="mt-s2 flex flex-wrap gap-s3 text-caveat">
+          <button data-wl-add="${esc(w.slug)}" title="${esc(wording.title)}"
+            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(wording.label)}</button>
+          <button data-wl-start="${esc(w.slug)}"
+            class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(START_LABEL)}</button>
         </div>
-      </button>`).join('')}
+      </div>`;
+      }).join('')}
     </div>`;
 }
 
@@ -1036,7 +1133,7 @@ function renderWorkListNav() {
   const byslug = (sl) => state.workLists.find((w) => w.slug === sl);
   const open = state.workListSlug ? byslug(state.workListSlug) : null;
   const last = !open && state.lastWorkListSlug ? byslug(state.lastWorkListSlug) : null;
-  const n = state.workLists.length;
+  const n = splitWorkLists().benches.length;
   const active = Boolean(state.workListSlug || state.workListIndex);
 
   // TWO controls, because they are two jobs — not one control with two
@@ -1062,6 +1159,7 @@ function renderWorkListNav() {
   el.querySelector('[data-act="back-to-matrix"]')?.addEventListener('click', () => {
     state.workListSlug = state.lastWorkListSlug;
     state.workListIndex = false;
+    ensureRunStageForList();
     writeUrl(); renderSidebar(); loadPane();
   });
 }
@@ -1856,6 +1954,23 @@ const FIND_TITLE = {
   filesystem: 'Register a filesystem path',
 };
 
+/** The Find action's visible words, by the kind shown (REPLY-DESIGNER-
+ *  RESOURCE-CONTROLS-PLACEMENT.md §6). Find is rare and its meaning changes
+ *  with the chip beside it, so it carries a label. "File system", never "file
+ *  share". File systems have no discovery yet, so the button says what it does
+ *  today: add one by hand. */
+const FIND_LABEL = {
+  repo: '＋ Find repos',
+  db: '＋ Find databases',
+  filesystem: '＋ Add a file system',
+};
+function findButtonHtml(inRow = false) {
+  const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
+  return `<button data-act="find-repos" title="${esc(title)}"
+    class="${inRow ? 'ml-auto' : ''} cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-on-dark"
+    >${esc(FIND_LABEL[state.resourceType] || FIND_LABEL.repo)}</button>`;
+}
+
 // Sidebar group collapse — persisted the same way classic's does (a JSON
 // array of collapsed group slugs in localStorage), but under its own key so
 // the two surfaces (classic's `index.html` and /next) never fight over one
@@ -1941,6 +2056,12 @@ function visibleRows() {
   return state.resourceType === 'repo' ? visibleProjects() : visibleNonRepoRows();
 }
 
+/** True when the currently selected resource is a database whose stored
+ *  credential cannot be read: its survey/Run controls are disabled. */
+function selectedCredentialUnreadable() {
+  return state.resourceType === 'db' && isCredentialUnreadable(selectedProject());
+}
+
 export function renderSidebar() {
   const el = $('sidebar');
   const types = [
@@ -1977,6 +2098,12 @@ export function renderSidebar() {
   const loaded = state.resourceType === 'repo' ? true
     : state.resourceType === 'db' ? state.databasesLoaded : state.filesystemsLoaded;
   const nonRepoLabel = state.resourceType === 'db' ? 'database' : 'filesystem';
+  // The list is narrowed to a facet (a disposition chip, "In scope") or a text
+  // filter: the most common reason to act on many is "everything I marked
+  // ignored", so the count line offers to select exactly those.
+  const facetFiltered = state.dispositionFacet !== 'all'
+    || !!state.filter.trim()
+    || (state.resourceType === 'repo' && !!state.scope);
 
   // Grouped by the resource's group. Group display names come from the
   // groups endpoint; a resource with no group lands in Ungrouped. Generic
@@ -2004,10 +2131,7 @@ export function renderSidebar() {
   el.innerHTML = `
     <div class="mb-s2 flex items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
-      <button data-act="find-repos" title="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
-        aria-label="${esc(FIND_TITLE[state.resourceType] || FIND_TITLE.repo)}"
-        class="ml-auto cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
-        >${icon('circle-plus', { size: 14 })}</button>
+      ${findButtonHtml(true)}
       <button data-act="mark-key" title="What the marks in this list mean"
         aria-label="What the marks in this list mean"
         class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
@@ -2016,6 +2140,7 @@ export function renderSidebar() {
     ${state.showMarkKey ? markKeyHtml() : ''}
 
     ${investigationBarHtml()}
+    ${workListsSidebarHtml()}
 
     <input id="resource-filter" placeholder="Filter ${
       state.resourceType === 'repo' ? 'repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}…" value="${esc(state.filter)}"
@@ -2051,30 +2176,21 @@ export function renderSidebar() {
     </div>
 
     <div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps text-chrome-muted">
-      <button data-act="select-mode" class="cursor-pointer bg-transparent ${
-        state.selectMode ? 'text-accent-on-dark' : 'text-chrome-muted hover:text-chrome-ink'}"
-        >${state.selectMode ? '☑ Selecting' : '☐ Select'}</button>
+      <button data-act="select-mode" class="cursor-pointer rounded-sm border bg-transparent px-2 py-[1px] ${
+        state.selectMode ? 'border-accent text-accent-on-dark' : 'border-chrome-line text-chrome-ink hover:border-accent'}"
+        title="Tick several resources and act on all of them. Shift-click or ⌘/Ctrl-click a row to start."
+        >${state.selectMode ? 'Done selecting' : 'Select several…'}</button>
       ${hiddenCount ? `<button data-act="show-hidden" class="cursor-pointer bg-transparent ${
         state.showHidden ? 'text-accent-on-dark' : 'text-chrome-muted hover:text-chrome-ink'}"
         >Show hidden <span class="tnum">${hiddenCount}</span></button>` : ''}
-      <span class="ml-auto"><span class="tnum">${visible.length}</span> shown</span>
+      <span class="ml-auto"><span class="tnum">${visible.length}</span> shown${
+        facetFiltered && visible.length
+          ? ` · <button data-act="select-these" class="cursor-pointer bg-transparent p-0 text-chrome-ink underline"
+              >select these <span class="tnum">${visible.length}</span></button>` : ''}</span>
     </div>
 
     ${state.selectMode ? selectActionsHtml() : ''}
 
-    ${state.workLists.length ? `
-      <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted">
-        Work lists · <span class="tnum">${state.workLists.length}</span>
-      </div>
-      <div class="mb-s4 flex flex-col gap-[1px]">
-        ${state.workLists.map((w) => `<button data-worklist="${esc(w.slug)}"
-          class="cursor-pointer truncate bg-transparent px-2 py-[5px] text-left ${
-            w.slug === state.workListSlug
-              ? 'border-l-2 border-accent bg-chrome-surface text-chrome-ink'
-              : 'border-l-2 border-transparent text-chrome-ink hover:bg-chrome-surface'}"
-          >${esc(w.display_name)} <span class="tnum text-chrome-muted">${w.member_count}</span>${
-            w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`).join('')}
-      </div>` : ''}
 
     ${!loaded ? `
       <div class="text-chip text-chrome-ink">Loading ${nonRepoLabel}s…</div>`
@@ -2082,7 +2198,8 @@ export function renderSidebar() {
       <div class="text-chip text-chrome-ink">${
         currentResourceRows().length
           ? 'Nothing matches these filters.'
-          : state.resourceType === 'repo' ? 'Nothing matches these filters.' : `No ${nonRepoLabel}s registered.`}</div>`
+          : state.resourceType === 'repo' ? 'Nothing matches these filters.'
+          : `No ${nonRepoLabel}s registered. ${findButtonHtml()}`}</div>`
     : [...groups.entries()].sort((a, b) => groupName(a[0]).localeCompare(groupName(b[0]))).map(([g, rows]) => {
         const memberSlugs = rows.map((p) => p.slug);
         const selectedHere = memberSlugs.filter((sl) => state.selected.has(sl)).length;
@@ -2108,7 +2225,7 @@ export function renderSidebar() {
             ${lifecycleMark(p)}${dispositionMark(p)}
             <button data-slug="${esc(p.slug)}"
               class="min-w-0 flex-1 cursor-pointer truncate bg-transparent text-left text-chrome-ink"
-              >${esc(p.display_name || p.slug)}</button>
+              >${esc(p.display_name || p.slug)}${credentialMarkHtml(p, 'block text-provenance')}</button>
             ${p.working_set_hidden
               ? icon('eye-off', { size: 13, cls: 'text-chrome-muted', title: 'Hidden from your list — a view preference, not a verdict' })
               : ''}
@@ -2193,38 +2310,83 @@ export async function refreshGroupsAndSidebar() {
   renderSidebar();
 }
 
-/** The Select-mode action bar. Every action here is a bulk write, so each
- *  says plainly what it touches — "remove from scope" and "delete" differ by
- *  everything, and the current UI's own tooltips are the wording. */
+/** What a kind is called on screen, singular and plural (REPLY-DESIGNER-
+ *  RESOURCE-CONTROLS-PLACEMENT.md §4/§6). "File system", never "file share". */
+const KIND_NOUN = {
+  repo: ['repo', 'repos'],
+  database: ['database', 'databases'],
+  filesystem: ['file system', 'file systems'],
+};
+function kindNoun(entityType, n = 1) {
+  const [one, many] = KIND_NOUN[entityType] || KIND_NOUN.repo;
+  return n === 1 ? one : many;
+}
+
+/** Select-bar scope wording (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §5,
+ *  WORK-LISTS-VS-INVESTIGATIONS §4). Current investigation: "＋ add to <name>" /
+ *  "− remove from <name>" (name cut at 24 chars, full name in the title). None
+ *  current: add reads "add to an investigation…", ENABLED, and opens the
+ *  investigation picker (investigation-picker.js); remove stays visible,
+ *  disabled, with the reason as visible text. */
+const SCOPE_WORDING = {
+  add: (name) => `＋ add to ${name}`,
+  remove: (name) => `− remove from ${name}`,
+  addNone: { label: '＋ add to an investigation…', title: 'Choose an investigation, or start a new one' },
+  removeNone: { label: '− remove from investigation', title: 'Choose an investigation first' },
+  noneReason: 'no investigation selected',
+};
+
+/** The Select-mode action bar, grouped by weight, one group per line
+ *  (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §5): scope; judgement and
+ *  lists; view; then a rule and "remove…". Every action is a bulk write, so
+ *  each says plainly what it touches. Removal is the quiet last control; only
+ *  the confirmation's commit button carries the accent. */
 function selectActionsHtml() {
   const n = state.selected.size;
-  return `<div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caps">
-    <button data-act="sel-all" class="cursor-pointer bg-transparent text-chrome-ink underline">All shown</button>
-    <button data-act="sel-none" class="cursor-pointer bg-transparent text-chrome-ink underline">None</button>
-    <span class="text-chrome-muted"><span class="tnum">${n}</span> selected</span>
-    <div class="flex w-full flex-wrap gap-s2 pt-s1">
-      <button data-act="sel-scope-add" ${state.investigation ? '' : 'disabled'}
-        title="${state.investigation ? 'Add to the current investigation’s scope' : 'Needs a current investigation'}"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark ${
-          state.investigation ? '' : 'border-dashed opacity-100'}">＋ scope</button>
-      <button data-act="sel-scope-remove" ${state.investigation ? '' : 'disabled'}
-        title="Remove from scope — the repo itself is untouched"
-        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">− scope</button>
-      <button data-act="sel-hide"
-        title="Hide from your own list. A view preference, not a judgement"
-        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">hide</button>
+  const entityType = apiEntityType(state.resourceType);
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  const invName = state.investigation ? (inv?.display_name || state.investigation) : '';
+  const shortInv = invName.length > 24 ? `${invName.slice(0, 23)}…` : invName;
+  return `<div class="mb-s3 text-caps" data-select-bar>
+    <div class="flex flex-wrap items-baseline gap-s2">
+      <button data-act="sel-all" class="cursor-pointer bg-transparent text-chrome-ink underline">All shown</button>
+      <button data-act="sel-none" class="cursor-pointer bg-transparent text-chrome-ink underline">None</button>
+      <span class="text-chrome-muted"><span class="tnum">${n}</span> selected</span>
+    </div>
+    <div class="mt-[2px] text-chrome-muted" data-select-hint>Tick resources, then act on all of them.</div>
+    <div class="mt-s1 flex flex-wrap items-baseline gap-s2" data-bar-group="scope">
+      <button data-act="sel-scope-add"
+        title="${esc(invName ? `Add to ${invName}’s scope` : SCOPE_WORDING.addNone.title)}"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">${esc(invName ? SCOPE_WORDING.add(shortInv) : SCOPE_WORDING.addNone.label)}</button>
+      <button data-act="sel-scope-remove" ${invName ? '' : 'disabled'}
+        title="${esc(invName ? `Remove from ${invName}’s scope — the ${kindNoun(entityType)} itself is untouched` : SCOPE_WORDING.removeNone.title)}"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink ${
+          invName ? '' : 'border-dashed'}">${esc(invName ? SCOPE_WORDING.remove(shortInv) : SCOPE_WORDING.removeNone.label)}</button>
+      ${invName ? '' : `<span class="text-chrome-muted" data-scope-reason>${SCOPE_WORDING.noneReason}</span>`}
+    </div>
+    <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="judgement">
       <select data-act="sel-disposition"
-        title="Set the disposition on every selected repo"
+        title="Set the disposition on every selected ${kindNoun(entityType)}"
         class="rounded-sm border border-chrome-line bg-chrome px-2 py-[2px] text-chrome-ink">
         <option value="">mark as…</option>
         ${VALID_DISPOSITIONS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
       </select>
       <button data-act="sel-worklist"
         title="Save the selected resources as a work list you can run, compare and narrow"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">save as work list</button>
-      <button data-act="sel-delete"
-        title="Unregister entirely and delete all local survey data"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">delete…</button>
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">save as work list…</button>
+    </div>
+    <div class="mt-s1 flex flex-wrap gap-s2" data-bar-group="view">
+      <button data-act="sel-hide"
+        title="Hide from your own list. A view preference, not a judgement"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink">hide</button>
+    </div>
+    <div class="mt-s2 flex flex-wrap items-baseline gap-s2 border-t border-chrome-line pt-s2" data-bar-group="remove">
+      <button data-act="sel-remove" ${n ? '' : 'disabled'}
+        title="${n ? 'Remove from Resource Explorer: unregisters these and drops RE’s own records about them. The sources themselves are not touched.'
+          : 'Tick resources first'}"
+        class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[2px] text-chrome-ink ${n ? '' : 'opacity-60'}">${n
+          ? `Remove <span class="tnum">${n}</span> ${kindNoun(entityType, n)}…` : 'remove…'}</button>
+      <span class="text-chrome-muted">from Resource Explorer</span>
     </div>
     <div id="sidebar-action" class="w-full"></div>
   </div>`;
@@ -2248,6 +2410,74 @@ function investigationBarHtml() {
         inv.slug === state.investigation ? 'selected' : ''}>${esc(inv.display_name || inv.slug)}</option>`).join('')}
     </select>
   </div>`;
+}
+
+/** A saved list that is somebody's inbox, not a bench: the journal's
+ *  "suggest to…" writes one `suggested-to-<audience>` list per audience
+ *  (`journal.py` SUGGESTION_PREFIX). Same prefix, one place. */
+const SUGGESTION_PREFIX = 'suggested-to-';
+
+/** The saved lists, split into the two things they are
+ *  (REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md §1). `linked` is the
+ *  benches tagged to the current investigation: the same rows
+ *  `list_all(investigation=)` would return, filtered here because the page
+ *  already holds every row and each carries its `investigation`, so a second
+ *  request could only disagree with this one. Counts are `.length` of these
+ *  arrays, never a stored number. */
+export function splitWorkLists() {
+  const benches = state.workLists.filter((w) => !String(w.slug).startsWith(SUGGESTION_PREFIX));
+  const suggestions = state.workLists.filter((w) => String(w.slug).startsWith(SUGGESTION_PREFIX));
+  const linked = state.investigation ? benches.filter((w) => w.investigation === state.investigation) : [];
+  const other = state.investigation ? benches.filter((w) => w.investigation !== state.investigation) : benches;
+  return { benches, suggestions, linked, other };
+}
+
+function workListRowHtml(w) {
+  return `<button data-worklist="${esc(w.slug)}"
+    class="cursor-pointer truncate bg-transparent px-2 py-[5px] text-left ${
+      w.slug === state.workListSlug
+        ? 'border-l-2 border-accent bg-chrome-surface text-chrome-ink'
+        : 'border-l-2 border-transparent text-chrome-ink hover:bg-chrome-surface'}"
+    >${esc(w.display_name)} <span class="tnum text-chrome-muted">${w.member_count}</span>${
+      w.egeria_guid ? ` ${icon('cloud', { size: 12, cls: 'text-state-ok-on-dark', title: 'Published to Egeria' })}` : ''}</button>`;
+}
+
+/** Panel A of the work-lists reply: under the investigation selector,
+ *  top to bottom, the scope line and the lists for this investigation; the
+ *  other lists folded to one line; the suggestions on their own line. With
+ *  no investigation current the section reads "Work lists · N" and lists
+ *  them all. */
+function workListsSidebarHtml() {
+  const { benches, suggestions, linked, other } = splitWorkLists();
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  const invName = state.investigation ? (inv?.display_name || state.investigation) : '';
+  const rows = (arr) => `<div class="mb-s2 flex flex-col gap-[1px]">${arr.map(workListRowHtml).join('')}</div>`;
+  let html = '';
+  if (invName) {
+    html += `<button data-act="sidebar-scope" type="button"
+        title="Show the repos in ${esc(invName)}’s scope (the In scope filter). The count is every kind of resource in the scope."
+        class="mb-[7px] block w-full cursor-pointer bg-transparent px-0 text-left font-heading uppercase tracking-caps text-caps text-chrome-muted"
+        >Scope · <span class="tnum" data-scope-count>${state.scopeCount === null ? '–' : state.scopeCount}</span></button>
+      <div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted" data-linked-lists-head>Work lists for ${esc(invName)} · <span class="tnum">${linked.length}</span></div>
+      ${linked.length ? rows(linked) : ''}`;
+    if (other.length) {
+      html += `<details class="mb-s2" data-other-lists>
+        <summary class="mb-[7px] cursor-pointer font-heading uppercase tracking-caps text-caps text-chrome-muted">Other work lists · <span class="tnum">${other.length}</span></summary>
+        ${rows(other)}
+      </details>`;
+    }
+  } else if (benches.length) {
+    html += `<div class="mb-[7px] font-heading uppercase tracking-caps text-caps text-chrome-muted" data-all-lists-head>Work lists · <span class="tnum">${benches.length}</span></div>
+      ${rows(benches)}`;
+  }
+  if (suggestions.length) {
+    html += `<details class="mb-s2" data-suggestions>
+        <summary class="mb-[7px] cursor-pointer font-heading uppercase tracking-caps text-caps text-chrome-muted">Suggestions · <span class="tnum">${suggestions.length}</span></summary>
+        <div class="mb-s2 px-2 text-provenance text-chrome-muted">Entries other people were pointed at from the journal’s “suggest to…”. They are inboxes, not work lists.</div>
+        ${rows(suggestions)}
+      </details>`;
+  }
+  return html ? `<div class="mb-s3">${html}</div>` : '';
 }
 
 function bindSidebar() {
@@ -2288,12 +2518,30 @@ function bindSidebar() {
       toggleGroupCollapsed(summary.closest('details').dataset.group);
     });
   });
+  el.querySelector('[data-act="sidebar-scope"]')?.addEventListener('click', () => {
+    state.scope = 'working-set';
+    rerender();
+  });
   el.querySelectorAll('button[data-worklist]').forEach((b) => b.addEventListener('click', () => {
     state.workListSlug = b.dataset.worklist;
+    ensureRunStageForList();
     renderSidebar();
     loadPane();
   }));
-  el.querySelectorAll('button[data-slug]').forEach((b) => b.addEventListener('click', () => {
+  el.querySelectorAll('button[data-slug]').forEach((b) => b.addEventListener('click', (e) => {
+    // Shift-click or ⌘/Ctrl-click is the convention every list teaches: it
+    // turns Select mode on with that row ticked (and, once on, toggles the
+    // row) instead of opening it.
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      const slug = b.dataset.slug;
+      const wasOn = state.selectMode;
+      state.selectMode = true;
+      if (wasOn && state.selected.has(slug)) state.selected.delete(slug);
+      else state.selected.add(slug);
+      renderSidebar();
+      return;
+    }
     // Leaving the matrix is remembered, so the way back is one click rather
     // than a hunt. Losing a 12x27 grid to a stray click on a repo, with no
     // visible route back, is what "I somehow got off the matrix view and
@@ -2347,16 +2595,24 @@ function bindSidebar() {
       if (!state.selectMode) state.selected.clear();
       renderSidebar();
     },
+    // "select these N" on a facet-filtered list: enters Select mode with
+    // exactly the rows the filters leave visible ticked.
+    'select-these': () => {
+      state.selectMode = true;
+      visibleRows().forEach((p) => state.selected.add(p.slug));
+      renderSidebar();
+    },
     'sel-all': () => { visibleRows().forEach((p) => state.selected.add(p.slug)); renderSidebar(); },
     'sel-none': () => { state.selected.clear(); renderSidebar(); },
     'sel-scope-add': () => bulkScope(true),
     'sel-scope-remove': () => bulkScope(false),
     'sel-hide': () => bulkHide(),
-    'sel-delete': () => confirmBulkDelete(),
+    'sel-remove': () => confirmBulkRemove(),
     'sel-worklist': () => saveSelectionAsWorkList(),
   };
   for (const [name, fn] of Object.entries(acts)) {
-    el.querySelector(`[data-act="${name}"]`)?.addEventListener('click', fn);
+    // All, not first: "find-repos" is also offered inline in an empty list.
+    el.querySelectorAll(`[data-act="${name}"]`).forEach((b) => b.addEventListener('click', fn));
   }
 
   const filter = el.querySelector('#resource-filter');
@@ -2376,28 +2632,56 @@ function sidebarNote(html) {
   if (el) el.innerHTML = `<div class="mt-s2 text-chip text-chrome-ink">${html}</div>`;
 }
 
-async function bulkScope(add) {
-  if (!state.investigation || !state.selected.size) return;
+/** Open the investigation picker and run `then(slug)` with the chosen one.
+ *  "Start a new one…" reuses the existing New investigation dialog; the new
+ *  investigation is handed straight on, and the person is not moved to its
+ *  page (they were in the middle of something else). */
+function chooseInvestigationThen(then) {
+  openInvestigationPicker({
+    investigations: state.investigations,
+    onChoose: (slug) => then(slug),
+    onNew: () => openNewInvestigationDialog({ onCreated: (inv) => then(inv.slug) }),
+  });
+}
+
+async function bulkScope(add, invSlug = state.investigation) {
+  if (!state.selected.size) { sidebarNote('Tick resources first.'); return; }
+  if (!invSlug) {
+    // None current: only "add" can be offered, and it asks which one first.
+    if (add) chooseInvestigationThen((slug) => bulkScope(true, slug));
+    return;
+  }
   const slugs = [...state.selected];
   const entityType = apiEntityType(state.resourceType);
   const failed = [];
   for (const slug of slugs) {
     try {
-      if (add) await addInvestigationMember(state.investigation, entityType, slug);
-      else await removeInvestigationMember(state.investigation, entityType, slug);
+      if (add) await addInvestigationMember(invSlug, entityType, slug);
+      else await removeInvestigationMember(invSlug, entityType, slug);
     } catch (err) { failed.push(`${slug}: ${err.message}`); }
   }
-  await loadWorkingSet();
+  // The chosen investigation becomes the current one (it is the one the person
+  // just worked in); setInvestigation also reloads its scope and repaints.
+  const becameCurrent = invSlug !== state.investigation;
+  if (becameCurrent) await setInvestigation(invSlug);
+  else await loadWorkingSet();
   // The open investigation page lists these members too; re-fetch it.
-  await refreshOpenInvestigation(state.investigation);
+  await refreshOpenInvestigation(invSlug);
+  // Repaint first, THEN write the note: renderSidebar rebuilds the bar and
+  // the note's host with it, so a note written before it is wiped at once.
+  renderSidebar();
+  const inv = state.investigations.find((i) => i.slug === invSlug);
+  const invName = inv?.display_name || invSlug;
+  const done = slugs.length - failed.length;
   // Report per-resource, never "done": a bulk write where some calls failed
   // and the banner says success is how a partial write becomes invisible.
   sidebarNote(failed.length
-    ? `<span class="text-accent-on-dark"><span class="tnum">${slugs.length - failed.length}</span>
+    ? `<span class="text-accent-on-dark"><span class="tnum">${done}</span>
        of <span class="tnum">${slugs.length}</span> ${add ? 'added' : 'removed'};
        ${esc(failed.join('; '))}</span>`
-    : `<span class="tnum">${slugs.length}</span> ${add ? 'added to' : 'removed from'} scope.`);
-  renderSidebar();
+    : add && becameCurrent
+      ? `Added <span class="tnum">${slugs.length}</span> to ${esc(invName)}, now your current investigation.`
+      : `<span class="tnum">${slugs.length}</span> ${add ? 'added to' : 'removed from'} scope.`);
 }
 
 async function bulkHide() {
@@ -2451,40 +2735,43 @@ async function bulkDisposition(disposition) {
 }
 
 /**
- * Delete is the one action with no undo anywhere in the stack: the endpoint
+ * Removal is the one action with no undo anywhere in the stack: the endpoint
  * takes no confirmation flag, drops the resource's pgvector collections and
  * removes the registry row. So the confirmation has to be here, it has to
- * name what is going, and it must not be a one-click button.
+ * name what is going, and it must not be a one-click button. One word
+ * everywhere: "Remove from Resource Explorer" (REPLY-DESIGNER-RESOURCE-CONTROLS-
+ * PLACEMENT.md §4) -- nothing here deletes a database or a file.
  *
- * Repo/database/filesystem deletion are three genuinely different registry
+ * Repo/database/filesystem removal are three genuinely different registry
  * operations (`removeProject`/`removeDatabase`/`removeFilesystem` in
- * re-api.js, each hitting its own DELETE route) — `removeEntity()` dispatches
+ * re-api.js, each hitting its own HTTP route) -- `removeEntity()` dispatches
  * by `apiEntityType()`-translated type, the same pattern `POST /{slug}/group`
- * already uses server-side (projects.py).
+ * already uses server-side (projects.py). The sentence is the single
+ * resource's, worded for N (`removeConfirmationHtml` takes a list); the sidebar
+ * is scoped to one kind, so a bulk removal is always one kind.
  */
-function confirmBulkDelete() {
+function confirmBulkRemove() {
   const slugs = [...state.selected];
   if (!slugs.length) return;
-  const noun = state.resourceType === 'repo' ? 'repo'
-    : state.resourceType === 'db' ? 'database' : 'filesystem';
+  const entityType = apiEntityType(state.resourceType);
+  const n = slugs.length;
   sidebarNote(`
-    <div class="text-accent-on-dark">Unregister <span class="tnum">${slugs.length}</span>
-      ${noun}${slugs.length === 1 ? '' : 's'} and delete all local survey data?
-      This cannot be undone.</div>
+    <div class="text-chrome-ink" data-remove-sentence>${removeConfirmationHtml(entityType, slugs)}</div>
     <div class="mt-s1 break-words text-chrome-muted">${esc(slugs.join(', '))}</div>
     <div class="mt-s2 flex gap-s2">
-      <button data-act="sel-delete-confirm"
-        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark">Delete</button>
-      <button data-act="sel-delete-cancel"
+      <button data-act="sel-remove-confirm"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-on-dark"
+        >Remove ${n} ${kindNoun(entityType, n)}</button>
+      <button data-act="sel-remove-cancel"
         class="cursor-pointer bg-transparent text-chrome-ink underline">Cancel</button>
     </div>`);
-  $('sidebar-action').querySelector('[data-act="sel-delete-confirm"]')
-    .addEventListener('click', () => bulkDelete(slugs));
-  $('sidebar-action').querySelector('[data-act="sel-delete-cancel"]')
+  $('sidebar-action').querySelector('[data-act="sel-remove-confirm"]')
+    .addEventListener('click', () => bulkRemove(slugs));
+  $('sidebar-action').querySelector('[data-act="sel-remove-cancel"]')
     .addEventListener('click', () => { $('sidebar-action').innerHTML = ''; });
 }
 
-async function bulkDelete(slugs) {
+async function bulkRemove(slugs) {
   const entityType = apiEntityType(state.resourceType);
   const listKey = state.resourceType === 'repo' ? 'projects'
     : state.resourceType === 'db' ? 'databases' : 'filesystems';
@@ -2526,6 +2813,7 @@ async function saveSelectionAsWorkList() {
     });
     state.workLists = await listWorkLists();
     state.workListSlug = wl.slug;
+    ensureRunStageForList();
     state.selectMode = false;
     state.selected.clear();
     renderSidebar();
@@ -2550,6 +2838,7 @@ export async function setInvestigation(slug) {
   if (!slug) {
     try { localStorage.removeItem(INVESTIGATION_KEY); } catch { /* private mode */ }
     state.workingSet = new Set();
+    state.scopeCount = null;
     if (state.scope === 'working-set') state.scope = '';
   } else {
     await loadWorkingSet();
@@ -2573,9 +2862,10 @@ export async function refreshInvestigationsAndSidebar() {
 }
 
 async function loadWorkingSet() {
-  if (!state.investigation) { state.workingSet = new Set(); return; }
+  if (!state.investigation) { state.workingSet = new Set(); state.scopeCount = null; return; }
   try {
     const members = await listInvestigationMembers(state.investigation);
+    state.scopeCount = (members || []).length;
     state.workingSet = new Set(
       (members || []).filter((m) => requireKind('loadWorkingSet', m.entity_type, 'member.entity_type') === 'repo')
                      .map((m) => m.entity_slug));
@@ -2584,6 +2874,7 @@ async function loadWorkingSet() {
     // are different, and "In scope" showing nothing because a call failed
     // would read as "this investigation has no members".
     state.workingSet = new Set();
+    state.scopeCount = null;
     state.workingSetUnknown = true;
   }
 }
@@ -2873,7 +3164,11 @@ function selectedProject() {
 }
 
 /**
- * Name, external links, provenance, and the write paths.
+ * Name, external links, provenance and the disposition pill. Hide and Remove
+ * are NOT here any more: they live in the resource's menu on its name in the
+ * top bar (REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md §1) -- a verdict
+ * belongs beside the content it judges, a view preference and an unregister do
+ * not.
  *
  * The external links are here because they were missing, and they are marked
  * as external (`↗`, `rel="noopener"`, a new tab) so they read differently
@@ -2967,15 +3262,13 @@ export function resourceHeaderHtml(slug) {
   const relTotal = cap?.relation_total ?? cap?.table_total;
   const relSelect = cap?.relation_select ?? cap?.table_select;
   if (cap && (relTotal || cap.schema_total)) {
-    const thin = (relSelect ?? 0) < (relTotal ?? 0)
-      || (cap.schema_visible ?? 0) < (cap.schema_total ?? 0);
+    // Slice A2.1: this line is about ONE survey, RE's own local one, and says so
+    // (with its date). The Schema Inventory and Curate trees may read a fuller
+    // Egeria survey, so a sentence about "this page" would speak for counts it
+    // does not describe.
+    const line = credentialLineText(cap, p?.credential_capability_at, relTotal, relSelect);
     credentialBanner = `
-      <div class="mt-s1 text-provenance ${thin ? 'text-accent-ink' : 'text-ink-muted'}">
-        connected as <span class="font-mono">${esc(cap.connected_as || '(unknown)')}</span> —
-        sees ${esc(String(cap.schema_visible ?? 0))} of ${esc(String(cap.schema_total ?? 0))} schema(s),
-        SELECT on ${esc(String(relSelect ?? 0))} of ${esc(String(relTotal ?? 0))} relation(s)
-        ${thin ? '· every count on this page is scoped to this credential, not the whole database' : ''}
-      </div>`;
+      <div data-credential-scope-line class="mt-s1 text-provenance ${line.thin ? 'text-accent-ink' : 'text-ink-muted'}">${esc(line.text)}</div>`;
   }
 
   return `
@@ -2993,14 +3286,11 @@ export function resourceHeaderHtml(slug) {
         <button data-act="disposition" class="cursor-pointer rounded-pill border border-rule-strong bg-transparent px-2 py-[1px] text-ink hover:border-accent">
           ${esc(p?.disposition || 'undecided')} ▾
         </button>
-        <button data-act="hide" class="cursor-pointer bg-transparent text-accent-ink underline">
-          ${p?.working_set_hidden ? 'unhide' : 'hide'}
-        </button>
-        <button data-act="remove" class="cursor-pointer bg-transparent text-accent-ink underline">remove</button>
       </span>
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
     ${credentialBanner}
+    ${isCredentialUnreadable(p) ? `<div class="mt-s1 text-provenance" data-credential-banner>${credentialMarkHtml(p)} — surveys and runs are disabled until the credential is re-entered.</div>` : ''}
     <div id="resource-action" class="mt-s2"></div>`;
 }
 
@@ -3223,8 +3513,8 @@ function wireDispositionPicker(host, p, { note, onSet }, entityType, entitySlug 
   }));
 }
 
-/** The header's three write paths. `hide` is reversible, `disposition` is a
- *  judgement, `remove` is neither — so only one of them asks. */
+/** The header's write path: the disposition pill. (`hide` and `remove` moved
+ *  to the resource menu, `toggleResourceMenu` below.) */
 export function bindResourceHeader() {
   const el = $('resource-header') || $('content');
   const slot = $('resource-action');
@@ -3285,88 +3575,192 @@ export function bindResourceHeader() {
         `<div class="text-caveat text-ink">Disposition is now <strong>${esc(value)}</strong>.</div>`;
     } }, entityType, state.selectedSlug);
   });
-
-  el.querySelector('[data-act="hide"]')?.addEventListener('click', async () => {
-    const hiding = !p?.working_set_hidden;
-    note(hiding ? 'Hiding…' : 'Unhiding…');
-    try {
-      // Generalized alongside the sidebar's bulk "hide" action -- this used
-      // to hard-code 'repo' regardless of the selected resource type, which
-      // silently hid the WRONG row whenever a database/filesystem happened
-      // to share a slug with a repo (`resource_working_set` is keyed on
-      // (entity_type, entity_slug), so a wrong entity_type is a wrong key,
-      // not a 404).
-      await setWorkingSetHidden(apiEntityType(state.resourceType), state.selectedSlug, hiding);
-      if (p) p.working_set_hidden = hiding;
-      renderSidebar();
-      await loadPane();
-      $('resource-action').innerHTML = `<div class="text-caveat text-ink">${
-        hiding
-          ? 'Hidden from your list. Still registered, and nothing was deleted — “Show hidden” in the sidebar brings it back.'
-          : 'Back in your list.'}</div>`;
-    } catch (err) {
-      note(`<span class="text-accent-ink">Not saved: ${esc(err.message)}</span>`);
-    }
-  });
-
-  el.querySelector('[data-act="remove"]')?.addEventListener('click', () => {
-    // Dispatch by kind. This used to call `removeProject` for every kind,
-    // which hits the repo-only `DELETE /api/projects/{slug}` (404 for a
-    // database or filesystem). `removeEntity` picks the route that exists for
-    // each kind, and the confirmation says what THAT route does and does not
-    // touch.
-    const entityType = apiEntityType(state.resourceType);
-    slot.innerHTML = `
-      <div class="text-caveat text-accent-ink">${removeConfirmationHtml(entityType, state.selectedSlug)}</div>
-      <div class="mt-s2 flex gap-s3 text-caveat">
-        <button data-act="remove-confirm"
-          class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink">Remove</button>
-        <button data-act="remove-cancel" class="cursor-pointer bg-transparent text-ink underline">Cancel</button>
-      </div>`;
-    slot.querySelector('[data-act="remove-cancel"]')
-      .addEventListener('click', () => { slot.innerHTML = ''; });
-    slot.querySelector('[data-act="remove-confirm"]').addEventListener('click', async () => {
-      const slug = state.selectedSlug;
-      const listKey = state.resourceType === 'db' ? 'databases'
-        : state.resourceType === 'filesystem' ? 'filesystems' : 'projects';
-      note('Removing…');
-      try {
-        await removeEntity(entityType, slug);
-        state[listKey] = state[listKey].filter((x) => x.slug !== slug);
-        state.selected.delete(slug);
-        state.selectedSlug = state[listKey][0]?.slug || null;
-        renderSidebar();
-        renderTopBar();
-        renderRailScope();
-        await loadPane();
-      } catch (err) {
-        note(`<span class="text-accent-ink">Not removed: ${esc(err.message)}</span>`);
-      }
-    });
-  });
 }
 
-/** What the header's remove confirmation says, per kind. Worded from what
- *  each DELETE route does: repo drops its pgvector collections and registry
- *  row (projects.py `remove_project`); database and filesystem delete the
- *  registry row and survey records only (`registry.remove_database` /
- *  `remove_filesystem`) and make no Egeria call. */
-export function removeConfirmationHtml(entityType, slug) {
-  const name = `<span class="font-mono">${esc(slug)}</span>`;
-  const notIgnored = `It is not the same as marking it <em>ignored</em> — an ignored
+/* ────────────────────────────────────────────────────────────────────────
+ * The resource's menu (hide, remove) and the panel under the top bar
+ * ──────────────────────────────────────────────────────────────────────── */
+
+function closeResourceMenu() {
+  const menu = $('resource-menu');
+  if (menu) menu.remove();
+  const btn = $('scope-slug');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('click', onDocClickCloseMenu, true);
+  document.removeEventListener('keydown', onKeyCloseMenu, true);
+}
+function onDocClickCloseMenu(e) {
+  const menu = $('resource-menu');
+  if (menu && !menu.contains(e.target) && !$('scope-slug')?.contains(e.target)) closeResourceMenu();
+}
+function onKeyCloseMenu(e) {
+  if (e.key === 'Escape') { closeResourceMenu(); $('scope-slug')?.focus(); }
+}
+
+/** The menu on the top bar's resource name. It sits there because the bar is
+ *  the one place that names the current resource on every stage and sub-tab
+ *  (the content header is redrawn per pane). Hide/Unhide first, a rule, then
+ *  Remove last, in ink: the accent is reserved for the control that commits. */
+function toggleResourceMenu() {
+  if ($('resource-menu')) { closeResourceMenu(); return; }
+  const btn = $('scope-slug');
+  const slug = state.selectedSlug;
+  if (!btn || !slug) return;
+  const hidden = !!selectedProject()?.working_set_hidden;
+  const menu = document.createElement('div');
+  menu.id = 'resource-menu';
+  menu.dataset.slug = slug;
+  menu.setAttribute('role', 'menu');
+  menu.className = 'absolute z-20 w-[290px] rounded-sm border border-rule-strong bg-paper text-caveat text-ink shadow-lg';
+  menu.style.left = `${btn.offsetLeft || 0}px`;
+  menu.style.top = `${(btn.offsetTop || 0) + (btn.offsetHeight || 0) + 4}px`;
+  menu.innerHTML = `
+    <button type="button" role="menuitem" data-act="menu-hide" class="block w-full cursor-pointer bg-transparent px-3 py-2 text-left text-ink hover:bg-chrome-surface hover:text-chrome-ink">
+      ${hidden ? 'Unhide' : 'Hide from my list'}
+      <span class="mt-[2px] block text-provenance text-ink-muted">${hidden
+        ? 'Put it back in your list. It was only ever hidden from your view.'
+        : 'A view preference: it changes only your list. The resource stays registered.'}</span>
+    </button>
+    <div class="border-t border-rule" role="separator"></div>
+    <button type="button" role="menuitem" data-act="menu-remove" class="block w-full cursor-pointer bg-transparent px-3 py-2 text-left text-ink hover:bg-chrome-surface hover:text-chrome-ink">Remove from Resource Explorer…</button>`;
+  (btn.closest('header') || btn.parentElement || document.body).appendChild(menu);
+  btn.setAttribute('aria-expanded', 'true');
+  menu.querySelector('[data-act="menu-hide"]').addEventListener('click', () => { closeResourceMenu(); toggleHiddenFromMenu(); });
+  menu.querySelector('[data-act="menu-remove"]').addEventListener('click', () => { closeResourceMenu(); openRemovePanel(); });
+  document.addEventListener('click', onDocClickCloseMenu, true);
+  document.addEventListener('keydown', onKeyCloseMenu, true);
+  menu.querySelector('[data-act="menu-hide"]').focus();
+}
+
+/** The panel directly under the top bar. Both the removal confirmation and the
+ *  one-line outcome of a hide land here, never in the content pane's
+ *  `#resource-action` slot, which can be scrolled off-screen. Stamped with the
+ *  resource it is about so `renderTopBar` can drop it when the selection moves. */
+function showControlsPanel(html, slug = state.selectedSlug) {
+  let panel = $('resource-controls-panel');
+  if (!panel) {
+    panel = document.createElement('section');
+    panel.id = 'resource-controls-panel';
+    panel.className = 'border-b border-rule-strong bg-paper px-4 py-s3 text-caveat text-ink';
+    const header = $('scope-slug')?.closest('header');
+    if (header) header.after(panel);
+    else ($('scope-slug')?.parentElement || document.body).appendChild(panel);
+  }
+  panel.dataset.slug = slug || '';
+  panel.innerHTML = html;
+  return panel;
+}
+function closeControlsPanel() { $('resource-controls-panel')?.remove(); }
+
+async function toggleHiddenFromMenu() {
+  const slug = state.selectedSlug;
+  const p = selectedProject();
+  const hiding = !p?.working_set_hidden;
+  const panel = showControlsPanel(hiding ? 'Hiding…' : 'Unhiding…', slug);
+  try {
+    // `resource_working_set` is keyed on (entity_type, entity_slug): the
+    // entity type must follow the selected kind, or a database sharing a slug
+    // with a repo hides the wrong row.
+    await setWorkingSetHidden(apiEntityType(state.resourceType), slug, hiding);
+    if (p) p.working_set_hidden = hiding;
+    renderSidebar();
+    await loadPane();
+    showControlsPanel(`${hiding
+      ? 'Hidden from your list. Still registered, and nothing was lost — “Show hidden” in the sidebar brings it back.'
+      : 'Back in your list.'} <button type="button" data-act="panel-close" class="cursor-pointer bg-transparent text-ink underline">Close</button>`, slug)
+      .querySelector('[data-act="panel-close"]').addEventListener('click', closeControlsPanel);
+  } catch (err) {
+    panel.innerHTML = `<span class="text-state-warn">Not saved: ${esc(err.message)}</span>`;
+  }
+}
+
+/** Remove from Resource Explorer: the per-kind confirmation as a panel under
+ *  the top bar. Its commit button is the only accent in it and names what goes. */
+function openRemovePanel() {
+  const entityType = apiEntityType(state.resourceType);
+  const slug = state.selectedSlug;
+  if (!slug) return;
+  const panel = showControlsPanel(`
+    <div class="text-ink" data-remove-sentence>${removeConfirmationHtml(entityType, slug)}</div>
+    <div class="mt-s3 flex items-baseline gap-s3">
+      <button type="button" data-act="remove-confirm"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink"
+        >Remove the ${kindNoun(entityType)} ${esc(slug)}</button>
+      <button type="button" data-act="remove-cancel" class="cursor-pointer bg-transparent text-ink underline">Cancel</button>
+    </div>`, slug);
+  panel.querySelector('[data-act="remove-cancel"]').addEventListener('click', closeControlsPanel);
+  panel.querySelector('[data-act="remove-confirm"]').addEventListener('click', () => commitResourceRemoval(entityType, slug));
+}
+
+async function commitResourceRemoval(entityType, slug) {
+  // Dispatch by kind (DB-REMOVE-BUTTON-IMPLEMENTED.md). This used to call
+  // `removeProject` for every kind, which hits the repo-only
+  // `DELETE /api/projects/{slug}` (404 for a database or filesystem).
+  // `removeEntity` picks the route that exists for each kind.
+  const listKey = state.resourceType === 'db' ? 'databases'
+    : state.resourceType === 'filesystem' ? 'filesystems' : 'projects';
+  const panel = showControlsPanel('Removing…', slug);
+  try {
+    await removeEntity(entityType, slug);
+    state[listKey] = state[listKey].filter((x) => x.slug !== slug);
+    state.selected.delete(slug);
+    state.selectedSlug = state[listKey][0]?.slug || null;
+    renderSidebar();
+    renderTopBar();
+    renderRailScope();
+    await loadPane();
+    showControlsPanel(`Removed the ${kindNoun(entityType)} ${esc(slug)} from Resource Explorer. <button type="button" data-act="panel-close" class="cursor-pointer bg-transparent text-ink underline">Close</button>`,
+      state.selectedSlug)
+      .querySelector('[data-act="panel-close"]').addEventListener('click', closeControlsPanel);
+  } catch (err) {
+    panel.innerHTML = `<span class="text-state-warn">Not removed: ${esc(err.message)}</span>`;
+  }
+}
+
+/** What the remove confirmation says, per kind, for one resource or for a list
+ *  (the Select bar's bulk removal uses the same sentence; the sidebar is scoped
+ *  to one kind, so a list is always one kind). Worded from what each DELETE
+ *  route does: repo drops its pgvector collections and registry row
+ *  (projects.py `remove_project`); database and filesystem delete the registry
+ *  row and survey records only (`registry.remove_database` / `remove_filesystem`)
+ *  and make no Egeria call. Plain ink: the accent is for the control that
+ *  commits, never for a sentence. "This cannot be undone" is said in words. */
+export function removeConfirmationHtml(entityType, target) {
+  const slugs = Array.isArray(target) ? target : [target];
+  const many = slugs.length > 1;
+  const name = many
+    ? `these <span class="tnum">${slugs.length}</span> ${kindNoun(entityType, slugs.length)}`
+    : `<span class="font-mono">${esc(slugs[0])}</span>`;
+  const notIgnored = many
+    ? `It is not the same as marking them <em>ignored</em> — an ignored
+    resource stays registered and can come back.`
+    : `It is not the same as marking it <em>ignored</em> — an ignored
     resource stays registered and can come back.`;
   if (entityType === 'database') {
-    return `Unregister the database ${name} and delete its local survey records
+    return many
+      ? `Unregister ${name} and delete their local survey records
+      (surveys, schema, table and column detail, coverage)? This cannot be undone.
+      Not touched: the source databases themselves, anything already published to Egeria,
+      and the server registrations they were discovered from. ${notIgnored}`
+      : `Unregister the database ${name} and delete its local survey records
       (surveys, schema, table and column detail, coverage)? This cannot be undone.
       Not touched: the source database itself, anything already published to Egeria,
       and the server registration it was discovered from. ${notIgnored}`;
   }
   if (entityType === 'filesystem') {
-    return `Unregister the filesystem ${name} and delete its local survey records?
+    return many
+      ? `Unregister ${name} and delete their local survey records?
+      This cannot be undone. Not touched: the files on disk and anything already
+      published to Egeria. ${notIgnored}`
+      : `Unregister the file system ${name} and delete its local survey records?
       This cannot be undone. Not touched: the files on disk and anything already
       published to Egeria. ${notIgnored}`;
   }
-  return `Unregister ${name} and delete all its local survey data? This cannot be
+  return many
+    ? `Unregister ${name} and delete all their local survey data? This cannot be
+    undone. Not touched: the GitHub repositories and anything already published to
+    Egeria. ${notIgnored}`
+    : `Unregister ${name} and delete all its local survey data? This cannot be
     undone. Not touched: the GitHub repository and anything already published to
     Egeria. ${notIgnored}`;
 }
@@ -3512,6 +3906,7 @@ async function loadSchemaInventoryPane() {
         class="absolute right-[6px] top-1/2 hidden -translate-y-1/2 cursor-pointer text-ink-muted hover:text-ink"
       >×</button>
     </div>
+    <div id="schema-tree-sources" data-schema-tree-sources class="mb-s2 text-provenance text-ink-muted"></div>
     <div id="schema-tree">Reading the schema tree…</div>`;
   bindSubTabs();
   bindResourceHeader();
@@ -3526,6 +3921,8 @@ async function loadSchemaInventoryPane() {
   }
   if (slug !== state.selectedSlug) return;
   $('schema-tree').innerHTML = schemaTreeHtml(tree.schemas || []);
+  const srcLine = $('schema-tree-sources');
+  if (srcLine) srcLine.textContent = inventoryHeaderText(tree.sources);
   bindSchemaTreeFilter();
 }
 
@@ -3576,9 +3973,14 @@ export function schemaTreeHtml(schemas) {
       return `<div class="mb-s1 text-caveat text-ink-muted" data-tree-node data-tree-text="system">
         ${esc(String(s.system_count))} system schema(s) folded (pg_catalog, information_schema, pg_toast*, pg_temp*)</div>`;
     }
+    // `measured` is a schema the Egeria native survey listed: it carries no row total
+    // of its own, so the stamp says tables and, when known, size -- never a made-up 0.
     const stamp = s.classification === 'data'
       ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}`
-      : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
+      : s.classification === 'measured'
+        ? `${s.table_count ?? '?'} table(s)${s.row_total != null ? ` · ${Number(s.row_total).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}` : ''}${s.bytes_total != null ? ` · ${fmtBytes(s.bytes_total)}` : ''}`
+        : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
+    const schemaSrc = nodeSourceLine(s);
     // Found live, `laz_local_adventureworks`, 2026-09-27 (Dan's gate):
     // this used to be the schema name PLUS every table/column name
     // concatenated, so a node's own displayed match state was really "does
@@ -3594,6 +3996,7 @@ export function schemaTreeHtml(schemas) {
         <span class="font-semibold">${esc(s.schema)}</span>
         <span class="text-caveat text-ink-muted"> schema</span>
         <span class="text-provenance text-ink-muted"> — ${esc(stamp)}</span>
+        ${schemaSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(schemaSrc)}</span>` : ''}
       </summary>
       ${s.reason ? `<div class="ml-s3 mt-[4px] text-provenance text-ink-muted">${esc(s.reason)}</div>` : ''}
       <div class="ml-s3 mt-s2">${(s.tables || []).map(tableHtml).join('') || '<span class="text-caveat text-ink-muted">No tables.</span>'}</div>
@@ -3608,13 +4011,15 @@ export function tableHtml(t) {
     : `${Number(t.row_count).toLocaleString('en-US')} row(s)${t.row_count_state === 'catalog_estimate' ? ' (est.)' : ''}`;
   const byteStamp = t.size_bytes == null ? 'not measured' : fmtBytes(t.size_bytes);
   const kindLabel = _TABLE_KIND_LABELS[t.table_type] || 'table';
+  const tableSrc = nodeSourceLine(t);
   // Own name only -- see schemaTreeHtml's comment above on why this is no
   // longer the table+columns concatenation it used to be.
   return `<details class="mb-s1" data-tree-node data-tree-text="${esc(t.name.toLowerCase())}">
     <summary class="cursor-pointer text-ink">
       ${esc(t.name)}
       <span class="text-caveat text-ink-muted"> ${esc(kindLabel)}</span>
-      <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count} column(s)</span>
+      <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count == null ? 'columns not measured' : `${t.column_count} column(s)`}</span>
+      ${tableSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(tableSrc)}</span>` : ''}
     </summary>
     <table class="ml-s3 mt-[4px] w-full max-w-[70ch] border-collapse text-caveat">
       ${(t.columns || []).map((c) => `<tr class="border-b border-rule" data-tree-node data-tree-text="${esc(c.name.toLowerCase())}">
@@ -3783,7 +4188,7 @@ async function loadDispositionPane() {
  *  thirty-two-row table fights. A catalogue record shows its steps inline
  *  as Curate draws them; a report shows its header sentence. Same row
  *  grammar, same date, same author (REPORT-RECORD-AND-TWO-CALLS C4). */
-async function renderRecords(slug, entityType) {
+export async function renderRecords(slug, entityType) {
   requireKind('renderRecords', entityType);
   const host = $('records');
   if (!host) return;
@@ -3792,6 +4197,8 @@ async function renderRecords(slug, entityType) {
   catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing catalogued, nothing written down.'; return; }
+  const scopeAct = await scopeActState(entityType, slug);
+  if (slug !== state.selectedSlug) return;
   host.innerHTML = recs.map((r) => {
     const when = `<span class="tnum">${esc(ago(r.requested_at))}</span> <span class="tnum">(${esc(String(r.requested_at).slice(0, 10))})</span>`;
     if (r.kind === 'report') {
@@ -3811,7 +4218,7 @@ async function renderRecords(slug, entityType) {
           <ul class="m-0 list-none p-0 pl-s2">${g.rows.map((row) => `<li class="flex items-baseline gap-s2 font-mono text-ink">
             <input type="checkbox" data-record-row="${esc(row.name)}" class="shrink-0">${esc(row.name)}${row.detail ? ` <span class="font-body text-ink-muted">${esc(row.detail)}</span>` : ''}</li>`).join('')}${
             g.truncated ? `<li class="text-ink-muted">and more — the first ${g.rows.length} are shown</li>` : ''}</ul>`).join('')}</div>
-        ${recordActsHtml(r, rowCount(rep))}
+        ${recordActsHtml(r, rowCount(rep), scopeAct)}
         ${recordUsesHtml(r)}
       </div>`;
     }
@@ -3843,13 +4250,44 @@ function rowCount(rep) {
  * acts on the snapshot and never re-derives; the journal opens seeded with
  * a citation, not a sentence; a stale record keeps all three live and what
  * they create carries the staleness; the record learns it was used. */
-function recordActsHtml(r, n) {
+/** What the "add to <investigation>" act should say for this resource: which
+ *  investigation is current and whether the resource is already in its scope.
+ *  The scope is read from the server (it holds every kind; `state.workingSet`
+ *  holds repos only). If it cannot be read the act is offered as "add" -- the
+ *  server refuses to overwrite an existing member's reason either way. */
+async function scopeActState(entityType, slug) {
+  const invSlug = state.investigation;
+  if (!invSlug) return { invName: '', inScope: false };
+  const inv = state.investigations.find((i) => i.slug === invSlug);
+  const invName = inv?.display_name || invSlug;
+  let inScope = false;
+  try {
+    inScope = ((await listInvestigationMembers(invSlug)) || [])
+      .some((m) => m.entity_type === entityType && m.entity_slug === slug);
+  } catch { /* unknown: offer the act */ }
+  return { invName, inScope };
+}
+
+/** The current investigation's display name, '' when none is current. */
+function curInvName() {
+  if (!state.investigation) return '';
+  const inv = state.investigations.find((i) => i.slug === state.investigation);
+  return inv?.display_name || state.investigation;
+}
+
+function scopeActHtml(scopeAct, attr, cls) {
+  const w = scopeActWording(scopeAct.invName, scopeAct.inScope);
+  if (w.mode === 'text') return `<span data-scope-act-text class="text-ink-muted" title="${esc(w.title)}">${esc(w.label)}</span>`;
+  return `<button ${attr} title="${esc(w.title)}" class="${cls}">${esc(w.label)}</button>`;
+}
+
+function recordActsHtml(r, n, scopeAct = { invName: '', inScope: false }) {
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   return `<div data-record-acts class="mt-s2 text-caveat">
     <div class="text-ink"><span data-record-scope>The whole report · <span class="tnum">${n}</span> row${n === 1 ? '' : 's'}</span>
       <span class="text-ink-muted">· as recorded ${esc(String(r.requested_at).slice(0, 10))}${r.out_of_date ? ' · its evidence has since moved — what these create will say so' : ''}</span></div>
     <div class="mt-[3px] flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-provenance">
-      <button data-record-act="work_list" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">add to work list</button>
+      ${scopeActHtml(scopeAct, `data-record-act="scope" ${me ? '' : 'disabled'}`, 'cursor-pointer bg-transparent p-0 text-accent-ink underline')}
       <button data-record-act="rfa" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">raise RFA</button>
       <button data-record-act="journal" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">note in journal</button>
       ${r.out_of_date && !r.corrected_by?.id ? `<button data-record-correct ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline">write a correction</button>` : ''}
@@ -3864,7 +4302,8 @@ function recordActsHtml(r, n) {
  *  in the same place. */
 function recordUsesHtml(r) {
   const uses = (r.uses || []).map((u) => {
-    const what = u.act === 'work_list' ? `added to work list “${esc(u.target_name)}”`
+    const what = u.act === 'scope' ? `added to ${esc(u.target_name)}’s scope`
+      : u.act === 'work_list' ? `added to work list “${esc(u.target_name)}”`
       : u.act === 'rfa' ? `raised RFA “${esc(u.target_name)}”`
       : u.act === 'journal' ? 'cited in the journal' : esc(u.act);
     return `<div class="text-provenance text-ink-muted">Used · ${what} · <span class="tnum">${esc(String(u.at).slice(5, 16).replace('T', ' '))}</span> · ${esc(u.by)}</div>`;
@@ -3905,16 +4344,39 @@ function wireRecordActs(host, slug, recs, entityType) {
         status.textContent = '→ the journal, below — write the thought after the citation';
         return;
       }
-      b.disabled = true; status.textContent = '…';
-      try {
-        const out = await actOnRecord(slug, id, { action, rows }, entityType);
-        const where = action === 'work_list' ? `now in “${out.name}”` : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
-        status.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
-        await renderRecords(slug, entityType);
-      } catch (err) {
-        b.disabled = false;
-        status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
+      const perform = async (investigation = '') => {
+        b.disabled = true; status.textContent = '…';
+        try {
+          const out = await actOnRecord(slug, id, { action, rows, investigation }, entityType);
+          let becameCurrent = false;
+          if (action === 'scope') {
+            // The chosen investigation becomes the current one, as in the
+            // Select bar; either way its scope is re-read for the member count.
+            becameCurrent = investigation !== state.investigation;
+            if (becameCurrent) await setInvestigation(investigation);
+            else await loadWorkingSet();
+            await refreshOpenInvestigation(investigation);
+          }
+          await renderRecords(slug, entityType);
+          // renderRecords rebuilt the box; say where it went in the new one.
+          const fresh = $('records')?.querySelector(`[data-record="${id}"] [data-record-status]`);
+          const where = action === 'scope'
+            ? (out.already_in_scope ? `already in ${out.investigation_name}’s scope, left as it was` : `added to ${out.investigation_name}’s scope${becameCurrent ? ', now your current investigation' : ''}`)
+            : `RFA ${String(out.rfa).slice(0, 8)} raised, pointing at this record`;
+          if (fresh) fresh.innerHTML = `<span class="text-state-ok">→ ${esc(where)}</span>`;
+        } catch (err) {
+          b.disabled = false;
+          status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to act on a report' : `: ${esc(err.message)}`}</span>`;
+        }
+      };
+      if (action === 'scope') {
+        // With none current, ask which investigation first; the act continues
+        // in the picker's callback.
+        if (state.investigation) await perform(state.investigation);
+        else chooseInvestigationThen((chosen) => perform(chosen));
+        return;
       }
+      await perform();
     }));
     box.querySelector('[data-record-correct]')?.addEventListener('click', async (ev) => {
       // A correction is save-as-report with the superseded record's id
@@ -4191,9 +4653,13 @@ export function surveyRowHtml(c) {
       // than a false zero until it is.
       c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}</div>
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
-    <button data-run-survey="${esc(c.qualified_name || c.guid)}"
+    ${selectedCredentialUnreadable()
+      ? `<button data-run-survey="${esc(c.qualified_name || c.guid)}" disabled title="${CREDENTIAL_UNREADABLE_TEXT}"
+      class="shrink-0 cursor-not-allowed rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
+      >${c.last_run_at ? 're-run' : 'run'} →</button>`
+      : `<button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-      >${c.last_run_at ? 're-run' : 'run'} →</button>
+      >${c.last_run_at ? 're-run' : 'run'} →</button>`}
   </div>`;
 }
 
@@ -4324,7 +4790,7 @@ export function enrichmentAnalysisRowHtml(row) {
   const key = enrichmentAnalysisCardStateKey(row);
   const g = stateEntry(key);
   const runBtn = row.unlocked && row.runnable !== false && row.state !== 'measured'
-    ? `<button type="button" data-run-enrichment-analysis="${esc(row.id)}"
+    ? `<button type="button" data-run-enrichment-analysis="${esc(row.id)}" ${selectedCredentialUnreadable() ? `disabled title="${CREDENTIAL_UNREADABLE_TEXT}"` : ''}
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Run</button>`
     : '';
   return `<div class="border-b border-rule py-s2">
@@ -4580,7 +5046,7 @@ export async function loadSurveyPane() {
           <span class="text-answer text-ink">${esc(c.display_name)}</span>
           <span class="tnum rounded-sm border border-state-warn px-2 py-[1px] text-provenance text-state-warn"
             >${steps} steps · all tiers</span>
-          <button data-plan-survey="${esc(c.qualified_name)}"
+          <button data-plan-survey="${esc(c.qualified_name)}" ${selectedCredentialUnreadable() ? `disabled title="${CREDENTIAL_UNREADABLE_TEXT}"` : ''}
             class="ml-auto cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
             >Plan a run…</button>
         </div>
@@ -4877,6 +5343,7 @@ async function renderAnalysesIndexSection(slug, stage) {
  */
 function planSurveyRun(c, slug) {
   if (!c) return;
+  if (selectedCredentialUnreadable()) return;   // the buttons are disabled; this guards any other caller
   const steps = (c.steps || []).length;
   const el = openDialog(c.display_name || c.qualified_name, `${slug} · ${c.survey_kind || 'unclassified'}`);
   const body = el.querySelector('#wl-detail-body');
@@ -5518,8 +5985,9 @@ function memberScope() {
  * fix" is not one here — cve_scan does not record fix availability, and a
  * facet the data cannot back would select nothing and look broken.
  *
- * Three acts, and they are different: add to work list (I will deal with
- * this), raise RFA (someone must), note in journal (worth knowing — no
+ * Three acts, and they are different: add to <investigation> (this belongs
+ * in my investigation's scope; W1-A, it used to mint a one-resource work
+ * list), raise RFA (someone must), note in journal (worth knowing — no
  * obligation, so the likeliest used). One provenance line, composed on the
  * server, travels with all three. The selection is a SNAPSHOT of names,
  * never a query: a work item that changes what it refers to when the scan
@@ -5563,7 +6031,7 @@ function facetsHtml(groups, data) {
   </div>`;
 }
 
-function wireSelection(out, { slug, analysisId, metric, data }) {
+export function wireSelection(out, { slug, analysisId, metric, data }) {
   const picks = () => [...out.querySelectorAll('[data-pick]:checked')];
   const footer = out.querySelector('#member-selection');
   const project = state.projects.find((x) => x.slug === slug);
@@ -5662,7 +6130,8 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
       <input id="promote-name" type="text" value="${esc(touched && typed ? typed : proposed(sel.length))}"
         class="mb-[4px] w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-caps text-chrome-ink">
       <div class="flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-caps">
-        <button data-promote="work_list" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">add to work list</button>
+        ${scopeActHtml({ invName: curInvName(), inScope: !!state.investigation && state.workingSet.has(slug) },
+          'data-promote="scope"', 'cursor-pointer bg-transparent p-0 text-accent-on-dark underline').replace('text-ink-muted', 'text-chrome-muted')}
         <button data-promote="rfa" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">raise RFA</button>
         <button data-promote="journal" class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">note in journal</button>
         <button data-report-sel class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">save as report</button>
@@ -5673,21 +6142,41 @@ function wireSelection(out, { slug, analysisId, metric, data }) {
       save(picks().map((c) => c.dataset.pick), facetLabel(), nameEl.value.trim(), footer.querySelector('#promote-status')));
     nameEl.addEventListener('input', () => { typed = nameEl.value; touched = typed.trim().length > 0; });
     footer.querySelectorAll('[data-promote]').forEach((b) => b.addEventListener('click', async () => {
-      const status = footer.querySelector('#promote-status');
-      const members = picks().map((c) => c.dataset.pick);
-      b.disabled = true; status.textContent = '…';
-      try {
-        const out2 = await promoteMembers(slug, analysisId, {
-          action: b.dataset.promote, metric: metric || data.metric || '', members, total, facet: facetLabel(), runAt,
-          name: nameEl.value.trim(),
-        }, apiEntityType(state.resourceType));
-        // Say where it went, not "sent".
-        const where = out2.work_list ? `work list ${out2.work_list}` : out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
-        status.innerHTML = `<span class="text-state-ok-on-dark">→ ${esc(where)}</span>`;
-      } catch (err) {
-        b.disabled = false;
-        status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'sign in to promote' : err.message)}</span>`;
+      const action = b.dataset.promote;
+      const perform = async (investigation = '') => {
+        const status = footer.querySelector('#promote-status');
+        const members = picks().map((c) => c.dataset.pick);
+        b.disabled = true; status.textContent = '…';
+        try {
+          const out2 = await promoteMembers(slug, analysisId, {
+            action, metric: metric || data.metric || '', members, total, facet: facetLabel(), runAt,
+            name: nameEl.value.trim(), investigation,
+          }, apiEntityType(state.resourceType));
+          // Say where it went, not "sent".
+          let where = out2.rfa ? `RFA ${String(out2.rfa).slice(0, 8)}` : 'the journal';
+          if (action === 'scope') {
+            const becameCurrent = investigation !== state.investigation;
+            if (becameCurrent) await setInvestigation(investigation);
+            else await loadWorkingSet();
+            await refreshOpenInvestigation(investigation);
+            where = out2.already_in_scope
+              ? `already in ${out2.investigation_name}’s scope, left as it was`
+              : `added to ${out2.investigation_name}’s scope${becameCurrent ? ', now your current investigation' : ''}`;
+            render();   // the act now reads "already in …’s scope"
+          }
+          const st = footer.querySelector('#promote-status');
+          if (st) st.innerHTML = `<span class="text-state-ok-on-dark">→ ${esc(where)}</span>`;
+        } catch (err) {
+          b.disabled = false;
+          status.innerHTML = `<span class="text-state-warn-on-dark">${esc(err.status === 401 ? 'sign in to promote' : err.message)}</span>`;
+        }
+      };
+      if (action === 'scope') {
+        if (state.investigation) await perform(state.investigation);
+        else chooseInvestigationThen((chosen) => perform(chosen));
+        return;
       }
+      await perform();
     }));
   }
   render();   // the whole-list state, before any pick
@@ -6870,6 +7359,7 @@ export function paneMessage(title, body) {
 
 async function loadPane() {
   const el = $('content');
+  let scopeIntoView = false;
   // The rail is a function of (resource, stage, sub-tab): empty it, and stand
   // down its in-flight writers, the moment any of those changed.
   syncRailToSelection();
@@ -6890,26 +7380,54 @@ async function loadPane() {
   // resource at a time; this is the one surface that does not.
   if (state.workListIndex && !state.workListSlug) {
     el.innerHTML = workListIndexHtml();
+    state.workListIndexNote = '';
     bindSubTabs();
+    bindWorkListIndexActions(el);
     el.querySelectorAll('[data-open-wl]').forEach((b) => b.addEventListener('click', () => {
       state.workListSlug = b.dataset.openWl;
       state.workListIndex = false;
+      ensureRunStageForList();
       writeUrl(); renderSidebar(); loadPane();
     }));
     writeUrl();
     return;
   }
 
+  // §5 of REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md: a work list is a
+  // bench against one stage's questions. On a RUN stage it stays open and
+  // re-scopes to that stage (the branch below). A FRAME or CROSS-CUTTING
+  // stage (Investigation, Understanding, Automate) asks no questions, so the
+  // click goes to the stage and the list closes into the "↩ <list>" link
+  // `lastWorkListSlug` drives. The class is read from `STAGES`.
+  if (state.workListSlug && stageClassOf(state.stage) !== 'run') {
+    const closing = state.workLists.find((w) => w.slug === state.workListSlug);
+    state.lastWorkListSlug = state.workListSlug;
+    state.workListSlug = null;
+    state.workListIndex = false;
+    // Special case: Investigation while the list is linked to an
+    // investigation opens THAT investigation, its Scope section in view,
+    // current or not. Only `work_lists.investigation` links them today.
+    if (state.stage === 'investigation' && closing?.investigation
+        && state.investigations.some((i) => i.slug === closing.investigation)) {
+      openInvestigationDetail(closing.investigation);
+      scopeIntoView = true;
+    }
+    writeUrl(); renderSidebar(); renderWorkListNav();
+  }
+
   if (state.workListSlug) {
     state.workListIndex = false;
+    if (stageClassOf(state.stage) === 'run') state.lastRunStage = state.stage;
     try {
       await openWorkList({
         el,
         subTabs: SUB_TABS.map((t) => ({ id: t.id, label: t.label })),
         stage: state.stage,
+        stageLabel: STAGES.find((s) => s.id === state.stage)?.label || state.stage,
         perspectives: state.activePerspectives,
         projects: state.projects,
         analyses: state.analyses || [],
+        host: workListHost(),
         onExit: () => {
           state.lastWorkListSlug = state.workListSlug;
           state.workListSlug = null;
@@ -6983,6 +7501,7 @@ async function loadPane() {
   if (state.stage === 'investigation') {
     await renderInvestigation();
     renderPerspectiveRow();
+    if (scopeIntoView) $('inv-scope')?.scrollIntoView?.({ block: 'start' });
     return;
   }
 

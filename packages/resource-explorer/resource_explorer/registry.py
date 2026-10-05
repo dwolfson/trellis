@@ -122,6 +122,10 @@ class DatabaseServer:
     last_run_candidates: list[str] | None = None
 
 
+#: slugs already warned about this process (one WARNING per slug).
+_UNREADABLE_LOGGED: set[str] = set()
+
+
 @dataclass
 class DatabaseEntity:
     """Represents a database in the registry."""
@@ -152,6 +156,13 @@ class DatabaseEntity:
     server_slug: str = ""
     governance_state: str = "certified"
     group_slug: str = ""  # slug of the umbrella project group this database belongs to
+    # Derived on read, never stored: "ok" | "none" | "unreadable". "unreadable"
+    # = a stored password exists but cannot be decrypted (wrong/rotated key);
+    # db_password is then "" and MUST NOT be used to connect.
+    credential_status: str = "none"
+    # UTC ISO seconds of the last recorded credential CHANGE (db_user or
+    # password differing from what was stored). None = before this was recorded.
+    credential_changed_at: str | None = None
 
 
 @dataclass
@@ -405,6 +416,12 @@ TARGET_SURVEY = "survey"
 #: them, and `query_findings_all_runs` is untouched — the provenance view must
 #: keep answering "who proposed what, ever" after the current answer changes.
 WITHDRAWN_LABEL = "withdrawn"
+
+#: Findings kinds that are read ACROSS runs on purpose (several independent
+#: steps contribute rows at different times, via query_findings_all_runs), so
+#: "latest run wins" must not be applied to their counts. Everything else is
+#: current-run-only. See FINDINGS-SUPERSESSION-IMPLEMENTED.md.
+ALL_RUNS_FINDING_KINDS = ("architecture_recovery", "architecture_decisions")
 
 
 # ── Structured DB/FS detail tables: provenance and measurement state ────────
@@ -1385,6 +1402,16 @@ class ProjectRegistry:
         """
         if "author" not in self._get_table_columns(conn, table_name):
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN author TEXT DEFAULT NULL")
+
+    def _add_credential_changed_at_column(self, conn) -> None:
+        """Idempotent, additive, nullable `credential_changed_at` on `databases`.
+
+        Same pattern and same SQL on SQLite and Postgres as `_add_author_column`
+        (metadata-only on Postgres; column list read first so a re-run is a
+        no-op). NULL = "before this was recorded", never ''.
+        """
+        if "credential_changed_at" not in self._get_table_columns(conn, "databases"):
+            conn.execute("ALTER TABLE databases ADD COLUMN credential_changed_at TEXT DEFAULT NULL")
 
     def _add_server_last_run_columns(self, conn) -> None:
         """Idempotent, additive, nullable `last_run_at` / `last_run_candidates`
@@ -2592,6 +2619,7 @@ class ProjectRegistry:
                 if col not in existing_db:
                     deftype = "INTEGER" if defval == "0" else "TEXT"
                     conn.execute(f"ALTER TABLE databases ADD COLUMN {col} {deftype} DEFAULT {defval}")
+            self._add_credential_changed_at_column(conn)
             # Database servers table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS db_servers (
@@ -2823,6 +2851,97 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag)"
             )
             self._add_author_column(conn, "resource_tags")
+            # ── Catalogue scope (Curate for a database: what gets catalogued) ──
+            #
+            # A declared, signed, dated choice stored in RE, not in Egeria.
+            # Slice A of CURATE-CATALOGUE-SCOPE: nothing here is ever sent to
+            # Egeria. Two APPEND-ONLY tables, additive and idempotent (CREATE
+            # TABLE IF NOT EXISTS), no foreign keys, no colons in this text
+            # because the Postgres translator rewrites colon-name tokens.
+            #
+            # catalogue_scope_events: one row per change. The current state of
+            # a node is its newest row (highest id); a cleared choice is a row
+            # with choice = '' so who cleared it and when is kept. node_kind is
+            # schema, table or depth (a depth change carries the depth id in
+            # choice). source is person, or the id of the proposal rule that
+            # was confirmed; proposal_rule/proposal_choice/reason/measured_at/
+            # measured_json keep the proposal and the measurement under it, so
+            # an overridden proposal can still be shown struck through and a
+            # survey that now disagrees can be detected.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_scope_events (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug   TEXT NOT NULL,
+                    node_kind       TEXT NOT NULL,
+                    schema_name     TEXT NOT NULL DEFAULT '',
+                    table_name      TEXT NOT NULL DEFAULT '',
+                    choice          TEXT NOT NULL DEFAULT '',
+                    action          TEXT NOT NULL DEFAULT 'set',
+                    source          TEXT NOT NULL DEFAULT 'person',
+                    proposal_rule   TEXT NOT NULL DEFAULT '',
+                    proposal_choice TEXT NOT NULL DEFAULT '',
+                    reason          TEXT NOT NULL DEFAULT '',
+                    measured_at     TEXT NOT NULL DEFAULT '',
+                    measured_json   TEXT NOT NULL DEFAULT '{}',
+                    author          TEXT NOT NULL,
+                    changed_at      TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalogue_scope_events_node "
+                "ON catalogue_scope_events(database_slug, node_kind, schema_name, table_name, id)"
+            )
+            # catalogue_scope_baselines: the set of schema and table node keys
+            # the latest survey knew when the scope was first declared and on
+            # each re-declaration. The newest row is the baseline "new since
+            # your scope was declared" is measured against.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_scope_baselines (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug   TEXT NOT NULL,
+                    kind            TEXT NOT NULL DEFAULT 'first',
+                    baseline_json   TEXT NOT NULL DEFAULT '{}',
+                    survey_at       TEXT NOT NULL DEFAULT '',
+                    declared_by     TEXT NOT NULL,
+                    declared_at     TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalogue_scope_baselines_slug "
+                "ON catalogue_scope_baselines(database_slug, id)"
+            )
+            # catalogue_commit_proofs: what a catalogue commit READ BACK from
+            # Egeria, one row per observation, append-only. Slice B of the
+            # catalogue-scope work. Every state word the scope tree shows after
+            # a commit (catalogued, attached and waiting, failed, removed,
+            # archived) derives from these rows plus the outbox rows, never
+            # from the branch the code took. Additive, no foreign keys, and no
+            # colons in this text because the Postgres translator rewrites
+            # colon-name tokens. proof names the observation; element_guid and
+            # target_guid are what was read back; read_at is when Egeria was
+            # read, not when the commit was pressed.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_commit_proofs (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug   TEXT NOT NULL,
+                    curation_id     TEXT NOT NULL DEFAULT '',
+                    node_kind       TEXT NOT NULL DEFAULT 'schema',
+                    schema_name     TEXT NOT NULL DEFAULT '',
+                    table_name      TEXT NOT NULL DEFAULT '',
+                    proof           TEXT NOT NULL,
+                    element_guid    TEXT NOT NULL DEFAULT '',
+                    target_guid     TEXT NOT NULL DEFAULT '',
+                    qualified_name  TEXT NOT NULL DEFAULT '',
+                    outbox_id       INTEGER DEFAULT NULL,
+                    detail_json     TEXT NOT NULL DEFAULT '{}',
+                    recorded_by     TEXT NOT NULL DEFAULT '',
+                    read_at         TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalogue_commit_proofs_node "
+                "ON catalogue_commit_proofs(database_slug, node_kind, schema_name, table_name, id)"
+            )
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
             # `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`, slice 1 ("Declare
@@ -3939,6 +4058,7 @@ class ProjectRegistry:
         "discovery_expand",
         "curate_commit",
         "materialize_components",
+        "catalogue_commit",
     )
 
     #: States that occupy a user's one fairness slot.
@@ -6494,10 +6614,41 @@ class ProjectRegistry:
                     f"GROUP BY project_slug, kind",
                     (*slugs, *kinds, "____-__-__%"),
                 ).fetchall()
+                current = None
+                if table == "project_analysis_findings":
+                    # CURRENT rows only: the newest run per (resource, kind,
+                    # scope), and not superseded. A bare COUNT(*) here added
+                    # every run ever written, so a resource surveyed six times
+                    # reported six runs' findings as the current answer
+                    # (FINDINGS-SUPERSESSION-IMPLEMENTED.md). Same rule as
+                    # query_findings(). Kinds in ALL_RUNS_FINDING_KINDS are read
+                    # across runs by design, so only the superseded filter
+                    # applies to them.
+                    all_runs = tuple(ALL_RUNS_FINDING_KINDS)
+                    current = {}
+                    for c in conn.execute(
+                        f"SELECT f.project_slug, f.kind, COUNT(*) AS n "
+                        f"FROM {table} f "
+                        f"JOIN (SELECT project_slug, kind, COALESCE(scope_locator, '') AS sl, "
+                        f"             MAX(surveyed_at) AS ts "
+                        f"      FROM {table} "
+                        f"      WHERE project_slug IN ({','.join('?' * len(slugs))}) "
+                        f"        AND kind IN ({','.join('?' * len(kinds))}) "
+                        f"        AND surveyed_at LIKE ? "
+                        f"      GROUP BY project_slug, kind, COALESCE(scope_locator, '')) l "
+                        f"  ON f.project_slug = l.project_slug AND f.kind = l.kind "
+                        f"  AND COALESCE(f.scope_locator, '') = l.sl "
+                        f"WHERE f.superseded_at IS NULL "
+                        f"  AND (f.surveyed_at = l.ts OR f.kind IN ({','.join('?' * len(all_runs))})) "
+                        f"GROUP BY f.project_slug, f.kind",
+                        (*slugs, *kinds, "____-__-__%", *all_runs),
+                    ).fetchall():
+                        current[(c["project_slug"], c["kind"])] = c["n"] or 0
                 for r in rows:
                     key = (r["project_slug"], r["kind"])
                     prev = out.get(key) or {"rows": 0, "measured_at": ""}
-                    prev["rows"] += r["n"] or 0
+                    prev["rows"] += (current.get(key, 0) if current is not None
+                                     else (r["n"] or 0))
                     # The LATER of the two tables' timestamps: an analysis that
                     # wrote metrics after findings was measured at the later
                     # moment, and reporting the earlier one would age it.
@@ -9117,15 +9268,29 @@ class ProjectRegistry:
 
     def add_working_set_member(self, ws_slug: str, entity_type: str, entity_slug: str,
                                *, membership_rationale: str = "",
-                               state: str = "in-scope") -> list[dict]:
+                               state: str = "in-scope",
+                               keep_existing: bool = False) -> list[dict]:
+        """Add a member (an upsert). By default a repeat add overwrites the
+        member's rationale and state with the arguments (an explicit edit).
+        With `keep_existing=True` a member that is already there keeps what it
+        has: the arguments only fill a rationale or state that is empty. A
+        first-time add writes the arguments either way."""
+        if keep_existing:
+            conflict = """DO UPDATE SET
+                   membership_rationale = CASE WHEN COALESCE(working_set_members.membership_rationale, '') = ''
+                       THEN EXCLUDED.membership_rationale ELSE working_set_members.membership_rationale END,
+                   state = CASE WHEN COALESCE(working_set_members.state, '') = ''
+                       THEN EXCLUDED.state ELSE working_set_members.state END"""
+        else:
+            conflict = """DO UPDATE SET membership_rationale = EXCLUDED.membership_rationale,
+                                 state = EXCLUDED.state"""
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO working_set_members
                    (working_set_slug, entity_type, entity_slug, membership_rationale, state, added_at)
                    VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT (working_set_slug, entity_type, entity_slug)
-                   DO UPDATE SET membership_rationale = EXCLUDED.membership_rationale,
-                                 state = EXCLUDED.state""",
+                   """ + conflict,
                 (ws_slug, entity_type, entity_slug, membership_rationale, state,
                  datetime.utcnow().isoformat()),
             )
@@ -9786,12 +9951,27 @@ class ProjectRegistry:
                 data,
             )
 
-    def get_database(self, slug: str) -> DatabaseEntity | None:
-        """Retrieve a database entity by slug."""
+    def get_database(self, slug: str, *, allow_unreadable: bool = False) -> DatabaseEntity | None:
+        """Retrieve a database entity by slug.
+
+        A row whose stored password cannot be decrypted raises
+        `CredentialUnreadableError` (for THAT slug only) unless
+        `allow_unreadable=True`, which returns the row with
+        `credential_status == "unreadable"` and an empty `db_password`.
+        Callers that only need existence/metadata pass True; anything that
+        may connect with the credential must not, so it never connects with
+        an empty password.
+        """
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM databases WHERE slug = ?", (normalized,)).fetchone()
-        return self._row_to_database(row) if row else None
+        if not row:
+            return None
+        entity = self._row_to_database(row)
+        if entity.credential_status == "unreadable" and not allow_unreadable:
+            from resource_explorer.credential_crypto import CredentialUnreadableError
+            raise CredentialUnreadableError(entity.slug)
+        return entity
 
     def list_databases(self, db_type: str | None = None, server_slug: str | None = None, governance_state: str | None = None) -> list[DatabaseEntity]:
         """List all registered databases, optionally filtered by type, server slug, or governance state."""
@@ -9839,16 +10019,57 @@ class ProjectRegistry:
         cli/main.py) via `omsecrets_store.write_credential`, since this
         method only knows about the registry, not the deployment's
         `.omsecrets` path.
+
+        Every change is recorded: an activity-log row naming the slug and the
+        NEW user name (never the password or any value of it), and
+        `credential_changed_at` set to now (UTC, seconds). A call that
+        rewrites the same user and the same plaintext (the lazy re-encrypt in
+        `_row_to_database`) still stores the new ciphertext but writes no row
+        and leaves `credential_changed_at` alone: nothing changed.
         """
-        from resource_explorer.credential_crypto import encrypt_db_password
+        from resource_explorer.credential_crypto import (
+            decrypt_db_password,
+            encrypt_db_password,
+        )
 
         slug = self._normalize_slug(slug)
         encrypted = encrypt_db_password(db_password or "")
         with self._conn() as conn:
-            conn.execute(
-                "UPDATE databases SET db_user = ?, db_password = ? WHERE slug = ?",
-                (db_user, encrypted, slug),
-            )
+            prev = conn.execute(
+                "SELECT db_user, db_password, display_name FROM databases WHERE slug = ?",
+                (slug,),
+            ).fetchone()
+            changed = True
+            display_name = ""
+            if prev is not None:
+                display_name = prev["display_name"] or ""
+                try:
+                    prev_plain = decrypt_db_password(prev["db_password"] or "")
+                except ValueError:
+                    prev_plain = None  # unreadable: cannot be "the same"
+                changed = not (
+                    (prev["db_user"] or "") == (db_user or "")
+                    and prev_plain == (db_password or "")
+                )
+            if changed:
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                conn.execute(
+                    "UPDATE databases SET db_user = ?, db_password = ?, "
+                    "credential_changed_at = ? WHERE slug = ?",
+                    (db_user, encrypted, now, slug),
+                )
+            else:
+                conn.execute(
+                    "UPDATE databases SET db_user = ?, db_password = ? WHERE slug = ?",
+                    (db_user, encrypted, slug),
+                )
+        if changed and prev is not None:
+            self.write_activity(ActivityEntry(
+                id=str(uuid.uuid4()), ts=now, operation="credential_change",
+                intent="enrichment", entity_type="database", entity_slug=slug,
+                entity_name=display_name, status="ok",
+                summary=f"Credentials for {slug} changed: user is now {db_user}",
+            ))
 
     def check_credential_drift(self, slug: str) -> dict:
         """Compare RE's registry against the `.omsecrets` file for one
@@ -9934,6 +10155,9 @@ class ProjectRegistry:
             # databases.slug; SQLite silently allows the reverse order
             # (foreign_keys pragma off by default), Postgres does not.
             conn.execute("DELETE FROM database_surveys WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM catalogue_scope_events WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM catalogue_scope_baselines WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM catalogue_commit_proofs WHERE database_slug = ?", (normalized,))
             # The structured detail tables are children too, and every one of
             # them has a real FK. Missing them here does not strand rows — it
             # makes the parent delete fail outright, on Postgres and on
@@ -10158,6 +10382,166 @@ class ProjectRegistry:
                 (slug,),
             ).fetchall()
         return dict(rows[0]) if rows else None
+
+    # ── Catalogue scope storage (append-only; see the DDL for the shape) ──
+
+    def append_catalogue_scope_event(self, slug: str, *, node_kind: str, author: str,
+                                     schema_name: str = "", table_name: str = "",
+                                     choice: str = "", action: str = "set",
+                                     source: str = "person", proposal_rule: str = "",
+                                     proposal_choice: str = "", reason: str = "",
+                                     measured_at: str = "", measured: dict | None = None,
+                                     changed_at: str | None = None) -> None:
+        """Append one scope change. Never updates or removes a row."""
+        slug = self._normalize_slug(slug)
+        if not author:
+            raise ValueError("a catalogue scope change needs an author")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO catalogue_scope_events
+                   (database_slug, node_kind, schema_name, table_name, choice, action,
+                    source, proposal_rule, proposal_choice, reason, measured_at,
+                    measured_json, author, changed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (slug, node_kind, schema_name or "", table_name or "", choice or "", action,
+                 source, proposal_rule, proposal_choice, reason, measured_at or "",
+                 json.dumps(measured or {}), author,
+                 changed_at or datetime.utcnow().isoformat()),
+            )
+
+    def list_catalogue_scope_events(self, slug: str) -> list[dict]:
+        """Every scope change for a database, oldest first."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, database_slug, node_kind, schema_name, table_name, choice,
+                          action, source, proposal_rule, proposal_choice, reason,
+                          measured_at, measured_json, author, changed_at
+                   FROM catalogue_scope_events WHERE database_slug = ? ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["measured"] = json.loads(d.pop("measured_json") or "{}")
+            except (ValueError, TypeError):
+                d["measured"] = {}
+            out.append(d)
+        return out
+
+    # ── Catalogue commit proofs (append-only; see the DDL for the shape) ──
+
+    def append_catalogue_commit_proof(self, slug: str, *, proof: str, node_kind: str = "schema",
+                                      schema_name: str = "", table_name: str = "",
+                                      curation_id: str = "", element_guid: str = "",
+                                      target_guid: str = "", qualified_name: str = "",
+                                      outbox_id: int | None = None, detail: dict | None = None,
+                                      recorded_by: str = "", read_at: str | None = None) -> int:
+        """Append one read-back observation. Never updates or removes a row."""
+        slug = self._normalize_slug(slug)
+        if not proof:
+            raise ValueError("a commit proof row needs a proof kind")
+        with self._conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO catalogue_commit_proofs
+                   (database_slug, curation_id, node_kind, schema_name, table_name, proof,
+                    element_guid, target_guid, qualified_name, outbox_id, detail_json,
+                    recorded_by, read_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (slug, curation_id or "", node_kind, schema_name or "", table_name or "", proof,
+                 element_guid or "", target_guid or "", qualified_name or "", outbox_id,
+                 json.dumps(detail or {}), recorded_by or "",
+                 read_at or datetime.utcnow().isoformat()),
+            )
+            row_id = getattr(cur, "lastrowid", None)
+            if row_id is None:
+                row_id = conn.execute(
+                    "SELECT MAX(id) AS id FROM catalogue_commit_proofs WHERE database_slug = ?",
+                    (slug,)).fetchone()["id"]
+        return int(row_id)
+
+    def list_catalogue_commit_proofs(self, slug: str) -> list[dict]:
+        """Every commit proof row for a database, oldest first."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, database_slug, curation_id, node_kind, schema_name, table_name,
+                          proof, element_guid, target_guid, qualified_name, outbox_id,
+                          detail_json, recorded_by, read_at
+                   FROM catalogue_commit_proofs WHERE database_slug = ? ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["detail"] = json.loads(d.pop("detail_json") or "{}")
+            except (ValueError, TypeError):
+                d["detail"] = {}
+            out.append(d)
+        return out
+
+    def list_catalogue_outbox_rows(self, slug: str) -> list[dict]:
+        """The outbox rows a catalogue commit queued for one database, oldest first.
+
+        Read straight from egeria_outbox so a "queued" or "failed" word on the
+        scope tree is the row's own status, never a flag kept beside it."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, run_id, element_kind, qualified_name, payload_json, status,
+                          attempts, last_error, egeria_guid, created_at, completed_at
+                   FROM egeria_outbox
+                   WHERE entity_type = 'database' AND entity_slug = ?
+                     AND element_kind IN ('catalogue_schema_attach', 'catalogue_schema_leave_out')
+                   ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            except (ValueError, TypeError):
+                d["payload"] = {}
+            out.append(d)
+        return out
+
+    def append_catalogue_scope_baseline(self, slug: str, *, baseline: dict, survey_at: str,
+                                        author: str, kind: str = "first",
+                                        declared_at: str | None = None) -> None:
+        slug = self._normalize_slug(slug)
+        if not author:
+            raise ValueError("a catalogue scope declaration needs an author")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO catalogue_scope_baselines
+                   (database_slug, kind, baseline_json, survey_at, declared_by, declared_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (slug, kind, json.dumps(baseline), survey_at or "", author,
+                 declared_at or datetime.utcnow().isoformat()),
+            )
+
+    def list_catalogue_scope_baselines(self, slug: str) -> list[dict]:
+        """Every declaration baseline for a database, oldest first."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, database_slug, kind, baseline_json, survey_at,
+                          declared_by, declared_at
+                   FROM catalogue_scope_baselines WHERE database_slug = ? ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["baseline"] = json.loads(d.pop("baseline_json") or "{}")
+            except (ValueError, TypeError):
+                d["baseline"] = {}
+            out.append(d)
+        return out
 
     def latest_measured_database_survey(self, slug: str) -> dict | None:
         """Newest row of `slug` that `is_measured_survey` accepts, or None.
@@ -10672,7 +11056,7 @@ class ProjectRegistry:
 
     def database_exists(self, slug: str) -> bool:
         """Check if a database entity exists."""
-        return self.get_database(slug) is not None
+        return self.get_database(slug, allow_unreadable=True) is not None
 
     def _row_to_database(self, row: sqlite3.Row) -> DatabaseEntity:
         """Convert a database row to a DatabaseEntity dataclass.
@@ -10726,8 +11110,23 @@ class ProjectRegistry:
                     "encrypted storage for database slug=%r: %s", d.get("slug"), exc
                 )
             d["db_password"] = plaintext
+            d["credential_status"] = "ok"
         else:
-            d["db_password"] = decrypt_db_password(raw_password)
+            try:
+                d["db_password"] = decrypt_db_password(raw_password)
+                d["credential_status"] = "ok" if raw_password else "none"
+            except ValueError as exc:
+                # Per-row tolerance: one undecryptable row must not take down
+                # every list. Never the password, ciphertext or exc text (it
+                # names the key env vars): slug and class name only, once.
+                d["db_password"] = ""
+                d["credential_status"] = "unreadable"
+                slug = d.get("slug") or ""
+                if slug not in _UNREADABLE_LOGGED:
+                    _UNREADABLE_LOGGED.add(slug)
+                    log.warning(
+                        "registry: stored credential for database slug=%r is unreadable (%s); "
+                        "listing it as 'credential unreadable'", slug, type(exc).__name__)
         # Filter to only known DatabaseEntity fields
         known = {f.name for f in dataclasses.fields(DatabaseEntity)}
         return DatabaseEntity(**{k: v for k, v in d.items() if k in known})

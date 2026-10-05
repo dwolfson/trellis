@@ -194,7 +194,7 @@ async def health_chart(slug: str) -> dict:
 # ── database charts ───────────────────────────────────────────────────────────
 
 def _database_or_404(registry: ProjectRegistry, slug: str) -> None:
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
 

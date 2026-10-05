@@ -34,14 +34,19 @@ import {
   getDispositionHistory,
   getWorkList,
   listAnalyses,
+  listInvestigationMembers,
   listWorkLists,
   promoteWorkList,
   publishWorkList,
+  fetchWorkListCsv,
   requireKind,
   setDisposition,
 } from '/static/re-api.js';
+import { saveCsv } from '/static/next/download.js';
 import { ago, daysSince, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
 import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
+import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
+import { shortName } from '/static/next/investigation-picker.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 
 /* ── Cell state ─────────────────────────────────────────────────────────
@@ -100,6 +105,15 @@ function kindOf(wl) {
     throw new Error(`work list ${wl && wl.slug ? `'${wl.slug}' ` : ''}has no entity_type`);
   }
   return k;
+}
+
+/** The open list's kind, in words, for the title line ("9 databases"). An
+ *  unknown kind says "resources" rather than guessing one. */
+function kindPlural(wl, n) {
+  const names = { repo: ['repo', 'repos'], database: ['database', 'databases'],
+                  filesystem: ['file system', 'file systems'] }[wl && wl.entity_type];
+  if (!names) return n === 1 ? 'resource' : 'resources';
+  return n === 1 ? names[0] : names[1];
 }
 
 /** A question Context records (context-recorded.js): the SAME state word the
@@ -194,7 +208,57 @@ export const grid = {
   bgErrors: new Map(),   // slug -> why its background read FAILED (not cancelled)
   ctx: null,             // the pane context, for actions raised from a popup
   contexts: new Map(),   // slug -> enrichment map, for questions Context records (context-recorded.js)
+  scope: null,           // the LINKED investigation's scope, read live: { slug, name, inScope: Set, error }
 };
+
+/* ── The linked investigation's scope ───────────────────────────────────
+ *
+ * REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS.md §2. A list tagged with an
+ * investigation shows, live, how many of its members are in that scope. It is
+ * read from `list_investigation_members` every time the pane opens or an add
+ * lands, and never stored: the list and the scope are two tables, so this is a
+ * copy, not a share, and if someone removes a member from scope the line
+ * becomes "6 of 9". Drift shows up; it does not hide. */
+async function loadScope(ctx) {
+  const wl = grid.workList;
+  grid.scope = null;
+  if (!wl || !wl.investigation) return;
+  const slug = wl.investigation;
+  const name = ctx.host?.investigationName?.(slug) || slug;
+  try {
+    const members = await listInvestigationMembers(slug);
+    const kind = kindOf(wl);
+    grid.scope = { slug, name, error: null,
+      inScope: new Set((members || []).filter((m) => m.entity_type === kind).map((m) => m.entity_slug)) };
+  } catch (err) {
+    // Unknown stays unknown: a failed read is not "nothing in scope".
+    grid.scope = { slug, name, error: err.message, inScope: new Set() };
+  }
+}
+
+function renderLinked() {
+  const host = document.getElementById('wl-linked');
+  if (!host) return;
+  const sc = grid.scope;
+  if (!sc) { host.innerHTML = ''; return; }
+  const name = `<span title="${esc(sc.name)}">${esc(shortName(sc.name))}</span>`;
+  if (sc.error) {
+    host.innerHTML = `<span class="text-state-warn">The scope of ${name} could not be read: ${esc(sc.error)}</span>`;
+    return;
+  }
+  const total = grid.workList.members.length;
+  const inN = grid.workList.members.filter((m) => sc.inScope.has(m.entity_slug)).length;
+  const notAdded = total - inN;
+  host.innerHTML = `<span class="tnum">${inN}</span> of <span class="tnum">${total}</span> in scope for ${name}${
+    notAdded ? ` · <span class="tnum">${notAdded}</span> not added` : ''}`;
+}
+
+/** The scope column's words: ink, no glyph, no accent colour. */
+function scopeWord(slug) {
+  const sc = grid.scope;
+  if (!sc || sc.error) return 'scope unknown';
+  return sc.inScope.has(slug) ? 'in scope' : 'not in scope';
+}
 
 /* ── Rendering ──────────────────────────────────────────────────────── */
 
@@ -228,12 +292,13 @@ export async function renderWorkListPane(ctx) {
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(wl.display_name)}</h3>
       <span class="tnum text-caveat text-ink-muted">
-        <span class="tnum">${wl.members.length}</span> resources · ${esc(stage)}
+        <span class="tnum">${wl.members.length}</span> ${esc(kindPlural(wl, wl.members.length))} · <span data-wl-stage-line>${esc(ctx.stageLabel || stage)}’s questions</span>
         ${wl.derived_from ? ` · narrowed from <span class="font-mono">${esc(wl.derived_from)}</span>` : ''}
         ${wl.egeria_guid ? ' · published to Egeria' : ' · not published'}
       </span>
     </div>
     <div id="wl-actions" class="mt-s3 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
+    <div id="wl-linked" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-note" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-progress" class="mt-s2"></div>
     <div class="my-s3 h-px bg-rule"></div>
@@ -251,6 +316,9 @@ export async function renderWorkListPane(ctx) {
   // disagrees with the funnel the rest of the screen is arranged around.
   grid.stageLabel = stage;
   grid.analyses = null;
+  renderActions(ctx);
+  await loadScope(ctx);
+  renderLinked();
   renderActions(ctx);
   renderLegend();
   try {
@@ -280,6 +348,10 @@ function renderActions(ctx) {
   // sentences, and an empty dropdown that means the first three looks
   // identical to a broken one.
   const runnable = analyses.length > 0;
+  const addWording = addActWording({
+    invName: ctx.host?.investigationName?.(ctx.host?.currentInvestigation?.() || ''),
+    count: grid.workList.members.length, selected: n,
+  });
   host.innerHTML = `
     <select id="wl-analysis" ${runnable ? '' : 'disabled'}
       class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
@@ -306,7 +378,7 @@ function renderActions(ctx) {
     <span class="text-ink-muted">${
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
-      : !runnable ? `<span class="text-accent-ink">No analyses are catalogued for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, Understanding and Automate, which are served elsewhere</span>`
+      : !runnable ? `<span class="text-accent-ink">No analyses are catalogued for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
       : n ? `${n} selected` : 'all rows'}</span>
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
       <select id="wl-disposition" ${n ? '' : 'disabled'}
@@ -316,6 +388,14 @@ function renderActions(ctx) {
       </select>
       <button data-act="promote" ${n ? '' : 'disabled'}
         class="cursor-pointer bg-transparent text-accent-ink underline">promote <span class="tnum">${n}</span> →</button>
+      <button data-act="export-csv" class="cursor-pointer bg-transparent text-accent-ink underline"
+        title="Download this work list as CSV: the same columns the Find dialog reads, status_ columns for a reader only"
+        >export CSV</button>
+      <button data-act="add-to-investigation" class="cursor-pointer bg-transparent text-accent-ink underline"
+        title="${esc(addWording.title)}">${esc(addWording.label)}</button>
+      <button data-act="start-from-list" class="cursor-pointer bg-transparent text-accent-ink underline"
+        title="Create an investigation from this list: its name, its description, its members in scope"
+        >${esc(START_LABEL)}</button>
       <button data-act="publish" class="cursor-pointer bg-transparent text-accent-ink underline"
         >${grid.workList.egeria_guid ? 're-publish' : 'publish to Egeria'}</button>
     </span>`;
@@ -324,6 +404,9 @@ function renderActions(ctx) {
   host.querySelector('[data-act="refresh"]')?.addEventListener('click', () => openRefreshPlan(ctx));
   host.querySelector('[data-act="promote"]')?.addEventListener('click', () => promote(ctx));
   host.querySelector('[data-act="publish"]')?.addEventListener('click', () => publish(ctx));
+  host.querySelector('[data-act="add-to-investigation"]')?.addEventListener('click', () => addToInvestigation(ctx));
+  host.querySelector('[data-act="start-from-list"]')?.addEventListener('click', () => startFromList(ctx));
+  host.querySelector('[data-act="export-csv"]')?.addEventListener('click', () => exportCsv());
   host.querySelector('#wl-disposition')?.addEventListener('change', (e) => {
     const value = e.target.value;
     e.target.value = '';
@@ -603,6 +686,7 @@ function renderNarrow(host, wl, qs) {
         <div class="truncate font-mono text-answer text-ink">${esc(slug)}</div>
         <div class="tnum text-provenance text-ink-muted">${idx + 1} of ${members.length} ·
           ${esc(grid.stageLabel || '')}${
+            grid.scope ? ` · ${esc(scopeWord(slug))}` : ''}${
             m.disposition ? ` · ${esc(m.disposition)}` : ''}</div>
       </div>
       <button type="button" data-narrow="next" class="ml-auto cursor-pointer bg-transparent text-ink-muted"
@@ -954,11 +1038,12 @@ function renderGrid() {
             data-col="${i}" title="${esc(q.question)}">
             <span class="tnum">${i + 1}</span></th>`).join('')}
           <th class="p-[6px] text-left font-heading text-ink">Answered</th>
+          ${grid.scope ? '<th class="p-[6px] text-left font-heading text-ink" data-scope-col>Scope</th>' : ''}
         </tr>
       </thead>
       <tbody>
         ${orderedRows(wl.members, qs).map((entry) => entry.band
-          ? `<tr class="wl-band"><td colspan="${shown.length + 3}"
+          ? `<tr class="wl-band"><td colspan="${shown.length + 3 + (grid.scope ? 1 : 0)}"
                class="p-[6px] text-caps uppercase tracking-caps text-ink-muted">
                ${esc(entry.band)} · <span class="tnum">${entry.count}</span></td></tr>`
           : rowHtml(entry.member, shown, qs)).join('')}
@@ -1165,7 +1250,8 @@ click for the latest results">${c.glyph}</button></td>`;
       // cells are old — and needs no interpretation at all.
       staleCount ? `<div class="text-provenance text-state-warn"
         title="Measured more than ${STALE_DAYS} days ago. The dates themselves are on the cells."
-        >${staleCount} stale</div>` : ''}</td>
+        >${staleCount} stale</div>` : ''}</td>${
+    grid.scope ? `<td class="p-[6px] text-ink" data-scope-cell="${esc(slug)}">${esc(scopeWord(slug))}</td>` : ''}
   </tr>`;
 }
 
@@ -1914,6 +2000,44 @@ async function promote(ctx) {
     await renderWorkListPane(ctx);
   } catch (err) {
     note(`<span class="text-state-warn">Could not promote: ${esc(err.message)}</span>`);
+  }
+}
+
+/** After an add or a start: re-read the list's link and scope, repaint. */
+async function afterInvestigationChange(ctx, out) {
+  try {
+    const fresh = await getWorkList(grid.workList.slug);
+    grid.workList.investigation = fresh.investigation;
+  } catch { /* the header reads what it had */ }
+  await loadScope(ctx);
+  renderActions(ctx);
+  renderLinked();
+  renderGrid();
+  note(out.noteHtml);
+}
+
+function addToInvestigation(ctx) {
+  const ticked = grid.selected.size ? [...grid.selected] : null;
+  return addListToInvestigation({
+    list: grid.workList, slugs: ticked, host: ctx.host,
+    onDone: (out) => afterInvestigationChange(ctx, out),
+  });
+}
+
+function startFromList(ctx) {
+  return openStartFromList({
+    list: grid.workList, host: ctx.host,
+    onDone: (out) => afterInvestigationChange(ctx, out),
+  });
+}
+
+async function exportCsv() {
+  try {
+    const { text, filename } = await fetchWorkListCsv(grid.workList.slug);
+    saveCsv(text, filename);
+    note(`Downloaded <span class="font-mono">${esc(filename)}</span>.`);
+  } catch (err) {
+    note(`<span class="text-state-warn">Could not export: ${esc(err.message)}</span>`);
   }
 }
 

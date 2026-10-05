@@ -47,6 +47,17 @@ class MemberUpdate(BaseModel):
     confidence: int | None = None
 
 
+class LinkInvestigation(BaseModel):
+    #: '' unlinks. Anything else must name an existing investigation.
+    investigation: str = ""
+
+
+class AddToInvestigation(BaseModel):
+    investigation: str
+    #: Omit for every member of the list; give a subset for the rows ticked.
+    entity_slugs: list[str] | None = None
+
+
 class PromoteRequest(BaseModel):
     survivors: list[str]
     display_name: str = ""
@@ -167,6 +178,24 @@ async def get_work_list(slug: str) -> dict:
     return wl
 
 
+@router.get("/{slug}/export.csv")
+async def export_work_list(slug: str):
+    """A work list's members as the shared CSV contract, named
+    `re-work-list-<name>-<date>.csv`."""
+    from fastapi.responses import Response
+
+    from resource_explorer.batch_io import export_filename, rows_to_csv_text, work_list_export_rows
+
+    wls = WorkLists()
+    wl = wls.get(slug)
+    if not wl:
+        raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    name = export_filename("work-list", wl.get("display_name") or slug)
+    return Response(content=rows_to_csv_text(work_list_export_rows(wls.registry, wl)),
+                    media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 @router.delete("/{slug}")
 async def delete_work_list(slug: str) -> dict:
     """Remove the list locally. Any Egeria Collection it published stays."""
@@ -196,6 +225,78 @@ async def remove_member(slug: str, entity_slug: str) -> dict:
         raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
     wls.remove_member(slug, entity_slug)
     return wls.get(slug)
+
+
+@router.put("/{slug}/investigation")
+async def link_investigation(slug: str, body: LinkInvestigation) -> dict:
+    """Tag a saved list with the investigation it belongs to (or untag it).
+
+    `work_lists.investigation` was only ever set at save time, and only when an
+    investigation happened to be current; nothing could set it afterwards.
+    """
+    wls = WorkLists()
+    if not wls.get(slug):
+        raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    if body.investigation and not wls.registry.get_investigation(body.investigation):
+        raise HTTPException(status_code=404,
+                            detail=f"Investigation {body.investigation!r} not found")
+    wls.set_investigation(slug, body.investigation)
+    return wls.get(slug)
+
+
+@router.post("/{slug}/add-to-investigation")
+async def add_to_investigation(slug: str, body: AddToInvestigation) -> dict:
+    """Put this list's members (or the ticked subset) in an investigation's scope.
+
+    Each member's `rationale` becomes its `membership_rationale`; a member with
+    none gets "from work list <name>". A member already in scope is SKIPPED,
+    not re-added, because re-adding overwrites the reason it was added for
+    (and the registry call is `keep_existing` besides, a second guard against a
+    race). Nothing is linked here: tagging the list is `PUT .../investigation`.
+    """
+    wls = WorkLists()
+    wl = wls.get(slug)
+    if not wl:
+        raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    if not body.investigation:
+        raise HTTPException(status_code=422, detail="an investigation is needed")
+    reg = wls.registry
+    inv = reg.get_investigation(body.investigation)
+    if not inv:
+        raise HTTPException(status_code=404,
+                            detail=f"Investigation {body.investigation!r} not found")
+    if inv.get("status") not in (None, "", "open"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Investigation '{inv.get('display_name') or body.investigation}' "
+                   f"is {inv.get('status')}, not open")
+    by_slug = {m["entity_slug"]: m for m in wl["members"]}
+    wanted = list(dict.fromkeys(body.entity_slugs)) if body.entity_slugs is not None \
+        else list(by_slug)
+    stray = [s for s in wanted if s not in by_slug]
+    if stray:
+        raise HTTPException(status_code=422,
+                            detail=f"not members of this list: {', '.join(stray)}")
+    kind = wl["entity_type"]
+    in_scope = {(m["entity_type"], m["entity_slug"])
+                for m in reg.list_investigation_members(body.investigation)}
+    added: list[str] = []
+    already: list[str] = []
+    ws_slug = ""
+    for s in wanted:
+        if (kind, s) in in_scope:
+            already.append(s)
+            continue
+        if not ws_slug:
+            ws_slug = reg.get_or_create_working_set(body.investigation)["slug"]
+        reason = (by_slug[s].get("rationale") or "").strip() \
+            or f"from work list {wl['display_name']}"
+        reg.add_working_set_member(ws_slug, kind, s, membership_rationale=reason,
+                                   state="in-scope", keep_existing=True)
+        added.append(s)
+    return {"investigation": body.investigation,
+            "investigation_name": inv.get("display_name") or body.investigation,
+            "added": added, "already_in_scope": already}
 
 
 @router.post("/{slug}/promote")

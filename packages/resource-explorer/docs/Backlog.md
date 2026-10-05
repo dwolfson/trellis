@@ -32,6 +32,20 @@ Not affected (checked): `state.analysisRunFailures`, `state.overview`, the doc-s
 
 Status: logged, not scheduled. The behaviour test should use the harness the stale-rail fix added (`rail-clears-on-change.test.mjs`) as its pattern.
 
+## Small items logged 2026-10-02 (from the Compliance trial, the incidents and the gates)
+
+Each is small and none is scheduled; the owner's decisions are marked.
+
+* **`step_runs` executor label.** On the egeria_docs trial the row for `repo_secret_scan` said executor `local` with an empty `flow_run_id`, although a real Prefect flow run executed it (the inverse of the earlier "prefect means attempted" issue). A real dispatch must be recorded as one, with its flow run id.
+* **The /next Run button gives no feedback**, so the owner clicked it twice and queued a duplicate full Compliance run. Disable it after the click and show queued or running.
+* **No cancel control for a queued run in /next** (only `POST /api/runs/{id}/cancel`, unclaimed rows only).
+* **`/next/` and `/next/index.html` answer with raw 401 JSON.** `RE_PUBLIC_PATHS` lists `/next` as an exact match on purpose (auth.py:108); redirect the two to `/next`, never add a `/next/` prefix.
+* **Stale schedule.** `localhost_docker_coco_ods` has an `index_health` schedule but is not in `databases`, so the scheduler errors on it every cycle. Owner decision: remove it.
+* **A foreign Egeria SurveyReport is invisible in RE.** "Also known to Egeria" lists only RE's own proof rows, so a failed survey run by another client vanishes. Read back Egeria's SurveyReports for the asset and mark each "submitted elsewhere" with Egeria's status and time (design ruling 2026-10-02, medium).
+* **Republish `RepoAssessmentSurvey` to Egeria** after #431: Admin, Egeria Alignment, `reauthor_survey_definitions`, then the link reconciler (not by hand; the link command is not idempotent). A shared Egeria write: peer check and the owner's go first.
+* **A repo-wide guard so no test reaches the shared registry** (branch `re/test-registry-guard`, held: its red evidence is tainted, it exempts CI by `GITHUB_ACTIONS`, and a raw connection with no `search_path` is allowed). Two test runs on 2026-10-02 touched the shared registry or live Egeria by accident; every test command should exclude `requires_egeria` and `live_egeria_writes`.
+* **The Egeria secrets file went missing again** (second time in three days; `resource-explorer.omsecrets` did not exist). `re/reproject-secrets` now rebuilds it at startup; check after the next restart that the collections exist.
+
 ## A per-card database analysis run clobbers every OTHER table's row_count/size_bytes
 
 > **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `e22f9602`, `32409a83`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
@@ -9093,6 +9107,45 @@ database/filesystem asset publishes, and extend `egeria_resync`'s stale-assets s
 databases and filesystems, not only the `projects` table. Until then, a dead database/filesystem
 GUID stays dead until someone manually republishes it.
 
+**Update 2026-10-03, after the Egeria reset: this moves up.** Two databases (`laz_local_adventureworks`,
+`localhost_docker_coco_pharma`) kept reading `is_published: True` against asset GUIDs Egeria no longer held;
+the Alignment scan reported nothing for them because `stale_assets` covers repos only. Only a manual
+`recheck_all_linkages` (databases only, owner-approved, after a peer check) flagged them stale. Design's ask
+(2026-10-03): the resync pass should re-verify flagged and published database rows against Egeria on every
+pass, as it now does for repositories, and the same for filesystems.
+
+**Status 2026-10-04: scan and flag fixed, PR #453** (`DB-FS-ASSET-SELFHEAL-IMPLEMENTED.md`). The scheduled pass re-verifies and flags (never deletes) database and filesystem GUIDs. Still not built: the outbox enqueue kind for database and filesystem asset publishes, and live proof that `ClassificationExplorer.get_element_by_guid` returns the expected shape for those asset types (a surprise shape fails safe as 'undetermined'). The registry held no filesystems on 2026-10-03, so the filesystem half has only stub tests.
+
+## A failed "Find databases" load shows "Try again" and no reason (2026-10-03, post-reset walk)
+
+Right after the Egeria reset, opening Find databases showed the Saved sources tab with no count and only a
+"Try again" button; the second try loaded both saved sources and all 15 of their registered databases (13 and
+2). So nothing was lost and the first failure was transient. The defect is that nothing said why: `loadServers`
+(`db-server-discovery.js`) sets `view.status` to the failure text and `render` prints it under the tabs, yet the
+screenshot showed no line there. Not diagnosed: whether the text was cleared by another handler, or the call
+failed in a way that produced an empty message. Reproduce by making `/api/db-servers/` fail once, check the
+message appears, and keep the failure text until the next successful load.
+
+## Dead outbox rows cannot be purged, and the retention purge never touches them (2026-10-03, post-reset check)
+
+After the reset the Publish Queue held 10 dead rows, all `collection_membership` for the investigation
+`egeria-understanding`, all the same "collection not found" error (see the "outbox retries a permanent target
+not found" entry). `purge_outbox_completed` deletes only `status='done'` rows (`registry.py` ~:7900), so these
+stay until a person acts, and the only control found is per-row retry, which would fail again. Needed: a way to
+discard a dead row deliberately (with a reason, and a visible record that it was discarded), or have the repair
+that clears a stale investigation GUID also close the dead rows that named it. The investigation itself now has
+no Egeria Project, which is the owner's decision (Alignment, "Investigations with no Egeria Project").
+
+## Do the 1,880 `done` outbox rows hold pre-reset GUIDs that a republish would trust? (2026-10-03, open question)
+
+`egeria-operations.md` §8 says a `done` row asserts a completed publish, `apply_element` short-circuits on a
+recorded GUID and a `done` row is never claimed again, so after a reset those rows point at elements that are
+gone. On 2026-10-03 the outbox held 1,880 `done` rows. `registry.reopen_outbox_row` (~:4614) exists to reopen a
+row instead of minting a second one, but who calls it, and whether it fires for these rows when a repo is
+republished, is not checked. Answer before the next republish: republish ONE repo and prove, from Egeria, that
+its annotations were written (not just that the outbox says `done`). If they were not, the fix is to reopen or
+retire `done` rows whose recorded GUID no longer resolves, in the same pass that clears stale assets.
+
 ## Egeria's projected secrets file doesn't survive a redeploy (2026-09-30, native survey slice)
 
 A real submission on adventureworks failed with `FATAL: role "default" does not exist` — traced
@@ -9120,6 +9173,8 @@ Two follow-ups (project owner decision, 2026-09-30 — not this slice, not tonig
 A same-slice fix already adds a Run precondition that checks for the projected collection before
 submitting and refuses with a clear message if it's missing — this backlog item is only the two
 follow-ups beyond that (auto-heal, and the docs line), not the immediate symptom.
+
+**Done 2026-10-02:** follow-up 1 (`database reproject-secrets`, plus automatic projection at startup and on each resync pass) — `docs/design-notes/implemented/REPROJECT-SECRETS-IMPLEMENTED.md`. Follow-up 2 (the setup-docs line) is not done.
 
 ## `database update-credentials` takes the password as a bare CLI argument (2026-09-30, native survey slice)
 
@@ -9195,3 +9250,316 @@ sidebar's filter box under one resource-type tab (Repos, DBs, FS) and then switc
 different tab leaves the old string in the box, filtering a list it was never typed against.
 Small UI fix: clear (or at least re-scope) the filter input's value when the active sidebar tab
 changes.
+
+## The outbox retries a permanent "target not found" eight times before dead-lettering it (2026-10-03, owner's pre-reset check)
+
+Before an Egeria reset the owner's Publish Queue showed 10 dead rows, all the same error: attaching a
+member to a collection whose GUID Egeria no longer holds (HTTP 404, `OMAG-REPOSITORY-HANDLER-404-007`,
+wrapped by pyegeria as a 400 `PyegeriaNotFoundException`). The outbox cannot tell that from an outage,
+so each row burned its 8 attempts with exponential backoff and then needed a human. A 404 on the
+*referent* is permanent: the investigation's stored Egeria GUID is stale, which is exactly what
+`egeria_resync`'s `stale_investigation_guids` finding reports.
+
+Fix, in `egeria_outbox.drain_outbox`: classify a not-found on the referent as non-retryable, dead-letter
+it on the first attempt with a plain-language reason, and flag the owning investigation's linkage as stale
+(`flag_vanished_publishes` already writes that kind of flag). Open points: confirm all 10 rows named the
+same collection GUID, and whether the purge removes dead rows (the retention purge only removes `done`).
+
+## Run the resync scan, and read the Publish Queue, before and after every Egeria reset (2026-10-03, runbook)
+
+The owner resets Egeria every few days. `egeria-operations.md` §8 now has a "before the reset" checklist
+(stop RE, empty the outbox, read any dead rows' errors) because the reset erases the Egeria state that
+explains them. Its §2.3 repair table lists 8 steps; `REPAIR_STEPS` in `egeria_resync.py` has 9
+(`flag_vanished_publishes` is missing from the table). Bring the table back in line with the code, ideally
+by a test that fails when they differ.
+
+## Resource controls: scope buttons still read "＋ scope" / "− scope" (2026-10-03, #445 walk)
+
+The owner's walk of #445 passed five of design's six checks. Check 5 (the grouped Select bar) is partial:
+`app.js` `selectActionsHtml` (~:2272, :2275) still says "＋ scope" / "− scope", where
+`REPLY-DESIGNER-RESOURCE-CONTROLS-PLACEMENT.md` §5 rules "＋ add to <investigation>" / "− remove from
+<investigation>". "save as work list" also lacks the ruled ellipsis and keeps the accent border. The
+ruling does not say what the buttons read when no investigation is selected (they are disabled then):
+ask design for that one line before the slice.
+
+**Status 2026-10-04: mostly fixed, PR #451** (`SCOPE-WORDING-IMPLEMENTED.md`). Wording, truncation, the ellipsis and the visible 'no investigation selected' text are in and walked. Still open: with no investigation selected design wants '＋ add to an investigation…' ENABLED and opening a picker (open investigations plus 'start a new one', REPLY-DESIGNER-WORK-LISTS-VS-INVESTIGATIONS §4); no picker exists, so it stays disabled. That picker is design's W1 item 4.
+
+**Status 2026-10-04: the picker is built, PR #458** (`W1-PICKER-AND-ACTS-IMPLEMENTED.md`): with no investigation selected the add button is enabled and opens the picker, as design ruled; W1-C (#459) and W1-B (#460) finished the rest of work-lists-vs-investigations §1, §2, §4 and §5. Design's W1 item 4 is done.
+
+## CSV import: the confirm re-offers rows already in the investigation, and re-confirming overwrites their state (2026-10-03, #441 walk)
+
+Re-importing the same file previews "0 new · 3 already registered", which is right, but the confirm still
+offers "Add these 3 to <investigation>". `fileSelection()` (`db-server-discovery.js` ~:794) counts every
+already-registered line whenever an investigation is chosen, deliberately, so a scope export can be
+imported into a second investigation (the walk's check 4 passed). It never subtracts rows already in
+*that* investigation. Clicking is not a duplicate (`add_working_set_member`, `registry.py` ~:9182, is an
+upsert) but its `DO UPDATE` overwrites `membership_rationale` and `state`, silently resetting anything the
+owner set since.
+
+Fix: split the preview into "already in <investigation>" (not counted, not offered) and "registered, not
+yet in it" (counted). Also consider making `add_working_set_member` keep an existing member's rationale and
+state, which fixes it for every caller but touches shared registry code.
+
+**Status 2026-10-04: fixed, PR #452** (`CSV-RECONFIRM-MEMBERS-IMPLEMENTED.md`), walked on 8810. Only the CSV import passes the new `keep_existing`; the other callers of `add_working_set_member` still overwrite, deliberately.
+
+## Findings supersession: what is not done (2026-10-03, `FINDINGS-SUPERSESSION-IMPLEMENTED.md`)
+
+- `scripts/repair_findings_supersession.py` exists and has not been run against anything real; applying
+  it to the shared registry is the owner's decision after a peer check (64, 91 and 50 stale rows were
+  counted for telemetry, provenance and SLA on 2026-10-02).
+- 15 single-call finding kinds are still not opted in (the audit table in that note).
+- `architecture_recovery` needs run-keyed supersession using `run_label`; a plain flag would retire sibling
+  calls' still-valid rows.
+
+## Deployment docs say nothing about `RE_DB_CREDENTIAL_KEY` (2026-10-03, credential-safety slice)
+
+Stored database passwords are encrypted with a key from the environment, and a registry restored or
+moved without the same key cannot read them: the list marks those rows "credential unreadable" and
+disables their runs (`LIST-TOLERATES-BAD-CREDENTIAL`). No deployment document names the variable, where
+it must live, or that losing it makes every stored password unrecoverable. Add that to the deployment
+guide and to the reset checklist in `egeria-operations.md`. (The code reads `RE_DB_CREDENTIAL_KEY`, then falls back to
+`TRELLIS_DB_CREDENTIAL_KEY`: `credential_crypto.py` ~:36.)
+
+Also after the next Egeria reset: the first bullet of the small-items list above ("Republish
+`RepoAssessmentSurvey`") is covered by bootstrap's unattended heal, which re-authors every definition
+whose canary is missing; do not also run `reauthor_survey_definitions` by hand (`egeria-operations.md`
+§2.1).
+
+## `DatabaseAssessmentSurvey` has no authored document, so its reconciler checks it against a guessed chain (2026-10-03, post-reset checks)
+
+After the 2026-10-03 Egeria reset, `scripts/reconcile_database_survey_definition_links.py --dry-run` printed
+"no authored document found for DatabaseAssessmentSurvey — reconciling against a linear chain derived from
+its step list, which would treat any branch as stale" (`survey_definition_reader.py` ~:1125) and reported
+`kept 0 edge(s)` for it, while `DatabaseScoutingSurvey` and `DatabaseAnalysisSurvey` kept 2 and 3. The
+dry run removes nothing; the risk is a real run on a definition that does branch, which would delete the
+branch's edges as stale. Not diagnosed: whether this predates the reset (it reads like a standing gap, not a
+heal failure), and whether a definition with 0 edges is a single step or a missing chain.
+
+Fix: author the `DatabaseAssessmentSurvey` document so the reconciler diffs against what was authored, or have
+the reconciler refuse to remove anything on a definition with no authored document.
+
+## `sql_analysis` has no Survey Type in `database_survey_types.csv` (2026-10-03, post-reset checks)
+
+Both database reconcilers warn: "DATABASE_STEP_REGISTRY step(s) with no Survey Type reference in
+database_survey_types.csv: ['sql_analysis']". The step is registered in
+`surveyors/database/survey_definition_adapter.py` (~:644, with no Survey Type) and runs RE's own SQL analysis,
+but the CSV that the database survey definitions are generated from (`generate_database_survey_definition.py`,
+"edit the CSV and regenerate") has no row for it, so it is in no authored definition and no Question term
+scopes it. Decide whether it needs a row (and which Question it answers) or is deliberately outside the
+generated definitions, and say so in the CSV's header if the latter. Likely the same gap as the item above.
+
+## Publish starts Egeria surveys and records no proof row (2026-10-04, post-reset watch by the PR/CI session)
+
+The database "Catalog & Survey in Egeria" path (`POST /api/databases/{slug}/publish`) calls
+`_initiate_survey` for the server and the database (`egeria_database_surveyor.py` ~:562-585) and only
+`log.info`s the engine-action GUIDs. `record_native_survey_submission` (`registry.py` ~:6712) is called only from
+`native_survey_run.py` (~:640, ~:645), so a survey started from Publish has no row, never shows in the
+native-survey list, and the UI can say it started with nothing to prove it. Fix dispatched 2026-10-04
+(`re/publish-records-survey-actions`): record the initiated actions through the same proof path, and make the
+"started" wording derive from what was recorded.
+
+**Status 2026-10-04: fixed, PR #455** (`PUBLISH-RECORDS-SURVEY-ACTIONS-IMPLEMENTED.md`). Not covered: see "Other Egeria surveys are started without a proof row" below.
+
+## The classic "Run Survey" confirm does nothing when browser dialogs are suppressed (2026-10-04, owner's marquez walk)
+
+The owner's first click on Run Survey for the never-surveyed `marquez` did nothing: no request reached 8810, and
+the likely cause is the `window.confirm()` under "Try Egeria first" being suppressed or dismissed without a
+visible sign. The retry worked (local survey ok, then publish and catalog ok). A `confirm()` that silently
+no-ops is invisible: replace it with an in-page confirmation (as /next does) or at least show a message when the
+call is skipped. Found only because the PR/CI session was watching requests; not diagnosed beyond that.
+
+## The first classic publish of `coco_pharma` after the reset did not write a GUID; cause unknown (2026-10-04)
+
+The owner reported "published coco_pharma from classic, it worked" on 2026-10-03 evening, but read-only checks at
+~02:20Z showed `egeria_asset_guid` still the dead `651d96af…`, no new native survey run and no activity row. The
+next publish (15:22Z) did work: a "link is stale" row, then the GUID moved to `17f0a963…` (exists) and the catalog
+write succeeded, so the stale-GUID path is fine. What the first attempt did is unknown (the UI reported success
+with no proof row, the failure this repo keeps hitting). Separately, `databases.status` stays `error` from RE's
+LOCAL connect ("password authentication failed for user surveyor" on `localhost (::1):5442`) although Egeria's own
+survey with the same projected credential via `host.docker.internal:5442` succeeded. Owner's rule: the Postgres
+on 5442 should accept the surveyor credentials and the one on 5432 uses `dwolfson`. So suspect an IPv6/`pg_hba`
+difference for RE's local connect, not a wrong password; unverified.
+
+## `/next` has no database Publish control (2026-10-04, parity gap, tagged for design)
+
+The database "Catalog & Survey in Egeria" / "Re-survey in Egeria" Publish button exists only in the classic UI
+(`static/index.html` ~:13379-13391 and its modal ~:1127, posting to `/api/databases/{slug}/publish`); nothing in
+`static/next` calls it. After a platform reset it is the only way to re-catalogue a database, so `/next` cannot
+yet do what a reset requires. Related to "Wire Catalog and Survey for one-click execution" above. Design
+question: where the control lives in /next (Curate's catalogue scope tree, the header, Survey & analyses), and
+what it says while publishing, with the Publish-proof-row fix above as the source of its status words.
+
+## Other Egeria surveys are started without a proof row, and the native-survey list hides the server survey (2026-10-04, #455 builder)
+
+PR #455 records the surveys that Publish starts. These still start surveys and record nothing:
+`scheduler.py` ~:780 (`trigger_survey_by_guid` for a database, no `step_runs` row),
+`surveyors/database/survey_definition_adapter.py` ~:275 (what it persists was not checked), the repo equivalents
+(`repo_survey_definition_adapter.py` ~:5150 and `egeria_publisher.py` ~:480-515), `EgeriaDatabaseSurveyor.trigger_survey_by_guid`
+(~:592, takes no registry), and `hybrid_filesystem_surveyor.py` ~:66 (a different class, not inspected). The hybrid
+database surveyor now records but passes no `submitted_by`, so those rows carry an empty identity. Separately,
+`native_survey_rows` lists only the "PostgreSQL Relational Database" process, so the server-survey row Publish now
+records (and a discovered Survey Definition process row) is stored and swept but never listed. Also seen, not
+changed: `_initiate_native_survey` calls `asyncio.get_event_loop()` inside a worker thread and works only because the
+route sets a loop.
+
+## Egeria 6.2 reuses survey annotations: what it means for RE (2026-10-04, from the egeria-workspaces PR notice)
+
+A coming egeria-workspaces PR says Egeria 6.2 reuses annotations when a repeat survey finds an unchanged resource, so
+one annotation is reported by many survey reports, and the annotation bean's single `fromSurveyReport` property
+becomes the list `fromSurveyReports` (the Portal's Tech Catalog handler is being switched to it). RE does not read
+that property: a grep of `packages/resource-explorer` finds no `fromSurveyReport`, and the read-back takes
+annotations from the report side (`egeria_survey_reader.annotations_from_report` reads `reportedAnnotations` of
+`get_asset_by_guid(report_guid, graphQueryDepth=1)`; `native_survey_annotations` is keyed on report GUID plus
+annotation GUID). So the rename needs no RE change. Not checked, and worth one look after the first repeat native
+survey of an unchanged database on a 6.2 Egeria: (1) the new report's `reportedAnnotations` still lists the reused
+annotations (if it lists only NEW ones, RE would store 0 and `derive_native_state` could read a clean repeat as
+empty); (2) any RE code that counts or de-duplicates by annotation GUID alone, not by report plus GUID; (3) whether
+the recreated Egeria is already 6.2: the jump from 91 to 318 annotations on `coco_pharma` after the reset
+(2026-10-03) may be the content pack or this change, and nobody has compared the types. pyegeria's reading of
+`fromSurveyReports` is a separate question for the egeria-python repo.
+
+**Update 2026-10-04: measured, annotation reuse did not fire.** The platform reports "Egeria OMAG Server Platform
+(version 6.2-SNAPSHOT)" and runs the local image `egeria-quickstart-platform:local`, built 2026-10-03 13:46 CDT, about
+two hours before the reset; the previous image was overwritten, so what ran before is unknown. A repeat native survey
+of the unchanged `marquez` (report `d66412c4`, 17:50Z) against the first (`ba7634bb`, 15:29Z) produced 49 stored
+annotations in both, identical type, summary and step, with ZERO shared annotation GUIDs: Egeria created 49 new
+annotations and reused none. RE read back the full report (stored equals recorded). The `coco_pharma` element holds 636
+associated annotations, which is two surveys of 318 each with nothing reused. Check (1) above (a report listing only
+reused annotations) is therefore still untested because the case never occurred; check (3) is answered by the next
+entry, not by reuse. To pin the build down, record the commit the image was built from.
+
+## `coco_pharma` was deliberately extended from 7 schemas to 29; RE should have surfaced the change and did not (2026-10-04, CORRECTED twice the same day)
+
+**Corrections.** This entry first read the jump from 61 to 266 tables as a schema filter the reset erased (PR #457), then
+as a change "nobody chose". Both were inferences and both were wrong. Cause, from the owner and read-only evidence: the
+Coco data owner (Mandy Chessell) extended `coco_pharma` deliberately as the Coco scenarios grew. Her commit `250cb8a8`
+("Add databases and Airflow DAGs for Coco data mesh", 2026-10-03 19:33 +0100, 602 files) adds 22 schema SQL files under
+`compose-configs/egeria-quickstart/docker-entrypoint-initdb.d/data/coco_systems/coco_pharma/` (`aus_inventory`,
+`austin_haz_mat`, `ca_payroll`, `coco_expenses`, `coco_haz_mat`, `coco_hrim`, `coco_inventory`, `coco_ledgers`,
+`coco_products`, `cocopages`, `ed_mfg_control`, `eddepot01`, `global_crm`, `kcdepot01`, `manufacturing_planning`,
+`mfctrl9482`, `nl_payroll`, `procurement01`, `sec_admin`, `uk_payroll`, `winch_mfg_control`, `winchdepot01`: exactly the
+22 schemas the survey gained), and arrived in dwolfson/egeria-workspaces as PR #598 (`mandy-chessell/oak2026`), merged
+2026-10-03 13:36 CDT. The platform image was built 13:46 CDT, the container recreated 15:36 CDT, and the new tables'
+files in Postgres were written 20:29 to 20:51 UTC the same day. An earlier commit `f4c6725d` (2026-09-27, "New Coco
+database fore digital products") is a different set of databases.
+
+What the measurements establish: all 79 recorded surveys of `localhost_docker_coco_pharma` (2026-09-02 to 10-03) saw at
+most 8 schemas, 61 tables and 479 columns, including four run as the superuser `egeria_admin`, so credential visibility
+does not explain it; `surveyor` has USAGE on 28 schemas and none on `demo` and `demo_auth`, which the old set included,
+so the old set does not track its grants; the old 61 was 58 base tables plus 3 views, the new 266 is 263 base tables
+plus 3 views (58 + 205), matching the native survey (29 schemas, 266 tables, 318 annotations: 266 table, 29 schema, 22
+column, 1 database).
+
+What it shows for RE: an intentional extension of a database RE tracks changed what Egeria's survey measures (it cannot
+be limited: every non-system schema is surveyed) and what the JDBC cataloguer would create, and RE did not surface it.
+Nothing on screen said "22 schemas are new since you last looked". The live element's connection is configured with only
+`databaseName`; `databaseSchema` is a recognised property that nothing sets. Egeria's catalogue also holds two table
+counts for this one database (61 in RE's own SurveyReport on the element, 266 from the native survey), and `surveyor` can
+SELECT only 208 of the 266 relations (25 of 29 schemas), which may limit column profiling (22 column annotations in both
+surveys); neither was looked into. Owner's pending 7-versus-29 question: 29 is the status quo and now the intended
+state; declaring a smaller scope would be a new decision to leave some of the new schemas out.
+
+Design consequences, recorded for the Curate scope slice and the next designer round:
+1. Nodes that appear after a scope was declared read "new since your scope was declared · undecided" on the scope tree,
+   and the commit's manifest lists them as "N new schemas not in your scope" (in the slice).
+2. A medium design row, not in the slice: the three views of the same change should agree, the scope tree's "new since",
+   Understanding's "since the last run" sentence, and Automate's change subscriptions, citing the source commit when
+   the change traces to one (the A5 git-as-provenance idea applied to data).
+3. Process lesson (the architect's): when a measurement shows a change in something people own, the next step is to ask
+   who changed it, not to name a cause.
+This remains the concrete example for `ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md` and
+`REPLY-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md`.
+
+## W1 is built; what is left of the work-lists-vs-investigations ruling (2026-10-04)
+
+W1-A (#458), W1-C (#459) and W1-B (#460) cover design's §1, §2, §4 and §5. Left: §3, the investigation page's
+comparison grid and its "work lists: …" link back to its benches (design's W2). Known limits recorded by the builders:
+`work_lists.investigation` holds ONE investigation, so a list links to one at a time; there is no UI to tag an existing
+list by hand (only "Start an investigation from this list…" and the new PUT route do it); W1-C's special case (clicking
+Investigation on a linked list opens that investigation's Scope) therefore fires only for lists saved while an
+investigation was current; the sidebar's "Scope · N" counts every kind but the In scope chip it sets filters repos only,
+so on a database view the click changes nothing visible; the server still accepts the old `work_list` act action though
+no UI offers it, and the old report and member-list acts' to-do belongs in `WorkItemList` (design: separate ask, not
+built); `SPEC-REPORT-ACTS.md`, `ReportActs.dc.html` and `Report.dc.html` still say "add to work list". None of W1 has
+been run in a browser by its builders; the owner walked A and C on 8810 (pass), B is not walked yet.
+
+## "Add these to <investigation>" is hard to find from a finding's numbers (2026-10-04, design row for the next designer round)
+
+Owner's walk of W1-A on 8810: the member-list act "add to <investigation>" works, but it is reachable only through
+Assessment or Analysis "the numbers behind this ›", the right-column count link, then the Members rail, and only
+`cve_scan`, `manifest_parse`, `architecture_*`, symbol and data-file analyses have readers (`stage_page._opens_for`).
+The owner first looked under By analysis and in Scouting answers, where no member lists exist; Scouting's "numbers
+behind this" tables never open members. Not a build defect. Design's framing (the four-level model: resource,
+container, member, field): a count on any stage that counts members should open the same Members rail with the same
+acts, and a database's schema and table counts on Scouting are member counts too, which is also what the Curate scope
+tree wants to show. Design is folding it into its reply handling for
+`ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES.md` instead of a new ask. (`BACKLOG-TRIAGE-2026-09-30.md` is a dated
+snapshot with fixed counts, so this row lives here, not there.)
+
+## The CI `test` job's 30-minute cap cancelled two otherwise-green runs on 2026-10-04 (2026-10-04)
+
+`.github/workflows/resource-explorer.yml:50` sets `timeout-minutes: 30`. Of the 22 most recent push-run `test` jobs,
+20 took 15 to 22 minutes (the full-suite step 12.7 to 19.6), and two ran to the cap: main `974ac3e0` (01:48Z, 27.8 min
+in the suite step) and W1-A's `547110b4` (19:23Z, 27.4 min; 7626 passed, 0 failed, cancelled during Prefect
+temporary-server teardown, "Stopping temporary server on http://127.0.0.1:8101"). A re-run passed. No steady slowdown
+shows, so it reads as an intermittently slow runner or a slow teardown; which one is not known (the logs need
+authentication, per-test durations were not compared). A false red costs a re-run of about 20 minutes. Options:
+raise the cap to 45; or investigate whether teardown hangs. Owner's call pending.
+
+## Curate catalogue scope, slice A: what the owner's first look on `coco_pharma` found (2026-10-05, 8810 at 074869f0)
+
+PR #467 is live. Defects (small slice A2, no designer needed): (1) the tree shows 8 schemas and 61 tables because it
+reads RE's own LOCAL survey of 2026-10-03, which is credential-scoped (the page says "sees 6 of 8 schema(s), SELECT on 3
+of 61 relation(s)") and older than the 22 schemas Mandy added, so 21 of the 29 schemas are not on screen and "new since
+your scope was declared" cannot flag them; (2) the header reads "Egeria's latest survey: not measured yet" although the
+post-reset native survey (report `03b908a5`, 29 schemas, 266 tables) exists: the builder read `database_surveys` rows with
+`source = egeria`, and native surveys live in the native-survey rows (`step_runs`, `native_survey_annotations`); (3) there
+is no select-all, so declaring 29 schemas takes 29 clicks (needs "catalogue all schemas" and "all except…"); (4) the
+column title "Name" should read "Schema / table"; (5) the STATE column is cut off at the right edge (not established
+whether the table scrolls); (6) the "proposed: leave out · no writes since 09-30" rule fired on `coco_ods`, `eu_sales`,
+`target_sales` and `us_sales` from two surveys three days apart, which shows dormant, not unimportant.
+
+## The scope tree should show reused facts with an as-of date, an activity word and honest staleness (2026-10-05, owner)
+
+Owner: the facts a steward needs (row counts, size, whether a table is active) are results RE and Egeria have ALREADY
+produced (the stored survey annotations, e.g. a table annotation's tableSize and row counters), so reuse them rather than
+query Postgres again. Every number carries its source and as-of date, because `pg_catalog` statistics lag: `reltuples` and
+`n_live_tup` update on analyze or vacuum, and the write counters are in memory and reset on crash recovery. Measured on
+2026-10-05 (read-only): in `coco_pharma` the 7 old schemas (57 tables) show 0 live rows and 0 writes in `pg_stat`, while
+RE's own survey estimated about 3,413 rows in `coco_sus`, so for those tables "no writes" only means none since a reset;
+the 22 newly loaded schemas (205 tables) show 15 to 193 rows each and the same number of inserts, so counters do mark
+recent loading. Postgres keeps no per-table "last write" time; the usable signal is the change in counters between two
+surveys. Proposal: rows ("estimate" or "counted"), size, writes with the counter window stated ("12 writes since 10-03,
+window 1 day"), and an activity word, active / dormant / can't tell, where "dormant" requires a known window of at least
+a threshold (30 days suggested, owner to set) and otherwise reads "can't tell: counters only cover N days". The "no
+writes since" proposal must carry the same window rule.
+
+## Choosing among hundreds of tables: filter, sort and decide by criterion (2026-10-05, owner; design question)
+
+With hundreds of tables, and columns, a per-row choice does not scale. Owner: filters and sorts for tables (and columns),
+and decisions on a group that fits a criterion, for example "catalogue every table with Sales in its name". Open question
+for the designer: is a rule a stored, signed, dated object in the scope record (so a table that arrives later and matches
+is picked up and shown as matched by that rule), compiled to plain names at commit because Egeria's include and exclude
+lists match exact names only? Select-all and "all except…" are the degenerate case of the same control.
+
+## Cataloguing is incremental over time, not a one-time operation (2026-10-05, owner; design question)
+
+Users add schemas and tables as needs grow; the scope is a living record and every commit is a diff (design's §3 already
+says so). Owner wants that explicit in the drawing, including "new since your scope was declared" arriving on its own
+(slice A has the row; it needs the native-survey source above to see new schemas at all) and a rule-matched arrival (above)
+distinct from an unmatched one.
+
+## Decide earlier, finalise in Curate: should earlier stages propose or record "worth cataloguing"? (2026-10-05, owner; design question)
+
+Owner: some of the decisions about what to publish could be made in earlier stages (Scouting, Discovery, Assessment,
+Analysis), with Curate finalising and adjusting them instead of deciding from scratch. Design question: where does an
+earlier stage record such a decision, as a proposal from measurements or as a person's verdict, and how does Curate show
+its provenance? Related to design's rule that only measurements that decide alone may propose.
+
+## The Portal Overview reads `error_count` on RE's SurveyReports (2026-10-05, Portal session FYI)
+
+The Portal's Overview classifies survey reports by outcome: RE's reports ("Survey: <name> @ <host>") count as completed
+only when their `additionalProperties` carry `error_count=0`; the database reports record only table and column counts, so
+they show as "unknown outcome". Writing an `error_count` on those reports would make the Overview pick them up with no
+Portal code change.
+

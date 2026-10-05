@@ -9,9 +9,24 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from resource_explorer.credential_crypto import (
+    CREDENTIAL_UNREADABLE_REASON,
+    CredentialUnreadableError,
+)
+
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _get_database_for_use(registry, slug: str):
+    """get_database for a route that may CONNECT with the stored credential:
+    an unreadable credential is a clear 409 for this database only, never an
+    empty-password connect and never a pass-shaped result."""
+    try:
+        return registry.get_database(slug)
+    except CredentialUnreadableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 class DatabaseSummary(BaseModel):
@@ -37,6 +52,14 @@ class DatabaseSummary(BaseModel):
     egeria_server: str = ""
     egeria_user: str = ""
     group_slug: str = ""
+    # "ok" | "none" | "unreadable" — a real marker from the registry, never the
+    # password. "unreadable" = a credential is stored but cannot be decrypted;
+    # `credential_reason` is then the fixed, secret-free display string.
+    credential_status: str = "none"
+    credential_reason: str = ""
+    # UTC ISO seconds of the last recorded credential change; None = before
+    # this was recorded.
+    credential_changed_at: str | None = None
     # 'undecided' when nobody has ever decided, same convention
     # `ProjectSummary.disposition` (projects.py) already uses — populated
     # once `repo_dispositions`' PK generalized to (entity_type, entity_slug)
@@ -70,6 +93,10 @@ class DatabaseSummary(BaseModel):
     # the same row it already reads for every other resource type — a repo or
     # filesystem row simply never sets this field.
     credential_capability: dict | None = None
+    # When the survey that carried that probe was taken (a stored row's own
+    # `surveyed_at`), so the visibility banner can say WHICH survey its counts
+    # are about instead of speaking for the whole page. "" when unknown.
+    credential_capability_at: str = ""
 
 
 class DatabaseRegistration(BaseModel):
@@ -185,6 +212,7 @@ def _to_summary(db) -> DatabaseSummary:
     # newest-first "has this key" search into Postgres instead of
     # rescanning every historical blob in Python a second time.
     credential_capability: dict | None = None
+    credential_capability_at = ""
     cap_survey = registry.find_latest_database_survey_with_key(db.slug, "credential_capability")
     if cap_survey is not None:
         try:
@@ -192,6 +220,7 @@ def _to_summary(db) -> DatabaseSummary:
         except (ValueError, TypeError):
             data = {}
         credential_capability = data.get("credential_capability") or None
+        credential_capability_at = str(cap_survey.get("surveyed_at") or "")
 
     from resource_explorer.egeria_linkage import describe_publish_status
     publish_status = describe_publish_status(
@@ -219,9 +248,14 @@ def _to_summary(db) -> DatabaseSummary:
         egeria_server=db.egeria_server or "",
         egeria_user=db.egeria_user or "",
         group_slug=getattr(db, "group_slug", "") or "",
+        credential_status=getattr(db, "credential_status", "none") or "none",
+        credential_changed_at=getattr(db, "credential_changed_at", None),
+        credential_reason=(CREDENTIAL_UNREADABLE_REASON
+                           if getattr(db, "credential_status", "") == "unreadable" else ""),
         disposition=disp.get("disposition", "undecided"),
         working_set_hidden=registry.is_working_set_hidden("database", db.slug),
         credential_capability=credential_capability,
+        credential_capability_at=credential_capability_at,
         is_published=publish_status["is_published"],
         egeria_publish_note=publish_status["note"],
     )
@@ -260,7 +294,7 @@ async def get_database(slug: str) -> DatabaseSummary:
     """Get details for a specific database."""
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     return _to_summary(database)
@@ -287,7 +321,7 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     from resource_explorer.workflows.analysis import build_analysis_last_activity
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     return build_analysis_last_activity(registry, "database", slug)
@@ -302,7 +336,7 @@ async def get_database_survey_results_boards(slug: str, stage: str = "") -> dict
     from resource_explorer.workflows.analysis import list_survey_result_boards
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     return await asyncio.to_thread(list_survey_result_boards, registry, "database", slug, stage)
@@ -333,7 +367,7 @@ async def get_database_survey_results(
     from resource_explorer.workflows.analysis import build_survey_results
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     return await asyncio.to_thread(
@@ -349,20 +383,26 @@ async def get_database_schema_inventory_tree(slug: str) -> dict:
     UI's `survey_data` blob path). See `schema_inventory_tree()`'s own
     docstring for the shape.
 
+    Since slice A2.1 the schemas come from `catalogue_scope.resolve_node_set` (the
+    fullest, newest complete survey, native or local) and a `sources` block names
+    them; `schema_inventory_tree()` is still the local half of that merge.
+
     404s the same way `get_database_survey_results` does; `to_thread`
     since this walks every stored table/column row plus the credential
     probe, same reasoning as that route."""
+    from resource_explorer.catalogue_scope import resolve_node_set, sources_view
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.database.survey_definition_adapter import (
-        schema_inventory_tree,
-    )
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
-    tree = await asyncio.to_thread(schema_inventory_tree, registry, slug)
-    return tree or {"schemas": []}
+    # A2.1: the same resolved node set the Curate tree reads (`resolve_node_set`),
+    # not RE's own credential-scoped local survey alone. Each schema and table
+    # carries its `source` and as-of; `sources` names the surveys so the pane can
+    # say which one it reads and when the two disagree.
+    resolved = await asyncio.to_thread(resolve_node_set, registry, slug)
+    return {"schemas": resolved["schemas"], "sources": sources_view(resolved)}
 
 
 @router.get("/{slug}/questions")
@@ -397,7 +437,7 @@ async def get_database_questions(
     from resource_explorer.workflows.scouting import build_question_checklist
 
     registry = ProjectRegistry()
-    if not registry.get_database(slug):
+    if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
@@ -418,7 +458,7 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     registry = ProjectRegistry()
 
     # Check if slug already exists
-    existing = registry.get_database(req.slug)
+    existing = registry.get_database(req.slug, allow_unreadable=True)
     if existing:
         raise HTTPException(status_code=400, detail=f"Database '{req.slug}' already exists")
     
@@ -484,14 +524,27 @@ async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate)
 
     registry = ProjectRegistry()
 
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    # Connect test BEFORE anything is stored or projected, against this
+    # database's own host/port/database_name; off the event loop. No bypass.
+    from resource_explorer.credential_check import (
+        CredentialCheckError,
+        check_database_credential,
+    )
+
+    try:
+        await asyncio.to_thread(
+            check_database_credential, database, req.db_user, req.db_password)
+    except CredentialCheckError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
     registry.update_database_credentials(slug, req.db_user, req.db_password)
     _project_credential_to_omsecrets(slug, req.db_user, req.db_password)
 
-    updated = registry.get_database(slug)
+    updated = registry.get_database(slug, allow_unreadable=True)
     return _to_summary(updated)
 
 
@@ -501,7 +554,7 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
     from resource_explorer.registry import ProjectRegistry, ProjectStatus
     
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = _get_database_for_use(registry, slug)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     
@@ -743,7 +796,7 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
     registry = ProjectRegistry()
-    db = registry.get_database(slug)
+    db = _get_database_for_use(registry, slug)
     if not db:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
@@ -790,7 +843,7 @@ async def remove_database(slug: str) -> dict:
     from resource_explorer.registry import ProjectRegistry
     
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     
@@ -809,7 +862,7 @@ async def get_database_surveys(slug: str, include_invalid: bool = False) -> list
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
@@ -829,7 +882,7 @@ async def get_database_egeria_surveys(slug: str) -> list[EgeriaSurveyReportRow]:
     )
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
     if not database.egeria_asset_guid:
@@ -856,7 +909,7 @@ async def get_database_egeria_annotations(slug: str, report_guid: str) -> list[E
     )
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = registry.get_database(slug, allow_unreadable=True)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
@@ -892,19 +945,32 @@ class PublishResult(BaseModel):
     annotation_count: int | None = None
     server_display_name: str | None = None
     database_display_name: str | None = None
+    # Native Egeria surveys this publish started, each backed by a persisted
+    # step_runs proof row (registry.record_native_survey_submission). Empty
+    # means NO survey was recorded; clients must not claim one started.
+    survey_submissions: list[dict[str, Any]] = []
     error: str | None = None
 
 
 @router.post("/{slug}/publish", response_model=PublishResult)
 async def publish_database_survey(slug: str, req: PublishRequest = PublishRequest()) -> PublishResult:
-    """Publish the latest local database survey to Egeria."""
+    """Publish the latest local database survey to Egeria.
+
+    **Retired from the UI (Curate slice B, BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md):**
+    Classic's Publish button and modal are gone; "Catalogue" on a database's Curate pane
+    (`POST /api/catalogue-scope/{slug}/commit`) is the publish now, with a manifest, a
+    ZoneMembership written before any target, a survey limited to the chosen schemas, and a
+    proof row behind every state. This route remains only for Classic API callers; RE itself
+    never calls it (the survey-definition retry goes through the commit and its stored scope).
+    It starts an UNSCOPED native survey and catalogues without a declared scope, so it must not
+    be offered as the way to publish. Backlog: make it scope-aware, or remove it."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.web.routes._validation import validate_egeria_user
 
     validate_egeria_user(req.egeria_user or "")
 
     registry = ProjectRegistry()
-    database = registry.get_database(slug)
+    database = _get_database_for_use(registry, slug)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
@@ -916,6 +982,9 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
         raise HTTPException(
             status_code=404,
             detail=f"No measured survey data for '{slug}' — run a survey first")
+
+    from resource_explorer.run_queue import requested_by
+    submitted_by = requested_by()      # read HERE, in the request; threads get it passed
 
     def _do_publish() -> dict[str, Any]:
         import asyncio as _aio
@@ -959,6 +1028,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
                 db_user=resolved_db_user,
                 db_pwd=resolved_db_pwd,
                 statistics=statistics,
+                submitted_by=submitted_by,
             )
         finally:
             loop.close()
@@ -1010,6 +1080,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
             asset_guid=result.get("asset_guid"),
             report_guid=result.get("report_guid"),
             annotation_count=result.get("annotation_count"),
+            survey_submissions=result.get("survey_submissions") or [],
             server_display_name=server_dn,
             database_display_name=database.database_name,
         )

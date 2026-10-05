@@ -887,7 +887,7 @@ def group_assign(
             raise typer.Exit(1)
         registry.set_project_group(resource_slug, group_slug)
     elif resource_type == "database":
-        if not registry.get_database(resource_slug):
+        if not registry.get_database(resource_slug, allow_unreadable=True):
             console.print(f"[red]Database '{resource_slug}' not found.[/red]")
             raise typer.Exit(1)
         registry.set_database_group(resource_slug, group_slug)
@@ -1652,17 +1652,19 @@ def database_register(
 def database_update_credentials(
     slug: str = typer.Argument(help="Database slug to update"),
     user: str = typer.Option(..., "--user", "-u", help="New database username"),
-    password: str = typer.Option(..., "--password", "-p", help="New database password", hide_input=True),
+    password: str = typer.Option(..., "--password", "-p", prompt=True, help="New database password (prompted, not echoed, when omitted)", hide_input=True),
 ):
     """Update the stored db_user/db_password for an already-registered database.
 
     The registration itself (slug, egeria_asset_guid, survey history) is
     untouched -- this only repoints which role/password future surveys connect
-    with.
+    with. The new credential is tested against the database first; if the
+    connection fails nothing is stored and the exit code is non-zero.
 
     Example:
-        resource-explorer database update-credentials my-postgres \\
-            --user surveyor --password secret
+        resource-explorer database update-credentials <slug> --user <role>
+
+    The password is prompted for.
     """
     from resource_explorer.registry import ProjectRegistry
 
@@ -1670,6 +1672,19 @@ def database_update_credentials(
 
     if not registry.database_exists(slug):
         console.print(f"[red]Database '{slug}' not found. Register it first with 'database register'.[/red]")
+        raise typer.Exit(1)
+
+    from rich.markup import escape
+
+    from resource_explorer.credential_check import (
+        CredentialCheckError,
+        check_database_credential,
+    )
+
+    try:
+        check_database_credential(registry.get_database(slug, allow_unreadable=True), user, password)
+    except CredentialCheckError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
     registry.update_database_credentials(slug, user, password)
@@ -1684,6 +1699,54 @@ def database_update_credentials(
 
     console.print(f"[green]✓ Credentials updated for database '{slug}'.[/green]")
     console.print(f"  User: {user}")
+
+
+@database_app.command(name="reproject-secrets")
+def database_reproject_secrets(
+    slug: str = typer.Argument(None, help="Database slug to project (omit with --all)"),
+    all_databases: bool = typer.Option(False, "--all", help="Project every registered database"),
+):
+    """Re-project stored credentials into the Egeria secrets file.
+
+    Uses the credentials RE already holds (decrypted the way the survey runner
+    decrypts them); nothing is typed or printed. One collection per database.
+    A database with no stored credential is skipped and said. Idempotent.
+    Use after a redeploy recreated the secrets directory.
+
+    Example:
+        resource-explorer database reproject-secrets --all
+    """
+    from resource_explorer import omsecrets_reproject, omsecrets_store
+    from resource_explorer.registry import ProjectRegistry
+
+    if bool(slug) == bool(all_databases):
+        console.print("[red]Give exactly one of <slug> or --all.[/red]")
+        raise typer.Exit(2)
+    path = omsecrets_store.local_path()
+    if not path:
+        console.print("[red]EGERIA_SECRETS_STORE_LOCAL_PATH is not set; there is no secrets file to project to.[/red]")
+        raise typer.Exit(1)
+    registry = ProjectRegistry()
+    if slug and not registry.database_exists(slug):
+        console.print(f"[red]Database '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    outcomes = omsecrets_reproject.reproject(
+        registry, [registry._normalize_slug(slug)] if slug else None, path=path)
+    failed = False
+    for o in outcomes:
+        if o.status == omsecrets_reproject.WRITTEN:
+            console.print(f"[green]written[/green]   {o.collection}")
+        elif o.status == omsecrets_reproject.UNCHANGED:
+            console.print(f"unchanged  {o.collection}")
+        elif o.status == omsecrets_reproject.SKIPPED:
+            console.print(f"[yellow]skipped[/yellow]   {o.slug}: {o.message}")
+        else:
+            failed = True
+            console.print(f"[red]error[/red]     {o.slug}: {o.message}")
+    if not outcomes:
+        console.print("No registered databases.")
+    if failed:
+        raise typer.Exit(1)
 
 
 @database_app.command(name="check-credential-drift")
@@ -2697,7 +2760,9 @@ def import_resources(
         console.print("[yellow]No rows found.[/yellow]")
         raise typer.Exit(0)
 
-    plan = plan_import(registry, rows)
+    # The command line registers repos only; database rows are registered from
+    # the web Find databases dialog (they need a server chosen by a person).
+    plan = plan_import(registry, rows, importable=("repo",))
     console.print(f"[bold]{plan.total} row(s) in {path}[/bold]")
     console.print(f"  [green]{len(plan.to_register)}[/green] to register")
     console.print(f"  [dim]{len(plan.already_registered)} already registered[/dim]")

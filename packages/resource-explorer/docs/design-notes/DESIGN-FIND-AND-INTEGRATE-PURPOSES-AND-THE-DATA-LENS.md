@@ -373,3 +373,63 @@ Two consequences for the slices in §9:
 The demo corpus (§7) gains the repositories and file systems that go with the
 regional databases: the forecasting code and the spreadsheet exports, so
 the mixed-kind pairs have something real to measure.
+
+## 13. A repository can inform a database, and the other way round (owner, 2026-10-04)
+
+**Decision (project owner, 2026-10-04):** *"there can often be a link
+between repos and dbs where one informs the other."* The occasion: the 22
+schemas that appeared in coco_pharma on 2026-10-03 were loaded by the
+rebuilt quickstart from Coco data carried in egeria-workspaces pull
+requests. The repository changed first; the database followed; RE surveyed
+both and connected neither.
+
+This is §12's mixed-kind pair made specific. The relation to model is
+**informs**, with its direction and its mechanism named, never guessed:
+
+| mechanism (measured in the repository) | what it says about the database |
+|---|---|
+| DDL and migration files naming schemas and tables | the repository **defines** the database's structure; a new migration predicts a schema change |
+| seed data, CSV loads, fixtures matching table names | the repository **loads** the database; a new data file predicts new rows or tables |
+| connection strings, DSNs, ORM models naming the database | the repository **reads or writes** it; a model change predicts a schema expectation |
+| a survey definition or Dr.Egeria document naming the database | the repository **governs** it |
+
+Consequences for the slices in §9 and for the Curate scope work:
+
+- An **Integrate pair question** for a repository and a database:
+  "does this repository define, load or read that database, and do they
+  agree today?" The answer carries the mechanism and the files, and the
+  parity precondition applies (the repository's file inventory and the
+  database's schema inventory both current).
+- **Change in one is a signal on the other.** A new migration or data
+  file in a repository that informs a database marks the database's scope
+  tree "the repository that loads this database changed · N new files
+  since your scope", and a schema change in the database marks the
+  repository "the database this code defines has changed". The three
+  views of change in the Curate scope ask (the scope tree, Understanding's
+  "since the last run", Automate's subscriptions) gain this fourth,
+  cross-kind one, and all cite the source commit when there is one (A5).
+- **The relation is detected and proposed, then confirmed** (owner,
+  2026-10-04, refining the above): RE measures the mechanism and proposes
+  "this repository loads that database" as a row with the four observation
+  states, naming the files behind it; a person confirms, overrides or
+  leaves it; only a confirmed relation is published. **It is not lineage**
+  (owner, 2026-10-04): lineage implies information flow, and a repository
+  that defines or loads a database is not a flow of information into it.
+  It is closer to a dependency, and which Egeria relationship type carries
+  it (a dependency, an implementation, a "defines" relation) is the Egeria
+  leads' choice; the existing LineageMapping path is the wrong one for this.
+  Until that type is chosen, RE keeps the confirmed relation locally with
+  its mechanism and publishes nothing for it. One-way and idempotent when it
+  does, as every publish.
+- **Once published, Egeria can watch it.** The owner's further point: with
+  the relation in the catalogue, Egeria's own mechanisms (watchdog
+  governance actions, the Notification Manager that Automate is meant to
+  grow into) can detect a change on one end and raise it on the other, so
+  RE need not be the only detector. RE then reads those notifications back
+  as the proof behind the "the database this code defines has changed"
+  row, with the source named as Egeria's. Which Egeria mechanism, which
+  relationship type, and what each needs from RE's publish are questions
+  for the Egeria leads alongside the annotation-type extension.
+
+The demo corpus (§7) already contains the first instance: egeria-workspaces
+informs coco_pharma.

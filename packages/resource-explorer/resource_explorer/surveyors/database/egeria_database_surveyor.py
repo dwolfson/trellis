@@ -180,6 +180,7 @@ class EgeriaDatabaseSurveyor:
         db_pwd: str,
         registry=None,
         survey_after_catalog: bool = True,
+        submitted_by: str = "",
     ) -> dict:
         """Guarded front door — see _catalog_and_survey."""
         from resource_explorer.egeria_linkage import guard_linkage
@@ -188,7 +189,8 @@ class EgeriaDatabaseSurveyor:
                            db_entity.display_name or db_entity.slug,
                            db_entity.egeria_asset_guid or ""):
             return self._catalog_and_survey(
-                db_entity, db_user, db_pwd, registry, survey_after_catalog)
+                db_entity, db_user, db_pwd, registry, survey_after_catalog,
+                submitted_by=submitted_by)
 
     @staticmethod
     def _note_stale_guid_if_any(exc, db_entity, guid: str, registry) -> None:
@@ -458,6 +460,7 @@ class EgeriaDatabaseSurveyor:
         db_pwd: str,
         registry=None,
         survey_after_catalog: bool = True,
+        submitted_by: str = "",
     ) -> dict:
         """Catalog the PostgreSQL server + database in Egeria, then optionally initiate a native survey.
 
@@ -467,9 +470,16 @@ class EgeriaDatabaseSurveyor:
         CATALOG-AND-SURVEY-REFRESH-FIX.md for what this does and
         does not fix for an already-cataloged element.
 
-        Returns dict with keys: server_guid, database_guid, survey_action_guid.
+        Returns dict with keys: server_guid, database_guid, survey_action_guid,
+        server_survey_guid and survey_submissions.
+
+        `survey_submissions` lists ONLY the surveys whose engine-action GUID
+        came back AND whose proof row was persisted (see _record_survey_submission);
+        callers must derive any "survey started" claim from it, never from the
+        branch that ran.
         """
         self.connect()
+        survey_submissions: list[dict] = []
 
         # Use egeria_host if set (e.g. host.docker.internal when Egeria runs in Docker);
         # fall back to the locally-visible host.
@@ -534,6 +544,15 @@ class EgeriaDatabaseSurveyor:
                         "portNumber": str(db_entity.port),
                         "databaseUserId": db_user,
                         "description": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                        # The template's description placeholder is
+                        # `databaseDescription`, not `description` (scratch test
+                        # 2, 2026-10-05), and `versionIdentifier` is a second one
+                        # nothing supplied: with `description` alone both stayed
+                        # as literal ~{...}~ strings on the element. Supplied
+                        # here so none remains; the version is "not recorded"
+                        # because RE keeps no PostgreSQL version for the database.
+                        "databaseDescription": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                        "versionIdentifier": "not recorded",
                         "databasePassword": db_pwd,
                         **secret_placeholders,
                     },
@@ -559,8 +578,12 @@ class EgeriaDatabaseSurveyor:
             # Survey the server first (captures connection info, database list, server config)
             if server_guid:
                 try:
+                    self._last_survey_process_qn = ""
                     server_survey_guid = self._initiate_survey("PostgreSQL Server", server_guid)
                     log.info(f"Egeria server survey initiated: {server_survey_guid}")
+                    self._record_survey_submission(
+                        registry, db_entity, "PostgreSQL Server", server_survey_guid,
+                        submitted_by, survey_submissions)
                 except Exception as exc:
                     log.warning(f"Server survey initiation failed (non-fatal): {exc}")
                     # This is where a stale cached GUID actually surfaces, and it
@@ -576,8 +599,12 @@ class EgeriaDatabaseSurveyor:
             # Survey the database (captures schemas, tables, columns, relationships)
             if db_guid:
                 try:
+                    self._last_survey_process_qn = ""
                     survey_action_guid = self._initiate_survey("PostgreSQL Relational Database", db_guid)
                     log.info(f"Egeria database survey initiated: {survey_action_guid}")
+                    self._record_survey_submission(
+                        registry, db_entity, "PostgreSQL Relational Database",
+                        survey_action_guid, submitted_by, survey_submissions)
                 except Exception as exc:
                     log.warning(f"Cataloged OK but Egeria database survey initiation failed: {exc}")
                     self._note_stale_guid_if_any(exc, db_entity, db_guid, registry)
@@ -587,7 +614,56 @@ class EgeriaDatabaseSurveyor:
             "server_survey_guid": server_survey_guid,
             "database_guid": db_guid,
             "survey_action_guid": survey_action_guid,
+            "survey_submissions": survey_submissions,
         }
+
+    _last_survey_process_qn: str = ""
+
+    def _record_survey_submission(
+        self, registry, db_entity, tech_type: str, engine_action_guid: str,
+        submitted_by: str, out: list,
+    ) -> None:
+        """Persist the proof row for a survey Publish just initiated, through the
+        SAME recorder a native-survey run uses (registry.record_native_survey_submission),
+        so the read-back sweep and the native-survey list see it.
+
+        Records nothing when there is no registry or no engine-action GUID
+        (an empty/None return is not proof Egeria accepted anything). A
+        recording failure is logged loudly and the survey is then NOT reported
+        as started: the claim must match a row that exists.
+
+        Arguments: entity_type 'database' and slug from the entity; the process
+        qualified name is the one _initiate_survey actually used (a discovered
+        Survey Definition process, else the configured survey_existing native
+        process for the technology type); surveyed_at is the submission time (UTC,
+        naive ISO, the registry's spelling); submitted_by is passed in, never read
+        from a ContextVar here.
+        """
+        guid = (engine_action_guid or "").strip() if isinstance(engine_action_guid, str) else ""
+        if registry is None or not guid:
+            return
+        process_qn = self._last_survey_process_qn
+        if not process_qn:
+            from resource_explorer.surveyors.technology_type_processes import (
+                KIND_SURVEY_EXISTING, get_process_by_kind)
+            native = get_process_by_kind("database", tech_type, KIND_SURVEY_EXISTING)
+            process_qn = native.qualified_name if native else ""
+        if not process_qn:
+            log.error(f"Survey {guid} was initiated for {tech_type} but no process name is "
+                      "known to record it under; no proof row written.")
+            return
+        from datetime import timezone
+        try:
+            registry.record_native_survey_submission(
+                "database", db_entity.slug, process_qn,
+                datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                engine_action_guid=guid, submitted_by=submitted_by or "")
+        except Exception as exc:  # noqa: BLE001
+            log.error(f"Survey {guid} was initiated but its proof row could not be "
+                      f"recorded: {exc}")
+            return
+        out.append({"technology_type": tech_type, "process_qualified_name": process_qn,
+                    "engine_action_guid": guid})
 
     def trigger_survey_by_guid(self, db_guid: str, start_time: datetime | None = None) -> str:
         """Initiate Egeria's native PostgreSQL database survey using a stored GUID.
@@ -750,6 +826,7 @@ class EgeriaDatabaseSurveyor:
                     action_targets=targets,
                     start_time=start_time,
                 )
+                self._last_survey_process_qn = process_name
                 log.info(f"Initiated dynamically discovered survey process {process_name} on {target_guid}: {guid}"
                          + (f" (start_time={start_time.isoformat()})" if start_time else ""))
                 return guid
@@ -772,7 +849,9 @@ class EgeriaDatabaseSurveyor:
                 f"start_time={start_time.isoformat()} requested but the native-survey fallback path "
                 f"(pyegeria's private _async_initiate_survey) has no start_time parameter — firing immediately."
             )
-        return self._initiate_native_survey(native.qualified_name, target_guid)
+        guid = self._initiate_native_survey(native.qualified_name, target_guid)
+        self._last_survey_process_qn = native.qualified_name
+        return guid
 
     def _initiate_native_survey(self, survey_qualified_name: str, target_guid: str) -> str:
         """Call pyegeria's private _async_initiate_survey directly with a correct
@@ -1016,16 +1095,24 @@ class EgeriaDatabaseSurveyor:
         db_pwd: str = "",
         statistics: dict | None = None,
         views: list | None = None,
+        submitted_by: str = "",
+        survey_after_catalog: bool = True,
     ) -> dict:
         """Catalog the database in Egeria, trigger a native PostgreSQL survey,
         and publish the local survey report and annotations directly to Egeria.
+
+        `survey_after_catalog=False` publishes everything but starts NO native
+        survey: the catalogue commit (`catalogue_commit.py`) starts its own,
+        scoped to the chosen schemas, and an unscoped one here would measure
+        every schema the steward left out.
         """
         result = self.catalog_and_survey(
             db_entity=db_entity,
             db_user=db_user,
             db_pwd=db_pwd,
             registry=registry,
-            survey_after_catalog=True,
+            survey_after_catalog=survey_after_catalog,
+            submitted_by=submitted_by,
         )
 
         server_guid        = result.get("server_guid", "")
@@ -1105,6 +1192,7 @@ class EgeriaDatabaseSurveyor:
             "report_guid":        effective_report_guid,
             "server_survey_guid": server_survey_guid,
             "annotation_count":   len(annotations),
+            "survey_submissions": result.get("survey_submissions", []),
         }
 
     def _publish_column_lineage(self, db_entity: "DatabaseEntity", views: list[dict]) -> None:

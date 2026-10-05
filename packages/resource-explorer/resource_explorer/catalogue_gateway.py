@@ -1,0 +1,537 @@
+"""The one door a database catalogue commit uses to reach Egeria.
+
+Slice B of the catalogue-scope work (`BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md`).
+`CatalogueGateway` is the whole surface the commit needs, as small named
+operations, so the commit logic (`catalogue_commit.py`) is written against one
+interface and the tests stand a stateful fake behind it. `PyegeriaCatalogueGateway`
+is the real one.
+
+**Everything the real gateway sends is recorded in the evidence, not invented.**
+The mechanism comes from `evidence/SCRATCH-CATALOGUER-TEST-2-2026-10-05.md` and
+`evidence/CATALOGUE-LEVER-FINDINGS.md`:
+
+* the schema element is created from the technology type "PostgreSQL Relational
+  Database Schema" (template GUID below; the short names return nothing) and
+  attached to the JDBC cataloguer as a SCHEMA-kind catalog target with no
+  configuration lists and `deleteMethod` ARCHIVE. **Never the database element,
+  never the server**: a database-kind target catalogues every schema's tables
+  directly under the database whatever its lists say;
+* the targets are read with the body `{"class": "ResultsRequestBody",
+  "graphQueryDepth": 0}`, because pyegeria's default sets a relationship type
+  as the element type and the server answers 500 (ISSUE-122);
+* the `/archive` endpoint answers 500 on this build, so an archive is the delete
+  endpoint with `deleteMethod` ARCHIVE, and without `forLineage` and
+  `forDuplicateProcessing` true it fails 400 and leaves one child archived;
+* every delete is per element, leaf first, `forLineage` true, never a cascade
+  (a cascade is partial and not atomic, S18);
+* the survey is scoped by the request parameter `includeSchemaNames`, comma
+  joined; the element's own connection configuration is ignored by the service;
+* RE never restarts a connector. A forced refresh is the daemon's refresh call
+  for the exact connector name.
+
+What the evidence did NOT establish, and so is isolated in one small method each
+and listed in the implemented note for the first live run: the parent/anchor
+fields on the template create (the scratch runs created the schema without a
+parent), the shape of a non-empty catalog-target answer, the relationship-read
+answer shape, and the integration-daemon status keys.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+log = logging.getLogger(__name__)
+
+#: The JDBC cataloguer integration connector (the content pack's GUID).
+JDBC_CATALOGUER_GUID = "70dcd0b7-9f06-48ad-ad44-ae4d7a7762aa"
+#: The exact connector name a refresh is addressed to. The short names match nothing.
+JDBC_CATALOGUER_NAME = "JDBCDatabaseCataloguer"
+#: The schema template: technology type "PostgreSQL Relational Database Schema".
+SCHEMA_TECH_TYPE = "PostgreSQL Relational Database Schema"
+SCHEMA_TEMPLATE_GUID = "82a5417c-d882-4271-8444-4c6a996a8bfc"
+DATABASE_TECH_TYPE = "PostgreSQL Relational Database"
+#: What a catalog target does with an element when its schema leaves the list.
+TARGET_DELETE_METHOD = "ARCHIVE"
+#: The honest value for a version RE has no record of.
+VERSION_NOT_RECORDED = "not recorded"
+
+#: delete forms RE performs
+SOFT_DELETE = "soft_delete"
+ARCHIVE = "archive"
+
+
+class GatewayError(RuntimeError):
+    """An Egeria read or write failed. The message is Egeria's own word, shortened."""
+
+
+@dataclass
+class CatalogTarget:
+    relationship_guid: str
+    element_guid: str
+    name: str = ""
+
+
+@dataclass
+class ElementRead:
+    guid: str
+    qualified_name: str
+    type_name: str = ""
+    archived: bool = False
+
+
+@dataclass
+class Relationship:
+    type_name: str
+    other_guid: str = ""
+    other_type: str = ""
+    guid: str = ""
+
+
+@dataclass
+class PublishedDatabase:
+    server_guid: str
+    database_guid: str
+    server_name: str
+    database_qualified_name: str
+    survey_submissions: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class ConnectorStatus:
+    name: str
+    status: str = ""
+    last_refresh_time: str = ""
+
+
+# ── names ────────────────────────────────────────────────────────────────────
+
+def server_name_for(db_entity) -> str:
+    """The name Egeria's template carries for the server: `<egeria host>:<port>`."""
+    host = getattr(db_entity, "egeria_host", "") or db_entity.host
+    return f"{host}:{db_entity.port}"
+
+
+def database_qualified_name(server_name: str, database_name: str) -> str:
+    return f"PostgreSQL Relational Database::{server_name}::{database_name}"
+
+
+def schema_qualified_name(server_name: str, database_name: str, schema: str) -> str:
+    """The qualifiedName the schema template produces (evidence, 2026-10-05)."""
+    return f"{SCHEMA_TECH_TYPE}::{server_name}::{database_name}.{schema}"
+
+
+def schema_type_qualified_name(server_name: str, database_name: str, schema: str) -> str:
+    """The orphan-case schema type an older cataloguer left behind."""
+    return f"{database_qualified_name(server_name, database_name)}::{schema}_schemaType"
+
+
+class CatalogueGateway(Protocol):
+    """Everything a catalogue commit asks of Egeria. Reads raise `GatewayError`."""
+
+    def publish_database(self, db_entity, db_user: str, db_pwd: str, *, registry=None,
+                         submitted_by: str = "") -> PublishedDatabase: ...
+    def publish_local_report(self, db_entity, db_user: str, db_pwd: str, measured: dict, *,
+                             registry=None, submitted_by: str = "") -> dict: ...
+    def set_zone_membership(self, guid: str, zones: list[str]) -> bool: ...
+    def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
+    def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
+    def find_schema_type(self, qualified_name: str) -> str: ...
+    def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
+                              description: str = "") -> str: ...
+    def link_schema_type(self, schema_guid: str, schema_type_guid: str) -> None: ...
+    def list_catalog_targets(self) -> list[CatalogTarget]: ...
+    def add_catalog_target(self, element_guid: str, name: str) -> str: ...
+    def remove_catalog_target(self, relationship_guid: str) -> None: ...
+    def elements_under(self, qualified_name_prefix: str) -> list[ElementRead]: ...
+    def relationships(self, guid: str) -> list[Relationship]: ...
+    def delete_element(self, guid: str, form: str) -> None: ...
+    def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]: ...
+    def connector_status(self) -> ConnectorStatus | None: ...
+    def refresh_connector(self, timeout: int = 120) -> None: ...
+
+
+# ── the real one ─────────────────────────────────────────────────────────────
+
+def _short(exc: Exception, n: int = 300) -> str:
+    return " ".join(str(exc).split())[:n] or type(exc).__name__
+
+
+def _header(element: Any) -> dict:
+    if not isinstance(element, dict):
+        return {}
+    return element.get("elementHeader") or element
+
+
+def _guid_of(element: Any) -> str:
+    h = _header(element)
+    return str(h.get("guid") or "") if isinstance(h, dict) else ""
+
+
+def _type_of(element: Any) -> str:
+    h = _header(element)
+    t = h.get("type") if isinstance(h, dict) else None
+    return str((t or {}).get("typeName") or "") if isinstance(t, dict) else ""
+
+
+def _qn_of(element: Any) -> str:
+    if not isinstance(element, dict):
+        return ""
+    props = element.get("properties") or {}
+    return str(props.get("qualifiedName") or "")
+
+
+def _is_memento(element: Any) -> bool:
+    h = _header(element)
+    for c in (h.get("classifications") or []) if isinstance(h, dict) else []:
+        if isinstance(c, dict) and (c.get("classificationName") == "Memento"
+                                    or (c.get("type") or {}).get("typeName") == "Memento"):
+            return True
+    return False
+
+
+def _element_read(element: Any) -> ElementRead:
+    return ElementRead(guid=_guid_of(element), qualified_name=_qn_of(element),
+                       type_name=_type_of(element), archived=_is_memento(element))
+
+
+class PyegeriaCatalogueGateway:
+    """The real gateway, over pyegeria. Built lazily: constructing it opens nothing."""
+
+    def __init__(self, db_entity=None, *, view_server: str = "", platform_url: str = "",
+                 user_id: str = "", user_password: str = "", daemon_server: str = ""):
+        from resource_explorer.config import get_config
+        cfg = get_config().egeria
+        e = db_entity
+        self.view_server = view_server or getattr(e, "egeria_server", "") or cfg.view_server
+        self.platform_url = platform_url or getattr(e, "egeria_url", "") or cfg.platform_url
+        self.user_id = user_id or getattr(e, "egeria_user", "") or cfg.user_id
+        self.user_password = user_password or getattr(e, "egeria_password", "") or cfg.user_password
+        self.daemon_server = daemon_server or cfg.integration_daemon_server
+        self._clients: dict[str, Any] = {}
+
+    # -- clients ---------------------------------------------------------
+
+    def _client(self, name: str):
+        if name not in self._clients:
+            import pyegeria
+            cls = getattr(pyegeria, name)
+            c = cls(self.view_server, self.platform_url, self.user_id, self.user_password)
+            c.create_egeria_bearer_token(self.user_id, self.user_password)
+            self._clients[name] = c
+        return self._clients[name]
+
+    def _server_ops(self):
+        if "ServerOps" not in self._clients:
+            from pyegeria import ServerOps
+            c = ServerOps(self.daemon_server, self.platform_url, self.user_id, self.user_password)
+            c.create_egeria_bearer_token(self.user_id, self.user_password)
+            self._clients["ServerOps"] = c
+        return self._clients["ServerOps"]
+
+    def _surveyor(self):
+        from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+        if "surveyor" not in self._clients:
+            self._clients["surveyor"] = EgeriaDatabaseSurveyor(
+                platform_url=self.platform_url, view_server=self.view_server,
+                user_id=self.user_id, user_password=self.user_password)
+        return self._clients["surveyor"]
+
+    # -- step 1 ----------------------------------------------------------
+
+    def publish_database(self, db_entity, db_user: str, db_pwd: str, *, registry=None,
+                         submitted_by: str = "") -> PublishedDatabase:
+        """The server and database elements, as Classic's publish did, but with no survey."""
+        try:
+            res = self._surveyor().catalog_and_survey(
+                db_entity, db_user, db_pwd, registry=registry, survey_after_catalog=False,
+                submitted_by=submitted_by)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        server = server_name_for(db_entity)
+        return PublishedDatabase(
+            server_guid=res.get("server_guid", ""), database_guid=res.get("database_guid", ""),
+            server_name=server, database_qualified_name=database_qualified_name(server, db_entity.database_name))
+
+    def publish_local_report(self, db_entity, db_user: str, db_pwd: str, measured: dict, *,
+                             registry=None, submitted_by: str = "") -> dict:
+        import json as _json
+        data = _json.loads(measured.get("survey_data") or "{}")
+        try:
+            return self._surveyor().publish_local_survey(
+                db_entity=db_entity, schema_info=data.get("schema_info", {}),
+                schema_count=measured.get("schema_count", 0), table_count=measured.get("table_count", 0),
+                column_count=measured.get("column_count", 0), surveyed_at=measured.get("surveyed_at", ""),
+                registry=registry, db_user=db_user, db_pwd=db_pwd,
+                statistics=data.get("statistics", {}), submitted_by=submitted_by,
+                survey_after_catalog=False)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+
+    def set_zone_membership(self, guid: str, zones: list[str]) -> bool:
+        """Put the database element in `zones`. Egeria's security connector REJECTS a zone
+        change whose before and after are equal (see `egeria_identity.current_zones`), so a
+        second commit must not write what is already there: it reads first, and an empty
+        read means "could not tell", never "no zones"."""
+        from resource_explorer.egeria_identity import current_zones, set_zone_membership
+        have = current_zones(guid)
+        if have and sorted(have) == sorted(zones):
+            return True
+        return bool(set_zone_membership(guid, zones))
+
+    def set_owner(self, guid: str, owner: str) -> tuple[str, str]:
+        """Add Ownership after read-back. ('set' | 'already' | 'refused', detail)."""
+        from resource_explorer.egeria_identity import ownership_body
+        try:
+            element = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
+        except Exception as exc:
+            raise GatewayError(f"could not read {guid} before classifying: {_short(exc)}") from exc
+        existing = None
+        for c in (_header(element).get("classifications") or []) if isinstance(element, dict) else []:
+            if isinstance(c, dict) and c.get("classificationName") == "Ownership":
+                existing = c
+        if existing is not None:
+            props = existing.get("classificationProperties") or {}
+            current = ""
+            vm = props.get("propertyValueMap") or {}
+            if isinstance(vm.get("owner"), dict):
+                current = str(vm["owner"].get("primitiveValue") or "")
+            current = current or str(props.get("owner") or "")
+            if current == owner:
+                return "already", f"Ownership already names {owner}"
+        try:
+            self._client("ClassificationExplorer").add_ownership_to_element(guid, ownership_body(owner))
+            return "set", f"Ownership set to {owner}"
+        except Exception as exc:
+            if existing is not None:
+                return "refused", _short(exc)
+            raise GatewayError(_short(exc)) from exc
+
+    # -- schema elements and targets ---------------------------------------
+
+    def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None:
+        body = {"class": "UniqueNameRequestBody", "name": qualified_name,
+                "namePropertyName": "qualifiedName", "forLineage": for_lineage,
+                "forDuplicateProcessing": for_lineage}
+        try:
+            res = self._client("MetadataExpert").get_metadata_element_by_unique_name(
+                name=qualified_name, property_name="qualifiedName", body=body)
+        except Exception as exc:
+            text = str(exc)
+            if "404" in text or "No element found" in text or "not found" in text.lower():
+                return None
+            raise GatewayError(_short(exc)) from exc
+        if not isinstance(res, dict):
+            return None
+        el = _element_read(res)
+        return el if el.guid else None
+
+    def find_schema_type(self, qualified_name: str) -> str:
+        el = self.read_element(qualified_name)
+        return el.guid if el else ""
+
+    def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
+                              description: str = "") -> str:
+        """The DeployedDatabaseSchema, from the template, under the database element.
+
+        UNVERIFIED LIVE: `anchorGUID`/`parentGUID`/`parentRelationshipTypeName` put
+        the schema under the database so its dependents copy the database's zones
+        (the findings, section 3). The scratch runs created the schema with no
+        parent, so the first live run must confirm this body is accepted."""
+        from resource_explorer.config import get_config
+        from resource_explorer.surveyors.database.egeria_database_surveyor import _secrets_collection_name
+        cfg = get_config().egeria
+        server = server_name_for(db_entity)
+        body = {
+            "class": "TemplateRequestBody",
+            "templateGUID": SCHEMA_TEMPLATE_GUID,
+            "isOwnAnchor": False,
+            "anchorGUID": database_guid,
+            "parentGUID": database_guid,
+            "parentRelationshipTypeName": "DataSetContent",
+            "parentAtEnd1": True,
+            "deepCopy": True,
+            "placeholderPropertyValues": {
+                "databaseName": db_entity.database_name,
+                "serverName": server,
+                "hostIdentifier": getattr(db_entity, "egeria_host", "") or db_entity.host,
+                "portNumber": str(db_entity.port),
+                "schemaName": schema,
+                "schemaDescription": description or f"PostgreSQL schema {schema} in {db_entity.database_name}",
+                "versionIdentifier": VERSION_NOT_RECORDED,
+                "secretsCollectionName": _secrets_collection_name(db_entity.slug),
+                "secretsStorePathName": cfg.secrets_store_path_name,
+            },
+        }
+        try:
+            guid = self._client("AutomatedCuration").create_elem_from_template(body)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        return guid if isinstance(guid, str) else _guid_of(guid)
+
+    def link_schema_type(self, schema_guid: str, schema_type_guid: str) -> None:
+        body = {"class": "NewRelatedElementsRequestBody", "typeName": "AssetSchemaType",
+                "metadataElement1GUID": schema_guid, "metadataElement2GUID": schema_type_guid}
+        try:
+            self._client("MetadataExpert").create_related_elements(body=body)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+
+    def list_catalog_targets(self) -> list[CatalogTarget]:
+        """Read the cataloguer's targets FIRST, with the body pyegeria's default lacks."""
+        try:
+            res = self._client("AssetMaker").get_catalog_targets(
+                JDBC_CATALOGUER_GUID, body={"class": "ResultsRequestBody", "graphQueryDepth": 0})
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        if not isinstance(res, list):
+            return []              # "No elements found"
+        out = []
+        for item in res:
+            if not isinstance(item, dict):
+                continue
+            rel = (item.get("relationshipHeader") or {}).get("guid") or item.get("relationshipGUID") or ""
+            el = item.get("catalogTargetElement") or item.get("relatedElement") or item.get("element") or {}
+            out.append(CatalogTarget(
+                relationship_guid=str(rel), element_guid=_guid_of(el) or str(item.get("elementGUID") or ""),
+                name=str((item.get("properties") or {}).get("catalogTargetName") or "")))
+        return out
+
+    def add_catalog_target(self, element_guid: str, name: str) -> str:
+        """A SCHEMA-kind target: no configuration lists, `deleteMethod` ARCHIVE."""
+        body = {"class": "NewRelationshipRequestBody",
+                "properties": {"class": "CatalogTargetProperties", "catalogTargetName": name,
+                               "deleteMethod": TARGET_DELETE_METHOD}}
+        try:
+            res = self._client("AssetMaker").add_catalog_target(JDBC_CATALOGUER_GUID, element_guid, body)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        return res if isinstance(res, str) else str((res or {}).get("guid") or "")
+
+    def remove_catalog_target(self, relationship_guid: str) -> None:
+        body = {"class": "DeleteRelationshipRequestBody", "forLineage": True, "forDuplicateProcessing": True}
+        try:
+            self._client("AssetMaker").remove_catalog_target(relationship_guid, body)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+
+    # -- reads under a schema ---------------------------------------------
+
+    def elements_under(self, qualified_name_prefix: str) -> list[ElementRead]:
+        body = {"class": "SearchStringRequestBody", "searchString": qualified_name_prefix,
+                "startsWith": True, "ignoreCase": False, "forLineage": True,
+                "forDuplicateProcessing": True, "graphQueryDepth": 0}
+        try:
+            res = self._client("MetadataExpert").find_metadata_elements_with_string(
+                search_string=qualified_name_prefix, starts_with=True, body=body)
+        except Exception as exc:
+            if "No elements found" in str(exc):
+                return []
+            raise GatewayError(_short(exc)) from exc
+        if not isinstance(res, list):
+            return []
+        return [e for e in (_element_read(x) for x in res) if e.guid and e.qualified_name.startswith(qualified_name_prefix)]
+
+    def relationships(self, guid: str) -> list[Relationship]:
+        body = {"class": "ResultsRequestBody", "graphQueryDepth": 0,
+                "forLineage": True, "forDuplicateProcessing": True}
+        try:
+            res = self._client("MetadataExpert").get_all_related_elements(guid=guid, body=body)
+        except Exception as exc:
+            if "No elements found" in str(exc):
+                return []
+            raise GatewayError(_short(exc)) from exc
+        if not isinstance(res, list):
+            return []
+        out = []
+        for item in res:
+            if not isinstance(item, dict):
+                continue
+            rh = item.get("relationshipHeader") or {}
+            type_name = str((rh.get("type") or {}).get("typeName") or item.get("relationshipType") or "")
+            other = item.get("relatedElement") or {}
+            out.append(Relationship(type_name=type_name, other_guid=_guid_of(other),
+                                    other_type=_type_of(other), guid=str(rh.get("guid") or "")))
+        return out
+
+    def delete_element(self, guid: str, form: str) -> None:
+        """One element, never a cascade. An archive is the delete endpoint with
+        ARCHIVE and forLineage and forDuplicateProcessing true (the archive
+        endpoint answers 500 on this build)."""
+        method = "ARCHIVE" if form == ARCHIVE else "SOFT_DELETE"
+        body = {"class": "DeleteElementRequestBody", "deleteMethod": method,
+                "forLineage": True, "forDuplicateProcessing": True}
+        try:
+            self._client("MetadataExpert").delete_metadata_element(guid, body, cascade_delete=False)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+
+    # -- survey and connector ---------------------------------------------
+
+    def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]:
+        """The native database survey, with request parameters (RE's own helper cannot pass any)."""
+        import asyncio
+        from resource_explorer.surveyors.technology_type_processes import KIND_SURVEY_EXISTING, get_process_by_kind
+        native = get_process_by_kind("database", DATABASE_TECH_TYPE, KIND_SURVEY_EXISTING)
+        if not native:
+            raise GatewayError("no native survey process is configured for PostgreSQL Relational Database")
+        ac = self._client("AutomatedCuration")
+        body = {"class": "InitiateGovernanceActionTypeRequestBody",
+                "governanceActionTypeQualifiedName": native.qualified_name,
+                "actionTargets": [{"class": "NewActionTarget", "actionTargetName": "serverToSurvey",
+                                   "actionTargetGUID": database_guid.strip()}],
+                "requestParameters": dict(request_parameters)}
+        url = f"{ac.ref_curation_command_base}/governance-action-types/initiate"
+        try:
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(ac._async_make_request("POST", url, body))
+            guid = response.json().get("guid", "")
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        if not guid or guid == "Action not initiated":
+            raise GatewayError("Egeria did not initiate the survey")
+        return guid, native.qualified_name
+
+    def connector_status(self) -> ConnectorStatus | None:
+        try:
+            status = self._server_ops().get_integration_daemon_status(self.daemon_server)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        return parse_connector_status(status, JDBC_CATALOGUER_NAME)
+
+    def refresh_connector(self, timeout: int = 120) -> None:
+        try:
+            self._server_ops().refresh_integration_connectors(
+                JDBC_CATALOGUER_NAME, self.daemon_server, timeout)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+
+
+def parse_connector_status(status: Any, connector_name: str) -> ConnectorStatus | None:
+    """Find one connector in the integration daemon's status, tolerantly (the keys
+    were not established live). The time is the CONNECTOR's, never a target's."""
+    def walk(x):
+        if isinstance(x, dict):
+            yield x
+            for v in x.values():
+                yield from walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from walk(v)
+    for d in walk(status):
+        name = d.get("connectorName") or d.get("name")
+        if name == connector_name and ("lastRefreshTime" in d or "connectorStatus" in d):
+            return ConnectorStatus(name=str(name), status=str(d.get("connectorStatus") or ""),
+                                   last_refresh_time=str(d.get("lastRefreshTime") or ""))
+    return None
+
+
+def like_matches(pattern: str, name: str) -> bool:
+    """Would JDBC's metadata calls, given `pattern`, also return `name`?
+
+    The cataloguer passes real names to `getTables`/`getColumns`/`getSchemas` as
+    patterns: `_` matches any one character and `%` any run. Case-sensitive, as
+    the evidence found (`aXb` came back under `a_b`)."""
+    rx = "".join("." if ch == "_" else ".*" if ch == "%" else re.escape(ch) for ch in pattern)
+    return re.fullmatch(rx, name, flags=re.DOTALL) is not None

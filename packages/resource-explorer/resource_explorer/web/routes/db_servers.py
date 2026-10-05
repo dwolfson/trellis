@@ -71,6 +71,9 @@ class DiscoveredDatabase(BaseModel):
     registered_slug: str | None = None
     verdict: dict | None = None      # prior verdict keyed by resource_key, or None
     is_new: bool | None = None       # None = no previous run to compare with
+    # Only for an already-registered row: the registry's credential_status
+    # ("ok" | "none" | "unreadable"); None for an unregistered candidate.
+    credential_status: str | None = None
 
 
 class SourceRun(BaseModel):
@@ -102,10 +105,12 @@ def _build_candidates(registry, host: str, port: int, listed: list[dict],
     before any registration), and — when a previous run exists — which are new."""
     from resource_explorer.batch_io import resource_key
 
+    listed_dbs = registry.list_databases()
     registered = {
         resource_key("database", f"{d.host}:{d.port}/{d.database_name}"): d.slug
-        for d in registry.list_databases()
+        for d in listed_dbs
     }
+    cred_status = {d.slug: getattr(d, "credential_status", None) for d in listed_dbs}
     keyed = [(db, resource_key("database", f"{host}:{port}/{db['name']}")) for db in listed]
     verdicts = registry.get_dispositions_for_entities("database", [k for _, k in keyed])
     # A registered database's verdict lives under its slug (the entity key once
@@ -131,6 +136,7 @@ def _build_candidates(registry, host: str, port: int, listed: list[dict],
             encoding=db.get("encoding"),
             is_registered=reg_slug is not None,
             registered_slug=reg_slug,
+            credential_status=cred_status.get(reg_slug) if reg_slug else None,
             verdict=({
                 "disposition": verdict.get("disposition") or "undecided",
                 "reason": verdict.get("reason") or "",
@@ -464,32 +470,23 @@ async def get_server(slug: str) -> ServerSummary:
 @router.post("/{slug}/add-database")
 async def add_database_from_server(slug: str, database_name: str, display_name: str = ""):
     """Register a specific database from this server into the databases table."""
-    from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+    from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     server = registry.get_server(slug)
     if not server:
         raise HTTPException(404, f"Server '{slug}' not found")
 
-    db_slug = f"{slug}-{database_name}".replace("_", "-")
-    if registry.get_database(db_slug):
-        raise HTTPException(400, f"Database '{db_slug}' already registered")
+    from resource_explorer.batch_io import build_database_entity
 
-    db = DatabaseEntity(
-        slug=db_slug,
-        display_name=display_name or f"{database_name} @ {server.display_name}",
-        db_type=server.db_type,
-        host=server.host,
-        port=server.port,
-        database_name=database_name,
-        server_slug=slug,
-        group_slug=server.group_slug,
-        db_user=server.db_user,
-        db_password=server.db_password,
-        egeria_host=server.egeria_host,
-        egeria_url=server.egeria_url,
-        egeria_server=server.egeria_server,
-        egeria_user=server.egeria_user,
-        egeria_password=server.egeria_password,
-    )
+    # One builder shared with the CSV import (batch_io.apply_import), so a
+    # database registered from a file is the same row as one registered here.
+    db = build_database_entity(server, database_name, display_name)
+    db_slug = db.slug
+    if registry.get_database(db_slug, allow_unreadable=True):
+        raise HTTPException(400, f"Database '{db_slug}' already registered")
     registry.register_database(db)
-    return {"slug": db_slug, "database_name": database_name, "server_slug": slug}
+    # The slug the registry STORED ('_' for '-'), not the one asked for. The
+    # dialog puts this into an investigation's scope and a group assignment, and
+    # a scope member under 'a-b' points at nothing when the database is 'a_b'.
+    return {"slug": registry._normalize_slug(db_slug), "database_name": database_name,
+            "server_slug": slug}

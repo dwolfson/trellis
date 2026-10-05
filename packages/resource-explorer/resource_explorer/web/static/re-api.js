@@ -160,6 +160,41 @@ export const getSchemaInventoryTree = (slug) =>
   get(`/api/databases/${encodeURIComponent(slug)}/schema-inventory-tree`);
 export const listFilesystems = () => get('/api/filesystems/');
 
+/* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
+ * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
+ * RE; the scope routes reach nothing of Egeria's (the commit routes below do).
+ * Every write is answered 401 when nobody is signed in. */
+const scopeUrl = (slug, tail = '') =>
+  `/api/catalogue-scope/${encodeURIComponent(slug)}${tail}`;
+export const getCatalogueScope = (slug) => get(scopeUrl(slug));
+export const setCatalogueDepth = (slug, depth) => put(scopeUrl(slug, '/depth'), { depth });
+export const setCatalogueNode = (slug, schema, table, choice) =>
+  put(scopeUrl(slug, '/node'), { schema_name: schema, table_name: table || '', choice });
+export const confirmCatalogueNode = (slug, schema, table) =>
+  post(scopeUrl(slug, '/node/confirm'), { schema_name: schema, table_name: table || '' });
+export const overrideCatalogueNode = (slug, schema, table) =>
+  post(scopeUrl(slug, '/node/override'), { schema_name: schema, table_name: table || '' });
+export const clearCatalogueNode = (slug, schema, table) =>
+  post(scopeUrl(slug, '/node/clear'), { schema_name: schema, table_name: table || '' });
+/** Bulk choice on schemas: `nodes` is [{schema, table?}], `choice` is
+ *  'catalogue' | 'leave_out' | '' (clear); `allSchemas` means every offered one. */
+export const setCatalogueNodes = (slug, nodes, choice, allSchemas = false) =>
+  post(scopeUrl(slug, '/nodes'), {
+    nodes: (nodes || []).map((n) => ({ schema_name: n.schema, table_name: n.table || '' })),
+    choice, all_schemas: !!allSchemas });
+export const redeclareCatalogueScope = (slug) => post(scopeUrl(slug, '/redeclare'));
+export const resolveCatalogueConflict = (slug, name, choice) =>
+  post(scopeUrl(slug, '/resolve'), { name, choice });
+/* The commit (Curate slice B). The preview READS Egeria (what hangs off each schema
+ * being left out) and writes nothing; the commit and the read-back are 401 when
+ * nobody is signed in, and the commit's body carries no scope: the record is the scope. */
+export const getCatalogueCommitPreview = (slug) => get(scopeUrl(slug, '/commit-preview'));
+export const postCatalogueCommit = (slug, refreshNow = false) =>
+  post(scopeUrl(slug, '/commit'), { refresh_now: !!refreshNow });
+export const getCatalogueCommitRecord = (slug, id) =>
+  get(scopeUrl(slug, `/commits/${encodeURIComponent(id)}`));
+export const postCatalogueReadBack = (slug) => post(scopeUrl(slug, '/read-back'));
+
 /* ── Database servers (web/routes/db_servers.py) ────────────────────────
  *
  * Classic's (index.html) real mechanism for finding databases: a server is
@@ -213,6 +248,56 @@ export const addDiscoveredDatabase = (slug, databaseName, displayName = '') =>
   post(`/api/db-servers/${encodeURIComponent(slug)}/add-database`
     + `?database_name=${encodeURIComponent(databaseName)}`
     + (displayName ? `&display_name=${encodeURIComponent(displayName)}` : ''));
+
+/* ── CSV in and out (web/routes/discovery.py `/from-file/*`, `/candidates.csv`) ──
+ *
+ * The CSV contract is batch_io.py's. The browser sends the file's TEXT; the
+ * server re-plans it on every call (the text is the truth, no rows travel).
+ * No credential is ever in the file, the request or the response: a database row
+ * names a registered server (`server`) or a reference name (`connection_ref`). */
+
+/** The five-count preview. Writes nothing. `serverChoices` is {line: serverSlug}
+ *  for rows that named no server. A refused file comes back 200 with `refused`. */
+export const previewDiscoveryFile = (text, serverChoices = {}, investigation = '') =>
+  post('/api/discovery/from-file/preview', { text, server_choices: serverChoices, investigation });
+
+/** Apply a confirmed preview: {text, lines, server_choices, group, investigation,
+ *  accept_changes: [{line, field}]}. */
+export const importDiscoveryFile = (payload) => post('/api/discovery/from-file/import', payload);
+
+/** Fetch any CSV export as {text, filename}; the filename is the server's own
+ *  `re-<what>-<name>-<date>.csv`. Bearer auth rides on the patched fetch, which a
+ *  plain download link would not carry. */
+export async function fetchCsvFile(path, options = {}) {
+  let res;
+  try {
+    res = await fetch(path, options);
+  } catch (err) {
+    throw new ApiError(0, `Resource Explorer at ${window.location.origin} is not responding.`, path);
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON error body */ }
+    throw new ApiError(res.status, detail, path);
+  }
+  const text = await res.text();
+  const cd = (res.headers && res.headers.get && res.headers.get('content-disposition')) || '';
+  const m = cd.match(/filename="?([^";]+)"?/);
+  return { text, filename: m ? m[1] : 're-export.csv' };
+}
+
+/** A source's candidates, as the dialog shows them. */
+export const fetchCandidatesCsv = (payload) =>
+  fetchCsvFile('/api/discovery/candidates.csv',
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(payload) });
+
+/** An investigation's in-scope members. */
+export const fetchScopeCsv = (slug) =>
+  fetchCsvFile(`/api/investigations/${encodeURIComponent(slug)}/scope.csv`);
+
+/** A work list's members. */
+export const fetchWorkListCsv = (slug) =>
+  fetchCsvFile(`/api/work-lists/${encodeURIComponent(slug)}/export.csv`);
 
 /* ── Catalog vocabularies ────────────────────────────────────────────── */
 
@@ -1125,13 +1210,13 @@ export const getMembers = (slug, analysisId, { metric = '', scope = 'public', li
 };
 
 /** Promote a member-list selection. Three acts, one provenance line
- *  composed on the server: work_list (I will deal with this), rfa (someone
- *  must), journal (worth knowing). `members` is a snapshot of names, never
+ *  composed on the server: scope (put the repo in `investigation`'s scope),
+ *  rfa (someone must), journal (worth knowing). `members` is a snapshot of names, never
  *  a query. 401 when anonymous. See `getMembers`'s found-not-fixed note
  *  above — same gap, same reason. */
-export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [] }, entityType) =>
+export const promoteMembers = (slug, analysisId, { action, metric = '', members = [], total = 0, facet = '', runAt = '', name = '', suggestTo = [], investigation = '' }, entityType) =>
   post(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/promote?entity_type=${encodeURIComponent(requireKind('promoteMembers', entityType))}`,
-    { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo });
+    { action, metric, members, total, facet, run_at: runAt, name, suggest_to: suggestTo, investigation });
 
 export const getMemberChildren = (slug, analysisId, key, { scope = 'public', limit = 200 } = {}, entityType) =>
   get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
@@ -1156,6 +1241,16 @@ export const createWorkList = (displayName, entitySlugs, { investigation = '', r
     display_name: displayName, entity_slugs: [...entitySlugs],
     investigation, rationale, description, entity_type: requireKind('createWorkList', entityType),
   });
+
+/** Tag a saved list with its investigation ('' unlinks). 404 for an unknown investigation. */
+export const linkWorkListInvestigation = (slug, investigation) =>
+  put(`/api/work-lists/${encodeURIComponent(slug)}/investigation`, { investigation });
+
+/** Put a list's members (or the ticked subset) in an investigation's scope. The server
+ *  skips members already in scope and reports them: {added, already_in_scope, ...}. */
+export const addWorkListToInvestigation = (slug, investigation, entitySlugs = null) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/add-to-investigation`,
+       { investigation, ...(entitySlugs ? { entity_slugs: [...entitySlugs] } : {}) });
 
 export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
   post(`/api/work-lists/${encodeURIComponent(slug)}/promote`,
@@ -1469,15 +1564,16 @@ export const listRecords = (slug, entityType) =>
 export const recordExportHref = (slug, id, fmt) =>
   `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}?fmt=${fmt}`;
 
-/** The three acts on a report: work_list | rfa | journal. `rows` null = the
- *  whole report. The server acts on the stored snapshot. `entityType` as
- *  above. */
-export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '' } = {}, entityType) =>
+/** The three acts on a report: scope | rfa | journal (`work_list` is legacy
+ *  and no longer offered). `scope` puts the resource in `investigation`'s
+ *  scope. `rows` null = the whole report. The server acts on the stored
+ *  snapshot. `entityType` as above. */
+export const actOnRecord = (slug, id, { action, rows = null, name = '', suggestTo = [], journalId = '', investigation = '' } = {}, entityType) =>
   post(
     requireKind('actOnRecord', entityType) === 'repo'
       ? `/api/projects/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`
       : `/api/projects/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/records/${encodeURIComponent(id)}/act`,
-    { action, rows, name, suggest_to: suggestTo, journal_id: journalId },
+    { action, rows, name, suggest_to: suggestTo, journal_id: journalId, investigation },
   );
 
 /* ── Component review ───────────────────────────────────────────────────── */

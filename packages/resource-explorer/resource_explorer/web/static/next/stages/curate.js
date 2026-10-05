@@ -20,6 +20,7 @@ import {
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
 } from '/static/next/stages/curate-bands.js';
+import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
@@ -244,6 +245,15 @@ export async function renderCurate(slug) {
     // Skip every repo-only /api/projects/{slug}/... call entirely rather
     // than firing it and reporting whatever 404 comes back.
     host.innerHTML = nonRepoCurateHtml(entityType);
+    if (entityType === 'database') {
+      // Band 2's first section: what gets catalogued. A failure says so in
+      // its own slot (renderCatalogueScope), never takes the pane down.
+      bands.push(renderCatalogueScope(host.querySelector('[data-curate-scope]'), slug)
+        .catch((err) => {
+          const slot = host.querySelector('[data-curate-scope]');
+          if (slot && slot.isConnected) slot.innerHTML = `<div class="text-caveat text-state-warn">The catalogue scope could not be drawn: ${esc(err.message)}</div>`;
+        }));
+    }
     await Promise.all(bands);
     return;
   }
