@@ -66,6 +66,56 @@ the OMF element handler (worth one cheap re-check of S11), two changes to
 the element handler (one cheap re-check of S18), and content-pack process
 definitions (S5, S6, S8, S10 not established from here).
 
+**Second scratch run, 2026-10-05 on today's build**
+(`evidence/SCRATCH-CATALOGUER-TEST-2-2026-10-05.md`), what changed and what
+it settles:
+
+- **S11 is now partly fixed:** `includeSchemaNames` as a real array on a
+  database-kind target is stored as a list and honoured; the database-level
+  leak (S12) is unchanged, and `public` is not special in it.
+- **S4 confirmed:** the survey's `includeSchemaNames` / `excludeSchemaNames`
+  as a *request parameter* scope the report exactly (1 schema, 2 schemas,
+  exclude); a name containing a comma is split and matches nothing; an array
+  on the database element's own connection is **ignored** (the service reads
+  its own connection's configuration), so RE passes the list as the request
+  parameter and says a comma-bearing schema name cannot be scoped.
+- **Schema-kind targets alone produce no database-level pass**: only the
+  targeted schemas' tables and columns appear, nothing under the database.
+  The `_`/`%` hazard inside a schema stands (S3).
+- **S17's operational cost:** a detached target keeps being refreshed until
+  the JDBCDatabaseCataloguer connector is restarted (restarting that one
+  connector suffices; verified four times); its elements stay active and
+  untouched.
+- **Leave-out, as RE will do it:** archiving the DeployedDatabaseSchema
+  archives its tables and columns with it; soft-deleting removes the whole
+  tree; with the target still attached the connector logs
+  JDBC-INTEGRATION-CONNECTOR-0006 and recreates nothing.
+- **Re-inclusion:** after a soft delete, re-create from the template and
+  re-attach works (new GUIDs, no 409 on this build); after an **archive**,
+  re-create from the template fails 400 because the archived element is
+  invisible to it (Memento), the archived schema keeps its qualifiedName and
+  its children get an `_archivedOn_` suffix. No restore path was found.
+- **The archive endpoint is broken on this build** (500, a
+  `DeleteRequestBody` class-name error); the only working archive is the
+  delete endpoint with `deleteMethod=ARCHIVE` plus `forLineage` and
+  `forDuplicateProcessing` true (without them: 400, one child archived).
+- **S18 re-confirmed:** cascade delete of the database element fails
+  (400 by default; 401 after 92 anchored deletes with SOFT_DELETE and
+  forLineage); per-element, leaf-first, forLineage true works.
+- **S15:** the database template's description placeholder is
+  `databaseDescription`, not `description`; supplied with
+  `versionIdentifier`, no `~{…}~` remains, so this one is RE's to fix.
+- Side observations: about twenty idle JDBC sessions lingered up to twenty
+  minutes after the test (the throwaway needed `DROP DATABASE … WITH
+  (FORCE)`); survey annotation GUIDs were shared across reports.
+
+Two more for the Egeria leads:
+
+| # | suggestion | what the test showed |
+|---|---|---|
+| S19 | **A restore path for an archived DeployedDatabaseSchema**, or a template create that adopts an archived element by qualifiedName | re-including a schema that was archived (the designer's preferred leave-out, to keep term assignments) fails 400; only a soft-deleted one can be re-created, with new GUIDs |
+| S20 | **The `/archive` endpoint returns 500** on the 2026-10-05 build (`DeleteRequestBody` class name) | archive works only through the delete endpoint with `deleteMethod=ARCHIVE`, `forLineage` and `forDuplicateProcessing` set |
+
 ## 2. The second door: RE catalogues on its own
 
 RE already creates elements for repositories (`publish_sub_resources`,
