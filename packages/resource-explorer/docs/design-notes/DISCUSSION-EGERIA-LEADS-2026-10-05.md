@@ -243,6 +243,40 @@ Recorded as given, with RE's response.
    cataloguer and the RE persona may all write in it, which the next
    scratch run confirms before any real database is catalogued.
 
+### Clarifications from the owner, later the same evening
+
+- **On scope names (topic 2):** schema-qualified names are possible, and a
+  *multi-part name*, the database's own `schema.table` identifier, may be
+  the better form; examples to be worked. RE's position: whichever form
+  Egeria's lists accept, RE compiles the stored scope into it; the
+  examples should include a table name present in two schemas, which is the
+  case plain names cannot express.
+- **On `_` and `%` (topic 3), restated because it was unclear:** this is
+  not about what RE passes to Egeria. RE's include and exclude names are
+  matched by exact equality and RE can filter them before the call. The
+  problem is inside the cataloguer's own listing: once it has chosen a
+  schema, it hands that schema's *real name* (`a_b`) to the JDBC driver's
+  `getTables` as the pattern argument, and JDBC reads `_` as "any one
+  character", so the driver also returns the tables of `aXb`, which the
+  cataloguer then creates under `a_b`. The same with `getColumns` and a
+  table named `x_y`. Those wrong rows are created inside Egeria's connector
+  before RE sees anything, so RE can only warn beforehand; the fix is in
+  the connector, by listing with a null pattern and filtering the returned
+  rows by exact name, or by escaping the name before the call.
+- **On the cataloguer creating the schema (topic 4):** agreed that common
+  qualified names cannot be enforced across every user of Egeria. What RE
+  needs is narrower: that the identity the cataloguer gives the elements
+  it creates is deterministic from the database's multi-part name, so RE
+  can read back the elements its commit caused. The cataloguer's
+  `<parent>::<name>` scheme already is; the agreement needed is only that
+  it stays so.
+- **On zones (topic 7):** there is a default zone to use when none is
+  requested, and with no zone specified everyone has visibility, which is
+  an acceptable default; users may choose special-purpose zones later. So
+  RE's commit writes no zone; the one fact to confirm is that the survey
+  engine, the cataloguer and the RE persona can all write in that default,
+  which tonight's read-back run tests.
+
 ## What RE will do regardless
 
 Store the scope in RE and compile it on every commit; derive every state
