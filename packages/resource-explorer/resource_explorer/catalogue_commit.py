@@ -61,6 +61,7 @@ LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connect
                   "· nothing is recreated")
 CANT_CHECK = "couldn't check what hangs off it"
 OWNER_REFUSED = "owner set by Egeria's source · can't change from RE"
+NO_SCOPE_SENTENCE = "no scope declared · nothing catalogued"
 NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet catalogued in Egeria"
 
 # ── proof kinds (rows in catalogue_commit_proofs) ────────────────────────────
@@ -526,6 +527,19 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
          "text": (f"{SURVEY_LINE}: " + (", ".join(ok_names) if ok_names else "no schema chosen, so the survey is not started")
                   + (f". Not scopable, a comma in the name: {', '.join(comma_names)}" if comma_names else ""))},
     ]
+    # What this commit will NOT do, named: "1 schema not committed: s_x · couldn't check what
+    # hangs off it". Both per-schema holds appear here; the rest of the commit proceeds.
+    held: dict[str, list[str]] = {}
+    for r in leave:
+        if r.get("blocked"):
+            held.setdefault(CANT_CHECK, []).append(r["schema"])
+    for r in refused:
+        held.setdefault(S19_SENTENCE, []).append(r["schema"])
+    not_committed = [{"reason": why, "schemas": names} for why, names in held.items()]
+    for nc in not_committed:
+        n = len(nc["schemas"])
+        nc["text"] = f"{n} schema{'s' if n != 1 else ''} not committed: {', '.join(nc['schemas'])} · {nc['reason']}"
+        lines.append({"id": "not_committed", "mechanism": 0, "text": nc["text"]})
     if leave:
         lines.append({"id": "leave_out", "mechanism": 0, "text": "; ".join(r["text"] for r in leave)})
     lines.append({"id": "whole_schemas", "mechanism": 0, "text": WHOLE_SCHEMAS_LINE})
@@ -549,7 +563,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         "leave_out": leave,
         "collisions": collisions,
         "survey": {"schemas": ok_names, "not_scopable": comma_names, "line": SURVEY_LINE},
-        "manifest": {"lines": lines, "schema_targets": len(attach), "new_targets": n_new,
+        "manifest": {"lines": lines, "not_committed": not_committed, "schema_targets": len(attach), "new_targets": n_new,
                      "survey_schemas": ok_names, "zones": zones, "owner": owner,
                      "whole_schemas_line": WHOLE_SCHEMAS_LINE},
         "tables_line": WHOLE_SCHEMAS_LINE,
@@ -778,6 +792,10 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
     db_entity = registry.get_database(slug, allow_unreadable=True)
     if db_entity is None:
         raise CommitBlocked(404, f"Database '{slug}' not found")
+    if not registry.list_catalogue_scope_baselines(slug):
+        # Nothing has ever been declared for this database. Catalogue-by-default is exactly
+        # what the scope exists to prevent, so this stops before any Egeria call is made.
+        raise CommitBlocked(409, NO_SCOPE_SENTENCE, [NO_SCOPE_SENTENCE])
     view = build_scope_view(registry, slug)
     derived = derive_commit_state(registry, slug, view)
     if gateway is None:

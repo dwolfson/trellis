@@ -58,8 +58,8 @@ connector, asserted by a test), `read_back`. A step that fails is a failed step;
 * **Depth.** A schema-kind target always creates tables and columns and Egeria has no depth option (S2), so depth is
   a tree view; the earlier "include list" wording would now be a false claim and is gone.
 * **Version** is "not recorded" (RE keeps no PostgreSQL version): honest beats a made-up "1.0".
-* **Classic**: the button and modal are gone. `POST /api/databases/{slug}/publish` stays because the survey-definition
-  "catalog in Egeria now, then retry" still calls it; it starts an unscoped survey (documented on the route).
+* **Classic**: the button and modal are gone, and the survey-definition retry now goes through the commit (see the architect rulings
+  below). `POST /api/databases/{slug}/publish` stays for Classic API callers only; it starts an unscoped survey (documented on the route).
 * A queued attach checks the scope again when it runs: if the schema was left out in the meantime it does nothing.
 
 ## Migration (for the coordinator's peer check)
@@ -115,8 +115,19 @@ no constraint, so the new kind needs nothing. Covered by `test_migration_is_addi
 8. The lingering-target sentence is the brief's wording; the read-back proves the detach, and S17 (a removed target keeps being refreshed) is the recorded behaviour, not something each read re-observes.
 9. The server-template placeholder for its description (S15 was only isolated for the database template).
 
-## Rulings wanted
+## Architect rulings (2026-10-05) and what they changed
 
-* Whether a collision should block per schema rather than the whole commit (built as the brief says: whole).
-* Whether the survey-definition retry should stop calling the unscoped Classic publish route.
-* Whether "refresh now" should default on (UI: on; API: off).
+**Decision (architect, 2026-10-05):** (1) The split is confirmed: a failed relationships read or a refused re-inclusion blocks only
+that schema, and the manifest names it in the form "1 schema not committed: s_x · couldn't check what hangs off it" (or "... ·
+can't be re-included until Egeria restores archived elements") while the rest proceeds; a name collision blocks the whole commit.
+Built as the `not_committed` manifest line and `manifest.not_committed`.
+**Decision (architect, 2026-10-05):** (2) RE itself never calls the unscoped publish route. The survey-definition "catalogue, then
+retry" button now POSTs the commit (`/api/catalogue-scope/{slug}/commit`), which compiles the stored scope; with no scope declared the
+commit stops with "no scope declared · nothing catalogued", before any gateway is built or Egeria is called, and queues nothing. The
+commit is queued work, so the survey definition is not auto-retried: the toast says to run it again when the commit has finished.
+**Decision (architect, 2026-10-05):** (3) Refresh-now default stays: UI on, API off.
+**Decision (architect, 2026-10-05):** (4) The database version stays "not recorded".
+
+**Backlog:** `POST /api/databases/{slug}/publish` stays only for Classic API callers and its docstring says it is unscoped; a follow-up
+makes it scope-aware or removes it. Also unscoped and not touched here: `HybridDatabaseSurveyor` (the `egeria-adaptive` survey path)
+still calls `publish_local_survey`/`catalog_and_survey`, which catalogue and start an unscoped survey; that is a separate follow-up.

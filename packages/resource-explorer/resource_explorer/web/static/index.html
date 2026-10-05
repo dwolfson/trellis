@@ -1126,7 +1126,7 @@
 <!-- The Publish-to-Egeria modal for databases was retired here (Curate slice B,
      BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md): "Catalogue" on a database's Curate pane in /next
      is the publish now, a curation record with a manifest and per-node proof. The REST route
-     POST /api/databases/{slug}/publish stays for the survey-definition retry below. -->
+     POST /api/databases/{slug}/publish is no longer called from this page (see the backlog note in the implemented note). -->
 
 <!-- Run Analysis (catalog card) modal — gives the analysis-card "Run" action
      the same backgrounded shape as the Run Survey Definition modal below:
@@ -9191,7 +9191,7 @@ async function submitSurveyDefinitionRun() {
           <div class="text-amber-300">This database isn't cataloged in Egeria yet, so its Egeria-side step(s) couldn't run.</div>
           <button id="survey-def-catalog-retry-btn" onclick="catalogAndRetrySurveyDefinition()"
             class="mt-1.5 text-xs px-2 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
-            ☁ Catalog in Egeria now, then retry →
+            ☁ Catalogue from its scope, then retry →
           </button>
         </div>`
       : '';
@@ -9239,43 +9239,37 @@ async function submitSurveyDefinitionRun() {
 }
 
 async function catalogAndRetrySurveyDefinition() {
+  // Never the unscoped database publish. Catalogue goes through the Curate commit, which
+  // compiles the STORED scope; with no scope declared it stops and writes nothing to Egeria.
+  // The commit is queued work, so the survey definition is not auto-retried: run it again
+  // once the commit has finished (its steps are on the database's Curate pane in /next).
   if (!_surveyDefRun) return;
   const { slug } = _surveyDefRun;
   const btn = document.getElementById('survey-def-catalog-retry-btn');
-  const dbUser = document.getElementById('survey-def-run-user').value.trim();
-  const dbPwd  = document.getElementById('survey-def-run-pwd').value;
-
-  if (btn) { btn.disabled = true; btn.textContent = 'Cataloging in Egeria… (this can take 30–90s)'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Queuing the catalogue commit…'; }
   const opId = logOp({ type:'publish', slug, status:'running',
-    summary:`Cataloging ${slug} in Egeria before retrying Survey Definition…` });
-  showToast('running', `Cataloging <strong>${_esc(slug)}</strong> in Egeria…`, 0);
-  const runningToastId = `toast-${_toastSeq}`;
-
+    summary:`Queuing the catalogue commit for ${slug} from its stored scope…` });
   try {
-    const res = await fetch(`/api/databases/${slug}/publish`, {
+    const res = await fetch(`/api/catalogue-scope/${encodeURIComponent(slug)}/commit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ db_user: dbUser, db_pwd: dbPwd }),
+      body: JSON.stringify({ refresh_now: false }),
     });
-    const data = await res.json();
-    document.getElementById(runningToastId)?.remove();
-    if (!res.ok || data.status === 'error') {
-      const msg = data.detail || data.error || 'Cataloging failed';
-      updateOp(opId, 'error', `Cataloging ${slug} failed: ${msg}`, msg);
-      showToast('error', `Cataloging failed for <strong>${_esc(slug)}</strong>: ${_esc(msg)}`, 10000);
-      if (btn) { btn.disabled = false; btn.textContent = '☁ Catalog in Egeria now, then retry →'; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data.detail || data.error || 'The catalogue commit was refused';
+      updateOp(opId, 'error', `Not catalogued: ${msg}`, msg);
+      showToast('error', `<strong>${_esc(slug)}</strong>: ${_esc(msg)}`, 10000);
+      if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
       return;
     }
-    updateOp(opId, 'ok', `Cataloged ${slug} in Egeria`, '');
-    showToast('success', `Cataloged <strong>${_esc(slug)}</strong> in Egeria — retrying Survey Definition…`, 5000);
-    // Now that the database has an egeria_asset_guid, retry the whole run —
-    // the previously-failing Egeria-tagged step(s) should succeed this time.
-    await submitSurveyDefinitionRun();
+    updateOp(opId, 'ok', `Catalogue commit queued for ${slug}`, '');
+    showToast('success', `Catalogue commit queued for <strong>${_esc(slug)}</strong>. Run the Survey Definition again when it has finished (Curate shows its steps).`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
   } catch(e) {
-    document.getElementById(runningToastId)?.remove();
-    updateOp(opId, 'error', `Cataloging ${slug} failed: ${e.message}`, e.message);
-    showToast('error', `Cataloging failed for <strong>${_esc(slug)}</strong>: ${_esc(e.message)}`, 10000);
-    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalog in Egeria now, then retry →'; }
+    updateOp(opId, 'error', `Catalogue commit failed to queue: ${e.message}`, e.message);
+    showToast('error', `Could not queue the catalogue commit: ${_esc(e.message)}`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
   }
 }
 

@@ -884,3 +884,59 @@ def test_the_database_template_gets_database_description_and_version_so_no_place
     s._catalog_and_survey(entity_stub(), "u", "p", registry=None, survey_after_catalog=False)
     ph = dict(calls)["PostgreSQL Relational Database"]
     assert ph["databaseDescription"] and ph["versionIdentifier"] and ph["description"]
+
+
+# ── architect rulings, 2026-10-05 ────────────────────────────────────────────
+
+def test_the_manifest_names_the_schemas_not_committed_in_one_sentence_form(world, fake):
+    _catalogued(world, fake, "sales", "archive")
+    choose(world, "sales", "leave_out")
+    fake.fail["relationships"] = "503 read failed"
+    p = cc.build_preview(world["registry"], "db", view(world), fake)
+    nc = [ln["text"] for ln in p["manifest"]["lines"] if ln["id"] == "not_committed"]
+    assert nc == ["1 schema not committed: sales · couldn't check what hangs off it"]
+    assert p["manifest"]["not_committed"][0]["schemas"] == ["sales"] and p["can_commit"]     # the rest proceeds
+
+
+def test_refused_reinclusion_and_a_failed_read_are_both_named_and_collisions_still_block_everything(world, fake):
+    _catalogued(world, fake, "archive")
+    fake.add_term_assignment("orders", "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.archive")
+    choose(world, "archive", "leave_out")
+    press(world, fake)
+    choose(world, "archive", "catalogue")
+    choose(world, "sales", "catalogue")
+    p = cc.build_preview(world["registry"], "db", view(world), fake)
+    assert "1 schema not committed: archive · can't be re-included until Egeria restores archived elements" in \
+        [ln["text"] for ln in p["manifest"]["lines"]]
+    assert p["can_commit"] and p["attach"] == ["sales"]
+    choose(world, "a_b", "catalogue")                                          # a collision blocks the whole commit
+    assert not cc.build_preview(world["registry"], "db", view(world), fake)["can_commit"]
+
+
+def test_the_commit_with_no_scope_declared_writes_nothing_to_egeria(world, fake, monkeypatch):
+    """The survey-definition retry goes through the commit: with no scope declared it stops, makes no
+    gateway and no Egeria call, queues no outbox row and no run."""
+    monkeypatch.setattr(cc, "make_gateway", lambda e: pytest.fail("no gateway may even be built"))
+    with pytest.raises(cc.CommitBlocked) as err:
+        cc.start_commit(world["registry"], "db", ME)
+    assert err.value.status == 409 and err.value.message == "no scope declared · nothing catalogued"
+    assert fake.calls == [] and world["registry"].list_catalogue_outbox_rows("db") == []
+    assert world["registry"].list_catalogue_commit_proofs("db") == []
+    with world["registry"]._conn() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"] == 0
+
+
+def test_commit_route_with_no_scope_is_409_with_the_sentence_and_no_egeria_call(client, world, fake):
+    r = client.post("/api/catalogue-scope/db/commit", json={}, headers=as_user(ME))
+    assert r.status_code == 409 and r.json()["detail"] == "no scope declared · nothing catalogued"
+    assert fake.calls == []
+
+
+def test_the_survey_definition_retry_uses_the_commit_and_never_the_unscoped_publish_route():
+    html = (Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html").read_text()
+    a = html.index("async function catalogAndRetrySurveyDefinition()")
+    body = html[a:html.index("// ── Context gathering form", a)]
+    assert "/api/catalogue-scope/" in body and "/commit" in body
+    assert "/publish" not in body and "db_pwd" not in body
+    assert "submitSurveyDefinitionRun()" not in body          # the commit is queued work: no automatic retry
+    assert "/api/databases/${slug}/publish" not in html       # RE's own page calls the unscoped route nowhere
