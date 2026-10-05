@@ -34,10 +34,11 @@ throwaway database; the live behaviour, not only the source):
 
 | # | suggestion | what the test showed |
 |---|---|---|
-| S11 | **Honour JSON arrays in a CatalogTarget's `configurationProperties`**, or document the string form the lists accept | an array read back as a flattened `ArrayTypePropertyValue{…}` string and no schema in the include list was processed; `deleteMethod` on the same relationship persisted fine |
+| S11 | **Accept several names in a CatalogTarget's include/exclude lists**: honour arrays, or split a delimited string | a JSON array read back as a flattened `ArrayTypePropertyValue{…}` string and no schema was processed; comma and JSON-array *strings* were stored as plain strings and treated as one name (`TransferCustomizations.processCustomization`: a String is one name, only `List<String>` gives several, and the relationship stores configurationProperties as strings), so a database-kind target can name exactly one schema |
 | S12 | **The "schema defaults to `public`" rule should apply only to tables in `public`**: no database-level pass over other schemas' tables | the docs (egeria-solutions/leveraging-postgres/overview) say a resource name is `serverName.databaseName.schemaName.tableName.columnName` "with the database schema defaulting to `public` if none is specified"; the test showed tables of five non-public schemas (a_b 1, aXb 1, s_x 2, pct 1, plain 2 of 7 built) created directly under the database as `<dbQN>::<table>`, none under a schema element, when the schema pass did not run; the throwaway had no table in `public`, so how `public` itself is treated is still to be read |
 | S13 | **Delete or archive dependents with a stale schema** (schema type, tables, columns) | a soft-deleted schema left its `_schemaType` and its table ACTIVE and orphaned |
 | S14 | **Exclude system schemas from pattern matches on real names** (with S3) | a table named `p%t` received about 65 `pg_catalog` columns alongside its own two |
+| S16 | **Re-including a schema that was once excluded must succeed**: the stale delete must remove the `_schemaType` (and other dependents) or the re-create must adopt it | after a schema was soft-deleted as stale, its schema type kept the unique qualifiedName; re-including the schema failed with OMAG-COMMON-409-001 on `<dbQN>::<schema>_schemaType` |
 | S15 | **Resolve or drop unused template placeholders** on template-created elements | RE's template publish left `description` and `versionIdentifier` as literal `~{…}~` strings (RE's side to supply, Egeria's side to refuse or blank) |
 
 **Two names, side by side, so neither is "fixed" into the other:** the
@@ -92,8 +93,27 @@ the owner):* S3 confirmed for tables and columns; adoption not established
 because the schema pass never ran (the array lists were not honoured, S11),
 and the pre-made schema was soft-deleted as stale with its dependents
 orphaned (S13); interval about 34 minutes, forced refresh 16 seconds. Two
-string forms of the include list remain to be tried on the live target. If
-neither works, the second door is the only one that honours a scope today.
+string forms of the include list were tried on 2026-10-05: neither works
+(S11). **A third door was found in the running build's newer code and
+tested: SCHEMA-kind catalog targets.** RE creates a DeployedDatabaseSchema
+from the template of technology type "PostgreSQL Relational Database
+Schema" (qualifiedName `PostgreSQL Relational Database Schema::<server>::<db>.<schema>`),
+attaches it to the JDBC cataloguer with no configuration, and one refresh
+creates exactly that schema's tables and columns under it and nothing
+else: no other schema's tables, no database-level leak from that target.
+The `_`/`%` hazard survives inside it (a SCHEMA target for `a_b` also
+pulled in `aXb`'s table), so RE's inventory check stays. Not yet tested:
+detaching a SCHEMA target and what happens to its elements; whether the
+database-level pass exists when no database-kind target is attached; and
+all of it on the rebuilt platform with the 2026-10-05 fixes.
+
+**Decision (design session, 2026-10-05, for the owner to confirm):** slice
+B takes the third door: one SCHEMA-kind target per chosen schema, created
+and attached by RE's commit, no include lists; depth below "tables and
+columns" is not offered until S2 exists; leave-out detaches the schema
+target and archives (behaviour to be read back); re-inclusion handles S16
+by adopting or clearing the orphaned schema type; RE's manifest flags
+`_`/`%` collisions across all schema and table names before attaching.
 
 - If adoption works and the hazard is guarded: attach the cataloguer, as
   the designer's reply assumes; RE's own creation stays the fallback.
