@@ -178,6 +178,10 @@ async function setUp(view, preview, opts = {}) {
   assert.ok(btn, 'nav must offer a Curate button');
   btn.click();
   await wait();
+  // a declared scope starts collapsed to one line, and the commit's preview is read only once it is open
+  const fold = document.querySelector('[data-scope-collapse]');
+  if (opts.leaveCollapsed) return { document, window, app, server };
+  if (fold && fold.getAttribute('aria-expanded') === 'false') { fold.click(); await wait(); }
   return { document, window, app, server };
 }
 
@@ -390,4 +394,15 @@ test('Read Egeria again posts the read-back and the status comes from its answer
   await wait(120);
   assert.equal(server.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/read-back')).length, 1);
   assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: 1 catalogued · 1 attached, waiting$/);
+});
+
+test('a collapsed section reads nothing from Egeria: the preview is read when it is opened', async () => {
+  const { document, server } = await setUp(baseView(), previewFor(), { leaveCollapsed: true });
+  assert.equal(server.calls.filter((c) => c.url.endsWith('/commit-preview')).length, 0);
+  // the marker is still there on the collapsed line, from the server's state
+  assert.equal(flat(document.querySelector('[data-scope-saved-marker]')), NOT_COMMITTED);
+  document.querySelector('[data-scope-collapse]').click();
+  await wait();
+  assert.equal(server.calls.filter((c) => c.url.endsWith('/commit-preview')).length, 1);
+  assert.ok(document.querySelector('[data-scope-commit-btn]'));
 });

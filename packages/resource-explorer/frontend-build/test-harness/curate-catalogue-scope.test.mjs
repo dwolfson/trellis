@@ -65,6 +65,9 @@ function baseView(over = {}) {
     counts: { schemas_offered: 3, schemas_catalogue: 0, schemas_leave_out: 0, schemas_undecided: 3 },
     new_since: { declared: false, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' },
     conflicts: { count: 0, names: [], pairs: [] },
+    // what the server derives from proof rows when nothing has been committed
+    commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet catalogued in Egeria' },
+      database: null, collisions: [], schemas: {}, tables: {} },
     schemas: [
       schema('sales', [table('sales', 'orders'), table('sales', 'customers')]),
       schema('archive', [table('archive', 'orders')]),
@@ -241,13 +244,38 @@ test('header, undeclared and never measured: says not measured yet, and an uncat
   assert.match(flat(document.querySelector('[data-scope-tree-header]')), /not catalogued in Egeria/);
 });
 
-test('header, declared: 7 of 29 schemas, declared by who and when', async () => {
-  const { document } = await setUp(baseView({
-    declared: { declared: true, by: 'dwolfson', at: '2026-10-04T08:00:00', kind: 'first', baseline_survey_at: '' },
-    counts: { schemas_offered: 29, schemas_catalogue: 7, schemas_leave_out: 0, schemas_undecided: 22 },
-  }));
+const declaredView = () => baseView({
+  declared: { declared: true, by: 'dwolfson', at: '2026-10-04T08:00:00', kind: 'first', baseline_survey_at: '' },
+  counts: { schemas_offered: 29, schemas_catalogue: 7, schemas_leave_out: 0, schemas_undecided: 22 },
+});
+
+test('header, declared: collapsed by default to one line of essentials, a real button; the marker stays', async () => {
+  const { document } = await setUp(declaredView());
+  const btn = document.querySelector('[data-scope-collapse]');
+  assert.equal(btn.tagName, 'BUTTON');
+  assert.equal(btn.getAttribute('aria-expanded'), 'false');
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    "Your scope: 7 of 29 schemas known to RE · declared by dwolfson 10-04 · Egeria's latest survey covers 29 schemas, 266 tables");
+  assert.equal(document.querySelector('[data-scope-body]').hidden, true);
+  // the marker is the server's derived state (curate-catalogue-commit.test.mjs covers its changes)
+  assert.equal(flat(document.querySelector('[data-scope-saved-marker]')),
+    'Saved in Resource Explorer · not yet catalogued in Egeria');
+});
+
+test('header, declared: a click expands to the whole scope and the header is the full sentence', async () => {
+  const { document } = await setUp(declaredView());
+  document.querySelector('[data-scope-collapse]').click();
+  assert.equal(document.querySelector('[data-scope-collapse]').getAttribute('aria-expanded'), 'true');
+  assert.equal(document.querySelector('[data-scope-body]').hidden, false);
   assert.equal(flat(document.querySelector('[data-scope-header]')),
     'Your scope: 7 of 29 schemas · declared by dwolfson 10-04 · 29 schemas · Egeria survey 10-04');
+});
+
+test('header, undeclared: open, and the disclosure glyph is outside the header sentence', async () => {
+  const { document } = await setUp(baseView());
+  assert.equal(document.querySelector('[data-scope-collapse]').getAttribute('aria-expanded'), 'true');
+  assert.equal(document.querySelector('[data-scope-body]').hidden, false);
+  assert.equal(document.querySelector('[data-scope-collapse] [aria-hidden="true"]').textContent, '▾');
 });
 
 /* ── depth ─────────────────────────────────────────────────────────────── */
@@ -777,7 +805,7 @@ test('the per-row source line sits under the name, not in the state cell', async
   const r = row(document, 'table:sales.orders');
   assert.ok(r.querySelector('[data-scope-name-cell] [data-scope-source]'));
   assert.equal(r.querySelector('[data-scope-state-cell] [data-scope-source]'), null);
-  assert.match(flat(r.querySelector('[data-scope-state-cell]')), /^not read yet/);
+  assert.match(flat(r.querySelector('[data-scope-state-cell]')), /^—/);   // no proof row, so no state word
 });
 
 test('widths: all seven columns fit a ~1300px content width, the name wraps, narrow panes still scroll', async () => {
