@@ -161,3 +161,70 @@ def test_default_config_without_env_file_fails_closed(fake_connect, monkeypatch)
         ProjectRegistry()                                    # no args, as a command does
     assert fake_connect == []
     assert url not in ProjectRegistry._pg_schema_ready       # never reached migration
+
+
+# --- vector store: the PGVECTOR_SCHEMA gap (closed 2026-10-05) ---------------
+
+
+def test_default_pgvector_store_is_refused_with_the_setting_named(fake_connect, monkeypatch):
+    """True declared default: no PGVECTOR_SCHEMA env, .env disabled."""
+    import resource_explorer.config as config
+    from resource_explorer.vector_store_pg import PgVectorStore
+
+    monkeypatch.delenv("PGVECTOR_SCHEMA", raising=False)
+    monkeypatch.setitem(config.PgVectorConfig.model_config, "env_file", None)
+    monkeypatch.setattr(config, "_config", None)
+    assert config.get_config().pgvector.schema_name == "resource_explorer"   # really the default
+    with pytest.raises(G.SharedRegistryAccessError) as exc:
+        PgVectorStore()
+    msg = str(exc.value)
+    assert "PGVECTOR_SCHEMA" in msg and "'resource_explorer'" in msg
+    assert "test_default_pgvector_store_is_refused_with_the_setting_named" in msg
+    assert fake_connect == []
+
+
+def test_explicit_shared_schema_argument_is_refused(fake_connect):
+    from resource_explorer.vector_store_pg import PgVectorStore
+
+    with pytest.raises(G.SharedRegistryAccessError):
+        PgVectorStore(schema="resource_explorer")
+    assert fake_connect == []
+
+
+def test_autouse_fixture_gives_a_per_test_scratch_schema(isolate_pgvector_schema, fake_connect):
+    """A default store under the suite resolves to the scratch schema, no connect."""
+    from resource_explorer.vector_store_pg import PgVectorStore
+
+    scratch = isolate_pgvector_schema
+    assert scratch.startswith(G.TEST_SCHEMA_PREFIX + "_") and scratch != "resource_explorer"
+    store = PgVectorStore()
+    assert store._config.schema == scratch
+    assert scratch in G._state["vector_schemas_built"]
+    assert fake_connect == []
+    G._state["vector_schemas_built"].discard(scratch)   # nothing real to drop
+
+
+def test_scratch_schema_is_distinct_per_test_and_not_built_unless_used(isolate_pgvector_schema):
+    assert isolate_pgvector_schema not in G._state["vector_schemas_built"]
+
+
+def test_a_tests_own_schema_override_is_left_alone(fake_connect, monkeypatch):
+    from resource_explorer.vector_store_pg import PgVectorStore
+
+    monkeypatch.setenv("PGVECTOR_SCHEMA", "my_own_schema")
+    assert PgVectorStore()._config.schema == "my_own_schema"
+    assert PgVectorStore(schema="resource_explorer_test_7")._config.schema == "resource_explorer_test_7"
+    G._state["vector_schemas_built"].discard("my_own_schema")
+    G._state["vector_schemas_built"].discard("resource_explorer_test_7")
+
+
+def test_vector_schema_opt_in_and_ci_exemptions(fake_connect, monkeypatch):
+    from resource_explorer.vector_store_pg import PgVectorStore
+
+    monkeypatch.setenv("PGVECTOR_SCHEMA", "resource_explorer")
+    monkeypatch.setenv(G.ALLOW_ENV, "1")
+    assert PgVectorStore()._config.schema == "resource_explorer"
+    monkeypatch.delenv(G.ALLOW_ENV)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert PgVectorStore()._config.schema == "resource_explorer"
+    G._state["vector_schemas_built"].discard("resource_explorer")
