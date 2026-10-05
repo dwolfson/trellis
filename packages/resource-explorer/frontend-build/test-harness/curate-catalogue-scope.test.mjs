@@ -501,28 +501,41 @@ test('every row carries a muted source line, and a fact another survey supplied 
 
 test('activity is a word with its window: active, dormant, or can\'t tell with the reason; never "none since"', async () => {
   const v = baseView();
-  v.schemas[0].tables[0].last_write = { state: 'active', text: 'active · 1,204 writes since counters reset 06-02' };
-  v.schemas[0].tables[1].last_write = { state: 'cant_tell', text: "can't tell · counters reset 10-03 · 2 days of evidence" };
-  v.schemas[1].last_write = { state: 'dormant', text: 'dormant · 0 writes in 336 days (counters reset 2025-11-02)' };
-  v.schemas[2].last_write = { state: 'cant_tell', text: "can't tell · reset date not recorded" };
+  v.schemas[0].tables[0].last_write = { state: 'active', writes: 1204, text: 'active · 1,204 writes since counters reset 06-02' };
+  v.schemas[0].tables[1].last_write = { state: 'cant_tell', reason: '2 days of evidence', text: "can't tell · counters reset 10-03 · 2 days of evidence" };
+  v.schemas[1].last_write = { state: 'dormant', writes: 0, window_days: 336, text: 'dormant · 0 writes in 336 days (counters reset 2025-11-02)' };
+  v.schemas[2].last_write = { state: 'cant_tell', reason: 'reset date not recorded', text: "can't tell · reset date not recorded" };
   const { document } = await setUp(v);
   document.querySelector('[data-scope-toggle="sales"]').click();
   const act = (key) => flat(row(document, key).querySelector('[data-scope-lastwrite-cell]'));
-  assert.equal(act('table:sales.orders'), 'active · 1,204 writes since counters reset 06-02');
-  assert.equal(act('table:sales.customers'), "can't tell · counters reset 10-03 · 2 days of evidence");
-  assert.equal(act('schema:archive'), 'dormant · 0 writes in 336 days (counters reset 2025-11-02)');
-  assert.equal(act('schema:empty_one'), "can't tell · reset date not recorded");
+  // The cell is short; the whole sentence rides in its title, so nothing is lost.
+  assert.equal(act('table:sales.orders'), 'active · 1,204 writes');
+  assert.equal(act('table:sales.customers'), "can't tell");
+  assert.equal(act('schema:archive'), 'dormant · 0 writes in 336 days');
+  assert.equal(act('schema:empty_one'), "can't tell");
+  const tip = (key) => row(document, key).querySelector('[data-scope-lastwrite-cell] [title]').title;
+  assert.equal(tip('table:sales.orders'), 'active · 1,204 writes since counters reset 06-02');
+  assert.equal(tip('table:sales.customers'), "can't tell · counters reset 10-03 · 2 days of evidence");
+  assert.equal(tip('schema:archive'), 'dormant · 0 writes in 336 days (counters reset 2025-11-02)');
+  assert.equal(tip('schema:empty_one'), "can't tell · reset date not recorded");
   assert.ok(row(document, 'table:sales.customers').querySelector('[data-scope-activity-cant-tell]').className.includes('text-ink-muted'));
   assert.doesNotMatch(flat(scopeEl(document)), /none since|no writes since/);
   assert.equal(scopeEl(document).querySelectorAll('[data-scope-act="confirm"]').length, 0, 'a can\'t tell proposes nothing');
-  assert.match(flat(document.querySelector('[data-scope-activity-head]')), /^activity$/);
+  assert.match(flat(document.querySelector('[data-scope-activity-head]')), /^Activity$/);
   assert.match(document.querySelector('[data-scope-activity-head]').title, /0 writes in at least 90 days/);
 });
 
-test('columns, left to right: choice, Schema / table, rows, size, activity, data classes, State in Egeria', async () => {
+test('columns, left to right: choice, Schema / table, Rows, Size, Activity, Classes, In Egeria (full names in the titles)', async () => {
   const { document } = await setUp(baseView());
-  const heads = [...document.querySelector('[data-scope-tree-head]').children].map((c) => flat(c).toLowerCase()).filter(Boolean);
-  assert.deepEqual(heads, ['choice', 'schema / table', 'rows', 'size', 'activity', 'data classes', 'state in egeria']);
+  const headEls = [...document.querySelector('[data-scope-tree-head]').children].filter((c) => flat(c));
+  assert.deepEqual(headEls.map(flat), ['choice', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classes', 'In Egeria']);
+  // every shortened header keeps its meaning on hover
+  const byText = Object.fromEntries(headEls.map((c) => [flat(c), c.title]));
+  assert.match(byText.Rows, /Row count/);
+  assert.match(byText.Size, /Size on disk/);
+  assert.match(byText.Activity, /dormant means 0 writes in at least 90 days/);
+  assert.match(byText.Classes, /Data classes found in the columns/);
+  assert.equal(byText['In Egeria'], 'State in Egeria');
   const cells = [...row(document, 'schema:sales').children].map((c) => Object.keys(c.dataset)[0]);
   assert.deepEqual(cells, ['scopeSelectCell', 'scopeChoiceCell', 'scopeNameCell', 'scopeRowsCell', 'scopeSizeCell', 'scopeLastwriteCell', 'scopeClassesCell', 'scopeStateCell']);
   assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-name-cell]')), /sales · 2 tables/);
@@ -578,8 +591,12 @@ test('the STATE column is fully present and the tree scrolls sideways inside its
   const host = document.querySelector('[data-scope-tree]');
   assert.equal(host.style.overflowX, 'auto', 'overflow-x is set on the container');
   assert.ok(host.className.includes('overflow-x-auto'));
-  assert.equal(flat(document.querySelector('[data-scope-state-head]')), 'State in Egeria');
-  assert.ok(host.querySelector('.min-w-max'), 'the rows keep their full width instead of shrinking and clipping');
+  assert.equal(flat(document.querySelector('[data-scope-state-head]')), 'In Egeria');
+  // A2.1: max-content let one long sentence widen every row and forced a scroll at any width.
+  // The floor is a fixed one, so at about 1300px all seven columns fit and only a narrower
+  // pane scrolls. (jsdom does no layout: the fit itself is reasoned from these widths, not measured.)
+  assert.equal(host.querySelector('.min-w-max'), null, 'no max-content floor');
+  assert.ok(host.querySelector('.min-w-\\[64rem\\]'), 'a fixed floor instead');
   assert.ok(row(document, 'schema:sales').querySelector('[data-scope-state-cell]'));
   // jsdom does no layout: whether STATE is fully visible at ~1300px is NOT measured here.
 });
@@ -705,4 +722,105 @@ test('when the earlier surveys could not be read, new-since says can\'t tell and
   const { document } = await setUp(v);
   assert.equal(flat(document.querySelector('[data-scope-new-since]')).startsWith("can't tell: the earlier surveys could not be read"), true);
   assert.equal(document.querySelectorAll('[data-scope-new-since-row]').length, 0);
+});
+
+/* ── slice A2.1: columns indented under their table, tighter widths, one activity line ── */
+
+function withColumns() {
+  const v = baseView();
+  v.depth.value = 'tables_and_columns';
+  v.schemas[0].tables[0].columns = [
+    { name: 'order_id', type: 'integer', key_role: 'PK' }, { name: 'total', type: 'numeric', key_role: '' }];
+  v.schemas[0].tables[1].columns = [{ name: 'customer_id', type: 'integer', key_role: 'PK' }];
+  return v;
+}
+
+test('columns sit directly under their own table, indented under its NAME, with a visible marker', async () => {
+  const { document } = await setUp(withColumns());
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  const block = document.querySelector('[data-scope-schema-block="sales"]');
+  // document order inside the schema block: table row, ITS columns, next table row, ITS columns
+  const seq = [...block.querySelectorAll('[data-scope-row], [data-scope-column]')]
+    .map((e) => (e.dataset.scopeRow ? e.dataset.scopeRow : flat(e).replace(/^└ /, '')));
+  assert.deepEqual(seq, ['schema:sales', 'table:sales.orders', 'order_id integer PK', 'total numeric',
+    'table:sales.customers', 'customer_id integer PK']);
+  // grouped: one wrapper per table, and it follows that table's row immediately
+  const wrappers = [...block.querySelectorAll('[data-scope-columns]')];
+  assert.equal(wrappers.length, 2);
+  assert.equal(row(document, 'table:sales.orders').nextElementSibling, wrappers[0]);
+  assert.equal(row(document, 'table:sales.customers').nextElementSibling, wrappers[1]);
+  // indented under the name column: it starts with spacers the width of the tick and choice cells
+  const spacers = [...wrappers[0].children].slice(0, 2).map((c) => c.className.match(/w-\[(\d+)ch\]/)[1]);
+  const rowWidths = [...row(document, 'table:sales.orders').children].slice(0, 2).map((c) => c.className.match(/w-\[(\d+)ch\]/)[1]);
+  assert.deepEqual(spacers, rowWidths, 'the column list starts where the table NAME starts');
+  assert.ok(wrappers[0].children[2].className.includes('border-l'), 'a rule marks them as the table\'s');
+  const col = block.querySelector('[data-scope-column]');
+  assert.ok(col.textContent.includes('└'), 'a visible marker');
+  assert.ok(col.className.includes('text-ink-muted') && col.className.includes('text-provenance'), 'muted and smaller than the rows');
+  assert.ok(!col.querySelector('.text-ink'), 'no full-strength ink inside a column line');
+  assert.ok(row(document, 'table:sales.orders').className.includes('text-caveat'));
+});
+
+test('a table with no columns draws no empty column wrapper', async () => {
+  const { document } = await setUp(baseView());
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  assert.equal(document.querySelector('[data-scope-columns]'), null);
+});
+
+test('the per-row source line sits under the name, not in the state cell', async () => {
+  const { document } = await setUp(baseView());
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  const r = row(document, 'table:sales.orders');
+  assert.ok(r.querySelector('[data-scope-name-cell] [data-scope-source]'));
+  assert.equal(r.querySelector('[data-scope-state-cell] [data-scope-source]'), null);
+  assert.match(flat(r.querySelector('[data-scope-state-cell]')), /^not read yet/);
+});
+
+test('widths: all seven columns fit a ~1300px content width, the name wraps, narrow panes still scroll', async () => {
+  const { document } = await setUp(baseView());
+  const head = document.querySelector('[data-scope-tree-head]');
+  const fixed = [...head.children].map((c) => Number((c.className.match(/(?<!min-)w-\[(\d+)ch\]/) || [0, 0])[1]));
+  const total = fixed.reduce((a, b) => a + b, 0);
+  const nameHead = [...head.children].find((c) => flat(c) === 'Schema / table');
+  const nameMin = Number(nameHead.className.match(/min-w-\[(\d+)ch\]/)[1]);
+  // 1300px at a generous 9px per ch is 144ch; leave room for gaps (8 x s2) and the indent
+  assert.ok(total + nameMin <= 120, `fixed columns ${total}ch + name floor ${nameMin}ch must fit in about 120ch`);
+  assert.ok(nameHead.className.includes('flex-1'), 'the name column takes what is left');
+  const nameCell = row(document, 'schema:sales').querySelector('[data-scope-name-cell]');
+  assert.ok(nameCell.className.includes('break-words'), 'the schema / table name may wrap');
+  assert.ok(document.querySelector('[data-scope-tree]').className.includes('overflow-x-auto'), 'scroll stays the fallback');
+});
+
+test('one line above the tree says why activity can\'t tell, grouped by reason, instead of repeating it per row', async () => {
+  const v = baseView();
+  const ct = (reason) => ({ state: 'cant_tell', reason, text: `can't tell · ${reason}` });
+  v.schemas[0].tables[0].last_write = ct('reset date not recorded');
+  v.schemas[0].tables[1].last_write = ct('reset date not recorded');
+  v.schemas[1].tables[0].last_write = ct('counters not measured');
+  v.schemas[2].last_write = ct('reset date not recorded');       // no tables: counted as its own row
+  const { document } = await setUp(v);
+  const line = flat(document.querySelector('[data-scope-activity-summary]'));
+  assert.equal(line, "Activity: can't tell on 3 rows: counter reset date not recorded · on 1 row: counters not measured");
+  // the reason is still reachable on each row
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  assert.equal(row(document, 'table:sales.orders').querySelector('[data-scope-lastwrite-cell] [title]').title,
+    "can't tell · reset date not recorded");
+});
+
+test('no summary line when nothing is can\'t-tell', async () => {
+  const v = baseView();
+  v.schemas.forEach((s) => { s.last_write = { state: 'active', writes: 5, text: 'active · 5 writes' }; s.tables.forEach((t) => { t.last_write = s.last_write; }); });
+  const { document } = await setUp(v);
+  assert.equal(document.querySelector('[data-scope-activity-summary]'), null);
+});
+
+test('a size the server could not measure reads "not measured" on the row, never "0 B"', async () => {
+  const v = baseView();
+  const [orders, customers] = v.schemas[0].tables;
+  orders.size_view = { state: 'not_measured', value: null, text: 'not measured', detail: '' };
+  customers.size_view = { state: 'measured', value: 0, text: '0 B', detail: 'Egeria survey 10-04' };
+  const { document } = await setUp(v);
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  assert.equal(flat(row(document, 'table:sales.orders').querySelector('[data-scope-size-cell]')), 'not measured');
+  assert.equal(flat(row(document, 'table:sales.customers').querySelector('[data-scope-size-cell]')), '0 B');
 });

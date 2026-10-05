@@ -78,6 +78,7 @@ import { openInvestigationPicker, scopeActWording } from '/static/next/investiga
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
+import { inventoryHeaderText, nodeSourceLine, credentialLineText } from '/static/next/stages/scope-sources.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
 // candidate-selection/catalogue UI, attached to sub_resource_survey's own
 // row in the Survey & analyses list below (analysisIndexRowHtml /
@@ -3261,15 +3262,13 @@ export function resourceHeaderHtml(slug) {
   const relTotal = cap?.relation_total ?? cap?.table_total;
   const relSelect = cap?.relation_select ?? cap?.table_select;
   if (cap && (relTotal || cap.schema_total)) {
-    const thin = (relSelect ?? 0) < (relTotal ?? 0)
-      || (cap.schema_visible ?? 0) < (cap.schema_total ?? 0);
+    // Slice A2.1: this line is about ONE survey, RE's own local one, and says so
+    // (with its date). The Schema Inventory and Curate trees may read a fuller
+    // Egeria survey, so a sentence about "this page" would speak for counts it
+    // does not describe.
+    const line = credentialLineText(cap, p?.credential_capability_at, relTotal, relSelect);
     credentialBanner = `
-      <div class="mt-s1 text-provenance ${thin ? 'text-accent-ink' : 'text-ink-muted'}">
-        connected as <span class="font-mono">${esc(cap.connected_as || '(unknown)')}</span> —
-        sees ${esc(String(cap.schema_visible ?? 0))} of ${esc(String(cap.schema_total ?? 0))} schema(s),
-        SELECT on ${esc(String(relSelect ?? 0))} of ${esc(String(relTotal ?? 0))} relation(s)
-        ${thin ? '· every count on this page is scoped to this credential, not the whole database' : ''}
-      </div>`;
+      <div data-credential-scope-line class="mt-s1 text-provenance ${line.thin ? 'text-accent-ink' : 'text-ink-muted'}">${esc(line.text)}</div>`;
   }
 
   return `
@@ -3907,6 +3906,7 @@ async function loadSchemaInventoryPane() {
         class="absolute right-[6px] top-1/2 hidden -translate-y-1/2 cursor-pointer text-ink-muted hover:text-ink"
       >×</button>
     </div>
+    <div id="schema-tree-sources" data-schema-tree-sources class="mb-s2 text-provenance text-ink-muted"></div>
     <div id="schema-tree">Reading the schema tree…</div>`;
   bindSubTabs();
   bindResourceHeader();
@@ -3921,6 +3921,8 @@ async function loadSchemaInventoryPane() {
   }
   if (slug !== state.selectedSlug) return;
   $('schema-tree').innerHTML = schemaTreeHtml(tree.schemas || []);
+  const srcLine = $('schema-tree-sources');
+  if (srcLine) srcLine.textContent = inventoryHeaderText(tree.sources);
   bindSchemaTreeFilter();
 }
 
@@ -3971,9 +3973,14 @@ export function schemaTreeHtml(schemas) {
       return `<div class="mb-s1 text-caveat text-ink-muted" data-tree-node data-tree-text="system">
         ${esc(String(s.system_count))} system schema(s) folded (pg_catalog, information_schema, pg_toast*, pg_temp*)</div>`;
     }
+    // `measured` is a schema the Egeria native survey listed: it carries no row total
+    // of its own, so the stamp says tables and, when known, size -- never a made-up 0.
     const stamp = s.classification === 'data'
       ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}`
-      : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
+      : s.classification === 'measured'
+        ? `${s.table_count ?? '?'} table(s)${s.row_total != null ? ` · ${Number(s.row_total).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}` : ''}${s.bytes_total != null ? ` · ${fmtBytes(s.bytes_total)}` : ''}`
+        : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
+    const schemaSrc = nodeSourceLine(s);
     // Found live, `laz_local_adventureworks`, 2026-09-27 (Dan's gate):
     // this used to be the schema name PLUS every table/column name
     // concatenated, so a node's own displayed match state was really "does
@@ -3989,6 +3996,7 @@ export function schemaTreeHtml(schemas) {
         <span class="font-semibold">${esc(s.schema)}</span>
         <span class="text-caveat text-ink-muted"> schema</span>
         <span class="text-provenance text-ink-muted"> — ${esc(stamp)}</span>
+        ${schemaSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(schemaSrc)}</span>` : ''}
       </summary>
       ${s.reason ? `<div class="ml-s3 mt-[4px] text-provenance text-ink-muted">${esc(s.reason)}</div>` : ''}
       <div class="ml-s3 mt-s2">${(s.tables || []).map(tableHtml).join('') || '<span class="text-caveat text-ink-muted">No tables.</span>'}</div>
@@ -4003,13 +4011,15 @@ export function tableHtml(t) {
     : `${Number(t.row_count).toLocaleString('en-US')} row(s)${t.row_count_state === 'catalog_estimate' ? ' (est.)' : ''}`;
   const byteStamp = t.size_bytes == null ? 'not measured' : fmtBytes(t.size_bytes);
   const kindLabel = _TABLE_KIND_LABELS[t.table_type] || 'table';
+  const tableSrc = nodeSourceLine(t);
   // Own name only -- see schemaTreeHtml's comment above on why this is no
   // longer the table+columns concatenation it used to be.
   return `<details class="mb-s1" data-tree-node data-tree-text="${esc(t.name.toLowerCase())}">
     <summary class="cursor-pointer text-ink">
       ${esc(t.name)}
       <span class="text-caveat text-ink-muted"> ${esc(kindLabel)}</span>
-      <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count} column(s)</span>
+      <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count == null ? 'columns not measured' : `${t.column_count} column(s)`}</span>
+      ${tableSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(tableSrc)}</span>` : ''}
     </summary>
     <table class="ml-s3 mt-[4px] w-full max-w-[70ch] border-collapse text-caveat">
       ${(t.columns || []).map((c) => `<tr class="border-b border-rule" data-tree-node data-tree-text="${esc(c.name.toLowerCase())}">

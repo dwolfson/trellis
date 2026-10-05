@@ -594,7 +594,7 @@ def resolve_node_set(registry, slug: str, tree: dict | None = None) -> dict:
     if native is None:
         egeria_info = _legacy_egeria_header(registry, slug)
         chosen = {"kind": local_kind, "as_of": local_at, "schemas": l_s, "tables": l_t, "merged": False}
-        return {"schemas": local, "chosen": chosen, "egeria": egeria_info, "local": local_info,
+        return {"schemas": _normalise_measures(local), "chosen": chosen, "egeria": egeria_info, "local": local_info,
                 "disagree": False, "unreadable": 0, "stats_reset": ""}
     n_s, n_t = _counts(native["schemas"])
     egeria_info = {"state": "measured", "schema_count": n_s, "table_count": n_t,
@@ -610,11 +610,84 @@ def resolve_node_set(registry, slug: str, tree: dict | None = None) -> dict:
         merged = _merge_sets(local, native["schemas"], secondary_newer=native["as_of"][:19] > local_at[:19])
         kind, as_of = local_kind, local_at
         used_other = True
+    merged = _normalise_measures(merged)
     m_s, m_t = _counts(merged)
     chosen = {"kind": kind, "as_of": as_of, "schemas": m_s, "tables": m_t, "merged": used_other}
     disagree = bool(l_s) and (l_s != n_s or l_t != n_t)
     return {"schemas": merged, "chosen": chosen, "egeria": egeria_info, "local": local_info,
             "disagree": disagree, "unreadable": native["unreadable"], "stats_reset": native["stats_reset"]}
+
+
+def _has_row_evidence(t: dict) -> bool:
+    """Did anything count rows in this table? A stored row count above zero, or
+    inserted/updated counters above zero (a table that took writes has rows)."""
+    if (t.get("row_count") or 0) > 0:
+        return True
+    c = t.get("counters") or {}
+    return any((c.get(k) or 0) > 0 for k in ("inserted", "updated"))
+
+
+def measured_size_rule(t: dict) -> tuple[int | None, int | None, str]:
+    """`(size_bytes, column_count, why)` for one table, with a recorded zero that
+    is not a measurement turned back into "not measured" (None).
+
+    The native survey stores `tableSize: 0` and `columnCount: 0` for tables it did
+    not measure, even when its other counters are non-zero: a "not measured" written
+    as a zero. The rule, in order:
+      - a column count of 0 is never a measurement (a table has columns): it becomes
+        the number of columns listed, or None when none are listed;
+      - a size of 0 with a column count of 0 is not a measurement;
+      - a size of 0 where rows were counted above zero (or the table took writes)
+        is not a measurement;
+      - a size of 0 stays "0 B" only when rows were counted as 0 by a measured
+        (not estimated) source and the column count is not 0: a plausible empty table.
+        A size of 0 with no row evidence either way is not established, so None."""
+    size, cols = t.get("size_bytes"), t.get("column_count")
+    listed = len(t.get("columns") or [])
+    why = ""
+    if cols == 0:
+        cols = listed or None
+        why = "column count 0 is not a measurement"
+    if size == 0:
+        zero_cols = t.get("column_count") == 0
+        measured_empty = (t.get("row_count") == 0 and t.get("row_count_state") != "catalog_estimate")
+        if zero_cols or _has_row_evidence(t) or not measured_empty:
+            size, why = None, why or "size 0 with no evidence that the table is empty"
+    return size, cols, why
+
+
+def _normalise_measures(schemas: list[dict]) -> list[dict]:
+    """Apply `measured_size_rule` to every table of a resolved node set, and a
+    schema's recorded zero total with it (a zero total stays only when a table is a
+    measured empty one)."""
+    out = []
+    for s in schemas:
+        if s.get("classification") == "system" or not s.get("schema"):
+            out.append(s)
+            continue
+        tabs = []
+        for t in s.get("tables") or []:
+            size, cols, _ = measured_size_rule(t)
+            if size == t.get("size_bytes") and cols == t.get("column_count"):
+                tabs.append(t)
+                continue
+            nt = {**t, "size_bytes": size, "column_count": cols}
+            if size is None:
+                nt["facts_from"] = {k: v for k, v in (t.get("facts_from") or {}).items() if k != "size"}
+            tabs.append(nt)
+        ns = {**s, "tables": tabs}
+        if s.get("bytes_total") == 0 and not any(t.get("size_bytes") == 0 for t in tabs):
+            ns["bytes_total"] = None
+            ns["facts_from"] = {k: v for k, v in (s.get("facts_from") or {}).items() if k != "size"}
+        out.append(ns)
+    return out
+
+
+def sources_view(resolved: dict) -> dict:
+    """The header facts of a resolved node set, shared by the Curate scope view and
+    the Schema Inventory route so both name the same surveys the same way."""
+    return {"chosen": resolved["chosen"], "egeria": resolved["egeria"], "local": resolved["local"],
+            "disagree": resolved["disagree"], "unreadable": resolved["unreadable"]}
 
 
 def _legacy_egeria_header(registry, slug: str) -> dict:
@@ -1091,9 +1164,7 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
         "system": ({"folded": system_row.get("system_count"), "text": SYSTEM_SENTENCE}
                    if system_row else None),
         "survey": resolved["egeria"],
-        "sources": {"chosen": resolved["chosen"], "egeria": resolved["egeria"],
-                    "local": resolved["local"], "disagree": resolved["disagree"],
-                    "unreadable": resolved["unreadable"]},
+        "sources": sources_view(resolved),
         "tree_surveyed_at": survey_at, "suggested_rules": suggested,
         "dormancy_days": DORMANCY_DAYS,
         "declared": ({"declared": True, "by": baseline["declared_by"], "at": baseline["declared_at"],
