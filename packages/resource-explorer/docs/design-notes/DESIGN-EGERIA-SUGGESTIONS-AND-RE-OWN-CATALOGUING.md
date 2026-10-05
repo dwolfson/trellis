@@ -20,7 +20,7 @@ requirements; the Egeria leads decide what fits the connectors' design.
 | S1 | **Schema-qualified names in the JDBC cataloguer's include and exclude lists** (`sales.orders`), or a per-schema table list | lists match plain table names, so "orders in sales but not in archive" cannot be said | `TransferCustomizations.java:58-96, :170` |
 | S2 | **A depth option** on the JDBC cataloguer (database / schemas / tables / columns) | no depth; "schemas only" or "no columns" needs an impossible name in an include list | `RelationalDatabaseCataloguer.java` (always creates all three levels) |
 | S3 | **Escape `_` and `%` when passing real names back to `DatabaseMetaData.getTables` / `getColumns`**, or filter the returned rows by exact name | a schema `a_b` also returns `aXb`'s tables, a table `x_y` also returns `xZy`'s columns, under the wrong parent (source read; live behaviour to be confirmed by the scratch test, the owner believes a guard exists) | `RelationalDatabaseCataloguer.java:335, :353, :670, :946`; `JdbcMetadata.java:101-128` |
-| S4 | **Scope on the database survey**: include and exclude schema lists on `survey-postgres-database`, like the server survey's database lists | the survey measures every non-system schema, table and column; a steward who left out 22 schemas sees them measured | `PostgresDatabaseSurveyActionService.java`; `PostgresConfigurationProperty.java:112-126` is server-level only |
+| S4 | **Scope on the database survey**: include and exclude schema lists on `survey-postgres-database`, like the server survey's database lists | **Landed upstream 2026-10-04** (ebafb08fdc "Optimizing surveys", in the dev platform since the 2026-10-05 rebuild): `includeSchemaNames` / `excludeSchemaNames` on the database and server surveys, a real array from configuration, a comma-split string (no trimming, so a comma inside a name is inexpressible) as a survey request parameter; to be confirmed by a run | was: the survey measured every non-system schema, table and column |
 | S5 | **Per-target status and last-run time on the CatalogTarget relationship** | only the connector has `lastRefreshTime`; a target's own progress is invisible until its elements appear | `AutomatedCuration` / daemon status |
 | S6 | **Arrays accepted where one name is passed today** in `catalog-postgres-database` request parameters | the process passes a single string per list | `RequestTypeDefinition.java:1520-1535` |
 | S7 | **Read `includeViewNames` / `excludeViewNames`** or remove them | declared, never read; views follow the table lists | `JDBCConfigurationProperty.java:65-74` |
@@ -56,6 +56,15 @@ through the daemon's refresh call; the natural interval was about 34
 minutes, not the configured 60; refreshes are idempotent; and the
 SecretsStoreCataloguer catalogues any `.omsecrets` file it can see,
 including a throwaway one.
+
+**Build comparison, 2026-10-05:** the JDBC integration connector jar in
+today's image is byte-identical to the 2026-10-03 one (18 entries, same
+hashes), so every cataloguer finding above (S1–S3, S7, S9, S11–S16) stands
+on the rebuilt platform without re-testing. What moved upstream between the
+builds: the survey scope lists (S4, now landed), a null-property-map fix in
+the OMF element handler (worth one cheap re-check of S11), two changes to
+the element handler (one cheap re-check of S18), and content-pack process
+definitions (S5, S6, S8, S10 not established from here).
 
 ## 2. The second door: RE catalogues on its own
 
