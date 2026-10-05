@@ -228,3 +228,65 @@ def test_vector_schema_opt_in_and_ci_exemptions(fake_connect, monkeypatch):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     assert PgVectorStore()._config.schema == "resource_explorer"
     G._state["vector_schemas_built"].discard("resource_explorer")
+
+def test_every_shared_default_url_setting_is_isolated_by_conftest():
+    """No test can leak by forgetting one: all three settings that default to
+    the shared Postgres resolve to temp SQLite unless the test overrides."""
+    from resource_explorer.config import get_config
+
+    cfg = get_config()
+    for url in (cfg.registry.database_url, cfg.observability.metrics_database_url,
+                cfg.feedback.database_url):
+        assert url.startswith("sqlite:///"), url[:12]
+
+
+def test_refusal_names_the_metrics_setting(fake_connect, monkeypatch):
+    """The 2026-10-05 leak: MetricsCollector on its default URL."""
+    import resource_explorer.config as config
+    from resource_explorer.observability.metrics_collector import MetricsCollector
+
+    for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setitem(config.ObservabilityConfig.model_config, "env_file", None)
+    monkeypatch.setattr(config, "_config", None)
+    with pytest.raises(G.SharedRegistryAccessError) as exc:
+        MetricsCollector()
+    assert "METRICS_DATABASE_URL" in str(exc.value)
+    assert fake_connect == []
+
+
+def test_feedback_store_default_is_refused_and_named(fake_connect, monkeypatch):
+    import resource_explorer.config as config
+    from resource_explorer.feedback_store import FeedbackStore
+
+    for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setitem(config.FeedbackConfig.model_config, "env_file", None)
+    monkeypatch.setattr(config, "_config", None)
+    with pytest.raises(G.SharedRegistryAccessError) as exc:
+        FeedbackStore()
+    assert "FEEDBACK_DATABASE_URL" in str(exc.value)
+
+
+def test_setting_hint_reads_the_calling_module():
+    base = "/x/resource_explorer/"
+    assert "METRICS" in G.setting_hint([base + "metrics_collector.py"])
+    assert "FEEDBACK" in G.setting_hint([base + "feedback_store.py"])
+    assert "leader" in G.setting_hint([base + "registry.py", base + "leader_election.py"])
+    assert "unknown" in G.setting_hint(["/x/other.py"])
+
+
+def test_both_isolation_fixtures_coexist_in_one_test(isolate_pgvector_schema, fake_connect):
+    """DB URL settings AND the vector schema are isolated together."""
+    import os
+    from resource_explorer.config import get_config
+    from resource_explorer.registry_label import is_shared_registry
+    from resource_explorer.vector_store_pg import PgVectorStore
+
+    for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
+        assert not is_shared_registry(os.environ[name]), name
+    scratch = isolate_pgvector_schema
+    assert get_config().pgvector.schema_name == scratch
+    assert PgVectorStore()._config.schema == scratch
+    assert fake_connect == []
+    G._state["vector_schemas_built"].discard(scratch)
