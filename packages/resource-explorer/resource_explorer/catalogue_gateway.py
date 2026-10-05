@@ -52,6 +52,9 @@ JDBC_CATALOGUER_NAME = "JDBCDatabaseCataloguer"
 SCHEMA_TECH_TYPE = "PostgreSQL Relational Database Schema"
 SCHEMA_TEMPLATE_GUID = "82a5417c-d882-4271-8444-4c6a996a8bfc"
 DATABASE_TECH_TYPE = "PostgreSQL Relational Database"
+#: Egeria's own attach step: a GovernanceActionType (NOT the process) that attaches an EXISTING
+#: element, given as action target `newAsset`, to the JDBC cataloguer as a SCHEMA-kind target.
+CATALOG_SCHEMA_ACTION_TYPE = "PostgreSQLGovernance::catalog-postgres-schema"
 #: What a catalog target does with an element when its schema leaves the list.
 TARGET_DELETE_METHOD = "ARCHIVE"
 #: The honest value for a version RE has no record of.
@@ -87,6 +90,18 @@ class Relationship:
     other_guid: str = ""
     other_type: str = ""
     guid: str = ""
+    #: An `ActionTarget` relationship carries the engine action's `activityStatus` and
+    #: `completionTime` (epoch ms as a string); the action element carries `completionMessage`.
+    activity_status: str = ""
+    completion_time: str = ""
+    completion_message: str = ""
+
+
+@dataclass
+class EngineActionStatus:
+    status: str = ""
+    message: str = ""
+    completion_time: str = ""
 
 
 @dataclass
@@ -109,8 +124,8 @@ class SurveyOutcome:
     annotations: int | None = None
 
 
-#: Engine action statuses that mean the action did not complete.
-FAILED_ACTION_STATUSES = frozenset({"ACTION_FAILED", "FAILED", "INVALID", "CANCELLED", "IGNORED"})
+#: Engine action `activityStatus` values that mean the action did not complete.
+FAILED_ACTION_STATUSES = frozenset({"FAILED", "INVALID", "CANCELLED", "IGNORED"})
 
 
 @dataclass
@@ -142,6 +157,25 @@ def schema_type_qualified_name(server_name: str, database_name: str, schema: str
     return f"{database_qualified_name(server_name, database_name)}::{schema}_schemaType"
 
 
+def schema_placeholders(db_entity, schema: str, description: str = "") -> dict[str, str]:
+    """The placeholders the schema template takes AND the request parameters Egeria's attach action
+    copies into the target: one dict, so the template create and the action type cannot disagree."""
+    from resource_explorer.config import get_config
+    from resource_explorer.surveyors.database.egeria_database_surveyor import _secrets_collection_name
+    cfg = get_config().egeria
+    return {
+        "databaseName": db_entity.database_name,
+        "serverName": server_name_for(db_entity),
+        "hostIdentifier": getattr(db_entity, "egeria_host", "") or db_entity.host,
+        "portNumber": str(db_entity.port),
+        "schemaName": schema,
+        "schemaDescription": description or f"PostgreSQL schema {schema} in {db_entity.database_name}",
+        "versionIdentifier": VERSION_NOT_RECORDED,
+        "secretsCollectionName": _secrets_collection_name(db_entity.slug),
+        "secretsStorePathName": cfg.secrets_store_path_name,
+    }
+
+
 class CatalogueGateway(Protocol):
     """Everything a catalogue commit asks of Egeria. Reads raise `GatewayError`."""
 
@@ -151,6 +185,8 @@ class CatalogueGateway(Protocol):
                              registry=None, submitted_by: str = "") -> dict: ...
     def set_zone_membership(self, guid: str, zones: list[str]) -> bool: ...
     def read_zones(self, guid: str) -> list[str]: ...
+    def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str: ...
+    def engine_action_status(self, guid: str) -> EngineActionStatus: ...
     def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome: ...
     def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
@@ -236,6 +272,55 @@ def _element_read(element: Any) -> ElementRead:
                        type_name=_type_of(element), archived=_is_memento(element))
 
 
+def _strings_of(element: Any) -> dict:
+    """LIVE: `elementProperties.propertiesAsStrings` of a raw element ({} when it has none)."""
+    ep = element.get("elementProperties") if isinstance(element, dict) else None
+    ps = ep.get("propertiesAsStrings") if isinstance(ep, dict) else None
+    return ps if isinstance(ps, dict) else {}
+
+
+def zones_of_element(element: Any) -> list[str]:
+    """The element's ZoneMembership zones from its raw top-level classifications; `[]` when it has
+    none (the read-back found no zone on any element a 2026-10-05 build created). Raises on an
+    element it does not recognise, so "unreadable" is never read as "no zones"."""
+    if not (isinstance(element, dict) and _guid_of(element)):
+        raise GatewayError("unrecognised element answer from Egeria: cannot read its zones")
+    for c in element.get("classifications") or []:
+        if not (isinstance(c, dict) and c.get("classificationName") == "ZoneMembership"):
+            continue
+        cp = c.get("classificationProperties") or {}
+        arr = (((cp.get("propertyValueMap") or {}).get("zoneMembership") or {}).get("arrayValues") or {}
+               ).get("propertiesAsStrings")
+        if isinstance(arr, dict):
+            return [str(arr[k]) for k in sorted(arr, key=lambda x: int(x) if str(x).isdigit() else 0)]
+        raw = (cp.get("propertiesAsStrings") or {}).get("zoneMembership")
+        if raw:
+            text = str(raw).strip().strip("{}")
+            return [p.split("=", 1)[-1].strip() for p in text.split(",") if p.strip()]
+        return []
+    return []
+
+
+def parse_initiate_answer(res: Any) -> str:
+    """A governance action type's `initiate` answer (a GUIDResponse) -> the ENGINE ACTION's guid."""
+    guid = str(res.get("guid") or "") if isinstance(res, dict) else ""
+    if not guid or guid == "Action not initiated":
+        raise GatewayError("Egeria did not initiate the action")
+    return guid
+
+
+def parse_engine_action_answer(res: Any) -> EngineActionStatus:
+    """An EngineAction raw element -> its status. The attribute is `activityStatus` (NOT
+    `actionStatus`), seen live. An element without it is an error, never a guess."""
+    if not (isinstance(res, dict) and _guid_of(res)):
+        raise GatewayError("unrecognised engine action answer from Egeria")
+    ps = _strings_of(res)
+    if not ps.get("activityStatus"):
+        raise GatewayError("the engine action carries no activityStatus")
+    return EngineActionStatus(status=str(ps["activityStatus"]), message=str(ps.get("completionMessage") or ""),
+                              completion_time=str(ps.get("completionTime") or ""))
+
+
 def _no_elements(res: Any) -> bool:
     return isinstance(res, str) and ("no element" in res.lower() or "not found" in res.lower())
 
@@ -283,8 +368,15 @@ def parse_related_answer(res: Any) -> list[Relationship]:
             t = item.get("type")
             rel_type = str(t.get("typeName") or "") if isinstance(t, dict) else ""
             other = item.get("element") if isinstance(item.get("element"), dict) else {}
-            out.append(Relationship(type_name=rel_type, other_guid=_guid_of(other), other_type=_type_of(other),
-                                    guid=str(item.get("relationshipGUID") or "")))
+            rp = item.get("relationshipProperties")
+            rps = (rp.get("propertiesAsStrings") if isinstance(rp, dict) else None) or {}
+            out.append(Relationship(
+                type_name=rel_type, other_guid=_guid_of(other), other_type=_type_of(other),
+                guid=str(item.get("relationshipGUID") or ""),
+                activity_status=str(rps.get("activityStatus") or ""),
+                completion_time=str(rps.get("completionTime") or ""),
+                completion_message=(str(_strings_of(other).get("completionMessage") or "")
+                                    if rel_type == "ActionTarget" else "")))
         return out
     if isinstance(res, dict) and not res:
         return []
@@ -381,18 +473,28 @@ class PyegeriaCatalogueGateway:
         return True
 
     def read_zones(self, guid: str) -> list[str]:
-        """The element's zones as Egeria holds them now; `[]` means "could not tell"."""
-        from resource_explorer.egeria_identity import current_zones
-        return list(current_zones(guid))
+        """The element's zones as Egeria holds them now: `[]` is "no ZoneMembership" (read from the
+        raw classifications), and an unreadable answer RAISES, never `[]`."""
+        try:
+            el = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
+        except Exception as exc:
+            raise GatewayError(f"could not read {guid[:8]}: {_short(exc)}") from exc
+        return zones_of_element(el)
+
+    def engine_action_status(self, guid: str) -> EngineActionStatus:
+        try:
+            el = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
+        except Exception as exc:
+            raise GatewayError(f"could not read engine action {guid[:8]}: {_short(exc)}") from exc
+        return parse_engine_action_answer(el)
 
     def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome:
         """The engine action's status and message, and the newest survey report created at or
         after `since` with its annotation count.
 
-        UNVERIFIED LIVE: the engine action's `actionStatus`/`completionMessage` property names
-        (from the open metadata type, not yet seen on the wire) and the report-by-time pick. Every
-        shape this cannot read comes back as "no report seen" / no status, which the commit shows
-        as "submitted", never as done."""
+        The engine action's `activityStatus`/`completionMessage` are the names seen live (read-back
+        of 2026-10-05). UNVERIFIED LIVE: the report-by-time pick; a report not seen comes back as
+        no report, which the commit shows as "submitted", never as done."""
         from resource_explorer.surveyors.egeria_survey_reader import (
             annotations_from_report, get_survey_reports_by_guid)
         out = SurveyOutcome()
@@ -400,11 +502,8 @@ class PyegeriaCatalogueGateway:
             el = self._client("MetadataExpert").get_metadata_element_by_guid(engine_action_guid)
         except Exception as exc:
             raise GatewayError(f"could not read engine action {engine_action_guid[:8]}: {_short(exc)}") from exc
-        if isinstance(el, dict):
-            ep = el.get("elementProperties") if isinstance(el.get("elementProperties"), dict) else {}
-            props = ep.get("propertiesAsStrings") if isinstance(ep.get("propertiesAsStrings"), dict) else {}
-            out.action_status = str(props.get("actionStatus") or "")
-            out.message = str(props.get("completionMessage") or "")
+        st = parse_engine_action_answer(el)
+        out.action_status, out.message = st.status, st.message
         reports = [r for r in get_survey_reports_by_guid(self._client("AssetMaker"), database_guid)
                    if str(r.get("surveyed_at") or "")[:19] >= str(since or "")[:19] and r.get("guid")]
         if reports:
@@ -472,14 +571,10 @@ class PyegeriaCatalogueGateway:
                               description: str = "") -> str:
         """The DeployedDatabaseSchema, from the template, under the database element.
 
-        UNVERIFIED LIVE: `anchorGUID`/`parentGUID`/`parentRelationshipTypeName` put
-        the schema under the database so its dependents copy the database's zones
-        (the findings, section 3). The scratch runs created the schema with no
-        parent, so the first live run must confirm this body is accepted."""
-        from resource_explorer.config import get_config
-        from resource_explorer.surveyors.database.egeria_database_surveyor import _secrets_collection_name
-        cfg = get_config().egeria
-        server = server_name_for(db_entity)
+        UNVERIFIED LIVE: `anchorGUID`/`parentGUID`/`parentRelationshipTypeName` put the schema
+        under the database. The read-back found that the template create (and Egeria's own
+        process) otherwise yields the same element for the same placeholders, by qualifiedName
+        `PostgreSQL Relational Database Schema::<host:port>::<db>.<schema>`."""
         body = {
             "class": "TemplateRequestBody",
             "templateGUID": SCHEMA_TEMPLATE_GUID,
@@ -489,23 +584,38 @@ class PyegeriaCatalogueGateway:
             "parentRelationshipTypeName": "DataSetContent",
             "parentAtEnd1": True,
             "deepCopy": True,
-            "placeholderPropertyValues": {
-                "databaseName": db_entity.database_name,
-                "serverName": server,
-                "hostIdentifier": getattr(db_entity, "egeria_host", "") or db_entity.host,
-                "portNumber": str(db_entity.port),
-                "schemaName": schema,
-                "schemaDescription": description or f"PostgreSQL schema {schema} in {db_entity.database_name}",
-                "versionIdentifier": VERSION_NOT_RECORDED,
-                "secretsCollectionName": _secrets_collection_name(db_entity.slug),
-                "secretsStorePathName": cfg.secrets_store_path_name,
-            },
+            "placeholderPropertyValues": schema_placeholders(db_entity, schema, description),
         }
         try:
             guid = self._client("AutomatedCuration").create_elem_from_template(body)
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
         return guid if isinstance(guid, str) else _guid_of(guid)
+
+    def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str:
+        """Egeria's own attach: `PostgreSQLGovernance::catalog-postgres-schema` with the schema
+        element as action target `newAsset`. Returns the ENGINE ACTION's guid (the attach happens
+        afterwards, on Egeria's side; the caller reads the target back)."""
+        return self._initiate_action_type(
+            CATALOG_SCHEMA_ACTION_TYPE,
+            [{"class": "NewActionTarget", "actionTargetName": "newAsset", "actionTargetGUID": schema_guid.strip()}],
+            request_parameters)
+
+    def _initiate_action_type(self, qualified_name: str, action_targets: list[dict],
+                              request_parameters: dict[str, str]) -> str:
+        import asyncio
+        ac = self._client("AutomatedCuration")
+        body = {"class": "InitiateGovernanceActionTypeRequestBody",
+                "governanceActionTypeQualifiedName": qualified_name,
+                "actionTargets": action_targets, "requestParameters": dict(request_parameters)}
+        url = f"{ac.ref_curation_command_base}/governance-action-types/initiate"
+        try:
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(ac._async_make_request("POST", url, body))
+            res = response.json()
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        return parse_initiate_answer(res)
 
     def link_schema_type(self, schema_guid: str, schema_type_guid: str) -> None:
         body = {"class": "NewRelatedElementsRequestBody", "typeName": "AssetSchemaType",
@@ -595,26 +705,14 @@ class PyegeriaCatalogueGateway:
 
     def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]:
         """The native database survey, with request parameters (RE's own helper cannot pass any)."""
-        import asyncio
         from resource_explorer.surveyors.technology_type_processes import KIND_SURVEY_EXISTING, get_process_by_kind
         native = get_process_by_kind("database", DATABASE_TECH_TYPE, KIND_SURVEY_EXISTING)
         if not native:
             raise GatewayError("no native survey process is configured for PostgreSQL Relational Database")
-        ac = self._client("AutomatedCuration")
-        body = {"class": "InitiateGovernanceActionTypeRequestBody",
-                "governanceActionTypeQualifiedName": native.qualified_name,
-                "actionTargets": [{"class": "NewActionTarget", "actionTargetName": "serverToSurvey",
-                                   "actionTargetGUID": database_guid.strip()}],
-                "requestParameters": dict(request_parameters)}
-        url = f"{ac.ref_curation_command_base}/governance-action-types/initiate"
-        try:
-            loop = asyncio.get_event_loop()
-            response = loop.run_until_complete(ac._async_make_request("POST", url, body))
-            guid = response.json().get("guid", "")
-        except Exception as exc:
-            raise GatewayError(_short(exc)) from exc
-        if not guid or guid == "Action not initiated":
-            raise GatewayError("Egeria did not initiate the survey")
+        guid = self._initiate_action_type(
+            native.qualified_name,
+            [{"class": "NewActionTarget", "actionTargetName": "serverToSurvey", "actionTargetGUID": database_guid.strip()}],
+            request_parameters)
         return guid, native.qualified_name
 
     def connector_status(self) -> ConnectorStatus | None:

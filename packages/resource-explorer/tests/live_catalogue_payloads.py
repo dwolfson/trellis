@@ -73,6 +73,40 @@ LIVE_RELATED = {
 RELATED_KEYS = frozenset({"startingElement", "elementList", "mermaidGraph"})
 RELATED_ITEM_KEYS = frozenset({"headerVersion", "status", "type", "origin", "versions", "relationshipGUID",
                                "element", "elementAtEnd1"})
+#: An ActionTarget item also carries `relationshipProperties` (read-back note, item 3).
+RELATED_ITEM_KEYS_WITH_PROPS = RELATED_ITEM_KEYS | {"relationshipProperties"}
+
+#: `initiate` (governance action type) answer: a GUIDResponse whose guid is the ENGINE ACTION.
+LIVE_INITIATE_RESPONSE = {"class": "GUIDResponse", "requestId": "e2931a25-0000-0000-0000-000000000000",
+                          "relatedHTTPCode": 200, "guid": "dc40606d-5538-48b1-9094-d06c7a1bf3bf"}
+ACTION_TYPE_QN = "PostgreSQLGovernance::catalog-postgres-schema"
+
+
+def _enum(symbol: str) -> dict:
+    return {"class": "EnumTypePropertyValue", "typeName": "ActivityStatus", "symbolicName": symbol}
+
+
+def relationship_properties(name: str, status: str, completion_ms: str = "") -> dict:
+    """`ActionTarget` relationshipProperties, live shape: typed map and string map side by side."""
+    pv = {"actionTargetName": {"class": "PrimitiveTypePropertyValue", "primitiveValue": name},
+          "activityStatus": _enum(status)}
+    ps = {"actionTargetName": name, "activityStatus": status}
+    if completion_ms:
+        pv["completionTime"] = {"class": "PrimitiveTypePropertyValue", "primitiveValue": completion_ms}
+        ps["completionTime"] = completion_ms
+    return {"propertyValueMap": pv, "propertiesAsStrings": ps}
+
+
+def raw_engine_action(guid: str, status: str, *, message: str = "", completion_ms: str = "") -> dict:
+    """An EngineAction raw element: the status attribute is `activityStatus` (NOT `actionStatus`)."""
+    ps = {"qualifiedName": f"EngineAction::{guid}", "activityStatus": status}
+    if message:
+        ps["completionMessage"] = message
+    if completion_ms:
+        ps["completionTime"] = completion_ms
+    el = raw_element(guid, ps["qualifiedName"], "EngineAction", props={k: v for k, v in ps.items() if k != "qualifiedName"})
+    el["elementProperties"]["propertyValueMap"] = {"activityStatus": _enum(status)}
+    return el
 
 
 def raw_element(guid: str, qn: str, type_name: str, *, archived: bool = False, zones: list[str] | None = None,
@@ -89,11 +123,16 @@ def raw_element(guid: str, qn: str, type_name: str, *, archived: bool = False, z
             "elementProperties": {"propertiesAsStrings": {"qualifiedName": qn, **(props or {})}}}
 
 
-def raw_related(start: dict, items: list[tuple[str, str, dict]]) -> dict:
-    """The related-elements dict. `items` are (relationship type, relationship guid, raw other element)."""
-    return {"startingElement": start,
-            "elementList": [{"headerVersion": 0, "status": "ACTIVE", "type": {"typeName": t}, "origin": {},
-                             "versions": {}, "relationshipGUID": g, "element": el,
-                             "elementAtEnd1": {"elementGUID": start["elementGUID"]}}
-                            for t, g, el in items],
-            "mermaidGraph": "graph TD"}
+def raw_related(start: dict, items: list[tuple]) -> dict:
+    """The related-elements dict. `items` are (relationship type, relationship guid, raw other
+    element[, relationshipProperties])."""
+    out = []
+    for it in items:
+        t, g, el = it[:3]
+        item = {"headerVersion": 0, "status": "ACTIVE", "type": {"typeName": t}, "origin": {},
+                "versions": {}, "relationshipGUID": g, "element": el,
+                "elementAtEnd1": {"elementGUID": start["elementGUID"]}}
+        if len(it) > 3 and it[3]:
+            item["relationshipProperties"] = it[3]
+        out.append(item)
+    return {"startingElement": start, "elementList": out, "mermaidGraph": "graph TD"}

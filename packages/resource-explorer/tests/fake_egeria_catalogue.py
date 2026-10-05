@@ -28,8 +28,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import live_catalogue_payloads as _live  # noqa: E402
 from live_catalogue_payloads import raw_element as _raw_element, raw_related as _raw_related  # noqa: E402
 
+import resource_explorer.catalogue_gateway as _gw  # noqa: E402  (new parsers are looked up at call time)
 from resource_explorer.catalogue_gateway import (  # noqa: E402
     ARCHIVE, CatalogTarget, ConnectorStatus, ElementRead, GatewayError, PublishedDatabase,
     Relationship, SurveyOutcome, like_matches, parse_element_answer, parse_elements_answer, parse_related_answer,
@@ -63,8 +65,9 @@ class FakeEgeria:
         self._n = 0
         self.db_guid = ""
         self.server_guid = ""
-        # What Egeria itself puts on a new database element (its security connector's defaults).
-        self.default_zones = ["egeria-runtime"]
+        # What Egeria itself puts on a new database element. On the 2026-10-05 build: NOTHING (the
+        # read-back found no ZoneMembership on any element it or its engines created).
+        self.default_zones: list[str] = []
         # The 2026-10-05 rehearsal: once the commit's own identity has written a ZoneMembership on
         # the database element, Egeria's security connector refuses the same identity (Classify,
         # anchored creates), the survey engine and the cataloguer every further write anchored to it.
@@ -72,6 +75,12 @@ class FakeEgeria:
         self.re_zone_writes: set[str] = set()
         self.zone_error = ("OPEN-METADATA-SECURITY-0011 User erinoverview is not authorized to issue "
                            "operation Classify on RelationalDatabase anchor element")
+        # The attach mechanism (read-back 2026-10-05): Egeria's GovernanceActionType
+        # `PostgreSQLGovernance::catalog-postgres-schema` attaches an EXISTING element given as action
+        # target `newAsset`. accept | refuse (the action FAILS, no target) | error (initiate raises) |
+        # pending (the action is IN_PROGRESS and attaches nothing until `finish_pending_actions`).
+        self.catalog_action = "accept"
+        self.actions: dict[str, dict] = {}          # engine action guid -> {status, message, schema}
         self.survey_behaviour = "pending"         # pending | annotated | failed | empty (a survey takes time)
         self.survey_failure = ("OMES-SURVEY-ACTION-0018 The survey service threw an exception. "
                                "Details are in the audit log.")
@@ -167,6 +176,14 @@ class FakeEgeria:
         """`get_all_related_elements`' answer (live shape): a dict with `elementList`."""
         items = []
         for r in self._relationship_list(guid):
+            if r.type_name == "ActionTarget" and getattr(r, "activity_status", ""):
+                other = _live.raw_engine_action(r.other_guid or "act", r.activity_status,
+                                                message=getattr(r, "completion_message", ""),
+                                                completion_ms=getattr(r, "completion_time", ""))
+                props = _live.relationship_properties("serverToSurvey", r.activity_status,
+                                                      getattr(r, "completion_time", ""))
+                items.append((r.type_name, r.guid or f"rel-{len(items)}", other, props))
+                continue
             other = _raw_element(r.other_guid or "other", f"other::{r.other_guid}", r.other_type or "Referenceable")
             items.append((r.type_name, r.guid or f"rel-{len(items)}", other))
         return _raw_related(self.raw_element(guid) if guid in self.elements else _raw_element(guid, "", ""), items)
@@ -215,9 +232,47 @@ class FakeEgeria:
         el = self.elements.get(element_guid)
         assert el is not None and el["type"] == "DeployedDatabaseSchema", \
             "a catalog target must be a SCHEMA-kind element, never the database or the server"
+        assert not any(t.element_guid == element_guid for t in self.targets), "attached the same schema twice"
         rel = self._guid("t")
         self.targets.append(CatalogTarget(rel, element_guid, name))
         return rel
+
+    def initiate_catalog_action(self, schema_guid, request_parameters):
+        """Egeria's `catalog-postgres-schema` action type, as answered live: a GUIDResponse whose guid
+        is the engine action; the attach happens afterwards, on Egeria's side."""
+        self.calls.append(("initiate_catalog_action", schema_guid, dict(request_parameters)))
+        self._boom("initiate_catalog_action")
+        if self.catalog_action == "error":
+            raise GatewayError("OMAG-GOVERNANCE-ACTION-400-001 the action type does not accept an existing element")
+        guid = self._guid("a")
+        resp = dict(_live.LIVE_INITIATE_RESPONSE, guid=guid)
+        self.last_wire = ("initiate", resp)
+        el = self.elements.get(schema_guid)
+        if self.catalog_action == "refuse":
+            self.actions[guid] = {"status": "FAILED", "schema": schema_guid,
+                                  "message": "GOVERNANCE-ACTION-CONNECTORS-0099 the new asset is not acceptable. Details follow."}
+        elif self.catalog_action == "pending":
+            self.actions[guid] = {"status": "IN_PROGRESS", "schema": schema_guid, "message": ""}
+        else:
+            assert el is not None and el["type"] == "DeployedDatabaseSchema"
+            self.targets.append(CatalogTarget(self._guid("t"), schema_guid, el["qn"].split("::", 2)[2]))
+            self.actions[guid] = {"status": "COMPLETED", "schema": schema_guid, "message": "attached"}
+        return _gw.parse_initiate_answer(resp)
+
+    def finish_pending_actions(self):
+        for g, a in self.actions.items():
+            if a["status"] == "IN_PROGRESS":
+                a["status"] = "COMPLETED"
+                el = self.elements[a["schema"]]
+                self.targets.append(CatalogTarget(self._guid("t"), a["schema"], el["qn"].split("::", 2)[2]))
+
+    def engine_action_status(self, guid):
+        self.calls.append(("engine_action_status", guid))
+        self._boom("engine_action_status")
+        a = self.actions[guid]
+        raw = _live.raw_engine_action(guid, a["status"], message=a["message"])
+        self.last_wire = ("engine_action", raw)
+        return _gw.parse_engine_action_answer(raw)
 
     def remove_catalog_target(self, relationship_guid):
         self.calls.append(("remove_catalog_target", relationship_guid))
@@ -249,6 +304,17 @@ class FakeEgeria:
             out.append(Relationship("AssetSchemaType", other_guid="st"))      # structural noise
             out.append(Relationship("CatalogTarget", other_guid="cat"))
         return out
+
+    def add_engine_action(self, schema_qn: str, status: str, *, completion_time: str = "", message: str = "",
+                          guid: str = "") -> str:
+        """An engine action targeting a schema (a survey, or the process's own step): the live
+        ActionTarget relationship carries `activityStatus` and `completionTime`."""
+        g = self.by_qn(schema_qn)["guid"]
+        ag = guid or self._guid("ea")
+        self.rels.setdefault(g, []).append(Relationship(
+            "ActionTarget", other_guid=ag, other_type="EngineAction", guid=self._guid("rl"),
+            activity_status=status, completion_time=completion_time, completion_message=message))
+        return ag
 
     def add_term_assignment(self, qn_suffix: str, schema_qn: str, n: int = 1) -> None:
         g = self.by_qn(f"{schema_qn}::{qn_suffix}")["guid"]
@@ -286,12 +352,12 @@ class FakeEgeria:
         self._boom("survey_outcome")
         b = self.survey_behaviour
         if b == "failed":
-            return SurveyOutcome("ACTION_FAILED", self.survey_failure, self._guid("r"), 0)
+            return SurveyOutcome("FAILED", self.survey_failure, self._guid("r"), 0)
         if b == "pending":
             return SurveyOutcome("IN_PROGRESS", "", "", None)
         if b == "empty":
-            return SurveyOutcome("ACTION_COMPLETED", "", self._guid("r"), 0)
-        return SurveyOutcome("ACTION_COMPLETED", "", self._guid("r"), 23)
+            return SurveyOutcome("COMPLETED", "", self._guid("r"), 0)
+        return SurveyOutcome("COMPLETED", "", self._guid("r"), 23)
 
     def connector_status(self):
         self.calls.append(("connector_status",))

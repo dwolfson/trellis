@@ -52,7 +52,8 @@ def test_the_manifest_says_zones_are_left_to_egeria_when_none_is_configured(worl
     assert p["manifest"]["zones"] == [] and p["manifest"]["zones_written"] is False
 
 
-def test_the_database_row_shows_the_zones_as_a_read_back_fact_set_by_egeria(world, fake, no_zone_config):
+def test_the_database_row_shows_zones_set_by_egeria_when_the_read_back_has_them(world, fake, no_zone_config):
+    fake.default_zones = ["egeria-runtime"]          # a build that DOES assign a default zone
     choose(world, "sales", "catalogue")
     press(world, fake)
     d = derived(world)
@@ -67,7 +68,7 @@ def test_configured_zones_are_written_last_after_targets_survey_refresh_and_owne
     out, rec = press(world, fake, refresh=True)
     names = [c[0] for c in fake.calls]
     z = names.index("set_zone_membership")
-    for earlier in ("publish_database", "set_owner", "create_schema_element", "add_catalog_target",
+    for earlier in ("publish_database", "set_owner", "create_schema_element", "initiate_catalog_action",
                     "initiate_survey", "refresh_connector"):
         assert max(i for i, n in enumerate(names) if n == earlier) < z, earlier
     assert zone_writes(fake)[0][2] == ("zone-a", "zone-b") and len(zone_writes(fake)) == 1

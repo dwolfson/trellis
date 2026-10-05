@@ -266,7 +266,8 @@ class EgeriaConfig(BaseSettings):
     # ServerName localhost:8885) — override if your deployment differs.
     portal_url: str = Field(default="http://localhost:8885", alias="EGERIA_PORTAL_URL")
     # Governance zones assigned by default when cataloging repos (survey) or databases
-    # NOTE: a catalogue commit for a database writes a ZoneMembership ONLY when this (or the
+    # NOTE: nothing on the 2026-10-05 build assigns a default zone (the read-back found none on any element).
+    # A catalogue commit for a database writes a ZoneMembership ONLY when this (or the
     # EXPLORER_PUBLISH_ZONES environment variable) is set, and then as its LAST write. UNVERIFIED
     # FOR A SECOND COMMIT: a zone on the database element may lock the service identity, the
     # survey engine and the cataloguer out of later anchored writes. First live use: a throwaway

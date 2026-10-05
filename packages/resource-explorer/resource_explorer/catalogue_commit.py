@@ -48,15 +48,21 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from resource_explorer.catalogue_gateway import (
-    ARCHIVE, FAILED_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
+    ARCHIVE, CATALOG_SCHEMA_ACTION_TYPE, FAILED_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
     schema_qualified_name, schema_type_qualified_name, server_name_for)
 from resource_explorer.catalogue_scope import CATALOGUE, LEAVE_OUT, current_schema_choice, md
 
 log = logging.getLogger(__name__)
+
+#: A seam for tests: how the attach waits for Egeria's own action to put the target in the list.
+_sleep = time.sleep
+CATALOG_POLLS = 4
+CATALOG_POLL_SECONDS = 2
 
 # ── words the screen uses (one place, so tests and the UI pin the same text) ──
 
@@ -66,6 +72,10 @@ SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
 CANT_CHECK = "couldn't check what hangs off it"
+IN_USE = "in use by a running survey · wait or cancel"
+#: An engine action's `activityStatus` that does NOT hold a schema: it finished, one way or the other.
+#: Anything else (REQUESTED, APPROVED, IN_PROGRESS, and any value never seen) holds it.
+FINISHED_ACTIVITY = frozenset({"COMPLETED", "FAILED"})
 OWNER_REFUSED = "owner set by Egeria's source · can't change from RE"
 NO_SCOPE_SENTENCE = "no scope declared · nothing catalogued"
 NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet catalogued in Egeria"
@@ -244,7 +254,39 @@ def read_hangs_off(gateway: CatalogueGateway, db_entity, schema: str) -> dict:
         return {"state": "cannot_check", "error": str(exc)}
     h = classify_hangs_off(rels)
     return {"state": "read", "form": ARCHIVE if h["total"] else SOFT_DELETE, "hangs_off": h,
-            "element_guid": el.guid, "checked": 1 + len(under)}
+            "element_guid": el.guid, "checked": 1 + len(under), "in_use": running_actions(rels)}
+
+
+def running_actions(rels_per_element: list[list]) -> list[dict]:
+    """Engine actions still holding the schema, from their `ActionTarget` relationships' own
+    `activityStatus`. `ActionTarget` stays structural for archive-versus-delete; this is the other
+    question: deleting under a running action is what ISSUE-90 loops on."""
+    out = []
+    for rels in rels_per_element:
+        for r in rels:
+            if r.type_name != "ActionTarget" or (r.activity_status or "") in FINISHED_ACTIVITY:
+                continue
+            out.append({"status": r.activity_status or "no status stated", "action_guid": r.other_guid,
+                        "completion_time": r.completion_time, "message": r.completion_message})
+    return out
+
+
+def _ms_stamp(ms: str) -> str:
+    """Epoch milliseconds (a string, as the raw relationship carries it) as `10-05 17:00`."""
+    try:
+        return _stamp(datetime.fromtimestamp(int(ms) / 1000, timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return str(ms)
+
+
+def in_use_text(schema: str, in_use: list[dict]) -> str:
+    first = in_use[0]
+    bits = [f"{schema}: {IN_USE}", " / ".join(sorted({a["status"] for a in in_use}))]
+    if first.get("completion_time"):
+        bits.append(f"completionTime {_ms_stamp(first['completion_time'])}")
+    if first.get("message"):
+        bits.append(egeria_first_sentence(first["message"])[0])
+    return " · ".join(bits)
 
 
 # ── deriving every state word from proof rows ────────────────────────────────
@@ -438,13 +480,15 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
 
 
 def _zones_text(written: dict | None, read: dict | None) -> str:
-    """The element's zones as a read-back FACT: "zones: a, b · set by Egeria". "Set by RE" only
-    when RE wrote a zone AND what Egeria reports back is exactly what RE wrote."""
+    """The element's zones as a read-back FACT. No ZoneMembership on the element reads "zones: none ·
+    everyone visible" (what the 2026-10-05 read-back found on every element it created); a zone
+    reads "zones: a, b · set by Egeria", or "set by RE" only when RE wrote a zone AND what Egeria
+    reports back is exactly what RE wrote. No read at all is "" (the header says "not read back")."""
     if not read:
         return ""
     zones = list((read.get("detail") or {}).get("zones") or [])
     if not zones:
-        return ""
+        return "zones: none · everyone visible"
     mine = sorted((written or {}).get("detail", {}).get("zones") or [])
     by = "RE (EXPLORER_PUBLISH_ZONES)" if mine and mine == sorted(zones) else "Egeria"
     return f"zones: {', '.join(zones)} · set by {by}"
@@ -542,6 +586,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
             row.update(form="none", blocked=False, text=f"{name}: not in Egeria any more · nothing to remove")
         elif read["state"] == "cannot_check":
             row.update(form="cannot_check", blocked=True, text=f"{name}: {CANT_CHECK}", error=read["error"])
+        elif read.get("in_use"):
+            row.update(form="in_use", blocked=True, reason=IN_USE, in_use=read["in_use"],
+                       text=in_use_text(name, read["in_use"]))
         elif read["form"] == SOFT_DELETE:
             row.update(form=SOFT_DELETE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: nothing hangs off it · will be removed (soft-deleted) from Egeria"
@@ -575,7 +622,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                   "description and version and the server's own description and version. "
                   + (f"The deployment configured publish zones ({', '.join(zones)}): joining them is RE's LAST write, "
                      "after the targets, the survey and the owner, read back, and a refusal is reported in Egeria's "
-                     "words, not retried. "
+                     "words, not retried (unverified for a second commit). "
                      if zones else
                      "RE writes no ZoneMembership: zones left to Egeria (EXPLORER_PUBLISH_ZONES is not configured). ")
                   + (f"Owner from Context: {owner}." if owner else "Not carried: owner, not declared on Context."))},
@@ -592,7 +639,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     held: dict[str, list[str]] = {}
     for r in leave:
         if r.get("blocked"):
-            held.setdefault(CANT_CHECK, []).append(r["schema"])
+            held.setdefault(r.get("reason", CANT_CHECK), []).append(r["schema"])
     for r in refused:
         held.setdefault(S19_SENTENCE, []).append(r["schema"])
     not_committed = [{"reason": why, "schemas": names} for why, names in held.items()]
@@ -645,6 +692,22 @@ def _entity(registry, slug: str):
     return e
 
 
+def gw_schema_placeholders(db_entity, schema: str) -> dict:
+    from resource_explorer.catalogue_gateway import schema_placeholders
+    return schema_placeholders(db_entity, schema)
+
+
+def _wait_for_target(gateway: CatalogueGateway, guid: str) -> list:
+    """Egeria's action attaches on its own side: look for the target a few times before concluding."""
+    for i in range(CATALOG_POLLS):
+        mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+        if mine:
+            return mine
+        if i + 1 < CATALOG_POLLS:
+            _sleep(CATALOG_POLL_SECONDS)
+    return []
+
+
 def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_id: int | None = None) -> str:
     """Create the schema element and attach it as a schema-kind target. Idempotent.
 
@@ -678,11 +741,31 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
                    detail={"schema_type_guid": orphan, "note": "adopted the existing schema type rather than create a second"})
     else:
         guid = el.guid
-    targets = gateway.list_catalog_targets()
-    mine = [t for t in targets if t.element_guid == guid]
+    mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+    mechanism, action_guid, fallback = "already_attached", "", ""
     if not mine:
-        gateway.add_catalog_target(guid, target_name(e, schema))
-        mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+        # Prefer Egeria's own attach: its GovernanceActionType takes the EXISTING schema element as
+        # action target `newAsset`. Fall back to add_catalog_target only when that is refused or
+        # errors. Never both: a still-running action is an error to retry, not a reason to attach.
+        try:
+            action_guid = gateway.initiate_catalog_action(guid, gw_schema_placeholders(e, schema))
+        except GatewayError as exc:
+            fallback = egeria_first_sentence(str(exc))[0]
+        else:
+            mechanism = "action_type"
+            mine = _wait_for_target(gateway, guid)
+            if not mine:
+                st = gateway.engine_action_status(action_guid)
+                if st.status in FAILED_ACTION_STATUSES:
+                    fallback = egeria_first_sentence(st.message or f"the action ended {st.status}")[0]
+                else:
+                    raise GatewayError(
+                        f"Egeria's attach action {action_guid[:8]} is {st.status} but the target for {schema} is not "
+                        "in the cataloguer's list yet (still waiting; not attaching a second time)")
+        if not mine and fallback:
+            mechanism = "add_catalog_target"
+            gateway.add_catalog_target(guid, target_name(e, schema))
+            mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
         if not mine:
             raise GatewayError(f"the target for {schema} was added but is not in the cataloguer's list on read-back")
     status = None
@@ -693,7 +776,9 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     _proof(registry, slug, P_TARGET, schema=schema, element_guid=guid, target_guid=mine[0].relationship_guid,
            qualified_name=qn, curation_id=payload.get("curation_id", ""), outbox_id=outbox_id,
            recorded_by=payload.get("by", ""),
-           detail={"targets_for_schema": len(mine),
+           detail={"targets_for_schema": len(mine), "mechanism": mechanism,
+                   "action_type": CATALOG_SCHEMA_ACTION_TYPE if action_guid else "",
+                   "engine_action": action_guid, "fallback_reason": fallback,
                    "connector_last_refresh": status.last_refresh_time if status else "",
                    "connector_note": "the connector's last refresh, not this target's"})
     return guid
@@ -740,6 +825,8 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     read = read_hangs_off(gateway, e, schema)
     if read["state"] == "cannot_check":
         raise GatewayError(f"{schema}: {CANT_CHECK}: {read['error']}")
+    if read.get("in_use"):
+        raise GatewayError(in_use_text(schema, read["in_use"]))
     form = ARCHIVE if (payload.get("form") == ARCHIVE or read.get("form") == ARCHIVE) else SOFT_DELETE
     if form == ARCHIVE:
         gateway.delete_element(guid, ARCHIVE)
@@ -825,13 +912,13 @@ def _read_database_facts(registry, gateway: CatalogueGateway, slug: str, curatio
     if published is None:
         return
     try:
-        zones = list(gateway.read_zones(published["element_guid"]))
+        zones: list[str] | None = list(gateway.read_zones(published["element_guid"]))
     except GatewayError as exc:
         _proof(registry, slug, P_READ_FAILED, node_kind="database", curation_id=curation_id,
                detail={"error": str(exc), "what": "the database element's zones"})
         summary["read_failed"] += 1
-        zones = []
-    if zones:            # an empty read means "could not tell", never "no zones"
+        zones = None
+    if zones is not None:   # a read that failed is None; `[]` is a read that found no ZoneMembership
         _proof(registry, slug, P_ZONES_READ, node_kind="database", element_guid=published["element_guid"],
                curation_id=curation_id, detail={"zones": zones})
     try:

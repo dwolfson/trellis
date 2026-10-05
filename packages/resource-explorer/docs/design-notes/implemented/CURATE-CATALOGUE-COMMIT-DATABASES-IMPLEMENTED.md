@@ -163,8 +163,40 @@ commits, the second exercising anchored writes under the zone. The zone setting 
 on the `default_catalog_zones` field in `config.py`, in `docs/admin-guide.md` and in `docs/Architecture.md`.
 
 **Decision (architect, 2026-10-05):** `ActionTarget` is structural (added to `STRUCTURAL_RELATIONSHIPS`): an engine action targeting a
-schema is Egeria's own machinery and never makes a leave-out an archive. The companion exception, an engine action still IN PROGRESS on a
-schema blocking its leave-out ("in use by a running survey · wait or cancel"), was NOT built: the relationship read gives the action as a
-raw element, but the status property name on it was never recorded (the rehearsal note and `live_catalogue_payloads.py` carry none), and
-the ruling says not to guess one. It needs one live read of an engine action's properties; ISSUE-90 (deleting under a running action
-loops) remains unguarded until then.
+schema is Egeria's own machinery and never makes a leave-out an archive. The companion exception (an engine action still running on a schema blocks its leave-out) was first skipped for want of a recorded status field and is built in the next section.
+
+## Step 2 from the read-back (successor branch re/curate-commit-step2-from-readback)
+
+Source: the read-back evidence note `READBACK-ZONES-AND-SCHEMA-PROCESS-2026-10-05.md` (branch `re/readback-zones-schema-process-evidence`). Every shape
+below is a recorded live shape (`tests/live_catalogue_payloads.py`), and the fake Egeria emits them.
+
+1. **Step 2 stays RE's template creation, then Egeria's own attach.** RE creates the `DeployedDatabaseSchema` from the schema template with the
+   deterministic qualifiedName `PostgreSQL Relational Database Schema::<host:port>::<db>.<schema>`, parented under RE's database element (as before).
+   It then PREFERS Egeria's GovernanceActionType `PostgreSQLGovernance::catalog-postgres-schema` (a type, not the process) with the schema as action
+   target `newAsset` and the template's request parameters (`schemaPlaceholders`: databaseName, serverName, hostIdentifier, portNumber, schemaName,
+   schemaDescription, secretsCollectionName, secretsStorePathName, versionIdentifier; the type copies them into the target). The target is read back
+   (a few polls, Egeria attaches on its own side). It FALLS BACK to `add_catalog_target` only when the action type errors or its engine action ends
+   FAILED/INVALID/CANCELLED/IGNORED. An action still running, or completed with no target, is an ERROR to retry, never a reason to attach a second time.
+   The `target_attached` proof row records `mechanism` (`action_type`, `add_catalog_target` or `already_attached`), the engine action GUID and any
+   fallback reason.
+2. **Zones.** The commit writes no zone. The read-back found NO ZoneMembership on any element created by the template, the process, the cataloguer or the
+   survey, so nothing on this build assigns a default zone, and all five identities (erinoverview, postgresqlsurveyengine, dbcatnpa,
+   postgresqlgovernanceengine, olcatnpa) wrote without refusal. The database row reads "zones: none · everyone visible" when the read-back shows no
+   ZoneMembership, "zones: <list> · set by Egeria" when it shows one, and "zones: not read back" when the read failed (`read_zones` raises on an
+   unreadable answer; `[]` means "none"). `EXPLORER_PUBLISH_ZONES` stays an optional override (last write, **unverified for a second commit**).
+3. **A running engine action blocks that schema's leave-out.** The relationships read now carries each `ActionTarget`'s own `activityStatus`
+   (`relationshipProperties`), `completionTime` and the action's `completionMessage`. REQUESTED, APPROVED, IN_PROGRESS and any value never seen block the
+   leave-out for THAT schema with "<schema>: in use by a running survey · wait or cancel · <status>" (the rest of the commit proceeds; re-checked at press
+   time, nothing is deleted); COMPLETED and FAILED do not. `ActionTarget` stays structural for the archive-versus-soft-delete choice. The engine action's status
+   attribute is `activityStatus` (not `actionStatus`; `survey_outcome` was corrected).
+4. **Non-deterministic identifiers** (process instance, engine actions, surveys, reports) are stored on proof rows at submission (`engine_action`,
+   `target_guid`) and never reconstructed; schema, table, column and connection names are deterministic and read by name. A test pins that every name the
+   commit builds contains no GUID, epoch or timestamp.
+
+**S21 for the Egeria list:** the schema CreateAsCatalogTarget process takes only text placeholders and cannot adopt an existing database element or anchor
+the schema under it; either it should accept the database element (action target) and anchor the schema there, or the `catalog-postgres-schema` action
+type should be documented as the attach-only step it is.
+
+**Still unverified live:** the action type's initiation with an EXISTING element created by RE's template (the read-back ran the process, not the type on
+its own); the `ACTIVATING` status (not sampled; it would block as an unknown value); template-first-then-process adoption (only process-first was run); the
+polling window (4 reads, 2 s apart) against a real attach; the zone read-back parse of a present ZoneMembership (none was ever seen on this build).

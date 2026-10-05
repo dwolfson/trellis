@@ -125,7 +125,7 @@ def test_commit_publishes_then_targets_and_writes_a_configured_zone_last_attachi
     out, rec = press(world, fake, refresh=False)
     names = [c[0] for c in fake.calls]
     # RE publishes first; a configured ZoneMembership is the LAST write, after every target (D1)
-    assert names.index("publish_database") < names.index("add_catalog_target") < names.index("set_zone_membership")
+    assert names.index("publish_database") < names.index("initiate_catalog_action") < names.index("set_zone_membership")
     zone_call = fake.ops("set_zone_membership")[0]
     assert zone_call[1] == fake.db_guid and zone_call[2] == ("zone-a", "zone-b")
     # one SCHEMA-kind target per chosen schema, never the database or the server
@@ -147,10 +147,10 @@ def test_never_attaches_the_same_schema_twice(world, fake):
     choose(world, "sales", "catalogue")
     press(world, fake, refresh=False)
     press(world, fake, refresh=False)
-    assert len(fake.ops("add_catalog_target")) == 1 and len(fake.targets) == 1
-    # and it READ the targets before adding anything
+    assert len(fake.ops("initiate_catalog_action")) == 1 and len(fake.targets) == 1
+    # and it READ the targets before attaching anything
     names = [c[0] for c in fake.calls]
-    assert names.index("list_catalog_targets") < names.index("add_catalog_target")
+    assert names.index("list_catalog_targets") < names.index("initiate_catalog_action")
 
 
 def test_owner_from_context_is_added_after_the_database_exists(world, fake):
@@ -252,7 +252,8 @@ def test_queued_is_the_outbox_row_and_failed_is_egeria_s_word(world, fake):
 
 
 def test_a_refused_attach_is_a_failed_state_with_egeria_s_word(world, fake):
-    fake.fail["add_catalog_target"] = "500 Egeria says no"
+    fake.catalog_action = "error"                       # Egeria's action type refuses, so the fallback runs ...
+    fake.fail["add_catalog_target"] = "500 Egeria says no"        # ... and that is refused too
     choose(world, "sales", "catalogue")
     _, rec = press(world, fake, refresh=False)
     assert step(rec, "schema_targets")["state"] == "failed"
