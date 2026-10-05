@@ -40,7 +40,28 @@ database"), handed a DeployedDatabaseSchema by the
 schema in it"). A per-schema scope without include lists is a candidate
 third door for topic 4: RE creates the DeployedDatabaseSchema for each
 chosen schema and attaches each as a SCHEMA target, and the cataloguer does
-tables and columns. Being tested on the scratch state today.
+tables and columns. Tested on the scratch state on 2026-10-05: it works
+(one refresh created exactly that schema's tables and columns under it,
+nothing else), and the owner chose it for RE's commit.
+
+*After the 2026-10-05 rebuild from today's upstream image:* the JDBC
+cataloguer jar is byte-identical to the 2026-10-03 one, so topics 3 and 4's
+cataloguer findings stand; what landed is scope on the database survey
+(`includeSchemaNames` / `excludeSchemaNames`, ebafb08fdc), which closes
+topic 2's survey item once a run confirms it, and a platform restart was
+observed to clear the cataloguer's cached target list (a detached target
+kept being refreshed until then).
+
+*Second scratch run, same day, on today's build:* the survey scope works as
+a request parameter (an array on the element's connection is ignored, and
+a comma inside a schema name cannot be expressed); arrays on a
+database-kind target are now honoured though its database-level pass
+remains; schema-kind targets alone produce no database-level pass; a
+single-connector restart clears a detached target; archiving a schema
+element archives its tables and columns, but an archived schema cannot be
+re-included (the template create fails 400 and no restore path was found,
+S19), and the `/archive` endpoint itself returns 500 on this build (S20).
+Topic 4's door stands on this evidence, with leave-out in two forms.
 
 ## 1. The annotation vocabulary and an honesty envelope
 
