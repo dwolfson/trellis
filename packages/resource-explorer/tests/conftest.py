@@ -19,6 +19,16 @@ import os
 
 import pytest
 
+# Fail-closed guard against tests reaching the SHARED registry (incident
+# 2026-10-02; see tests/shared_registry_guard.py and
+# docs/design-notes/implemented/TEST-SHARED-REGISTRY-GUARD-IMPLEMENTED.md).
+# Installed at import, before any probe below opens a connection, at the
+# SQLAlchemy/psycopg2 connect choke point so a cached config cannot defeat it.
+# Opt-in for a deliberate run: RE_TESTS_ALLOW_SHARED_REGISTRY=1.
+from tests import shared_registry_guard
+
+shared_registry_guard.install()
+
 # Per-process, NOT a single shared name. The fixture below drops this schema
 # CASCADE at session start and teardown, so a fixed name meant any two
 # overlapping pytest runs destroyed each other's data mid-test — one session's
@@ -559,3 +569,22 @@ def clear_tech_type_catalog_singleton():
     survey_definitions_route._tech_type_catalog = None
     yield
     survey_definitions_route._tech_type_catalog = None
+
+
+@pytest.fixture(autouse=True)
+def reset_cached_config():
+    """Drop `resource_explorer.config._config` before and after every test.
+
+    `get_config()` caches the first `ExplorerConfig` for the life of the
+    process, so a test that sets `REGISTRY_DATABASE_URL` (or any env var) in a
+    fixture was silently ignored once anything had called it earlier, and the
+    test fell through to the SHARED registry (incident 2026-10-02). Resetting
+    makes a per-test `monkeypatch.setenv` effective. The connect-time guard in
+    tests/shared_registry_guard.py is the backstop for URLs that arrive by any
+    other route.
+    """
+    import resource_explorer.config as _config_module
+
+    _config_module._config = None
+    yield
+    _config_module._config = None
