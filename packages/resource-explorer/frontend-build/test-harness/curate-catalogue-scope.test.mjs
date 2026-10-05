@@ -238,13 +238,37 @@ test('header, undeclared and never measured: says not measured yet, and an uncat
   assert.match(flat(document.querySelector('[data-scope-tree-header]')), /not catalogued in Egeria/);
 });
 
-test('header, declared: 7 of 29 schemas, declared by who and when', async () => {
-  const { document } = await setUp(baseView({
-    declared: { declared: true, by: 'dwolfson', at: '2026-10-04T08:00:00', kind: 'first', baseline_survey_at: '' },
-    counts: { schemas_offered: 29, schemas_catalogue: 7, schemas_leave_out: 0, schemas_undecided: 22 },
-  }));
+const declaredView = () => baseView({
+  declared: { declared: true, by: 'dwolfson', at: '2026-10-04T08:00:00', kind: 'first', baseline_survey_at: '' },
+  counts: { schemas_offered: 29, schemas_catalogue: 7, schemas_leave_out: 0, schemas_undecided: 22 },
+});
+
+test('header, declared: collapsed by default to one line of essentials, a real button; the marker stays', async () => {
+  const { document } = await setUp(declaredView());
+  const btn = document.querySelector('[data-scope-collapse]');
+  assert.equal(btn.tagName, 'BUTTON');
+  assert.equal(btn.getAttribute('aria-expanded'), 'false');
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    "Your scope: 7 of 29 schemas known to RE · declared by dwolfson 10-04 · Egeria's latest survey covers 29 schemas, 266 tables");
+  assert.equal(document.querySelector('[data-scope-body]').hidden, true);
+  assert.equal(flat(document.querySelector('[data-scope-saved-marker]')),
+    'Saved in Resource Explorer · not yet catalogued in Egeria');
+});
+
+test('header, declared: a click expands to the whole scope and the header is the full sentence', async () => {
+  const { document } = await setUp(declaredView());
+  document.querySelector('[data-scope-collapse]').click();
+  assert.equal(document.querySelector('[data-scope-collapse]').getAttribute('aria-expanded'), 'true');
+  assert.equal(document.querySelector('[data-scope-body]').hidden, false);
   assert.equal(flat(document.querySelector('[data-scope-header]')),
     'Your scope: 7 of 29 schemas · declared by dwolfson 10-04 · 29 schemas · Egeria survey 10-04');
+});
+
+test('header, undeclared: open, and the disclosure glyph is outside the header sentence', async () => {
+  const { document } = await setUp(baseView());
+  assert.equal(document.querySelector('[data-scope-collapse]').getAttribute('aria-expanded'), 'true');
+  assert.equal(document.querySelector('[data-scope-body]').hidden, false);
+  assert.equal(document.querySelector('[data-scope-collapse] [aria-hidden="true"]').textContent, '▾');
 });
 
 /* ── depth ─────────────────────────────────────────────────────────────── */

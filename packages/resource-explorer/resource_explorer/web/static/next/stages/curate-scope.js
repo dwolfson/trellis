@@ -25,7 +25,10 @@ import {
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
-import { SOURCE_WORD, md, nodeSourceLine } from '/static/next/stages/scope-sources.js';
+import {
+  SOURCE_WORD, md, nodeSourceLine, SCOPE_SAVED_MARKER, scopeCollapsedText,
+  readScopePref, writeScopePref, scopeStartsOpen,
+} from '/static/next/stages/scope-sources.js';
 
 const whoAmI = () =>
   (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
@@ -40,7 +43,13 @@ const openSchemas = new Set();
 const selected = new Set();
 let openFor = '';
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { openSchemas.clear(); selected.clear(); openFor = ''; }
+export function resetScopeUi() { openSchemas.clear(); selected.clear(); openFor = ''; sectionOpen = null; }
+
+/** Whether the whole section is open. Decided once per pane visit (from the remembered
+ *  choice, else from whether a scope is declared) and then only a click changes it, so a
+ *  write that redraws the section (or declares the scope) never flips it under the person. */
+let sectionOpen = null;
+const storage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 
 /** What the header says about the measurement the tree is read from. One
  *  source: "29 schemas · Egeria survey 10-04". The two sources disagreeing:
@@ -347,7 +356,7 @@ function treeSourceText(view) {
   return `tree read from the ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)}: ${ch.schemas} schemas, ${ch.tables} tables${ch.merged ? ', facts it lacked filled from the other survey' : ''}${unread ? ` · ${unread} annotation${unread === 1 ? '' : 's'} could not be read` : ''}`;
 }
 
-export function scopeSectionHtml(view, me, status = '') {
+export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(view, '')) {
   const el = view.egeria_element || {};
   const element = el.short ? `reads Egeria element <span class="font-mono">${esc(el.short)}</span>…` : esc(el.text || 'not catalogued in Egeria');
   const ns = view.new_since || {};
@@ -359,7 +368,14 @@ export function scopeSectionHtml(view, me, status = '') {
   const cf = (view.conflicts || {}).count || 0;
   const cfLine = cf
     ? `<div data-scope-conflict-summary class="mb-s1 text-caveat text-ink">${glyphSpan('human')} ${cf} choice${cf === 1 ? '' : 's'} Egeria can't express — resolve ${cf === 1 ? 'it' : 'them'} below</div>` : '';
-  return `<div data-scope-header class="mb-s1 text-answer text-ink">${esc(scopeHeaderText(view))}</div>
+  const declared = !!(view.declared && view.declared.declared);
+  open = open || !declared;   // nothing to collapse to until a scope is declared
+  const line = open ? scopeHeaderText(view) : scopeCollapsedText(view);
+  return `<div data-scope-saved-marker class="mb-s1 text-provenance text-ink-muted">${esc(SCOPE_SAVED_MARKER)}</div>
+    <div class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
+      aria-controls="scope-section-body" title="${open ? 'Collapse to one line' : 'Show the whole scope'}"
+      class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header><span data-scope-header-line>${esc(line)}</span></span></button></div>
+    <div id="scope-section-body" data-scope-body${open ? '' : ' hidden'}>
     ${me ? '' : `<div data-scope-signed-out class="mb-s1 text-caveat text-ink-muted">You can read the scope as it stands. ${esc(signInReason)}.</div>`}
     ${nsLine}${cfLine}
     ${depthLineHtml(view, me)}
@@ -369,6 +385,7 @@ export function scopeSectionHtml(view, me, status = '') {
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
     ${bulkBarHtml(view, me)}
     <div data-scope-tree class="overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
+    </div>
     <div data-scope-status class="mt-s1 text-provenance text-ink-muted">${esc(status)}</div>`;
 }
 
@@ -383,7 +400,7 @@ const find = (view, schema, table) => {
 
 export async function renderCatalogueScope(el, slug, status = '') {
   if (!el) throw new Error('Catalogue scope host missing');
-  if (openFor !== slug) { openSchemas.clear(); selected.clear(); openFor = slug; }
+  if (openFor !== slug) { openSchemas.clear(); selected.clear(); openFor = slug; sectionOpen = null; }
   let view;
   try {
     view = await getCatalogueScope(slug);
@@ -395,7 +412,23 @@ export async function renderCatalogueScope(el, slug, status = '') {
   }
   if (stale(el, slug)) return;
   const me = whoAmI();
-  el.innerHTML = scopeSectionHtml(view, me, status);
+  if (sectionOpen === null) sectionOpen = scopeStartsOpen(view, readScopePref(storage(), me, slug));
+  el.innerHTML = scopeSectionHtml(view, me, status, sectionOpen);
+  const fold = el.querySelector('[data-scope-collapse]');
+  if (fold) fold.addEventListener('click', () => {
+    sectionOpen = !sectionOpen;
+    writeScopePref(storage(), me, slug, sectionOpen);   // best effort: the page works without storage
+    const declared = !!(view.declared && view.declared.declared);
+    const shown = sectionOpen || !declared;   // a stored collapse takes effect only once declared
+    const body = el.querySelector('[data-scope-body]');
+    if (body) body.hidden = !shown;
+    // The same button is edited in place (focus stays on it); the words come from the view.
+    fold.setAttribute('aria-expanded', shown ? 'true' : 'false');
+    fold.title = shown ? 'Collapse to one line' : 'Show the whole scope';
+    fold.querySelector('[aria-hidden]').textContent = shown ? '▾' : '▸';
+    fold.querySelector('[data-scope-header-line]').textContent =
+      shown ? scopeHeaderText(view) : scopeCollapsedText(view);
+  });
   const say = (msg, warn = false) => {
     const s = el.querySelector('[data-scope-status]');
     if (!s) return;

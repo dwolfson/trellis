@@ -51,3 +51,66 @@ export function credentialLineText(cap, at, relTotal, relSelect) {
     + (thin ? '; counts from that survey are scoped to this credential' : '');
   return { text, thin };
 }
+
+/* ── the scope section's one-line collapse (Curate, catalogue scope) ────────
+ * Pure functions, no imports, so a test can run them under node. */
+
+const isCount = (n) => typeof n === 'number' && Number.isFinite(n);
+
+/** The marker under the scope header: where the scope lives and what has not happened. */
+export const SCOPE_SAVED_MARKER = 'Saved in Resource Explorer \u00b7 not yet catalogued in Egeria';
+
+/** The ONE line of essentials, or '' while no scope is declared:
+ *  "Your scope: 3 of 29 schemas · declared by dan 10-04 · Egeria's latest survey covers 29 schemas, 412 tables".
+ *  A clause whose figures are not available is omitted, never filled with zero or a guess. */
+export function scopeCollapsedText(view) {
+  const d = (view && view.declared) || {};
+  if (!d.declared) return '';
+  const c = view.counts || {};
+  const sv = view.survey || {};
+  const parts = [];
+  // "known to RE" says which m this is: the schemas RE knows on the database, which can differ
+  // from the count Egeria's latest survey covers (said in its own clause below).
+  parts.push(isCount(c.schemas_catalogue) && isCount(c.schemas_offered)
+    ? `Your scope: ${c.schemas_catalogue} of ${c.schemas_offered} schemas known to RE` : 'Your scope');
+  const decl = [d.by ? `declared by ${d.by}` : 'declared', md(d.at)].filter(Boolean).join(' ');
+  parts.push(decl);
+  if (sv.state === 'measured') {
+    const figs = [];
+    if (isCount(sv.schema_count)) figs.push(`${sv.schema_count} schemas`);
+    if (isCount(sv.table_count)) figs.push(`${sv.table_count} tables`);
+    if (figs.length) parts.push(`Egeria's latest survey covers ${figs.join(', ')}`);
+  }
+  return parts.join(' \u00b7 ');
+}
+
+/** localStorage key for the person's choice, per person per database; '' when nobody is signed in. */
+export function scopeCollapseKey(person, slug) {
+  return person && slug ? `re-next.scopeSection.${person}.${slug}` : '';
+}
+
+/** 'open' | 'collapsed' | '' (nothing remembered, or storage unavailable). Never throws. */
+export function readScopePref(storage, person, slug) {
+  const key = scopeCollapseKey(person, slug);
+  if (!key) return '';
+  try {
+    const v = storage && storage.getItem(key);
+    return v === 'open' || v === 'collapsed' ? v : '';
+  } catch { return ''; }
+}
+
+/** Remember the choice. Returns whether it was stored; the page works either way. */
+export function writeScopePref(storage, person, slug, open) {
+  const key = scopeCollapseKey(person, slug);
+  if (!key) return false;
+  try { storage.setItem(key, open ? 'open' : 'collapsed'); return true; } catch { return false; }
+}
+
+/** Open until a scope has been declared, whatever is stored (a stored 'collapsed' takes effect
+ *  only once a scope is declared); collapsed after, unless the person remembered 'open'. */
+export function scopeStartsOpen(view, pref) {
+  if (!((view && view.declared) || {}).declared) return true;
+  if (pref === 'open') return true;
+  if (pref === 'collapsed') return false;
+  return !((view && view.declared) || {}).declared;
+}
