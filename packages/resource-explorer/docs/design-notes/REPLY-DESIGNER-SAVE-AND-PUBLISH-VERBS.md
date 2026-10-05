@@ -90,6 +90,14 @@ reserved, but the destination is named whenever it's Egeria.
    owner's call; whichever is chosen, there shouldn't be two spellings on
    one page.
 
+**Decision (project owner, 2026-10-06):** **Catalog**, the US spelling, is
+the reserved verb on controls and in result lines ("Catalog", "cataloged ·
+read back ‹when›"), matching Egeria's own word. Every "Catalogue" in the
+tables above reads "Catalog". The repository Curate's `Catalogue →`
+becomes `Catalog →` in the same slice, so no page shows both spellings.
+Design notes keep their existing filenames; their prose moves to the US
+spelling as they're next edited.
+
 ## Not changed
 
 - Choice words on the scope tree, verdict pickers ("mark as…") and
