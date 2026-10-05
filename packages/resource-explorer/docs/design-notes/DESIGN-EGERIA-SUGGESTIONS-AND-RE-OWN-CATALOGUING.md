@@ -35,10 +35,18 @@ throwaway database; the live behaviour, not only the source):
 | # | suggestion | what the test showed |
 |---|---|---|
 | S11 | **Honour JSON arrays in a CatalogTarget's `configurationProperties`**, or document the string form the lists accept | an array read back as a flattened `ArrayTypePropertyValue{…}` string and no schema in the include list was processed; `deleteMethod` on the same relationship persisted fine |
-| S12 | **No database-level table pass when a schema filter is set**, or make it opt-in | every schema's tables were catalogued directly under the database even though the schema filter matched nothing |
+| S12 | **The "schema defaults to `public`" rule should apply only to tables in `public`**: no database-level pass over other schemas' tables | the docs (egeria-solutions/leveraging-postgres/overview) say a resource name is `serverName.databaseName.schemaName.tableName.columnName` "with the database schema defaulting to `public` if none is specified"; the test showed tables of five non-public schemas (a_b 1, aXb 1, s_x 2, pct 1, plain 2 of 7 built) created directly under the database as `<dbQN>::<table>`, none under a schema element, when the schema pass did not run; the throwaway had no table in `public`, so how `public` itself is treated is still to be read |
 | S13 | **Delete or archive dependents with a stale schema** (schema type, tables, columns) | a soft-deleted schema left its `_schemaType` and its table ACTIVE and orphaned |
 | S14 | **Exclude system schemas from pattern matches on real names** (with S3) | a table named `p%t` received about 65 `pg_catalog` columns alongside its own two |
 | S15 | **Resolve or drop unused template placeholders** on template-created elements | RE's template publish left `description` and `versionIdentifier` as literal `~{…}~` strings (RE's side to supply, Egeria's side to refuse or blank) |
+
+**Two names, side by side, so neither is "fixed" into the other:** the
+stored identities the cataloguer writes are `<dbQN>::<schema>`,
+`<parentQN>::<table>`, `<tableQN>::<column>` and `<schemaQN>_schemaType`
+(observed 2026-10-05), where the database's qualified name comes from RE's
+template, `PostgreSQL Relational Database::<host>:<port>::<database>`; the
+docs' dotted four-level name is the resource's display hierarchy, not its
+qualified name.
 
 Also observed, for the record: a forced refresh is synchronous (about 16 s)
 through the daemon's refresh call; the natural interval was about 34
