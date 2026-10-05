@@ -25,10 +25,10 @@ import {
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
+import { SOURCE_WORD, md, nodeSourceLine } from '/static/next/stages/scope-sources.js';
 
 const whoAmI = () =>
   (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
-const md = (iso) => String(iso || '').slice(5, 10);
 const words = (choice) => (choice === 'leave_out' ? 'leave out' : choice === 'catalogue' ? 'catalogue' : '');
 const opposite = (choice) => (choice === 'leave_out' ? 'catalogue' : 'leave_out');
 const signInReason = 'sign in to change what gets catalogued: every choice needs an author';
@@ -41,8 +41,6 @@ const selected = new Set();
 let openFor = '';
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
 export function resetScopeUi() { openSchemas.clear(); selected.clear(); openFor = ''; }
-
-const SOURCE_WORD = { egeria: 'Egeria survey', local: 'RE local survey' };
 
 /** What the header says about the measurement the tree is read from. One
  *  source: "29 schemas · Egeria survey 10-04". The two sources disagreeing:
@@ -161,23 +159,8 @@ function stateCellHtml(node, me) {
     lines.push(`<div data-scope-not-established class="text-ink-muted">${glyphSpan('not_established')} not established: no access with this credential</div>`);
   }
   (node.notes || []).forEach((n) => lines.push(`<div data-scope-note class="text-ink-muted">${esc(n)}</div>`));
-  const srcLine = sourceLine(node);
-  if (srcLine) lines.push(`<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>`);
   if (node.provenance) lines.push(`<div data-scope-provenance class="text-provenance text-ink-muted">${esc(node.provenance)}</div>`);
   return lines.join('');
-}
-
-/** "from Egeria survey 10-04", plus "rows from RE local survey 10-03" for a
- *  fact the node's own source lacked and another survey supplied. */
-function sourceLine(node) {
-  const own = node.source || {};
-  if (!own.kind) return '';
-  const say = (src) => `${SOURCE_WORD[src.kind] || src.kind} ${md(src.as_of)}`;
-  const parts = [`from ${say(own)}`];
-  Object.entries(node.facts_from || {}).forEach(([fact, src]) => {
-    if (src && (src.kind !== own.kind || src.as_of !== own.as_of)) parts.push(`${fact} from ${say(src)}`);
-  });
-  return parts.join(' · ');
 }
 
 function dataClassCell(node) {
@@ -187,15 +170,45 @@ function dataClassCell(node) {
   return '<span class="text-ink-muted">not established</span>';
 }
 
-/** The activity word and its window, from the server: active, dormant (0 writes in
- *  at least the dormancy threshold of counter evidence) or can't tell, with the reason.
- *  A can't-tell proposes nothing, so it is drawn muted and carries no control. */
+/** Why a can't-tell row can't tell: the server's `reason`, or the text without its prefix. */
+const cantTellReason = (lw) => lw.reason || String(lw.text || '').replace(/^can't tell( · )?/, '') || 'counters not measured';
+
+/** The activity word, kept short ("can't tell", "dormant · 0 writes in 336 days",
+ *  "active · 1,204 writes") with the whole sentence in the cell's title, so nothing is lost.
+ *  A can't-tell proposes nothing, so it is drawn muted and carries no control; the reason
+ *  it can't tell is said once above the tree (`activitySummaryHtml`) and on hover. */
 function lastWriteCell(node) {
   const lw = node.last_write || {};
-  if (lw.state === 'cant_tell') return `<span class="text-ink-muted" data-scope-activity-cant-tell>${esc(lw.text || "can't tell · counters not measured")}</span>`;
-  if (lw.state === 'active' || lw.state === 'dormant') return `<span data-scope-activity-${esc(lw.state)}>${esc(lw.text || lw.state)}</span>`;
+  const tip = lw.text ? ` title="${esc(lw.text)}"` : '';
+  if (lw.state === 'cant_tell') return `<span class="text-ink-muted" data-scope-activity-cant-tell${tip}>can't tell</span>`;
+  if (lw.state === 'dormant') {
+    const short = lw.window_days != null ? `dormant · 0 writes in ${lw.window_days} days` : (lw.text || 'dormant');
+    return `<span data-scope-activity-dormant${tip}>${esc(short)}</span>`;
+  }
+  if (lw.state === 'active') {
+    const short = lw.writes != null ? `active · ${num(lw.writes)} writes` : (lw.text || 'active');
+    return `<span data-scope-activity-active${tip}>${esc(short)}</span>`;
+  }
   if (node.access === 'not_established') return '<span class="text-ink-muted">? not established</span>';
   return '<span class="text-ink-muted">not measured</span>';
+}
+
+/** ONE line above the tree for the can't-tell rows, grouped by reason, instead of the
+ *  same reason repeated on every row: "Activity: can't tell on 266 rows: counter reset
+ *  date not recorded". Counts tables, plus any schema that lists none. */
+export function activitySummaryHtml(view) {
+  const counts = new Map();
+  const add = (n) => {
+    const lw = n.last_write || {};
+    if (lw.state !== 'cant_tell') return;
+    const why = cantTellReason(lw).replace(/^reset date not recorded$/, 'counter reset date not recorded');
+    counts.set(why, (counts.get(why) || 0) + 1);
+  };
+  (view.schemas || []).forEach((sc) => { if ((sc.tables || []).length) sc.tables.forEach(add); else add(sc); });
+  if (!counts.size) return '';
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1])
+    .map(([why, n]) => `on ${num(n)} row${n === 1 ? '' : 's'}: ${why}`);
+  return `<div data-scope-activity-summary class="mb-s1 text-provenance text-ink-muted">Activity: can't tell ${esc(parts.join(' · '))}</div>`;
 }
 
 /** A rows or size cell: the number in its own kind (≈ for an estimate), "not measured",
@@ -226,6 +239,8 @@ function sizeCell(node) {
 }
 
 
+/* Column widths, shared by the header, rows and the column lines so they stay aligned.
+ * Written out as literal classes (Tailwind scans this file; it cannot see a built string). */
 function rowHtml(node, me, depth, kindWord) {
   const isSchema = node.kind === 'schema';
   const key = isSchema ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
@@ -239,21 +254,30 @@ function rowHtml(node, me, depth, kindWord) {
   const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
   const pick = isSchema
     ? `<input type="checkbox" data-scope-select="${esc(node.name)}" aria-label="select schema ${esc(node.name)}" ${selected.has(node.name) ? 'checked' : ''} ${dis}>` : '';
+  const srcLine = nodeSourceLine(node);
+  const src = srcLine ? `<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>` : '';
   return `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
-    <div class="w-[3ch] shrink-0" data-scope-select-cell>${pick}</div>
-    <div class="w-[32ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me)}</div>
-    <div class="w-[26ch] shrink-0 text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}</div>
-    <div class="w-[14ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
-    <div class="w-[10ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
-    <div class="w-[26ch] shrink-0" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
-    <div class="w-[12ch] shrink-0" data-scope-classes-cell>${dataClassCell(node)}</div>
-    <div class="min-w-[36ch] flex-1" data-scope-state-cell><div data-scope-egeria-state class="text-ink-muted">not read yet</div>${stateCellHtml(node, me)}</div>
+    <div class="w-[2ch] shrink-0" data-scope-select-cell>${pick}</div>
+    <div class="w-[24ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me)}</div>
+    <div class="min-w-[16ch] flex-1 break-words text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
+    <div class="w-[9ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
+    <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
+    <div class="w-[18ch] shrink-0" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
+    <div class="w-[10ch] shrink-0 break-words" data-scope-classes-cell>${dataClassCell(node)}</div>
+    <div class="w-[20ch] shrink-0" data-scope-state-cell><div data-scope-egeria-state class="text-ink-muted">not read yet</div>${stateCellHtml(node, me)}</div>
   </div>`;
 }
 
+/** A table's columns, directly beneath it and indented under the table's NAME (two empty
+ *  cells the width of the tick and choice columns, then a rule and a "└" marker), muted and
+ *  smaller than the rows, so they cannot read as belonging to the next table. */
 function columnRowsHtml(table) {
-  return (table.columns || []).map((c) => `<div data-scope-column class="ml-s4 flex items-baseline gap-s2 py-[1px] text-provenance text-ink-muted">
-    <span class="font-mono text-ink">${esc(c.name)}</span> <span>${esc(c.type || '')}</span> <span class="text-accent-ink">${esc(c.key_role || '')}</span></div>`).join('');
+  const cols = table.columns || [];
+  if (!cols.length) return '';
+  return `<div data-scope-columns class="mb-[3px] flex gap-s2">
+    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0"></div>
+    <div class="flex-1 border-l border-rule pl-s2">${cols.map((c) => `<div data-scope-column class="py-[1px] text-provenance text-ink-muted">
+      <span aria-hidden="true" class="text-rule-strong">└</span> <span class="font-mono">${esc(c.name)}</span> <span>${esc(c.type || '')}</span> <span class="text-accent-ink">${esc(c.key_role || '')}</span></div>`).join('')}</div></div>`;
 }
 
 const TABLE_KIND = { 'BASE TABLE': 'table', VIEW: 'view', 'MATERIALIZED VIEW': 'matview', FOREIGN: 'foreign table' };
@@ -263,11 +287,12 @@ export function treeHtml(view, me) {
     return `<div class="text-caveat text-ink-muted">No stored schema rows yet: run a survey first. Nothing to scope until Egeria's survey or RE's has listed the schemas.</div>`;
   }
   const head = `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" data-scope-tree-head>
-    <div class="w-[3ch] shrink-0"></div><div class="w-[32ch] shrink-0">choice</div><div class="w-[26ch] shrink-0">Schema / table</div>
-    <div class="w-[14ch] shrink-0 text-right">rows</div><div class="w-[10ch] shrink-0 text-right">size</div>
-    <div class="w-[26ch] shrink-0" data-scope-activity-head title="dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">activity</div>
-    <div class="w-[12ch] shrink-0">data classes</div>
-    <div class="min-w-[36ch] flex-1" data-scope-state-head>State in Egeria</div></div>`;
+    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0">choice</div><div class="min-w-[16ch] flex-1">Schema / table</div>
+    <div class="w-[9ch] shrink-0 text-right" title="Row count; the source and date ride on each cell">Rows</div>
+    <div class="w-[8ch] shrink-0 text-right" title="Size on disk; the source and date ride on each cell">Size</div>
+    <div class="w-[18ch] shrink-0" data-scope-activity-head title="Activity: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">Activity</div>
+    <div class="w-[10ch] shrink-0" data-scope-classes-head title="Data classes found in the columns">Classes</div>
+    <div class="w-[20ch] shrink-0" data-scope-state-head title="State in Egeria">In Egeria</div></div>`;
   const body = (view.schemas || []).map((s) => {
     const open = openSchemas.has(s.name) || s.tables.some((t) => t.conflict);
     if (open) openSchemas.add(s.name);
@@ -277,9 +302,10 @@ export function treeHtml(view, me) {
   }).join('');
   const sys = view.system
     ? `<div data-scope-system class="mt-s1 text-caveat text-ink-muted">${esc(String(view.system.folded))} system schemas folded · ${esc(view.system.text)}</div>` : '';
-  // min-w-max keeps every column (STATE included) at its full width; the host
-  // scrolls sideways inside its own container instead of clipping at the edge.
-  return `<div class="min-w-max">${head + body + sys}</div>`;
+  // A fixed floor (not max-content, which let one long sentence widen every row): at about
+  // 1300px everything fits, and below the floor the host scrolls sideways inside its own
+  // container instead of clipping at the edge.
+  return `<div class="min-w-[64rem]">${head + body + sys}</div>`;
 }
 
 /** The tick-everything box and the bulk bar above the tree. */
@@ -339,6 +365,7 @@ export function scopeSectionHtml(view, me, status = '') {
     ${depthLineHtml(view, me)}
     <div data-scope-tree-header class="mb-s1 text-provenance text-ink-muted">${element} · ${esc(treeSourceText(view))} · nothing here is sent to Egeria</div>
     <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
+    ${activitySummaryHtml(view)}
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
     ${bulkBarHtml(view, me)}
     <div data-scope-tree class="overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>

@@ -924,3 +924,102 @@ def test_a_failed_local_survey_read_is_unreadable_not_not_measured(world, monkey
     monkeypatch.setattr(world["registry"], "get_database_surveys", boom)
     local = view(world)["sources"]["local"]
     assert local["state"] == "unreadable" and "surveys table unreadable" in local["read_error"]
+
+
+# ── slice A2.1: one node set for Schema Inventory and Curate; zeros that are not measurements ──────
+
+def _native_tables(registry, tables, schema="shop"):
+    """A complete native survey of one schema whose tables carry exactly the given properties."""
+    anns = [_ann(0, "Capture Database Measurements", {"lastStatisticsReset": "2026-10-03T07:30:00"}),
+            _ann(1, "Capture Database Schema Measurements",
+                 {"schemaName": schema, "qualifiedSchemaName": f"coco.{schema}", "tableCount": str(len(tables))})]
+    for i, (name, props) in enumerate(tables.items(), start=2):
+        anns.append(_ann(i, "Capture Database Table Measurements",
+                         {"tableName": name, "qualifiedTableName": f"coco.{schema}.{name}", **props}))
+    registry.record_native_survey_submission("database", "db", PROC, NATIVE_AT, engine_action_guid="ea-1")
+    registry.record_native_survey_report("ea-1", entity_type="database", slug="db", process_qualified_name=PROC,
+                                         report_guid="r-1", report_at=NATIVE_AT, read_at=NATIVE_AT, annotations=anns)
+
+
+def test_a_native_size_of_zero_with_a_column_count_of_zero_is_not_a_measurement(world):
+    """The native survey wrote tableSize 0 / columnCount 0 for tables it never measured."""
+    world["tree"] = {"schemas": []}
+    _native_tables(world["registry"], {
+        "unmeasured": {"tableSize": "0", "columnCount": "0", "tableType": "BASE TABLE"},
+        "wrote_rows": {"tableSize": "0", "columnCount": "4", "numberOfRowsInserted": "250"},
+        "real": {"tableSize": "16384", "columnCount": "3"},
+    })
+    v = view(world)
+    u, w, r = (node(v, "shop", n) for n in ("unmeasured", "wrote_rows", "real"))
+    assert u["size_view"]["text"] == "not measured" and u["size_bytes"] is None and u["column_count"] is None
+    assert w["size_view"]["text"] == "not measured" and w["size_bytes"] is None      # rows were counted
+    assert w["column_count"] == 4                                                      # a real count stays
+    assert r["size_view"]["text"] == "16 KB" and r["column_count"] == 3
+    assert "size" not in u["facts_from"]                                              # no source claimed for a non-measurement
+
+
+def test_a_measured_empty_table_still_reads_0_B_and_a_zero_with_no_evidence_does_not(world):
+    """Size 0 stays "0 B" only when rows were counted as 0 by a measured source and the table has columns."""
+    world["tree"] = {"schemas": [sch("shop", [
+        {**tbl("empty", rows=0), "size_bytes": 0, "column_count": 3},        # rows scanned as 0
+        {**tbl("estimated", rows=0), "size_bytes": 0, "column_count": 3, "row_count_state": "catalog_estimate"},
+        {**tbl("no_rows", rows=None), "size_bytes": 0, "column_count": 3},   # nobody counted rows
+        {**tbl("has_rows", rows=40), "size_bytes": 0, "column_count": 3},    # rows counted above zero
+        {**tbl("zero_cols", rows=0), "size_bytes": 0, "column_count": 0, "columns": []},
+    ])]}
+    v = view(world)
+    assert node(v, "shop", "empty")["size_view"]["text"] == "0 B"
+    for n in ("estimated", "no_rows", "has_rows", "zero_cols"):
+        assert node(v, "shop", n)["size_view"]["text"] == "not measured", n
+    assert node(v, "shop", "zero_cols")["column_count"] is None
+
+
+def test_a_column_count_of_zero_becomes_the_number_of_columns_listed(world):
+    t = {**tbl("x"), "column_count": 0}                                   # tbl() lists one column
+    assert cs.measured_size_rule(t)[1] == 1
+    assert cs.measured_size_rule({**t, "columns": []})[1] is None
+
+
+def test_a_schema_total_of_zero_is_not_a_measurement_unless_a_table_is_a_measured_empty_one(world):
+    world["tree"] = {"schemas": [{**sch("shop", [tbl("a", rows=5)]), "bytes_total": 0},
+                                 {**sch("hollow", [{**tbl("b", rows=0), "size_bytes": 0}]), "bytes_total": 0}]}
+    v = view(world)
+    assert node(v, "shop")["size_view"]["text"] == "100 B"
+    assert node(v, "hollow")["size_view"]["text"] == "0 B"
+    only_zero = {**sch("flat", [{**tbl("c", rows=5), "size_bytes": None}]), "bytes_total": 0}
+    world["tree"] = {"schemas": [only_zero]}
+    assert node(view(world), "flat")["size_view"]["text"] == "not measured"
+
+
+def test_the_schema_inventory_route_reads_the_same_node_set_as_curate(client, world):
+    """29 schemas from the Egeria survey, 8 from RE's stale local one: the Schema Inventory
+    route answers with the 29, each carrying its source and as-of, and names both surveys."""
+    _native(world["registry"])
+    world["tree"] = _local_tree(8, 7)
+    world["survey_at"] = LOCAL_AT
+    j = client.get("/api/databases/db/schema-inventory-tree").json()
+    real = [s for s in j["schemas"] if s.get("schema") and s["classification"] != "system"]
+    assert len(real) == 29
+    assert all(s["source"]["kind"] == "egeria" and s["source"]["as_of"] == NATIVE_AT for s in real)
+    assert all(t["source"]["as_of"] == NATIVE_AT for s in real for t in s["tables"])
+    src = j["sources"]
+    assert (src["chosen"]["kind"], src["chosen"]["schemas"]) == ("egeria", 29)
+    assert (src["local"]["schema_count"], src["local"]["table_count"], src["local"]["surveyed_at"]) == (8, 56, LOCAL_AT)
+    assert src["disagree"] is True
+    # and it is literally Curate's set, not a second merge
+    cur = client.get("/api/catalogue-scope/db").json()
+    assert [s["name"] for s in cur["schemas"]] == [s["schema"] for s in real]
+    assert cur["sources"] == src
+    # columns the native survey lacks are still filled from the local one
+    assert next(s for s in real if s["schema"] == "s05")["tables"][3]["columns"][0]["name"] == "id"
+
+
+def test_the_summary_says_when_the_credential_scoped_survey_was_taken(registry, client):
+    registry.record_database_survey(
+        "db", 8, 61, 479,
+        {"credential_capability": {"connected_as": "surveyor", "schema_total": 8, "schema_visible": 6,
+                                   "relation_total": 61, "relation_select": 3}},
+        source="local", surveyed_at="2026-10-03T09:00:00")
+    row = next(r for r in client.get("/api/databases/").json() if r["slug"] == "db")
+    assert row["credential_capability"]["connected_as"] == "surveyor"
+    assert row["credential_capability_at"].startswith("2026-10-03")

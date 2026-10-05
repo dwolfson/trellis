@@ -93,6 +93,10 @@ class DatabaseSummary(BaseModel):
     # the same row it already reads for every other resource type — a repo or
     # filesystem row simply never sets this field.
     credential_capability: dict | None = None
+    # When the survey that carried that probe was taken (a stored row's own
+    # `surveyed_at`), so the visibility banner can say WHICH survey its counts
+    # are about instead of speaking for the whole page. "" when unknown.
+    credential_capability_at: str = ""
 
 
 class DatabaseRegistration(BaseModel):
@@ -208,6 +212,7 @@ def _to_summary(db) -> DatabaseSummary:
     # newest-first "has this key" search into Postgres instead of
     # rescanning every historical blob in Python a second time.
     credential_capability: dict | None = None
+    credential_capability_at = ""
     cap_survey = registry.find_latest_database_survey_with_key(db.slug, "credential_capability")
     if cap_survey is not None:
         try:
@@ -215,6 +220,7 @@ def _to_summary(db) -> DatabaseSummary:
         except (ValueError, TypeError):
             data = {}
         credential_capability = data.get("credential_capability") or None
+        credential_capability_at = str(cap_survey.get("surveyed_at") or "")
 
     from resource_explorer.egeria_linkage import describe_publish_status
     publish_status = describe_publish_status(
@@ -249,6 +255,7 @@ def _to_summary(db) -> DatabaseSummary:
         disposition=disp.get("disposition", "undecided"),
         working_set_hidden=registry.is_working_set_hidden("database", db.slug),
         credential_capability=credential_capability,
+        credential_capability_at=credential_capability_at,
         is_published=publish_status["is_published"],
         egeria_publish_note=publish_status["note"],
     )
@@ -376,20 +383,26 @@ async def get_database_schema_inventory_tree(slug: str) -> dict:
     UI's `survey_data` blob path). See `schema_inventory_tree()`'s own
     docstring for the shape.
 
+    Since slice A2.1 the schemas come from `catalogue_scope.resolve_node_set` (the
+    fullest, newest complete survey, native or local) and a `sources` block names
+    them; `schema_inventory_tree()` is still the local half of that merge.
+
     404s the same way `get_database_survey_results` does; `to_thread`
     since this walks every stored table/column row plus the credential
     probe, same reasoning as that route."""
+    from resource_explorer.catalogue_scope import resolve_node_set, sources_view
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.database.survey_definition_adapter import (
-        schema_inventory_tree,
-    )
 
     registry = ProjectRegistry()
     if not registry.get_database(slug, allow_unreadable=True):
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
-    tree = await asyncio.to_thread(schema_inventory_tree, registry, slug)
-    return tree or {"schemas": []}
+    # A2.1: the same resolved node set the Curate tree reads (`resolve_node_set`),
+    # not RE's own credential-scoped local survey alone. Each schema and table
+    # carries its `source` and as-of; `sources` names the surveys so the pane can
+    # say which one it reads and when the two disagree.
+    resolved = await asyncio.to_thread(resolve_node_set, registry, slug)
+    return {"schemas": resolved["schemas"], "sources": sources_view(resolved)}
 
 
 @router.get("/{slug}/questions")
