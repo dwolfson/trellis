@@ -52,6 +52,17 @@ topic 2's survey item once a run confirms it, and a platform restart was
 observed to clear the cataloguer's cached target list (a detached target
 kept being refreshed until then).
 
+*Second scratch run, same day, on today's build:* the survey scope works as
+a request parameter (an array on the element's connection is ignored, and
+a comma inside a schema name cannot be expressed); arrays on a
+database-kind target are now honoured though its database-level pass
+remains; schema-kind targets alone produce no database-level pass; a
+single-connector restart clears a detached target; archiving a schema
+element archives its tables and columns, but an archived schema cannot be
+re-included (the template create fails 400 and no restore path was found,
+S19), and the `/archive` endpoint itself returns 500 on this build (S20).
+Topic 4's door stands on this evidence, with leave-out in two forms.
+
 ## 1. The annotation vocabulary and an honesty envelope
 
 **What RE needs.** Every analytic result, Egeria's surveys and RE's own
