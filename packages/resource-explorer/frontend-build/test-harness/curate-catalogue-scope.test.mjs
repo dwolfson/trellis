@@ -20,7 +20,8 @@ const node = (kind, name, over = {}) => ({
   kind, name, key: name, state: 'undecided', proposal: null, live_proposal: null, overridden: null,
   disagrees: null, notes: [], marks: [], explicit: null, effective: null, effective_from: null,
   new_since: false, conflict: null, access: 'established', provenance: '',
-  last_write: { state: 'not_established', from: '', to: '' },
+  last_write: { state: 'not_established', from: '', to: '', text: 'not established' },
+  source: { kind: 'egeria', as_of: '2026-10-04T06:00:00', text: 'from Egeria survey 10-04' }, facts_from: {},
   data_classes: { state: 'not_established', classes: [], pii_columns: 0 }, ...over,
 });
 const table = (schema, name, over = {}) => node('table', name, {
@@ -40,7 +41,13 @@ function baseView(over = {}) {
   return {
     database: 'adventureworks',
     egeria_element: { guid: 'abcdef12-0', short: 'abcdef12', text: 'abcdef12' },
-    survey: { state: 'measured', schema_count: 29, table_count: 266, surveyed_at: '2026-10-03T00:00:00', report_guid: 'g' },
+    survey: { state: 'measured', schema_count: 29, table_count: 266, surveyed_at: '2026-10-04T06:00:00', report_guid: 'g' },
+    sources: {
+      chosen: { kind: 'egeria', as_of: '2026-10-04T06:00:00', schemas: 29, tables: 266, merged: false },
+      egeria: { state: 'measured', schema_count: 29, table_count: 266, surveyed_at: '2026-10-04T06:00:00', report_guid: 'g' },
+      local: { state: 'not_measured', schema_count: 0, table_count: 0, surveyed_at: '', surveyed_as: '', sees: '' },
+      disagree: false, unreadable: 0,
+    },
     declared: { declared: false, by: '', at: '', kind: '', baseline_survey_at: '' },
     depth: {
       value: 'schemas_and_tables', declared: false, by: '', at: '',
@@ -101,6 +108,14 @@ function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
           const o = n.proposal; const choice = o.choice === 'leave_out' ? 'catalogue' : 'leave_out';
           n.explicit = person(choice, 'me', '2026-10-04T11:00:00', { action: 'override', proposal_rule: o.rule, proposal_choice: o.choice, reason: o.reason });
           n.effective = choice; n.state = 'overridden'; n.overridden = { rule: o.rule, choice: o.choice, reason: o.reason }; n.proposal = null;
+        }
+        if (u.endsWith('/nodes')) {
+          const names = body.all_schemas ? s.view.schemas.map((x) => x.name) : body.nodes.map((n) => n.schema_name);
+          for (const nm of names) {
+            const n = find(nm, '');
+            if (body.choice) { n.explicit = person(body.choice, 'me'); n.effective = body.choice; n.state = 'chosen'; n.proposal = null; }
+            else { n.explicit = null; n.effective = null; n.state = 'undecided'; }
+          }
         }
         if (u.endsWith('/node/clear')) {
           const n = find(body.schema_name, body.table_name);
@@ -182,16 +197,40 @@ test('the scope is the FIRST section of a database band 2, above the two waiting
   assert.equal(kind.querySelectorAll('table').length, 0, 'never a <table>');
 });
 
-test('header, undeclared: names the scope as none declared and quotes Egeria’s latest survey', async () => {
+test('header, undeclared, Egeria the source: "29 schemas · Egeria survey 10-04"', async () => {
   const { document } = await setUp(baseView());
   assert.equal(flat(document.querySelector('[data-scope-header]')),
-    "Your scope: none declared yet · Egeria's latest survey covers 29 schemas, 266 tables");
+    'Your scope: none declared yet · 29 schemas · Egeria survey 10-04');
   assert.match(flat(document.querySelector('[data-scope-tree-header]')), /reads Egeria element abcdef12/);
+  assert.match(flat(document.querySelector('[data-scope-tree-header]')), /tree read from the Egeria survey 10-04: 29 schemas, 266 tables/);
+});
+
+test('header, RE local survey the only source: names the source, its date and what the credential sees', async () => {
+  const { document } = await setUp(baseView({ sources: {
+    chosen: { kind: 'local', as_of: '2026-10-03T09:00:00', schemas: 8, tables: 61, merged: false },
+    egeria: { state: 'not_measured', schema_count: null, table_count: null, surveyed_at: '', report_guid: '' },
+    local: { state: 'measured', schema_count: 8, table_count: 61, surveyed_at: '2026-10-03T09:00:00', surveyed_as: 'surveyor', sees: 'sees 6' },
+    disagree: false, unreadable: 0 } }));
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    'Your scope: none declared yet · 8 schemas · RE local survey 10-03 · sees 6 of 8');
+});
+
+test('header, the two sources DISAGREE: it names both, with their counts and dates', async () => {
+  const { document } = await setUp(baseView({ sources: {
+    chosen: { kind: 'egeria', as_of: '2026-10-04T06:00:00', schemas: 29, tables: 266, merged: true },
+    egeria: { state: 'measured', schema_count: 29, table_count: 266, surveyed_at: '2026-10-04T06:00:00', report_guid: 'g' },
+    local: { state: 'measured', schema_count: 8, table_count: 61, surveyed_at: '2026-10-03T09:00:00', surveyed_as: 'surveyor', sees: 'sees 6' },
+    disagree: true, unreadable: 0 } }));
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    "Your scope: none declared yet · Egeria's latest survey covers 29 schemas, 266 tables · RE's own survey saw 8 schemas, 61 tables, 10-03");
+  assert.match(flat(document.querySelector('[data-scope-tree-header]')), /facts it lacked filled from the other survey/);
 });
 
 test('header, undeclared and never measured: says not measured yet, and an uncatalogued database says so', async () => {
   const { document } = await setUp(baseView({
     survey: { state: 'not_measured', schema_count: null, table_count: null, surveyed_at: '', report_guid: '' },
+    sources: { chosen: { kind: 'local', as_of: '', schemas: 0, tables: 0, merged: false },
+      egeria: { state: 'not_measured' }, local: { state: 'not_measured' }, disagree: false, unreadable: 0 },
     egeria_element: { guid: '', short: '', text: 'not catalogued in Egeria' },
   }));
   assert.equal(flat(document.querySelector('[data-scope-header]')),
@@ -204,7 +243,8 @@ test('header, declared: 7 of 29 schemas, declared by who and when', async () => 
     declared: { declared: true, by: 'dwolfson', at: '2026-10-04T08:00:00', kind: 'first', baseline_survey_at: '' },
     counts: { schemas_offered: 29, schemas_catalogue: 7, schemas_leave_out: 0, schemas_undecided: 22 },
   }));
-  assert.equal(flat(document.querySelector('[data-scope-header]')), 'Your scope: 7 of 29 schemas · declared by dwolfson 10-04');
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    'Your scope: 7 of 29 schemas · declared by dwolfson 10-04 · 29 schemas · Egeria survey 10-04');
 });
 
 /* ── depth ─────────────────────────────────────────────────────────────── */
@@ -439,4 +479,230 @@ test('a 401 from a write says to sign in, in words', async () => {
   row(document, 'schema:sales').querySelector('[data-scope-act="set"][data-scope-choice="leave_out"]').click();
   await wait();
   assert.match(flat(document.querySelector('[data-scope-status]')), /sign in to change what gets catalogued/);
+});
+
+/* ── slice A2: sources on every row, activity, select-all and bulk, layout ── */
+
+test('every row carries a muted source line, and a fact another survey supplied says where it came from', async () => {
+  const v = baseView();
+  v.schemas[0].tables[0].facts_from = { rows: { kind: 'local', as_of: '2026-10-03T09:00:00', text: '' } };
+  v.schemas[1].source = { kind: 'local', as_of: '2026-10-03T09:00:00', text: 'from RE local survey 10-03' };
+  const { document } = await setUp(v);
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  const src = (key) => row(document, key).querySelector('[data-scope-source]');
+  assert.equal(flat(src('schema:sales')), 'from Egeria survey 10-04');
+  assert.equal(flat(src('schema:archive')), 'from RE local survey 10-03');
+  assert.equal(flat(src('table:sales.orders')), 'from Egeria survey 10-04 · rows from RE local survey 10-03');
+  assert.equal(flat(src('table:sales.customers')), 'from Egeria survey 10-04');
+  for (const key of ['schema:sales', 'schema:archive', 'table:sales.orders']) {
+    assert.ok(src(key).className.includes('text-ink-muted'), `${key}: the source line is muted ink`);
+  }
+});
+
+test('activity is a word with its window: active, dormant, or can\'t tell with the reason; never "none since"', async () => {
+  const v = baseView();
+  v.schemas[0].tables[0].last_write = { state: 'active', text: 'active · 1,204 writes since counters reset 06-02' };
+  v.schemas[0].tables[1].last_write = { state: 'cant_tell', text: "can't tell · counters reset 10-03 · 2 days of evidence" };
+  v.schemas[1].last_write = { state: 'dormant', text: 'dormant · 0 writes in 336 days (counters reset 2025-11-02)' };
+  v.schemas[2].last_write = { state: 'cant_tell', text: "can't tell · reset date not recorded" };
+  const { document } = await setUp(v);
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  const act = (key) => flat(row(document, key).querySelector('[data-scope-lastwrite-cell]'));
+  assert.equal(act('table:sales.orders'), 'active · 1,204 writes since counters reset 06-02');
+  assert.equal(act('table:sales.customers'), "can't tell · counters reset 10-03 · 2 days of evidence");
+  assert.equal(act('schema:archive'), 'dormant · 0 writes in 336 days (counters reset 2025-11-02)');
+  assert.equal(act('schema:empty_one'), "can't tell · reset date not recorded");
+  assert.ok(row(document, 'table:sales.customers').querySelector('[data-scope-activity-cant-tell]').className.includes('text-ink-muted'));
+  assert.doesNotMatch(flat(scopeEl(document)), /none since|no writes since/);
+  assert.equal(scopeEl(document).querySelectorAll('[data-scope-act="confirm"]').length, 0, 'a can\'t tell proposes nothing');
+  assert.match(flat(document.querySelector('[data-scope-activity-head]')), /^activity$/);
+  assert.match(document.querySelector('[data-scope-activity-head]').title, /0 writes in at least 90 days/);
+});
+
+test('columns, left to right: choice, Schema / table, rows, size, activity, data classes, State in Egeria', async () => {
+  const { document } = await setUp(baseView());
+  const heads = [...document.querySelector('[data-scope-tree-head]').children].map((c) => flat(c).toLowerCase()).filter(Boolean);
+  assert.deepEqual(heads, ['choice', 'schema / table', 'rows', 'size', 'activity', 'data classes', 'state in egeria']);
+  const cells = [...row(document, 'schema:sales').children].map((c) => Object.keys(c.dataset)[0]);
+  assert.deepEqual(cells, ['scopeSelectCell', 'scopeChoiceCell', 'scopeNameCell', 'scopeRowsCell', 'scopeSizeCell', 'scopeLastwriteCell', 'scopeClassesCell', 'scopeStateCell']);
+  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-name-cell]')), /sales · 2 tables/);
+});
+
+test('rows and size: a scan, an estimate (≈), not measured, and "◐ sources disagree" with both values', async () => {
+  const v = baseView();
+  const [orders, customers] = v.schemas[0].tables;
+  orders.rows_view = { state: 'measured', value: 3412, text: '3,412', detail: 'RE local survey 10-14 · scan' };
+  customers.rows_view = { state: 'estimate', value: 3400, estimate: true, text: '≈3,400', detail: 'RE local survey 10-14 · estimate' };
+  v.schemas[1].tables[0].rows_view = { state: 'disagree', value: null, text: '◐ sources disagree', detail: 'RE local survey 10-02: ≈3,400 · Egeria survey 10-04: 0' };
+  v.schemas[2].rows_view = { state: 'not_measured', value: null, text: 'not measured', detail: '' };
+  orders.size_view = { state: 'measured', value: 1, text: '22 MB', detail: 'Egeria survey 10-04' };
+  customers.size_view = { state: 'not_measured', value: null, text: 'not measured', detail: '' };
+  const { document } = await setUp(v);
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  document.querySelector('[data-scope-toggle="archive"]').click();
+  const cell = (key, which) => row(document, key).querySelector(`[data-scope-${which}-cell]`);
+  assert.equal(flat(cell('table:sales.orders', 'rows')), '3,412');
+  assert.equal(flat(cell('table:sales.customers', 'rows')), '≈3,400');
+  assert.match(cell('table:sales.customers', 'rows').querySelector('[title]').title, /estimate/);
+  assert.match(flat(cell('table:archive.orders', 'rows')), /^◐ sources disagree RE local survey 10-02: ≈3,400 · Egeria survey 10-04: 0$/);
+  assert.equal(flat(cell('schema:empty_one', 'rows')), 'not measured');
+  assert.equal(flat(cell('table:sales.orders', 'size')), '22 MB');
+  assert.equal(flat(cell('table:sales.customers', 'size')), 'not measured');
+  assert.ok(cell('table:sales.orders', 'rows').querySelector('.tnum.text-right, .tnum'), 'tabular figures');
+});
+
+test('a lens term found in table names is a muted suggestion sentence, not a proposal and not a rule control', async () => {
+  const v = baseView({ suggested_rules: [{ term: 'Sales', count: 14, text: 'The lens names Sales: 14 table names contain it · make that a rule?' }] });
+  const { document } = await setUp(v);
+  const line = document.querySelector('[data-scope-suggested-rule]');
+  assert.equal(flat(line), 'The lens names Sales: 14 table names contain it · make that a rule?');
+  assert.ok(line.className.includes('text-ink-muted'));
+  assert.equal(line.querySelector('button'), null, 'rules are a later slice: no control');
+  assert.equal(scopeEl(document).querySelectorAll('[data-scope-act="confirm"]').length, 0);
+});
+
+test('the column title is "Schema / table", tables are indented under their schema, and each says its kind', async () => {
+  const { document } = await setUp(baseView());
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  const head = flat(document.querySelector('[data-scope-tree-head]'));
+  assert.match(head, /Schema \/ table/);
+  assert.doesNotMatch(head, /(^|\s)name(\s|$)/i);
+  const t = row(document, 'table:sales.orders');
+  assert.ok(t.parentElement.className.includes('ml-s3'), 'the table row is indented');
+  assert.match(flat(t.querySelector('[data-scope-kind]')), /^· table$/);
+  assert.ok(row(document, 'schema:sales').querySelector('[data-scope-toggle]'), 'a schema row has its expander');
+});
+
+test('the STATE column is fully present and the tree scrolls sideways inside its own container', async () => {
+  const { document } = await setUp(baseView());
+  const host = document.querySelector('[data-scope-tree]');
+  assert.equal(host.style.overflowX, 'auto', 'overflow-x is set on the container');
+  assert.ok(host.className.includes('overflow-x-auto'));
+  assert.equal(flat(document.querySelector('[data-scope-state-head]')), 'State in Egeria');
+  assert.ok(host.querySelector('.min-w-max'), 'the rows keep their full width instead of shrinking and clipping');
+  assert.ok(row(document, 'schema:sales').querySelector('[data-scope-state-cell]'));
+  // jsdom does no layout: whether STATE is fully visible at ~1300px is NOT measured here.
+});
+
+test('select all schemas ticks every schema row, and the bulk bar counts them', async () => {
+  const { document, window } = await setUp(baseView());
+  const bar = document.querySelector('[data-scope-bulk]');
+  assert.match(flat(bar), /select all schemas/);
+  assert.match(flat(bar), /0 of 3 selected/);
+  assert.ok(document.querySelector('[data-scope-bulk-act="catalogue"]').disabled, 'nothing selected: nothing to apply');
+  const all = document.querySelector('[data-scope-all-box]');
+  all.checked = true;
+  all.dispatchEvent(new window.Event('change', { bubbles: true }));
+  const boxes = [...document.querySelectorAll('[data-scope-select]')];
+  assert.equal(boxes.length, 3);
+  assert.ok(boxes.every((b) => b.checked));
+  assert.match(flat(document.querySelector('[data-scope-bulk]')), /3 of 3 selected/);
+  assert.equal(document.querySelector('[data-scope-bulk-act="leave_out"]').disabled, false);
+  assert.equal(row(document, 'table:sales.orders'), null, 'tables carry no tick (schema rows only)');
+});
+
+test('catalogue selected: one POST naming the ticked schemas, and the status is derived from the re-read', async () => {
+  const { document, window, server } = await setUp(baseView());
+  for (const n of ['sales', 'archive']) {
+    const b = document.querySelector(`[data-scope-select="${n}"]`);
+    b.checked = true;
+    b.dispatchEvent(new window.Event('change', { bubbles: true }));
+  }
+  assert.match(flat(document.querySelector('[data-scope-selected-count]')), /2 of 3 selected/);
+  document.querySelector('[data-scope-bulk-act="catalogue"]').click();
+  await wait();
+  const [c] = calls(server, 'POST', '/nodes');
+  assert.deepEqual(c.body, { nodes: [{ schema_name: 'sales', table_name: '' }, { schema_name: 'archive', table_name: '' }], choice: 'catalogue', all_schemas: false });
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas now set to catalogue by me$/);
+  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalogue · set by me/);
+  assert.match(flat(document.querySelector('[data-scope-selected-count]')), /0 of 3 selected/, 'the selection is spent');
+});
+
+test('leave out selected and clear choice send their own choice', async () => {
+  const { document, window, server } = await setUp(baseView());
+  const tick = (n) => { const b = document.querySelector(`[data-scope-select="${n}"]`); b.checked = true; b.dispatchEvent(new window.Event('change', { bubbles: true })); };
+  tick('sales');
+  document.querySelector('[data-scope-bulk-act="leave_out"]').click();
+  await wait();
+  tick('sales');
+  document.querySelector('[data-scope-bulk-act="clear"]').click();
+  await wait();
+  const posts = calls(server, 'POST', '/nodes');
+  assert.deepEqual(posts.map((p) => p.body.choice), ['leave_out', '']);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now have no choice in the re-read scope$/);
+});
+
+test('catalogue all N schemas: one click, one POST asking for all of them, "3 schemas now set to catalogue by me"', async () => {
+  const { document, server } = await setUp(baseView());
+  const btn = document.querySelector('[data-scope-catalogue-all]');
+  assert.equal(flat(btn), 'catalogue all 3 schemas');
+  btn.click();
+  await wait();
+  const [c] = calls(server, 'POST', '/nodes');
+  assert.equal(c.body.all_schemas, true);
+  assert.equal(c.body.choice, 'catalogue');
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^3 schemas now set to catalogue by me$/);
+});
+
+test('bulk: a table with its own differing choice is reported from the re-read, not overwritten', async () => {
+  const v = baseView();
+  v.schemas[0].tables[0].explicit = person('catalogue'); v.schemas[0].tables[0].effective = 'catalogue';
+  v.schemas[0].tables[0].differs_from_schema = true; v.schemas[0].tables[0].state = 'chosen';
+  const { document, window } = await setUp(v);
+  const b = document.querySelector('[data-scope-select="sales"]');
+  b.checked = true; b.dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('[data-scope-bulk-act="leave_out"]').click();
+  await wait();
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now set to leave out by me · 1 table keeps its own choice and differs from its schema$/);
+  document.querySelector('[data-scope-toggle="sales"]').click();
+  assert.match(flat(row(document, 'table:sales.orders').querySelector('[data-scope-choice-cell]')), /catalogue · set by dwolfson 10-04 · differs from its schema/);
+});
+
+test('bulk, signed out: every bulk control is disabled with the reason and nothing is sent', async () => {
+  const { document, server } = await setUp(baseView(), { signedIn: false });
+  const controls = [...document.querySelectorAll('[data-scope-all-box], [data-scope-select], [data-scope-bulk-act], [data-scope-catalogue-all]')];
+  assert.ok(controls.length >= 7);
+  for (const c of controls) {
+    assert.ok(c.disabled, 'disabled');
+    assert.match(c.title, /sign in to change what gets catalogued/);
+  }
+  document.querySelector('[data-scope-catalogue-all]').click();
+  await wait(50);
+  assert.equal(server.calls.filter((x) => x.method !== 'GET').length, 0);
+});
+
+test('KNOWN-NEGATIVE: a bulk write the server drops is not reported as done', async () => {
+  const { document, server } = await setUp(baseView(), { dropWrites: true });
+  document.querySelector('[data-scope-catalogue-all]').click();
+  await wait();
+  assert.equal(calls(server, 'POST', '/nodes').length, 1);
+  const s = flat(document.querySelector('[data-scope-status]'));
+  assert.match(s, /the write returned, but the re-read scope shows only 0 of 3 schemas set to catalogue/);
+  assert.doesNotMatch(s, /now set to/);
+});
+
+test('a failed read of RE\'s own survey says so instead of "not measured"', async () => {
+  const lo = { state: 'unreadable', read_error: 'RuntimeError: x', schema_count: 0, table_count: 0, surveyed_at: '', surveyed_as: '', sees: '' };
+  const { document } = await setUp(baseView({ sources: {
+    chosen: { kind: 'local', as_of: '', schemas: 0, tables: 0, merged: false },
+    egeria: { state: 'not_measured' }, local: lo, disagree: false, unreadable: 0 } }));
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    "Your scope: none declared yet · RE's own survey could not be read");
+  assert.doesNotMatch(flat(document.querySelector('[data-scope-header]')), /not measured/);
+  const { document: d2 } = await setUp(baseView({ sources: {
+    chosen: { kind: 'egeria', as_of: '2026-10-04T06:00:00', schemas: 29, tables: 266, merged: false },
+    egeria: { state: 'measured', schema_count: 29, table_count: 266, surveyed_at: '2026-10-04T06:00:00' }, local: lo, disagree: false, unreadable: 0 } }));
+  assert.equal(flat(d2.querySelector('[data-scope-header]')),
+    "Your scope: none declared yet · 29 schemas · Egeria survey 10-04 · RE's own survey could not be read");
+});
+
+test('when the earlier surveys could not be read, new-since says can\'t tell and no row is flagged new', async () => {
+  const v = baseView({
+    declared: { declared: true, by: 'dwolfson', at: '2026-10-04T08:00:00', kind: 'first', baseline_survey_at: '' },
+    new_since: { declared: true, can_tell: false, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [],
+      text: "can't tell: the earlier surveys could not be read", since: '2026-10-04T08:00:00' },
+  });
+  const { document } = await setUp(v);
+  assert.equal(flat(document.querySelector('[data-scope-new-since]')).startsWith("can't tell: the earlier surveys could not be read"), true);
+  assert.equal(document.querySelectorAll('[data-scope-new-since-row]').length, 0);
 });

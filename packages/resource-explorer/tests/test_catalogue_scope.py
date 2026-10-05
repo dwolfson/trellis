@@ -58,8 +58,10 @@ def world(registry, monkeypatch):
                               sch("archive", [tbl("orders"), tbl("old_stuff")]),
                               sch("empty_one"), SYSTEM]}}
     monkeypatch.setattr(cs, "_load_tree", lambda reg, slug: w["tree"])
-    monkeypatch.setattr(cs, "_tree_survey_at", lambda reg, slug: SURVEY_AT)
-    monkeypatch.setattr(cs, "_change_rates", lambda reg, slug: w.get("rates", {}))
+    w["survey_at"] = SURVEY_AT
+    monkeypatch.setattr(cs, "_tree_survey_at", lambda reg, slug: w["survey_at"])
+    monkeypatch.setattr(cs, "_activity_counters", lambda reg, slug: w.get("activity", {}))
+    monkeypatch.setattr(cs, "_row_sources", lambda reg, slug: w.get("row_sources", {}))
     w["registry"] = registry
     return w
 
@@ -73,10 +75,9 @@ def node(v, schema, table=None):
     return s if table is None else next(t for t in s["tables"] if t["name"] == table)
 
 
-def rates(idle=(), active=()):
-    per = [{"schema_name": s, "table_name": t, "change": "idle"} for s, t in idle]
-    per += [{"schema_name": s, "table_name": t, "change": "active"} for s, t in active]
-    return {"per_table": per, "from_surveyed_at": "2026-09-27T00:00:00", "to_surveyed_at": SURVEY_AT}
+def counters(tables, writes=0, reset="2026-10-01T00:00:00", at=SURVEY_AT):
+    """Cumulative write counters for `tables` [(schema, table)], as the stored activity rows carry them."""
+    return {(s, t): {"writes": writes, "reset": reset, "at": at, "source": "local"} for s, t in tables}
 
 
 # ── storage: tables, migrations ──────────────────────────────────────────────
@@ -138,32 +139,85 @@ def test_rule_empty_schema_no_access_proposes_nothing(world):
     assert n["access"] == "not_established"
 
 
-def test_rule_no_writes_proposes_leave_out_with_evidence(world):
-    world["rates"] = rates(idle=[("archive", "orders"), ("archive", "old_stuff")])
-    n = node(view(world), "archive")
-    assert n["proposal"]["rule"] == "no_writes" and n["proposal"]["choice"] == "leave_out"
-    assert "no writes since 09-27" in n["proposal"]["reason"]
-    assert "10-02" in n["proposal"]["reason"]
-    t = node(view(world), "archive", "orders")
-    assert t["proposal"]["rule"] == "no_writes"
-
-
-def test_rule_no_writes_negatives_active_or_unmeasured(world):
-    world["rates"] = rates(idle=[("archive", "orders")], active=[("archive", "old_stuff")])
+def test_two_surveys_three_days_apart_with_idle_counters_propose_nothing(world):
+    """The two false leave-out proposals of the first real use: coco_ods, eu_sales,
+    target_sales and us_sales read "no writes since 09-30 (survey of 10-03)". Counters
+    reset 10-03 and the survey is 10-03/10-04: two days of evidence is "can't tell"."""
+    world["survey_at"] = "2026-10-04T09:00:00"
+    world["activity"] = counters([(sn, t) for sn in ("archive", "sales") for t in ("orders", "old_stuff", "customers")],
+                                 writes=0, reset="2026-10-03T07:30:00", at="2026-10-04T09:00:00")
     v = view(world)
-    assert node(v, "archive")["proposal"] is None            # one active table: not idle
-    assert node(v, "archive", "old_stuff")["proposal"] is None
-    world["rates"] = {}                                       # one snapshot: no change rate at all
+    for sname in ("archive", "sales"):
+        n = node(v, sname)
+        assert n["proposal"] is None and n["live_proposal"] is None and n["state"] == "undecided"
+        assert n["last_write"]["state"] == "cant_tell"
+        for t in n["tables"]:
+            assert t["proposal"] is None and t["state"] == "undecided"
+    assert not any("no writes since" in str(n) for n in v["schemas"])
+
+
+def test_the_activity_words_and_their_windows(world):
+    world["survey_at"] = "2026-10-04T09:00:00"
+    at = "2026-10-04T09:00:00"
+    world["activity"] = {
+        **counters([("archive", "orders")], writes=0, reset="2025-11-02T00:00:00", at=at),     # 336 days, zero
+        **counters([("archive", "old_stuff")], writes=1204, reset="2026-06-02T00:00:00", at=at),
+        **counters([("sales", "orders")], writes=0, reset="2026-10-03T07:30:00", at=at),       # 1 day
+        **counters([("sales", "customers")], writes=0, reset="", at=at),                       # no reset date
+    }
+    v = view(world)
+    assert node(v, "archive", "orders")["last_write"]["text"] == "dormant · 0 writes in 336 days (counters reset 2025-11-02)"
+    assert node(v, "archive", "old_stuff")["last_write"]["text"] == "active · 1,204 writes since counters reset 06-02"
+    assert node(v, "sales", "orders")["last_write"]["text"] == "can't tell · counters reset 10-03 · 1 day of evidence"
+    assert node(v, "sales", "customers")["last_write"]["text"] == "can't tell · reset date not recorded"
+    assert node(v, "archive", "old_stuff")["last_write"]["state"] == "active"
+    # a table with no counters at all
+    assert node(v, "empty_one")["last_write"]["text"] == "can't tell · counters not measured"
+    # schema roll-up: one active table makes it active; mixed dormant+can't-tell is can't tell
+    assert node(v, "archive")["last_write"]["state"] == "active"
+    assert node(v, "sales")["last_write"]["state"] == "cant_tell"
+
+
+def test_a_dormant_table_proposes_leave_out_and_the_reason_is_the_window(world):
+    world["survey_at"] = "2026-10-04T09:00:00"
+    world["activity"] = counters([("archive", "orders"), ("archive", "old_stuff")], writes=0,
+                                 reset="2025-11-02T00:00:00", at="2026-10-04T09:00:00")
+    v = view(world)
+    n = node(v, "archive")
+    assert (n["proposal"]["rule"], n["proposal"]["choice"]) == ("dormant", "leave_out")
+    assert n["proposal"]["reason"] == "dormant, 0 writes in 336 days"
+    assert node(v, "archive", "orders")["proposal"]["rule"] == "dormant"
+    assert node(v, "sales")["proposal"] is None                       # no counters: can't tell
+
+
+def test_the_dormancy_threshold_is_what_separates_dormant_from_cant_tell(world, monkeypatch):
+    c = counters([("archive", "orders"), ("archive", "old_stuff")], writes=0, reset="2026-07-06T00:00:00",
+                 at="2026-10-04T09:00:00")          # 90 days exactly
+    world["survey_at"] = "2026-10-04T09:00:00"
+    world["activity"] = c
+    assert node(view(world), "archive")["last_write"]["state"] == "dormant"
+    monkeypatch.setattr(cs, "DORMANCY_DAYS", 91)
+    assert node(view(world), "archive")["last_write"]["state"] == "cant_tell"
     assert node(view(world), "archive")["proposal"] is None
 
 
-def test_rule_lens_match_proposes_catalogue_only_with_a_lens(world):
-    assert node(view(world), "sales", "orders")["proposal"] is None       # no lens: nothing
+def test_an_active_table_never_proposes_and_activity_is_not_the_two_survey_delta(world):
+    world["survey_at"] = "2026-10-04T09:00:00"
+    world["activity"] = {**counters([("archive", "orders")], writes=0, reset="2025-01-01T00:00:00", at="2026-10-04T09:00:00"),
+                         **counters([("archive", "old_stuff")], writes=3, reset="2025-01-01T00:00:00", at="2026-10-04T09:00:00")}
+    v = view(world)
+    assert node(v, "archive")["proposal"] is None and node(v, "archive", "old_stuff")["proposal"] is None
+    assert not hasattr(cs, "_change_rates")
+
+
+def test_a_lens_term_in_table_names_is_a_suggested_rule_never_a_proposal(world):
+    assert view(world)["suggested_rules"] == []
     v = view(world, lens={"subjectTerms": ["orders"]})
-    p = node(v, "sales", "orders")["proposal"]
-    assert (p["rule"], p["choice"]) == ("data_lens_match", "catalogue")
-    assert "orders" in p["reason"]
-    assert node(v, "sales", "customers")["proposal"] is None              # no match: nothing
+    assert node(v, "sales", "orders")["proposal"] is None and node(v, "archive", "orders")["proposal"] is None
+    assert v["suggested_rules"] == [{"term": "orders", "count": 2,
+        "text": "The lens names orders: 2 table names contain it · make that a rule?"}]
+    assert view(world, lens={"subjectTerms": ["nothing_like_it"]})["suggested_rules"] == []
+    assert "data_lens_match" not in cs.PROPOSAL_RULES
 
 
 def test_the_database_has_no_lens_on_this_build():
@@ -188,14 +242,7 @@ def test_verdict_never_proposes():
     facts = {"kind": "schema", "name": "s", "classification": "data", "table_count": 5,
              "idle": None, "verdict": "recommended", "disposition": "using"}
     assert cs.propose_for_node(facts) is None
-    assert set(cs.PROPOSAL_RULES) == {"empty_schema", "no_writes", "data_lens_match"}
-
-
-def test_two_rules_that_disagree_propose_nothing(world):
-    world["rates"] = rates(idle=[("sales", "orders")])
-    v = view(world, lens={"subjectTerms": ["orders"]})
-    t = node(v, "sales", "orders")
-    assert t["proposal"] is None and any("disagree" in n for n in t["notes"])
+    assert set(cs.PROPOSAL_RULES) == {"empty_schema", "dormant"}
 
 
 def test_system_schemas_are_folded_never_offered(world):
@@ -296,6 +343,7 @@ def _seven_then_twentynine(world):
         cs.set_node_choice(world["registry"], "db", "dwolfson", schema=f"s{i}", choice="catalogue")
     world["tree"] = {"schemas": seven + [sch(f"new{i}", [tbl("a"), tbl("b"), tbl("c")])
                                          for i in range(22)] + [SYSTEM]}
+    world["survey_at"] = "2026-10-05T09:00:00"       # a survey AFTER the declaration (10-04 08:00) saw them
 
 
 def test_nothing_is_new_before_a_scope_is_declared(world):
@@ -329,8 +377,10 @@ def test_a_decision_on_a_new_schema_takes_it_out_of_the_count_and_redeclare_rese
 
 
 def test_new_table_in_a_known_schema_is_reported_separately(world):
-    cs.set_node_choice(world["registry"], "db", "alice", schema="sales", choice="catalogue")
+    cs.set_node_choice(world["registry"], "db", "alice", schema="sales", choice="catalogue",
+                       now="2026-10-02T10:00:00")
     world["tree"]["schemas"][0]["tables"].append(tbl("fresh"))
+    world["survey_at"] = "2026-10-03T09:00:00"
     ns = cs.new_since_declared(world["registry"], "db")
     assert ns["schemas"] == 0 and ns["tables_in_known_schemas"] == 1
     assert node(view(world), "sales", "fresh")["new_since"] is True
@@ -401,6 +451,10 @@ def test_header_survey_numbers_come_from_the_native_survey_row(world):
                              surveyed_at="2026-10-03T00:00:00")
     s = view(world)["survey"]
     assert (s["state"], s["schema_count"], s["table_count"]) == ("measured", 29, 266)
+    # and the native survey rows (step_runs + annotations), when stored, are what it reads first
+    _native(r, schemas=2, tables_per=3)
+    s = view(world)["survey"]
+    assert (s["state"], s["schema_count"], s["table_count"]) == ("measured", 2, 11)
 
 
 # ── routes ───────────────────────────────────────────────────────────────────
@@ -480,3 +534,393 @@ def test_conflicts_and_new_since_routes(client):
                                                       "choice": "leave_out"}, headers=a)
     assert client.get("/api/catalogue-scope/db/conflicts").json()["count"] == 1
     assert client.get("/api/catalogue-scope/db/new-since").json()["declared"] is True
+
+
+# ── slice A2: the tree reads the fullest, newest measured set ───────────────────
+#
+# The first real use (localhost_docker_coco_pharma): the tree showed RE's own
+# credential-scoped survey of 10-03 (8 schemas, 61 tables) while the post-reset
+# Egeria native survey (29 schemas, 266 tables) sat in step_runs and
+# native_survey_annotations, unread.
+
+import json as _json
+
+NATIVE_AT = "2026-10-04T06:00:00"
+LOCAL_AT = "2026-10-03T09:00:00"
+PROC = "survey-postgres-database:coco"
+
+
+def _ann(n, kind, props, summary=""):
+    return {"guid": f"a-{kind.split()[2]}-{n}", "annotation_type": kind, "summary": summary or f"{kind} {n}",
+            "analysis_step": "x", "explanation": "", "confidence": 100,
+            "detail": {"json_properties": props if isinstance(props, str) else _json.dumps(props)}}
+
+
+def _native(registry, schemas=29, tables_per=9, *, at=NATIVE_AT, guid="03b908a5-report", extra=(), reset="2026-10-03T07:30:00"):
+    """A stored, complete native survey: `schemas` schema annotations and `tables_per` table
+    annotations in each, plus one database annotation. 29 x 9 + 5 = 266 tables."""
+    anns = [_ann(0, "Capture Database Measurements", {"lastStatisticsReset": reset} if reset else {})]
+    total = 0
+    for i in range(schemas):
+        sname = f"s{i:02d}"
+        n = tables_per + (5 if i == 0 else 0)
+        anns.append(_ann(i, "Capture Database Schema Measurements",
+                         {"schemaName": sname, "qualifiedSchemaName": f"coco.{sname}", "tableCount": str(n)}))
+        for j in range(n):
+            total += 1
+            anns.append(_ann(total, "Capture Database Table Measurements",
+                             {"tableName": f"t{j:02d}", "qualifiedTableName": f"coco.{sname}.t{j:02d}",
+                              "tableSize": str(8192 * (j + 1)), "tableType": "VIEW" if j == 0 and i == 1 else "BASE TABLE",
+                              "numberOfRowsInserted": "0", "numberOfRowsUpdated": "0", "numberOfRowsDeleted": "0"}))
+    anns += list(extra)
+    registry.record_native_survey_submission("database", "db", PROC, at, engine_action_guid="ea-1")
+    registry.record_native_survey_report(
+        "ea-1", entity_type="database", slug="db", process_qualified_name=PROC,
+        report_guid=guid, report_at=at, read_at=at, annotations=anns)
+    return total
+
+
+def _local_tree(n_schemas=8, tables_per=7, names=None, rows=1000):
+    names = names or [f"s{i:02d}" for i in range(n_schemas)]
+    return {"schemas": [sch(n, [tbl(f"t{j:02d}", rows=rows) for j in range(tables_per)]) for n in names] + [SYSTEM]}
+
+
+def test_the_tree_reads_the_native_survey_when_it_is_fuller_and_newer(world):
+    assert _native(world["registry"]) == 266
+    world["tree"] = _local_tree(8, 7)                      # 8 schemas, 56 tables, older
+    world["survey_at"] = LOCAL_AT
+    v = view(world)
+    assert len(v["schemas"]) == 29
+    assert sum(len(s["tables"]) for s in v["schemas"]) == 266
+    ch = v["sources"]["chosen"]
+    assert (ch["kind"], ch["schemas"], ch["tables"], ch["as_of"]) == ("egeria", 29, 266, NATIVE_AT)
+    assert (v["sources"]["egeria"]["schema_count"], v["sources"]["egeria"]["table_count"]) == (29, 266)
+    assert (v["sources"]["local"]["schema_count"], v["sources"]["local"]["table_count"]) == (8, 56)
+    assert v["sources"]["disagree"] is True
+    assert v["survey"]["state"] == "measured" and v["survey"]["schema_count"] == 29
+
+
+def test_each_node_carries_its_own_source_and_as_of(world):
+    _native(world["registry"])
+    world["tree"] = _local_tree(8, 7)
+    world["survey_at"] = LOCAL_AT
+    v = view(world)
+    n = node(v, "s05")
+    assert n["source"]["kind"] == "egeria" and n["source"]["as_of"] == NATIVE_AT
+    assert n["source"]["text"] == "from Egeria survey 10-04"
+    assert node(v, "s05", "t03")["source"]["text"] == "from Egeria survey 10-04"
+    # a local-only fact (rows) is filled in at node level and says where it came from
+    t = node(v, "s05", "t03")
+    assert t["row_count"] == 1000 and t["facts_from"]["rows"]["text"] == "from RE local survey 10-03"
+    assert t["size_bytes"] == 8192 * 4 and t["facts_from"]["size"]["kind"] == "egeria"
+    # a native node the local survey never saw has no rows and says so honestly
+    assert node(v, "s20", "t03")["row_count"] is None and "rows" not in node(v, "s20", "t03")["facts_from"]
+
+
+def test_a_database_with_only_a_local_survey_still_works(world):
+    v = view(world)
+    assert [s["name"] for s in v["schemas"]] == ["sales", "archive", "empty_one"]
+    assert v["sources"]["chosen"]["kind"] == "local" and v["sources"]["egeria"]["state"] == "not_measured"
+    assert v["sources"]["disagree"] is False
+    assert node(v, "sales")["source"]["text"] == "from RE local survey 10-02"
+
+
+def test_a_database_with_only_a_native_survey_works(world):
+    _native(world["registry"], schemas=3, tables_per=2)
+    world["tree"] = {"schemas": []}                        # no local rows at all
+    v = view(world)
+    assert [s["name"] for s in v["schemas"]] == ["s00", "s01", "s02"]
+    assert v["sources"]["chosen"]["kind"] == "egeria" and v["sources"]["local"]["state"] == "not_measured"
+    assert v["sources"]["disagree"] is False
+
+
+def test_system_schemas_in_a_native_survey_stay_folded(world):
+    extra = [_ann(900, "Capture Database Schema Measurements", {"schemaName": "pg_catalog"}),
+             _ann(901, "Capture Database Table Measurements",
+                  {"tableName": "pg_class", "qualifiedTableName": "coco.pg_catalog.pg_class"})]
+    _native(world["registry"], schemas=2, tables_per=1, extra=extra)
+    v = view(world)
+    assert "pg_catalog" not in [s["name"] for s in v["schemas"]]
+    assert v["system"]["folded"] == 1
+
+
+def test_a_malformed_json_properties_does_not_break_the_tree(world):
+    extra = [_ann(800, "Capture Database Table Measurements", "{not json at all"),
+             _ann(801, "Capture Database Table Measurements", ""),
+             # readable name, junk fact: it still lists, with the size not established
+             _ann(802, "Capture Database Table Measurements",
+                  {"tableName": "odd", "qualifiedTableName": "coco.s00.odd", "tableSize": "n/a"})]
+    _native(world["registry"], schemas=2, tables_per=2, extra=extra)
+    v = view(world)
+    assert len(v["schemas"]) == 2
+    odd = node(v, "s00", "odd")
+    assert odd["size_bytes"] is None and odd["row_count"] is None
+    assert v["sources"]["unreadable"] == 2          # counted, never silently dropped
+
+
+def test_an_incomplete_native_survey_is_not_built_from(world):
+    _native(world["registry"], schemas=3, tables_per=2)
+    with world["registry"]._conn() as conn:
+        conn.execute("DELETE FROM native_survey_annotations WHERE annotation_type = ?",
+                     ("Capture Database Schema Measurements",))
+    v = view(world)                                        # stored rows no longer match the run's count
+    assert v["sources"]["chosen"]["kind"] == "local" and v["sources"]["egeria"]["state"] == "not_measured"
+
+
+def test_a_newer_local_node_the_native_survey_never_saw_is_added_with_its_own_source(world):
+    _native(world["registry"], schemas=3, tables_per=2, at="2026-10-01T06:00:00")
+    world["tree"] = _local_tree(names=["s00", "s01", "s02", "brand_new"], tables_per=1)
+    world["survey_at"] = "2026-10-03T09:00:00"
+    v = view(world)
+    assert node(v, "brand_new")["source"]["kind"] == "local"
+    assert node(v, "s01")["source"]["kind"] == "egeria"
+    # but a node only an OLDER measurement had is not listed (it may have been dropped since)
+    world["survey_at"] = "2026-09-20T09:00:00"
+    world["tree"] = _local_tree(names=["s00", "s01", "s02", "dropped_since"], tables_per=1)
+    assert "dropped_since" not in [s["name"] for s in view(world)["schemas"]]
+
+
+def test_the_fuller_measurement_wins_over_a_newer_thinner_one(world):
+    _native(world["registry"], schemas=29, tables_per=2, at="2026-10-01T06:00:00")
+    world["tree"] = _local_tree(8, 2)
+    world["survey_at"] = "2026-10-05T09:00:00"               # newer, but sees 8 of 29
+    v = view(world)
+    assert v["sources"]["chosen"]["kind"] == "egeria" and len(v["schemas"]) == 29
+
+
+def test_empty_schema_rule_still_proposes_from_the_chosen_source(world):
+    extra = [_ann(700, "Capture Database Schema Measurements",
+                  {"schemaName": "hollow", "qualifiedSchemaName": "coco.hollow", "tableCount": "0"})]
+    _native(world["registry"], schemas=2, tables_per=2, extra=extra)
+    n = node(view(world), "hollow")
+    assert n["table_count"] == 0
+    assert (n["proposal"]["rule"], n["proposal"]["choice"]) == ("empty_schema", "leave_out")
+    assert n["proposal"]["reason"] == "0 tables, measured 10-04"
+
+
+def test_native_counters_alone_read_cant_tell_with_the_database_reset_date(world):
+    _native(world["registry"], schemas=2, tables_per=2)
+    v = view(world)
+    t = node(v, "s00", "t00")
+    assert t["last_write"]["state"] == "cant_tell"
+    assert t["last_write"]["text"] == "can't tell · counters reset 10-03 · 1 day of evidence"
+    assert t["proposal"] is None and node(v, "s00")["proposal"] is None
+    world["registry"]  # no reset recorded anywhere: say the window is not recorded
+    r2 = world["registry"]
+    with r2._conn() as conn:
+        conn.execute("DELETE FROM native_survey_annotations WHERE annotation_type = 'Capture Database Measurements'")
+        conn.execute("UPDATE step_runs SET report_annotation_count = report_annotation_count - 1")
+    t = node(view(world), "s00", "t00")
+    assert t["last_write"]["text"] == "can't tell · reset date not recorded"
+
+
+# ── baseline and "new since" across sources ──────────────────────────────────────
+
+def test_a_scope_declared_now_baselines_all_29_and_a_30th_is_new_since(world):
+    _native(world["registry"])
+    world["tree"] = _local_tree(8, 7)
+    world["survey_at"] = LOCAL_AT
+    cs.set_node_choice(world["registry"], "db", "dwolfson", schema="s00", choice="catalogue",
+                       now="2026-10-04T12:00:00")
+    base = world["registry"].list_catalogue_scope_baselines("db")[0]
+    assert len(base["baseline"]["schemas"]) == 29 and len(base["baseline"]["tables"]) == 266
+    assert (base["baseline"]["source"], base["baseline"]["as_of"]) == ("egeria", NATIVE_AT)
+    assert base["survey_at"] == NATIVE_AT
+    assert cs.new_since_declared(world["registry"], "db")["schemas"] == 0
+    # a later native survey with a 30th schema
+    world["registry"].record_native_survey_submission("database", "db", PROC, "2026-10-06T06:00:00",
+                                                      engine_action_guid="ea-2")
+    anns = [_ann(1, "Capture Database Schema Measurements", {"schemaName": "s30", "tableCount": "1"}),
+            _ann(2, "Capture Database Table Measurements", {"tableName": "t0", "qualifiedTableName": "coco.s30.t0"})]
+    anns += [_ann(10 + i, "Capture Database Schema Measurements", {"schemaName": f"s{i:02d}", "tableCount": "1"})
+             for i in range(29)]
+    anns += [_ann(50 + i, "Capture Database Table Measurements",
+                  {"tableName": "t0", "qualifiedTableName": f"coco.s{i:02d}.t0"}) for i in range(29)]
+    world["registry"].record_native_survey_report(
+        "ea-2", entity_type="database", slug="db", process_qualified_name=PROC,
+        report_guid="newer", report_at="2026-10-06T06:00:00", read_at="2026-10-06T06:00:00", annotations=anns)
+    ns = cs.new_since_declared(world["registry"], "db")
+    assert ns["schema_names"] == ["s30"] and ns["tables"] == 1
+    assert node(view(world), "s30")["new_since"] is True
+    assert node(view(world), "s05")["new_since"] is False
+
+
+def test_a_baseline_from_a_thin_source_does_not_call_older_measured_nodes_new(world):
+    """Scope declared on 10-03 from the 8-schema local survey; the 29-schema Egeria
+    survey was taken 10-02 (before the declaration) so those 21 schemas existed then:
+    not "new". A schema that only a measurement AFTER the declaration shows is."""
+    world["tree"] = _local_tree(8, 7)
+    world["survey_at"] = LOCAL_AT
+    cs.set_node_choice(world["registry"], "db", "dwolfson", schema="s00", choice="catalogue",
+                       now="2026-10-03T10:00:00")
+    assert world["registry"].list_catalogue_scope_baselines("db")[0]["baseline"]["source"] == "local"
+    _native(world["registry"], at="2026-10-02T06:00:00")           # older than the declaration
+    v = view(world)
+    assert len(v["schemas"]) == 29
+    assert v["new_since"]["schemas"] == 0 and not any(s["new_since"] for s in v["schemas"])
+    world["registry"].record_native_survey_submission("database", "db", PROC, "2026-10-09T06:00:00",
+                                                      engine_action_guid="ea-9")
+    anns = [_ann(1, "Capture Database Schema Measurements", {"schemaName": "s_after", "tableCount": "1"}),
+            _ann(2, "Capture Database Table Measurements", {"tableName": "t", "qualifiedTableName": "coco.s_after.t"})]
+    anns += [_ann(10 + i, "Capture Database Schema Measurements", {"schemaName": f"s{i:02d}", "tableCount": "1"})
+             for i in range(29)]
+    anns += [_ann(50 + i, "Capture Database Table Measurements",
+                  {"tableName": "t0", "qualifiedTableName": f"coco.s{i:02d}.t0"}) for i in range(29)]
+    world["registry"].record_native_survey_report(
+        "ea-9", entity_type="database", slug="db", process_qualified_name=PROC,
+        report_guid="later", report_at="2026-10-09T06:00:00", read_at="2026-10-09T06:00:00", annotations=anns)
+    assert cs.new_since_declared(world["registry"], "db")["schema_names"] == ["s_after"]
+
+
+# ── bulk choice ──────────────────────────────────────────────────────────────────
+
+def test_catalogue_all_29_records_one_event_per_node_with_the_author(world):
+    _native(world["registry"])
+    out = cs.set_nodes_choice(world["registry"], "db", "dwolfson", all_schemas=True, choice="catalogue",
+                              now="2026-10-04T12:00:00")
+    assert len(out["written"]) == 29
+    ev = [e for e in world["registry"].list_catalogue_scope_events("db") if e["node_kind"] == "schema"]
+    assert len(ev) == 29 and {e["author"] for e in ev} == {"dwolfson"}
+    assert {e["choice"] for e in ev} == {"catalogue"} and {e["changed_at"] for e in ev} == {"2026-10-04T12:00:00"}
+    v = view(world)
+    assert v["counts"]["schemas_catalogue"] == 29
+    assert len(world["registry"].list_catalogue_scope_baselines("db")) == 1     # one declaration, not 29
+
+
+def test_bulk_selected_leave_out_and_clear(world):
+    r = world["registry"]
+    out = cs.set_nodes_choice(r, "db", "alice", nodes=[{"schema": "sales"}, {"schema": "archive"}],
+                              choice="leave_out")
+    assert out["written"] == ["sales", "archive"]
+    assert node(view(world), "archive")["effective"] == "leave_out"
+    out = cs.set_nodes_choice(r, "db", "bob", nodes=[{"schema": "sales"}, {"schema": "empty_one"}], choice="")
+    assert out["written"] == ["sales"] and out["skipped"] == ["empty_one"]       # nothing to clear there
+    last = r.list_catalogue_scope_events("db")[-1]
+    assert (last["choice"], last["author"], last["action"]) == ("", "bob", "clear")
+
+
+def test_bulk_choice_over_a_proposal_records_confirm_or_override(world):
+    r = world["registry"]
+    cs.set_nodes_choice(r, "db", "alice", nodes=[{"schema": "empty_one"}], choice="leave_out")
+    assert node(view(world), "empty_one")["state"] == "confirmed"
+    cs.set_nodes_choice(r, "db", "alice", nodes=[{"schema": "empty_one"}], choice="catalogue")
+    n = node(view(world), "empty_one")                                # the proposal still stands: opposite choice = override
+    assert n["state"] == "overridden" and n["effective"] == "catalogue"
+
+
+def test_bulk_does_not_overwrite_an_explicit_table_choice_and_reports_it(world):
+    r = world["registry"]
+    cs.set_node_choice(r, "db", "alice", schema="sales", table="customers", choice="catalogue")
+    out = cs.set_nodes_choice(r, "db", "alice", nodes=[{"schema": "sales"}], choice="leave_out")
+    assert out["differing_tables"] == [{"schema": "sales", "table": "customers", "choice": "catalogue"}]
+    t = node(view(world), "sales", "customers")
+    assert t["effective"] == "catalogue" and t["differs_from_schema"] is True
+    assert node(view(world), "sales", "orders")["effective"] == "leave_out"   # the sibling follows the schema
+
+
+def test_bulk_validates_before_writing_anything(world):
+    r = world["registry"]
+    with pytest.raises(cs.ScopeError) as e:
+        cs.set_nodes_choice(r, "db", "alice", nodes=[{"schema": "sales"}, {"schema": "pg_catalog"}], choice="catalogue")
+    assert e.value.status == 404 and r.list_catalogue_scope_events("db") == []
+    for bad, status in (({"nodes": [], "choice": "catalogue"}, 400), ({"nodes": [{"schema": "sales"}], "choice": "maybe"}, 400)):
+        with pytest.raises(cs.ScopeError) as e:
+            cs.set_nodes_choice(r, "db", "alice", **bad)
+        assert e.value.status == status
+    with pytest.raises(cs.ScopeError) as e:
+        cs.set_nodes_choice(r, "db", "", nodes=[{"schema": "sales"}], choice="catalogue")
+    assert e.value.status == 401
+
+
+def test_bulk_route_records_the_session_author_and_refuses_signed_out(client, registry):
+    body = {"nodes": [{"schema_name": "sales"}, {"schema_name": "archive"}], "choice": "catalogue", "author": "mallory"}
+    assert client.post("/api/catalogue-scope/db/nodes", json=body).status_code == 401
+    assert registry.list_catalogue_scope_events("db") == []
+    r = client.post("/api/catalogue-scope/db/nodes", json=body, headers=as_user("alice"))
+    assert r.status_code == 200 and r.json()["written"] == ["sales", "archive"]
+    assert {e["author"] for e in registry.list_catalogue_scope_events("db")} == {"alice"}
+    r = client.post("/api/catalogue-scope/db/nodes", json={"all_schemas": True, "choice": "leave_out"},
+                    headers=as_user("bob"))
+    assert len(r.json()["written"]) == 3
+
+
+# ── slice A2, designer round 2: rows and size with source, as-of, estimate and disagreement ──
+
+def test_rows_show_their_kind_estimate_scan_and_their_source_and_date(world):
+    world["tree"]["schemas"][0]["tables"][0].update(row_count=3412, row_count_state="measured")
+    world["tree"]["schemas"][0]["tables"][1].update(row_count=3400, row_count_state="catalog_estimate")
+    v = view(world)
+    scan, est = node(v, "sales", "orders")["rows_view"], node(v, "sales", "customers")["rows_view"]
+    assert (scan["text"], scan["state"]) == ("3,412", "measured") and scan["detail"].endswith("· scan")
+    assert (est["text"], est["state"]) == ("≈3,400", "estimate") and "estimate" in est["detail"]
+    assert "10-02" in scan["detail"] and "RE local survey" in scan["detail"]
+    sm = node(v, "sales")["rows_view"]
+    assert sm["text"] == "≈6,812"                       # an estimate inside makes the sum an estimate
+
+
+def test_unmeasured_is_not_a_zero_and_a_real_zero_is_a_zero_and_no_access_is_not_established(world):
+    t = world["tree"]["schemas"][0]["tables"]
+    t[0].update(row_count=None)
+    t[1].update(row_count=0)
+    world["tree"]["schemas"].insert(0, sch("locked", cls="no_access", table_count=0))
+    v = view(world)
+    assert node(v, "sales", "orders")["rows_view"]["text"] == "not measured"
+    assert node(v, "sales", "customers")["rows_view"]["text"] == "0"
+    assert node(v, "sales")["rows_view"]["text"] == "≥ 0 · 1 table not measured"
+    assert node(v, "locked")["rows_view"]["text"] == "? not established"
+    assert node(v, "empty_one")["rows_view"]["text"] == "not measured"
+
+
+def test_two_sources_that_disagree_by_more_than_2x_read_sources_disagree_with_both_values(world):
+    world["tree"]["schemas"][0]["tables"][0].update(row_count=3400, row_count_state="catalog_estimate")
+    world["row_sources"] = {("sales", "orders"): [
+        {"source": "local", "rows": 3400, "state": "catalog_estimate", "at": "2026-10-02T09:00:00"},
+        {"source": "egeria", "rows": 0, "state": "measured", "at": "2026-10-04T06:00:00"}]}
+    c = node(view(world), "sales", "orders")["rows_view"]
+    assert c["text"] == "◐ sources disagree" and c["state"] == "disagree"
+    assert c["detail"] == "RE local survey 10-02: ≈3,400 · Egeria survey 10-04: 0"
+    world["row_sources"][("sales", "orders")][1]["rows"] = 3000          # within 2x: no disagreement
+    assert node(view(world), "sales", "orders")["rows_view"]["state"] != "disagree"
+
+
+def test_size_is_formatted_dated_and_a_schema_with_unsized_tables_says_at_least(world):
+    world["tree"]["schemas"][0]["tables"][0].update(size_bytes=22 * 1024 * 1024)
+    world["tree"]["schemas"][0]["tables"][1].update(size_bytes=None)
+    v = view(world)
+    assert node(v, "sales", "orders")["size_view"]["text"] == "22 MB"
+    assert node(v, "sales", "customers")["size_view"]["text"] == "not measured"
+    assert node(v, "sales")["size_view"]["text"] == "≥ 22 MB"
+
+
+# ── a failed read is observable, never "nothing known" / "not measured" ─────────────
+
+def test_a_failed_read_of_the_earlier_surveys_says_cant_tell_and_flags_nothing_new(world, monkeypatch):
+    world["tree"] = {"schemas": [sch(f"s{i}", [tbl("t")]) for i in range(2)] + [SYSTEM]}
+    cs.set_node_choice(world["registry"], "db", "dwolfson", schema="s0", choice="catalogue",
+                       now="2026-10-04T08:00:00")
+    world["tree"] = {"schemas": [sch(f"s{i}", [tbl("t")]) for i in range(4)] + [SYSTEM]}
+    world["survey_at"] = "2026-10-05T09:00:00"
+    assert cs.new_since_declared(world["registry"], "db")["schemas"] == 2     # the reads work: 2 are new
+
+    def boom(*a, **k):
+        raise RuntimeError("registry unreachable")
+    monkeypatch.setattr(cs, "_native_node_set", lambda reg, slug, before="": None)
+    monkeypatch.setattr(world["registry"], "query_detail_rows", boom)
+    with world["registry"]._conn() as conn:
+        conn.execute("INSERT INTO database_tables (database_slug, surveyed_at, schema_name, table_name) "
+                     "VALUES ('db', '2026-10-01T00:00:00', 's0', 't')")
+    v = view(world)
+    ns = v["new_since"]
+    assert ns["text"] == "can't tell: the earlier surveys could not be read"
+    assert ns["can_tell"] is False and "registry unreachable" in ns["error"]
+    assert ns["schemas"] == 0 and not any(s["new_since"] for s in v["schemas"])
+    assert not any(t["new_since"] for s in v["schemas"] for t in s["tables"])
+
+
+def test_a_failed_local_survey_read_is_unreadable_not_not_measured(world, monkeypatch):
+    world["tree"] = {"schemas": []}
+    def boom(slug, *a, **k):
+        raise RuntimeError("surveys table unreadable")
+    monkeypatch.setattr(world["registry"], "get_database_surveys", boom)
+    local = view(world)["sources"]["local"]
+    assert local["state"] == "unreadable" and "surveys table unreadable" in local["read_error"]

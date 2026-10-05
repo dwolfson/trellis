@@ -21,7 +21,7 @@
 import {
   getCatalogueScope, setCatalogueDepth, setCatalogueNode, confirmCatalogueNode,
   overrideCatalogueNode, clearCatalogueNode, redeclareCatalogueScope,
-  resolveCatalogueConflict,
+  resolveCatalogueConflict, setCatalogueNodes,
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
@@ -36,20 +36,42 @@ const num = (n) => Number(n).toLocaleString('en-US');
 
 /** Which schemas are expanded survives a redraw (a write redraws the tree). */
 const openSchemas = new Set();
+/** Which schema rows are ticked for a bulk choice (cleared after every write). */
+const selected = new Set();
 let openFor = '';
-/** Forget which schemas were expanded (another database, or a fresh pane). */
-export function resetScopeUi() { openSchemas.clear(); openFor = ''; }
+/** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
+export function resetScopeUi() { openSchemas.clear(); selected.clear(); openFor = ''; }
+
+const SOURCE_WORD = { egeria: 'Egeria survey', local: 'RE local survey' };
+
+/** What the header says about the measurement the tree is read from. One
+ *  source: "29 schemas · Egeria survey 10-04". The two sources disagreeing:
+ *  BOTH are named, so a reader can see the tree is not the thinner one. */
+export function sourcesClause(view) {
+  const src = view.sources;
+  if (!src) {   // a server that predates the node-set resolver: the old sentence
+    const sv = view.survey || {};
+    return sv.state === 'measured'
+      ? `Egeria's latest survey covers ${sv.schema_count} schemas, ${sv.table_count} tables`
+      : "Egeria's latest survey: not measured yet";
+  }
+  const ch = src.chosen || {}; const eg = src.egeria || {}; const lo = src.local || {};
+  const unreadable = lo.state === 'unreadable' ? "RE's own survey could not be read" : '';
+  if (eg.state !== 'measured' && lo.state !== 'measured') return unreadable || "Egeria's latest survey: not measured yet";
+  if (unreadable) return `${ch.schemas} schemas · ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)} · ${unreadable}`;
+  if (src.disagree && eg.state === 'measured' && lo.state === 'measured') {
+    return `Egeria's latest survey covers ${eg.schema_count} schemas, ${eg.table_count} tables · RE's own survey saw ${lo.schema_count} schemas, ${lo.table_count} tables, ${md(lo.surveyed_at)}`;
+  }
+  const sees = ch.kind === 'local' && lo.sees ? ` · ${lo.sees} of ${lo.schema_count}` : '';
+  return `${ch.schemas} schemas · ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)}${sees}`;
+}
 
 export function scopeHeaderText(view) {
-  const sv = view.survey || {};
   if (view.declared && view.declared.declared) {
     const c = view.counts || {};
-    return `Your scope: ${c.schemas_catalogue} of ${c.schemas_offered} schemas · declared by ${view.declared.by} ${md(view.declared.at)}`;
+    return `Your scope: ${c.schemas_catalogue} of ${c.schemas_offered} schemas · declared by ${view.declared.by} ${md(view.declared.at)}${view.sources ? ` · ${sourcesClause(view)}` : ''}`;
   }
-  const covers = sv.state === 'measured'
-    ? `Egeria's latest survey covers ${sv.schema_count} schemas, ${sv.table_count} tables`
-    : "Egeria's latest survey: not measured yet";
-  return `Your scope: none declared yet · ${covers}`;
+  return `Your scope: none declared yet · ${sourcesClause(view)}`;
 }
 
 /* ── one row ─────────────────────────────────────────────────────────── */
@@ -139,8 +161,23 @@ function stateCellHtml(node, me) {
     lines.push(`<div data-scope-not-established class="text-ink-muted">${glyphSpan('not_established')} not established: no access with this credential</div>`);
   }
   (node.notes || []).forEach((n) => lines.push(`<div data-scope-note class="text-ink-muted">${esc(n)}</div>`));
+  const srcLine = sourceLine(node);
+  if (srcLine) lines.push(`<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>`);
   if (node.provenance) lines.push(`<div data-scope-provenance class="text-provenance text-ink-muted">${esc(node.provenance)}</div>`);
   return lines.join('');
+}
+
+/** "from Egeria survey 10-04", plus "rows from RE local survey 10-03" for a
+ *  fact the node's own source lacked and another survey supplied. */
+function sourceLine(node) {
+  const own = node.source || {};
+  if (!own.kind) return '';
+  const say = (src) => `${SOURCE_WORD[src.kind] || src.kind} ${md(src.as_of)}`;
+  const parts = [`from ${say(own)}`];
+  Object.entries(node.facts_from || {}).forEach(([fact, src]) => {
+    if (src && (src.kind !== own.kind || src.as_of !== own.as_of)) parts.push(`${fact} from ${say(src)}`);
+  });
+  return parts.join(' · ');
 }
 
 function dataClassCell(node) {
@@ -150,18 +187,42 @@ function dataClassCell(node) {
   return '<span class="text-ink-muted">not established</span>';
 }
 
+/** The activity word and its window, from the server: active, dormant (0 writes in
+ *  at least the dormancy threshold of counter evidence) or can't tell, with the reason.
+ *  A can't-tell proposes nothing, so it is drawn muted and carries no control. */
 function lastWriteCell(node) {
   const lw = node.last_write || {};
-  if (lw.state === 'idle') return `none since ${esc(md(lw.from))}`;
-  if (lw.state === 'active') return `written ${esc(md(lw.from))} to ${esc(md(lw.to))}`;
-  return '<span class="text-ink-muted">not established</span>';
+  if (lw.state === 'cant_tell') return `<span class="text-ink-muted" data-scope-activity-cant-tell>${esc(lw.text || "can't tell · counters not measured")}</span>`;
+  if (lw.state === 'active' || lw.state === 'dormant') return `<span data-scope-activity-${esc(lw.state)}>${esc(lw.text || lw.state)}</span>`;
+  if (node.access === 'not_established') return '<span class="text-ink-muted">? not established</span>';
+  return '<span class="text-ink-muted">not measured</span>';
+}
+
+/** A rows or size cell: the number in its own kind (≈ for an estimate), "not measured",
+ *  "? not established", or "◐ sources disagree" with both values dated beneath. The
+ *  source and as-of ride on hover. Numbers align right in tabular figures. */
+function factCell(v, fallback) {
+  if (!v) return fallback;
+  const tip = v.detail ? ` title="${esc(v.detail)}"` : '';
+  if (v.state === 'disagree') {
+    return `<div data-scope-disagree class="text-right text-ink"${tip}>${esc(v.text)}</div>
+      <div class="text-right text-provenance text-ink-muted">${esc(v.detail)}</div>`;
+  }
+  if (v.state === 'not_measured' || v.state === 'not_established') {
+    return `<span class="block text-right text-ink-muted"${tip}>${esc(v.text)}</span>`;
+  }
+  return `<span class="tnum block text-right"${tip}>${esc(v.text)}</span>`;
 }
 
 function rowsCell(node) {
   const v = node.kind === 'schema' ? node.row_total : node.row_count;
-  if (v == null) return '<span class="text-ink-muted">not established</span>';
-  const est = node.kind === 'schema' ? node.is_estimate : node.row_count_state === 'catalog_estimate';
-  return `<span class="tnum">${est ? '~' : ''}${esc(num(v))}</span>${est ? ' <span class="text-ink-muted">(est.)</span>' : ''}`;
+  const legacy = v == null ? '<span class="text-ink-muted">not established</span>'
+    : `<span class="tnum">${node.is_estimate ? '~' : ''}${esc(num(v))}</span>`;
+  return factCell(node.rows_view, legacy);
+}
+
+function sizeCell(node) {
+  return factCell(node.size_view, '<span class="text-ink-muted">not measured</span>');
 }
 
 
@@ -171,17 +232,22 @@ function rowHtml(node, me, depth, kindWord) {
   const toggle = isSchema
     ? `<button type="button" data-scope-toggle="${esc(node.name)}" aria-expanded="${openSchemas.has(node.name) ? 'true' : 'false'}"
         class="cursor-pointer bg-transparent p-0 text-ink-muted">${openSchemas.has(node.name) ? '▾' : '▸'}</button> ` : '';
-  const tablesCell = isSchema
-    ? `<span class="tnum">${node.table_count == null ? '<span class="text-ink-muted">not established</span>' : esc(String(node.table_count))}</span>`
-    : `<span class="text-ink-muted">${esc(kindWord)}</span>`;
+  const nameTail = isSchema
+    ? (node.table_count == null ? ' <span class="text-ink-muted">· tables not established</span>'
+      : ` <span class="text-ink-muted" data-scope-table-count>· ${esc(String(node.table_count))} table${node.table_count === 1 ? '' : 's'}</span>`)
+    : ` <span class="text-ink-muted" data-scope-kind>· ${esc(kindWord)}</span>`;
+  const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
+  const pick = isSchema
+    ? `<input type="checkbox" data-scope-select="${esc(node.name)}" aria-label="select schema ${esc(node.name)}" ${selected.has(node.name) ? 'checked' : ''} ${dis}>` : '';
   return `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
-    <div class="w-[34ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me)}</div>
-    <div class="w-[22ch] shrink-0 text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-semibold' : ''}">${esc(node.name)}</span></div>
-    <div class="w-[12ch] shrink-0" data-scope-tables-cell>${tablesCell}</div>
-    <div class="w-[12ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
+    <div class="w-[3ch] shrink-0" data-scope-select-cell>${pick}</div>
+    <div class="w-[32ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me)}</div>
+    <div class="w-[26ch] shrink-0 text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}</div>
+    <div class="w-[14ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
+    <div class="w-[10ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
+    <div class="w-[26ch] shrink-0" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
     <div class="w-[12ch] shrink-0" data-scope-classes-cell>${dataClassCell(node)}</div>
-    <div class="w-[12ch] shrink-0" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
-    <div class="min-w-[24ch] flex-1" data-scope-state-cell>${stateCellHtml(node, me)}</div>
+    <div class="min-w-[36ch] flex-1" data-scope-state-cell><div data-scope-egeria-state class="text-ink-muted">not read yet</div>${stateCellHtml(node, me)}</div>
   </div>`;
 }
 
@@ -197,9 +263,11 @@ export function treeHtml(view, me) {
     return `<div class="text-caveat text-ink-muted">No stored schema rows yet: run a survey first. Nothing to scope until Egeria's survey or RE's has listed the schemas.</div>`;
   }
   const head = `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" data-scope-tree-head>
-    <div class="w-[34ch] shrink-0">choice</div><div class="w-[22ch] shrink-0">name</div><div class="w-[12ch] shrink-0">tables</div>
-    <div class="w-[12ch] shrink-0">rows</div><div class="w-[12ch] shrink-0">data classes</div><div class="w-[12ch] shrink-0">last write</div>
-    <div class="min-w-[24ch] flex-1">state</div></div>`;
+    <div class="w-[3ch] shrink-0"></div><div class="w-[32ch] shrink-0">choice</div><div class="w-[26ch] shrink-0">Schema / table</div>
+    <div class="w-[14ch] shrink-0 text-right">rows</div><div class="w-[10ch] shrink-0 text-right">size</div>
+    <div class="w-[26ch] shrink-0" data-scope-activity-head title="dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">activity</div>
+    <div class="w-[12ch] shrink-0">data classes</div>
+    <div class="min-w-[36ch] flex-1" data-scope-state-head>State in Egeria</div></div>`;
   const body = (view.schemas || []).map((s) => {
     const open = openSchemas.has(s.name) || s.tables.some((t) => t.conflict);
     if (open) openSchemas.add(s.name);
@@ -209,7 +277,25 @@ export function treeHtml(view, me) {
   }).join('');
   const sys = view.system
     ? `<div data-scope-system class="mt-s1 text-caveat text-ink-muted">${esc(String(view.system.folded))} system schemas folded · ${esc(view.system.text)}</div>` : '';
-  return head + body + sys;
+  // min-w-max keeps every column (STATE included) at its full width; the host
+  // scrolls sideways inside its own container instead of clipping at the edge.
+  return `<div class="min-w-max">${head + body + sys}</div>`;
+}
+
+/** The tick-everything box and the bulk bar above the tree. */
+export function bulkBarHtml(view, me) {
+  const n = (view.schemas || []).length;
+  if (!n) return '';
+  const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
+  const none = selected.size === 0;
+  const need = (on) => (!me ? `disabled title="${esc(signInReason)}"` : (on ? '' : 'disabled title="select at least one schema first"'));
+  const bulk = (act, label) => `<button type="button" data-scope-bulk-act="${act}" ${need(!none)} class="${me && !none ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">${label}</button>`;
+  return `<div data-scope-bulk class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat text-ink">
+    <label class="inline-flex cursor-pointer items-baseline gap-[4px]"><input type="checkbox" data-scope-all-box ${selected.size === n ? 'checked' : ''} ${dis}> select all schemas</label>
+    <span data-scope-selected-count class="text-ink-muted">${selected.size} of ${n} selected</span>
+    ${bulk('catalogue', 'catalogue selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'clear choice')}
+    <span class="text-ink-muted">|</span>
+    <button type="button" data-scope-catalogue-all ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">catalogue all ${n} schemas</button></div>`;
 }
 
 export function depthLineHtml(view, me) {
@@ -221,6 +307,18 @@ export function depthLineHtml(view, me) {
   return `<div data-scope-depth class="mb-s1 flex flex-wrap items-baseline gap-s2"><span class="text-caveat text-ink-muted">Depth</span> ${radios}</div>
     <div data-scope-depth-how class="text-provenance text-ink-muted">${esc(cur.label || '')}: ${esc(cur.how || '')}${d.declared ? ` · chosen by ${esc(d.by)} ${esc(md(d.at))}` : ' · not chosen yet, this is the default'}</div>
     <div data-scope-depth-help class="mb-s2 text-provenance text-ink-muted">${esc(d.help || '')} Depth only changes what this tree shows; nothing is sent to Egeria from here.</div>`;
+}
+
+/** Which measurement this tree was built from, with the merge said out loud. */
+function treeSourceText(view) {
+  const ch = (view.sources || {}).chosen;
+  if (!ch) {
+    return view.survey && view.survey.state === 'measured'
+      ? `Egeria's latest survey ${md(view.survey.surveyed_at)}: ${view.survey.schema_count} schemas, ${view.survey.table_count} tables`
+      : "Egeria's latest survey: not measured yet";
+  }
+  const unread = (view.sources || {}).unreadable;
+  return `tree read from the ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)}: ${ch.schemas} schemas, ${ch.tables} tables${ch.merged ? ', facts it lacked filled from the other survey' : ''}${unread ? ` · ${unread} annotation${unread === 1 ? '' : 's'} could not be read` : ''}`;
 }
 
 export function scopeSectionHtml(view, me, status = '') {
@@ -239,11 +337,11 @@ export function scopeSectionHtml(view, me, status = '') {
     ${me ? '' : `<div data-scope-signed-out class="mb-s1 text-caveat text-ink-muted">You can read the scope as it stands. ${esc(signInReason)}.</div>`}
     ${nsLine}${cfLine}
     ${depthLineHtml(view, me)}
-    <div data-scope-tree-header class="mb-s1 text-provenance text-ink-muted">${element} · ${
-      view.survey && view.survey.state === 'measured'
-        ? `Egeria's latest survey ${esc(md(view.survey.surveyed_at))}: ${esc(String(view.survey.schema_count))} schemas, ${esc(String(view.survey.table_count))} tables`
-        : "Egeria's latest survey: not measured yet"} · nothing here is sent to Egeria</div>
-    <div data-scope-tree>${treeHtml(view, me)}</div>
+    <div data-scope-tree-header class="mb-s1 text-provenance text-ink-muted">${element} · ${esc(treeSourceText(view))} · nothing here is sent to Egeria</div>
+    <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
+    ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
+    ${bulkBarHtml(view, me)}
+    <div data-scope-tree class="overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
     <div data-scope-status class="mt-s1 text-provenance text-ink-muted">${esc(status)}</div>`;
 }
 
@@ -258,7 +356,7 @@ const find = (view, schema, table) => {
 
 export async function renderCatalogueScope(el, slug, status = '') {
   if (!el) throw new Error('Catalogue scope host missing');
-  if (openFor !== slug) { openSchemas.clear(); openFor = slug; }
+  if (openFor !== slug) { openSchemas.clear(); selected.clear(); openFor = slug; }
   let view;
   try {
     view = await getCatalogueScope(slug);
@@ -288,7 +386,64 @@ export async function renderCatalogueScope(el, slug, status = '') {
     await renderCatalogueScope(el, slug, verify(again) || '');
   };
 
+  const offered = (view.schemas || []).map((x) => x.name);
+  /** The bulk bar and the row ticks are re-drawn from `selected`, never from the DOM. */
+  const bindBulk = () => {
+    const bar = el.querySelector('[data-scope-bulk]');
+    if (bar) {
+      const all = bar.querySelector('[data-scope-all-box]');
+      if (all) {
+        all.indeterminate = selected.size > 0 && selected.size < offered.length;
+        all.addEventListener('change', () => {
+          selected.clear();
+          if (all.checked) offered.forEach((n) => selected.add(n));
+          refreshBulk();
+        });
+      }
+      bar.querySelectorAll('[data-scope-bulk-act]').forEach((b) => b.addEventListener('click', () => {
+        const act = b.dataset.scopeBulkAct;
+        runBulk([...selected].filter((n) => offered.includes(n)), act === 'clear' ? '' : act, false);
+      }));
+      const every = bar.querySelector('[data-scope-catalogue-all]');
+      if (every) every.addEventListener('click', () => runBulk(offered.slice(), 'catalogue', true));
+    }
+  };
+  const refreshBulk = () => {
+    const bar = el.querySelector('[data-scope-bulk]');
+    if (bar) bar.outerHTML = bulkBarHtml(view, me);
+    el.querySelector('[data-scope-tree]').innerHTML = treeHtml(view, me);
+    bindBulk();
+    bindTree();
+  };
+  /** Bulk choice: one write, then the sentence comes from the re-read scope. */
+  const runBulk = (names, choice, everySchema) => {
+    if (!names.length) { say('select at least one schema first', true); return; }
+    selected.clear();
+    const label = choice ? words(choice) : 'no choice';
+    afterWrite(() => setCatalogueNodes(slug, names.map((n) => ({ schema: n })), choice, everySchema),
+      'set the choices', (v) => {
+        const got = names.map((n) => find(v, n, '')).filter(Boolean);
+        const ok = got.filter((n) => (n.explicit ? n.explicit.choice : '') === choice);
+        const by = [...new Set(ok.map((n) => (n.explicit ? n.explicit.by : '')).filter(Boolean))];
+        const differ = got.reduce((acc, n) => acc + (n.tables || []).filter((t) => t.differs_from_schema).length, 0);
+        const tail = differ
+          ? (differ === 1 ? ' · 1 table keeps its own choice and differs from its schema'
+            : ` · ${differ} tables keep their own choice and differ from their schema`) : '';
+        if (ok.length !== names.length) {
+          return `the write returned, but the re-read scope shows only ${ok.length} of ${names.length} schemas set to ${label}`;
+        }
+        return choice
+          ? `${ok.length} schema${ok.length === 1 ? '' : 's'} now set to ${label} by ${by.join(', ')}${tail}`
+          : `${ok.length} schema${ok.length === 1 ? '' : 's'} now have no choice in the re-read scope${tail}`;
+      });
+  };
+
   const bindTree = () => {
+    el.querySelectorAll('[data-scope-select]').forEach((box) => box.addEventListener('change', () => {
+      if (box.checked) selected.add(box.dataset.scopeSelect); else selected.delete(box.dataset.scopeSelect);
+      const bar = el.querySelector('[data-scope-bulk]');
+      if (bar) { bar.outerHTML = bulkBarHtml(view, me); bindBulk(); }
+    }));
     el.querySelectorAll('[data-scope-toggle]').forEach((b) => b.addEventListener('click', () => {
       const n = b.dataset.scopeToggle;
       if (openSchemas.has(n)) openSchemas.delete(n); else openSchemas.add(n);
@@ -325,6 +480,7 @@ export async function renderCatalogueScope(el, slug, status = '') {
     }));
   };
   bindTree();
+  bindBulk();
   el.querySelectorAll('[data-scope-depth-radio]').forEach((r) => r.addEventListener('change', () => {
     const want = r.dataset.scopeDepthRadio;
     afterWrite(() => setCatalogueDepth(slug, want), 'choose the depth', (v) =>
