@@ -430,16 +430,20 @@ def test_depth_is_stored_with_author_and_changes_what_the_tree_shows(world):
     v = view(world)
     assert v["depth"]["value"] == "tables_and_columns" and v["depth"]["by"] == "alice"
     assert node(v, "sales", "orders")["columns"][0]["name"] == "id"
-    assert "Views follow the table lists" in v["depth"]["help"]
+    assert "changes this tree only" in v["depth"]["help"]
+    assert v["depth"]["commit_note"] == cs.DEPTH_NOT_HONOURED or v["depth"]["value"] == "tables_and_columns"
     with pytest.raises(cs.ScopeError):
         cs.set_depth(r, "db", "alice", depth="everything")
 
 
-def test_depth_provenance_names_the_excluded_level():
-    assert cs.depth_provenance("schemas", "table") == "tables excluded via include list"
-    assert cs.depth_provenance("schemas_and_tables", "table") == "columns excluded via include list"
+def test_depth_provenance_is_a_view_claim_and_names_no_lever_the_commit_does_not_use():
+    assert cs.depth_provenance("schemas", "table") == "tables hidden in this view · the commit still catalogues them"
+    assert cs.depth_provenance("schemas_and_tables", "table") == "columns hidden in this view · the commit still catalogues them"
     assert cs.depth_provenance("tables_and_columns", "table") == ""
-    assert "no catalog target" in cs.depth_provenance("database_only", "schema")
+    assert "the commit still catalogues whole schemas" in cs.depth_provenance("database_only", "schema")
+    # slice B takes the schema-kind door: there are no include lists, so no text may claim one
+    for d in cs.DEPTHS:
+        assert "include" not in d["how"] and d["commit_honours"] is (d["id"] == "tables_and_columns")
 
 
 def test_header_survey_numbers_come_from_the_native_survey_row(world):

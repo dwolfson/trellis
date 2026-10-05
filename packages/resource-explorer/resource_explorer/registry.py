@@ -2910,6 +2910,38 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_catalogue_scope_baselines_slug "
                 "ON catalogue_scope_baselines(database_slug, id)"
             )
+            # catalogue_commit_proofs: what a catalogue commit READ BACK from
+            # Egeria, one row per observation, append-only. Slice B of the
+            # catalogue-scope work. Every state word the scope tree shows after
+            # a commit (catalogued, attached and waiting, failed, removed,
+            # archived) derives from these rows plus the outbox rows, never
+            # from the branch the code took. Additive, no foreign keys, and no
+            # colons in this text because the Postgres translator rewrites
+            # colon-name tokens. proof names the observation; element_guid and
+            # target_guid are what was read back; read_at is when Egeria was
+            # read, not when the commit was pressed.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_commit_proofs (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug   TEXT NOT NULL,
+                    curation_id     TEXT NOT NULL DEFAULT '',
+                    node_kind       TEXT NOT NULL DEFAULT 'schema',
+                    schema_name     TEXT NOT NULL DEFAULT '',
+                    table_name      TEXT NOT NULL DEFAULT '',
+                    proof           TEXT NOT NULL,
+                    element_guid    TEXT NOT NULL DEFAULT '',
+                    target_guid     TEXT NOT NULL DEFAULT '',
+                    qualified_name  TEXT NOT NULL DEFAULT '',
+                    outbox_id       INTEGER DEFAULT NULL,
+                    detail_json     TEXT NOT NULL DEFAULT '{}',
+                    recorded_by     TEXT NOT NULL DEFAULT '',
+                    read_at         TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalogue_commit_proofs_node "
+                "ON catalogue_commit_proofs(database_slug, node_kind, schema_name, table_name, id)"
+            )
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
             # `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`, slice 1 ("Declare
@@ -4026,6 +4058,7 @@ class ProjectRegistry:
         "discovery_expand",
         "curate_commit",
         "materialize_components",
+        "catalogue_commit",
     )
 
     #: States that occupy a user's one fairness slot.
@@ -10124,6 +10157,7 @@ class ProjectRegistry:
             conn.execute("DELETE FROM database_surveys WHERE database_slug = ?", (normalized,))
             conn.execute("DELETE FROM catalogue_scope_events WHERE database_slug = ?", (normalized,))
             conn.execute("DELETE FROM catalogue_scope_baselines WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM catalogue_commit_proofs WHERE database_slug = ?", (normalized,))
             # The structured detail tables are children too, and every one of
             # them has a real FK. Missing them here does not strand rows — it
             # makes the parent delete fail outright, on Postgres and on
@@ -10393,6 +10427,84 @@ class ProjectRegistry:
                 d["measured"] = json.loads(d.pop("measured_json") or "{}")
             except (ValueError, TypeError):
                 d["measured"] = {}
+            out.append(d)
+        return out
+
+    # ── Catalogue commit proofs (append-only; see the DDL for the shape) ──
+
+    def append_catalogue_commit_proof(self, slug: str, *, proof: str, node_kind: str = "schema",
+                                      schema_name: str = "", table_name: str = "",
+                                      curation_id: str = "", element_guid: str = "",
+                                      target_guid: str = "", qualified_name: str = "",
+                                      outbox_id: int | None = None, detail: dict | None = None,
+                                      recorded_by: str = "", read_at: str | None = None) -> int:
+        """Append one read-back observation. Never updates or removes a row."""
+        slug = self._normalize_slug(slug)
+        if not proof:
+            raise ValueError("a commit proof row needs a proof kind")
+        with self._conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO catalogue_commit_proofs
+                   (database_slug, curation_id, node_kind, schema_name, table_name, proof,
+                    element_guid, target_guid, qualified_name, outbox_id, detail_json,
+                    recorded_by, read_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (slug, curation_id or "", node_kind, schema_name or "", table_name or "", proof,
+                 element_guid or "", target_guid or "", qualified_name or "", outbox_id,
+                 json.dumps(detail or {}), recorded_by or "",
+                 read_at or datetime.utcnow().isoformat()),
+            )
+            row_id = getattr(cur, "lastrowid", None)
+            if row_id is None:
+                row_id = conn.execute(
+                    "SELECT MAX(id) AS id FROM catalogue_commit_proofs WHERE database_slug = ?",
+                    (slug,)).fetchone()["id"]
+        return int(row_id)
+
+    def list_catalogue_commit_proofs(self, slug: str) -> list[dict]:
+        """Every commit proof row for a database, oldest first."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, database_slug, curation_id, node_kind, schema_name, table_name,
+                          proof, element_guid, target_guid, qualified_name, outbox_id,
+                          detail_json, recorded_by, read_at
+                   FROM catalogue_commit_proofs WHERE database_slug = ? ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["detail"] = json.loads(d.pop("detail_json") or "{}")
+            except (ValueError, TypeError):
+                d["detail"] = {}
+            out.append(d)
+        return out
+
+    def list_catalogue_outbox_rows(self, slug: str) -> list[dict]:
+        """The outbox rows a catalogue commit queued for one database, oldest first.
+
+        Read straight from egeria_outbox so a "queued" or "failed" word on the
+        scope tree is the row's own status, never a flag kept beside it."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, run_id, element_kind, qualified_name, payload_json, status,
+                          attempts, last_error, egeria_guid, created_at, completed_at
+                   FROM egeria_outbox
+                   WHERE entity_type = 'database' AND entity_slug = ?
+                     AND element_kind IN ('catalogue_schema_attach', 'catalogue_schema_leave_out')
+                   ORDER BY id""",
+                (slug,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            except (ValueError, TypeError):
+                d["payload"] = {}
             out.append(d)
         return out
 

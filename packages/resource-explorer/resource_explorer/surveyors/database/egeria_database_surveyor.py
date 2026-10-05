@@ -544,6 +544,15 @@ class EgeriaDatabaseSurveyor:
                         "portNumber": str(db_entity.port),
                         "databaseUserId": db_user,
                         "description": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                        # The template's description placeholder is
+                        # `databaseDescription`, not `description` (scratch test
+                        # 2, 2026-10-05), and `versionIdentifier` is a second one
+                        # nothing supplied: with `description` alone both stayed
+                        # as literal ~{...}~ strings on the element. Supplied
+                        # here so none remains; the version is "not recorded"
+                        # because RE keeps no PostgreSQL version for the database.
+                        "databaseDescription": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
+                        "versionIdentifier": "not recorded",
                         "databasePassword": db_pwd,
                         **secret_placeholders,
                     },
@@ -1087,16 +1096,22 @@ class EgeriaDatabaseSurveyor:
         statistics: dict | None = None,
         views: list | None = None,
         submitted_by: str = "",
+        survey_after_catalog: bool = True,
     ) -> dict:
         """Catalog the database in Egeria, trigger a native PostgreSQL survey,
         and publish the local survey report and annotations directly to Egeria.
+
+        `survey_after_catalog=False` publishes everything but starts NO native
+        survey: the catalogue commit (`catalogue_commit.py`) starts its own,
+        scoped to the chosen schemas, and an unscoped one here would measure
+        every schema the steward left out.
         """
         result = self.catalog_and_survey(
             db_entity=db_entity,
             db_user=db_user,
             db_pwd=db_pwd,
             registry=registry,
-            survey_after_catalog=True,
+            survey_after_catalog=survey_after_catalog,
             submitted_by=submitted_by,
         )
 

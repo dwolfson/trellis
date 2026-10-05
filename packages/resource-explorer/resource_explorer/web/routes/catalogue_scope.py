@@ -3,8 +3,9 @@
 A declared, signed, dated choice stored in RE. Every write route resolves the
 author from the session first and answers 401 when nobody is signed in (the
 same posture as the Curate author routes); the request bodies have no author
-field. Nothing here writes to Egeria and nothing here compiles a list for
-Egeria's cataloguer: that is slice B. See `resource_explorer.catalogue_scope`.
+field. The scope routes write nothing to Egeria; the commit is slice B, below (`/commit-preview`, `/commit`,
+`/commits`, `/read-back`; see `resource_explorer.catalogue_commit`). The scope
+routes still only edit RE's record; only `/commit` and `/read-back` reach Egeria.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from resource_explorer import catalogue_commit as commit
 from resource_explorer import catalogue_scope as scope
 from resource_explorer.auth import get_current_user
 from resource_explorer.registry import ProjectRegistry
@@ -74,12 +76,99 @@ async def _run(fn, *args, **kwargs):
 @router.get("/{slug}")
 async def read_scope(slug: str) -> dict:
     registry = _registry_for(slug)
-    view = await asyncio.to_thread(scope.build_scope_view, registry, slug)
+
+    def build() -> dict:
+        view = scope.build_scope_view(registry, slug)
+        # Every state word, and the header marker, from persisted rows only:
+        # opening Curate never contacts Egeria.
+        view["commit"] = commit.derive_commit_state(registry, slug, view)
+        return view
+
+    view = await asyncio.to_thread(build)
     entity = registry.get_database(slug, allow_unreadable=True)
     guid = getattr(entity, "egeria_asset_guid", "") or ""
     view["egeria_element"] = {"guid": guid, "short": guid[:8],
                               "text": guid[:8] if guid else "not catalogued in Egeria"}
     return view
+
+
+def _gateway_or_none(entity):
+    try:
+        return commit.make_gateway(entity)
+    except Exception:  # noqa: BLE001 -- no client at all: the preview says it could not check
+        return None
+
+
+@router.get("/{slug}/commit-preview")
+async def read_commit_preview(slug: str) -> dict:
+    """What pressing Catalogue would do, with the Egeria READS it needs (what hangs
+    off each schema being left out). Writes nothing."""
+    registry = _registry_for(slug)
+    entity = registry.get_database(slug, allow_unreadable=True)
+
+    def build() -> dict:
+        view = scope.build_scope_view(registry, slug)
+        derived = commit.derive_commit_state(registry, slug, view)
+        return commit.build_preview(registry, slug, view, _gateway_or_none(entity),
+                                    db_entity=entity, derived=derived)
+
+    return await asyncio.to_thread(commit.run_with_loop, build)
+
+
+class CommitBody(BaseModel):
+    refresh_now: bool = False
+
+
+@router.post("/{slug}/commit")
+async def post_commit(slug: str, body: CommitBody, request: Request) -> dict:
+    """Catalogue →. Re-validates against a fresh preview, records the curation,
+    and queues the run. The body carries no scope: the record is the scope."""
+    author = _require_author(request, "catalogue")
+    registry = _registry_for(slug)
+    try:
+        out = await asyncio.to_thread(commit.run_with_loop, commit.start_commit, registry, slug, author,
+                                      refresh_now=body.refresh_now)
+    except commit.CommitBlocked as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    return {"curation": out["curation"], "run_id": out["run_id"], "activity_id": out["activity_id"]}
+
+
+@router.get("/{slug}/commits")
+async def list_commits(slug: str) -> dict:
+    from resource_explorer.curate_plan import Curations
+    registry = _registry_for(slug)
+    recs = [r for r in Curations(registry).for_resource("database", slug) if r.get("kind") == "catalogue"]
+    return {"commits": recs}
+
+
+@router.get("/{slug}/commits/{curation_id}")
+async def read_commit(slug: str, curation_id: str) -> dict:
+    from resource_explorer.curate_plan import Curations
+    registry = _registry_for(slug)
+    rec = Curations(registry).get(curation_id)
+    if not rec or rec["entity_slug"] != slug:
+        raise HTTPException(status_code=404, detail="No such catalogue commit")
+    return rec
+
+
+@router.post("/{slug}/read-back")
+async def post_read_back(slug: str, request: Request) -> dict:
+    """Read Egeria again and record what it says (proof rows). Changes no scope and
+    writes nothing to Egeria."""
+    author = _require_author(request, "read Egeria back")
+    registry = _registry_for(slug)
+    entity = registry.get_database(slug, allow_unreadable=True)
+
+    def go() -> dict:
+        view = scope.build_scope_view(registry, slug)
+        derived = commit.derive_commit_state(registry, slug, view)
+        gateway = _gateway_or_none(entity)
+        if gateway is None:
+            raise scope.ScopeError(503, "Egeria could not be reached: no client could be built")
+        chosen, kept = commit._chosen_and_kept(view, derived["schemas"])
+        return commit.read_back(registry, gateway, slug, chosen + kept, by=author)
+
+    return await _run(commit.run_with_loop, go)
 
 
 @router.get("/{slug}/conflicts")

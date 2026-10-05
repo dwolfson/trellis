@@ -248,6 +248,19 @@ def _handle_curate_commit(target: dict, result_ref: str) -> RunOutcome:
                       error=("failed: " + ", ".join(failed)) if failed else "")
 
 
+def _handle_catalogue_commit(target: dict, result_ref: str) -> RunOutcome:
+    """Catalogue → for a database. Every step writes its outcome to the curation
+    record; the run fails only if a step did (the record says which)."""
+    from resource_explorer.catalogue_commit import execute_commit, run_with_loop
+    from resource_explorer.registry import ProjectRegistry
+
+    # pyegeria's sync wrappers need an event loop on the executing thread
+    rec = run_with_loop(execute_commit, ProjectRegistry(), target["curation_id"])
+    failed = [s["name"] for s in rec.get("steps", []) if s.get("state") == "failed"]
+    return RunOutcome(state="failed" if failed else "succeeded",
+                      error=("failed: " + ", ".join(failed)) if failed else "")
+
+
 def _handle_materialize_components(target: dict, result_ref: str) -> RunOutcome:
     """Accepted components become Egeria SolutionComponents, one at a time,
     after a branch verdict. Each result is recorded on the activity entry;
@@ -273,6 +286,7 @@ def _handle_materialize_components(target: dict, result_ref: str) -> RunOutcome:
 
 HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "curate_commit": _handle_curate_commit,
+    "catalogue_commit": _handle_catalogue_commit,
     "materialize_components": _handle_materialize_components,
     "analysis_run": _handle_analysis_run,
     "database_analysis_run": _handle_database_analysis_run,

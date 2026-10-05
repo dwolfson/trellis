@@ -60,6 +60,11 @@ class OutboxClients:
     #: between two already-existing GUIDs (annotation-linking-plan Phase 2).
     #: DataDiscovery has no create/attach endpoint for AnnotationExtension.
     metadata_expert: object | None = None
+    #: The database catalogue commit's door to Egeria (`catalogue_gateway`), and the
+    #: registry its proof rows are written to. Both optional: the catalogue kinds
+    #: build their own from the row's database when the drain was not given them.
+    catalogue_gateway: object | None = None
+    registry: object | None = None
 
     def require(self, name: str):
         client = getattr(self, name, None)
@@ -158,7 +163,8 @@ def _resolve_link_referents(payload: dict, resolve_row_guids) -> dict:
 #: with a real GUID that was never actually linked to THIS resource's
 #: asset — a silent gap the generic annotation/membership/link kinds don't
 #: have, because a bare create is everything their own creators do too.
-_SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish"}
+_SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
+                         "catalogue_schema_attach", "catalogue_schema_leave_out"}
 
 
 def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str],
@@ -215,6 +221,10 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         # visible in the same place as every other stuck write.
         raise OutboxApplyError(f"payload_json is not valid JSON: {exc}") from exc
 
+    if kind in ("catalogue_schema_attach", "catalogue_schema_leave_out"):
+        # The proof rows name the outbox row that produced them. Only these kinds
+        # take the extra key: the annotation creators pass the payload on as a body.
+        payload = dict(payload, _outbox_id=row.get("id"))
     creator = _CREATORS.get(kind)
     if creator is None:
         raise OutboxApplyError(
@@ -512,6 +522,47 @@ def _create_doc_source_unpublish(clients: "OutboxClients", payload: dict) -> str
     return ref_guid
 
 
+def _catalogue_gateway(clients: "OutboxClients", payload: dict):
+    gateway = getattr(clients, "catalogue_gateway", None)
+    if gateway is not None:
+        return gateway
+    registry = clients.require("registry")
+    from resource_explorer.catalogue_commit import make_gateway
+    entity = registry.get_database(payload["slug"], allow_unreadable=True)
+    if entity is None:
+        raise OutboxApplyError(f"database {payload['slug']!r} no longer resolves")
+    return make_gateway(entity)
+
+
+def _create_catalogue_schema_attach(clients: "OutboxClients", payload: dict) -> str:
+    """Create one schema element from the template and attach it to the JDBC
+    cataloguer as a SCHEMA-kind target (slice B). Self-resolving: the generic
+    lookup-by-qualified-name above would adopt an existing schema element and
+    skip the attach, which is the half that matters. Idempotent by its own reads
+    (the element by qualified name, the targets before and after)."""
+    from resource_explorer.catalogue_commit import SchemaRefused, apply_attach
+    from resource_explorer.catalogue_gateway import GatewayError
+    registry = clients.require("registry")
+    try:
+        return apply_attach(registry, _catalogue_gateway(clients, payload), payload,
+                            outbox_id=payload.get("_outbox_id"))
+    except (GatewayError, SchemaRefused) as exc:
+        raise OutboxApplyError(str(exc)) from exc
+
+
+def _create_catalogue_schema_leave_out(clients: "OutboxClients", payload: dict) -> str:
+    """Detach a schema's target and remove or archive its element (slice B).
+    Per element, leaf first, `forLineage` true, never a cascade."""
+    from resource_explorer.catalogue_commit import apply_leave_out
+    from resource_explorer.catalogue_gateway import GatewayError
+    registry = clients.require("registry")
+    try:
+        return apply_leave_out(registry, _catalogue_gateway(clients, payload), payload,
+                               outbox_id=payload.get("_outbox_id"))
+    except GatewayError as exc:
+        raise OutboxApplyError(str(exc)) from exc
+
+
 def _guid_of(result) -> str:
     """pyegeria create_* calls variously return a GUID string, a dict, or
     nothing useful. An empty string is not an error here — the row is still
@@ -538,6 +589,8 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "annotation_link": _create_annotation_link,
     "doc_source_publish": _create_doc_source_publish,
     "doc_source_unpublish": _create_doc_source_unpublish,
+    "catalogue_schema_attach": _create_catalogue_schema_attach,
+    "catalogue_schema_leave_out": _create_catalogue_schema_leave_out,
 }
 
 
@@ -598,6 +651,9 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
                         len(rows))
             summary["skipped"] = len(rows)
             return summary
+
+    if getattr(clients, "registry", None) is None:
+        clients.registry = registry      # the catalogue kinds write their proof rows here
 
     troubled_runs: dict[str, str] = {}
     #: run_ids (the annotation qualified_name_prefix, never its `::links`
