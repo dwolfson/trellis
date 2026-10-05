@@ -6,8 +6,9 @@
  *   1. Findable  -- group (with its change control inline) and tags (chips,
  *                   autocomplete from GET /api/curate/tags). Local, not in Egeria.
  *   2. the kind's own work -- repo: the existing plan view (curate.js);
- *                   database: two sections that wait on readers, each saying
- *                   what for; file system: one sentence.
+ *                   database: "What gets catalogued" (the scope tree,
+ *                   curate-scope.js) first, then two sections that wait on
+ *                   readers, each saying what for; file system: one sentence.
  *   3. What people say -- ratings as COUNTS (never an average), and notes as
  *                   the signed append-only journal, with Classic's curator
  *                   notes read-only beneath it.
@@ -59,17 +60,26 @@ const DB_WORK_SECTIONS = [
   {
     id: 'glossary',
     title: 'Glossary terms on tables and columns',
-    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against.',
+    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against, and the tables to be catalogued first (above).',
   },
   {
     id: 'schema-match',
     title: 'Logical schema match',
-    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read. Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
+    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read, and the tables to be catalogued first (above). Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
   },
 ];
 
+/** The first section of a database's band 2: what gets catalogued (the
+ *  scope tree, curate-scope.js, fills `[data-curate-scope]`). It comes first
+ *  because the two sections below act on its output. */
+export function databaseScopeHtml() {
+  return `<div data-curate-work="scope" class="mb-s3">
+    <div class="text-answer text-ink">What gets catalogued</div>
+    <div data-curate-scope class="mt-s1 text-caveat text-ink-muted">Reading the catalogue scope…</div></div>`;
+}
+
 export function databaseWorkHtml() {
-  return DB_WORK_SECTIONS.map((s) => `<div data-curate-work="${s.id}" class="mb-s2">
+  return databaseScopeHtml() + DB_WORK_SECTIONS.map((s) => `<div data-curate-work="${s.id}" class="mb-s2">
     <div class="text-answer text-ink">${esc(s.title)}</div>
     <div class="text-caveat text-ink-muted">${esc(s.waits)}</div></div>`).join('');
 }

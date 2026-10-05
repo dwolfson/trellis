@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.web.routes import work_lists as work_lists_routes
-from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
+from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
 
 
 log = logging.getLogger(__name__)
@@ -237,6 +237,7 @@ app.include_router(compile_context_routes.router, prefix="/api/context", tags=["
 app.include_router(project_context.router, prefix="/api/project-context", tags=["project-context"])
 app.include_router(automate.router, prefix="/api/automate", tags=["automate"])
 app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
+app.include_router(catalogue_scope.router, prefix="/api/catalogue-scope", tags=["catalogue-scope"])
 app.include_router(doc_sources.router, prefix="/api/doc-sources", tags=["doc-sources"])
 app.include_router(native_surveys.router, prefix="/api/native-surveys", tags=["native-surveys"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])

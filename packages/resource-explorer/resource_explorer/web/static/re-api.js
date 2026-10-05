@@ -160,6 +160,26 @@ export const getSchemaInventoryTree = (slug) =>
   get(`/api/databases/${encodeURIComponent(slug)}/schema-inventory-tree`);
 export const listFilesystems = () => get('/api/filesystems/');
 
+/* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
+ * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
+ * RE; nothing here reaches Egeria. Every write is answered 401 when nobody
+ * is signed in. */
+const scopeUrl = (slug, tail = '') =>
+  `/api/catalogue-scope/${encodeURIComponent(slug)}${tail}`;
+export const getCatalogueScope = (slug) => get(scopeUrl(slug));
+export const setCatalogueDepth = (slug, depth) => put(scopeUrl(slug, '/depth'), { depth });
+export const setCatalogueNode = (slug, schema, table, choice) =>
+  put(scopeUrl(slug, '/node'), { schema_name: schema, table_name: table || '', choice });
+export const confirmCatalogueNode = (slug, schema, table) =>
+  post(scopeUrl(slug, '/node/confirm'), { schema_name: schema, table_name: table || '' });
+export const overrideCatalogueNode = (slug, schema, table) =>
+  post(scopeUrl(slug, '/node/override'), { schema_name: schema, table_name: table || '' });
+export const clearCatalogueNode = (slug, schema, table) =>
+  post(scopeUrl(slug, '/node/clear'), { schema_name: schema, table_name: table || '' });
+export const redeclareCatalogueScope = (slug) => post(scopeUrl(slug, '/redeclare'));
+export const resolveCatalogueConflict = (slug, name, choice) =>
+  post(scopeUrl(slug, '/resolve'), { name, choice });
+
 /* ── Database servers (web/routes/db_servers.py) ────────────────────────
  *
  * Classic's (index.html) real mechanism for finding databases: a server is
