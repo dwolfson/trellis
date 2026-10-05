@@ -252,6 +252,9 @@ class EgeriaConfig(BaseSettings):
     platform_url: str = Field(default="https://localhost:9443", alias="EGERIA_PLATFORM_URL")
     view_server: str = Field(default="qs-view-server", alias="EGERIA_VIEW_SERVER")
     engine_host: str = Field(default="engine-host", alias="EGERIA_ENGINE_HOST")
+    #: The integration daemon a catalogue commit may ask to refresh the JDBC
+    #: cataloguer (never to restart it). The scratch tests ran against this one.
+    integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")
     user_id: str = Field(default="erinoverview", alias="EGERIA_USER_ID")
     user_password: str = Field(default="secret", alias="EGERIA_USER_PASSWORD")
     kafka_endpoint: str = Field(default="localhost:9092", alias="EGERIA_KAFKA_ENDPOINT")

@@ -954,7 +954,16 @@ class PublishResult(BaseModel):
 
 @router.post("/{slug}/publish", response_model=PublishResult)
 async def publish_database_survey(slug: str, req: PublishRequest = PublishRequest()) -> PublishResult:
-    """Publish the latest local database survey to Egeria."""
+    """Publish the latest local database survey to Egeria.
+
+    **Retired from the UI (Curate slice B, BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md):**
+    Classic's Publish button and modal are gone; "Catalogue" on a database's Curate pane
+    (`POST /api/catalogue-scope/{slug}/commit`) is the publish now, with a manifest, a
+    ZoneMembership written before any target, a survey limited to the chosen schemas, and a
+    proof row behind every state. This route remains only for Classic API callers; RE itself
+    never calls it (the survey-definition retry goes through the commit and its stored scope).
+    It starts an UNSCOPED native survey and catalogues without a declared scope, so it must not
+    be offered as the way to publish. Backlog: make it scope-aware, or remove it."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.web.routes._validation import validate_egeria_user
 

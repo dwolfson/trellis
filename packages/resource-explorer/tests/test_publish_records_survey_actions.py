@@ -202,11 +202,11 @@ def test_a_discovered_survey_definition_process_is_recorded_under_its_own_name(r
     assert nsr.NATIVE_SURVEY_STEP_PREFIX + "Custom::PostgreSQL Relational Database" in keys
 
 
-def test_classic_ui_derives_the_survey_claim_from_survey_submissions():
+def test_classic_ui_no_longer_publishes_a_database_so_it_makes_no_survey_claim():
+    """Retired (Curate slice B): Classic's database Publish modal, whose success handler used to derive
+    "survey started" from `survey_submissions`, is gone. The claim now lives in the catalogue commit's
+    curation record, written from the survey's proof row (tests/test_catalogue_commit.py)."""
     from pathlib import Path
     html = (Path(__file__).resolve().parent.parent / "resource_explorer" / "web" / "static"
             / "index.html").read_text()
-    body = html[html.index("if (data.status === 'ok') {\n      // Build structured item list"):]
-    body = body[:body.index("await loadDatabases();")]
-    assert "survey_submissions" in body
-    assert "if (data.report_guid) items.push({ kind:'Survey Action" not in body
+    assert "submitPublishDb" not in html and "Build structured item list" not in html

@@ -1123,67 +1123,10 @@
   </div>
 </div>
 
-<!-- Publish-to-Egeria modal -->
-<div id="publish-db-modal" class="modal-overlay hidden">
-  <div class="modal-box">
-    <div class="flex items-center justify-between mb-4">
-      <span class="font-semibold text-slate-100"><span id="publish-db-title-verb">Catalog &amp; Survey in Egeria</span> — <span id="publish-db-slug-label" class="text-cyan-400"></span></span>
-      <button onclick="hidePublishDbModal()" class="text-slate-500 hover:text-slate-200 text-lg leading-none">×</button>
-    </div>
-    <div class="space-y-3">
-      <p id="publish-db-description" class="text-xs text-slate-400">Registers the PostgreSQL server + database in Egeria (storing credentials) then initiates Egeria's native survey. Annotations are populated asynchronously by Egeria.</p>
-      <div id="publish-creds-hint" class="text-xs text-emerald-400"></div>
-      <div class="border-t border-slate-700 pt-3">
-        <div class="text-xs text-slate-400 uppercase tracking-wide mb-2">Database Credentials <span class="text-slate-600">(blank = use stored)</span></div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="modal-label">DB Username</label>
-            <input id="publish-db-user" type="text" class="modal-input" placeholder="postgres">
-          </div>
-          <div>
-            <label class="modal-label">DB Password</label>
-            <input id="publish-db-pwd" type="password" class="modal-input" placeholder="••••••••">
-          </div>
-        </div>
-      </div>
-      <div class="border-t border-slate-700 pt-3">
-        <div class="text-xs text-slate-400 uppercase tracking-wide mb-2">Egeria Connection (optional — falls back to env vars)</div>
-        <div class="space-y-2">
-          <div>
-            <label class="modal-label">Platform URL</label>
-            <input id="publish-egeria-url" type="text" class="modal-input" placeholder="https://localhost:9443">
-          </div>
-          <div class="grid grid-cols-3 gap-2">
-            <div>
-              <label class="modal-label">View Server</label>
-              <input id="publish-egeria-server" type="text" class="modal-input" placeholder="view-server">
-            </div>
-            <div>
-              <label class="modal-label">User</label>
-              <input id="publish-egeria-user" type="text" class="modal-input" placeholder="erinoverview">
-            </div>
-            <div>
-              <label class="modal-label">Password</label>
-              <input id="publish-egeria-password" type="password" class="modal-input" placeholder="••••••••">
-            </div>
-          </div>
-        </div>
-      </div>
-      <div id="publish-db-error" class="text-red-400 text-xs hidden"></div>
-      <div id="publish-db-progress" class="text-slate-400 text-xs hidden">Cataloging &amp; initiating survey… this may take 30–90 s</div>
-      <div class="flex gap-2 pt-1">
-        <button id="publish-submit-btn" onclick="submitPublishDb()"
-          class="flex-1 py-1.5 rounded bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium transition-colors">
-          Catalog + Survey →
-        </button>
-        <button onclick="hidePublishDbModal()"
-          class="px-4 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition-colors">
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
+<!-- The Publish-to-Egeria modal for databases was retired here (Curate slice B,
+     BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md): "Catalogue" on a database's Curate pane in /next
+     is the publish now, a curation record with a manifest and per-node proof. The REST route
+     POST /api/databases/{slug}/publish is no longer called from this page (see the backlog note in the implemented note). -->
 
 <!-- Run Analysis (catalog card) modal — gives the analysis-card "Run" action
      the same backgrounded shape as the Run Survey Definition modal below:
@@ -9248,7 +9191,7 @@ async function submitSurveyDefinitionRun() {
           <div class="text-amber-300">This database isn't cataloged in Egeria yet, so its Egeria-side step(s) couldn't run.</div>
           <button id="survey-def-catalog-retry-btn" onclick="catalogAndRetrySurveyDefinition()"
             class="mt-1.5 text-xs px-2 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
-            ☁ Catalog in Egeria now, then retry →
+            ☁ Catalogue from its scope, then retry →
           </button>
         </div>`
       : '';
@@ -9296,43 +9239,37 @@ async function submitSurveyDefinitionRun() {
 }
 
 async function catalogAndRetrySurveyDefinition() {
+  // Never the unscoped database publish. Catalogue goes through the Curate commit, which
+  // compiles the STORED scope; with no scope declared it stops and writes nothing to Egeria.
+  // The commit is queued work, so the survey definition is not auto-retried: run it again
+  // once the commit has finished (its steps are on the database's Curate pane in /next).
   if (!_surveyDefRun) return;
   const { slug } = _surveyDefRun;
   const btn = document.getElementById('survey-def-catalog-retry-btn');
-  const dbUser = document.getElementById('survey-def-run-user').value.trim();
-  const dbPwd  = document.getElementById('survey-def-run-pwd').value;
-
-  if (btn) { btn.disabled = true; btn.textContent = 'Cataloging in Egeria… (this can take 30–90s)'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Queuing the catalogue commit…'; }
   const opId = logOp({ type:'publish', slug, status:'running',
-    summary:`Cataloging ${slug} in Egeria before retrying Survey Definition…` });
-  showToast('running', `Cataloging <strong>${_esc(slug)}</strong> in Egeria…`, 0);
-  const runningToastId = `toast-${_toastSeq}`;
-
+    summary:`Queuing the catalogue commit for ${slug} from its stored scope…` });
   try {
-    const res = await fetch(`/api/databases/${slug}/publish`, {
+    const res = await fetch(`/api/catalogue-scope/${encodeURIComponent(slug)}/commit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ db_user: dbUser, db_pwd: dbPwd }),
+      body: JSON.stringify({ refresh_now: false }),
     });
-    const data = await res.json();
-    document.getElementById(runningToastId)?.remove();
-    if (!res.ok || data.status === 'error') {
-      const msg = data.detail || data.error || 'Cataloging failed';
-      updateOp(opId, 'error', `Cataloging ${slug} failed: ${msg}`, msg);
-      showToast('error', `Cataloging failed for <strong>${_esc(slug)}</strong>: ${_esc(msg)}`, 10000);
-      if (btn) { btn.disabled = false; btn.textContent = '☁ Catalog in Egeria now, then retry →'; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data.detail || data.error || 'The catalogue commit was refused';
+      updateOp(opId, 'error', `Not catalogued: ${msg}`, msg);
+      showToast('error', `<strong>${_esc(slug)}</strong>: ${_esc(msg)}`, 10000);
+      if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
       return;
     }
-    updateOp(opId, 'ok', `Cataloged ${slug} in Egeria`, '');
-    showToast('success', `Cataloged <strong>${_esc(slug)}</strong> in Egeria — retrying Survey Definition…`, 5000);
-    // Now that the database has an egeria_asset_guid, retry the whole run —
-    // the previously-failing Egeria-tagged step(s) should succeed this time.
-    await submitSurveyDefinitionRun();
+    updateOp(opId, 'ok', `Catalogue commit queued for ${slug}`, '');
+    showToast('success', `Catalogue commit queued for <strong>${_esc(slug)}</strong>. Run the Survey Definition again when it has finished (Curate shows its steps).`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
   } catch(e) {
-    document.getElementById(runningToastId)?.remove();
-    updateOp(opId, 'error', `Cataloging ${slug} failed: ${e.message}`, e.message);
-    showToast('error', `Cataloging failed for <strong>${_esc(slug)}</strong>: ${_esc(e.message)}`, 10000);
-    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalog in Egeria now, then retry →'; }
+    updateOp(opId, 'error', `Catalogue commit failed to queue: ${e.message}`, e.message);
+    showToast('error', `Could not queue the catalogue commit: ${_esc(e.message)}`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
   }
 }
 
@@ -13374,21 +13311,12 @@ function renderDbSurveyReport(db, surveys) {
     ? `<span class="${srcLabel[2]} text-xs font-mono" title="${srcLabel[3]}">${srcLabel[0]} ${srcLabel[1]}</span>`
     : '';
 
-  // Publish button: if already in Egeria show "Re-survey", otherwise "Catalog & Survey"
-  const alreadyInEgeria = !!(db.egeria_asset_guid);
-  const publishBtn = latest
-    ? (alreadyInEgeria
-        ? `<button id="db-publish-btn" onclick="showPublishDbModal('${_esc(db.slug)}')"
-             class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-cyan-300 transition-colors whitespace-nowrap"
-             title="DB is already registered in Egeria. Triggers a fresh Egeria native survey.">
-             ☁ Re-survey in Egeria
-           </button>`
-        : `<button id="db-publish-btn" onclick="showPublishDbModal('${_esc(db.slug)}')"
-             class="text-xs px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-700 text-white transition-colors whitespace-nowrap"
-             title="Register this server & database in Egeria and trigger a native survey.">
-             Catalog &amp; Survey in Egeria →
-           </button>`)
-    : '';
+  // Retired (Curate slice B): Classic no longer publishes a database. Catalogue on the
+  // database's Curate pane in /next is the publish, with a manifest of what it does and a
+  // proof row behind every state it shows. Nothing here claims a state either way.
+  const publishBtn = `<span class="text-xs text-slate-400 whitespace-nowrap"
+    title="Publishing a database is now the Catalogue button on its Curate pane in /next, which shows what it will do and what Egeria holds afterwards.">
+    Publish: Curate → Catalogue in /next</span>`;
 
   // Header
   let html = `
@@ -13747,126 +13675,6 @@ function toggleTableBlock(tblId) {
   if (!body) return;
   const hidden = body.classList.toggle('hidden');
   if (chevron) chevron.textContent = hidden ? '▶' : '▼';
-}
-
-let _publishingDbSlug = null;
-
-function showPublishDbModal(slug) {
-  _publishingDbSlug = slug;
-  document.getElementById('publish-db-slug-label').textContent = slug;
-  document.getElementById('publish-db-modal').classList.remove('hidden');
-  document.getElementById('publish-db-error').classList.add('hidden');
-  document.getElementById('publish-db-progress').classList.add('hidden');
-  document.getElementById('publish-submit-btn').disabled = false;
-  const db0 = _dbMap[slug] || {};
-  const alreadyCataloged = !!(db0.egeria_asset_guid);
-  document.getElementById('publish-submit-btn').textContent = alreadyCataloged ? 'Re-survey in Egeria →' : 'Catalog + Survey →';
-  const titleVerb = document.getElementById('publish-db-title-verb');
-  if (titleVerb) titleVerb.innerHTML = alreadyCataloged ? 'Re-survey in Egeria' : 'Catalog &amp; Survey in Egeria';
-  const descEl = document.getElementById('publish-db-description');
-  if (descEl) descEl.textContent = alreadyCataloged
-    ? 'Server and database are already registered in Egeria. This will trigger a fresh native survey on the existing asset — useful if the schema has changed. Annotations are updated asynchronously.'
-    : 'Registers the PostgreSQL server + database in Egeria (storing credentials) then initiates Egeria\'s native survey. Also surveys the server itself for connection metadata. Annotations are populated asynchronously.';
-
-  // Pre-fill from stored values; blank = use stored
-  const db = _dbMap[slug] || {};
-  document.getElementById('publish-db-user').value = '';
-  document.getElementById('publish-db-user').placeholder = db.db_user ? `${db.db_user} (stored)` : 'postgres';
-  document.getElementById('publish-db-pwd').value = '';
-  document.getElementById('publish-db-pwd').placeholder = db.db_user ? '(stored — leave blank to reuse)' : '••••••••';
-  document.getElementById('publish-egeria-url').value = db.egeria_url || '';
-  document.getElementById('publish-egeria-server').value = db.egeria_server || '';
-  document.getElementById('publish-egeria-user').value = db.egeria_user || '';
-  document.getElementById('publish-egeria-password').value = '';
-
-  // Show stored-creds note
-  const hint = document.getElementById('publish-creds-hint');
-  if (hint) hint.textContent = db.db_user
-    ? `DB credentials stored (${db.db_user}). Leave blank to reuse.`
-    : 'No stored DB credentials — enter username and password.';
-
-  if (!db.db_user) document.getElementById('publish-db-user').focus();
-}
-
-function hidePublishDbModal() {
-  document.getElementById('publish-db-modal').classList.add('hidden');
-  _publishingDbSlug = null;
-}
-
-async function submitPublishDb() {
-  const slug    = _publishingDbSlug;
-  const dbUser  = document.getElementById('publish-db-user').value.trim();
-  const dbPwd   = document.getElementById('publish-db-pwd').value;
-  const errEl   = document.getElementById('publish-db-error');
-  const progress = document.getElementById('publish-db-progress');
-  const submitBtn = document.getElementById('publish-submit-btn');
-
-  const db = _dbMap[slug] || {};
-  if (!db.db_user && (!dbUser || !dbPwd)) {
-    errEl.textContent = 'Database username and password are required (no stored credentials).';
-    errEl.classList.remove('hidden');
-    return;
-  }
-
-  errEl.classList.add('hidden');
-  progress.classList.remove('hidden');
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Working…';
-
-  // Log the start of the operation
-  const opId = logOp({ type:'publish', slug, status:'running',
-    summary:`Cataloging ${slug} in Egeria and initiating native survey…` });
-  showToast('running', `Publishing <strong>${_esc(slug)}</strong> to Egeria… (30–90 s)`, 0);
-  const runningToastId = `toast-${_toastSeq}`;
-
-  const payload = {
-    db_user: dbUser,
-    db_pwd: dbPwd,
-    egeria_url: document.getElementById('publish-egeria-url').value.trim() || null,
-    egeria_server: document.getElementById('publish-egeria-server').value.trim() || null,
-    egeria_user: document.getElementById('publish-egeria-user').value.trim() || null,
-    egeria_password: document.getElementById('publish-egeria-password').value || null,
-  };
-
-  hidePublishDbModal();  // close modal immediately — feedback goes to activity log
-
-  try {
-    const res  = await fetch(`/api/databases/${slug}/publish`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    document.getElementById(runningToastId)?.remove();
-
-    if (data.status === 'ok') {
-      // Build structured item list for the activity log
-      const items = [];
-      if (data.server_guid) items.push({ kind:'PostgreSQL Server', name: data.server_display_name || '', guid: data.server_guid });
-      if (data.asset_guid)  items.push({ kind:'PostgreSQL Database', name: data.database_display_name || slug, guid: data.asset_guid });
-      // The "survey started" claim derives from the persisted proof rows the
-      // server reports (data.survey_submissions), never from report_guid, which
-      // is the SurveyReport RE itself created and proves no survey ran.
-      const subs = Array.isArray(data.survey_submissions) ? data.survey_submissions : [];
-      subs.forEach(s => items.push({ kind:'Survey Action (async)', name: `Egeria survey submitted: ${s.technology_type}`, guid: s.engine_action_guid }));
-      if (data.report_guid) items.push({ kind:'Survey Report', name:'Published survey report', guid: data.report_guid });
-      const detail = subs.length
-        ? 'Egeria accepted the native survey — its status and annotations are read back into RE as it runs.'
-        : 'Cataloged and published. No Egeria survey was started or recorded (see the server log if one was expected).';
-      updateOp(opId, 'ok', subs.length ? `Cataloged & survey submitted for ${slug} in Egeria` : `Cataloged ${slug} in Egeria (no survey recorded)`, detail, items);
-      showToast('success', `<strong>${_esc(slug)}</strong> cataloged in Egeria ✓ — click 📋 Activity for GUIDs`, 8000);
-      await loadDatabases();
-    } else {
-      const stage = data.stage ? ` [stage: ${data.stage}]` : '';
-      const msg = data.error || 'Publish failed';
-      updateOp(opId, 'error', `Publish failed: ${msg}`, msg + stage);
-      showToast('error', `Publish failed for <strong>${_esc(slug)}</strong>: ${_esc(msg)}${stage}`, 10000);
-    }
-  } catch(e) {
-    document.getElementById(runningToastId)?.remove();
-    updateOp(opId, 'error', `Request failed: ${e.message}`, e.message);
-    showToast('error', `Publish request failed: ${_esc(e.message)}`, 10000);
-  }
 }
 
 // ── chat ───────────────────────────────────────────────────────────────────────

@@ -45,26 +45,32 @@ CATALOGUE = "catalogue"
 LEAVE_OUT = "leave_out"
 CHOICES = (CATALOGUE, LEAVE_OUT)
 
-#: The four depths, in the order the depth line draws them. `how` is the
-#: honest account of HOW each is done (the lever research,
-#: the catalogue lever findings section 1: the cataloguer's lists match plain
-#: names, an empty include list means "everything", so "off" is only
-#: expressible as an include list holding a name that matches nothing).
-#: Slice A stores the choice; nothing is compiled or sent.
+#: The four depths, in the order the depth line draws them.
+#:
+#: **Slice B (owner's decision, 2026-10-05, the schema-kind door): a depth is a
+#: view of this tree, not an instruction to Egeria.** A schema-kind catalog target
+#: makes Egeria's cataloguer create a schema's tables AND columns, and it has no
+#: depth option yet (suggestion S2), so a shallower depth cannot be asked for. The
+#: earlier wording ("an include-schema list, with an impossible table name...")
+#: described a lever the commit no longer uses and would now be a false claim on
+#: screen. `commit_honours` says which depth is what the commit does.
 DEPTHS: tuple[dict, ...] = (
-    {"id": "database_only", "label": "the database only",
-     "how": "no catalog target at all: the database asset alone, nothing below it"},
-    {"id": "schemas", "label": "schemas",
-     "how": "an include-schema list, with an impossible table name in the include-table list"},
-    {"id": "schemas_and_tables", "label": "schemas and tables",
-     "how": "include lists for schemas and tables, with an impossible column name in the include-column list"},
-    {"id": "tables_and_columns", "label": "tables and columns",
-     "how": "everything: the lists name schemas and tables and no column list is sent"},
+    {"id": "database_only", "label": "the database only", "commit_honours": False,
+     "how": "tree view only: shows the database alone · the commit still catalogues whole schemas"},
+    {"id": "schemas", "label": "schemas", "commit_honours": False,
+     "how": "tree view only: shows schemas · the commit still catalogues their tables and columns"},
+    {"id": "schemas_and_tables", "label": "schemas and tables", "commit_honours": False,
+     "how": "tree view only: shows schemas and tables · the commit still catalogues their columns"},
+    {"id": "tables_and_columns", "label": "tables and columns", "commit_honours": True,
+     "how": "everything: this is what the commit catalogues for each chosen schema"},
 )
 DEPTH_IDS = tuple(d["id"] for d in DEPTHS)
 DEFAULT_DEPTH = "schemas_and_tables"
-DEPTH_HELP = ("Views follow the table lists: a view is catalogued when its name is in the "
-              "table list, because Egeria's cataloguer never reads a separate view list.")
+DEPTH_HELP = ("Egeria catalogues whole schemas with their tables and columns, and a shallower depth can't be "
+              "asked for until Egeria has a depth option (S2), so a depth here changes this tree only.")
+#: Shown beside the depth line, and in the commit's manifest, when the chosen depth is not what the commit does.
+DEPTH_NOT_HONOURED = ("The commit catalogues tables and columns for every chosen schema whatever depth is "
+                      "chosen: Egeria has no depth option yet (S2).")
 
 SYSTEM_SENTENCE = "not catalogued: system schemas are never offered"
 
@@ -97,20 +103,16 @@ def md(iso: str | None) -> str:
 # ── provenance of a node, by depth ───────────────────────────────────────────
 
 def depth_provenance(depth: str, kind: str) -> str:
-    """The second line of a row: which level the depth leaves out, and how.
-
-    The first three depths each leave a level out through an include list
-    (the lever has no off switch). The database-only depth sends no catalog
-    target at all, so it says that instead.
-    """
+    """The second line of a row: what this depth's VIEW leaves out. A view claim only:
+    the commit still catalogues the level (see `DEPTHS`)."""
     if depth == "database_only":
-        return ("schemas excluded: no catalog target, nothing below the database is catalogued"
+        return ("schemas hidden in this view · the commit still catalogues whole schemas"
                 if kind == "schema" else
-                "tables excluded: no catalog target, nothing below the database is catalogued")
+                "tables hidden in this view · the commit still catalogues them")
     if depth == "schemas":
-        return "tables excluded via include list" if kind == "table" else ""
+        return "tables hidden in this view · the commit still catalogues them" if kind == "table" else ""
     if depth == "schemas_and_tables":
-        return "columns excluded via include list" if kind == "table" else ""
+        return "columns hidden in this view · the commit still catalogues them" if kind == "table" else ""
     return ""
 
 
@@ -908,6 +910,16 @@ def _latest_by_node(events: list[dict]) -> tuple[dict, dict | None]:
     return {k: v for k, v in latest.items() if v["choice"]}, depth
 
 
+def current_schema_choice(registry, slug: str, schema: str) -> str | None:
+    """A schema's explicit choice right now (`catalogue`, `leave_out`) or None.
+
+    Read from the events alone, so a queued write can check whether the person
+    changed their mind after it was queued without building the whole view."""
+    explicit, _depth = _latest_by_node(registry.list_catalogue_scope_events(slug))
+    ev = explicit.get(("schema", schema, ""))
+    return ev["choice"] if ev else None
+
+
 # ── the merged view ──────────────────────────────────────────────────────────
 
 def _dormant_fact(act: dict) -> bool | None:
@@ -1174,7 +1186,8 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
                                        "baseline_survey_at": ""}),
         "depth": {"value": depth, "declared": depth_event is not None,
                   "by": (depth_event or {}).get("author", ""), "at": (depth_event or {}).get("changed_at", ""),
-                  "options": [dict(d) for d in DEPTHS], "help": DEPTH_HELP},
+                  "options": [dict(d) for d in DEPTHS], "help": DEPTH_HELP,
+                  "commit_note": ("" if depth == "tables_and_columns" else DEPTH_NOT_HONOURED)},
         "conflicts": conflicts,
     }
     view["counts"] = {

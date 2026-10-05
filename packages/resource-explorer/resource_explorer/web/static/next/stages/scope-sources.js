@@ -57,8 +57,10 @@ export function credentialLineText(cap, at, relTotal, relSelect) {
 
 const isCount = (n) => typeof n === 'number' && Number.isFinite(n);
 
-/** The marker under the scope header: where the scope lives and what has not happened. */
-export const SCOPE_SAVED_MARKER = 'Saved in Resource Explorer \u00b7 not yet catalogued in Egeria';
+/* The marker under the scope header ("Saved in Resource Explorer · not yet catalogued in
+ * Egeria") used to be a constant here. Curate slice B makes it state-derived: the server
+ * builds it from the commit's proof rows (catalogue_commit._header) and curate-scope.js draws
+ * what it is sent, so a catalogued scope can never carry the "not yet catalogued" words. */
 
 /** The ONE line of essentials, or '' while no scope is declared:
  *  "Your scope: 3 of 29 schemas · declared by dan 10-04 · Egeria's latest survey covers 29 schemas, 412 tables".

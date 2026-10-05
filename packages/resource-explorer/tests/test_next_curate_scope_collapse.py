@@ -1,5 +1,5 @@
-"""The Curate catalogue-scope section: its 'saved in RE, not yet catalogued in Egeria'
-marker and its one-line collapse (open until a scope is declared, collapsed after, the
+"""The Curate catalogue-scope section: its state-derived 'saved in RE / catalogued in Egeria'
+marker (slice B; a constant until then) and its one-line collapse (open until a scope is declared, collapsed after, the
 person's choice remembered per person per database, a real button, works without storage).
 
 Two layers: the pure logic in stages/scope-sources.js is run under node (skipped when node
@@ -126,13 +126,16 @@ class TestTheWiring:
     def _js(self):
         return SCOPE_JS.read_text(encoding="utf-8")
 
-    def test_the_marker_is_in_the_same_shape_as_the_other_egeria_fact_lines(self):
+    def test_the_marker_is_state_derived_in_the_same_shape_as_the_other_egeria_fact_lines(self):
+        """Curate slice B: the marker is the commit's derived state, never a constant in the JS."""
         js = self._js()
-        assert "SCOPE_SAVED_MARKER" in js
-        assert "Saved in Resource Explorer \\u00b7 not yet catalogued in Egeria" in SOURCES.read_text(encoding="utf-8")
-        # the same classes as the in-file 'reads Egeria element ...' line, and no new accent colour
+        assert "SCOPE_SAVED_MARKER" not in js and "SCOPE_SAVED_MARKER" not in SOURCES.read_text(encoding="utf-8")
+        assert "Saved in Resource Explorer" not in js
+        assert "Saved in Resource Explorer" not in SOURCES.read_text(encoding="utf-8").split("*/")[-1]
         i = js.index("data-scope-saved-marker")
-        assert 'class="mb-s1 text-provenance text-ink-muted"' in js[i:i + 120]
+        assert "commitHeaderText(view)" in js[i:i + 400]
+        # the same classes as the in-file 'reads Egeria element ...' line, and no new accent colour
+        assert 'class="mb-s1 text-provenance text-ink-muted"' in js[i:i + 400]
         assert 'data-scope-tree-header class="mb-s1 text-provenance text-ink-muted"' in js
 
     def test_the_collapsed_line_is_a_real_button_with_aria_expanded(self):

@@ -162,8 +162,8 @@ export const listFilesystems = () => get('/api/filesystems/');
 
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
- * RE; nothing here reaches Egeria. Every write is answered 401 when nobody
- * is signed in. */
+ * RE; the scope routes reach nothing of Egeria's (the commit routes below do).
+ * Every write is answered 401 when nobody is signed in. */
 const scopeUrl = (slug, tail = '') =>
   `/api/catalogue-scope/${encodeURIComponent(slug)}${tail}`;
 export const getCatalogueScope = (slug) => get(scopeUrl(slug));
@@ -185,6 +185,15 @@ export const setCatalogueNodes = (slug, nodes, choice, allSchemas = false) =>
 export const redeclareCatalogueScope = (slug) => post(scopeUrl(slug, '/redeclare'));
 export const resolveCatalogueConflict = (slug, name, choice) =>
   post(scopeUrl(slug, '/resolve'), { name, choice });
+/* The commit (Curate slice B). The preview READS Egeria (what hangs off each schema
+ * being left out) and writes nothing; the commit and the read-back are 401 when
+ * nobody is signed in, and the commit's body carries no scope: the record is the scope. */
+export const getCatalogueCommitPreview = (slug) => get(scopeUrl(slug, '/commit-preview'));
+export const postCatalogueCommit = (slug, refreshNow = false) =>
+  post(scopeUrl(slug, '/commit'), { refresh_now: !!refreshNow });
+export const getCatalogueCommitRecord = (slug, id) =>
+  get(scopeUrl(slug, `/commits/${encodeURIComponent(id)}`));
+export const postCatalogueReadBack = (slug) => post(scopeUrl(slug, '/read-back'));
 
 /* ── Database servers (web/routes/db_servers.py) ────────────────────────
  *
