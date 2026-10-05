@@ -1062,7 +1062,7 @@ def test_the_collapsed_line_is_built_from_the_scope_route_json(client, registry,
                                     egeria_report_guid="g1", surveyed_at="2026-10-05T09:00:00")
     j = client.get("/api/catalogue-scope/db").json()
     line = _collapsed_line_for(j)
-    assert line.startswith("Your scope: 7 of 29 schemas · declared by dwolfson 10-04")
+    assert line.startswith("Your scope: 7 of 29 schemas known to RE · declared by dwolfson 10-04")
     if j["survey"].get("state") == "measured":
         assert line.endswith(f"Egeria's latest survey covers {j['survey']['schema_count']} schemas, {j['survey']['table_count']} tables")
     else:   # no measured Egeria survey figures on the route: that clause is omitted, never zero

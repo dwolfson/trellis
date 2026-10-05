@@ -369,11 +369,12 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
   const cfLine = cf
     ? `<div data-scope-conflict-summary class="mb-s1 text-caveat text-ink">${glyphSpan('human')} ${cf} choice${cf === 1 ? '' : 's'} Egeria can't express — resolve ${cf === 1 ? 'it' : 'them'} below</div>` : '';
   const declared = !!(view.declared && view.declared.declared);
-  const line = open || !declared ? scopeHeaderText(view) : scopeCollapsedText(view);
+  open = open || !declared;   // nothing to collapse to until a scope is declared
+  const line = open ? scopeHeaderText(view) : scopeCollapsedText(view);
   return `<div data-scope-saved-marker class="mb-s1 text-provenance text-ink-muted">${esc(SCOPE_SAVED_MARKER)}</div>
-    <div data-scope-header class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
+    <div class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
       aria-controls="scope-section-body" title="${open ? 'Collapse to one line' : 'Show the whole scope'}"
-      class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header-line>${esc(line)}</span></button></div>
+      class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header><span data-scope-header-line>${esc(line)}</span></span></button></div>
     <div id="scope-section-body" data-scope-body${open ? '' : ' hidden'}>
     ${me ? '' : `<div data-scope-signed-out class="mb-s1 text-caveat text-ink-muted">You can read the scope as it stands. ${esc(signInReason)}.</div>`}
     ${nsLine}${cfLine}
@@ -417,15 +418,16 @@ export async function renderCatalogueScope(el, slug, status = '') {
   if (fold) fold.addEventListener('click', () => {
     sectionOpen = !sectionOpen;
     writeScopePref(storage(), me, slug, sectionOpen);   // best effort: the page works without storage
-    const body = el.querySelector('[data-scope-body]');
-    if (body) body.hidden = !sectionOpen;
-    // The same button is edited in place (focus stays on it); the words come from the view.
     const declared = !!(view.declared && view.declared.declared);
-    fold.setAttribute('aria-expanded', sectionOpen ? 'true' : 'false');
-    fold.title = sectionOpen ? 'Collapse to one line' : 'Show the whole scope';
-    fold.querySelector('[aria-hidden]').textContent = sectionOpen ? '▾' : '▸';
+    const shown = sectionOpen || !declared;   // a stored collapse takes effect only once declared
+    const body = el.querySelector('[data-scope-body]');
+    if (body) body.hidden = !shown;
+    // The same button is edited in place (focus stays on it); the words come from the view.
+    fold.setAttribute('aria-expanded', shown ? 'true' : 'false');
+    fold.title = shown ? 'Collapse to one line' : 'Show the whole scope';
+    fold.querySelector('[aria-hidden]').textContent = shown ? '▾' : '▸';
     fold.querySelector('[data-scope-header-line]').textContent =
-      sectionOpen || !declared ? scopeHeaderText(view) : scopeCollapsedText(view);
+      shown ? scopeHeaderText(view) : scopeCollapsedText(view);
   });
   const say = (msg, warn = false) => {
     const s = el.querySelector('[data-scope-status]');

@@ -42,22 +42,37 @@ DECLARED = ("{declared:{declared:true,by:'dan',at:'2026-10-04T08:00:00'},"
 class TestTheOneLine:
     def test_the_full_line(self):
         assert _run(f"m.scopeCollapsedText({DECLARED})") == (
-            "Your scope: 7 of 29 schemas · declared by dan 10-04 · "
+            "Your scope: 7 of 29 schemas known to RE · declared by dan 10-04 · "
             "Egeria's latest survey covers 29 schemas, 266 tables")
 
     def test_nothing_declared_gives_no_line(self):
         assert _run("m.scopeCollapsedText({declared:{declared:false},counts:{}})") == ""
 
     def test_an_unavailable_survey_omits_the_clause_and_never_shows_zero(self):
-        for survey in ("{state:'not_measured'}", "{}", "{state:'measured'}", "{state:'measured',schema_count:29}"):
+        for survey in ("{state:'not_measured'}", "{}", "{state:'measured'}", "{state:'not_measured',schema_count:29}"):
             line = _run(f"m.scopeCollapsedText({{declared:{{declared:true,by:'dan',at:'2026-10-04'}},"
                         f"counts:{{schemas_catalogue:7,schemas_offered:29}},survey:{survey}}})")
-            assert line == "Your scope: 7 of 29 schemas · declared by dan 10-04", (survey, line)
+            assert line == "Your scope: 7 of 29 schemas known to RE · declared by dan 10-04", (survey, line)
+
+    def test_when_the_two_counts_differ_the_line_says_which_is_which(self):
+        line = _run("m.scopeCollapsedText({declared:{declared:true,by:'dan',at:'2026-10-04'},"
+                    "counts:{schemas_catalogue:2,schemas_offered:8},survey:{state:'measured',schema_count:29,table_count:266}})")
+        assert line == ("Your scope: 2 of 8 schemas known to RE \u00b7 declared by dan 10-04 \u00b7 "
+                        "Egeria's latest survey covers 29 schemas, 266 tables")
+
+    def test_a_clause_is_omitted_only_when_its_own_figure_is_missing(self):
+        base = "Your scope: 2 of 8 schemas known to RE \u00b7 declared by dan 10-04"
+        for survey, tail in (("{state:'measured',schema_count:29}", " \u00b7 Egeria's latest survey covers 29 schemas"),
+                             ("{state:'measured',table_count:266}", " \u00b7 Egeria's latest survey covers 266 tables"),
+                             ("{state:'measured'}", ""), ("{state:'not_measured',schema_count:29}", "")):
+            line = _run("m.scopeCollapsedText({declared:{declared:true,by:'dan',at:'2026-10-04'},"
+                        f"counts:{{schemas_catalogue:2,schemas_offered:8}},survey:{survey}}})")
+            assert line == base + tail, (survey, line)
 
     def test_a_zero_that_was_measured_is_kept_but_a_missing_count_is_not_a_zero(self):
         z = _run("m.scopeCollapsedText({declared:{declared:true,by:'dan',at:'2026-10-04'},"
                  "counts:{schemas_catalogue:0,schemas_offered:5},survey:{}})")
-        assert z.startswith("Your scope: 0 of 5 schemas")
+        assert z.startswith("Your scope: 0 of 5 schemas known to RE")
         gone = _run("m.scopeCollapsedText({declared:{declared:true,by:'dan',at:'2026-10-04'},counts:{},survey:{}})")
         assert gone == "Your scope · declared by dan 10-04" and "schemas" not in gone
 
@@ -67,8 +82,13 @@ class TestOpenOrCollapsed:
     def test_open_until_declared_collapsed_after(self):
         assert _run("[m.scopeStartsOpen({declared:{declared:false}},''), m.scopeStartsOpen({declared:{declared:true}},'')]") == [True, False]
 
-    def test_a_remembered_choice_wins_either_way(self):
-        assert _run("[m.scopeStartsOpen({declared:{declared:true}},'open'), m.scopeStartsOpen({declared:{declared:false}},'collapsed')]") == [True, False]
+    def test_a_remembered_open_wins_once_declared(self):
+        assert _run("m.scopeStartsOpen({declared:{declared:true}},'open')") is True
+        assert _run("m.scopeStartsOpen({declared:{declared:true}},'collapsed')") is False
+
+    def test_a_stored_collapse_does_not_take_effect_until_a_scope_is_declared(self):
+        assert _run("[m.scopeStartsOpen({declared:{declared:false}},'collapsed'), m.scopeStartsOpen({},'collapsed'),"
+                    " m.scopeStartsOpen({declared:{declared:false}},'open')]") == [True, True, True]
 
 
 @needs_node
@@ -135,3 +155,8 @@ class TestTheWiring:
         js = self._js()
         assert "if (sectionOpen === null) sectionOpen = scopeStartsOpen(view, readScopePref(" in js
         assert "sectionOpen = null; }" in js   # reset when the database changes
+
+    def test_an_undeclared_scope_cannot_be_collapsed_on_screen_by_a_click_either(self):
+        js = self._js()
+        assert "open = open || !declared;" in js
+        assert "const shown = sectionOpen || !declared;" in js and "body.hidden = !shown;" in js

@@ -69,12 +69,17 @@ export function scopeCollapsedText(view) {
   const c = view.counts || {};
   const sv = view.survey || {};
   const parts = [];
+  // "known to RE" says which m this is: the schemas RE knows on the database, which can differ
+  // from the count Egeria's latest survey covers (said in its own clause below).
   parts.push(isCount(c.schemas_catalogue) && isCount(c.schemas_offered)
-    ? `Your scope: ${c.schemas_catalogue} of ${c.schemas_offered} schemas` : 'Your scope');
+    ? `Your scope: ${c.schemas_catalogue} of ${c.schemas_offered} schemas known to RE` : 'Your scope');
   const decl = [d.by ? `declared by ${d.by}` : 'declared', md(d.at)].filter(Boolean).join(' ');
   parts.push(decl);
-  if (sv.state === 'measured' && isCount(sv.schema_count) && isCount(sv.table_count)) {
-    parts.push(`Egeria's latest survey covers ${sv.schema_count} schemas, ${sv.table_count} tables`);
+  if (sv.state === 'measured') {
+    const figs = [];
+    if (isCount(sv.schema_count)) figs.push(`${sv.schema_count} schemas`);
+    if (isCount(sv.table_count)) figs.push(`${sv.table_count} tables`);
+    if (figs.length) parts.push(`Egeria's latest survey covers ${figs.join(', ')}`);
   }
   return parts.join(' \u00b7 ');
 }
@@ -101,8 +106,10 @@ export function writeScopePref(storage, person, slug, open) {
   try { storage.setItem(key, open ? 'open' : 'collapsed'); return true; } catch { return false; }
 }
 
-/** Open until a scope has been declared, collapsed after; a remembered choice wins. */
+/** Open until a scope has been declared, whatever is stored (a stored 'collapsed' takes effect
+ *  only once a scope is declared); collapsed after, unless the person remembered 'open'. */
 export function scopeStartsOpen(view, pref) {
+  if (!((view && view.declared) || {}).declared) return true;
   if (pref === 'open') return true;
   if (pref === 'collapsed') return false;
   return !((view && view.declared) || {}).declared;
