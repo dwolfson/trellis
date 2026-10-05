@@ -2,8 +2,9 @@
  *  section of band 2 -- the scope tree, the depth line, proposals, the four
  *  observation states, inheritance, name conflicts and "new since" rows --
  *  and its controls call the right API shapes.
- *  (the designer reply on catalogue scope (page 18 of the CatalogueScope wireframe); slice A, no commit,
- *  nothing is sent to Egeria.)
+ *  (the designer reply on catalogue scope (page 18 of the CatalogueScope wireframe); slice A, the scope tree.
+ *  Editing the scope sends nothing to Egeria. The commit and its per-node states are
+ *  curate-catalogue-commit.test.mjs.)
  *
  *  Real app.js, real router, the real Curate nav button. A stateful stub
  *  stands behind fetch so every row shown is a re-read of what the "server"
@@ -51,12 +52,13 @@ function baseView(over = {}) {
     declared: { declared: false, by: '', at: '', kind: '', baseline_survey_at: '' },
     depth: {
       value: 'schemas_and_tables', declared: false, by: '', at: '',
-      help: 'Views follow the table lists: a view is catalogued when its name is in the table list.',
+      help: "Egeria catalogues whole schemas with their tables and columns, and a shallower depth can't be asked for until Egeria has a depth option (S2), so a depth here changes this tree only.",
+      commit_note: 'The commit catalogues tables and columns for every chosen schema whatever depth is chosen: Egeria has no depth option yet (S2).',
       options: [
-        { id: 'database_only', label: 'the database only', how: 'no catalog target at all' },
-        { id: 'schemas', label: 'schemas', how: 'an include-schema list, with an impossible table name in the include-table list' },
-        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'include lists, with an impossible column name in the include-column list' },
-        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything' },
+        { id: 'database_only', label: 'the database only', how: 'tree view only: shows the database alone · the commit still catalogues whole schemas' },
+        { id: 'schemas', label: 'schemas', how: 'tree view only: shows schemas · the commit still catalogues their tables and columns' },
+        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'tree view only: shows schemas and tables · the commit still catalogues their columns' },
+        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything: this is what the commit catalogues for each chosen schema' },
       ],
     },
     system: { folded: 3, text: 'not catalogued: system schemas are never offered' },
@@ -90,6 +92,7 @@ function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/api/catalogue-scope/')) {
+      if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalogue'], button: 'Catalogue · 0 schemas', leave_out: [], refused: [], collisions: [] });
       if (method === 'GET') return ok(s.view);
       if (!s.signedIn) return err(401, 'Sign in to change the scope');
       if (!s.dropWrites) {
@@ -249,16 +252,17 @@ test('header, declared: 7 of 29 schemas, declared by who and when', async () => 
 
 /* ── depth ─────────────────────────────────────────────────────────────── */
 
-test('depth line: four depths, each honest about how, views follow the table lists, no Catalogue button', async () => {
+test('depth line: four depths, each honest that a depth is a tree view and the commit does whole schemas', async () => {
   const { document, window, server } = await setUp(baseView());
   const radios = [...document.querySelectorAll('[data-scope-depth-radio]')];
   assert.deepEqual(radios.map((r) => r.dataset.scopeDepthRadio), ['database_only', 'schemas', 'schemas_and_tables', 'tables_and_columns']);
   assert.equal(radios.find((r) => r.checked).dataset.scopeDepthRadio, 'schemas_and_tables');
   assert.match(flat(document.querySelector('[data-scope-depth]')), /the database only.*schemas.*schemas and tables.*tables and columns/);
-  assert.match(flat(document.querySelector('[data-scope-depth-how]')), /impossible column name in the include-column list/);
-  assert.match(flat(document.querySelector('[data-scope-depth-help]')), /Views follow the table lists/);
-  const buttons = [...scopeEl(document).querySelectorAll('button')].map((b) => b.textContent.trim());
-  assert.ok(!buttons.some((t) => /^catalogue\s*(→|·|$)/i.test(t) && t.length > 9), 'no commit button in slice A');
+  assert.match(flat(document.querySelector('[data-scope-depth-how]')), /the commit still catalogues their columns/);
+  assert.match(flat(document.querySelector('[data-scope-depth-help]')), /changes this tree only/);
+  assert.match(flat(document.querySelector('[data-scope-depth-commit-note]')), /whatever depth is chosen: Egeria has no depth option yet \(S2\)/);
+  // the Catalogue button lives in its own panel under the tree, never inside it
+  assert.equal(document.querySelector('[data-scope-tree] [data-scope-commit-btn]'), null);
   const r = radios.find((x) => x.dataset.scopeDepthRadio === 'schemas');
   r.checked = true;
   r.dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -280,11 +284,11 @@ test('column depth: column rows appear under an opened table', async () => {
 
 test('shallower depth: no column rows, and a table says which level the depth excludes', async () => {
   const shallow = baseView();
-  shallow.schemas[0].tables.forEach((t) => { t.provenance = 'columns excluded via include list'; });
+  shallow.schemas[0].tables.forEach((t) => { t.provenance = 'columns hidden in this view · the commit still catalogues them'; });
   const { document } = await setUp(shallow);
   document.querySelector('[data-scope-toggle="sales"]').click();
   assert.equal(document.querySelector('[data-scope-column]'), null);
-  assert.match(flat(row(document, 'table:sales.orders')), /columns excluded via include list/);
+  assert.match(flat(row(document, 'table:sales.orders')), /columns hidden in this view · the commit still catalogues them/);
 });
 
 /* ── proposals ─────────────────────────────────────────────────────────── */

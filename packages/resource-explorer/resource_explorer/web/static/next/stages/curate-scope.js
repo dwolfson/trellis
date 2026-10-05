@@ -1,15 +1,19 @@
 /* Curate, database, band 2, first section: "What gets catalogued".
  *
  * The designer's reply on catalogue scope and
- * wireframes/CatalogueScope.dc.html (page 18), slice A: everything up to the
- * commit button. There is NO Catalogue button here and nothing on this page
- * writes to Egeria: the scope is a declared, signed, dated choice stored in
- * RE (web/routes/catalogue_scope.py), and a later slice compiles it.
+ * wireframes/CatalogueScope.dc.html (page 18). Slice A drew the scope: a declared,
+ * signed, dated choice stored in RE (web/routes/catalogue_scope.py). Slice B
+ * (BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md) adds the commit: a manifest of the
+ * three mechanisms, the Catalogue button, and the per-node proof states. Editing
+ * the scope still writes nothing to Egeria; only the Catalogue button and "Read
+ * Egeria again" do, and both are disabled when nobody is signed in.
  *
  * Rules this file keeps:
  *  - what a row says comes from the server's re-read AFTER a write, never
  *    from what the click assumed; a status sentence is derived from those
- *    rows (the same rule curate-bands.js keeps);
+ *    rows (the same rule curate-bands.js keeps). The "In Egeria" column and the
+ *    header marker are drawn from `view.commit`, which the server derives from
+ *    persisted proof rows only: a state with no proof row is never drawn;
  *  - every write control is disabled, with a plain reason, when nobody is
  *    signed in (the routes answer 401 then), and the tree stays readable;
  *  - the proposal glyph and word come from glyphs.js; this file declares no
@@ -21,7 +25,8 @@
 import {
   getCatalogueScope, setCatalogueDepth, setCatalogueNode, confirmCatalogueNode,
   overrideCatalogueNode, clearCatalogueNode, redeclareCatalogueScope,
-  resolveCatalogueConflict, setCatalogueNodes,
+  resolveCatalogueConflict, setCatalogueNodes, getCatalogueCommitPreview,
+  postCatalogueCommit, getCatalogueCommitRecord, postCatalogueReadBack,
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
@@ -39,8 +44,13 @@ const openSchemas = new Set();
 /** Which schema rows are ticked for a bulk choice (cleared after every write). */
 const selected = new Set();
 let openFor = '';
+/** The last commit pressed on this pane, kept so its steps survive the re-draw that follows it. */
+let commitUi = null;
+/** How long between reads of a running commit's record (a test shortens it). */
+let commitPollMs = 2000;
+export function setCommitPollMs(ms) { commitPollMs = ms; }
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { openSchemas.clear(); selected.clear(); openFor = ''; }
+export function resetScopeUi() { openSchemas.clear(); selected.clear(); openFor = ''; commitUi = null; }
 
 /** What the header says about the measurement the tree is read from. One
  *  source: "29 schemas · Egeria survey 10-04". The two sources disagreeing:
@@ -62,6 +72,12 @@ export function sourcesClause(view) {
   }
   const sees = ch.kind === 'local' && lo.sees ? ` · ${lo.sees} of ${lo.schema_count}` : '';
   return `${ch.schemas} schemas · ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)}${sees}`;
+}
+
+/** The state-derived marker line: what the proof rows say Egeria holds, never a constant. */
+export function commitHeaderText(view) {
+  const h = (view.commit || {}).header;
+  return h && h.text ? h.text : 'Egeria state not read: this server sent no proof rows';
 }
 
 export function scopeHeaderText(view) {
@@ -139,6 +155,32 @@ export function choiceCellHtml(node, me) {
   const tail = node.kind === 'schema' && node.undecided_words
     ? ` · <span data-scope-undecided-words>${esc(node.undecided_words)}</span>` : '';
   return `<div data-scope-state-word="undecided" class="text-ink-muted">undecided${tail}</div>${setterButtons(node, me)}`;
+}
+
+/** The "In Egeria" cell: the commit's derived state for this node, with its glyph and its
+ *  second line. `commit` is `view.commit`; a server that predates it says "not read yet".
+ *  A node with no state ('none') says nothing about Egeria rather than inventing a word. */
+const EGERIA_GLYPH = {
+  catalogued: 'catalogued', attached_waiting: 'attached_waiting', queued: 'queued',
+  failed: 'catalogue_failed', removed: 'removed', archived: 'archived',
+};
+export function egeriaStateHtml(node, commit) {
+  if (!commit) return '<div data-scope-egeria-state class="text-ink-muted">not read yet</div>';
+  const st = node.kind === 'schema' ? (commit.schemas || {})[node.name] : (commit.tables || {})[`${node.schema}.${node.name}`];
+  if (!st || st.state === 'none' || !st.words) {
+    return '<div data-scope-egeria-state data-scope-egeria-word="none" class="text-ink-muted">—</div>';
+  }
+  const glyph = EGERIA_GLYPH[st.state] ? `${glyphSpan(EGERIA_GLYPH[st.state])} ` : '';
+  const muted = ['uncommitted', 'left_out', 'follows_schema', 'not_read_back'].includes(st.state) ? 'text-ink-muted' : 'text-ink';
+  const second = st.second ? `<div data-scope-egeria-second class="text-provenance text-ink-muted">${esc(st.second)}</div>` : '';
+  return `<div data-scope-egeria-state data-scope-egeria-word="${esc(st.state)}" class="${muted}">${glyph}${esc(st.words)}</div>${second}`;
+}
+
+function collisionLines(node, commit) {
+  return ((commit && commit.collisions) || [])
+    .filter((c) => (node.kind === 'schema' ? c.kind === 'schema' && c.name === node.name
+      : c.kind === 'table' && c.schema === node.schema && c.name === node.name))
+    .map((c) => `<div data-scope-collision class="text-ink">${esc(c.text)}</div>`).join('');
 }
 
 function stateCellHtml(node, me) {
@@ -241,7 +283,7 @@ function sizeCell(node) {
 
 /* Column widths, shared by the header, rows and the column lines so they stay aligned.
  * Written out as literal classes (Tailwind scans this file; it cannot see a built string). */
-function rowHtml(node, me, depth, kindWord) {
+function rowHtml(node, me, depth, kindWord, commit) {
   const isSchema = node.kind === 'schema';
   const key = isSchema ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
   const toggle = isSchema
@@ -264,7 +306,7 @@ function rowHtml(node, me, depth, kindWord) {
     <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
     <div class="w-[18ch] shrink-0" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
     <div class="w-[10ch] shrink-0 break-words" data-scope-classes-cell>${dataClassCell(node)}</div>
-    <div class="w-[20ch] shrink-0" data-scope-state-cell><div data-scope-egeria-state class="text-ink-muted">not read yet</div>${stateCellHtml(node, me)}</div>
+    <div class="w-[20ch] shrink-0" data-scope-state-cell>${egeriaStateHtml(node, commit)}${collisionLines(node, commit)}${stateCellHtml(node, me)}</div>
   </div>`;
 }
 
@@ -296,9 +338,9 @@ export function treeHtml(view, me) {
   const body = (view.schemas || []).map((s) => {
     const open = openSchemas.has(s.name) || s.tables.some((t) => t.conflict);
     if (open) openSchemas.add(s.name);
-    const tables = open ? s.tables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table')}${columnRowsHtml(t)}</div>`).join('')
+    const tables = open ? s.tables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
       || '<div class="ml-s3 text-caveat text-ink-muted">No tables.</div>' : '';
-    return `<div data-scope-schema-block="${esc(s.name)}">${rowHtml(s, me, 0, '')}${tables}</div>`;
+    return `<div data-scope-schema-block="${esc(s.name)}">${rowHtml(s, me, 0, '', view.commit)}${tables}</div>`;
   }).join('');
   const sys = view.system
     ? `<div data-scope-system class="mt-s1 text-caveat text-ink-muted">${esc(String(view.system.folded))} system schemas folded · ${esc(view.system.text)}</div>` : '';
@@ -332,7 +374,8 @@ export function depthLineHtml(view, me) {
   const cur = d.options.find((o) => o.id === d.value) || {};
   return `<div data-scope-depth class="mb-s1 flex flex-wrap items-baseline gap-s2"><span class="text-caveat text-ink-muted">Depth</span> ${radios}</div>
     <div data-scope-depth-how class="text-provenance text-ink-muted">${esc(cur.label || '')}: ${esc(cur.how || '')}${d.declared ? ` · chosen by ${esc(d.by)} ${esc(md(d.at))}` : ' · not chosen yet, this is the default'}</div>
-    <div data-scope-depth-help class="mb-s2 text-provenance text-ink-muted">${esc(d.help || '')} Depth only changes what this tree shows; nothing is sent to Egeria from here.</div>`;
+    <div data-scope-depth-help class="${d.commit_note ? '' : 'mb-s2 '}text-provenance text-ink-muted">${esc(d.help || '')}</div>
+    ${d.commit_note ? `<div data-scope-depth-commit-note class="mb-s2 text-provenance text-ink">${esc(d.commit_note)}</div>` : ''}`;
 }
 
 /** Which measurement this tree was built from, with the merge said out loud. */
@@ -363,13 +406,15 @@ export function scopeSectionHtml(view, me, status = '') {
     ${me ? '' : `<div data-scope-signed-out class="mb-s1 text-caveat text-ink-muted">You can read the scope as it stands. ${esc(signInReason)}.</div>`}
     ${nsLine}${cfLine}
     ${depthLineHtml(view, me)}
-    <div data-scope-tree-header class="mb-s1 text-provenance text-ink-muted">${element} · ${esc(treeSourceText(view))} · nothing here is sent to Egeria</div>
+    <div data-scope-commit-header data-scope-commit-header-state="${esc(((view.commit || {}).header || {}).state || 'unknown')}" class="mb-s1 text-caveat text-ink">${esc(commitHeaderText(view))}</div>
+    <div data-scope-tree-header class="mb-s1 text-provenance text-ink-muted">${element} · ${esc(treeSourceText(view))}</div>
     <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
     ${activitySummaryHtml(view)}
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
     ${bulkBarHtml(view, me)}
     <div data-scope-tree class="overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
-    <div data-scope-status class="mt-s1 text-provenance text-ink-muted">${esc(status)}</div>`;
+    <div data-scope-status class="mt-s1 text-provenance text-ink-muted">${esc(status)}</div>
+    <div data-scope-commit class="mt-s2"></div>`;
 }
 
 /* ── wiring ──────────────────────────────────────────────────────────── */
@@ -380,6 +425,121 @@ const find = (view, schema, table) => {
   if (!s) return null;
   return table ? (s.tables || []).find((t) => t.name === table) || null : s;
 };
+
+/* ── the commit (slice B) ───────────────────────────────────────────── */
+
+const STEP_LABEL = {
+  publish_elements: 'publish the server and database', zone_membership: 'ZoneMembership on the database',
+  owner: 'owner from Context', schema_targets: 'attach the schema targets', leave_outs: 'leave outs',
+  survey_report: "RE's own survey report", survey: "Egeria's survey", refresh: 'refresh the cataloguer',
+  read_back: 'read Egeria back',
+};
+const STEP_GLYPH = { done: 'catalogued', failed: 'catalogue_failed', running: 'queued', pending: 'queued' };
+
+/** The steps of the curation record, exactly as the record holds them. A step's state word is
+ *  the record's, which the server writes from rows (the outbox, the proof rows), never a guess. */
+export function commitStepsHtml(rec) {
+  if (!rec) return '';
+  const rows = (rec.steps || []).map((st) => `<div data-scope-commit-step="${esc(st.name)}" data-state="${esc(st.state)}" class="text-provenance ${st.state === 'failed' ? 'text-state-warn' : 'text-ink-muted'}">
+    ${STEP_GLYPH[st.state] ? `${glyphSpan(STEP_GLYPH[st.state])} ` : ''}${esc(STEP_LABEL[st.name] || st.name)} · ${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</div>`).join('');
+  return `<div data-scope-commit-steps class="mt-s1"><div class="text-caveat text-ink">Commit ${esc(String(rec.id || '').slice(0, 8))} · ${esc(rec.state || '')} · by ${esc(rec.author || '')}</div>${rows}</div>`;
+}
+
+/** What pressing Catalogue would do, as the server's preview says it: the three mechanisms in the
+ *  order they run, what leaving schemas out does and in which form, anything that blocks the
+ *  press, and the button whose label carries the counts. */
+export function commitPanelHtml(preview, me, ui) {
+  const m = preview.manifest || {};
+  const dis = (why) => `disabled title="${esc(why)}"`;
+  const reason = !me ? signInReason : (preview.can_commit ? '' : (preview.blockers || [])[0] || 'the commit is disabled');
+  const lines = (m.lines || []).map((ln) => `<li data-scope-manifest-line="${esc(ln.id)}" class="${ln.mechanism ? 'text-ink' : 'text-ink-muted'}">${ln.mechanism ? `${ln.mechanism}. ` : ''}${esc(ln.text)}</li>`).join('');
+  const refused = (preview.refused || []).map((r) => `<div data-scope-refused="${esc(r.schema)}" class="text-ink">${glyphSpan('human')} ${esc(r.text)}</div>`).join('');
+  const collisions = (preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-ink">${esc(c.text)}</div>`).join('');
+  const leave = (preview.leave_out || []).map((r) => `<div data-scope-leave-out="${esc(r.schema)}" data-form="${esc(r.form)}" class="${r.blocked ? 'text-ink' : 'text-ink-muted'}">${r.blocked ? `${glyphSpan('human')} ` : ''}${esc(r.text)}</div>`).join('');
+  const blockers = (preview.blockers || []).map((b) => `<div data-scope-blocker class="text-ink">${glyphSpan('human')} ${esc(b)}</div>`).join('');
+  const off = !me || !preview.can_commit;
+  return `<div data-scope-commit-panel>
+    <div class="mb-s1 text-answer text-ink">What this commit does</div>
+    <ol data-scope-manifest class="mb-s1 list-none pl-0 text-caveat">${lines}</ol>
+    ${refused}${collisions}${leave}${blockers}
+    <div class="mt-s1 flex flex-wrap items-baseline gap-s2 text-caveat text-ink">
+      <label class="inline-flex cursor-pointer items-baseline gap-[4px]"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloguer now (about 16 s; RE never restarts a connector)</label>
+      <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="${off ? 'opacity-60 text-ink-muted' : 'cursor-pointer text-accent-ink underline'} bg-transparent p-0">${esc(preview.button || 'Catalogue')}</button>
+      <button type="button" data-scope-read-back ${me ? '' : dis(signInReason)} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Read Egeria again</button>
+    </div>
+    <div data-scope-commit-status class="mt-s1 text-provenance text-ink-muted"></div>
+    ${commitStepsHtml(ui && ui.rec)}
+  </div>`;
+}
+
+/** One line for the status area, derived from the record's own steps. */
+function commitSummary(rec) {
+  const c = {};
+  (rec.steps || []).forEach((st) => { c[st.state] = (c[st.state] || 0) + 1; });
+  const bits = ['done', 'failed', 'skipped'].filter((k) => c[k]).map((k) => `${c[k]} ${k}`);
+  return `commit ${String(rec.id || '').slice(0, 8)} ${rec.state}: ${bits.join(' · ')}`;
+}
+
+async function loadCommitPanel(el, slug, me, redraw) {
+  const host = el.querySelector('[data-scope-commit]');
+  if (!host) return;
+  host.innerHTML = '<div data-scope-commit-loading class="text-provenance text-ink-muted">Reading what the commit would do (this reads Egeria and writes nothing)…</div>';
+  let preview;
+  try {
+    preview = await getCatalogueCommitPreview(slug);
+    if (!preview || !preview.manifest) throw new Error('the server answered with something that is not a commit preview');
+  } catch (err) {
+    if (stale(host, slug)) return;
+    host.innerHTML = `<div data-scope-commit-error class="text-caveat text-state-warn">The commit preview could not be read: ${esc(err.message)}. The commit stays disabled until it can be.</div>`;
+    return;
+  }
+  if (stale(host, slug)) return;
+  host.innerHTML = commitPanelHtml(preview, me, commitUi && commitUi.slug === slug ? commitUi : null);
+  const say = (msg, warn = false) => {
+    const e = host.querySelector('[data-scope-commit-status]');
+    if (!e) return;
+    e.textContent = msg;
+    e.className = `mt-s1 text-provenance ${warn ? 'text-state-warn' : 'text-ink-muted'}`;
+  };
+  const fail = (err, what) => (err.status === 401 ? signInReason : `${what} failed: ${err.message}`);
+  const paintSteps = () => {
+    const old = host.querySelector('[data-scope-commit-steps]');
+    const html = commitStepsHtml(commitUi && commitUi.rec);
+    if (old) old.outerHTML = html; else host.querySelector('[data-scope-commit-panel]').insertAdjacentHTML('beforeend', html);
+  };
+  const poll = async () => {
+    if (stale(host, slug) || !commitUi || commitUi.slug !== slug) return;
+    let rec;
+    try { rec = await getCatalogueCommitRecord(slug, commitUi.id); } catch (err) { say(`could not read the commit record: ${err.message}`, true); return; }
+    commitUi.rec = rec;
+    paintSteps();
+    if (rec.state === 'done' || rec.state === 'failed') {
+      commitUi.polling = false;
+      await redraw(commitSummary(rec));          // the tree and header re-read from the proof rows
+      return;
+    }
+    setTimeout(poll, commitPollMs);
+  };
+  const btn = host.querySelector('[data-scope-commit-btn]');
+  if (btn) btn.addEventListener('click', async () => {
+    const refreshNow = host.querySelector('[data-scope-refresh-now]').checked;
+    btn.disabled = true;
+    say('Queuing the commit…');
+    let out;
+    try { out = await postCatalogueCommit(slug, refreshNow); } catch (err) { btn.disabled = false; say(fail(err, 'the commit'), true); return; }
+    commitUi = { slug, id: out.curation.id, rec: out.curation, polling: true };
+    say(`queued: commit ${String(out.curation.id).slice(0, 8)} · run ${String(out.run_id || '').slice(0, 8)}`);
+    paintSteps();
+    setTimeout(poll, commitPollMs);
+  });
+  const rb = host.querySelector('[data-scope-read-back]');
+  if (rb) rb.addEventListener('click', async () => {
+    say('Reading Egeria…');
+    let r;
+    try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); return; }
+    await redraw(`read back: ${r.catalogued || 0} catalogued · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
+  });
+}
 
 export async function renderCatalogueScope(el, slug, status = '') {
   if (!el) throw new Error('Catalogue scope host missing');
@@ -517,4 +677,5 @@ export async function renderCatalogueScope(el, slug, status = '') {
   const again = el.querySelector('[data-scope-redeclare]');
   if (again) again.addEventListener('click', () => afterWrite(() => redeclareCatalogueScope(slug), 'declare the scope again',
     (v) => ((v.new_since || {}).text ? 'the declaration returned, but the re-read scope still shows new things' : 'declared again: nothing is new since now')));
+  loadCommitPanel(el, slug, me, (msg) => renderCatalogueScope(el, slug, msg));
 }
