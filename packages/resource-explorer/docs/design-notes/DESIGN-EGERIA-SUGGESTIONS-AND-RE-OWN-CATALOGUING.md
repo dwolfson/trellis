@@ -20,7 +20,7 @@ requirements; the Egeria leads decide what fits the connectors' design.
 | S1 | **Schema-qualified names in the JDBC cataloguer's include and exclude lists** (`sales.orders`), or a per-schema table list | lists match plain table names, so "orders in sales but not in archive" cannot be said | `TransferCustomizations.java:58-96, :170` |
 | S2 | **A depth option** on the JDBC cataloguer (database / schemas / tables / columns) | no depth; "schemas only" or "no columns" needs an impossible name in an include list | `RelationalDatabaseCataloguer.java` (always creates all three levels) |
 | S3 | **Escape `_` and `%` when passing real names back to `DatabaseMetaData.getTables` / `getColumns`**, or filter the returned rows by exact name | a schema `a_b` also returns `aXb`'s tables, a table `x_y` also returns `xZy`'s columns, under the wrong parent (source read; live behaviour to be confirmed by the scratch test, the owner believes a guard exists) | `RelationalDatabaseCataloguer.java:335, :353, :670, :946`; `JdbcMetadata.java:101-128` |
-| S4 | **Scope on the database survey**: include and exclude schema lists on `survey-postgres-database`, like the server survey's database lists | the survey measures every non-system schema, table and column; a steward who left out 22 schemas sees them measured | `PostgresDatabaseSurveyActionService.java`; `PostgresConfigurationProperty.java:112-126` is server-level only |
+| S4 | **Scope on the database survey**: include and exclude schema lists on `survey-postgres-database`, like the server survey's database lists | **Landed upstream 2026-10-04** (ebafb08fdc "Optimizing surveys", in the dev platform since the 2026-10-05 rebuild): `includeSchemaNames` / `excludeSchemaNames` on the database and server surveys, a real array from configuration, a comma-split string (no trimming, so a comma inside a name is inexpressible) as a survey request parameter; to be confirmed by a run | was: the survey measured every non-system schema, table and column |
 | S5 | **Per-target status and last-run time on the CatalogTarget relationship** | only the connector has `lastRefreshTime`; a target's own progress is invisible until its elements appear | `AutomatedCuration` / daemon status |
 | S6 | **Arrays accepted where one name is passed today** in `catalog-postgres-database` request parameters | the process passes a single string per list | `RequestTypeDefinition.java:1520-1535` |
 | S7 | **Read `includeViewNames` / `excludeViewNames`** or remove them | declared, never read; views follow the table lists | `JDBCConfigurationProperty.java:65-74` |
@@ -34,10 +34,13 @@ throwaway database; the live behaviour, not only the source):
 
 | # | suggestion | what the test showed |
 |---|---|---|
-| S11 | **Honour JSON arrays in a CatalogTarget's `configurationProperties`**, or document the string form the lists accept | an array read back as a flattened `ArrayTypePropertyValue{…}` string and no schema in the include list was processed; `deleteMethod` on the same relationship persisted fine |
+| S11 | **Accept several names in a CatalogTarget's include/exclude lists**: honour arrays, or split a delimited string | a JSON array read back as a flattened `ArrayTypePropertyValue{…}` string and no schema was processed; comma and JSON-array *strings* were stored as plain strings and treated as one name (`TransferCustomizations.processCustomization`: a String is one name, only `List<String>` gives several, and the relationship stores configurationProperties as strings), so a database-kind target can name exactly one schema |
 | S12 | **The "schema defaults to `public`" rule should apply only to tables in `public`**: no database-level pass over other schemas' tables | the docs (egeria-solutions/leveraging-postgres/overview) say a resource name is `serverName.databaseName.schemaName.tableName.columnName` "with the database schema defaulting to `public` if none is specified"; the test showed tables of five non-public schemas (a_b 1, aXb 1, s_x 2, pct 1, plain 2 of 7 built) created directly under the database as `<dbQN>::<table>`, none under a schema element, when the schema pass did not run; the throwaway had no table in `public`, so how `public` itself is treated is still to be read |
 | S13 | **Delete or archive dependents with a stale schema** (schema type, tables, columns) | a soft-deleted schema left its `_schemaType` and its table ACTIVE and orphaned |
 | S14 | **Exclude system schemas from pattern matches on real names** (with S3) | a table named `p%t` received about 65 `pg_catalog` columns alongside its own two |
+| S16 | **Re-including a schema that was once excluded must succeed**: the stale delete must remove the `_schemaType` (and other dependents) or the re-create must adopt it | after a schema was soft-deleted as stale, its schema type kept the unique qualifiedName; re-including the schema failed with OMAG-COMMON-409-001 on `<dbQN>::<schema>_schemaType` |
+| S17 | **A detached catalog target must stop being refreshed**: the connector should re-read its target list on each refresh (or on detach), or a detach should reach the running connector | after all three CatalogTarget relationships were removed (read-back: none), two forced refreshes still refreshed all three targets (OIF-CONNECTOR-0008/0009, 13 tables re-transferred); the connector keeps its list cached; whether the natural cycle, a config refresh or only a connector restart clears it was established 2026-10-05: a platform restart cleared it (the new connector's first refresh touched zero targets); whether the natural cycle re-reads the list was not observed, since the rebuild came first; a connector-only restart was not tried |
+| S18 | **Cascade delete by an ordinary user should either succeed over cataloguer-created children or say which it cannot delete** | a cascade delete of a database element as a demo user removed most children, then returned AUTHORIZATION_ERROR_401 and left the seven elements the cataloguer's own user had created; deleting those individually, leaf first, succeeded |
 | S15 | **Resolve or drop unused template placeholders** on template-created elements | RE's template publish left `description` and `versionIdentifier` as literal `~{…}~` strings (RE's side to supply, Egeria's side to refuse or blank) |
 
 **Two names, side by side, so neither is "fixed" into the other:** the
@@ -53,6 +56,15 @@ through the daemon's refresh call; the natural interval was about 34
 minutes, not the configured 60; refreshes are idempotent; and the
 SecretsStoreCataloguer catalogues any `.omsecrets` file it can see,
 including a throwaway one.
+
+**Build comparison, 2026-10-05:** the JDBC integration connector jar in
+today's image is byte-identical to the 2026-10-03 one (18 entries, same
+hashes), so every cataloguer finding above (S1–S3, S7, S9, S11–S16) stands
+on the rebuilt platform without re-testing. What moved upstream between the
+builds: the survey scope lists (S4, now landed), a null-property-map fix in
+the OMF element handler (worth one cheap re-check of S11), two changes to
+the element handler (one cheap re-check of S18), and content-pack process
+definitions (S5, S6, S8, S10 not established from here).
 
 ## 2. The second door: RE catalogues on its own
 
@@ -92,8 +104,29 @@ the owner):* S3 confirmed for tables and columns; adoption not established
 because the schema pass never ran (the array lists were not honoured, S11),
 and the pre-made schema was soft-deleted as stale with its dependents
 orphaned (S13); interval about 34 minutes, forced refresh 16 seconds. Two
-string forms of the include list remain to be tried on the live target. If
-neither works, the second door is the only one that honours a scope today.
+string forms of the include list were tried on 2026-10-05: neither works
+(S11). **A third door was found in the running build's newer code and
+tested: SCHEMA-kind catalog targets.** RE creates a DeployedDatabaseSchema
+from the template of technology type "PostgreSQL Relational Database
+Schema" (qualifiedName `PostgreSQL Relational Database Schema::<server>::<db>.<schema>`),
+attaches it to the JDBC cataloguer with no configuration, and one refresh
+creates exactly that schema's tables and columns under it and nothing
+else: no other schema's tables, no database-level leak from that target.
+The `_`/`%` hazard survives inside it (a SCHEMA target for `a_b` also
+pulled in `aXb`'s table), so RE's inventory check stays. Not yet tested:
+detaching a SCHEMA target and what happens to its elements; whether the
+database-level pass exists when no database-kind target is attached; and
+all of it on the rebuilt platform with the 2026-10-05 fixes.
+
+**Decision (project owner, 2026-10-05):** "Go with the schema-kind door."
+It may be revisited as Egeria is enhanced and changed; the lever it rests
+on (SCHEMA-kind catalog targets) and the alternatives above stay recorded
+for that. As confirmed, slice B takes the third door: one SCHEMA-kind target per chosen schema, created
+and attached by RE's commit, no include lists; depth below "tables and
+columns" is not offered until S2 exists; leave-out detaches the schema
+target and archives (behaviour to be read back); re-inclusion handles S16
+by adopting or clearing the orphaned schema type; RE's manifest flags
+`_`/`%` collisions across all schema and table names before attaching.
 
 - If adoption works and the hazard is guarded: attach the cataloguer, as
   the designer's reply assumes; RE's own creation stays the fallback.
