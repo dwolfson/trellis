@@ -1023,3 +1023,47 @@ def test_the_summary_says_when_the_credential_scoped_survey_was_taken(registry, 
     row = next(r for r in client.get("/api/databases/").json() if r["slug"] == "db")
     assert row["credential_capability"]["connected_as"] == "surveyor"
     assert row["credential_capability_at"].startswith("2026-10-03")
+
+
+# ── the collapsed one-line summary reads what the route serves ──────────────
+
+import json as _json2
+import shutil as _shutil
+import subprocess as _subprocess
+from pathlib import Path as _Path
+
+_SCOPE_SOURCES = (_Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static"
+                  / "next" / "stages" / "scope-sources.js")
+
+
+def _scope_sources_mjs():
+    import tempfile
+    d = _Path(tempfile.mkdtemp(prefix="re-scope-sources-")) / "scope-sources.mjs"   # a bare .js is CommonJS to node
+    d.write_text(_SCOPE_SOURCES.read_text(encoding="utf-8"), encoding="utf-8")
+    return d
+
+
+def _collapsed_line_for(view_json):
+    """Run the shipped scopeCollapsedText (scope-sources.js, no imports) on the route's JSON."""
+    out = _subprocess.run(
+        ["node", "--input-type=module", "-e",
+         f"import {{ scopeCollapsedText }} from '{_scope_sources_mjs().as_uri()}';"
+         "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.stringify(scopeCollapsedText(JSON.parse(s)))));"],
+        input=_json2.dumps(view_json), capture_output=True, text=True, check=True)
+    return _json2.loads(out.stdout)
+
+
+@pytest.mark.skipif(_shutil.which("node") is None, reason="node not installed")
+def test_the_collapsed_line_is_built_from_the_scope_route_json(client, registry, world):
+    # nothing declared yet: no collapsed line (the section stays open)
+    assert _collapsed_line_for(client.get("/api/catalogue-scope/db").json()) == ""
+    _seven_then_twentynine(world)
+    registry.record_database_survey("db", 29, 266, 1000, {"schema_info": {"x": 1}}, source="egeria",
+                                    egeria_report_guid="g1", surveyed_at="2026-10-05T09:00:00")
+    j = client.get("/api/catalogue-scope/db").json()
+    line = _collapsed_line_for(j)
+    assert line.startswith("Your scope: 7 of 29 schemas · declared by dwolfson 10-04")
+    if j["survey"].get("state") == "measured":
+        assert line.endswith(f"Egeria's latest survey covers {j['survey']['schema_count']} schemas, {j['survey']['table_count']} tables")
+    else:   # no measured Egeria survey figures on the route: that clause is omitted, never zero
+        assert "survey" not in line and "0 schemas" not in line
