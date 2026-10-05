@@ -8,17 +8,22 @@ cataloguer test of 2026-10-04/05 (`evidence/SCRATCH-CATALOGUER-TEST-2026-10-04.m
 file:line evidence is `DESIGN-EGERIA-SUGGESTIONS-AND-RE-OWN-CATALOGUING.md`
 (S1–S15). This note is the agenda: six topics, what we found, what we ask.
 
-**Version caveat, added the same day.** The owner reports that the Egeria
-lead found and fixed bugs on 2026-10-05 that may explain some of these
-findings. Everything below was read from the source at df82f4fe
-(2026-09-15) and observed on the quickstart image running on the dev
-platform, whose build checkout is not established. Before any item is
-raised as a defect, it is re-checked against the fixed build: the scratch
-test is repeatable (throwaway database, forced refresh, read-back), and
-each topic names the observation so the re-check is one comparison. Items
-that the fixes resolve move from "defect" to "confirmed fixed in <version>"
-here; the design questions (envelope, scope lever, which mechanism,
-relationship type) stand either way.
+**Version caveat, resolved the same day.** The Egeria lead fixed bugs on
+2026-10-05 and the owner rebuilt the dev platform from that day's upstream
+image (6.2-SNAPSHOT, index digest bf2b3799…, built 14:19 UTC, upstream main
+up to PR #9357). Every finding below was then re-established against that
+build: the JDBC integration connector jar in it is byte-identical to the
+2026-10-03 one, so the cataloguer findings (topics 3 and 4, S1–S3, S7, S9,
+S12–S14, S16–S20) stand on current code with no re-check needed; the one
+item the fixes resolved is the survey's schema scope (S4, landed in
+ebafb08fdc and confirmed live); arrays on a database-kind target are now
+honoured (S11, partly) though its database-level pass remains; and the
+rehearsal findings in topic 7 were made on the rebuilt platform itself.
+Source citations are to df82f4fe where the file is unchanged to upstream
+main (`JdbcMetadata.java`, `TransferCustomizations.java`, the
+`getTables`/`getColumns` call sites) and to the running jar otherwise.
+Anything the leads fix after 2026-10-05 needs the same one-comparison
+re-check: the scratch scripts are kept for it.
 
 *What the running platform is (established 2026-10-05, read-only):* the
 dev platform reports version 6.2-SNAPSHOT; the quickstart image was built
