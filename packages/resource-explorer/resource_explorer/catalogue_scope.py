@@ -561,15 +561,16 @@ def _local_header(registry, slug: str, schemas: list[dict], as_of: str, kind: st
     n_s, n_t = _counts(schemas)
     real = [s for s in schemas if s.get("schema") and s.get("classification") != "system"]
     blind = sum(1 for s in real if s.get("classification") == "no_access")
-    surveyed_as = ""
+    surveyed_as, read_error = "", ""
     try:
         for r in registry.get_database_surveys(slug) or []:
             if (r.get("source") or "") == SOURCE_LOCAL and r.get("surveyed_as"):
                 surveyed_as = r["surveyed_as"]
                 break
-    except Exception:
-        pass
-    return {"state": "measured" if n_s else "not_measured", "kind": kind, "schema_count": n_s,
+    except Exception as exc:  # observable: a failed read is not "not measured"
+        read_error = f"{type(exc).__name__}: {exc}"[:300]
+    state = "measured" if n_s else ("unreadable" if read_error else "not_measured")
+    return {"state": state, "read_error": read_error, "kind": kind, "schema_count": n_s,
             "table_count": n_t, "surveyed_at": as_of if n_s else "", "surveyed_as": surveyed_as,
             "sees": (f"sees {n_s - blind} of {n_s}" if blind else "")}
 
@@ -636,11 +637,14 @@ def _legacy_egeria_header(registry, slug: str) -> dict:
             "surveyed_at": "", "report_guid": ""}
 
 
-def _known_before(registry, slug: str, declared_at: str) -> tuple[set, set]:
+def _known_before(registry, slug: str, declared_at: str) -> tuple[set, set, str]:
     """Schema names and `schema.table` keys that a COMPLETE survey measured at or
     before `declared_at`: the newest native survey of that time, and the newest
     local snapshot of that time. A node in here existed when the scope was
-    declared, whatever the baseline's own (possibly thin) source could see."""
+    declared, whatever the baseline's own (possibly thin) source could see.
+
+    The third value is a read error ('' when the reads worked). A failed read is
+    NOT "nothing was known before": the caller must branch on it."""
     schemas: set[str] = set()
     tables: set[str] = set()
     native = _native_node_set(registry, slug, before=declared_at)
@@ -660,9 +664,9 @@ def _known_before(registry, slug: str, declared_at: str) -> tuple[set, set]:
                 if r.get("schema_name") and not _is_system(r["schema_name"]):
                     schemas.add(r["schema_name"])
                     tables.add(f"{r['schema_name']}.{r.get('table_name')}")
-    except Exception:
-        pass
-    return schemas, tables
+    except Exception as exc:
+        return schemas, tables, f"{type(exc).__name__}: {exc}"[:300]
+    return schemas, tables, ""
 
 
 def _parse_day(iso: str):
@@ -861,7 +865,7 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
     base_schemas = set(base_keys.get("schemas") or [])
     base_tables = set(base_keys.get("tables") or [])
 
-    before: dict[str, tuple[set, set]] = {}
+    before: dict[str, tuple[set, set, str]] = {}
 
     def _existed_then(base: dict, key: str, is_table: bool) -> bool:
         """Was it in ANY complete survey taken before the declaration? Computed
@@ -869,6 +873,9 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
         if "k" not in before:
             before["k"] = _known_before(registry, slug, str(base.get("declared_at") or ""))
         return key in before["k"][1 if is_table else 0]
+
+    def _earlier_unreadable() -> bool:
+        return bool(before.get("k") and before["k"][2])
 
     def _is_new(base: dict | None, known: bool, node_at: str, key: str = "", is_table: bool = False) -> bool:
         """A node is "new since your scope was declared" only when the baseline
@@ -882,7 +889,10 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
         declared = str(base.get("declared_at") or "")[:19]
         if not (declared and node_at and str(node_at)[:19] > declared):
             return False
-        return not _existed_then(base, key, is_table)
+        existed = _existed_then(base, key, is_table)
+        if _earlier_unreadable():
+            return False          # never infer "nothing known before" from a failed read
+        return not existed
 
     def _table_activity(sname: str, t: dict) -> dict:
         cands = [local_counters.get((sname, t["name"]))]
@@ -1102,6 +1112,7 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
         "schemas_leave_out": sum(1 for n in schemas_out if n["effective"] == LEAVE_OUT),
         "schemas_undecided": sum(1 for n in schemas_out if n["effective"] is None),
     }
+    view["earlier_read_error"] = before["k"][2] if before.get("k") else ""
     view["new_since"] = _new_since_from_view(view)
     return view
 
@@ -1115,6 +1126,13 @@ def _new_since_from_view(view: dict) -> dict:
     if not view["declared"]["declared"]:
         return {"declared": False, "schemas": 0, "tables": 0, "tables_in_known_schemas": 0,
                 "schema_names": [], "text": "", "since": ""}
+    if view.get("earlier_read_error"):
+        # A failed read of the earlier surveys is not "nothing was known before":
+        # say we can't tell, and flag nothing as new.
+        return {"declared": True, "can_tell": False, "schemas": 0, "tables": 0,
+                "tables_in_known_schemas": 0, "schema_names": [],
+                "error": view["earlier_read_error"], "since": view["declared"]["at"],
+                "text": "can't tell: the earlier surveys could not be read"}
     new_schemas = [s for s in view["schemas"] if s["new_since"] and s["explicit"] is None]
     tables_in_new = sum(1 for s in new_schemas for t in s["tables"] if t["explicit"] is None)
     known = [t for s in view["schemas"] if not s["new_since"] for t in s["tables"]

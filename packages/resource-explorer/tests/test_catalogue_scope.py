@@ -890,3 +890,37 @@ def test_size_is_formatted_dated_and_a_schema_with_unsized_tables_says_at_least(
     assert node(v, "sales", "orders")["size_view"]["text"] == "22 MB"
     assert node(v, "sales", "customers")["size_view"]["text"] == "not measured"
     assert node(v, "sales")["size_view"]["text"] == "≥ 22 MB"
+
+
+# ── a failed read is observable, never "nothing known" / "not measured" ─────────────
+
+def test_a_failed_read_of_the_earlier_surveys_says_cant_tell_and_flags_nothing_new(world, monkeypatch):
+    world["tree"] = {"schemas": [sch(f"s{i}", [tbl("t")]) for i in range(2)] + [SYSTEM]}
+    cs.set_node_choice(world["registry"], "db", "dwolfson", schema="s0", choice="catalogue",
+                       now="2026-10-04T08:00:00")
+    world["tree"] = {"schemas": [sch(f"s{i}", [tbl("t")]) for i in range(4)] + [SYSTEM]}
+    world["survey_at"] = "2026-10-05T09:00:00"
+    assert cs.new_since_declared(world["registry"], "db")["schemas"] == 2     # the reads work: 2 are new
+
+    def boom(*a, **k):
+        raise RuntimeError("registry unreachable")
+    monkeypatch.setattr(cs, "_native_node_set", lambda reg, slug, before="": None)
+    monkeypatch.setattr(world["registry"], "query_detail_rows", boom)
+    with world["registry"]._conn() as conn:
+        conn.execute("INSERT INTO database_tables (database_slug, surveyed_at, schema_name, table_name) "
+                     "VALUES ('db', '2026-10-01T00:00:00', 's0', 't')")
+    v = view(world)
+    ns = v["new_since"]
+    assert ns["text"] == "can't tell: the earlier surveys could not be read"
+    assert ns["can_tell"] is False and "registry unreachable" in ns["error"]
+    assert ns["schemas"] == 0 and not any(s["new_since"] for s in v["schemas"])
+    assert not any(t["new_since"] for s in v["schemas"] for t in s["tables"])
+
+
+def test_a_failed_local_survey_read_is_unreadable_not_not_measured(world, monkeypatch):
+    world["tree"] = {"schemas": []}
+    def boom(slug, *a, **k):
+        raise RuntimeError("surveys table unreadable")
+    monkeypatch.setattr(world["registry"], "get_database_surveys", boom)
+    local = view(world)["sources"]["local"]
+    assert local["state"] == "unreadable" and "surveys table unreadable" in local["read_error"]

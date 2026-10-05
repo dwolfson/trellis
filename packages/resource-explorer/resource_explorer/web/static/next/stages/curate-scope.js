@@ -56,7 +56,9 @@ export function sourcesClause(view) {
       : "Egeria's latest survey: not measured yet";
   }
   const ch = src.chosen || {}; const eg = src.egeria || {}; const lo = src.local || {};
-  if (eg.state !== 'measured' && lo.state !== 'measured') return "Egeria's latest survey: not measured yet";
+  const unreadable = lo.state === 'unreadable' ? "RE's own survey could not be read" : '';
+  if (eg.state !== 'measured' && lo.state !== 'measured') return unreadable || "Egeria's latest survey: not measured yet";
+  if (unreadable) return `${ch.schemas} schemas · ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)} · ${unreadable}`;
   if (src.disagree && eg.state === 'measured' && lo.state === 'measured') {
     return `Egeria's latest survey covers ${eg.schema_count} schemas, ${eg.table_count} tables · RE's own survey saw ${lo.schema_count} schemas, ${lo.table_count} tables, ${md(lo.surveyed_at)}`;
   }

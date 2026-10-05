@@ -680,3 +680,29 @@ test('KNOWN-NEGATIVE: a bulk write the server drops is not reported as done', as
   assert.match(s, /the write returned, but the re-read scope shows only 0 of 3 schemas set to catalogue/);
   assert.doesNotMatch(s, /now set to/);
 });
+
+test('a failed read of RE\'s own survey says so instead of "not measured"', async () => {
+  const lo = { state: 'unreadable', read_error: 'RuntimeError: x', schema_count: 0, table_count: 0, surveyed_at: '', surveyed_as: '', sees: '' };
+  const { document } = await setUp(baseView({ sources: {
+    chosen: { kind: 'local', as_of: '', schemas: 0, tables: 0, merged: false },
+    egeria: { state: 'not_measured' }, local: lo, disagree: false, unreadable: 0 } }));
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    "Your scope: none declared yet · RE's own survey could not be read");
+  assert.doesNotMatch(flat(document.querySelector('[data-scope-header]')), /not measured/);
+  const { document: d2 } = await setUp(baseView({ sources: {
+    chosen: { kind: 'egeria', as_of: '2026-10-04T06:00:00', schemas: 29, tables: 266, merged: false },
+    egeria: { state: 'measured', schema_count: 29, table_count: 266, surveyed_at: '2026-10-04T06:00:00' }, local: lo, disagree: false, unreadable: 0 } }));
+  assert.equal(flat(d2.querySelector('[data-scope-header]')),
+    "Your scope: none declared yet · 29 schemas · Egeria survey 10-04 · RE's own survey could not be read");
+});
+
+test('when the earlier surveys could not be read, new-since says can\'t tell and no row is flagged new', async () => {
+  const v = baseView({
+    declared: { declared: true, by: 'dwolfson', at: '2026-10-04T08:00:00', kind: 'first', baseline_survey_at: '' },
+    new_since: { declared: true, can_tell: false, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [],
+      text: "can't tell: the earlier surveys could not be read", since: '2026-10-04T08:00:00' },
+  });
+  const { document } = await setUp(v);
+  assert.equal(flat(document.querySelector('[data-scope-new-since]')).startsWith("can't tell: the earlier surveys could not be read"), true);
+  assert.equal(document.querySelectorAll('[data-scope-new-since-row]').length, 0);
+});
