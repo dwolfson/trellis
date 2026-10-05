@@ -90,10 +90,19 @@ def test_a_live_term_assignment_makes_the_leave_out_an_archive_not_a_soft_delete
     assert read["hangs_off"]["by_type"] == {"SemanticAssignment": 1}
 
 
-def test_the_live_action_target_on_a_schema_reads_as_hanging_off_it():
-    """The rehearsal found `ActionTarget` is NOT in the structural list, so an engine action that
-    targets a schema reads as hanging off it: archive, never a soft delete. Pinned, not fixed."""
-    assert "ActionTarget" not in cc.STRUCTURAL_RELATIONSHIPS
+def test_an_engine_action_target_is_structural_and_never_makes_a_leave_out_an_archive(real):
+    """Architect ruling 2026-10-05: an engine action targeting a schema is Egeria's own machinery,
+    never something a person attached. Live relationship type `ActionTarget` (rehearsal)."""
+    assert "ActionTarget" in cc.STRUCTURAL_RELATIONSHIPS
+    g, c, ent = real
+    qn = gw.schema_qualified_name(gw.server_name_for(ent), "shop", "sales")
+    schema = live.raw_element("sch1", qn, "DeployedDatabaseSchema")
+    action = live.raw_element("ea1", "EngineAction::1", "EngineAction")
+    c["MetadataExpert"].get_metadata_element_by_unique_name.return_value = schema
+    c["MetadataExpert"].find_metadata_elements_with_string.return_value = []
+    c["MetadataExpert"].get_all_related_elements.return_value = live.raw_related(schema, [("ActionTarget", "ra", action)])
+    read = cc.read_hangs_off(g, ent, "sales")
+    assert read["form"] == gw.SOFT_DELETE and read["hangs_off"]["total"] == 0
 
 
 @pytest.mark.parametrize("bad", [{"unexpected": 1}, 42, ["not", "elements"]])

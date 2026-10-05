@@ -383,7 +383,8 @@ claim curates across resources it does not own; everyone else gets 403. Enforced
 element, materialized components and blueprints — is born in `resource-explorer-draft`
 (`ZoneMembership`, `0424`), and curate-accept promotes it into the deployment's publish zones
 (`EXPLORER_PUBLISH_ZONES`, default `egeria-runtime`, which is what the quickstart configures). The
-worker creates the zone itself once at startup, leader-elected.
+worker creates the zone itself once at startup, leader-elected. (A database catalogue commit writes
+the publish zone only when `EXPLORER_PUBLISH_ZONES` is set, last; unverified for a second commit.)
 
 "Everything, no exceptions" is a correction, made against the live platform on 2026-09-04. A
 materialized component was at first written straight into the publish zones, on the reasoning that

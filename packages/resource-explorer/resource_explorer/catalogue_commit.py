@@ -110,6 +110,9 @@ STRUCTURAL_RELATIONSHIPS = frozenset({
     "NestedSchemaAttribute", "SchemaTypeOption", "LinkedType", "Anchors",
     "ConnectionToAsset", "ServerAssetUse", "AssetConnection", "ReportSubject",
     "TemplateSource", "SourcedFrom", "ResourceList",
+    # An engine action that targets a schema is Egeria's own machinery (the survey), never
+    # something a person attached (architect, 2026-10-05). It never makes a leave-out an archive.
+    "ActionTarget",
 })
 
 HANGS_OFF_WORDS = {

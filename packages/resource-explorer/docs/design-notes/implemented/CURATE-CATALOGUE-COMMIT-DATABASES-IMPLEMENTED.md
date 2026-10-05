@@ -158,4 +158,13 @@ the project owner and D8 (no remove for the secrets projection) is a separate fo
 **A consequence worth knowing before the gate:** with a zone configured, a SECOND commit writes anchored elements under a database
 element that now carries RE's zone. If that zone is not one the service identity may write in (the rehearsal's evidence), that second
 commit fails the way the first did. The fake models this lockout (`zone_lockout`, on by default) and the ordering test relies on it;
-the first live run with `EXPLORER_PUBLISH_ZONES` set should be on a throwaway database, then a second commit on it.
+**Decision (architect, 2026-10-05):** the first live use of a configured `EXPLORER_PUBLISH_ZONES` goes on a throwaway database with TWO
+commits, the second exercising anchored writes under the zone. The zone setting is **unverified for a second commit**; this is stated
+on the `default_catalog_zones` field in `config.py`, in `docs/admin-guide.md` and in `docs/Architecture.md`.
+
+**Decision (architect, 2026-10-05):** `ActionTarget` is structural (added to `STRUCTURAL_RELATIONSHIPS`): an engine action targeting a
+schema is Egeria's own machinery and never makes a leave-out an archive. The companion exception, an engine action still IN PROGRESS on a
+schema blocking its leave-out ("in use by a running survey · wait or cancel"), was NOT built: the relationship read gives the action as a
+raw element, but the status property name on it was never recorded (the rehearsal note and `live_catalogue_payloads.py` carry none), and
+the ruling says not to guess one. It needs one live read of an engine action's properties; ISSUE-90 (deleting under a running action
+loops) remains unguarded until then.
