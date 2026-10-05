@@ -115,3 +115,18 @@ pgvector reachable wrote there. Those rows were NOT touched; the owner decides.
 - Not verified: the integration test itself, which skips without a reachable
   pgvector here. Its fix is covered by the isolation test plus the metrics
   refusal test; a run with pgvector reachable is still needed.
+
+## Addendum 2026-10-05 (3): regression in 26fb2057, and the check that catches it
+
+The METRICS_DATABASE_URL block from the previous addendum landed in
+`TestVectorStoreIntegration::test_multi_collection_store_wrapper_real_round_trip`,
+which does not request `tmp_path`, instead of the e2e test that does. It
+raised NameError only where pgvector is reachable; the test skips elsewhere,
+so every local run passed. Fixed: that test is byte-identical to origin/main
+again and the block is in `test_ingest_then_query_returns_real_retrieved_content`.
+
+Guard against the class: `tests/test_no_undefined_names_in_tests.py` runs
+`ruff check --select F821` over `tests/` (skips if ruff is absent) and proves
+it catches an unrequested-fixture name. Two pre-existing false positives in
+quoted annotations were cleaned (`Path` in test_ingestion.py, `ast` in
+test_vendored.py) by importing the names at module level.
