@@ -9505,3 +9505,61 @@ temporary-server teardown, "Stopping temporary server on http://127.0.0.1:8101")
 shows, so it reads as an intermittently slow runner or a slow teardown; which one is not known (the logs need
 authentication, per-test durations were not compared). A false red costs a re-run of about 20 minutes. Options:
 raise the cap to 45; or investigate whether teardown hangs. Owner's call pending.
+
+## Curate catalogue scope, slice A: what the owner's first look on `coco_pharma` found (2026-10-05, 8810 at 074869f0)
+
+PR #467 is live. Defects (small slice A2, no designer needed): (1) the tree shows 8 schemas and 61 tables because it
+reads RE's own LOCAL survey of 2026-10-03, which is credential-scoped (the page says "sees 6 of 8 schema(s), SELECT on 3
+of 61 relation(s)") and older than the 22 schemas Mandy added, so 21 of the 29 schemas are not on screen and "new since
+your scope was declared" cannot flag them; (2) the header reads "Egeria's latest survey: not measured yet" although the
+post-reset native survey (report `03b908a5`, 29 schemas, 266 tables) exists: the builder read `database_surveys` rows with
+`source = egeria`, and native surveys live in the native-survey rows (`step_runs`, `native_survey_annotations`); (3) there
+is no select-all, so declaring 29 schemas takes 29 clicks (needs "catalogue all schemas" and "all except…"); (4) the
+column title "Name" should read "Schema / table"; (5) the STATE column is cut off at the right edge (not established
+whether the table scrolls); (6) the "proposed: leave out · no writes since 09-30" rule fired on `coco_ods`, `eu_sales`,
+`target_sales` and `us_sales` from two surveys three days apart, which shows dormant, not unimportant.
+
+## The scope tree should show reused facts with an as-of date, an activity word and honest staleness (2026-10-05, owner)
+
+Owner: the facts a steward needs (row counts, size, whether a table is active) are results RE and Egeria have ALREADY
+produced (the stored survey annotations, e.g. a table annotation's tableSize and row counters), so reuse them rather than
+query Postgres again. Every number carries its source and as-of date, because `pg_catalog` statistics lag: `reltuples` and
+`n_live_tup` update on analyze or vacuum, and the write counters are in memory and reset on crash recovery. Measured on
+2026-10-05 (read-only): in `coco_pharma` the 7 old schemas (57 tables) show 0 live rows and 0 writes in `pg_stat`, while
+RE's own survey estimated about 3,413 rows in `coco_sus`, so for those tables "no writes" only means none since a reset;
+the 22 newly loaded schemas (205 tables) show 15 to 193 rows each and the same number of inserts, so counters do mark
+recent loading. Postgres keeps no per-table "last write" time; the usable signal is the change in counters between two
+surveys. Proposal: rows ("estimate" or "counted"), size, writes with the counter window stated ("12 writes since 10-03,
+window 1 day"), and an activity word, active / dormant / can't tell, where "dormant" requires a known window of at least
+a threshold (30 days suggested, owner to set) and otherwise reads "can't tell: counters only cover N days". The "no
+writes since" proposal must carry the same window rule.
+
+## Choosing among hundreds of tables: filter, sort and decide by criterion (2026-10-05, owner; design question)
+
+With hundreds of tables, and columns, a per-row choice does not scale. Owner: filters and sorts for tables (and columns),
+and decisions on a group that fits a criterion, for example "catalogue every table with Sales in its name". Open question
+for the designer: is a rule a stored, signed, dated object in the scope record (so a table that arrives later and matches
+is picked up and shown as matched by that rule), compiled to plain names at commit because Egeria's include and exclude
+lists match exact names only? Select-all and "all except…" are the degenerate case of the same control.
+
+## Cataloguing is incremental over time, not a one-time operation (2026-10-05, owner; design question)
+
+Users add schemas and tables as needs grow; the scope is a living record and every commit is a diff (design's §3 already
+says so). Owner wants that explicit in the drawing, including "new since your scope was declared" arriving on its own
+(slice A has the row; it needs the native-survey source above to see new schemas at all) and a rule-matched arrival (above)
+distinct from an unmatched one.
+
+## Decide earlier, finalise in Curate: should earlier stages propose or record "worth cataloguing"? (2026-10-05, owner; design question)
+
+Owner: some of the decisions about what to publish could be made in earlier stages (Scouting, Discovery, Assessment,
+Analysis), with Curate finalising and adjusting them instead of deciding from scratch. Design question: where does an
+earlier stage record such a decision, as a proposal from measurements or as a person's verdict, and how does Curate show
+its provenance? Related to design's rule that only measurements that decide alone may propose.
+
+## The Portal Overview reads `error_count` on RE's SurveyReports (2026-10-05, Portal session FYI)
+
+The Portal's Overview classifies survey reports by outcome: RE's reports ("Survey: <name> @ <host>") count as completed
+only when their `additionalProperties` carry `error_count=0`; the database reports record only table and column counts, so
+they show as "unknown outcome". Writing an `error_count` on those reports would make the Overview pick them up with no
+Portal code change.
+
