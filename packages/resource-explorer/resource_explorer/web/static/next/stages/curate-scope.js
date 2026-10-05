@@ -180,9 +180,9 @@ export function egeriaStateHtml(node, commit) {
     return '<div data-scope-egeria-state data-scope-egeria-word="none" class="text-ink-muted">—</div>';
   }
   const glyph = EGERIA_GLYPH[st.state] ? `${glyphSpan(EGERIA_GLYPH[st.state])} ` : '';
-  const muted = ['uncommitted', 'left_out', 'follows_schema', 'not_read_back'].includes(st.state) ? 'text-ink-muted' : 'text-ink';
+  const isMuted = ['uncommitted', 'left_out', 'follows_schema', 'not_read_back'].includes(st.state);
   const second = st.second ? `<div data-scope-egeria-second class="text-provenance text-ink-muted">${esc(st.second)}</div>` : '';
-  return `<div data-scope-egeria-state data-scope-egeria-word="${esc(st.state)}" class="${muted}">${glyph}${esc(st.words)}</div>${second}`;
+  return `<div data-scope-egeria-state data-scope-egeria-word="${esc(st.state)}" class="${isMuted ? 'text-ink-muted' : 'text-ink'}">${glyph}${esc(st.words)}</div>${second}`;
 }
 
 function collisionLines(node, commit) {
