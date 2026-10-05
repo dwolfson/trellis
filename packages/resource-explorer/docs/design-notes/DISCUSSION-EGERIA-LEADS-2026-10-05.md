@@ -20,6 +20,28 @@ that the fixes resolve move from "defect" to "confirmed fixed in <version>"
 here; the design questions (envelope, scope lever, which mechanism,
 relationship type) stand either way.
 
+*What the running platform is (established 2026-10-05, read-only):* the
+dev platform reports version 6.2-SNAPSHOT; the quickstart image was built
+2026-10-03 from a pinned upstream `odpi/egeria-platform:latest` digest, not
+from our checkout; its JDBC connector jar contains the 2026-09-22 commit
+fcb804149b (new `CatalogTargetKind`, `JDBCDatabaseCatalogTarget`), so the
+cataloguer that ran the scratch test is newer than our df82f4fe citations
+for it. `JdbcMetadata.java` and `TransferCustomizations.java` are
+byte-identical between df82f4fe and upstream main, so topic 3's pattern
+and exact-match findings stand on current source. Upstream main is 70
+commits ahead at d395c18f; any fix from 2026-10-05 is absent from the
+running image, so a re-check needs a new image pin and a platform
+restart.
+
+*A lever we had not read, from that newer code:* a catalog target can
+now be of kind SCHEMA ("one schema of a database, and nothing else in that
+database"), handed a DeployedDatabaseSchema by the
+`catalog-<vendor>-schema` processes, as well as kind DATABASE ("every
+schema in it"). A per-schema scope without include lists is a candidate
+third door for topic 4: RE creates the DeployedDatabaseSchema for each
+chosen schema and attaches each as a SCHEMA target, and the cataloguer does
+tables and columns. Being tested on the scratch state today.
+
 ## 1. The annotation vocabulary and an honesty envelope
 
 **What RE needs.** Every analytic result, Egeria's surveys and RE's own
