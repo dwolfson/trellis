@@ -29,13 +29,16 @@ schema; revisit as Egeria changes.
 
 ## The steps, in the manifest's order
 
-`publish_elements` (server and database, no survey), `zone_membership` (before any target; skipped writes when the zones
-already match, because Egeria rejects an equal change), `owner` (added after the database exists; a refused change reads
+(Order as changed by the rehearsal fixes below; the zone step moved from second to next-to-last.)
+
+`publish_elements` (server and database, no survey), `owner` (added after the database exists; a refused change reads
 "owner set by Egeria's source · can't change from RE"), `schema_targets` (outbox rows, drained at once), `leave_outs`,
-`survey_report` (RE's own report and annotations, no native survey), `survey` (Egeria's, with `includeSchemaNames`),
-`refresh` (optional; `refresh_integration_connectors("JDBCDatabaseCataloguer", daemon, 120)`; RE never restarts a
-connector, asserted by a test), `read_back`. A step that fails is a failed step; what depends on it is skipped with the reason
-(no zones means no target is attached, because dependents copy the zones at creation).
+`survey_report` (RE's own report and annotations, no native survey), `survey` (Egeria's, with `includeSchemaNames`; reads
+"submitted · <time>" until a read-back shows the report with annotations), `refresh` (optional;
+`refresh_integration_connectors("JDBCDatabaseCataloguer", daemon, 120)`; RE never restarts a connector, asserted by a test;
+reads "refreshed" only when the connector's own time moved), `zone_membership` (written ONLY when `EXPLORER_PUBLISH_ZONES` or
+`egeria.default_catalog_zones` is configured, and then LAST), `read_back`. A step that fails is a failed step; what depends on
+it is skipped with the reason.
 
 ## Decisions
 
@@ -113,7 +116,13 @@ no constraint, so the new kind needs nothing. Covered by `test_migration_is_addi
 6. The Ownership read-before-write shape; the zone read-first (`current_zones`) against a real security connector.
 7. Cost: the preview makes one relationships read per element of every schema being left out that was ever catalogued.
 8. The lingering-target sentence is the brief's wording; the read-back proves the detach, and S17 (a removed target keeps being refreshed) is the recorded behaviour, not something each read re-observes.
-9. The server-template placeholder for its description (S15 was only isolated for the database template).
+9. The server-template placeholder for its description (S15 was only isolated for the database template). The rehearsal answered it:
+   the server takes `description` (it received the database's) and leaves `versionIdentifier` unresolved; both fixed (D7), not re-run live.
+
+Still open after the rehearsal fixes (nothing below has been seen live): items 1, 4, 5, 7 and 8 above; the engine action's
+`actionStatus`/`completionMessage` property names and the newest-report-since pick used by `survey_outcome`; the live shape of a
+non-empty `get_catalog_targets` answer; whether a configured `EXPLORER_PUBLISH_ZONES` zone leaves the service identity, the survey
+engine and the cataloguer able to write later (see D1); and that the zone read-back parses the live ZoneMembership classification.
 
 ## Architect rulings (2026-10-05) and what they changed
 
@@ -131,3 +140,22 @@ commit is queued work, so the survey definition is not auto-retried: the toast s
 **Backlog:** `POST /api/databases/{slug}/publish` stays only for Classic API callers and its docstring says it is unscoped; a follow-up
 makes it scope-aware or removes it. Also unscoped and not touched here: `HybridDatabaseSurveyor` (the `egeria-adaptive` survey path)
 still calls `publish_local_survey`/`catalog_and_survey`, which catalogue and start an unscoped survey; that is a separate follow-up.
+
+## Rehearsal fixes (follow-up to PR #485, from the live rehearsal of 2026-10-05)
+
+Source: `evidence/REHEARSAL-CURATE-COMMIT-DATABASES-2026-10-05.md`. D5 (RE's own survey report names left-out schemas) is waiting on
+the project owner and D8 (no remove for the secrets projection) is a separate follow-up; neither is in this change.
+
+| # | Defect | Status | What changed |
+|---|---|---|---|
+| D2 | Gateway parsed invented shapes: every read came back empty | fixed, tests only | `catalogue_gateway.parse_element_answer`/`parse_elements_answer`/`parse_related_answer` read the LIVE shapes (`elementGUID`, `type.typeName`, `elementProperties.propertiesAsStrings`, the related-elements dict with `elementList`). An answer they do not recognise RAISES `GatewayError`, so a shape change can never again read as "nothing there" (and so never as "nothing hangs off it"). `tests/live_catalogue_payloads.py` holds the recorded shapes; `FakeEgeria` builds its payloads with the same builders and its reads go through the real parsers, so the whole commit suite runs on live shapes. A test asserts the fake's payloads equal the fixtures. |
+| D1 | The zone write locked the identity, the survey engine and the cataloguer out of the database element | fixed in code, NOT verified live | The commit writes no zone unless `EXPLORER_PUBLISH_ZONES` (or `egeria.default_catalog_zones`) is configured; the hard-coded `egeria-runtime` fallback is no longer written. Unconfigured, the step reads "zones left to Egeria" and the database row shows "zones: <list> · set by Egeria", read back (`zones_read` proof). Configured, the zone is the LAST write (after the targets, the survey submission, the refresh and the owner), is read back, is skipped if any earlier step failed, and a refusal reads in Egeria's words and is never retried. Egeria offers no dry check of "can I still write after this zone change", so it is last, not first. The manifest, steps and proof rows say so. |
+| D3 | `survey` read "done" on initiation; `refresh` read "done" with no read | fixed | `survey` reads "submitted · <time>" (state `submitted`) until a read-back (the commit's own, or "Read Egeria again") finds the survey report WITH annotations, then "done"; a failed engine action reads Egeria's word; a report with 0 annotations stays "submitted". `refresh` reads "refreshed · connector time moved" only when the connector status's `lastRefreshTime` moved across the call, else "refresh requested" (state `requested`). New proofs: `survey_result`, `zones_read`. No table changes. |
+| D4 | Raw multi-part Egeria message on failed rows; "attachd" | fixed | Failed schema rows and failed steps show the first sentence (`egeria_first_sentence`) and fold the rest under "details" (collapsed). The typo came from `f"{what}d"`; the outbox step now uses real past tenses. |
+| D6 | First declaration recorded as "redeclare" | fixed | The first explicit declaration is kind "declare"; only a later one is "redeclare"; the implicit baseline a first choice makes stays "first". One existing assertion changed with it (`['first','redeclare']` became `['first','declare']`). |
+| D7 | Server element kept `~{versionIdentifier}~` and took the database's description | fixed | The server template now gets `versionIdentifier` and its own description (`PostgreSQL server at <host>:<port>`). |
+
+**A consequence worth knowing before the gate:** with a zone configured, a SECOND commit writes anchored elements under a database
+element that now carries RE's zone. If that zone is not one the service identity may write in (the rehearsal's evidence), that second
+commit fails the way the first did. The fake models this lockout (`zone_lockout`, on by default) and the ordering test relies on it;
+the first live run with `EXPLORER_PUBLISH_ZONES` set should be on a throwaway database, then a second commit on it.

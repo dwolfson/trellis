@@ -372,8 +372,18 @@ def test_a_decision_on_a_new_schema_takes_it_out_of_the_count_and_redeclare_rese
     cs.redeclare(world["registry"], "db", "dwolfson")
     assert cs.new_since_declared(world["registry"], "db")["schemas"] == 0
     base = world["registry"].list_catalogue_scope_baselines("db")
-    assert [b["kind"] for b in base] == ["first", "redeclare"]       # history kept
+    # D6 (rehearsal 2026-10-05): the implicit baseline a first choice makes stays "first"; the first
+    # EXPLICIT declaration is "declare", not "redeclare"; only a declaration after that is a re-declaration.
+    assert [b["kind"] for b in base] == ["first", "declare"]         # history kept
     assert len(base[0]["baseline"]["schemas"]) == 7 and len(base[1]["baseline"]["schemas"]) == 29
+    cs.redeclare(world["registry"], "db", "dwolfson")
+    assert [b["kind"] for b in world["registry"].list_catalogue_scope_baselines("db")] == ["first", "declare", "redeclare"]
+
+
+def test_the_first_declaration_with_no_earlier_baseline_is_a_declare_and_the_view_says_so(world):
+    cs.redeclare(world["registry"], "db", "dwolfson")
+    assert [b["kind"] for b in world["registry"].list_catalogue_scope_baselines("db")] == ["declare"]
+    assert cs.build_scope_view(world["registry"], "db")["declared"]["kind"] == "declare"
 
 
 def test_new_table_in_a_known_schema_is_reported_separately(world):

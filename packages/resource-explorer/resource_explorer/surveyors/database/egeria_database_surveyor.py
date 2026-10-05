@@ -519,7 +519,12 @@ class EgeriaDatabaseSurveyor:
                         "hostIdentifier": egeria_host,
                         "portNumber": str(db_entity.port),
                         "databaseUserId": db_user,
-                        "description": db_entity.description or f"PostgreSQL server at {egeria_host}:{db_entity.port}",
+                        # The server's OWN description: the rehearsal (2026-10-05) found the
+                        # server element carrying the DATABASE's description.
+                        "description": f"PostgreSQL server at {egeria_host}:{db_entity.port}",
+                        # A second placeholder nothing supplied: it stayed as a literal
+                        # `~{versionIdentifier}~` on the server element.
+                        "versionIdentifier": "not recorded",
                         "databasePassword": db_pwd,
                         **secret_placeholders,
                     },

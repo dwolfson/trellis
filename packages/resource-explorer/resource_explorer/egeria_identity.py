@@ -67,6 +67,7 @@ __all__ = [
     "identity_for_user",
     "ownership_body",
     "publish_zones",
+    "configured_publish_zones",
     "service_credentials",
     "set_ownership",
     "set_zone_membership",
@@ -161,6 +162,24 @@ def publish_zones() -> list[str]:
     if configured:
         return configured
     return list(DEFAULT_PUBLISH_ZONES)
+
+
+def configured_publish_zones() -> list[str]:
+    """The publish zones this deployment CONFIGURED, or `[]` when it did not.
+
+    `publish_zones()` falls back to `DEFAULT_PUBLISH_ZONES` (`egeria-runtime`) so a promotion
+    always has somewhere to go. A catalogue commit must not: the 2026-10-05 rehearsal found that
+    writing that fallback onto a database element locks the service identity, Egeria's survey
+    engine and the cataloguer out of it. So the commit writes a zone ONLY when someone set
+    `EXPLORER_PUBLISH_ZONES` (or RE's `egeria.default_catalog_zones`) on purpose.
+    """
+    raw = os.environ.get("EXPLORER_PUBLISH_ZONES", "")
+    zones = [z.strip() for z in raw.split(",") if z.strip()]
+    if zones:
+        return zones
+    from resource_explorer.config import get_config
+
+    return list(get_config().egeria.default_catalog_zones or [])
 
 
 # ---------------------------------------------------------------------------

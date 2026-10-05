@@ -15,13 +15,25 @@ not from what would be convenient:
   restarted (S17), and the connector never recreates an archived or deleted schema;
 * creating a schema element whose qualified name already exists returns the same GUID.
 
+* **Reads speak the LIVE wire shapes.** `read_element`, `elements_under` and `relationships`
+  build the raw payloads Egeria really answers with (`live_catalogue_payloads.py`, recorded in
+  the 2026-10-05 rehearsal) and parse them with the real gateway's own parsers, so a parser that
+  reads the wrong shape fails every commit test instead of reading "nothing there" (D2).
+
 Nothing here touches a network, a file or a registry.
 """
 from __future__ import annotations
 
-from resource_explorer.catalogue_gateway import (
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from live_catalogue_payloads import raw_element as _raw_element, raw_related as _raw_related  # noqa: E402
+
+from resource_explorer.catalogue_gateway import (  # noqa: E402
     ARCHIVE, CatalogTarget, ConnectorStatus, ElementRead, GatewayError, PublishedDatabase,
-    Relationship, like_matches, schema_type_qualified_name)
+    Relationship, SurveyOutcome, like_matches, parse_element_answer, parse_elements_answer, parse_related_answer,
+    schema_type_qualified_name)
 
 PROCESS_QN = "PostgreSQLSurvey::survey-postgres-database"
 
@@ -51,11 +63,29 @@ class FakeEgeria:
         self._n = 0
         self.db_guid = ""
         self.server_guid = ""
+        # What Egeria itself puts on a new database element (its security connector's defaults).
+        self.default_zones = ["egeria-runtime"]
+        # The 2026-10-05 rehearsal: once the commit's own identity has written a ZoneMembership on
+        # the database element, Egeria's security connector refuses the same identity (Classify,
+        # anchored creates), the survey engine and the cataloguer every further write anchored to it.
+        self.zone_lockout = True
+        self.re_zone_writes: set[str] = set()
+        self.zone_error = ("OPEN-METADATA-SECURITY-0011 User erinoverview is not authorized to issue "
+                           "operation Classify on RelationalDatabase anchor element")
+        self.survey_behaviour = "pending"         # pending | annotated | failed | empty (a survey takes time)
+        self.survey_failure = ("OMES-SURVEY-ACTION-0018 The survey service threw an exception. "
+                               "Details are in the audit log.")
+        self.refresh_moves_time = True
+        self.last_wire: tuple | None = None       # (kind, raw payload) of the newest read
 
     # -- helpers ---------------------------------------------------------
     def _guid(self, prefix: str = "g") -> str:
         self._n += 1
         return f"{prefix}{self._n:04d}-0000-0000-0000-000000000000"
+
+    def _locked(self, guid: str, op: str) -> None:
+        if self.zone_lockout and guid in self.re_zone_writes:
+            raise GatewayError(f"{self.zone_error} (operation {op})")
 
     def _boom(self, op: str) -> None:
         if op in self.fail:
@@ -96,6 +126,7 @@ class FakeEgeria:
             self.server_guid = self._guid("s")
             self.db_guid = self._guid("d")
             self.elements[self.db_guid] = {"qn": qn, "type": "RelationalDatabase", "parent": "", "archived": False, "deleted": False}
+            self.zones[self.db_guid] = list(self.default_zones)
         return PublishedDatabase(self.server_guid, self.db_guid, server, qn)
 
     def publish_local_report(self, db_entity, db_user, db_pwd, measured, *, registry=None, submitted_by="") -> dict:
@@ -106,12 +137,19 @@ class FakeEgeria:
     def set_zone_membership(self, guid, zones) -> bool:
         self.calls.append(("set_zone_membership", guid, tuple(zones)))
         if not self.zones_ok:
-            return False
+            raise GatewayError(self.zone_error.replace("Classify", "Classify (ZoneMembership)"))
         self.zones[guid] = list(zones)
+        self.re_zone_writes.add(guid)
         return True
+
+    def read_zones(self, guid):
+        self.calls.append(("read_zones", guid))
+        self._boom("read_zones")
+        return list(self.zones.get(guid, []))
 
     def set_owner(self, guid, owner):
         self.calls.append(("set_owner", guid, owner))
+        self._locked(guid, "Classify")
         if self.owner_policy == "fail":
             raise GatewayError("500 Egeria failed")
         if self.owner_policy == "refuse":
@@ -120,15 +158,28 @@ class FakeEgeria:
         return "set", f"Ownership set to {owner}"
 
     # -- reads and schema elements --------------------------------------
+    def raw_element(self, guid: str) -> dict:
+        """The element as Egeria answers (live shape): `elementGUID`, `elementProperties`, ..."""
+        e = self.elements[guid]
+        return _raw_element(guid, e["qn"], e["type"], archived=e["archived"], zones=self.zones.get(guid))
+
+    def raw_related(self, guid: str) -> dict:
+        """`get_all_related_elements`' answer (live shape): a dict with `elementList`."""
+        items = []
+        for r in self._relationship_list(guid):
+            other = _raw_element(r.other_guid or "other", f"other::{r.other_guid}", r.other_type or "Referenceable")
+            items.append((r.type_name, r.guid or f"rel-{len(items)}", other))
+        return _raw_related(self.raw_element(guid) if guid in self.elements else _raw_element(guid, "", ""), items)
+
     def read_element(self, qualified_name, *, for_lineage=False):
         self.calls.append(("read_element", qualified_name, for_lineage))
         self._boom("read_element")
         e = self.by_qn(qualified_name)
-        if e is None:
-            return None
-        if e["archived"] and not for_lineage:
-            return None
-        return ElementRead(e["guid"], e["qn"], e["type"], e["archived"])
+        if e is None or (e["archived"] and not for_lineage):
+            self.last_wire = ("element", "No elements found")
+            return parse_element_answer("No elements found")
+        self.last_wire = ("element", self.raw_element(e["guid"]))
+        return parse_element_answer(self.last_wire[1])
 
     def find_schema_type(self, qualified_name):
         self.calls.append(("find_schema_type", qualified_name))
@@ -137,6 +188,7 @@ class FakeEgeria:
     def create_schema_element(self, db_entity, schema, database_guid, *, description=""):
         self.calls.append(("create_schema_element", schema, database_guid))
         self._boom("create_schema_element")
+        self._locked(database_guid, "Create")
         server = f"{getattr(db_entity, 'egeria_host', '') or db_entity.host}:{db_entity.port}"
         qn = f"PostgreSQL Relational Database Schema::{server}::{db_entity.database_name}.{schema}"
         e = self.by_qn(qn)
@@ -179,12 +231,18 @@ class FakeEgeria:
     def elements_under(self, prefix):
         self.calls.append(("elements_under", prefix))
         self._boom("elements_under")
-        return [ElementRead(g, e["qn"], e["type"], False) for g, e in self.elements.items()
-                if self._visible(e) and e["qn"].startswith(prefix)]
+        raw = [self.raw_element(g) for g, e in self.elements.items()
+               if self._visible(e) and e["qn"].startswith(prefix)]
+        self.last_wire = ("elements", raw or "No elements found")
+        return parse_elements_answer(self.last_wire[1])
 
     def relationships(self, guid):
         self.calls.append(("relationships", guid))
         self._boom("relationships")
+        self.last_wire = ("related", self.raw_related(guid))
+        return parse_related_answer(self.last_wire[1])
+
+    def _relationship_list(self, guid):
         out = list(self.rels.get(guid, []))
         e = self.elements.get(guid)
         if e is not None and e["type"] == "DeployedDatabaseSchema":
@@ -219,8 +277,21 @@ class FakeEgeria:
     def initiate_survey(self, database_guid, request_parameters):
         self.calls.append(("initiate_survey", database_guid, dict(request_parameters)))
         self._boom("initiate_survey")
+        self._locked(database_guid, "UpdateProperties")
         self.surveys.append((database_guid, dict(request_parameters)))
         return self._guid("a"), PROCESS_QN
+
+    def survey_outcome(self, database_guid, engine_action_guid, since):
+        self.calls.append(("survey_outcome", database_guid, engine_action_guid))
+        self._boom("survey_outcome")
+        b = self.survey_behaviour
+        if b == "failed":
+            return SurveyOutcome("ACTION_FAILED", self.survey_failure, self._guid("r"), 0)
+        if b == "pending":
+            return SurveyOutcome("IN_PROGRESS", "", "", None)
+        if b == "empty":
+            return SurveyOutcome("ACTION_COMPLETED", "", self._guid("r"), 0)
+        return SurveyOutcome("ACTION_COMPLETED", "", self._guid("r"), 23)
 
     def connector_status(self):
         self.calls.append(("connector_status",))
@@ -231,7 +302,8 @@ class FakeEgeria:
         self.calls.append(("refresh_connector", timeout))
         self._boom("refresh_connector")
         self.refreshes += 1
-        self.connector_time = f"2026-10-05T09:{10 + self.refreshes:02d}:00"
+        if self.refresh_moves_time:
+            self.connector_time = f"2026-10-05T09:{10 + self.refreshes:02d}:00"
         self.run_cataloguer()
 
     def restart_connector(self):          # RE must never call this; a test asserts it stays 0

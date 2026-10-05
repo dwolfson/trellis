@@ -99,6 +99,21 @@ class PublishedDatabase:
 
 
 @dataclass
+class SurveyOutcome:
+    """What a read of Egeria says about a survey that was started: the engine action's own
+    status and message, and the newest survey report made since, with its annotation count.
+    `annotations` None means no report was seen (not "a report with none")."""
+    action_status: str = ""
+    message: str = ""
+    report_guid: str = ""
+    annotations: int | None = None
+
+
+#: Engine action statuses that mean the action did not complete.
+FAILED_ACTION_STATUSES = frozenset({"ACTION_FAILED", "FAILED", "INVALID", "CANCELLED", "IGNORED"})
+
+
+@dataclass
 class ConnectorStatus:
     name: str
     status: str = ""
@@ -135,6 +150,8 @@ class CatalogueGateway(Protocol):
     def publish_local_report(self, db_entity, db_user: str, db_pwd: str, measured: dict, *,
                              registry=None, submitted_by: str = "") -> dict: ...
     def set_zone_membership(self, guid: str, zones: list[str]) -> bool: ...
+    def read_zones(self, guid: str) -> list[str]: ...
+    def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome: ...
     def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
     def find_schema_type(self, qualified_name: str) -> str: ...
@@ -159,27 +176,50 @@ def _short(exc: Exception, n: int = 300) -> str:
 
 
 def _header(element: Any) -> dict:
+    """The dict that carries an element's classifications. The LIVE raw element has them at the
+    top level; a header-wrapped shape (`elementHeader`, which `AssetMaker.get_asset_by_guid` uses)
+    is still tolerated for the places that read that one."""
     if not isinstance(element, dict):
         return {}
     return element.get("elementHeader") or element
 
 
 def _guid_of(element: Any) -> str:
-    h = _header(element)
+    """LIVE: top-level `elementGUID`. (`elementHeader.guid` is the asset-graph shape.)"""
+    if not isinstance(element, dict):
+        return ""
+    if element.get("elementGUID"):
+        return str(element["elementGUID"])
+    h = element.get("elementHeader")
     return str(h.get("guid") or "") if isinstance(h, dict) else ""
 
 
 def _type_of(element: Any) -> str:
-    h = _header(element)
-    t = h.get("type") if isinstance(h, dict) else None
-    return str((t or {}).get("typeName") or "") if isinstance(t, dict) else ""
+    """LIVE: top-level `type.typeName`."""
+    if not isinstance(element, dict):
+        return ""
+    t = element.get("type")
+    if not isinstance(t, dict):
+        h = element.get("elementHeader")
+        t = h.get("type") if isinstance(h, dict) else None
+    return str(t.get("typeName") or "") if isinstance(t, dict) else ""
 
 
 def _qn_of(element: Any) -> str:
+    """LIVE: `elementProperties.propertiesAsStrings.qualifiedName`, or the typed value in
+    `elementProperties.propertyValueMap.qualifiedName.primitiveValue`."""
     if not isinstance(element, dict):
         return ""
-    props = element.get("properties") or {}
-    return str(props.get("qualifiedName") or "")
+    ep = element.get("elementProperties")
+    if isinstance(ep, dict):
+        v = (ep.get("propertiesAsStrings") or {}).get("qualifiedName")
+        if v:
+            return str(v)
+        pv = (ep.get("propertyValueMap") or {}).get("qualifiedName")
+        if isinstance(pv, dict) and pv.get("primitiveValue"):
+            return str(pv["primitiveValue"])
+    props = element.get("properties")
+    return str(props.get("qualifiedName") or "") if isinstance(props, dict) else ""
 
 
 def _is_memento(element: Any) -> bool:
@@ -194,6 +234,62 @@ def _is_memento(element: Any) -> bool:
 def _element_read(element: Any) -> ElementRead:
     return ElementRead(guid=_guid_of(element), qualified_name=_qn_of(element),
                        type_name=_type_of(element), archived=_is_memento(element))
+
+
+def _no_elements(res: Any) -> bool:
+    return isinstance(res, str) and ("no element" in res.lower() or "not found" in res.lower())
+
+
+def parse_element_answer(res: Any) -> ElementRead | None:
+    """One raw element -> `ElementRead`, or None when Egeria says there is none.
+
+    An answer this does not recognise RAISES: parsing a shape it does not know into "nothing
+    there" is how D2 made every element look absent (and would have made every leave-out a soft
+    delete)."""
+    if res is None or _no_elements(res):
+        return None
+    if isinstance(res, dict) and _guid_of(res):
+        return _element_read(res)
+    raise GatewayError(f"unrecognised element answer from Egeria: {type(res).__name__} "
+                       f"with keys {sorted(res)[:8] if isinstance(res, dict) else str(res)[:80]}")
+
+
+def parse_elements_answer(res: Any) -> list[ElementRead]:
+    """A list of raw elements -> `[ElementRead]`; "No elements found" -> []; anything else raises."""
+    if res is None or _no_elements(res):
+        return []
+    if isinstance(res, list):
+        out = []
+        for x in res:
+            if not (isinstance(x, dict) and _guid_of(x)):
+                raise GatewayError("unrecognised element in a list answer from Egeria")
+            out.append(_element_read(x))
+        return out
+    raise GatewayError(f"unrecognised elements answer from Egeria: {type(res).__name__}")
+
+
+def parse_related_answer(res: Any) -> list[Relationship]:
+    """`get_all_related_elements`' dict `{startingElement, elementList, mermaidGraph}` ->
+    `[Relationship]`. LIVE item keys: `type` (the relationship type), `relationshipGUID`,
+    `element`, `elementAtEnd1`. "No elements found" -> []; anything else raises, because an
+    empty list here means "nothing hangs off it"."""
+    if res is None or _no_elements(res):
+        return []
+    if isinstance(res, dict) and isinstance(res.get("elementList"), list):
+        out = []
+        for item in res["elementList"]:
+            if not isinstance(item, dict):
+                raise GatewayError("unrecognised relationship item from Egeria")
+            t = item.get("type")
+            rel_type = str(t.get("typeName") or "") if isinstance(t, dict) else ""
+            other = item.get("element") if isinstance(item.get("element"), dict) else {}
+            out.append(Relationship(type_name=rel_type, other_guid=_guid_of(other), other_type=_type_of(other),
+                                    guid=str(item.get("relationshipGUID") or "")))
+        return out
+    if isinstance(res, dict) and not res:
+        return []
+    raise GatewayError(f"unrecognised related-elements answer from Egeria: {type(res).__name__} "
+                       f"with keys {sorted(res)[:8] if isinstance(res, dict) else str(res)[:80]}")
 
 
 class PyegeriaCatalogueGateway:
@@ -270,15 +366,58 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(_short(exc)) from exc
 
     def set_zone_membership(self, guid: str, zones: list[str]) -> bool:
-        """Put the database element in `zones`. Egeria's security connector REJECTS a zone
-        change whose before and after are equal (see `egeria_identity.current_zones`), so a
-        second commit must not write what is already there: it reads first, and an empty
-        read means "could not tell", never "no zones"."""
-        from resource_explorer.egeria_identity import current_zones, set_zone_membership
+        """Put the element in `zones`. Egeria's security connector REJECTS a zone change whose
+        before and after are equal (see `egeria_identity.current_zones`), so this reads first: an
+        empty read means "could not tell", never "no zones". A refusal RAISES with Egeria's own
+        word (the caller reports it and never retries it blindly)."""
+        from resource_explorer.egeria_identity import current_zones, zone_membership_body
         have = current_zones(guid)
         if have and sorted(have) == sorted(zones):
             return True
-        return bool(set_zone_membership(guid, zones))
+        try:
+            self._client("ClassificationExplorer").add_zone_membership(guid, zone_membership_body(zones))
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        return True
+
+    def read_zones(self, guid: str) -> list[str]:
+        """The element's zones as Egeria holds them now; `[]` means "could not tell"."""
+        from resource_explorer.egeria_identity import current_zones
+        return list(current_zones(guid))
+
+    def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome:
+        """The engine action's status and message, and the newest survey report created at or
+        after `since` with its annotation count.
+
+        UNVERIFIED LIVE: the engine action's `actionStatus`/`completionMessage` property names
+        (from the open metadata type, not yet seen on the wire) and the report-by-time pick. Every
+        shape this cannot read comes back as "no report seen" / no status, which the commit shows
+        as "submitted", never as done."""
+        from resource_explorer.surveyors.egeria_survey_reader import (
+            annotations_from_report, get_survey_reports_by_guid)
+        out = SurveyOutcome()
+        try:
+            el = self._client("MetadataExpert").get_metadata_element_by_guid(engine_action_guid)
+        except Exception as exc:
+            raise GatewayError(f"could not read engine action {engine_action_guid[:8]}: {_short(exc)}") from exc
+        if isinstance(el, dict):
+            ep = el.get("elementProperties") if isinstance(el.get("elementProperties"), dict) else {}
+            props = ep.get("propertiesAsStrings") if isinstance(ep.get("propertiesAsStrings"), dict) else {}
+            out.action_status = str(props.get("actionStatus") or "")
+            out.message = str(props.get("completionMessage") or "")
+        reports = [r for r in get_survey_reports_by_guid(self._client("AssetMaker"), database_guid)
+                   if str(r.get("surveyed_at") or "")[:19] >= str(since or "")[:19] and r.get("guid")]
+        if reports:
+            newest = reports[0]                       # the reader sorts newest first
+            out.report_guid = newest["guid"]
+            try:
+                body = {"class": "GetRequestBody", "graphQueryDepth": 1}
+                res = self._client("AssetMaker").get_asset_by_guid(newest["guid"], body=body, output_format="JSON")
+            except Exception as exc:
+                raise GatewayError(f"could not read survey report {newest['guid'][:8]}: {_short(exc)}") from exc
+            if isinstance(res, dict):
+                out.annotations = len(annotations_from_report(res))
+        return out
 
     def set_owner(self, guid: str, owner: str) -> tuple[str, str]:
         """Add Ownership after read-back. ('set' | 'already' | 'refused', detail)."""
@@ -297,6 +436,7 @@ class PyegeriaCatalogueGateway:
             vm = props.get("propertyValueMap") or {}
             if isinstance(vm.get("owner"), dict):
                 current = str(vm["owner"].get("primitiveValue") or "")
+            current = current or str((props.get("propertiesAsStrings") or {}).get("owner") or "")
             current = current or str(props.get("owner") or "")
             if current == owner:
                 return "already", f"Ownership already names {owner}"
@@ -322,10 +462,7 @@ class PyegeriaCatalogueGateway:
             if "404" in text or "No element found" in text or "not found" in text.lower():
                 return None
             raise GatewayError(_short(exc)) from exc
-        if not isinstance(res, dict):
-            return None
-        el = _element_read(res)
-        return el if el.guid else None
+        return parse_element_answer(res)
 
     def find_schema_type(self, qualified_name: str) -> str:
         el = self.read_element(qualified_name)
@@ -429,9 +566,7 @@ class PyegeriaCatalogueGateway:
             if "No elements found" in str(exc):
                 return []
             raise GatewayError(_short(exc)) from exc
-        if not isinstance(res, list):
-            return []
-        return [e for e in (_element_read(x) for x in res) if e.guid and e.qualified_name.startswith(qualified_name_prefix)]
+        return [e for e in parse_elements_answer(res) if e.qualified_name.startswith(qualified_name_prefix)]
 
     def relationships(self, guid: str) -> list[Relationship]:
         body = {"class": "ResultsRequestBody", "graphQueryDepth": 0,
@@ -442,18 +577,7 @@ class PyegeriaCatalogueGateway:
             if "No elements found" in str(exc):
                 return []
             raise GatewayError(_short(exc)) from exc
-        if not isinstance(res, list):
-            return []
-        out = []
-        for item in res:
-            if not isinstance(item, dict):
-                continue
-            rh = item.get("relationshipHeader") or {}
-            type_name = str((rh.get("type") or {}).get("typeName") or item.get("relationshipType") or "")
-            other = item.get("relatedElement") or {}
-            out.append(Relationship(type_name=type_name, other_guid=_guid_of(other),
-                                    other_type=_type_of(other), guid=str(rh.get("guid") or "")))
-        return out
+        return parse_related_answer(res)
 
     def delete_element(self, guid: str, form: str) -> None:
         """One element, never a cascade. An archive is the delete endpoint with
