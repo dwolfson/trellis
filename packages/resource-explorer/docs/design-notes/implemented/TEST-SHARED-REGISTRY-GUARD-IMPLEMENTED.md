@@ -56,3 +56,30 @@ A refusal raises `SharedRegistryAccessError` naming the test
 ## Not verified
 
 A real CI run. The exemption relies on GitHub setting `GITHUB_ACTIONS=true`.
+
+## Addendum 2026-10-05: registry open log, CLI line, builder checklist
+
+Trigger: a builder command in a worktree (no `.env`, so the default shared
+Postgres) created `catalogue_commit_proofs` in the shared registry. The test
+guard did not apply because it was a command, not a test.
+
+- `resource_explorer/registry_label.py`: `describe_registry(url)` returns
+  `registry: localhost:5442/egeria_advisor (shared) schema=resource_explorer`,
+  `registry: host:port/db schema=...` or `registry: sqlite:///<basename>`.
+  Host and database only; no user, password, query string or directory.
+- `ProjectRegistry._log_open`: one INFO line per distinct registry URL per
+  process (servers build a registry per request, so not per construction or
+  query). Also fixed the pre-existing `registry_init` timing line, which logged
+  the full `database_url` INCLUDING the default password; it now logs the label.
+- CLI root callback prints the same line once per invocation to stderr (stdout
+  stays clean for piping). It prints for every command, including ones that
+  never open the registry. Not a refusal: 8810 and 8813 use the default.
+- New guard test `test_default_config_without_env_file_fails_closed`: no env var,
+  `.env` disabled, `ProjectRegistry()` with no arguments reaches the connect
+  hook and is refused before schema migration (FAKE connect; never real).
+  Red-run with the guard's `check()` disabled: 5 guard tests fail, including it.
+- Tests: `tests/test_registry_open_log.py`, `tests/test_cli_registry_line.py`.
+- Docs: `docs/BUILDER-BRIEF-CHECKLIST.md` and the same line in the package CLAUDE.md Setup (no file citation there: the design-note reference test treats an uppercase .md name as a design note).
+
+Known limit, unchanged: the guard only protects pytest. A non-test command in a
+worktree is only made visible (the `registry:` line), not blocked.

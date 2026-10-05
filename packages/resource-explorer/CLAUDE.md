@@ -45,6 +45,8 @@ All imports use `from resource_explorer.X import Y`. The package was ported from
 
 ## Setup
 
+A worktree has no .env; RE defaults its registry to the shared Postgres. Set REGISTRY_DATABASE_URL to a temp SQLite file before any command or test that opens the registry; the guard will fail you otherwise.
+
 ```bash
 uv sync
 uv sync --extra dev --extra phoenix

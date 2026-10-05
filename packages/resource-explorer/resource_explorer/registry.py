@@ -1230,6 +1230,9 @@ class ProjectRegistry:
     _pg_engine_cache: dict[str, Any] = {}
     _pg_schema_ready: set[str] = set()
     _pg_cache_lock = threading.Lock()
+    # Registries already announced in this process (see `_log_open`). Keyed on
+    # the full URL internally; only the credential-free label is ever logged.
+    _opened_logged: set[str] = set()
 
     def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
         """database_url, when given, is used verbatim — bypassing the
@@ -1341,10 +1344,13 @@ class ProjectRegistry:
             ran_schema_init = True
         _elapsed_ms = (_time.perf_counter() - _t0) * 1000
         if _elapsed_ms > 5:
+            from resource_explorer.registry_label import describe_registry
+            # The label, never the URL: the default URL carries a password.
             logging.getLogger(__name__).info(
-                "registry_init path=%s ran_schema_init=%s elapsed_ms=%.1f",
-                self.database_url, ran_schema_init, _elapsed_ms,
+                "registry_init %s ran_schema_init=%s elapsed_ms=%.1f",
+                describe_registry(self.database_url), ran_schema_init, _elapsed_ms,
             )
+        self._log_open()
         # Per-INSTANCE, self-invalidating cache for `get_database_surveys` —
         # see that method's docstring
         # (PER-REQUEST-SERVER-LATENCY-IMPLEMENTED.md's
@@ -1359,6 +1365,19 @@ class ProjectRegistry:
         # the original write-through-this-instance-only invalidation could
         # never see a survey a DIFFERENT instance or process wrote.
         self._database_surveys_cache: dict[str, tuple[tuple, list[dict]]] = {}
+
+    def _log_open(self) -> None:
+        """One INFO line per distinct registry opened in this process.
+
+        Names host and database (or the SQLite basename) only. Servers build a
+        `ProjectRegistry()` per request, so this is once per URL per process,
+        not per construction or per query.
+        """
+        if self.database_url in ProjectRegistry._opened_logged:
+            return
+        ProjectRegistry._opened_logged.add(self.database_url)
+        from resource_explorer.registry_label import describe_registry
+        logging.getLogger(__name__).info("%s", describe_registry(self.database_url))
 
     @contextmanager
     def _conn(self):

@@ -1,0 +1,10 @@
+# Builder brief checklist
+
+Put these in every brief handed to a builder session.
+
+- A worktree has no .env; RE defaults its registry to the shared Postgres. Set REGISTRY_DATABASE_URL to a temp SQLite file before any command or test that opens the registry; the guard will fail you otherwise.
+- Use an absolute temp path: `REGISTRY_DATABASE_URL=sqlite:////abs/scratch/reg.db PGVECTOR_PORT=1`. Check `echo $REGISTRY_DATABASE_URL | cut -c1-12` prints `sqlite:` before running anything.
+- Every `resource-explorer` command prints one `registry: ...` line on stderr. If it says `(shared)`, stop: you are about to touch the shared registry.
+- Never set `RE_TESTS_ALLOW_SHARED_REGISTRY`.
+
+See `docs/design-notes/implemented/TEST-SHARED-REGISTRY-GUARD-IMPLEMENTED.md`.

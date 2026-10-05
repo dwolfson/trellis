@@ -141,3 +141,23 @@ def test_conftest_resets_the_cached_config_between_tests(monkeypatch):
 def test_shared_instance_is_derived_from_declared_defaults(monkeypatch):
     monkeypatch.setenv("PGVECTOR_PORT", "1")        # ambient env cannot move it
     assert (5442, "egeria_advisor") in G.shared_instances()
+
+
+def test_default_config_without_env_file_fails_closed(fake_connect, monkeypatch):
+    """The 2026-10-05 scenario: a worktree has no .env and no env var, so the
+    declared DEFAULT (the shared Postgres) is what ProjectRegistry() resolves.
+    The guard must refuse at connect, before the schema migration runs."""
+    import resource_explorer.config as config
+    from resource_explorer.registry import ProjectRegistry
+
+    monkeypatch.delenv("REGISTRY_DATABASE_URL", raising=False)
+    monkeypatch.setitem(config.RegistryConfig.model_config, "env_file", None)
+    monkeypatch.setattr(config, "_config", None)
+    url = config.get_config().registry.database_url
+    assert "localhost:5442/egeria_advisor" in url            # really the default
+    ProjectRegistry._pg_schema_ready.discard(url)
+    ProjectRegistry._pg_engine_cache.pop(url, None)
+    with pytest.raises(G.SharedRegistryAccessError) as exc:
+        ProjectRegistry()                                    # no args, as a command does
+    assert fake_connect == []
+    assert url not in ProjectRegistry._pg_schema_ready       # never reached migration
