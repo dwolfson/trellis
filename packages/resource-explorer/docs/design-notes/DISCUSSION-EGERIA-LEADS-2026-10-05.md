@@ -8,6 +8,18 @@ cataloguer test of 2026-10-04/05 (`evidence/SCRATCH-CATALOGUER-TEST-2026-10-04.m
 file:line evidence is `DESIGN-EGERIA-SUGGESTIONS-AND-RE-OWN-CATALOGUING.md`
 (S1–S15). This note is the agenda: six topics, what we found, what we ask.
 
+**Version caveat, added the same day.** The owner reports that the Egeria
+lead found and fixed bugs on 2026-10-05 that may explain some of these
+findings. Everything below was read from the source at df82f4fe
+(2026-09-15) and observed on the quickstart image running on the dev
+platform, whose build checkout is not established. Before any item is
+raised as a defect, it is re-checked against the fixed build: the scratch
+test is repeatable (throwaway database, forced refresh, read-back), and
+each topic names the observation so the re-check is one comparison. Items
+that the fixes resolve move from "defect" to "confirmed fixed in <version>"
+here; the design questions (envelope, scope lever, which mechanism,
+relationship type) stand either way.
+
 ## 1. The annotation vocabulary and an honesty envelope
 
 **What RE needs.** Every analytic result, Egeria's surveys and RE's own
