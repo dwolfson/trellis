@@ -107,8 +107,10 @@ detaching a SCHEMA target and what happens to its elements; whether the
 database-level pass exists when no database-kind target is attached; and
 all of it on the rebuilt platform with the 2026-10-05 fixes.
 
-**Decision (design session, 2026-10-05, for the owner to confirm):** slice
-B takes the third door: one SCHEMA-kind target per chosen schema, created
+**Decision (project owner, 2026-10-05):** "Go with the schema-kind door."
+It may be revisited as Egeria is enhanced and changed; the lever it rests
+on (SCHEMA-kind catalog targets) and the alternatives above stay recorded
+for that. As confirmed, slice B takes the third door: one SCHEMA-kind target per chosen schema, created
 and attached by RE's commit, no include lists; depth below "tables and
 columns" is not offered until S2 exists; leave-out detaches the schema
 target and archives (behaviour to be read back); re-inclusion handles S16
