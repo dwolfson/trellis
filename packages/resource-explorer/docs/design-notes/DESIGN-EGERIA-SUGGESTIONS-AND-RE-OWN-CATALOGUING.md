@@ -28,6 +28,24 @@ requirements; the Egeria leads decide what fits the connectors' design.
 | S9 | **Default exclusion of system schemas** in the JDBC cataloguer | none excluded by default; every caller must send an include list | `RelationalDatabaseCataloguer.java:128` |
 | S10 | **Survey annotations that say what they could not measure** (the honesty envelope the extensibility note asks for) | a column absent from `pg_stats` is simply absent from the report | `PostgresDatabaseStatsExtractor.getAnnotations()` |
 
+Added after the scratch cataloguer test of 2026-10-04/05
+(`evidence/SCRATCH-CATALOGUER-TEST-2026-10-04.md`, run live against a
+throwaway database; the live behaviour, not only the source):
+
+| # | suggestion | what the test showed |
+|---|---|---|
+| S11 | **Honour JSON arrays in a CatalogTarget's `configurationProperties`**, or document the string form the lists accept | an array read back as a flattened `ArrayTypePropertyValue{…}` string and no schema in the include list was processed; `deleteMethod` on the same relationship persisted fine |
+| S12 | **No database-level table pass when a schema filter is set**, or make it opt-in | every schema's tables were catalogued directly under the database even though the schema filter matched nothing |
+| S13 | **Delete or archive dependents with a stale schema** (schema type, tables, columns) | a soft-deleted schema left its `_schemaType` and its table ACTIVE and orphaned |
+| S14 | **Exclude system schemas from pattern matches on real names** (with S3) | a table named `p%t` received about 65 `pg_catalog` columns alongside its own two |
+| S15 | **Resolve or drop unused template placeholders** on template-created elements | RE's template publish left `description` and `versionIdentifier` as literal `~{…}~` strings (RE's side to supply, Egeria's side to refuse or blank) |
+
+Also observed, for the record: a forced refresh is synchronous (about 16 s)
+through the daemon's refresh call; the natural interval was about 34
+minutes, not the configured 60; refreshes are idempotent; and the
+SecretsStoreCataloguer catalogues any `.omsecrets` file it can see,
+including a throwaway one.
+
 ## 2. The second door: RE catalogues on its own
 
 RE already creates elements for repositories (`publish_sub_resources`,
@@ -60,6 +78,14 @@ answer it with one extra step.
 Decide after the scratch test, on three facts it will establish: whether
 the cataloguer mis-parents on colliding names (S3), whether it adopts
 pre-existing elements by qualifiedName, and the actual refresh interval.
+
+*Status after the first run (2026-10-05, stopped at step 5, state left for
+the owner):* S3 confirmed for tables and columns; adoption not established
+because the schema pass never ran (the array lists were not honoured, S11),
+and the pre-made schema was soft-deleted as stale with its dependents
+orphaned (S13); interval about 34 minutes, forced refresh 16 seconds. Two
+string forms of the include list remain to be tried on the live target. If
+neither works, the second door is the only one that honours a scope today.
 
 - If adoption works and the hazard is guarded: attach the cataloguer, as
   the designer's reply assumes; RE's own creation stays the fallback.
