@@ -116,6 +116,25 @@ Two more for the Egeria leads:
 | S19 | **A restore path for an archived DeployedDatabaseSchema**, or a template create that adopts an archived element by qualifiedName | re-including a schema that was archived (the designer's preferred leave-out, to keep term assignments) fails 400; only a soft-deleted one can be re-created, with new GUIDs |
 | S20 | **The `/archive` endpoint returns 500** on the 2026-10-05 build (`DeleteRequestBody` class name) | archive works only through the delete endpoint with `deleteMethod=ARCHIVE`, `forLineage` and `forDuplicateProcessing` set |
 
+**Egeria team's response, 2026-10-05 (relayed by the owner; fixes in
+source on their branch, in two unmerged PRs, in no build, untested live):**
+ISSUE-117 explains S19 and S20's shape: the archive renames the qualified
+name after classifying Memento and re-reads without forLineage, so the
+cascade is not atomic and the top-level archived element is never renamed;
+after their fix the top-level element is renamed too, so an archived schema
+may become re-includable, and a half-done archive can be finished by
+repeating the delete. Slice B keeps S19's refusal until a build with the
+fix is live and re-observed. ISSUE-112: a secret saved to a non-YAML
+secrets store silently succeeds without writing; RE's re-projection must
+read back, not trust the save. ISSUE-89: tokens do not survive a platform
+restart (new key pair each start, no refresh); RE must re-authenticate on
+401 after any Egeria restart. ISSUE-90: the engine host sweeps every five
+seconds over all active engine actions and an action target in a zone the
+engine user cannot read loops 403s; the rehearsal's zone lockout (topic 7
+of the discussion note) is that case. ISSUE-108: an effectiveFrom later
+than the server's now hides relationships silently; RE must never set
+effectiveFrom from its own clock.
+
 ## 2. The second door: RE catalogues on its own
 
 RE already creates elements for repositories (`publish_sub_resources`,
