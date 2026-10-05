@@ -208,6 +208,41 @@ staying stable: a note of which response classes are contract would help.
   endpoint returns 500 on the 2026-10-05 build (S20); cascade delete by an
   ordinary user fails over cataloguer-created children (S18).
 
+## Answers from the Egeria leads (2026-10-05, evening review)
+
+Recorded as given, with RE's response.
+
+1. **Annotation types:** yes, they will be extended. RE supplies a
+   half-page attribute list for the envelope (state: measured / not
+   established with reason / not applicable; the producing run).
+2. **Scope:** "the latest fix should have addressed this." The survey half
+   is addressed and confirmed live (S4). The cataloguer half is in no build
+   we have run (the connector jar is byte-identical across the rebuild);
+   if the fix is on the unmerged branch, the scratch scripts re-check it
+   the day it ships.
+3. **`_` and `%`:** RE's proposal is to list with a null pattern and filter
+   by exact equality in Java, one `getTables` per schema and one
+   `getColumns` per schema grouped by exact table name, which removes the
+   pattern arguments and matches how the lists are already evaluated;
+   escaping with the driver's search-string escape is the alternative,
+   workable but per call site and driver-dependent.
+4. **The cataloguer should create the schema:** agreed in principle; RE will
+   call the `catalog-postgres-schema` process per chosen schema instead of
+   creating the DeployedDatabaseSchema from the template, provided the
+   process takes an existing database element and the schema name and
+   creates the schema under it rather than beside a new database. That is
+   the first read-back of the next scratch run; RE's own creation stays
+   the fallback.
+5. **The repository-to-database relation:** there will be several
+   relationship types; a list is forthcoming. RE keeps confirmed relations
+   local with their mechanism until the list arrives.
+6. (no answer needed)
+7. **Zones:** start with a default zone, expand to the user's choice later.
+   So RE's commit writes no zone and relies on the default; the one fact
+   still needed is the default zone's name, and that the survey engine, the
+   cataloguer and the RE persona may all write in it, which the next
+   scratch run confirms before any real database is catalogued.
+
 ## What RE will do regardless
 
 Store the scope in RE and compile it on every commit; derive every state
