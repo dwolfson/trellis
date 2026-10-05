@@ -30,6 +30,27 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def _announce_registry() -> None:
+    """Print which registry this command will use, once, to stderr.
+
+    A worktree has no `.env` and the default is the SHARED Postgres, so a
+    stray command must be visible: the shared default prints
+    `registry: localhost:5442/egeria_advisor (shared) ...`, anything else
+    (e.g. a builder's temp SQLite) prints `registry: sqlite:///<file>`.
+    Host and database only, never credentials. Not a refusal: 8810 and 8813
+    legitimately use the default.
+    """
+    from resource_explorer.registry_label import describe_registry
+
+    try:
+        from resource_explorer.config import get_config
+        url = get_config().registry.database_url
+    except Exception:
+        url = os.environ.get("REGISTRY_DATABASE_URL", "sqlite:///data/registry.db")
+    typer.echo(describe_registry(url), err=True)
+
+
 # ── sign in / sign out ───────────────────────────────────────────────────────
 #
 # `docs/runtime-architecture-plan.md` §4: Egeria is the identity provider, its
