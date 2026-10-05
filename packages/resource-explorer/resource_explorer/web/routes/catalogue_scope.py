@@ -44,6 +44,17 @@ class NodeBody(BaseModel):
     choice: str = ""
 
 
+class BulkNode(BaseModel):
+    schema_name: str
+    table_name: str = ""
+
+
+class BulkBody(BaseModel):
+    nodes: list[BulkNode] = []
+    choice: str = ""
+    all_schemas: bool = False
+
+
 class DepthBody(BaseModel):
     depth: str
 
@@ -103,6 +114,15 @@ async def put_node(slug: str, body: NodeBody, request: Request) -> dict:
     registry = _registry_for(slug)
     return await _run(scope.set_node_choice, registry, slug, author,
                       schema=body.schema_name, table=body.table_name, choice=body.choice)
+
+
+@router.post("/{slug}/nodes")
+async def post_nodes(slug: str, body: BulkBody, request: Request) -> dict:
+    author = _require_author(request, "choose what gets catalogued")
+    registry = _registry_for(slug)
+    return await _run(scope.set_nodes_choice, registry, slug, author,
+                      nodes=[{"schema": n.schema_name, "table": n.table_name} for n in body.nodes],
+                      choice=body.choice, all_schemas=body.all_schemas)
 
 
 @router.post("/{slug}/node/confirm")

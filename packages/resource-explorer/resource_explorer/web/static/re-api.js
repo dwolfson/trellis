@@ -176,6 +176,12 @@ export const overrideCatalogueNode = (slug, schema, table) =>
   post(scopeUrl(slug, '/node/override'), { schema_name: schema, table_name: table || '' });
 export const clearCatalogueNode = (slug, schema, table) =>
   post(scopeUrl(slug, '/node/clear'), { schema_name: schema, table_name: table || '' });
+/** Bulk choice on schemas: `nodes` is [{schema, table?}], `choice` is
+ *  'catalogue' | 'leave_out' | '' (clear); `allSchemas` means every offered one. */
+export const setCatalogueNodes = (slug, nodes, choice, allSchemas = false) =>
+  post(scopeUrl(slug, '/nodes'), {
+    nodes: (nodes || []).map((n) => ({ schema_name: n.schema, table_name: n.table || '' })),
+    choice, all_schemas: !!allSchemas });
 export const redeclareCatalogueScope = (slug) => post(scopeUrl(slug, '/redeclare'));
 export const resolveCatalogueConflict = (slug, name, choice) =>
   post(scopeUrl(slug, '/resolve'), { name, choice });
