@@ -8,17 +8,22 @@ cataloguer test of 2026-10-04/05 (`evidence/SCRATCH-CATALOGUER-TEST-2026-10-04.m
 file:line evidence is `DESIGN-EGERIA-SUGGESTIONS-AND-RE-OWN-CATALOGUING.md`
 (S1–S15). This note is the agenda: six topics, what we found, what we ask.
 
-**Version caveat, added the same day.** The owner reports that the Egeria
-lead found and fixed bugs on 2026-10-05 that may explain some of these
-findings. Everything below was read from the source at df82f4fe
-(2026-09-15) and observed on the quickstart image running on the dev
-platform, whose build checkout is not established. Before any item is
-raised as a defect, it is re-checked against the fixed build: the scratch
-test is repeatable (throwaway database, forced refresh, read-back), and
-each topic names the observation so the re-check is one comparison. Items
-that the fixes resolve move from "defect" to "confirmed fixed in <version>"
-here; the design questions (envelope, scope lever, which mechanism,
-relationship type) stand either way.
+**Version caveat, resolved the same day.** The Egeria lead fixed bugs on
+2026-10-05 and the owner rebuilt the dev platform from that day's upstream
+image (6.2-SNAPSHOT, index digest bf2b3799…, built 14:19 UTC, upstream main
+up to PR #9357). Every finding below was then re-established against that
+build: the JDBC integration connector jar in it is byte-identical to the
+2026-10-03 one, so the cataloguer findings (topics 3 and 4, S1–S3, S7, S9,
+S12–S14, S16–S20) stand on current code with no re-check needed; the one
+item the fixes resolved is the survey's schema scope (S4, landed in
+ebafb08fdc and confirmed live); arrays on a database-kind target are now
+honoured (S11, partly) though its database-level pass remains; and the
+rehearsal findings in topic 7 were made on the rebuilt platform itself.
+Source citations are to df82f4fe where the file is unchanged to upstream
+main (`JdbcMetadata.java`, `TransferCustomizations.java`, the
+`getTables`/`getColumns` call sites) and to the running jar otherwise.
+Anything the leads fix after 2026-10-05 needs the same one-comparison
+re-check: the scratch scripts are kept for it.
 
 *What the running platform is (established 2026-10-05, read-only):* the
 dev platform reports version 6.2-SNAPSHOT; the quickstart image was built
@@ -153,6 +158,35 @@ published, Egeria's own watchers (governance actions, Notification Manager)
 can raise a change at one end against the other, so RE is not the only
 detector (`DESIGN-FIND-AND-INTEGRATE-PURPOSES-AND-THE-DATA-LENS.md` §13).
 
+## 7. Zones, identities and the engines (new, from the live rehearsal)
+
+**What we found.** RE's catalogue commit wrote ZoneMembership
+`egeria-runtime` on the database element before anything else, as the
+Curate design described. From that moment the platform's security
+connector refused every later write on that element and under it
+(OPEN-METADATA-SECURITY-0011): by RE's sign-in persona (owner
+classification, schema creates, delete, clearing the zone), by the
+PostgreSQL survey engine's identity (the native survey threw and left a
+report with no annotations), and by the OpenLineage cataloguer's. RE could
+not undo the zone it had set. So a zone a steward chooses can silently
+disable Egeria's own engines on the element, and nothing warns before the
+write.
+
+**To discuss.** Which zones the survey engines, the cataloguers and an
+RE persona may write in under the Coco security model, so RE can offer
+only those; whether a zone write that would lock out the platform's own
+engine identities should be refused or warned about by Egeria rather than
+discovered afterwards; and whether a publish zone is best set last, after
+the targets and the survey, or by the daemon's default zones with no write
+from RE at all. Until this is answered RE writes no zone and shows the
+element's zones as a read-back fact.
+
+**Also from the rehearsal, ours not Egeria's:** RE's gateway was parsing
+the wrong response shapes for elements, children and relationships, so
+every live read came back empty; the live payloads are now the fixtures.
+Worth saying only because the fix on our side relies on those shapes
+staying stable: a note of which response classes are contract would help.
+
 ## 6. Smaller items with evidence
 
 - Per-target status and last-run time on the CatalogTarget relationship,
@@ -168,6 +202,11 @@ detector (`DESIGN-FIND-AND-INTEGRATE-PURPOSES-AND-THE-DATA-LENS.md` §13).
 - pyegeria: `AssetMaker.get_catalog_targets` sends a relationship type as
   the element type and always fails (egeria-python ISSUE-122, with the
   working body).
+- A detached catalog target keeps being refreshed until its connector
+  restarts (S17); a restart of that one connector suffices.
+- Re-including an archived schema has no path (S19); the `/archive`
+  endpoint returns 500 on the 2026-10-05 build (S20); cascade delete by an
+  ordinary user fails over cataloguer-created children (S18).
 
 ## What RE will do regardless
 
@@ -176,3 +215,9 @@ word from a read-back; keep the plain-name and `_`/`%` checks in its
 manifest until the cataloguer no longer needs them; publish one-way and
 idempotently; propose relations and never judge them. The discussion
 decides how much of that Egeria makes unnecessary.
+
+*Status at the end of 2026-10-05:* topics 2 and 4 are settled on evidence
+(survey scope landed; schema-kind targets chosen for RE's commit, owner's
+decision); topic 3's findings stand on the current cataloguer, which is
+byte-identical across the rebuild; topic 7 is the newest and the one most
+in need of the Egeria leads' answer before RE catalogues a real database.
