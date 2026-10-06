@@ -265,3 +265,31 @@ def install() -> None:
     guarded_init.__wrapped__ = real_init  # type: ignore[attr-defined]
     PgVectorStore.__init__ = guarded_init  # type: ignore[method-assign]
     _state["installed"] = True
+
+
+# --- default isolation of the URL settings (used by conftest's autouse fixture)
+
+SHARED_DB_URL_SETTINGS = ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL")
+
+
+def isolate_url_settings(environ: Mapping[str, str], setenv: Callable[[str, str], None],
+                         tmp_dir: Any) -> list[str]:
+    """Decide and apply the default isolation; return the names it replaced.
+
+    Pure over `environ`, so a test can drive both branches with a fake
+    environment instead of depending on the ambient CI flag. CI
+    (GITHUB_ACTIONS=true) is left untouched: its service container IS the
+    registry. Otherwise a setting that is unset, or already addresses the
+    shared registry, is pointed at a throwaway SQLite file.
+    """
+    from resource_explorer.registry_label import is_shared_registry
+
+    if environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        return []
+    replaced = []
+    for name in SHARED_DB_URL_SETTINGS:
+        current = environ.get(name)
+        if current is None or is_shared_registry(current):
+            setenv(name, f"sqlite:///{tmp_dir}/{name.lower()}.db")
+            replaced.append(name)
+    return replaced

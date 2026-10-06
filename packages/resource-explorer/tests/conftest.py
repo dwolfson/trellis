@@ -572,9 +572,6 @@ def clear_tech_type_catalog_singleton():
     survey_definitions_route._tech_type_catalog = None
 
 
-_SHARED_DB_URL_SETTINGS = ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL")
-
-
 @pytest.fixture(autouse=True)
 def isolate_database_url_settings(tmp_path, monkeypatch):
     """Point every setting that defaults to the SHARED Postgres at a throwaway
@@ -592,13 +589,8 @@ def isolate_database_url_settings(tmp_path, monkeypatch):
     afterwards with its own monkeypatch.setenv.
     """
     import resource_explorer.config as _config_module
-    from resource_explorer.registry_label import is_shared_registry
 
-    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
-        for name in _SHARED_DB_URL_SETTINGS:
-            current = os.environ.get(name)
-            if current is None or is_shared_registry(current):
-                monkeypatch.setenv(name, f"sqlite:///{tmp_path}/{name.lower()}.db")
+    shared_registry_guard.isolate_url_settings(os.environ, monkeypatch.setenv, tmp_path)
     _config_module._config = None
     yield
 

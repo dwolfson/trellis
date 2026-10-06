@@ -229,11 +229,45 @@ def test_vector_schema_opt_in_and_ci_exemptions(fake_connect, monkeypatch):
     assert PgVectorStore()._config.schema == "resource_explorer"
     G._state["vector_schemas_built"].discard("resource_explorer")
 
-def test_every_shared_default_url_setting_is_isolated_by_conftest():
-    """No test can leak by forgetting one: all three settings that default to
-    the shared Postgres resolve to temp SQLite unless the test overrides."""
+SHARED_URL = SHARED
+
+
+def test_isolation_replaces_unset_and_shared_urls_outside_ci(tmp_path):
+    """Outside CI every unset or shared URL becomes temp SQLite. Fails if the
+    isolation stops replacing them. Driven by a fake environment, so it does
+    not depend on the ambient GITHUB_ACTIONS."""
+    env = {"METRICS_DATABASE_URL": SHARED_URL}          # one shared, two unset
+    set_ = {}
+    replaced = G.isolate_url_settings(env, set_.__setitem__, tmp_path)
+    assert sorted(replaced) == sorted(G.SHARED_DB_URL_SETTINGS)
+    assert all(v.startswith("sqlite:///") for v in set_.values())
+    assert len(set_) == 3
+
+
+def test_isolation_keeps_a_deliberate_override_outside_ci(tmp_path):
+    env = {"REGISTRY_DATABASE_URL": "sqlite:///mine.db",
+           "FEEDBACK_DATABASE_URL": TEST_SCHEMA}
+    set_ = {}
+    replaced = G.isolate_url_settings(env, set_.__setitem__, tmp_path)
+    assert replaced == ["METRICS_DATABASE_URL"] and list(set_) == replaced
+
+
+def test_isolation_leaves_the_environment_untouched_under_ci(tmp_path):
+    """CI's Postgres service container IS the registry: nothing is replaced."""
+    env = {"GITHUB_ACTIONS": "true", "REGISTRY_DATABASE_URL": SHARED_URL}
+    set_ = {}
+    assert G.isolate_url_settings(env, set_.__setitem__, tmp_path) == []
+    assert set_ == {}
+
+
+def test_autouse_fixture_applies_the_isolation_outside_ci():
+    """What the real fixture did to this process. Under CI it deliberately
+    does nothing, so only then is the ambient value not asserted."""
+    import os
     from resource_explorer.config import get_config
 
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        pytest.skip("CI leaves the URL settings to the service container")
     cfg = get_config()
     for url in (cfg.registry.database_url, cfg.observability.metrics_database_url,
                 cfg.feedback.database_url):
@@ -283,8 +317,9 @@ def test_both_isolation_fixtures_coexist_in_one_test(isolate_pgvector_schema, fa
     from resource_explorer.registry_label import is_shared_registry
     from resource_explorer.vector_store_pg import PgVectorStore
 
-    for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
-        assert not is_shared_registry(os.environ[name]), name
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":   # URL isolation is a CI no-op
+        for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
+            assert not is_shared_registry(os.environ[name]), name
     scratch = isolate_pgvector_schema
     assert get_config().pgvector.schema_name == scratch
     assert PgVectorStore()._config.schema == scratch
