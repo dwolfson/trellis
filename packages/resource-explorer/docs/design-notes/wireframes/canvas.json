@@ -71,6 +71,10 @@
   {
    "id": "page-18",
    "name": "Curate: what gets catalogued (databases)"
+  },
+  {
+   "id": "page-19",
+   "name": "State as a visual cue"
   }
  ],
  "artboards": [
@@ -322,6 +326,14 @@
    "w": 1560,
    "h": 1140,
    "page": "page-18"
+  },
+  {
+   "file": "StateCues.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 1150,
+   "page": "page-19"
   }
  ],
  "annotations": [
@@ -484,10 +496,18 @@
    "w": 300,
    "page": "page-18",
    "text": "Reply to ASK-DESIGNER-CURATE-CATALOGUE-SCOPE-DATABASES (and the coco_pharma addendum), against main at 45f4671b.\n\nThe scope is a declared, signed, dated choice stored in RE; the commit compiles it into the cataloguer target's include/exclude lists every time, so a reset and re-commit restores it.\n\nBand 2 order: what gets catalogued, then glossary terms, then schema match. Depth before the tree; the column-depth offer after commit, once.\n\nProposals only when the decision follows from a measurement alone: 0 tables, no writes since, a lens match. PII is a mark; a staging-like name is a note. Four observation states fit. Undecided keeps what's in Egeria; only an explicit leave-out removes.\n\nPer-node state from proof: catalogued (read back), attached \u00b7 waiting, queued, failed, left out. Name-filter conflicts block the commit before the press. The manifest names RE's publish, the cataloguer, and the native survey (which measures what you left out too).\n\nRound 2 (lower artboard, against e1770aec): facts only from stored rows, each sourced and dated; activity is active / dormant / can't tell from the cumulative counters since stats_reset, with the window printed, and can't-tell proposes nothing. A filter offers a bulk choice now or a rule that keeps deciding; precedence hand > rule > schema > undecided, each row says which. Return visits open on what changed since the last commit. No survey records 'worth cataloguing'; the Schema Inventory tab on any stage writes the same scope events. Lens terms in names become a suggested rule, not a proposal."
+  },
+  {
+   "id": "cues-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-19",
+   "text": "Replies to ASK-DESIGNER-STATE-AS-VISUAL-CUE and ASK-DESIGNER-VERBS-UNMAPPED-CONTROLS Q7, against main at f1f679eb.\n\nThe cue sits where the decision was made; the sentence is one gesture away; a pressed control looks pending and ignores a second press; a control that changes nothing visible is not a control.\n\nTwo lanes: your choice (fill = chosen value in ink, lowered row = not included, tag = source, edge rule = needs you) and in Egeria (glyph + word). Strike-through means superseded text only.\n\nScope row choice is a selector, Include | Leave out, under 'Include in catalog?'; Catalog appears only on the commit button. Steps become a numbered stepper with 'step n of 9 \u00b7 running \u00b7 failed'. The manifest becomes a table per mechanism with the Catalog button on top and blockers under it."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-18"
+  "page": "page-19"
  }
 }
