@@ -134,3 +134,40 @@ a plan.
   the unit of archive too.
 - The anchor check that cannot fire is a bug whatever the anchoring. Nested anchors shrink the blast radius
   without fixing it. Keep the fix and the redesign apart.
+
+## Throwaway trial RESULTS (2026-10-06, 18:42Z to 18:45Z; run by the coordinator, owner's "proceed", peers all clear)
+
+Tree `rftrial_202610061842_*`: one database (its own anchor) with two schemas, a schema type, a table, a column,
+all anchored to the database as RE's are, plus a SemanticAssignment from the table to an existing term. Every
+call went through pyegeria MetadataExpert directly (never RE's gateway); the ISSUE-117 block was neither
+bypassed nor cleared. Full ordered call log with requests and Egeria's responses:
+`RFTRIAL-CALLLOG-2026-10-06.jsonl` in this folder (includes the dry runs, marked `DRY`).
+
+1. **Cascade reproduced exactly.** One ARCHIVE request (`forLineage` and `forDuplicateProcessing` true,
+   cascade false) on ONE schema archived the database, the other schema, the schema type, the table and the
+   column, all within the same second. As on coco_pharma, the schema that was archived was NOT renamed; the rest
+   were. So the incident is reproducible on a clean throwaway tree with two schemas.
+2. **The 500 reproduced.** A plain read (no forLineage) of the archived database returned SERVER_ERROR_500.
+3. **Declassify the database alone works.** Removing `Memento` from the database with `forLineage: true` removed
+   the classification, and the plain read answered OK (500 gone). The children stayed Memento, so declassify did
+   not cascade.
+4. **Restore per element works.** Declassify (forLineage true) then `update_metadata_element_properties` with the
+   suffix stripped, one element at a time, in the order schemas, schema type, table, column. After each step a
+   read-back showed Memento gone and the original name back. The database's own name needs its own rename
+   (declassify does not rename it); my first script run missed that and was fixed.
+5. **Plain read-back of the whole restored tree:** all six elements visible with original names, Anchors intact,
+   and the SemanticAssignment on the table survived.
+6. **Archiving the trial's OWN anchor stayed inside the trial tree.** The eight coco_pharma GUIDs were read before
+   and after and did not change. The root (the database) was not renamed, the rest were: the known
+   "top-level archived element keeps its name" behaviour.
+
+**What the trial did NOT show:** the name-collision step (renaming the new elements aside) was not tried, because
+the throwaway had no competing new elements; the ~149-element scale; whether a restored tree is cataloguable,
+because the throwaway's elements were hand-built and not made by the template or the cataloguer, and no Postgres
+was attached; pyegeria's `lineage_visible` was not available in RE's installed pyegeria, so a no-op shim was used
+and every body carried forLineage true instead; the hand-built type and relationship names were partly guessed
+(the first build stopped at a wrong relationship name, then resumed).
+
+**Left on the platform:** the trial tree is archived and renamed, at the bottom of this list. Hard removal is a
+separate decision: database c9842fd3, schemas f3c86a1a and 6645f226, schema type 1c6ac3a4, table 3d3fe8ec,
+column 117f75f6 (all names start `rftrial_202610061842`), plus one SemanticAssignment 9a03366a to an existing term.
