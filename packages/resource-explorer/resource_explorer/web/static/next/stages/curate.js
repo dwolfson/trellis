@@ -223,6 +223,13 @@ export function mountCurateHost() {
   return host;
 }
 
+/** The seconds on the plan's loading line come from this clock (a test swaps it for a fake). */
+const curateClock = {
+  now: () => Date.now(),
+  every: (fn, ms) => { const id = setInterval(fn, ms); return () => clearInterval(id); },
+};
+export function setCurateClock(c) { Object.assign(curateClock, c); }
+
 export async function renderCurate(slug) {
   const frame = mountCurateHost();
   const entityType = apiEntityType(state.resourceType);
@@ -257,14 +264,26 @@ export async function renderCurate(slug) {
     await Promise.all(bands);
     return;
   }
-  host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalogue would learn…</div>`;
+  // The plan request can take tens of seconds on a large repository (25 s on egeria_git). The
+  // stage is already drawn and the other bands are loading on their own; this slot says so and
+  // counts the seconds, and blocks nothing.
+  const started = curateClock.now();
+  const secs = () => Math.max(0, Math.floor((curateClock.now() - started) / 1000));
+  host.innerHTML = `<div data-curate-plan-loading role="status" class="text-caveat text-ink-muted">plan loading · 0 s</div>`;
+  const stopTicker = curateClock.every(() => {
+    const line = host.querySelector('[data-curate-plan-loading]');
+    if (!line || !host.isConnected) { stopTicker(); return; }
+    line.textContent = `plan loading · ${secs()} s`;
+  }, 1000);
   let plan;
   try {
     plan = await getCuratePlan(slug);
   } catch (err) {
-    host.innerHTML = `<div class="text-answer text-accent-ink">The plan could not be read: ${esc(err.message)}</div>`;
+    stopTicker();
+    if (host.isConnected) host.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">The plan could not be read after ${secs()} s: ${esc(err.message)}</div>`;
     return;
   }
+  stopTicker();
   if (slug !== state.selectedSlug) return;
   state.curate = state.curate || {};
   const picks = new Set(state.curate.picks || plan.what_it_is.filter((r) => r.candidate && r.state === 'measured' && r.kind !== 'InfrastructureAsset').map((r) => r.kind));
