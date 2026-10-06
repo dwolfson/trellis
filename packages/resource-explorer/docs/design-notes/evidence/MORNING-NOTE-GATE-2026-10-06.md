@@ -14,7 +14,7 @@ is named. The gate on coco_pharma is the first live use of the fixed commit path
 | Process | pid 82489, started Tue Oct 6 07:08:01 2026, cwd = that worktree; `GET /` returns 200 (coordinator re-checked) |
 | Environment | the main checkout's `.env` loaded (key names only on record: EGERIA_*, PREFECT_*, TRELLIS_*, FEEDBACK_ADMIN_TOKEN, GITHUB_TOKEN, PORT) |
 | Migrations since 8810's code | none in the last four merges (the one new table, `catalogue_commit_proofs`, exists since 2026-10-05) |
-| 8810 | still the pre-refresh process unless you restarted it; it shows the OLD code and is not the gate build |
+| 8810 | you restarted it after last night's platform refresh; it runs the code from BEFORE #501 (the old commit path) and is NOT the gate build; do not walk the gate there |
 
 What changed since the second rehearsal (merged in order): #498 templates sync (`725cf1ff`), #499 parent-link evidence
 (`da6643a1`), #500 the live Egeria tiers are opt-in (`1b433d2e`), **#501 the rehearsal-2 fixes (`46aaf5db`)**.
@@ -61,10 +61,17 @@ the fixed build is marked (new)**. If a word differs, that is a finding, not nec
    under each schema, **none directly under the database** for the chosen schemas.
    **Watch for:** more than one catalog target per schema on the JDBC cataloguer (the guard should prevent it; this is the
    first live proof). A press creates real elements on coco_pharma's database in Egeria.
-2. **Leave out a schema with nothing hanging off it** (none of the two chosen has one yet: leave out one you just cataloged and
-   changed nothing on). Expect the preview to say (new) `delete · nothing depends on it`, then after the press the row says it was removed; choosing it again
-   re-creates it (new GUIDs, same name). Cataloged schemas may still plan an ARCHIVE if Egeria's own lineage engine added a
-   DataFlow to something other than its own engine component (the rule treats only the engine's own component as machinery).
+2. **Leave out a CATALOGED schema.** On a cataloged schema the tables hang off it two hops away
+   (schema, its schema type, tables), so the build rules that a cataloged schema **always archives**. Expect the preview to say
+   `<schema>: <n> ... hang off it · will be archived in Egeria, not deleted · ...` and to name the tables
+   (and `archive · lineage to <name> would be lost` when something else points at it); after the press
+   `archived in Egeria · <time>`. **That is the correct result, not a failure.** The soft-delete path is NOT reachable on a
+   cataloged schema, by design. It is proven by the tests in #501 and will be proven live on a throwaway later: a schema left
+   out while still "attached", before the refresh has made tables. For the record, the strings the code prints for that path
+   are, in the preview, `<schema>: nothing hangs off it · will be removed (soft-deleted) from Egeria` (with
+   ` with its <n> tables` and ` · delete · nothing depends on it`), and on the row `removed · <time>`
+   (the architect expected the verb "deleted from Egeria"; the code prints "removed", so if that is the wrong word it is a
+   wording follow-up, not part of this gate).
 3. **Leave out one with a term assignment on a table.** Expect the preview to name it: `1 term assignment hang off it · will be archived in Egeria, not deleted · can't be re-included until Egeria restores archived elements`, then `archived in Egeria · <time>`, the
    assignment surviving on the table, and choosing it again refused with `1 schema not committed: <schema> · can't be re-included until Egeria restores archived elements`. A schema with lineage to another asset says (new) `archive · lineage to <name> would be lost`.
 4. **Colliding names** (`a_b`/`aXb`, `x_y`/`xZy`): flagged before the press (`⚠ Egeria's listing for a_b would also return aXb`; blockers
