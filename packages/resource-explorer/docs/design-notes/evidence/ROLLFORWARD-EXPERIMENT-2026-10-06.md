@@ -44,4 +44,27 @@ targets were removed, or hidden because their elements are Mementos; NOT yet det
 
 ## Observed (filled in after)
 
-(pending)
+Commit pressed by the owner on 8813 at about 16:59Z. Proof rows 36-47, read back by GUID at 17:35Z.
+
+1. Publish: CONFIRMED. New database `def55997` (RelationalDatabase, not Memento, original QN
+   `PostgreSQL Relational Database::host.docker.internal:5442::coco_pharma`). Old 17f0a963 untouched, still Memento.
+2. Schemas: CONFIRMED for coco_sus (new 4079a1d5) and coco_ods (new 1f31b602), original names, not Memento.
+   us_sales was NOT re-catalogued: RE's own guard held it ("can't be re-included until Egeria restores
+   archived elements"); its Memento 87271b37 still holds the original name.
+3. Attach: PREDICTION FAILED, in the sense that the defect did not appear. The target list was already EMPTY
+   before the press (read 16:58Z), so there were no stale targets to match by name. Two new targets were
+   attached (proofs 38-41, attach_requested then target_attached) and the list now holds exactly 2
+   (1f31b602 coco_pharma.coco_ods, 4079a1d5 coco_pharma.coco_sus). The name-matching guard defect is NOT
+   shown; it remains a risk only if old targets are ever present with archived elements.
+4. Report: a SurveyReport exists on the new database (ReportSubject 1) with 56 ResourceMeasureAnnotations,
+   not the predicted 76. Not explained yet; the new database's own survey (below) may account for the count.
+5. Ownership: owner_result proof 37 on def55997 (the row exists; the Egeria-side ownership was not read back).
+6. Survey: new engine action `0d625a7c` COMPLETED in 53 s (requested 1791305953991, completed 1791306006994),
+   "postgres-database-survey-service has completed the analysis of asset def55997". Was it limited to the
+   three schemas? Not checked.
+
+Unexpected: the new schemas have NO tables or schema type at 17:35Z. Each has 3 related elements only
+(CatalogTarget, ActionTarget, DataFlow). The cataloguer's last refresh was 17:04:24Z, after the attach, so
+the tables were NOT built by that refresh. Cause unknown (candidates: needs another refresh; the cataloguer
+looks up the schema by its own QN form `<DBQN>::<schema>` and RE's template form does not match).
+Nothing was detached, archived, restored or deleted by anyone.
