@@ -236,3 +236,43 @@ def test_already_deleted_and_already_archived_read_in_those_words(world, fake):
     press(world, fake)
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
     assert row["text"] == "sales: nothing to remove · already deleted from Egeria"
+
+
+# ── the one additive table: group_changes ─────────────────────────────────────────────────────────
+
+def test_group_changes_is_additive_and_an_old_shape_database_reopens_safely(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    r = ProjectRegistry(db_path=path)
+    r.add(Project(slug="p", display_name="P", github_url="https://github.com/x/p", description=""))
+    con = sqlite3.connect(path)
+    con.execute("DROP TABLE group_changes")                      # the OLD shape: the table did not exist before this slice
+    con.commit()
+    assert "group_changes" not in {t[0] for t in con.execute("SELECT name FROM sqlite_master")}
+    con.close()
+    r2 = ProjectRegistry(db_path=path)                           # opening it creates the table
+    assert r2.list_group_changes("repo", "p") == []
+    at = r2.record_group_change("repo", "p", "", "dwolfson")
+    assert [(x["author"], x["changed_at"]) for x in r2.list_group_changes("repo", "p")] == [("dwolfson", at)]
+    assert r2.get("p") is not None                               # nothing existing was touched
+    con = sqlite3.connect(path)
+    assert [c[1] for c in con.execute("PRAGMA table_info(group_changes)")] == \
+        ["id", "entity_type", "entity_slug", "group_slug", "author", "changed_at"]
+    con.close()
+
+
+def test_the_group_changes_sql_survives_the_postgres_translator_untouched_by_its_hazards():
+    """The translator rewrites `?` to `%s`, any `:name` token to `%(name)s` and AUTOINCREMENT to SERIAL; DDL text
+    must carry no `?` and no `:name` (a colon in a comment or a string would be rewritten)."""
+    from resource_explorer.registry import PostgresCursorWrapper
+    src = (PKG / "registry.py").read_text()
+    ddl = src[src.index("CREATE TABLE IF NOT EXISTS group_changes"): src.index("idx_group_changes_entity")]
+    ddl_sql = ddl[: ddl.index('""")')]
+    assert "?" not in ddl_sql and not re.search(r"(?<!:):[A-Za-z_]", ddl_sql)
+    t = PostgresCursorWrapper(None)._translate_sql
+    out = t(ddl_sql)
+    assert "SERIAL PRIMARY KEY" in out and "AUTOINCREMENT" not in out and "%" not in out
+    ins = ("INSERT INTO group_changes (entity_type, entity_slug, group_slug, author, changed_at) VALUES (?, ?, ?, ?, ?)")
+    assert t(ins).count("%s") == 5 and "?" not in t(ins)
+    idx = "CREATE INDEX IF NOT EXISTS idx_group_changes_entity ON group_changes(entity_type, entity_slug, id)"
+    assert t(idx) == idx
