@@ -201,3 +201,31 @@ derive only from the STATE_PROOFS set, so a new `P_RESTORED` constant (a code ch
 if the page should show it. Not done. The slug `coco_pharma` is assumed; the shared registry was not read.
 
 **Not run:** every Egeria write, every `--go` path, the registry write, the cataloguer refresh.
+
+## REAL RESTORE RESULTS (2026-10-06 20:50Z to 22:45Z; owner's go with clearance dan/20261006T2100Z; all four peers clear)
+
+Ordered call log with requests and responses: `REALRESTORE-CALLLOG-2026-10-06.jsonl` (plus the earlier dry-run lines, marked DRY).
+
+1. **Detach** the two new schemas' catalog targets (5289479c, e261ff9d): read-back 0 left.
+2. **Rename aside** 7 new elements to `..._rolledforward_202610062050` (database def55997, its 4 connection elements,
+   schemas 4079a1d5 and 1f31b602); each read back.
+3. **Restore old:** the security classifier blocked the agent's own run of this step; the owner ran the same script in his
+   own terminal. 149 declassify + 148 renames, call log shows 0 failures. Independent plain read of all 149: 149/149 visible,
+   149/149 original names, 0 Memento, Anchors on 148/148 non-root, the SemanticAssignment on us_sales_forecast intact,
+   one CatalogTarget relationship each on coco_sus and coco_ods, ownership on the database intact. Exactly ONE live
+   element holds each original name (database 17f0a963; schemas 28bbde37, a358abb3, 87271b37).
+4. **Registry:** slug is `localhost_docker_coco_pharma` (the script's default `coco_pharma` was wrong and would have written
+   nothing useful; caught by reading the record). Proof row id 48 `restored` (database 17f0a963, from def55997) and
+   `set_database_egeria_guid` back to 17f0a963; read back by a fresh read. The first --go would also have written to a
+   throwaway SQLite had `run.sh` been used; a separate runner left REGISTRY_DATABASE_URL unset for this step.
+5. **Retire the new tree:** ARCHIVE def55997 (its own anchor). Its four connection elements archived; the database kept its
+   rolled-forward name (root not renamed, the known behaviour); 0 of the 149 old elements changed. The two new schemas
+   (4079a1d5, 1f31b602) were NOT archived and stay live under `_rolledforward_` names.
+6. **Cataloguer:** one forced JDBCDatabaseCataloguer refresh completed (22:44:20Z). The daemon log shows tables and columns
+   being transferred for coco_ods ("Transfer complete for table ...coco_ods::sites"); 30 tables under the restored
+   coco_sus after the refresh. No NullPointerException in the window read.
+
+**Not done / still open:** us_sales is restored as an element but has no catalog target (RE detached it); re-attach through
+RE's own commit. The two live `_rolledforward_` schemas and the archived new tree remain as leftovers, plus the trial tree.
+The restore confirms the trial's method on the real tree. The Egeria lead's questions (regression, 500 cause, restore API)
+remain open. 56 versus 76 annotations is moot: the old 120 annotations are restored.
