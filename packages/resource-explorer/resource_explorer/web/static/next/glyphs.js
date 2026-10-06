@@ -187,7 +187,9 @@ export const STATES = {
   attached_waiting: { glyph: '◔', family: 'running',  word: 'attached, waiting', tone: 'text-ink-muted' },
   queued:           { glyph: '◔', family: 'running',  word: 'queued', tone: 'text-ink-muted' },
   catalogue_failed: { glyph: '✕', family: 'failed',   word: 'failed', tone: 'text-state-warn' },
-  removed:          { glyph: '∅', family: 'measured-nothing', word: 'deleted from Egeria', tone: 'text-ink-muted' },
+  // An Egeria soft delete: NO glyph (designer, STATE-AS-VISUAL-CUE addendum 2026-10-06). The measured-nothing glyph means
+  // "measured, nothing found" and keeps that one meaning; "removed" is reserved for taking a resource out of RE.
+  deleted:          { glyph: '', family: 'deleted', word: 'deleted from Egeria', tone: 'text-ink-muted' },
   archived:         { glyph: '□', family: 'stored',   word: 'archived', tone: 'text-ink-muted' },
 
   // □ stored -- not one of the reply's merged families (it names a fifth

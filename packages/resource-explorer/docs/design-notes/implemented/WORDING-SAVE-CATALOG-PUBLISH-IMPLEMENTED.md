@@ -81,3 +81,31 @@ None of the table rows was unmappable. Judgement calls and gaps:
 3. The journal shows `saved entries are permanent: no edit, no delete` beside **Save entry**; saving one adds a line `saved · <you> · <when>`.
 4. No page shows the UK spelling anywhere (search the page for "catalogu"; only `cataloguer`, Egeria's connector, may remain).
 5. On coco_pharma, a leave-out of a schema with nothing of a steward's on it previews `will be deleted from Egeria`, never `removed`.
+
+## Slice 2: the controls the first slice left unmapped
+
+From `REPLY-DESIGNER-VERBS-UNMAPPED-CONTROLS.md` (rule: the control that sends to Egeria says Publish or Catalog; a control that only
+opens a dialog keeps its own verb, and the dialog's sending button says Publish).
+
+| Control | Page | Old word | New word | Designer's reason |
+|---|---|---|---|---|
+| Relink members | Investigation, Egeria-bound | Relink members | **Publish member links** | it sends; a panel header saying "Egeria" scrolls away, a button does not |
+| Reclassify (opener) | Investigation | Reclassify… | **Reclassify…** (kept) | it only opens the dialog |
+| Reclassify (dialog's sending button) | Investigation | Reclassify | **Publish classification** | the sending button says Publish with its object |
+| Unbind | Investigation, Egeria-bound | Unbind | **Unbind…**, confirmation "Unbind · the Egeria project stays; RE stops publishing to it" | neither takes "Remove from Resource Explorer" (reserved for a resource); the confirmation says what survives |
+| Promote | Work list | promote N → | **Shortlist N →** (action id `promote` and the `/promote` route path stay: identifiers) | it makes a narrower list in RE; "Promote" is the investigation route's word for sending to Egeria |
+| Export CSV | Work list, Investigation scope | export CSV / Export CSV | **Download CSV** | a download is neither a save nor a send |
+| remove | Doc sources | remove | **Remove source…**, confirmation `Remove source "<name>" from Resource Explorer's record; the Egeria external reference stays?` (the clause only when one was published) | a doc source is not a resource; the confirmation names what survives |
+| Add member, Bind existing project…, Add to investigation / Start…, local run / re-run, Automate's controls, re-check, Save-then-catalog | various | as is | **kept** | scope or local acts, a picker, or a probe (the designer's table) |
+
+Also from the designer's ∅ addendum (STATE-AS-VISUAL-CUE): an Egeria soft delete draws **no glyph** (`glyphs.js`'s `removed` key, which used the
+measured-nothing ∅, is renamed `deleted` with an empty glyph; the row word stays "deleted from Egeria" per the architect's earlier ruling, where the
+designer's text says "deleted in Egeria"; the row **lowering** and the "will delete" preview form are not done: the lowering belongs to the
+state-cue slice, and the preview already reads "will be deleted from Egeria").
+
+Confirmations are real confirm steps: the harness tests assert the request does not fire until the person accepts, and that the Unbind words are
+exactly the designer's. **Not done in this branch:** "a reload forgets the commit it was watching" (resume the stepper from the newest commit's proof
+rows) lives on the Curate UX branch and is a separate change.
+
+**Controls I could not map:** none; every row of the designer's table was a keep or a named word. The ∅ addendum's row lowering is the one
+instruction left for the state-cue slice.

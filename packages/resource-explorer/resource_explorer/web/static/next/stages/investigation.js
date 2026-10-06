@@ -373,7 +373,7 @@ async function renderDetail(slug) {
       <button data-act="inv-export-scope" type="button"
         class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
         title="Download the in-scope members as CSV. Loading it into another investigation adds the resources; the status_ columns are for a reader and are never read back."
-        >Export CSV</button>
+        >Download CSV</button>
       <span id="inv-scope-note" class="text-caveat text-ink-muted"></span>
     </div>
     <div id="inv-add-menu"></div>
@@ -395,8 +395,8 @@ function egeriaSectionHtml(inv) {
       </p>
       <div class="flex flex-wrap gap-s2">
         <button data-act="inv-sync" class="${btnCls()}">Publish again</button>
-        <button data-act="inv-relink" class="${btnCls()}">Relink members</button>
-        <button data-act="inv-unbind" class="${btnCls()}">Unbind</button>
+        <button data-act="inv-relink" class="${btnCls()}">Publish member links</button>
+        <button data-act="inv-unbind" class="${btnCls()}">Unbind…</button>
       </div>`;
   }
   return `<p class="max-w-[70ch] text-caveat text-ink-muted">
@@ -579,7 +579,7 @@ function bindDetail(inv, members) {
         exactly which elements moved and which did not.
       </p>
       <div class="flex gap-s2">
-        <button id="inv-reclass-save" class="${btnCls()}">Reclassify</button>
+        <button id="inv-reclass-save" class="${btnCls()}">Publish classification</button>
         <button id="inv-reclass-cancel" class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Cancel</button>
       </div>
       <div id="inv-reclass-result" class="mt-s2 text-caveat"></div>
@@ -594,7 +594,7 @@ function bindDetail(inv, members) {
     host.querySelector('#inv-reclass-save').addEventListener('click', async () => {
       const btn = host.querySelector('#inv-reclass-save');
       btn.disabled = true;
-      btn.textContent = 'Reclassifying…';
+      btn.textContent = 'Publishing…';
       const resultEl = host.querySelector('#inv-reclass-result');
       try {
         // ReclassificationResult.as_dict() (investigation_reclassifier.py):
@@ -606,7 +606,7 @@ function bindDetail(inv, members) {
         // more than snapping back to a clean view.
         const result = await reclassifyInvestigation(
           inv.slug, sel.value, host.querySelector('#inv-reclass-hyp').value.trim());
-        btn.textContent = 'Reclassify';
+        btn.textContent = 'Publish classification';
         resultEl.innerHTML = (result.ok
           ? `<span class="text-state-ok">Reclassified to ${esc(result.to_classification)}.</span>`
           : `<span class="text-state-warn">Partial (${esc(result.direction)}): local_applied=${
@@ -618,7 +618,7 @@ function bindDetail(inv, members) {
         await refreshInvestigationsAndSidebar();
       } catch (err) {
         btn.disabled = false;
-        btn.textContent = 'Reclassify';
+        btn.textContent = 'Publish classification';
         resultEl.innerHTML = `<span class="text-state-warn">${esc(err.message)}</span>`;
       }
     });
@@ -675,7 +675,7 @@ function bindDetail(inv, members) {
   });
 
   el.querySelector('[data-act="inv-unbind"]')?.addEventListener('click', async () => {
-    if (!window.confirm('Unbind this investigation from its Egeria Project? The Egeria Project itself is not deleted.')) return;
+    if (!window.confirm('Unbind · the Egeria project stays; RE stops publishing to it')) return;
     await bindInvestigationEgeriaProject(inv.slug, { status: 'unset' });
     await refreshInvestigationsAndSidebar();
     renderDetail(inv.slug);
@@ -733,13 +733,13 @@ function bindDetail(inv, members) {
   el.querySelector('[data-act="inv-relink"]')?.addEventListener('click', async () => {
     const btn = el.querySelector('[data-act="inv-relink"]');
     btn.disabled = true;
-    btn.textContent = 'Relinking…';
+    btn.textContent = 'Publishing…';
     try {
       await relinkInvestigationMembers(inv.slug);
       renderDetail(inv.slug);
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = `Not relinked: ${err.message}`;
+      btn.textContent = `Not published: ${err.message}`;
     }
   });
 

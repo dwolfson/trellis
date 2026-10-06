@@ -400,3 +400,14 @@ test('the work list send reads "Publish to Egeria", then "Publish again"; the li
   assert.equal(act(document, 'publish').textContent.trim(), 'Publish again');
   assert.doesNotMatch(text(document.getElementById('wl-actions')), /re-publish|\bpublish to Egeria/);
 });
+
+
+test('work list: "Shortlist N →" (not "promote", the investigation route\'s word for sending to Egeria) and "Download CSV"', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  const shortlist = document.querySelector('#wl-actions [data-act="promote"]');
+  assert.match(text(shortlist), /^Shortlist \d+ →$/);
+  assert.equal(text(act(document, 'export-csv')), 'Download CSV');
+  const bar = text(document.getElementById('wl-actions'));
+  assert.doesNotMatch(bar, /\bpromote\b|export CSV/);
+  assert.equal(shortlist.dataset.act, 'promote', 'the action id (and the /promote route path) stay: identifiers, not words');
+});

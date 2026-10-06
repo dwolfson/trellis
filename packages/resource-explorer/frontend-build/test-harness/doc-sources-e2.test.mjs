@@ -193,3 +193,28 @@ test('gate 6: on a repo the block calls /api/doc-sources/repo/<slug> (not databa
   await enrichment.renderDocSources('amundsen');
   assert.ok(urls.some((u) => u.includes('/api/doc-sources/repo/amundsen')), urls.join(','));
 });
+
+// ── wording slice 2: "Remove source…" names what survives ────────────────
+test('the remove control reads "Remove source…", confirms first, and names what survives (the Egeria external reference when one was published)', async () => {
+  const { enrichment, host } = await setUp();
+  let deletes = 0;
+  stub((url, opts) => {
+    if (opts && opts.method === 'DELETE') { deletes += 1; return { ok: true }; }
+    return payload([src({ id: 'local1', label: 'Local one' }),
+      src({ id: 'pub1', label: 'Published one', egeria_external_ref_guid: 'ref-guid-9', egeria_state: 'catalogued' })]);
+  });
+  const asked = [];
+  window.confirm = (m) => { asked.push(m); return false; };
+  await enrichment.renderDocSources('amundsen');
+  const rm = (id) => host.querySelector(`[data-doc-remove="${id}"]`);
+  assert.equal(rm('local1').textContent.trim(), 'Remove source…');
+  assert.doesNotMatch(host.textContent, />remove</);
+  rm('local1').click();
+  rm('pub1').click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(deletes, 0, 'nothing is sent before the confirmation is accepted');
+  assert.equal(asked.length, 2);
+  assert.doesNotMatch(asked[0], /external reference/, 'an unpublished source has no Egeria reference to survive');
+  assert.match(asked[1], /the Egeria external reference stays/);
+  assert.match(asked[1], /Remove source/);
+});

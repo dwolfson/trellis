@@ -303,7 +303,7 @@ test('every state word on a schema row is the server\'s, with its glyph and seco
   assert.match(flat(word('q')), /^◔ queued · outbox #4182$/);
   assert.match(flat(word('plain')), /^✕ failed · 500 Egeria says no$/);
   assert.match(flat(secondOf(document, 'schema:plain')), /step: attach · outbox #7 · will retry/);
-  assert.match(flat(word('old')), /^∅ deleted from Egeria · 10-05 09:30$/);
+  assert.match(flat(word('old')), /^deleted from Egeria · 10-05 09:30$/);
   assert.match(flat(secondOf(document, 'schema:old')), /still lists this schema until its connector restarts · nothing is recreated/);
   assert.match(flat(word('ledger')), /^□ archived in Egeria · 10-05 09:31$/);
   assert.match(flat(secondOf(document, 'schema:ledger')), /can't be re-included until Egeria restores archived elements/);

@@ -603,7 +603,7 @@ function docSourceRowHtml(src) {
     <div class="pl-[20px] text-provenance text-ink-muted">feeds → nothing reads this yet</div>
     <div class="pl-[20px] mt-[2px] flex items-baseline gap-s3 text-provenance">
       <button type="button" data-doc-recheck="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button>
-      <button type="button" data-doc-remove="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">remove</button>
+      <button type="button" data-doc-remove="${esc(src.id)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Remove source…</button>
     </div>
   </div>`;
 }
@@ -693,7 +693,10 @@ function renderDocSourcesFromData(slug, entityType, data, deadline) {
     // exactly as they were -- no request, no state change.
     const row = b.closest('[data-source-row]');
     const name = row?.querySelector('a')?.textContent || 'this source';
-    if (!window.confirm(`Remove documentation source "${name}"?`)) return;
+    // The confirmation names what SURVIVES: removing a source is RE's record only; an Egeria external reference
+    // that was published for it stays in Egeria.
+    const published = !!(sources.find((s) => String(s.id) === String(b.dataset.docRemove)) || {}).egeria_external_ref_guid;
+    if (!window.confirm(`Remove source "${name}" from Resource Explorer's record${published ? '; the Egeria external reference stays' : ''}?`)) return;
     b.disabled = true; b.textContent = 'removing…';
     try {
       await removeDocSource(entityType, slug, b.dataset.docRemove);

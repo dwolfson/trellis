@@ -387,10 +387,10 @@ function renderActions(ctx) {
         ${VALID_DISPOSITIONS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
       </select>
       <button data-act="promote" ${n ? '' : 'disabled'}
-        class="cursor-pointer bg-transparent text-accent-ink underline">promote <span class="tnum">${n}</span> →</button>
+        class="cursor-pointer bg-transparent text-accent-ink underline">Shortlist <span class="tnum">${n}</span> →</button>
       <button data-act="export-csv" class="cursor-pointer bg-transparent text-accent-ink underline"
         title="Download this work list as CSV: the same columns the Find dialog reads, status_ columns for a reader only"
-        >export CSV</button>
+        >Download CSV</button>
       <button data-act="add-to-investigation" class="cursor-pointer bg-transparent text-accent-ink underline"
         title="${esc(addWording.title)}">${esc(addWording.label)}</button>
       <button data-act="start-from-list" class="cursor-pointer bg-transparent text-accent-ink underline"

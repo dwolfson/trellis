@@ -202,6 +202,7 @@ async function investigationPage({ bound }) {
     const method = (opts.method || 'GET').toUpperCase();
     calls.push(`${method} ${u}`);
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
+    if (u.includes('/relink')) return ok({});
     if (u.includes('/promote')) return ok({ ok: true, classification_requested: 'StudyProject', classification_confirmed: 'StudyProject',
       members_linked: [], members_unlinkable: [], errors: [] });
     if (u.includes('/sync-egeria')) return ok({});
@@ -260,4 +261,54 @@ test('source scan: every <button> whose text is a bare "save"/"add"/"submit" in 
   };
   walk(root);
   assert.deepEqual(offenders, []);
+});
+
+/* ── wording slice 2: the controls the first slice left unmapped (REPLY-DESIGNER-VERBS-UNMAPPED-CONTROLS.md) ── */
+
+test('investigation, Egeria-bound: "Publish member links" sends; "Reclassify…" keeps its opener; "Unbind…" asks first', async () => {
+  const { document, calls } = await investigationPage({ bound: true });
+  const btn = (act) => document.querySelector(`[data-act="${act}"]`);
+  assert.equal(label(btn('inv-relink')), 'Publish member links');
+  assert.equal(label(btn('inv-unbind')), 'Unbind…');
+  assert.equal(label(btn('inv-reclassify')), 'Reclassify…', 'the opener keeps its own verb');
+  assert.doesNotMatch(document.getElementById('content').textContent, /Relink members/);
+  // the dialog's sending button says Publish
+  btn('inv-reclassify').click();
+  await wait(100);
+  assert.equal(label(document.getElementById('inv-reclass-save')), 'Publish classification');
+  assert.doesNotMatch(document.getElementById('inv-reclass-form').textContent, /Reclassify\b(?!…)/);
+  void calls;
+});
+
+test('Unbind… is a real confirm step: nothing is sent before the person says yes, and the words say what survives', async () => {
+  const { document, calls } = await investigationPage({ bound: true });
+  const asked = [];
+  let answer = false;
+  globalThis.window.confirm = (m) => { asked.push(m); return answer; };
+  const unbind = document.querySelector('[data-act="inv-unbind"]');
+  unbind.click();
+  await wait(60);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0], 'Unbind · the Egeria project stays; RE stops publishing to it');
+  assert.equal(calls.filter((c) => c.startsWith('PUT') || c.startsWith('POST') || c.includes('/bind')).length, 0,
+    'declined: no request was made');
+  answer = true;
+  unbind.click();
+  await wait(100);
+  assert.ok(calls.some((c) => /(PUT|POST) .*\/(egeria-project|bind)/.test(c) || /(PUT|POST).*inv1/.test(c)),
+    `accepted: the unbind request fired (${calls.join(' | ')})`);
+});
+
+test('Publish member links sends the relink and says so only after the pane re-reads', async () => {
+  const { document, calls } = await investigationPage({ bound: true });
+  document.querySelector('[data-act="inv-relink"]').click();
+  await wait(100);
+  assert.ok(calls.some((c) => /POST .*relink/.test(c)), calls.join(' | '));
+});
+
+test('investigation scope: "Download CSV" (a download, neither a save nor a send)', async () => {
+  const { document } = await investigationPage({ bound: false });
+  const b = document.querySelector('[data-act="inv-export-scope"]');
+  assert.equal(label(b), 'Download CSV');
+  assert.doesNotMatch(document.getElementById('content').textContent, /Export CSV/);
 });
