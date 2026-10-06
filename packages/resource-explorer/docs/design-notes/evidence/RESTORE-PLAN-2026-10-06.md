@@ -229,3 +229,10 @@ Ordered call log with requests and responses: `REALRESTORE-CALLLOG-2026-10-06.js
 RE's own commit. The two live `_rolledforward_` schemas and the archived new tree remain as leftovers, plus the trial tree.
 The restore confirms the trial's method on the real tree. The Egeria lead's questions (regression, 500 cause, restore API)
 remain open. 56 versus 76 annotations is moot: the old 120 annotations are restored.
+
+## Why the retire did not take the two new schemas (read-only, ~22:50Z)
+
+The architect asked whether the leftover schemas 4079a1d5 and 1f31b602 are anchored to def55997.
+- Their Anchors classification names **def55997** (`anchorTypeName RelationalDatabase`, `anchorGUID def55997-...`), the same as the new connection d98b8ad5, which the archive DID take. So the anchoring is as RE's other elements: it is NOT the case that the adopt path anchored them elsewhere. def55997 itself is its own anchor (no anchorGUID).
+- What differs is the relationships. The archive walk follows relationships from the element and collects those whose Anchors name the anchor. At 17:35Z (read earlier today) each new schema had only 3 relationships (DataFlow, ActionTarget, CatalogTarget) and NO `DataSetContent` link to the database, unlike the restored old schemas, which have DataSetContent to the database. A schema anchored to def55997 but not linked to it by any relationship cannot be reached by a relationship walk from def55997, which fits the schemas surviving the archive.
+- So the walk is consistent with how it is written (it walks relationships), and the RE-side question is why the press created the new schemas anchored to def55997 but without the DataSetContent link to it (the architect's "created by the adopt-by-name path" candidate). Not diagnosed: the press's publish and schema-create calls were not read. Log as an RE defect candidate; the schemas also lack the ResourceConnection that stopped the cataloguer earlier (same family: the template create did not link what it should).
