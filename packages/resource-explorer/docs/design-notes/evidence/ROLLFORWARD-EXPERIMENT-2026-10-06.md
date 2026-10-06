@@ -46,7 +46,7 @@ targets were removed, or hidden because their elements are Mementos; NOT yet det
 
 Commit pressed by the owner on 8813 at about 16:59Z. Proof rows 36-47, read back by GUID at 17:35Z.
 
-1. Publish: CONFIRMED. New database `def55997` (RelationalDatabase, not Memento, original QN
+1. Publish: CORRECTED (see the correction section). The database `def55997` (RelationalDatabase, not Memento, original QN
    `PostgreSQL Relational Database::host.docker.internal:5442::coco_pharma`). Old 17f0a963 untouched, still Memento.
 2. Schemas: CONFIRMED for coco_sus (new 4079a1d5) and coco_ods (new 1f31b602), original names, not Memento.
    us_sales was NOT re-catalogued: RE's own guard held it ("can't be re-included until Egeria restores
@@ -117,3 +117,19 @@ archive left some archived-lineage elements (the schema types of the two kept sc
 their names. Prediction 3 is withdrawn as unproven: the target-list read does not show the connector's full list.
 Cause of A, best fit from the connection-graph reads: the schema-level connection graph and schema types of the old
 schemas were left live under their original names, so the new schemas could not get their own ResourceConnection.
+
+## CORRECTION (2026-10-06, after PR/CI's 8813 log read)
+
+This note said the press CREATED the new database def55997. That is wrong. Egeria's own creation times:
+database def55997 and its connection d98b8ad5 were created at 16:04:26Z by erinoverview, i.e. by the
+INCIDENT commit aa798e88's survey step (8813 log 11:04:27 CDT: "Created PostgreSQL database element:
+def55997", because the lookup by name no longer found the archived 17f0a963). The press at 16:59Z adopted
+that database (proof 36 database_published, 37 owner_result on def55997). Only the schemas were created by the
+press: coco_sus 4079a1d5 at 16:59:08Z, coco_ods 1f31b602 at 16:59:11Z.
+
+So: prediction 1 (new database created on re-publish) is not demonstrated by the press; it was done by the
+incident commit's own survey step. Prediction 2 (new schemas) stands. The 56 annotations on def55997 and its one
+SurveyReport also date from the 16:04 survey step, not the press (the 16:04 SurveyReport publish itself failed with a
+409 on the old report name; the report found now was not traced to its creation time).
+Also from the 8813 log: the leave-out of us_sales failed at its first column read-back
+(`...us_sales_forecast::createddate was archived but the read-back does not show it`), and the run ended failed at 11:05:01 CDT.
