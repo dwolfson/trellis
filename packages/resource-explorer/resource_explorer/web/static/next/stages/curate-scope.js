@@ -300,13 +300,13 @@ function rowHtml(node, me, depth, kindWord, commit) {
   const src = srcLine ? `<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>` : '';
   return `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
     <div class="w-[2ch] shrink-0" data-scope-select-cell>${pick}</div>
-    <div class="w-[24ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me)}</div>
-    <div class="min-w-[16ch] flex-1 break-words text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
-    <div class="w-[9ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
+    <div class="w-[22ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me)}</div>
+    <div class="min-w-[14ch] flex-1 break-words text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
+    <div class="w-[8ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
     <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
-    <div class="w-[18ch] shrink-0" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
-    <div class="w-[10ch] shrink-0 break-words" data-scope-classes-cell>${dataClassCell(node)}</div>
-    <div class="w-[20ch] shrink-0" data-scope-state-cell>${egeriaStateHtml(node, commit)}${collisionLines(node, commit)}${stateCellHtml(node)}</div>
+    <div class="w-[14ch] shrink-0 break-words" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
+    <div class="w-[14ch] shrink-0 break-words" data-scope-classes-cell>${dataClassCell(node)}</div>
+    <div class="w-[18ch] shrink-0 break-words" data-scope-state-cell>${egeriaStateHtml(node, commit)}${collisionLines(node, commit)}${stateCellHtml(node)}</div>
   </div>`;
 }
 
@@ -317,7 +317,7 @@ function columnRowsHtml(table) {
   const cols = table.columns || [];
   if (!cols.length) return '';
   return `<div data-scope-columns class="mb-[3px] flex gap-s2">
-    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0"></div>
+    <div class="w-[2ch] shrink-0"></div><div class="w-[22ch] shrink-0"></div>
     <div class="flex-1 border-l border-rule pl-s2">${cols.map((c) => `<div data-scope-column class="py-[1px] text-provenance text-ink-muted">
       <span aria-hidden="true" class="text-rule-strong">└</span> <span class="font-mono">${esc(c.name)}</span> <span>${esc(c.type || '')}</span> <span class="text-accent-ink">${esc(c.key_role || '')}</span></div>`).join('')}</div></div>`;
 }
@@ -329,12 +329,12 @@ export function treeHtml(view, me) {
     return `<div class="text-caveat text-ink-muted">No stored schema rows yet: run a survey first. Nothing to scope until Egeria's survey or RE's has listed the schemas.</div>`;
   }
   const head = `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" data-scope-tree-head>
-    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0">choice</div><div class="min-w-[16ch] flex-1">Schema / table</div>
-    <div class="w-[9ch] shrink-0 text-right" title="Row count; the source and date ride on each cell">Rows</div>
-    <div class="w-[8ch] shrink-0 text-right" title="Size on disk; the source and date ride on each cell">Size</div>
-    <div class="w-[18ch] shrink-0" data-scope-activity-head title="Activity: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">Activity</div>
-    <div class="w-[10ch] shrink-0" data-scope-classes-head title="Data classes found in the columns">Classes</div>
-    <div class="w-[20ch] shrink-0" data-scope-state-head title="State in Egeria">In Egeria</div></div>`;
+    <div class="w-[2ch] shrink-0"></div><div class="w-[22ch] shrink-0 break-words">choice</div><div class="min-w-[14ch] flex-1 break-words">Schema / table</div>
+    <div class="w-[8ch] shrink-0 break-words text-right" title="Row count; the source and date ride on each cell">Rows</div>
+    <div class="w-[8ch] shrink-0 break-words text-right" title="Size on disk; the source and date ride on each cell">Size</div>
+    <div class="w-[14ch] shrink-0 break-words" data-scope-activity-head title="Activity: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">Activity</div>
+    <div class="w-[14ch] shrink-0 break-words" data-scope-classes-head title="Data classes found in the columns">Classification</div>
+    <div class="w-[18ch] shrink-0 break-words" data-scope-state-head title="State in Egeria">In Egeria</div></div>`;
   const body = (view.schemas || []).map((s) => {
     const open = openSchemas.has(s.name);
     const tables = open ? s.tables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
@@ -346,7 +346,7 @@ export function treeHtml(view, me) {
   // A fixed floor (not max-content, which let one long sentence widen every row): at about
   // 1300px everything fits, and below the floor the host scrolls sideways inside its own
   // container instead of clipping at the edge.
-  return `<div class="min-w-[64rem]">${head + body + sys}</div>`;
+  return `<div class="min-w-[52rem]">${head + body + sys}</div>`;
 }
 
 /** The tick-everything box and the bulk bar above the tree. */
@@ -416,7 +416,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
     ${activitySummaryHtml(view)}
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
     ${bulkBarHtml(view, me)}
-    <div data-scope-tree class="overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
+    <div data-scope-tree class="min-w-0 max-w-full overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
     <div data-scope-commit class="mt-s2"></div>
     </div>
     <div data-scope-status class="mt-s1 text-provenance text-ink-muted">${esc(status)}</div>`;

@@ -539,16 +539,16 @@ test('activity is a word with its window: active, dormant, or can\'t tell with t
   assert.match(document.querySelector('[data-scope-activity-head]').title, /0 writes in at least 90 days/);
 });
 
-test('columns, left to right: choice, Schema / table, Rows, Size, Activity, Classes, In Egeria (full names in the titles)', async () => {
+test('columns, left to right: choice, Schema / table, Rows, Size, Activity, Classification, In Egeria (full names in the titles)', async () => {
   const { document } = await setUp(baseView());
   const headEls = [...document.querySelector('[data-scope-tree-head]').children].filter((c) => flat(c));
-  assert.deepEqual(headEls.map(flat), ['choice', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classes', 'In Egeria']);
+  assert.deepEqual(headEls.map(flat), ['choice', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
   // every shortened header keeps its meaning on hover
   const byText = Object.fromEntries(headEls.map((c) => [flat(c), c.title]));
   assert.match(byText.Rows, /Row count/);
   assert.match(byText.Size, /Size on disk/);
   assert.match(byText.Activity, /dormant means 0 writes in at least 90 days/);
-  assert.match(byText.Classes, /Data classes found in the columns/);
+  assert.match(byText.Classification, /Data classes found in the columns/);
   assert.equal(byText['In Egeria'], 'State in Egeria');
   const cells = [...row(document, 'schema:sales').children].map((c) => Object.keys(c.dataset)[0]);
   assert.deepEqual(cells, ['scopeSelectCell', 'scopeChoiceCell', 'scopeNameCell', 'scopeRowsCell', 'scopeSizeCell', 'scopeLastwriteCell', 'scopeClassesCell', 'scopeStateCell']);
@@ -610,7 +610,7 @@ test('the STATE column is fully present and the tree scrolls sideways inside its
   // The floor is a fixed one, so at about 1300px all seven columns fit and only a narrower
   // pane scrolls. (jsdom does no layout: the fit itself is reasoned from these widths, not measured.)
   assert.equal(host.querySelector('.min-w-max'), null, 'no max-content floor');
-  assert.ok(host.querySelector('.min-w-\\[64rem\\]'), 'a fixed floor instead');
+  assert.ok(host.querySelector('.min-w-\\[52rem\\]'), 'a fixed floor instead');
   assert.ok(row(document, 'schema:sales').querySelector('[data-scope-state-cell]'));
   // jsdom does no layout: whether STATE is fully visible at ~1300px is NOT measured here.
 });
