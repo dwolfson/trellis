@@ -91,3 +91,46 @@ Whether to restore at all or to roll forward. The project owner decides, with th
   - Con: anchors also decide visibility and delete cascade for everything under them, so a table anchored
     on its own schema changes what a database-level delete reaches. Behaviour of the template create and
     the JDBC cataloguer with nested anchors is not known; they would need a throwaway trial.
+
+## Review additions (architect, 2026-10-06; items marked CHECK were not verified by me)
+
+**Approach A needs these steps added:**
+1. Detach the NEW schemas' catalog targets (by relationship GUID, read first) before retiring the new tree.
+   Otherwise the connector keeps two targets per name, one on an archived element, and the restored
+   coco_sus/coco_ods targets compete with them. The daemon already shows this state for scratch_cat_test6.
+2. Move RE's registry with Egeria. The database record's Egeria element pointer (CHECK the exact field
+   name, the architect calls it egeria_asset_guid) and the roll-forward commit's proof rows point at
+   def55997. After a restore, write a proof row "restored · 17f0a963 · from def55997 · <when> · by <who>" and
+   set the pointer back; otherwise every status on the page derives from rows naming the wrong element. If
+   B is chosen, write "rolled forward · def55997 · previous 17f0a963 archived".
+3. Rename-aside must cover every new element that took an old element's name: the two schemas, the
+   database and its four connection elements, and any new SurveyReport or annotation sharing a deterministic
+   name with an old one. 56 of 76 annotations suggests about twenty collided; read before the trial.
+4. The old coco_sus schema type and schema-level connection are LIVE with original names and relationships
+   intact (read 17:5xZ); the old coco_ods schema type is live too (its schema-level connection was NOT read:
+   CHECK). After declassify and rename-back they should rejoin without work. This is why A restores a
+   cataloguable tree and B does not.
+5. Order: anchor first (the database), then children, because a read of a child can return 500 while its
+   anchor is Memento (the symptom seen). The trial confirms.
+
+**Trial additions.** After the deliberate cascade, read the database by GUID and expect the 500; declassify
+the database alone and read again before touching any child. That answers question 3 with one call. The
+trial database needs two schemas and a table with a term assignment, so the cascade and the surviving
+relationships both reproduce.
+
+**Why A is consistent with roll-forward.** The archive was not an intended state change but a defective
+write; Egeria keeps the versions either way; the correction is recorded as a forward event (the
+"restored" proof row). If the Egeria lead's fix lands first, B becomes a re-run on the fixed build rather than
+a plan.
+
+**Nested anchors, what the first cons missed.**
+- The anchor is Egeria's choice (template and cataloguer), not RE's: RE can only follow. The real question
+  for the Egeria lead is whether her cataloguer and template will change.
+- A transition leaves mixed trees (old elements anchored to the database, new ones to the schema), so RE's
+  leave-out preview must read each element's Anchors classification and not assume the shape. That is right
+  regardless.
+- Visibility and zones are evaluated through the anchor, so nesting changes which element's zone governs a table.
+- Pro: schema-kind targets already make the schema the unit of cataloguing; nested anchors would make it
+  the unit of archive too.
+- The anchor check that cannot fire is a bug whatever the anchoring. Nested anchors shrink the blast radius
+  without fixing it. Keep the fix and the redesign apart.
