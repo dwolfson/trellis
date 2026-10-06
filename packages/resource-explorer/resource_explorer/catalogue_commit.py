@@ -55,6 +55,7 @@ from typing import Any, Callable
 from resource_explorer.catalogue_gateway import (
     ARCHIVE, CATALOG_SCHEMA_ACTION_TYPE, FAILED_ACTION_STATUSES, RUNNING_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
     schema_qualified_name, server_name_for)
+from resource_explorer import catalogue_gateway as gw
 from resource_explorer.catalogue_scope import CATALOGUE, LEAVE_OUT, current_schema_choice, md
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ WHOLE_SCHEMAS_LINE = "Egeria catalogs whole schemas · table choices are kept fo
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
+# The ISSUE-117 hard block lives in catalogue_gateway (`ISSUE_117_BLOCK`, `ISSUE_117_WORDS`); it is read at
+# call time through `gw` so one switch governs the preview, the outbox handler and the real gateway.
+CATALOGED_STATES = ("catalogued", "attached_waiting", "queued", "sent", "failed")
 CANT_CHECK = "couldn't check what hangs off it"
 IN_USE = "in use by a running survey · wait or cancel"
 WAIT = "wait or cancel"
@@ -682,6 +686,10 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                                                                   if st.get("state") in ("deleted", "archived") else " · never cataloged"))
             leave.append(row)
             continue
+        if gw.ISSUE_117_BLOCK and st.get("state") in CATALOGED_STATES:
+            row.update(form="issue_117", blocked=True, reason=gw.ISSUE_117_WORDS, text=f"{name}: {gw.ISSUE_117_WORDS}")
+            leave.append(row)
+            continue
         if gateway is None:
             row.update(form="cannot_check", blocked=True, text=f"{name}: {CANT_CHECK}",
                        error="Egeria could not be reached")
@@ -988,6 +996,9 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
         return ""
     el = gateway.read_element(qn)
     guid = el.guid if el else ""
+    if gw.ISSUE_117_BLOCK and el is not None:
+        # Defence behind the preview: whatever queued this, nothing is sent for a schema Egeria holds.
+        raise GatewayError(f"{schema}: {gw.ISSUE_117_WORDS}")
     if guid:
         for t in [t for t in gateway.list_catalog_targets() if t.element_guid == guid]:
             gateway.remove_catalog_target(t.relationship_guid)

@@ -169,7 +169,19 @@ const who = (by) => (by && by === whoAmI() ? 'you' : by);
  *  sentence behind "details"), tags for what differs or came from a rule, and, only for rows that need
  *  a person, a visible second line (a proposal's reason, a survey disagreement). */
 export function choiceCellHtml(node, me, commit = null) {
-  return choiceCellCore(node, me) + savedNoteHtml(node, commit);
+  return choiceCellCore(node, me) + blockedMarkHtml(node, commit) + savedNoteHtml(node, commit);
+}
+
+/** ISSUE-117: Egeria archives a database's WHOLE tree when any part of it is archived, so a leave-out of a
+ *  schema that is cataloged in Egeria sends nothing. The choice is kept; the row says so with a mark and a
+ *  short word, the sentence on hover. (The server's preview names the same reason on the commit.) */
+const ISSUE_117_TITLE = 'Egeria archives the whole database tree when any part of it is archived (ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent';
+const CATALOGED = ['catalogued', 'attached_waiting', 'queued', 'sent', 'failed'];
+function blockedMarkHtml(node, commit) {
+  if (node.kind !== 'schema' || node.effective !== 'leave_out') return '';
+  const st = ((commit || {}).schemas || {})[node.name];
+  if (!st || !CATALOGED.includes(st.state)) return '';
+  return `<div data-scope-blocked class="text-provenance font-semibold text-ink" title="${esc(ISSUE_117_TITLE)}"><span aria-hidden="true">⛔</span> kept · not sent <details data-scope-details class="inline text-provenance text-ink-muted font-normal"><summary class="inline cursor-pointer">why</summary> ${esc(ISSUE_117_TITLE)}</details></div>`;
 }
 
 /** "saved · you · just now" in the cell that was pressed, for a few seconds; the full sentence rides
@@ -360,7 +372,7 @@ function rowHtml(node, me, depth, kindWord, commit, open = false) {
   return `<div class="flex items-baseline gap-s2 border-b border-rule border-l-[3px] pl-[4px] py-[3px] text-caveat ${edge ? 'border-l-ink' : 'border-l-transparent'} ${lowered ? 'text-ink-muted opacity-70' : ''} ${flashRows.has(key) ? 'bg-paper-surface' : ''}" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}"${lowered ? ' data-scope-lowered' : ''}>
     <div class="w-[2ch] shrink-0" data-scope-select-cell>${pick}</div>
     <div class="w-[24ch] shrink-0" data-scope-choice-cell ${pendingRows.has(key) ? 'aria-busy="true"' : ''}>${choiceCellHtml(node, me, commit)}</div>
-    <div class="min-w-[14ch] flex-1 break-words ${lowered ? 'text-ink-muted' : 'text-ink'}" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
+    <div class="min-w-[14ch] flex-1 break-words ${lowered ? 'text-ink-muted' : 'text-ink'}" data-scope-name-cell><span data-scope-bullet aria-hidden="true" class="text-ink-muted">${isSchema ? '▪' : '·'}</span> ${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
     <div class="w-[8ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
     <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
     <div class="w-[14ch] shrink-0 break-words" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
@@ -419,7 +431,7 @@ export function treeHtml(view, me) {
   const body = plan.rows.map(({ s, tables: shownTables, open }) => {
     const tables = open ? shownTables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
       || '<div class="ml-s3 text-caveat text-ink-muted">No tables.</div>' : '';
-    return `<div data-scope-schema-block="${esc(s.name)}">${rowHtml(s, me, 0, '', view.commit, open)}${tables}</div>`;
+    return `<div data-scope-schema-block="${esc(s.name)}" class="mt-[2px] border-t border-rule-strong">${rowHtml(s, me, 0, '', view.commit, open)}${tables}</div>`;
   }).join('') || `<div data-scope-filter-empty class="py-s1 text-caveat text-ink-muted">Nothing matches “${esc(filterText.trim())}”.</div>`;
   const sys = view.system
     ? `<div data-scope-system class="mt-s1 text-caveat text-ink-muted">${esc(String(view.system.folded))} system schemas folded · ${esc(view.system.text)}</div>` : '';

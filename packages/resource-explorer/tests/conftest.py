@@ -471,6 +471,17 @@ os.environ.setdefault("RE_JWT_SECRET", "resource-explorer-test-secret")
 
 
 @pytest.fixture(autouse=True)
+def issue_117_block_off_for_legacy_delete_path_tests(request, monkeypatch):
+    """The ISSUE-117 hard block (catalogue_gateway.ISSUE_117_BLOCK) stops every archive and delete RE could
+    send to Egeria. The older catalogue tests exercise that frozen path against the fake and keep doing so
+    with the switch off; ONLY tests/test_catalogue_issue117_block.py runs with it on (the shipped state)."""
+    if request.module.__name__.endswith("test_catalogue_issue117_block"):
+        return
+    from resource_explorer import catalogue_gateway
+    monkeypatch.setattr(catalogue_gateway, "ISSUE_117_BLOCK", False)
+
+
+@pytest.fixture(autouse=True)
 def ephemeral_prefect(monkeypatch):
     """Force Prefect to run flows in-process, ignoring any configured server.
 
