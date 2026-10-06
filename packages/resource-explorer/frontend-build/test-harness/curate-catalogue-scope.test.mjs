@@ -16,6 +16,8 @@ import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
 
 const wait = (ms = 250) => new Promise((r) => setTimeout(r, ms));
 const flat = (el) => el.textContent.replace(/\s+/g, ' ').trim();
+/** The choice cell's words without its state mark and its transient 'saved'. */
+const words = (el) => { const c = el.cloneNode(true); c.querySelectorAll('[data-scope-mark-line], [data-scope-saved-note]').forEach((n) => n.remove()); return flat(c); };
 
 const node = (kind, name, over = {}) => ({
   kind, name, key: name, state: 'undecided', proposal: null, live_proposal: null, overridden: null,
@@ -324,7 +326,7 @@ function withProposal() {
 test('a proposal row: the proposal glyph and word, its reason, confirm and the other choice; effective stays undecided', async () => {
   const { document } = await setUp(withProposal());
   const r = row(document, 'schema:empty_one');
-  assert.equal(flat(r.querySelector('[data-scope-choice-cell]')),
+  assert.equal(words(r.querySelector('[data-scope-choice-cell]')),
     '⏵ proposed: leave out · 0 tables, measured 10-02 confirm · catalogue instead');
   assert.equal(r.dataset.scopeEffective, '', 'an unconfirmed proposal is still undecided');
   assert.ok(r.querySelector('[aria-label="proposal"]'), 'the glyph carries the existing word');
@@ -336,7 +338,7 @@ test('confirm POSTs the node and the row reads confirmed from the re-read', asyn
   await wait();
   const [c] = calls(server, 'POST', '/node/confirm');
   assert.deepEqual(c.body, { schema_name: 'empty_one', table_name: '' });
-  assert.match(flat(row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]')), /^leave out · confirmed by me 10-04/);
+  assert.match(words(row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]')), /^leave out · confirmed by me 10-04/);
   assert.match(flat(document.querySelector('[data-scope-status]')), /empty_one: leave out is in the re-read scope/);
 });
 
@@ -346,7 +348,7 @@ test('override POSTs the node; the row shows the other choice and the proposal r
   await wait();
   assert.equal(calls(server, 'POST', '/node/override').length, 1);
   const cell = row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]');
-  assert.match(flat(cell), /^catalogue · overridden by me 10-04/);
+  assert.match(words(cell), /^catalogue · overridden by me 10-04/);
   const struck = cell.querySelector('[data-scope-struck]');
   assert.ok(struck && struck.className.includes('line-through'));
   assert.match(flat(struck), /proposed: leave out · 0 tables, measured 10-02/);
@@ -362,7 +364,7 @@ test('survey now disagrees: both values and the survey date, and the choice does
   const cell = row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]');
   assert.match(flat(cell.querySelector('[data-scope-disagrees]')),
     /survey now disagrees: Confirmed leave out on 10-04, when it had 0 tables; it now has 4 \(survey of 10-09\)\. The choice has not changed\./);
-  assert.match(flat(cell), /^leave out/);
+  assert.match(words(cell), /^leave out/);
   assert.ok(cell.querySelector('[data-scope-act="clear"]'), 'offers to reconsider');
 });
 

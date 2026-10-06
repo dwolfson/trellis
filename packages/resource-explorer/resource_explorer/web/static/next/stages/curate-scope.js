@@ -57,6 +57,27 @@ let openFor = '';
 /** Rows whose choice was just saved: key -> {by, at}. A plain line on the row says so for a few seconds. */
 const savedNotes = new Map();
 let savedNoteMs = 6000;
+/** Rows whose write is in flight (a second press on them is ignored) and rows flashing after a save. */
+const pendingRows = new Set();
+let bulkBusy = false;
+const flashRows = new Set();
+let flashMs = 1500;
+export function setFlashMs(ms) { flashMs = ms; }
+const rowKeyOf = (node) => (node.kind === 'schema' ? `schema:${node.name}` : `table:${node.schema}.${node.name}`);
+/** The state mark: shape and place, never colour alone and never an accent (accent is for controls). */
+const MARKS = {
+  catalogue: { glyph: '●', word: 'catalog', cls: 'text-ink' },
+  leave_out: { glyph: '⊘', word: 'left out', cls: 'text-ink-muted' },
+  none: { glyph: '○', word: 'undecided', cls: 'text-ink-muted' },
+};
+const STRIPS = ['border-l-ink', 'border-l-rule-strong', 'border-l-transparent'];
+const tone = (eff) => (eff === 'catalogue' ? 'border-l-ink' : eff === 'leave_out' ? 'border-l-rule-strong' : 'border-l-transparent');
+function markHtml(node) {
+  const k = node.effective === 'catalogue' || node.effective === 'leave_out' ? node.effective : 'none';
+  const m = MARKS[k];
+  const badge = k === 'leave_out' ? ' <span data-scope-badge class="text-provenance font-semibold text-ink-muted">left out</span>' : '';
+  return `<div data-scope-mark-line><span data-scope-mark="${k}" role="img" aria-label="${m.word}" title="${m.word}" class="inline-block w-[1.4ch] font-semibold ${k === 'catalogue' ? 'text-ink' : 'text-ink-muted'}">${m.glyph}</span>${badge}</div>`;
+}
 export function setSavedNoteMs(ms) { savedNoteMs = ms; }
 /** The last commit pressed on this pane, kept so its steps survive the re-draw that follows it. */
 let commitUi = null;
@@ -111,13 +132,14 @@ export function scopeHeaderText(view) {
 /* ── one row ─────────────────────────────────────────────────────────── */
 
 function setterButtons(node, me) {
-  const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
+  const busy = pendingRows.has(rowKeyOf(node));
+  const dis = me ? (busy ? 'disabled aria-busy="true"' : '') : `disabled title="${esc(signInReason)}"`;
   const sch = esc(node.kind === 'schema' ? node.name : node.schema);
   const tbl = node.kind === 'table' ? esc(node.name) : '';
   const own = node.explicit ? node.explicit.choice : '';
   const btn = (choice, label) => `<button type="button" data-scope-act="set" data-scope-choice="${choice}"
     data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis} ${own === choice ? 'aria-pressed="true"' : 'aria-pressed="false"'}
-    class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">${label}</button>`;
+    class="${me && !busy ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} ${busy && own === choice ? 'font-semibold' : ''} bg-transparent p-0">${label}</button>`;
   const clear = node.explicit ? ` <button type="button" data-scope-act="clear" data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis}
     class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">${node.state === 'disagrees' ? 'reconsider' : 'clear'}</button>` : '';
   return `<span class="text-provenance">${btn('catalogue', 'catalogue')} · ${btn('leave_out', 'leave out')}${clear}</span>`;
@@ -135,7 +157,7 @@ function proposalControls(node, me) {
 /** The left-hand choice cell: the person's choice, or the proposal, or what
  *  the row inherits, in the words the designer drew. */
 export function choiceCellHtml(node, me, commit = null) {
-  return choiceCellCore(node, me) + savedNoteHtml(node, commit);
+  return markHtml(node) + choiceCellCore(node, me) + savedNoteHtml(node, commit);
 }
 
 /** "saved in Resource Explorer · who · when · not yet cataloged in Egeria": shown for a few seconds
@@ -147,7 +169,7 @@ function savedNoteHtml(node, commit) {
   if (!n) return '';
   const st = node.kind === 'schema' ? ((commit || {}).schemas || {})[node.name] : ((commit || {}).tables || {})[`${node.schema}.${node.name}`];
   const tail = !st || ['none', 'uncommitted', 'left_out'].includes(st.state) ? 'not yet cataloged in Egeria' : 'Egeria changes when you press Catalog';
-  return `<div data-scope-saved-note class="text-provenance text-ink-muted">saved in Resource Explorer · ${esc(n.by)} · ${esc(n.at)} · ${tail}</div>`;
+  return `<div><span data-scope-saved-note title="saved in Resource Explorer · ${esc(n.by)} · ${esc(n.at)} · ${tail}" class="text-provenance text-ink-muted">saved</span></div>`;
 }
 
 function choiceCellCore(node, me) {
@@ -326,10 +348,11 @@ function rowHtml(node, me, depth, kindWord, commit, open = false) {
     : `<input type="checkbox" data-scope-select-schema="${esc(node.schema)}" data-scope-select-table="${esc(node.name)}" aria-label="select table ${esc(node.schema)}.${esc(node.name)}" ${selectedTables.has(tkey(node.schema, node.name)) ? 'checked' : ''} ${dis}>`;
   const srcLine = nodeSourceLine(node);
   const src = srcLine ? `<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>` : '';
-  return `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
+  const leaveOut = node.effective === 'leave_out';
+  return `<div class="flex items-baseline gap-s2 border-b border-rule border-l-[6px] pl-[4px] py-[3px] text-caveat ${node.effective === 'catalogue' ? 'border-l-ink' : node.effective === 'leave_out' ? 'border-l-rule-strong' : 'border-l-transparent'} ${flashRows.has(key) ? 'bg-paper-surface' : ''}" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
     <div class="w-[2ch] shrink-0" data-scope-select-cell>${pick}</div>
-    <div class="w-[22ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me, commit)}</div>
-    <div class="min-w-[14ch] flex-1 break-words text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
+    <div class="w-[22ch] shrink-0" data-scope-choice-cell ${pendingRows.has(key) ? 'aria-busy="true"' : ''}>${choiceCellHtml(node, me, commit)}</div>
+    <div class="min-w-[14ch] flex-1 break-words ${leaveOut ? 'text-ink-muted line-through opacity-70' : 'text-ink'}" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
     <div class="w-[8ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
     <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
     <div class="w-[14ch] shrink-0 break-words" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
@@ -488,6 +511,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
     <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
     ${activitySummaryHtml(view)}
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
+    ${(view.schemas || []).length ? `<div data-scope-legend class="mb-s1 text-provenance text-ink-muted">● catalog · ⊘ left out (struck through) · ○ undecided</div>` : ''}
     ${(view.schemas || []).length ? filterBarHtml(view) : ''}${bulkBarHtml(view, me)}
     <div data-scope-tree class="min-w-0 max-w-full overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
     <div data-scope-commit class="mt-s2"></div>
@@ -699,33 +723,110 @@ function paintScope(el, slug, status, view) {
   };
   const failure = (err, what) => (err.status === 401 ? signInReason : `${what} failed: ${err.message}`);
 
+  const rowEl = (k) => [...el.querySelectorAll('[data-scope-row]')].find((r) => r.dataset.scopeRow === k);
+  const nodeFor = (k) => {
+    const rest = k.slice(k.indexOf(':') + 1);
+    if (k.startsWith('table:')) { const d = rest.indexOf('.'); return find(view, rest.slice(0, d), rest.slice(d + 1)); }
+    return find(view, rest, '');
+  };
+  /** What a node would look like with `want` chosen (or cleared, ''): the row shows it the moment the
+   *  button is pressed, before the server has answered; a failed write puts the old state back. */
+  const guess = (node, want) => {
+    if (want) {
+      return { ...node, explicit: { choice: want, by: whoAmI(), at: new Date().toISOString(), action: 'set', source: 'person', reason: '' },
+        effective: want, effective_from: 'self', state: 'chosen', proposal: null, overridden: null, disagrees: null };
+    }
+    const parent = node.kind === 'table' ? (find(view, node.schema, '') || {}).effective || null : null;
+    return { ...node, explicit: null, effective: parent, effective_from: parent ? 'schema' : null, state: 'undecided', proposal: null, overridden: null, disagrees: null };
+  };
+  const paintRow = (k, node) => {
+    const r = rowEl(k);
+    if (!r) return;
+    STRIPS.forEach((c) => r.classList.remove(c));
+    r.classList.add(tone(node.effective));
+    r.dataset.scopeEffective = node.effective || '';
+    const nm = r.querySelector('[data-scope-name-cell]');
+    if (nm) {
+      const out = node.effective === 'leave_out';
+      ['line-through', 'opacity-70', 'text-ink-muted'].forEach((c) => nm.classList.toggle(c, out));
+      nm.classList.toggle('text-ink', !out);
+    }
+    const cell = r.querySelector('[data-scope-choice-cell]');
+    if (cell) {
+      if (pendingRows.has(k)) cell.setAttribute('aria-busy', 'true'); else cell.removeAttribute('aria-busy');
+      cell.innerHTML = choiceCellHtml(node, me, view.commit);
+    }
+  };
   // After a write the words come from the re-read view, not from the click. The scope is read
   // ONCE here and handed to the redraw (it used to be read again by the redraw: two GETs a write).
-  const afterWrite = async (write, what, verify, spent = false, rowKey = '') => {
-    const rowEl = (k) => [...el.querySelectorAll('[data-scope-row]')].find((r) => r.dataset.scopeRow === k);
-    const cell = rowKey && rowEl(rowKey) ? rowEl(rowKey).querySelector('[data-scope-choice-cell]') : null;
-    if (cell) cell.insertAdjacentHTML('beforeend', '<div data-scope-saving class="text-provenance text-ink-muted">saving…</div>');
+  // `rowKey` names the one row the press was on: it changes at once, is ignored if pressed again
+  // while its write is out, flashes briefly when the server has taken it, and is rolled back with
+  // "not saved" when it has not.
+  const afterWrite = async (write, what, verify, spent = false, rowKey = '', want = null) => {
+    let before = null;
+    if (rowKey) {
+      if (pendingRows.has(rowKey)) return;                 // already out: a second press is ignored
+      const node = nodeFor(rowKey);
+      const r = rowEl(rowKey);
+      pendingRows.add(rowKey);
+      if (node && r && want !== null) {
+        const cell = r.querySelector('[data-scope-choice-cell]');
+        before = { cell: cell ? cell.innerHTML : '', cls: r.className, eff: r.dataset.scopeEffective, node };
+        paintRow(rowKey, guess(node, want));
+        const c2 = r.querySelector('[data-scope-choice-cell]');
+        if (c2) c2.insertAdjacentHTML('beforeend', '<div data-scope-saving class="text-provenance text-ink-muted">saving…</div>');
+      }
+    }
+    const release = () => { if (rowKey) pendingRows.delete(rowKey); };
     try { await write(); } catch (err) {
-      if (cell) cell.querySelectorAll('[data-scope-saving]').forEach((e) => e.remove());
+      release();
+      if (before) {
+        const r = rowEl(rowKey);
+        if (r) {
+          paintRow(rowKey, before.node);
+          r.querySelector('[data-scope-choice-cell]').insertAdjacentHTML('beforeend',
+            `<div data-scope-not-saved class="text-provenance font-semibold text-ink">✕ not saved · ${esc(err.status === 401 ? 'sign in first' : err.message)}</div>`);
+        }
+      }
       say(failure(err, what), true); return;
     }
     if (spent) { selected.clear(); selectedTables.clear(); }   // a finished bulk action spends the selection
+    if (rowKey) {
+      // the server has taken it: say so on the row now, before the scope is read again
+      const r = rowEl(rowKey);
+      const mineNote = { by: whoAmI(), at: md(new Date().toISOString()) };
+      savedNotes.set(rowKey, mineNote);
+      flashRows.add(rowKey);
+      if (r) {
+        r.classList.add('bg-paper-surface');
+        const cell = r.querySelector('[data-scope-choice-cell]');
+        if (cell) {
+          cell.querySelectorAll('[data-scope-saving]').forEach((e) => e.remove());
+          cell.insertAdjacentHTML('beforeend', savedNoteHtml(nodeFor(rowKey) || { kind: 'schema', name: '' }, view.commit));
+        }
+      }
+      setTimeout(() => { flashRows.delete(rowKey); const rr = rowEl(rowKey); if (rr) rr.classList.remove('bg-paper-surface'); }, flashMs);
+    }
     let again;
     try { again = await getCatalogueScope(slug); }
-    catch (err) { say(`${what}: written, but the scope could not be re-read: ${err.message}`, true); return; }
+    catch (err) { release(); say(`${what}: written, but the scope could not be re-read: ${err.message}`, true); return; }
     if (rowKey) {
-      const [kind, rest] = [rowKey.split(':')[0], rowKey.slice(rowKey.indexOf(':') + 1)];
-      const dot = rest.indexOf('.');
-      const n = kind === 'table' ? find(again, rest.slice(0, dot), rest.slice(dot + 1)) : find(again, rest, '');
+      const n = nodeIn(again, rowKey);
       const ex = n && n.explicit;
       savedNotes.set(rowKey, { by: ex ? ex.by : whoAmI(), at: ex ? md(ex.at) : md(new Date().toISOString()) });
       setTimeout(() => {
         savedNotes.delete(rowKey);
-        const r = rowEl(rowKey);
-        if (r) r.querySelectorAll('[data-scope-saved-note]').forEach((e) => e.remove());
+        const rr = rowEl(rowKey);
+        if (rr) rr.querySelectorAll('[data-scope-saved-note]').forEach((e) => e.parentElement.remove());
       }, savedNoteMs);
     }
+    release();
     await renderCatalogueScope(el, slug, verify(again) || '', again);
+  };
+  const nodeIn = (v, k) => {
+    const rest = k.slice(k.indexOf(':') + 1);
+    if (k.startsWith('table:')) { const d = rest.indexOf('.'); return find(v, rest.slice(0, d), rest.slice(d + 1)); }
+    return find(v, rest, '');
   };
 
   const offered = (view.schemas || []).map((x) => x.name);
@@ -792,12 +893,33 @@ function paintScope(el, slug, status, view) {
     if (!names.length && !tabs.length) { say('select at least one schema or table first', true); return; }
     const label = choice ? words(choice) : 'no choice';
     const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    if (bulkBusy) return;                       // one bulk action at a time: a second press is ignored
+    bulkBusy = true;
+    const keys = [...names.map((n) => `schema:${n}`), ...tabs.map((t) => `table:${t.schema}.${t.table}`)];
+    // the ticked rows show the new state now; their controls look pressed until the server answers
+    keys.forEach((k) => {
+      const node = nodeFor(k);
+      if (!node || !rowEl(k)) return;
+      pendingRows.add(k);
+      paintRow(k, guess(node, choice));
+      rowEl(k).querySelector('[data-scope-choice-cell]').insertAdjacentHTML('beforeend', '<div data-scope-saving class="text-provenance text-ink-muted">saving…</div>');
+    });
+    el.querySelectorAll('[data-scope-bulk-act], [data-scope-catalogue-all]').forEach((b) => { b.disabled = true; b.setAttribute('aria-busy', 'true'); });
+    const settle = () => { bulkBusy = false; keys.forEach((k) => pendingRows.delete(k)); };
     afterWrite(async () => {
-      if (names.length) await setCatalogueNodes(slug, names.map((n) => ({ schema: n })), choice, everySchema);
-      for (const t of tabs) {
-        if (choice) await setCatalogueNode(slug, t.schema, t.table, choice);
-        else await clearCatalogueNode(slug, t.schema, t.table);
+      try {
+        if (names.length) await setCatalogueNodes(slug, names.map((n) => ({ schema: n })), choice, everySchema);
+        for (const t of tabs) {
+          if (choice) await setCatalogueNode(slug, t.schema, t.table, choice);
+          else await clearCatalogueNode(slug, t.schema, t.table);
+        }
+      } catch (err) {
+        settle();
+        keys.forEach((k) => { const node = nodeFor(k); const r = rowEl(k); if (node && r) paintRow(k, node); });
+        el.querySelectorAll('[data-scope-bulk-act], [data-scope-catalogue-all]').forEach((b) => { b.disabled = false; b.removeAttribute('aria-busy'); });
+        throw err;
       }
+      settle();
     }, 'set the choices', (v) => {
       const mine = (n) => (n.explicit ? n.explicit.choice : '') === choice;
       const got = names.map((n) => find(v, n, '')).filter(Boolean);
@@ -848,14 +970,15 @@ function paintScope(el, slug, status, view) {
           ? `${label}: ${words(want) || 'no choice'} is in the re-read scope${want ? ` · set by ${n.explicit.by}` : ''}`
           : `the write returned, but the re-read scope shows ${got ? words(got) : 'no choice'} for ${label}`;
       };
-      if (act === 'set') afterWrite(() => setCatalogueNode(slug, schema, table, choice), 'set the choice', check(choice), false, rowKey);
-      else if (act === 'clear') afterWrite(() => clearCatalogueNode(slug, schema, table), 'clear the choice', check(''), false, rowKey);
+      const cur = find(view, schema, table) || {};
+      if (act === 'set') afterWrite(() => setCatalogueNode(slug, schema, table, choice), 'set the choice', check(choice), false, rowKey, choice);
+      else if (act === 'clear') afterWrite(() => clearCatalogueNode(slug, schema, table), 'clear the choice', check(''), false, rowKey, '');
       else if (act === 'confirm') {
-        const want = (find(view, schema, table) || {}).proposal;
-        afterWrite(() => confirmCatalogueNode(slug, schema, table), 'confirm the proposal', check(want ? want.choice : ''), false, rowKey);
+        const want = cur.proposal;
+        afterWrite(() => confirmCatalogueNode(slug, schema, table), 'confirm the proposal', check(want ? want.choice : ''), false, rowKey, want ? want.choice : null);
       } else if (act === 'override') {
-        const want = (find(view, schema, table) || {}).proposal;
-        afterWrite(() => overrideCatalogueNode(slug, schema, table), 'override the proposal', check(want ? opposite(want.choice) : ''), false, rowKey);
+        const want = cur.proposal;
+        afterWrite(() => overrideCatalogueNode(slug, schema, table), 'override the proposal', check(want ? opposite(want.choice) : ''), false, rowKey, want ? opposite(want.choice) : null);
       }
     }));
   };

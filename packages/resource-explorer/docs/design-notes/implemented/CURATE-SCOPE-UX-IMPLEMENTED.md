@@ -62,3 +62,24 @@ Cause, measured on a temp-SQLite fixture (no Egeria, no shared registry), `build
   on a 2-schema scope, 6 annotations so far). The step reads `running in Egeria · IN_PROGRESS · N annotations
   so far`, with the hint `check again in a minute with Read Egeria again`, no spinner; the leave-out
   in-progress block will matter for the same reason.
+
+## Part 6 addendum: what a choice press looks like (owner feedback 2026-10-06)
+
+The owner pressed `leave out` twice because the only trace was text scrolled off the right edge. Now,
+in the visible left part of the row (the choice cell and the row's left strip), at the moment of the press:
+
+Before (undecided row), markup:
+`<div class="flex items-baseline gap-s2 border-b border-rule border-l-[6px] pl-[4px] py-[3px] text-caveat border-l-transparent" data-scope-effective="">`
+choice cell: `○` (`data-scope-mark="none"`, `role="img" aria-label="undecided"`), `undecided · keeps what’s in Egeria now`, `catalogue · leave out`.
+
+After pressing `leave out`, before the server answers (same render as the press):
+row class `… border-l-rule-strong`, name cell `text-ink-muted line-through opacity-70`, choice cell
+`aria-busy="true"`: `⊘ left out` (`data-scope-mark="leave_out"`, `aria-label="left out"`, badge
+`data-scope-badge`), `leave out · set by <who> <date>`, `saving…`, both verbs `disabled` (a second press
+on the row is ignored; one bulk action at a time).
+When the PUT answers (before the scope is read again): `saving…` becomes `saved`
+(`title="saved in Resource Explorer · who · when · not yet cataloged in Egeria"`) and the row gets
+`bg-paper-surface` for 1.5 s. If the PUT fails the row returns to its previous markup and shows
+`✕ not saved · <cause>`.
+Catalog is `●` with `border-l-ink`; the legend above the table reads `● catalog · ⊘ left out (struck
+through) · ○ undecided`. State uses shape, weight, strike-through and opacity only (no accent colour).

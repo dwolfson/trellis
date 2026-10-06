@@ -88,6 +88,9 @@ export function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
       }
       if (method === 'GET' && u.includes('/commits/')) return ok({ id: 'cafe0123', state: 'running', author: 'me', steps: [] });
       if (method === 'PUT' && s.holdPut) await s.holdPut;
+      if (method === 'POST' && u.endsWith('/nodes') && s.holdPut) await s.holdPut;
+      if (method === 'PUT' && s.failPut) return err(500, s.failPut);
+      if (method === 'GET' && s.holdGet && !u.endsWith('/commit-preview')) await s.holdGet;
       if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalogue'], button: 'Catalogue · 0 schemas', leave_out: [], refused: [], collisions: [] });
       if (method === 'GET') return ok(s.view);
       if (!s.signedIn) return err(401, 'Sign in to change the scope');

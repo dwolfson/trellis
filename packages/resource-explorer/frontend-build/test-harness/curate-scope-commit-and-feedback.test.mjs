@@ -79,7 +79,8 @@ test('a choice write shows saving…, then a plain "saved in Resource Explorer" 
   await wait(60);
   const note = row(ctx.document, 'schema:sales').querySelector('[data-scope-saved-note]');
   assert.ok(note, 'the row says what happened');
-  assert.equal(flat(note), 'saved in Resource Explorer · me · 10-04 · not yet cataloged in Egeria');
+  assert.equal(flat(note), 'saved');
+  assert.equal(note.getAttribute('title'), 'saved in Resource Explorer · me · 10-04 · not yet cataloged in Egeria');
   assert.equal(ctx.document.querySelector('[role="dialog"]'), null, 'not a modal');
   await wait(220);
   assert.equal(row(ctx.document, 'schema:sales').querySelector('[data-scope-saved-note]'), null);
