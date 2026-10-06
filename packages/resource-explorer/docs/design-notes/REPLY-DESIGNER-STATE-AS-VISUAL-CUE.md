@@ -27,7 +27,7 @@ which is a different fact, from a different source, at a different time.
 **Addition 2: every control visibly changes something when pressed, or
 it isn't a control.** The schema-row toggle that "did nothing visible" is
 the same failure as the missing proof, so the same rule covers it: a
-press changes the element, or it's removed.
+press changes the element, or the control goes.
 
 ## 1. One vocabulary of cues, for every page
 
@@ -47,8 +47,8 @@ different place in each lane, and the lanes never borrow each other's cues.
 | **proven by read-back** | Egeria | ✓ | "cataloged" / "published" |
 | **failed** | Egeria | ✕, and the row gets a rule on its left edge | "failed" |
 | **archived in Egeria** | Egeria | □ | "archived" |
-| **removed from Egeria** | Egeria | ∅ | "removed" |
-| **will change in Egeria at the next commit** | Egeria | ⚠ | "will archive" / "will remove" |
+| **deleted in Egeria** | Egeria | none: the word alone, and the row lowers | "deleted" (see the addendum) |
+| **will change in Egeria at the next commit** | Egeria | ⚠ | "will archive" / "will delete" |
 
 **What carries meaning, so each cue means one thing:**
 
@@ -59,14 +59,14 @@ different place in each lane, and the lanes never borrow each other's cues.
 - **Lowered contrast across a row** means "not included". Nothing else
   lowers a row.
 - **Strike-through** means *superseded text* only: an overridden proposal,
-  a retired rule. It never means "removed from Egeria". That gets its own
-  glyph and word, so a struck row can't read as a deletion.
+  a retired rule. It never means "deleted in Egeria". That gets its own
+  word, so a struck row can't read as a deletion.
 - **A left-edge rule** means "this row needs you": failed, conflict,
   survey-now-disagrees. One mark for attention, used rarely.
 - **Glyphs stay** in the Egeria lane and in running text, always with
   their word (§4).
 
-No new glyph. ◔ ✓ ✕ □ ∅ ⚠ are `glyphs.js`'s own, with their words.
+No new glyph. ◔ ✓ ✕ □ ⚠ are `glyphs.js`'s own, with their words.
 
 ## 2. How much of the sentence shows
 
@@ -149,3 +149,26 @@ In order of how often a person presses and then waits:
 
 The gate stays as the ask states it, by use. The owner presses, and says
 whether he saw it, on each surface in turn.
+
+## Addendum (2026-10-06): "removed from Egeria" collided twice
+
+The architect caught it: my table gave Egeria's soft delete the ∅ glyph and
+the word "removed". Both are already taken. ∅ means *measured, nothing
+found* (`glyphs.js`'s measured-nothing family), and "removed" is reserved
+for taking a resource out of RE ("Remove from Resource Explorer", the
+controls reply). Her interim, "deleted" with no glyph, is the ruling:
+
+- **Word: "deleted"**, with "in Egeria" in the row's detail line:
+  "deleted in Egeria · ‹when›". It's Egeria's own term for a soft delete,
+  so a steward who checks in Egeria finds the same word there.
+- **No glyph.** None of the existing families fits: not ∅ (nothing
+  found), not ✕ (failed), not □ (archived is stored and restorable in a
+  way the steward should keep distinct). Adding one isn't worth a new
+  member for a state that ends a row's story. The row **lowers**, as a
+  left-out row does, since a deleted element isn't in the catalog.
+- **The preview's future form is "will delete"**, beside "will archive".
+  The commit's preview and row strings that print "removed (soft-deleted)"
+  and "removed · ‹time›" become "will delete" and "deleted · ‹time›".
+- **`glyphs.js`'s `removed` key** (∅, measured-nothing) is renamed
+  `deleted`, and its glyph is dropped. The key should name the state, and
+  the measured-nothing family keeps a single meaning.
