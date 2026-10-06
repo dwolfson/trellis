@@ -73,6 +73,7 @@ def _sweep_orphan_test_schemas(cur) -> list[str]:
         if name == _TEST_SCHEMA:
             continue
         suffix = name[len(_TEST_SCHEMA_PREFIX) + 1:]
+        suffix = suffix.split("_", 1)[0]   # `<pid>_v<n>` per-test scratch schemas
         if name != _TEST_SCHEMA_PREFIX and not suffix.isdigit():
             continue    # not a session schema at all — `..._backup` is someone's
                         # deliberate copy, and destroying data this fixture does
@@ -611,3 +612,44 @@ def reset_cached_config():
     _config_module._config = None
     yield
     _config_module._config = None
+
+
+_scratch_counter = {"n": 0}
+
+
+@pytest.fixture(autouse=True)
+def isolate_pgvector_schema(monkeypatch, isolate_database_url_settings, reset_cached_config):
+    """Point PGVECTOR_SCHEMA at a per-test scratch schema, never the shared one.
+
+    The guard's raw-psycopg2 allowance cannot see a default `PgVectorStore()`:
+    it qualifies tables by schema NAME, so it would read and write the shared
+    `resource_explorer` schema. This sets PGVECTOR_SCHEMA to
+    `resource_explorer_test_<pid>_v<n>` (a test's own override still wins), and
+    shared_registry_guard refuses a store built on the shared name.
+
+    LAZY: setting the env var connects to nothing. The schema is created by the
+    store itself (CREATE SCHEMA IF NOT EXISTS on connect) and dropped here at
+    teardown only if a store was actually built on it AND pgvector is
+    reachable, so a run without pgvector never attempts it.
+    """
+    _scratch_counter["n"] += 1
+    scratch = f"{_TEST_SCHEMA_PREFIX}_{os.getpid()}_v{_scratch_counter['n']}"
+    monkeypatch.setenv("PGVECTOR_SCHEMA", scratch)
+    yield scratch
+    if scratch in shared_registry_guard._state["vector_schemas_built"]:
+        shared_registry_guard._state["vector_schemas_built"].discard(scratch)
+        if _PGVECTOR_AVAILABLE:
+            import psycopg2
+            from resource_explorer.config import PgVectorConfig
+
+            cfg = PgVectorConfig()
+            conn = psycopg2.connect(
+                host=cfg.host, port=cfg.port, dbname=cfg.dbname,
+                user=cfg.db_user, password=cfg.password,
+            )
+            conn.autocommit = True
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f'DROP SCHEMA IF EXISTS "{scratch}" CASCADE')
+            finally:
+                conn.close()
