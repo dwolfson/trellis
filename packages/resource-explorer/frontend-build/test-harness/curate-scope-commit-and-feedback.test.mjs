@@ -84,14 +84,14 @@ test('a choice write shows saving…, then a plain "saved in Resource Explorer" 
   assert.equal(ctx.document.querySelector('[role="dialog"]'), null, 'not a modal');
   await wait(220);
   assert.equal(row(ctx.document, 'schema:sales').querySelector('[data-scope-saved-note]'), null);
-  assert.match(flat(row(ctx.document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalogue · set by me/, 'the choice itself stays');
+  assert.match(flat(row(ctx.document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalog · set by me/, 'the choice itself stays');
   mod.setSavedNoteMs(6000);
 });
 
 test('the per-row choice links keep their words', async () => {
   const { document } = await open(declaredView(), PREVIEW());
   const r = row(document, 'schema:sales');
-  assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="catalogue"]')), 'catalogue');
+  assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="catalogue"]')), 'catalog');
   assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="leave_out"]')), 'leave out');
 });
 

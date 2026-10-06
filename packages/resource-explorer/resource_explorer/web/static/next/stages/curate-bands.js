@@ -23,7 +23,7 @@
  *    this file falls back to the same words rather than ever drawing blank;
  *  - nothing here reads back from Egeria, and nothing publishes to it.
  */
-import { ago } from '/static/next/format.js';
+import { ago, savedLine } from '/static/next/format.js';
 import {
   getCurateTagsDetail, getCurateAllTags, addCurateTag, removeCurateTag,
   getCurateFeedback, addCurateFeedback, getCurateNotes, deleteCurateNote,
@@ -60,12 +60,12 @@ const DB_WORK_SECTIONS = [
   {
     id: 'glossary',
     title: 'Glossary terms on tables and columns',
-    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against, and the tables to be catalogued first (above).',
+    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against, and the tables to be cataloged first (above).',
   },
   {
     id: 'schema-match',
     title: 'Logical schema match',
-    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read, and the tables to be catalogued first (above). Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
+    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read, and the tables to be cataloged first (above). Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
   },
 ];
 
@@ -74,8 +74,8 @@ const DB_WORK_SECTIONS = [
  *  because the two sections below act on its output. */
 export function databaseScopeHtml() {
   return `<div data-curate-work="scope" class="mb-s3 min-w-0">
-    <div class="text-answer text-ink">What gets catalogued</div>
-    <div data-curate-scope class="mt-s1 text-caveat text-ink-muted">Reading the catalogue scope…</div></div>`;
+    <div class="text-answer text-ink">What gets cataloged</div>
+    <div data-curate-scope class="mt-s1 text-caveat text-ink-muted">Reading the catalog scope…</div></div>`;
 }
 
 export function databaseWorkHtml() {
@@ -155,7 +155,7 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
         class="w-[16ch] rounded-sm border border-rule-strong bg-transparent px-[4px] text-caveat text-ink placeholder:text-ink-muted">
       <datalist id="curate-tag-datalist">${(allTags || []).map((t) => `<option value="${esc(t.tag)}"></option>`).join('')}</datalist>
       <button type="button" data-curate-tag-add ${me ? '' : 'disabled'}
-        class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">add</button>
+        class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Save</button>
       <span data-curate-findable-status class="text-provenance text-ink-muted">${esc(me ? status : signInReason('add or remove a tag'))}</span>
     </div>`;
 
@@ -181,9 +181,11 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
     if (!tag) { input.focus(); return; }
     try { await addCurateTag(entityType, slug, tag); }
     catch (err) { say(failure(err, 'add the tag'), true); return; }
-    await reload((rows) => (rows.some((r) => r.tag === tag.toLowerCase())
-      ? `tag “${tag.toLowerCase()}” is on the list`
-      : `the write returned, but “${tag.toLowerCase()}” is not in the re-read list`));
+    await reload((rows) => {
+      const mine = rows.find((r) => r.tag === tag.toLowerCase());
+      return mine ? `${savedLine(mine.author_label || mine.author, mine.created_at)} · tag “${tag.toLowerCase()}” is on the list`
+        : `the write returned, but “${tag.toLowerCase()}” is not in the re-read list`;
+    });
   };
   el.querySelector('[data-curate-tag-add]').addEventListener('click', addTag);
   el.querySelector('[data-curate-tag-input]').addEventListener('keydown', (ev) => {
@@ -200,13 +202,15 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
 
   el.querySelector('[data-curate-group-save]').addEventListener('click', async () => {
     const want = el.querySelector('[data-curate-group-select]').value;
-    try { await assignGroup(slug, want, entityType); }
+    let saved;
+    try { saved = await assignGroup(slug, want, entityType); }
     catch (err) { say(failure(err, 'change the group'), true); return; }
     try { await refreshGroupsAndSidebar(); } catch { /* the re-read below says what the row now holds */ }
     if (stale(el, slug)) return;
     const now = currentGroupSlug(slug);
     await renderFindableBand(el, slug, entityType,
-      now === want ? `group is now ${groupName(now)}` : `the change returned, but the list still shows ${groupName(now)}`);
+      now === want ? `${savedLine((saved || {}).saved_by, (saved || {}).saved_at)} · group is now ${groupName(now)}`
+        : `the change returned, but the list still shows ${groupName(now)}`);
   });
 }
 
@@ -261,7 +265,7 @@ export async function renderRatingsBand(el, slug, entityType, status = '') {
       class="mt-s1 w-full rounded-sm border border-rule-strong bg-transparent p-s2 text-caveat text-ink placeholder:text-ink-muted"></textarea>
     <div class="mt-s1 flex items-baseline gap-s3">
       <button type="button" data-curate-fb-submit ${dis}
-        class="${me ? 'cursor-pointer' : 'opacity-60'} rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink">Submit</button>
+        class="${me ? 'cursor-pointer' : 'opacity-60'} rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink">Save rating</button>
       <span data-curate-ratings-status class="text-provenance text-ink-muted">${esc(me ? status : signInReason('rate or comment'))}</span>
     </div>`;
   const say = (msg, warn) => {
@@ -284,7 +288,11 @@ export async function renderRatingsBand(el, slug, entityType, status = '') {
     try { rows = await getCurateFeedback(entityType, slug); }
     catch (err) { b.disabled = false; say(`saved, but the list could not be re-read: ${err.message}`, true); return; }
     await renderRatingsBand(el, slug, entityType,
-      rows.some((x) => x.message === message) ? 'saved — it is in the list above' : 'the save returned, but the entry is not in the re-read list');
+      (() => {
+        const mine = [...rows].reverse().find((x) => x.message === message);
+        return mine ? `${savedLine(mine.author_label || mine.author, mine.created_at)} · it is in the list above`
+          : 'the save returned, but the entry is not in the re-read list';
+      })());
   });
 }
 

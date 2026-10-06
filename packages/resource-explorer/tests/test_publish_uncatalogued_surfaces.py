@@ -15,7 +15,7 @@ from resource_explorer.workflows.analysis import (
 )
 
 STATIC = Path(__file__).parent.parent / "resource_explorer" / "web" / "static"
-WORDING = "not catalogued, publish needed"
+WORDING = "not cataloged, publish needed"
 
 
 @pytest.fixture

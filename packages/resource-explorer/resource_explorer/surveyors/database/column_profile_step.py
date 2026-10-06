@@ -589,7 +589,7 @@ def run_column_profile(
                 resource_properties=catalog.as_dict(),
                 explanation=(
                     f"{catalog.unavailable_reason}. Every column's match verdict "
-                    f"is therefore 'no_candidates' — an unread catalogue cannot "
+                    f"is therefore 'no_candidates' — an unread catalog cannot "
                     f"produce a negative finding."
                 ),
             )

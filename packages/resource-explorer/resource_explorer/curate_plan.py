@@ -138,7 +138,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
             else:  # "library" -- importable, no deployment evidence
                 what_it_is.append(_row(
                     f"SoftwareComponentCandidate::{name}",
-                    f"Component, not catalogued by default · {name} — importable {ecosystem} "
+                    f"Component, not cataloged by default · {name} — importable {ecosystem} "
                     "distribution, no deployment evidence",
                     evidence=d.get("summary", ""), source="deployment_evidence",
                     state="measured", candidate=False, detail=det))
@@ -214,7 +214,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     subs = _findings(srs)
     worthy = [f for f in subs if f.get("label") == "worthy"]
     rejected = [f for f in subs if f.get("label") == "not_worthy"]
-    holds.append(_row("SubResource", f"{len(worthy)} of {len(subs)} sub-resources worth cataloguing · {len(rejected)} not",
+    holds.append(_row("SubResource", f"{len(worthy)} of {len(subs)} sub-resources worth cataloging · {len(rejected)} not",
                       evidence="each becomes its own asset, related to this one",
                       source="sub_resource_survey", state=srs.get("state", ""), count=len(worthy),
                       members={"analysis_id": "sub_resource_survey"}, candidate=len(worthy) > 0,
@@ -247,8 +247,8 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     deps = _fact(layer, slug, "dependency_analysis")
     n_deps = sum(len(v) for v in ((deps.get("value") or {}).get("by_ecosystem") or {}).values())
     relates = [
-        _row("Dependency", f"{n_deps} dependencies · already-catalogued ones not looked up",
-             evidence="which of these are already assets in the catalogue is an Egeria search, not a local fact; not built yet",
+        _row("Dependency", f"{n_deps} dependencies · already-cataloged ones not looked up",
+             evidence="which of these are already assets in the catalog is an Egeria search, not a local fact; not built yet",
              source="dependency_analysis", state=deps.get("state", ""), count=n_deps,
              members={"analysis_id": "dependency_analysis"}, candidate=False),
     ]
@@ -459,7 +459,7 @@ class Curations:
         if not rec:
             raise LookupError(cid)
         if rec.get("layer2_offer"):
-            raise ValueError(f"catalogue record {cid} already carries a layer-2 offer outcome")
+            raise ValueError(f"catalog record {cid} already carries a layer-2 offer outcome")
         payload = {"outcome": outcome, "decided_by": decided_by, "at": _now()}
         with self._conn() as conn:
             conn.execute("UPDATE resource_curation SET layer2_offer = ? WHERE id = ?",

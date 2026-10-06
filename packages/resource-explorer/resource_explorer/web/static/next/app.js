@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago, whenMs, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
+import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt } from '/static/next/format.js';
 // The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
@@ -3232,7 +3232,7 @@ export function resourceHeaderHtml(slug) {
   // publish trigger of its own yet to wire it to, and its Analysis pane has
   // no publish control either, so the sentence below must not point there.
   if (ov?.publish_uncatalogued) {
-    published += ` <span class="text-accent-ink">⚠ not catalogued, publish needed</span>`;
+    published += ` <span class="text-accent-ink">⚠ not cataloged, publish needed</span>`;
   }
   if (ov?.publish_stale) {
     published += ` <span class="text-accent-ink">⚠ these elements are no longer in the store —`
@@ -4137,7 +4137,7 @@ async function loadDispositionPane() {
     <div id="depth-offer" class="mb-s4"></div>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Records</span>
-      <span class="text-provenance text-ink-muted">what was catalogued, and what was written down · a snapshot, not a query</span>
+      <span class="text-provenance text-ink-muted">what was cataloged, and what was written down · a snapshot, not a query</span>
     </div>
     <div id="records" class="mb-s4 text-caveat text-ink-muted">Reading the records…</div>
     <div class="mb-s1 flex items-baseline gap-s2">
@@ -4196,7 +4196,7 @@ export async function renderRecords(slug, entityType) {
   try { recs = (await listRecords(slug, entityType)).records || []; }
   catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
-  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing catalogued, nothing written down.'; return; }
+  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing cataloged, nothing written down.'; return; }
   const scopeAct = await scopeActState(entityType, slug);
   if (slug !== state.selectedSlug) return;
   host.innerHTML = recs.map((r) => {
@@ -4224,7 +4224,7 @@ export async function renderRecords(slug, entityType) {
     }
     // curateRecordHtml carries the author, date and state line itself.
     return `<div class="border-t border-rule py-s2" data-record="${esc(r.id)}">
-      <div class="text-answer text-ink">catalogued${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
+      <div class="text-answer text-ink">cataloged${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
       ${curateRecordHtml(r)}
     </div>`;
   }).join('');
@@ -4420,9 +4420,10 @@ export function renderJournalWrite(slug, entityType) {
         class="w-[12ch] rounded-sm border border-rule-strong bg-transparent px-[4px] text-caveat text-ink placeholder:text-ink-muted"></label>
     </div>
     <div class="mt-s2 flex items-baseline gap-s3">
-      <button id="journal-save" type="button" ${who ? '' : 'disabled title="sign in to write — an entry needs an author"'}
-        class="${who ? 'cursor-pointer' : 'opacity-60'} rounded-sm border border-accent bg-transparent px-2 py-[2px] text-answer text-accent-ink">Write</button>
-      <span class="text-provenance text-ink-muted">${who ? `as ${esc(who)}` : 'sign in to write — an entry needs an author'}
+      <button id="journal-save" type="button" ${who ? '' : 'disabled title="sign in to save — an entry needs an author"'}
+        class="${who ? 'cursor-pointer' : 'opacity-60'} rounded-sm border border-accent bg-transparent px-2 py-[2px] text-answer text-accent-ink">Save entry</button>
+      <span class="text-provenance text-ink-muted">saved entries are permanent: no edit, no delete
+        · ${who ? `as ${esc(who)}` : 'sign in to save — an entry needs an author'}
         · a suggestion is a work-list entry for them, not a notification</span>
     </div>`;
   $('journal-save').addEventListener('click', async () => {
@@ -4431,7 +4432,7 @@ export function renderJournalWrite(slug, entityType) {
     const targets = [...host.querySelectorAll('[data-suggest]:checked')].map((c) => c.dataset.suggest);
     const person = ($('journal-person').value || '').trim();
     if (person) targets.push(person);
-    const b = $('journal-save'); b.disabled = true; b.textContent = 'writing…';
+    const b = $('journal-save'); b.disabled = true; b.textContent = 'saving…';
     try {
       const out = await writeJournal(slug, body, targets, entityType);
       const cites = $('journal-body').dataset.citesRecord;
@@ -4444,7 +4445,7 @@ export function renderJournalWrite(slug, entityType) {
       }
       $('journal-body').value = ''; $('journal-person').value = '';
       host.querySelectorAll('[data-suggest]').forEach((c) => { c.checked = false; });
-      b.disabled = false; b.textContent = 'Write';
+      b.disabled = false; b.textContent = 'Save entry';
       // Where it landed, by the list's NAME -- "Suggested to Data Expert"
       // is what was created; the slug is how the server finds it. And it
       // stays until the next write replaces it: this is the only record
@@ -4454,12 +4455,16 @@ export function renderJournalWrite(slug, entityType) {
       const note = document.createElement('div');
       note.className = 'mt-s1 text-provenance text-ink';
       note.setAttribute('data-journal-note', '1');
-      note.textContent = where ? `written · suggested — now in “${where}”` : 'written';
       host.appendChild(note);
-      await renderJournalEntries(slug, entityType);
+      // "saved · who · when" comes from the RE-READ entry, never from the click.
+      const entries = await renderJournalEntries(slug, entityType);
+      const mine = (entries || []).find((e) => out.id && e.id === out.id);
+      note.textContent = mine
+        ? `${savedLine(mine.author, mine.written_at)}${where ? ` · suggested — now in “${where}”` : ''}`
+        : 'the save returned, but the entry is not in the re-read list';
     } catch (err) {
       b.disabled = false;
-      b.textContent = err.status === 401 ? 'sign in to write' : `not written: ${err.message}`;
+      b.textContent = err.status === 401 ? 'sign in to save' : `not saved: ${err.message}`;
     }
   });
 }
@@ -4470,14 +4475,14 @@ export async function renderJournalEntries(slug, entityType) {
   if (!host) return;
   let data;
   try { data = await getJournal(slug, entityType); }
-  catch (err) { host.innerHTML = `<span class="text-state-warn">The journal could not be read: ${esc(err.message)}</span>`; return; }
-  if (slug !== state.selectedSlug) return;
+  catch (err) { host.innerHTML = `<span class="text-state-warn">The journal could not be read: ${esc(err.message)}</span>`; return []; }
+  if (slug !== state.selectedSlug) return [];
   const entries = data.entries || [];
   if (!entries.length) {
     // Visible, and a fair thing for a corpus view to count: catalogued,
     // never written about.
     host.innerHTML = `<span class="text-ink-muted">Nobody has written about this resource yet.</span>`;
-    return;
+    return entries;
   }
   host.innerHTML = `
     <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">Earlier entries · <span class="tnum">${entries.length}</span>${
@@ -4487,6 +4492,7 @@ export async function renderJournalEntries(slug, entityType) {
       <div class="text-provenance text-ink-muted">${esc(e.author || 'unsigned · from before authors were recorded')} · <span class="tnum">${esc(ago(e.written_at))}</span>${
         e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}</div>
     </div>`).join('')}`;
+  return entries;
 }
 
 function paneNeedsRepo() {
@@ -4671,7 +4677,7 @@ export function surveyRowHtml(c) {
 // crashing the render.
 const NATIVE_PROCESS_KIND_LABELS = {
   survey_existing: 'surveys an existing catalog entry',
-  catalog_and_survey: 'catalogues, then surveys',
+  catalog_and_survey: 'catalogs, then surveys',
   delete: 'deletes a catalog entry',
 };
 function nativeProcessKindLabel(kind) {
@@ -7698,7 +7704,7 @@ async function loadPane() {
   // level note (RULING-SUBRESOURCES-PLACEMENT.md; next/stages/analysis.js).
   if (!state.questions.length) {
     rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
-      No catalogued questions match this stage and this perspective set.
+      No cataloged questions match this stage and this perspective set.
       That is a fact about the filter, not about the repository.</div>`;
     $('answered-count').textContent = state.stage === 'curate' ? 'review and commit · Curate' : `0 questions · ${stageLabel()}`;
     return;
@@ -8066,7 +8072,7 @@ function bodyLines(entry, i, st, env) {
            placeholder="${esc(why)}">${esc(held?.answer || '')}</textarea>
          <div class="flex shrink-0 flex-col gap-[2px]">
            <button type="button" data-answer-save="${esc(entry.question)}"
-             class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button>
+             class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Save</button>
            <button type="button" data-answer-cancel="1"
              class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">cancel</button>
          </div>

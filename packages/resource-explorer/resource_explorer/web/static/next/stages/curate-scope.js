@@ -30,6 +30,7 @@ import {
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
+import { savedLine } from '/static/next/format.js';
 import {
   SOURCE_WORD, md, nodeSourceLine, scopeCollapsedText,
   readScopePref, writeScopePref, scopeStartsOpen,
@@ -37,9 +38,9 @@ import {
 
 const whoAmI = () =>
   (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
-const words = (choice) => (choice === 'leave_out' ? 'leave out' : choice === 'catalogue' ? 'catalogue' : '');
+const words = (choice) => (choice === 'leave_out' ? 'leave out' : choice === 'catalogue' ? 'catalog' : '');
 const opposite = (choice) => (choice === 'leave_out' ? 'catalogue' : 'leave_out');
-const signInReason = 'sign in to change what gets catalogued: every choice needs an author';
+const signInReason = 'sign in to change what gets cataloged: every choice needs an author';
 const num = (n) => Number(n).toLocaleString('en-US');
 
 /** Which schemas are expanded survives a redraw (a write redraws the tree). */
@@ -142,7 +143,7 @@ function setterButtons(node, me) {
     class="${me && !busy ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} ${busy && own === choice ? 'font-semibold' : ''} bg-transparent p-0">${label}</button>`;
   const clear = node.explicit ? ` <button type="button" data-scope-act="clear" data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis}
     class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">${node.state === 'disagrees' ? 'reconsider' : 'clear'}</button>` : '';
-  return `<span class="text-provenance">${btn('catalogue', 'catalogue')} · ${btn('leave_out', 'leave out')}${clear}</span>`;
+  return `<span class="text-provenance">${btn('catalogue', 'catalog')} · ${btn('leave_out', 'leave out')}${clear}</span>`;
 }
 
 function proposalControls(node, me) {
@@ -458,7 +459,7 @@ export function bulkBarHtml(view, me) {
     <span data-scope-selected-count class="text-ink-muted">${selected.size} of ${n} schemas · ${selectedTables.size} of ${countTables(view)} tables selected</span>
     ${bulk('catalogue', 'catalog selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'clear choice')}
     <span class="text-ink-muted">|</span>
-    <button type="button" data-scope-catalogue-all ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">catalogue all ${n} schemas</button></div>`;
+    <button type="button" data-scope-catalogue-all ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">catalog all ${n} schemas</button></div>`;
 }
 
 export function depthLineHtml(view, me) {
@@ -487,18 +488,18 @@ function treeSourceText(view) {
 
 export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(view, '')) {
   const el = view.egeria_element || {};
-  const element = el.short ? `reads Egeria element <span class="font-mono">${esc(el.short)}</span>…` : esc(el.text || 'not catalogued in Egeria');
+  const element = el.short ? `reads Egeria element <span class="font-mono">${esc(el.short)}</span>…` : esc(el.text || 'not cataloged in Egeria');
   const ns = view.new_since || {};
   const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
   const nsLine = ns.text
     ? `<div data-scope-new-since class="mb-s1 text-caveat text-ink">${esc(ns.text)}
-        · <button type="button" data-scope-redeclare ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">declare the scope again</button>
-        <span class="text-provenance text-ink-muted">counts new things from the day you do</span></div>` : '';
+        · <button type="button" data-scope-redeclare ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Start a new baseline</button>
+        <span class="text-provenance text-ink-muted">it saves where things stand now, so new things are counted from today; it does not change your choices</span></div>` : '';
   const declared = !!(view.declared && view.declared.declared);
   open = open || !declared;   // nothing to collapse to until a scope is declared
   const line = open ? scopeHeaderText(view) : scopeCollapsedText(view);
   // The marker under the header is the commit's state, derived by the server from proof rows;
-  // the "not yet catalogued" words exist only server-side, and only while no commit has left a row.
+  // the "not yet cataloged" words exist only server-side, and only while no commit has left a row.
   return `<div data-scope-saved-marker data-scope-commit-header data-scope-commit-header-state="${esc(((view.commit || {}).header || {}).state || 'unknown')}" class="mb-s1 text-provenance text-ink-muted">${esc(commitHeaderText(view))}</div>
     <div class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
       aria-controls="scope-section-body" title="${open ? 'Collapse to one line' : 'Show the whole scope'}"
@@ -555,7 +556,7 @@ export function commitStepsHtml(rec) {
   return `<div data-scope-commit-steps class="mt-s1"><div class="text-caveat text-ink">Commit ${esc(String(rec.id || '').slice(0, 8))} · ${esc(rec.state || '')} · by ${esc(rec.author || '')}</div>${rows}</div>`;
 }
 
-/** What pressing Catalogue would do, as the server's preview says it: the three mechanisms in the
+/** What pressing Catalog would do, as the server's preview says it: the three mechanisms in the
  *  order they run, what leaving schemas out does and in which form, anything that blocks the
  *  press, and the button whose label carries the counts. */
 export function commitPanelHtml(preview, me, ui, declared = true) {
@@ -667,12 +668,12 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true) {
     say('Reading Egeria…');
     let r;
     try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); return; }
-    await redraw(`read back: ${r.catalogued || 0} catalogued · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
+    await redraw(`read back: ${r.catalogued || 0} cataloged · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
   });
 }
 
 export async function renderCatalogueScope(el, slug, status = '', known = null) {
-  if (!el) throw new Error('Catalogue scope host missing');
+  if (!el) throw new Error('Catalog scope host missing');
   if (openFor !== slug) { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = slug; sectionOpen = null; }
   let view;
   try {
@@ -680,7 +681,7 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
     if (!view || !Array.isArray(view.schemas)) throw new Error('the server answered with something that is not a scope');
   } catch (err) {
     if (stale(el, slug)) return;
-    el.innerHTML = `<div data-scope-error class="text-caveat text-state-warn">The catalogue scope could not be read: ${esc(err.message)}</div>`;
+    el.innerHTML = `<div data-scope-error class="text-caveat text-state-warn">The catalog scope could not be read: ${esc(err.message)}</div>`;
     return;
   }
   if (stale(el, slug)) return;
@@ -1000,7 +1001,8 @@ function paintScope(el, slug, status, view) {
         : 'the write returned, but the re-read scope shows a different depth'));
   }));
   const again = el.querySelector('[data-scope-redeclare]');
-  if (again) again.addEventListener('click', () => afterWrite(() => redeclareCatalogueScope(slug), 'declare the scope again',
-    (v) => ((v.new_since || {}).text ? 'the declaration returned, but the re-read scope still shows new things' : 'declared again: nothing is new since now')));
+  if (again) again.addEventListener('click', () => afterWrite(() => redeclareCatalogueScope(slug), 'start a new baseline',
+    (v) => ((v.new_since || {}).text ? 'the baseline was saved, but the re-read scope still shows new things'
+      : `${savedLine((v.declared || {}).by, (v.declared || {}).at)} · new baseline: nothing is new since now`)));
   if (sectionOpen || !(view.declared && view.declared.declared)) startCommitPanel();
 }

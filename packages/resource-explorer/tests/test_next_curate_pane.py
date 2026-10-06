@@ -36,7 +36,7 @@ class TestTheScreenHoldsTheDesignRules:
         body = app[app.index("async function renderCurate("):app.index("async function renderCatalogueDepthOffer(")]
         assert "Only worthy things get curated" in body
         assert "data-curate-go ${plan.in_population && me ? '' : 'disabled'}" in body
-        assert "sign in to catalogue" in body
+        assert "sign in to catalog" in body
 
     def test_every_count_opens_its_members_and_the_manifest_names_the_three_rules(self):
         app = _app()

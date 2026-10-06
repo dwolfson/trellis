@@ -592,7 +592,7 @@ def _resolve_platform() -> "tuple[str, Optional[str]]":
         return entries[0][0], entries[0][1]
     if not entries:
         raise RuntimeError(
-            "could not identify the platform to configure: no catalogued "
+            "could not identify the platform to configure: no cataloged "
             "SoftwareServerPlatform found. Set EXPLORER_EGERIA_PLATFORM_NAME."
         )
 
@@ -610,7 +610,7 @@ def _resolve_platform() -> "tuple[str, Optional[str]]":
     url_matches = [e for e in entries if e[2].strip().rstrip("/").lower() == configured_url]
     if configured_url and len(url_matches) == 1:
         name, guid, _ = url_matches[0]
-        log.info("egeria: several platforms catalogued %s; using %r (guid %s), whose "
+        log.info("egeria: several platforms cataloged %s; using %r (guid %s), whose "
                  "platformURLRoot matches this process's configured EGERIA_PLATFORM_URL",
                  names, name, guid)
         return name, guid
@@ -643,12 +643,12 @@ def _resolve_platform() -> "tuple[str, Optional[str]]":
             if got and (got.get("associatedSecurityList") or {}):
                 holders.append((name, guid))
         if len(holders) == 1:
-            log.info("egeria: several platforms catalogued %s; using %r, which holds "
+            log.info("egeria: several platforms cataloged %s; using %r, which holds "
                      "the %r control", names, holders[0][0], zone)
             return holders[0]
         if len(holders) > 1:
             raise RuntimeError(
-                f"the {zone!r} control exists on more than one catalogued platform "
+                f"the {zone!r} control exists on more than one cataloged platform "
                 f"({[h[0] for h in holders]}), so which one governs this deployment is "
                 "ambiguous. Set EXPLORER_EGERIA_PLATFORM_NAME."
             )

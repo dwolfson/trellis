@@ -286,7 +286,7 @@ def test_header_marker_is_state_derived_never_a_constant(world, fake):
     choose(world, "sales", "catalogue")
     choose(world, "archive", "catalogue")
     before = derived(world)["header"]["text"]
-    assert before == "Saved in Resource Explorer · not yet catalogued in Egeria"
+    assert before == "Saved in Resource Explorer · not yet cataloged in Egeria"
     press(world, fake, refresh=False)
     waiting = derived(world)["header"]["text"]
     assert "2 schemas chosen: 2 attached, waiting" in waiting and "connector's last refresh" in waiting
@@ -388,7 +388,7 @@ def test_the_preview_names_the_form_before_the_press_and_writes_nothing(world, f
     p = cc.build_preview(world["registry"], "db", view(world), fake)
     forms = {r["schema"]: r["form"] for r in p["leave_out"]}
     assert forms == {"sales": "soft_delete", "archive": "archive"}
-    assert p["button"] == "Catalog · 0 schemas · removes 1 from Egeria · archives 1"
+    assert p["button"] == "Catalog · 0 schemas · deletes 1 from Egeria · archives 1"
     assert len(fake.ops("delete_element")) == deletes_before and len(fake.targets) == 2
 
 
@@ -587,7 +587,7 @@ def test_the_manifest_lists_three_mechanisms_the_target_count_and_the_survey_sch
     assert "next refresh, not now" in mech[1]
     assert mech[2] == "Egeria's survey is limited to your chosen schemas: sales, archive"
     assert m["schema_targets"] == 2 and m["survey_schemas"] == ["sales", "archive"]
-    assert m["whole_schemas_line"] == "Egeria catalogues whole schemas · table choices are kept for when it can"
+    assert m["whole_schemas_line"] == "Egeria catalogs whole schemas · table choices are kept for when it can"
     assert p["button"] == "Catalog · 2 schemas" and p["can_commit"]
 
 
@@ -616,7 +616,7 @@ def test_undecided_schemas_already_in_egeria_stay_targets_and_in_the_survey(worl
 
 def test_nothing_to_commit_is_a_blocker_not_an_empty_run(world, fake):
     p = cc.build_preview(world["registry"], "db", view(world), fake)
-    assert not p["can_commit"] and p["blockers"] == ["nothing to commit: choose at least one schema to catalogue"]
+    assert not p["can_commit"] and p["blockers"] == ["nothing to commit: choose at least one schema to catalog"]
 
 
 def test_signed_out_commit_is_refused(world, fake):
@@ -921,7 +921,7 @@ def test_the_commit_with_no_scope_declared_writes_nothing_to_egeria(world, fake,
     monkeypatch.setattr(cc, "make_gateway", lambda e: pytest.fail("no gateway may even be built"))
     with pytest.raises(cc.CommitBlocked) as err:
         cc.start_commit(world["registry"], "db", ME)
-    assert err.value.status == 409 and err.value.message == "no scope declared · nothing catalogued"
+    assert err.value.status == 409 and err.value.message == "no scope declared · nothing cataloged"
     assert fake.calls == [] and world["registry"].list_catalogue_outbox_rows("db") == []
     assert world["registry"].list_catalogue_commit_proofs("db") == []
     with world["registry"]._conn() as conn:
@@ -930,7 +930,7 @@ def test_the_commit_with_no_scope_declared_writes_nothing_to_egeria(world, fake,
 
 def test_commit_route_with_no_scope_is_409_with_the_sentence_and_no_egeria_call(client, world, fake):
     r = client.post("/api/catalogue-scope/db/commit", json={}, headers=as_user(ME))
-    assert r.status_code == 409 and r.json()["detail"] == "no scope declared · nothing catalogued"
+    assert r.status_code == 409 and r.json()["detail"] == "no scope declared · nothing cataloged"
     assert fake.calls == []
 
 

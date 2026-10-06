@@ -74,3 +74,18 @@ export function changedTimesHtml(n) {
   if (n < 1) return '';
   return n === 1 ? 'changed once' : `changed <span class="tnum">${n}</span> times`;
 }
+
+/** The result line for something saved in RE's own record: "saved · who · when" (REPLY-DESIGNER-SAVE-AND-PUBLISH-VERBS.md).
+ *  It is built from the re-read row (or the route's own answer), never from the click. A missing author is said, not
+ *  skipped: "who isn't recorded". The Egeria family's lines are different words ("cataloged · read back when",
+ *  "published · read back when", "sent · waiting for Egeria") and only after a read-back proves them. */
+export function savedLine(who, whenIso) {
+  const w = String(whenIso || '');
+  const when = w.length >= 16 ? `${w.slice(5, 10)} ${w.slice(11, 16)}` : '';
+  return ['saved', who || "who isn't recorded", when].filter(Boolean).join(' · ');
+}
+
+/** "read back 09:12": the time the read-back was done, for the Egeria family's result lines. */
+export function readBackAt(date = new Date()) {
+  return `read back ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}

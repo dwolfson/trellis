@@ -96,7 +96,7 @@ def _classification_bodies(enrichment: dict) -> list[tuple[str, str, dict]]:
                 "stewardPropertyName": "userId", "source": "resource-explorer enrichment",
                 "confidence": 100,
                 "notes": f"{f.get('value','')} — set by {f.get('author','?')} on {(f.get('set_at') or '')[:10]}"
-                         f"{' · interim' if f.get('interim') else ''}; copied to the catalogue {stamp}"}
+                         f"{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}"}
 
     f = enrichment.get("sensitivity") or {}
     if f.get("value"):
@@ -162,7 +162,7 @@ def _resurvey_plan(registry: ProjectRegistry, slug: str) -> tuple[list[str] | No
 
     history = registry.get_analysis_last_run("repo", slug)
     if not history:
-        return None, "no run history for this repo yet — running a full survey for the first catalogue"
+        return None, "no run history for this repo yet — running a full survey for the first catalog"
 
     stale_ids, fresh_ids = [], []
     for analysis_id in sorted(history):
@@ -220,7 +220,7 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
         if not context or context.get("status") == "unset":
             inherited = registry.inherited_egeria_project_context("repo", slug)
             if not inherited:
-                raise RuntimeError("no Egeria Project context — decide it on the Scouting pane (or bind the investigation) and press Catalogue again")
+                raise RuntimeError("no Egeria Project context — decide it on the Scouting pane (or bind the investigation) and press Catalog again")
             registry.set_project_context(
                 "repo", slug, status="linked",
                 egeria_project_guid=inherited["egeria_project_guid"],

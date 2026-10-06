@@ -16,7 +16,7 @@ test('one choice write makes exactly one PUT, one scope GET and one commit-previ
   assert.equal(calls(server, 'PUT', '/node').length, 1);
   assert.equal(scopeReads(server).length, 1, 'the scope is read once after a write');
   assert.equal(previewReads(server).length, 1, 'and so is the commit preview');
-  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalogue · set by me/);
+  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalog · set by me/);
 });
 
 test('a bulk action over schemas and tables also re-reads once', async () => {

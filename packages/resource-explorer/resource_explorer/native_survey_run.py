@@ -403,13 +403,13 @@ def derive_native_state(run: dict | None, *, stored_annotation_count: int | None
 # ── the rows a resource shows ───────────────────────────────────────────────
 
 _NEEDS_CATALOGUING = (
-    "Not catalogued in Egeria yet -- the survey acts on the resource's Egeria "
+    "Not cataloged in Egeria yet -- the survey acts on the resource's Egeria "
     "asset, and this resource has none. Publish it to Egeria first.")
 _NEEDS_TEMPLATE = (
-    "RE cannot run this one: it creates the catalogue entry from a connection "
+    "RE cannot run this one: it creates the catalog entry from a connection "
     "template (host, port, credentials) before surveying it, and RE does not "
     "collect those template properties. Use a survey that acts on an "
-    "already-catalogued resource.")
+    "already-cataloged resource.")
 
 
 def _resource_entity(registry, entity_type: str, slug: str):
@@ -628,7 +628,7 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
     if not exists:
         raise NativeSurveyCannotRun(
             f"Egeria has no asset with the GUID RE has stored for this resource "
-            f"({asset_guid}); the catalogue entry was removed or replaced. "
+            f"({asset_guid}); the catalog entry was removed or replaced. "
             "Publish the resource to Egeria again.")
 
     submitted_at = _now()

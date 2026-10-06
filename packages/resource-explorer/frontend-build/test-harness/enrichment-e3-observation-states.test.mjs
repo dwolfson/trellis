@@ -99,7 +99,7 @@ const licenceText = (document) => {
 test('gate 1: a database\'s rail names no repository analysis and says one line; nothing is fetched for repo', async () => {
   const { document, log } = await routeToContext('db', 'coco_pharma', { factsById: {} });
   const rail = document.getElementById('rail-evidence').textContent;
-  assert.match(rail, /no enrichment evidence is catalogued for databases yet/);
+  assert.match(rail, /no enrichment evidence is cataloged for databases yet/);
   for (const id of REPO_EVIDENCE) assert.doesNotMatch(rail, new RegExp(id), `${id} must not appear on a database`);
   assert.doesNotMatch(rail, /never.?run|has not run/i);
   assert.ok(!log.some((l) => /entity_type=repo/.test(l)), log.join('\n'));

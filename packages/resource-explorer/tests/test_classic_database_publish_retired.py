@@ -20,7 +20,7 @@ def test_the_classic_publish_modal_and_button_are_gone():
 
 
 def test_classic_points_at_curate_and_claims_no_state():
-    assert "Publish: Curate → Catalogue in /next" in HTML
+    assert "Publish: Curate → Catalog in /next" in HTML
     # the survey-definition retry still has its own route; only the database Publish UI retired
     assert "catalogAndRetrySurveyDefinition" in HTML
 

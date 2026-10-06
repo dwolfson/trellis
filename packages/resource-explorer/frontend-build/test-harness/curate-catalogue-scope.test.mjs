@@ -54,20 +54,20 @@ function baseView(over = {}) {
     declared: { declared: false, by: '', at: '', kind: '', baseline_survey_at: '' },
     depth: {
       value: 'schemas_and_tables', declared: false, by: '', at: '',
-      help: "Egeria catalogues whole schemas with their tables and columns, and a shallower depth can't be asked for until Egeria has a depth option (S2), so a depth here changes this tree only.",
-      commit_note: 'The commit catalogues tables and columns for every chosen schema whatever depth is chosen: Egeria has no depth option yet (S2).',
+      help: "Egeria catalogs whole schemas with their tables and columns, and a shallower depth can't be asked for until Egeria has a depth option (S2), so a depth here changes this tree only.",
+      commit_note: 'The commit catalogs tables and columns for every chosen schema whatever depth is chosen: Egeria has no depth option yet (S2).',
       options: [
-        { id: 'database_only', label: 'the database only', how: 'tree view only: shows the database alone · the commit still catalogues whole schemas' },
-        { id: 'schemas', label: 'schemas', how: 'tree view only: shows schemas · the commit still catalogues their tables and columns' },
-        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'tree view only: shows schemas and tables · the commit still catalogues their columns' },
-        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything: this is what the commit catalogues for each chosen schema' },
+        { id: 'database_only', label: 'the database only', how: 'tree view only: shows the database alone · the commit still catalogs whole schemas' },
+        { id: 'schemas', label: 'schemas', how: 'tree view only: shows schemas · the commit still catalogs their tables and columns' },
+        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'tree view only: shows schemas and tables · the commit still catalogs their columns' },
+        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything: this is what the commit catalogs for each chosen schema' },
       ],
     },
-    system: { folded: 3, text: 'not catalogued: system schemas are never offered' },
+    system: { folded: 3, text: 'not cataloged: system schemas are never offered' },
     counts: { schemas_offered: 3, schemas_catalogue: 0, schemas_leave_out: 0, schemas_undecided: 3 },
     new_since: { declared: false, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' },
     // what the server derives from proof rows when nothing has been committed
-    commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet catalogued in Egeria' },
+    commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet cataloged in Egeria' },
       database: null, collisions: [], schemas: {}, tables: {} },
     schemas: [
       schema('sales', [table('sales', 'orders'), table('sales', 'customers')]),
@@ -96,7 +96,7 @@ function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/api/catalogue-scope/')) {
-      if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalogue'], button: 'Catalogue · 0 schemas', leave_out: [], refused: [], collisions: [] });
+      if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalog'], button: 'Catalog · 0 schemas', leave_out: [], refused: [], collisions: [] });
       if (method === 'GET') return ok(s.view);
       if (!s.signedIn) return err(401, 'Sign in to change the scope');
       if (!s.dropWrites) {
@@ -128,7 +128,7 @@ function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
           const n = find(body.schema_name, body.table_name);
           n.explicit = null; n.effective = null; n.state = 'undecided';
         }
-        if (u.endsWith('/redeclare')) { s.view.new_since = { declared: true, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' }; for (const sc of s.view.schemas) { sc.new_since = false; sc.tables.forEach((t) => { t.new_since = false; }); } }
+        if (u.endsWith('/redeclare')) { s.view.declared = { declared: true, by: 'me', at: '2026-10-05T09:30:00', kind: 'redeclare', baseline_survey_at: '' }; s.view.new_since = { declared: true, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' }; for (const sc of s.view.schemas) { sc.new_since = false; sc.tables.forEach((t) => { t.new_since = false; }); } }
       }
       return ok({ state: 'ok' });
     }
@@ -190,9 +190,9 @@ test('the scope is the FIRST section of a database band 2, above the two waiting
   const kind = document.querySelector('[data-curate-band="kind"]');
   const order = [...kind.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork);
   assert.deepEqual(order, ['scope', 'glossary', 'schema-match']);
-  assert.match(flat(kind.querySelector('[data-curate-work="scope"]')), /^What gets catalogued/);
-  assert.match(flat(kind.querySelector('[data-curate-work="glossary"]')), /and the tables to be catalogued first \(above\)/);
-  assert.match(flat(kind.querySelector('[data-curate-work="schema-match"]')), /and the tables to be catalogued first \(above\)/);
+  assert.match(flat(kind.querySelector('[data-curate-work="scope"]')), /^What gets cataloged/);
+  assert.match(flat(kind.querySelector('[data-curate-work="glossary"]')), /and the tables to be cataloged first \(above\)/);
+  assert.match(flat(kind.querySelector('[data-curate-work="schema-match"]')), /and the tables to be cataloged first \(above\)/);
   assert.equal(kind.querySelectorAll('table').length, 0, 'never a <table>');
 });
 
@@ -230,11 +230,11 @@ test('header, undeclared and never measured: says not measured yet, and an uncat
     survey: { state: 'not_measured', schema_count: null, table_count: null, surveyed_at: '', report_guid: '' },
     sources: { chosen: { kind: 'local', as_of: '', schemas: 0, tables: 0, merged: false },
       egeria: { state: 'not_measured' }, local: { state: 'not_measured' }, disagree: false, unreadable: 0 },
-    egeria_element: { guid: '', short: '', text: 'not catalogued in Egeria' },
+    egeria_element: { guid: '', short: '', text: 'not cataloged in Egeria' },
   }));
   assert.equal(flat(document.querySelector('[data-scope-header]')),
     "Your scope: none declared yet · Egeria's latest survey: not measured yet");
-  assert.match(flat(document.querySelector('[data-scope-tree-header]')), /not catalogued in Egeria/);
+  assert.match(flat(document.querySelector('[data-scope-tree-header]')), /not cataloged in Egeria/);
 });
 
 const declaredView = () => baseView({
@@ -252,7 +252,7 @@ test('header, declared: collapsed by default to one line of essentials, a real b
   assert.equal(document.querySelector('[data-scope-body]').hidden, true);
   // the marker is the server's derived state (curate-catalogue-commit.test.mjs covers its changes)
   assert.equal(flat(document.querySelector('[data-scope-saved-marker]')),
-    'Saved in Resource Explorer · not yet catalogued in Egeria');
+    'Saved in Resource Explorer · not yet cataloged in Egeria');
 });
 
 test('header, declared: a click expands to the whole scope and the header is the full sentence', async () => {
@@ -279,7 +279,7 @@ test('depth line: four depths, each honest that a depth is a tree view and the c
   assert.deepEqual(radios.map((r) => r.dataset.scopeDepthRadio), ['database_only', 'schemas', 'schemas_and_tables', 'tables_and_columns']);
   assert.equal(radios.find((r) => r.checked).dataset.scopeDepthRadio, 'schemas_and_tables');
   assert.match(flat(document.querySelector('[data-scope-depth]')), /the database only.*schemas.*schemas and tables.*tables and columns/);
-  assert.match(flat(document.querySelector('[data-scope-depth-how]')), /the commit still catalogues their columns/);
+  assert.match(flat(document.querySelector('[data-scope-depth-how]')), /the commit still catalogs their columns/);
   assert.match(flat(document.querySelector('[data-scope-depth-help]')), /changes this tree only/);
   assert.match(flat(document.querySelector('[data-scope-depth-commit-note]')), /whatever depth is chosen: Egeria has no depth option yet \(S2\)/);
   // the Catalogue button lives in its own panel under the tree, never inside it
@@ -305,11 +305,11 @@ test('column depth: column rows appear under an opened table', async () => {
 
 test('shallower depth: no column rows, and a table says which level the depth excludes', async () => {
   const shallow = baseView();
-  shallow.schemas[0].tables.forEach((t) => { t.provenance = 'columns hidden in this view · the commit still catalogues them'; });
+  shallow.schemas[0].tables.forEach((t) => { t.provenance = 'columns hidden in this view · the commit still catalogs them'; });
   const { document } = await setUp(shallow);
   document.querySelector('[data-scope-toggle="sales"]').click();
   assert.equal(document.querySelector('[data-scope-column]'), null);
-  assert.match(flat(row(document, 'table:sales.orders')), /columns hidden in this view · the commit still catalogues them/);
+  assert.match(flat(row(document, 'table:sales.orders')), /columns hidden in this view · the commit still catalogs them/);
 });
 
 /* ── proposals ─────────────────────────────────────────────────────────── */
@@ -327,7 +327,7 @@ test('a proposal row: the proposal glyph and word, its reason, confirm and the o
   const { document } = await setUp(withProposal());
   const r = row(document, 'schema:empty_one');
   assert.equal(words(r.querySelector('[data-scope-choice-cell]')),
-    '⏵ proposed: leave out · 0 tables, measured 10-02 confirm · catalogue instead');
+    '⏵ proposed: leave out · 0 tables, measured 10-02 confirm · catalog instead');
   assert.equal(r.dataset.scopeEffective, '', 'an unconfirmed proposal is still undecided');
   assert.ok(r.querySelector('[aria-label="proposal"]'), 'the glyph carries the existing word');
 });
@@ -348,7 +348,7 @@ test('override POSTs the node; the row shows the other choice and the proposal r
   await wait();
   assert.equal(calls(server, 'POST', '/node/override').length, 1);
   const cell = row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]');
-  assert.match(words(cell), /^catalogue · overridden by me 10-04/);
+  assert.match(words(cell), /^catalog · overridden by me 10-04/);
   const struck = cell.querySelector('[data-scope-struck]');
   assert.ok(struck && struck.className.includes('line-through'));
   assert.match(flat(struck), /proposed: leave out · 0 tables, measured 10-02/);
@@ -385,7 +385,7 @@ test('inherited and differing tables are drawn differently', async () => {
   const { document } = await setUp(v);
   document.querySelector('[data-scope-toggle="sales"]').click();
   const inherited = row(document, 'table:sales.orders').querySelector('[data-scope-state-word="inherited"]');
-  assert.equal(flat(inherited), 'catalogue (from schema)');
+  assert.equal(flat(inherited), 'catalog (from schema)');
   assert.ok(inherited.className.includes('text-ink-muted'), 'muted ink');
   const differs = row(document, 'table:sales.customers').querySelector('[data-scope-choice-cell]');
   assert.match(flat(differs), /leave out · set by dwolfson 10-04 · differs from its schema/);
@@ -426,11 +426,14 @@ test('new since the scope was declared: rows say so, the count line quotes the m
   assert.match(flat(document.querySelector('[data-scope-new-since]')), /1 new schema \(3 tables\) not in your scope/);
   assert.match(flat(row(document, 'schema:coco_new')), /new since your scope was declared · undecided/);
   assert.equal(row(document, 'schema:sales').querySelector('[data-scope-new-since-row]'), null);
-  document.querySelector('[data-scope-redeclare]').click();
+  const again = document.querySelector('[data-scope-redeclare]');
+  assert.equal(flat(again), 'Start a new baseline', 'it saves; it does not redeclare the choices');
+  assert.doesNotMatch(flat(document.querySelector('[data-scope-new-since]')), /declare the scope again/);
+  again.click();
   await wait();
   assert.equal(calls(server, 'POST', '/redeclare').length, 1);
   assert.equal(document.querySelector('[data-scope-new-since]'), null);
-  assert.match(flat(document.querySelector('[data-scope-status]')), /declared again/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^saved · me · 10-05 09:30 · new baseline: nothing is new since now$/);
 });
 
 /* ── marks, notes, access, system ──────────────────────────────────────── */
@@ -451,7 +454,7 @@ test('PII is a mark, staging a note, no access is "not established": none of the
 test('system schemas are folded with their sentence and never offered a control', async () => {
   const { document } = await setUp(baseView());
   const sys = document.querySelector('[data-scope-system]');
-  assert.match(flat(sys), /3 system schemas folded · not catalogued: system schemas are never offered/);
+  assert.match(flat(sys), /3 system schemas folded · not cataloged: system schemas are never offered/);
   assert.equal(sys.querySelector('button'), null);
   assert.equal(document.querySelector('[data-scope-row*="pg_catalog"]'), null);
 });
@@ -466,12 +469,12 @@ test('a database with no stored rows says so in words, not an empty table', asyn
 
 test('signed out: the tree reads, every control is disabled with the reason, and no write is attempted', async () => {
   const { document, server } = await setUp(withProposal(), { signedIn: false });
-  assert.match(flat(document.querySelector('[data-scope-signed-out]')), /You can read the scope as it stands\. sign in to change what gets catalogued/);
+  assert.match(flat(document.querySelector('[data-scope-signed-out]')), /You can read the scope as it stands\. sign in to change what gets cataloged/);
   const controls = [...scopeEl(document).querySelectorAll('button[data-scope-act], input[data-scope-depth-radio]')];
   assert.ok(controls.length > 4);
   for (const c of controls) {
     assert.ok(c.disabled, 'control is disabled');
-    assert.match(c.title, /sign in to change what gets catalogued/);
+    assert.match(c.title, /sign in to change what gets cataloged/);
   }
   row(document, 'schema:empty_one').querySelector('[data-scope-act="confirm"]').click();
   await wait(50);
@@ -494,7 +497,7 @@ test('a 401 from a write says to sign in, in words', async () => {
   server.signedIn = false;
   row(document, 'schema:sales').querySelector('[data-scope-act="set"][data-scope-choice="leave_out"]').click();
   await wait();
-  assert.match(flat(document.querySelector('[data-scope-status]')), /sign in to change what gets catalogued/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /sign in to change what gets cataloged/);
 });
 
 /* ── slice A2: sources on every row, activity, select-all and bulk, layout ── */
@@ -634,7 +637,7 @@ test('select all schemas ticks every schema row, and the bulk bar counts them', 
   assert.equal(row(document, 'table:sales.orders'), null, 'tables are collapsed: no table row (and no table tick) is drawn');
 });
 
-test('catalogue selected: one POST naming the ticked schemas, and the status is derived from the re-read', async () => {
+test('catalog selected: one POST naming the ticked schemas, and the status is derived from the re-read', async () => {
   const { document, window, server } = await setUp(baseView());
   for (const n of ['sales', 'archive']) {
     const b = document.querySelector(`[data-scope-select="${n}"]`);
@@ -646,8 +649,8 @@ test('catalogue selected: one POST naming the ticked schemas, and the status is 
   await wait();
   const [c] = calls(server, 'POST', '/nodes');
   assert.deepEqual(c.body, { nodes: [{ schema_name: 'sales', table_name: '' }, { schema_name: 'archive', table_name: '' }], choice: 'catalogue', all_schemas: false });
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas now set to catalogue by me$/);
-  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalogue · set by me/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas now set to catalog by me$/);
+  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalog · set by me/);
   assert.match(flat(document.querySelector('[data-scope-selected-count]')), /0 of 3 schemas/, 'the selection is spent');
 });
 
@@ -665,16 +668,16 @@ test('leave out selected and clear choice send their own choice', async () => {
   assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now has no choice in the re-read scope$/);
 });
 
-test('catalogue all N schemas: one click, one POST asking for all of them, "3 schemas now set to catalogue by me"', async () => {
+test('catalog all N schemas: one click, one POST asking for all of them, "3 schemas now set to catalog by me"', async () => {
   const { document, server } = await setUp(baseView());
   const btn = document.querySelector('[data-scope-catalogue-all]');
-  assert.equal(flat(btn), 'catalogue all 3 schemas');
+  assert.equal(flat(btn), 'catalog all 3 schemas');
   btn.click();
   await wait();
   const [c] = calls(server, 'POST', '/nodes');
   assert.equal(c.body.all_schemas, true);
   assert.equal(c.body.choice, 'catalogue');
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^3 schemas now set to catalogue by me$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^3 schemas now set to catalog by me$/);
 });
 
 test('bulk: a table with its own differing choice is reported from the re-read, not overwritten', async () => {
@@ -688,7 +691,7 @@ test('bulk: a table with its own differing choice is reported from the re-read, 
   await wait();
   assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now set to leave out by me · 1 table keeps its own choice and differs from its schema$/);
   document.querySelector('[data-scope-toggle="sales"]').click();
-  assert.match(flat(row(document, 'table:sales.orders').querySelector('[data-scope-choice-cell]')), /catalogue · set by dwolfson 10-04 · differs from its schema/);
+  assert.match(flat(row(document, 'table:sales.orders').querySelector('[data-scope-choice-cell]')), /catalog · set by dwolfson 10-04 · differs from its schema/);
 });
 
 test('bulk, signed out: every bulk control is disabled with the reason and nothing is sent', async () => {
@@ -697,7 +700,7 @@ test('bulk, signed out: every bulk control is disabled with the reason and nothi
   assert.ok(controls.length >= 7);
   for (const c of controls) {
     assert.ok(c.disabled, 'disabled');
-    assert.match(c.title, /sign in to change what gets catalogued/);
+    assert.match(c.title, /sign in to change what gets cataloged/);
   }
   document.querySelector('[data-scope-catalogue-all]').click();
   await wait(50);
@@ -710,7 +713,7 @@ test('KNOWN-NEGATIVE: a bulk write the server drops is not reported as done', as
   await wait();
   assert.equal(calls(server, 'POST', '/nodes').length, 1);
   const s = flat(document.querySelector('[data-scope-status]'));
-  assert.match(s, /the write returned, but the re-read scope shows only 0 of 3 schemas set to catalogue/);
+  assert.match(s, /the write returned, but the re-read scope shows only 0 of 3 schemas set to catalog/);
   assert.doesNotMatch(s, /now set to/);
 });
 

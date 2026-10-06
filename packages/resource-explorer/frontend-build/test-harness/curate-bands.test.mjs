@@ -362,7 +362,7 @@ test('signed out: every write control is disabled and says why', async () => {
   const text = host(document).textContent;
   assert.match(q(document, '[data-curate-findable-status]').textContent, /sign in to add or remove a tag — it needs an author/);
   assert.match(q(document, '[data-curate-ratings-status]').textContent, /sign in to rate or comment — it needs an author/);
-  assert.match(text, /sign in to write — an entry needs an author/);
+  assert.match(text, /sign in to save — an entry needs an author/);
   q(document, '[data-curate-tag-add]').click();
   q(document, '#journal-save').click();
   await wait(50);

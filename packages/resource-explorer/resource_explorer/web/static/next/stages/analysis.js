@@ -89,7 +89,7 @@ export async function mountSubResourcePanel(slug, panel) {
 function catalogedBadge(row) {
   return row.egeria_guid
     ? '<span class="text-accent-ink" title="Published to Egeria">☁ published</span>'
-    : '<span class="text-ink-muted" title="Tracked locally only">🗂 catalogued</span>';
+    : '<span class="text-ink-muted" title="Tracked locally only">🗂 cataloged</span>';
 }
 
 function subResRowHtml(f, s) {
@@ -100,7 +100,7 @@ function subResRowHtml(f, s) {
   return `<tr class="border-b border-rule ${f.label !== 'worthy' ? 'opacity-60' : ''}">
     <td class="py-[5px] pr-s2">
       ${cataloged
-        ? '<input type="checkbox" disabled checked title="Already catalogued">'
+        ? '<input type="checkbox" disabled checked title="Already cataloged">'
         : `<input type="checkbox" data-subres-pick data-locator="${esc(locator)}" data-kind="${esc(f.kind)}" ${checkedDefault ? 'checked' : ''}>`}
     </td>
     <td class="py-[5px] pr-s2 max-w-[28ch] truncate font-mono text-caveat text-ink" title="${esc(locator)}">${esc(locator) || '(root)'}</td>
@@ -167,7 +167,7 @@ function renderSubResourcePanel(panel, s) {
   if (!s.findings.length) {
     panel.innerHTML = `
       <p class="max-w-[70ch] text-caveat text-ink-muted">No sub-resource survey results yet -- use the
-        <span class="text-ink">run</span> button above to recommend which folders/files are worth cataloguing
+        <span class="text-ink">run</span> button above to recommend which folders/files are worth cataloging
         as their own Egeria assets, based on the current file inventory. This panel will show the candidate
         list once it has run.</p>
       ${catalogedHtml}`;
@@ -190,7 +190,7 @@ function renderSubResourcePanel(panel, s) {
   panel.innerHTML = `
     <p class="max-w-[70ch] text-caveat text-ink-muted">Review the recommendation list, select which folders/files
       are worth tracking as their own Egeria assets, then catalog the selection. Repeatable -- come back anytime
-      with more information and add to what's already catalogued.</p>
+      with more information and add to what's already cataloged.</p>
 
     <div class="mt-s2 flex flex-wrap items-center gap-s2">
       <button type="button" data-subres-select-all="true" class="cursor-pointer bg-transparent text-caveat text-accent-ink underline">select all worthy</button>
@@ -250,14 +250,14 @@ async function submitSubResourceCatalog(panel, slug, btn) {
   const items = boxes.map((cb) => ({ locator: cb.dataset.locator, kind: cb.dataset.kind }));
   const publishToEgeria = panel.querySelector('[data-subres-publish]')?.checked ?? true;
   const original = btn.textContent;
-  btn.textContent = 'cataloguing…';
+  btn.textContent = 'cataloging…';
   btn.disabled = true;
   try {
     const data = await catalogSubResources(slug, items, publishToEgeria);
     const publishedCount = Object.keys(data.published || {}).length;
     const msg = publishToEgeria
-      ? `Catalogued ${data.cataloged.length} sub-resource(s), published ${publishedCount} to Egeria.`
-      : `Catalogued ${data.cataloged.length} sub-resource(s) locally.`;
+      ? `Cataloged ${data.cataloged.length} sub-resource(s), published ${publishedCount} to Egeria.`
+      : `Cataloged ${data.cataloged.length} sub-resource(s) locally.`;
     if (feedback) feedback.innerHTML = `<span class="text-accent-ink">${esc(msg)}</span>`;
     await reload(panel);
   } catch (err) {

@@ -152,9 +152,9 @@ test('gate 4: the Egeria fact is never blank and each state has its own words', 
   await enrichment.renderDocSources('amundsen');
   const t = (id) => host.querySelector(`[data-doc-egeria-state="${id}"]`).textContent.trim();
   assert.match(t('a'), /^local only/);
-  assert.equal(t('b'), 'local — not catalogued (publish needed)');
+  assert.equal(t('b'), 'local — not cataloged (publish needed)');
   assert.equal(t('c'), 'local — publishing…');
-  assert.equal(t('d'), 'catalogued in Egeria');
+  assert.equal(t('d'), 'cataloged in Egeria');
   assert.ok(t('e').length > 0, 'a row with no egeria_state still reads "local", never blank');
 });
 

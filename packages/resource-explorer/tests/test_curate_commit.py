@@ -227,4 +227,4 @@ class TestExecuteCurationPublishAssetStep:
 
         publish_step = next(s for s in rec["steps"] if s["name"] == "publish_asset")
         assert publish_step["state"] == "done"
-        assert "no run history" in publish_step["detail"] or "first catalogue" in publish_step["detail"]
+        assert "no run history" in publish_step["detail"] or "first catalog" in publish_step["detail"]

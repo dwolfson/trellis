@@ -56,7 +56,7 @@ def test_a_schema_with_only_the_templates_own_relationships_plans_a_soft_delete(
     choose(world, "sales", "leave_out")
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
     assert row["form"] == gw.SOFT_DELETE and row["hangs_off"]["total"] == 0
-    assert "will be removed (soft-deleted)" in row["text"] and "archived" not in row["text"]
+    assert "will be deleted from Egeria" in row["text"] and "archived" not in row["text"] and "removed" not in row["text"]
     _, rec = press(world, fake)
     assert fake.by_qn(SALES_QN) is None and step(rec, "leave_outs")["state"] == "done"
     assert derived(world)["schemas"]["sales"]["state"] == "removed"
@@ -284,7 +284,7 @@ def test_an_archive_step_says_archived_and_a_removal_says_removed(world, fake):
     choose(world, "archive", "leave_out")
     _, rec = press(world, fake)
     d = step(rec, "leave_outs")["detail"]
-    assert "1 archived" in d and "1 removed" in d and "2 of 2" in d
+    assert "1 archived in Egeria" in d and "1 deleted from Egeria" in d and "2 of 2" in d and "removed" not in d
 
 
 def test_a_failed_row_says_it_retries_when_the_worker_runs(world, fake):

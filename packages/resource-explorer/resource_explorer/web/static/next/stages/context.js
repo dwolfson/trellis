@@ -51,7 +51,7 @@ import {
  *  survey source via the catalog's own `fromAnalysis` field (already on
  *  `OBSERVATIONS`, E0-era) rather than a fabricated cross-reference. */
 function fixedFieldFeedsLine(def) {
-  const parts = ['Curate (catalogue record)'];
+  const parts = ['Curate (catalog record)'];
   if (def.fromAnalysis) parts.push(`sourced from ${def.fromAnalysis}`);
   return `<div class="text-provenance text-ink-muted">feeds → ${esc(parts.join(' · '))}</div>`;
 }
@@ -139,7 +139,7 @@ function humanQuestionRowHtml(entry) {
         placeholder="${esc(entry.note || '')}">${esc(held?.answer || '')}</textarea>
       <div class="flex shrink-0 flex-col gap-[2px]">
         <button type="button" data-context-answer-save="${esc(entry.question)}"
-          class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button>
+          class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Save</button>
         <button type="button" data-context-answer-cancel="1"
           class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">cancel</button>
       </div>
@@ -205,7 +205,7 @@ function renderHumanQuestions(slug) {
   if (!host) return;
   host.innerHTML = _humanQuestions.length
     ? _humanQuestions.map(humanQuestionRowHtml).join('')
-    : `<div class="text-caveat text-ink-muted">No catalogued human questions for this stage.</div>`;
+    : `<div class="text-caveat text-ink-muted">No cataloged human questions for this stage.</div>`;
   wireHumanQuestionControls(host, slug);
 }
 
@@ -301,7 +301,7 @@ export async function renderContext(slug) {
   host.innerHTML = `
     <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Everything a person has supplied about this
       resource — each row signed and dated, and each saying what it feeds. Nothing here is written to the
-      catalogue until you catalogue it (Curate).</p>
+      catalog until you catalog it (Curate).</p>
 
     <div class="mb-s1 flex items-baseline gap-s2">
       <h3 class="m-0 mb-s1 mt-s4 font-heading text-name font-normal text-ink">What we judge</h3>

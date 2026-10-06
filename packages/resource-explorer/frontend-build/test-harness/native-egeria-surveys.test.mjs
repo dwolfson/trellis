@@ -106,7 +106,16 @@ test('a runnable survey that has not run reads "not run" with a Run control', as
   const host = document.createElement('div');
   host.innerHTML = ns.nativeSurveyRowHtml(row());
   assert.match(host.textContent, /not run/);
-  assert.match(host.querySelector('[data-native-run]').textContent, /^run\s*→$/);
+  assert.match(host.querySelector('[data-native-run]').textContent, /^Run in Egeria\s*→$/);
+});
+
+test('a survey that has run says "Run again in Egeria →" (the destination is named whenever it is Egeria)', async () => {
+  const { document, ns } = await setUp();
+  const host = document.createElement('div');
+  host.innerHTML = ns.nativeSurveyRowHtml(withRun({ state: 'complete', read_at: isoAgo(5_000), report_at: isoAgo(9_000),
+    annotation_count: 4, report_guid: 'r-1', engine_action_guid: 'ea-1' }));
+  assert.match(host.querySelector('[data-native-run]').textContent, /^Run again in Egeria\s*→$/);
+  assert.doesNotMatch(host.textContent, /\bre-run\b/);
 });
 
 test('submitted: says "submitted to Egeria" with the time and the engine-action GUID, not "running"', async () => {
@@ -143,7 +152,7 @@ test('complete: when it was read, the report\'s time, the annotation count, and 
   const text = host.textContent.replace(/\s+/g, ' ');
   assert.match(text, /complete · read 3m ago · report from 3h ago · 638 annotations/);
   assert.ok(host.querySelector('[data-native-report="rep-1"]'));
-  assert.match(host.querySelector('[data-native-run]').textContent, /^re-run\s*→$/);
+  assert.match(host.querySelector('[data-native-run]').textContent, /^Run again in Egeria\s*→$/);
 });
 
 test('failed: Egeria\'s status word and message on the row; never "complete", never blank', async () => {
