@@ -215,7 +215,7 @@ class TestSubResourcePanelPortsClassicsRealBehaviour:
 
     def test_already_cataloged_items_are_shown_disabled_not_re_selectable(self):
         src = _analysis_src()
-        assert 'disabled checked title="Already catalogued"' in src
+        assert 'disabled checked title="Already cataloged"' in src
 
     def test_scoped_analysis_dispatch_uses_the_shape_gate(self):
         src = _analysis_src()

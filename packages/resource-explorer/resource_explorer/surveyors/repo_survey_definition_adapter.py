@@ -947,7 +947,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "an (unambiguous) Dockerfile/compose/Helm chart, a web-framework "
         "dependency — and the verdict that evidence supports: application "
         "(evidence found), library (importable, none found), or unknown (no "
-        "manifest read yet). Layer 1 of 'Cataloguing in layers' (project "
+        "manifest read yet). Layer 1 of 'Cataloging in layers' (project "
         "owner, 2026-09-14): before a distribution is proposed to Egeria as "
         "a SoftwareCapability classified Application, this is the evidence "
         "that verdict rests on.",

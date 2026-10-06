@@ -112,7 +112,7 @@ test('needs_sign_in and not_found states render their own glyph/label, not "reac
   assert.match(host.textContent, /HTTP 404/);
 });
 
-test('a published, catalogued source shows no "local only" note, and an unpublished one always does', async () => {
+test('a published, cataloged source shows no "local only" note, and an unpublished one always does', async () => {
   const { enrichment, host } = await setUpEnrichmentDom();
   stubFetchJson({
     '/api/doc-sources/database/adventureworks': docSourcesFixture({
@@ -128,7 +128,7 @@ test('a published, catalogued source shows no "local only" note, and an unpublis
   await enrichment.renderDocSources('adventureworks');
 
   assert.doesNotMatch(host.textContent, /local only/);
-  assert.match(host.textContent, /catalogued in Egeria/);
+  assert.match(host.textContent, /cataloged in Egeria/);
 });
 
 test('a stale-linkage publish note is shown verbatim instead of the generic "local only" copy', async () => {
@@ -235,7 +235,7 @@ test('each of the four Egeria publish-state rows renders its own required wordin
     in_egeria_count: 1,
     local_count: 3,
     sources: [
-      { ...base, id: 'catalogued-1', label: 'Catalogued source',
+      { ...base, id: 'cataloged-1', label: 'Cataloged source',
         egeria_external_ref_guid: 'ref-guid-42', egeria_state: 'catalogued',
         egeria_state_detail: 'ref-guid-42' },
       { ...base, id: 'publishing-1', label: 'Publishing source',
@@ -252,7 +252,7 @@ test('each of the four Egeria publish-state rows renders its own required wordin
 
   await enrichment.renderDocSources('adventureworks');
 
-  assert.match(host.textContent, /catalogued in Egeria/, 'state 1: catalogued');
+  assert.match(host.textContent, /cataloged in Egeria/, 'state 1: cataloged');
   assert.match(host.textContent, /local — publishing…/, 'state 2: publishing');
   assert.match(
     host.textContent,
@@ -263,10 +263,10 @@ test('each of the four Egeria publish-state rows renders its own required wordin
 
   // The ref GUID is surfaced but not cluttering the row's own text -- the
   // catalogued row carries it in a title attribute instead.
-  const catalogRow = host.querySelector('[data-source-row="catalogued-1"]');
-  assert.ok(catalogRow, 'expected the catalogued row in the DOM');
+  const catalogRow = host.querySelector('[data-source-row="cataloged-1"]');
+  assert.ok(catalogRow, 'expected the cataloged row in the DOM');
   const titled = catalogRow.querySelector('[title*="ref-guid-42"]');
-  assert.ok(titled, 'expected the ref guid surfaced via a title attribute near the catalogued row');
+  assert.ok(titled, 'expected the ref guid surfaced via a title attribute near the cataloged row');
 
   // Header counts the real per-row states, not a single published boolean.
   assert.match(host.textContent, /4.*declared/s);
@@ -292,12 +292,12 @@ test('the not_catalogued state (round 4, 2026-09-29) renders its own honest word
 
   await enrichment.renderDocSources('adventureworks');
 
-  assert.match(host.textContent, /local — not catalogued \(publish needed\)/);
+  assert.match(host.textContent, /local — not cataloged \(publish needed\)/);
   assert.doesNotMatch(host.textContent, /local — publishing…/);
-  assert.doesNotMatch(host.textContent, /catalogued in Egeria/);
+  assert.doesNotMatch(host.textContent, /cataloged in Egeria/);
 });
 
-test('a "publishing" row polls the GET endpoint and updates to catalogued without any user action (round 4, 2026-09-29)', async () => {
+test('a "publishing" row polls the GET endpoint and updates to cataloged without any user action (round 4, 2026-09-29)', async () => {
   // The bug this pins against: the add response reflects the PRE-drain
   // state and nothing ever re-fetched once the background immediate-attempt
   // drain finished -- live-verified 2026-09-29 (source "pdr"): the server
@@ -339,9 +339,18 @@ test('a "publishing" row polls the GET endpoint and updates to catalogued withou
     await new Promise((resolve) => realSetTimeout(resolve, 10));
     await new Promise((resolve) => realSetTimeout(resolve, 10));
 
-    assert.match(host.textContent, /catalogued in Egeria/, 'row must update on its own');
+    assert.match(host.textContent, /cataloged in Egeria/, 'row must update on its own');
     assert.ok(call >= 2, 'expected the poll to have re-fetched at least once');
   } finally {
     globalThis.setTimeout = realSetTimeout;
   }
+});
+
+test('the doc-source add control says what it does, in order: "Save and probe" (a probe is a network read of the URL, not an Egeria send)', async () => {
+  const { enrichment, host } = await setUpEnrichmentDom();
+  stubFetchJson({ '/api/doc-sources/database/adventureworks': docSourcesFixture({ sources: [] }) });
+  await enrichment.renderDocSources('adventureworks');
+  const btn = host.querySelector('#doc-source-add');
+  assert.equal(btn.textContent.trim(), 'Save and probe');
+  assert.doesNotMatch(host.textContent, /add \+ probe/);
 });

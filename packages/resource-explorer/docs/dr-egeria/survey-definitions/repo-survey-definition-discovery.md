@@ -139,7 +139,7 @@ Repo Discovery Survey — Repo Deployment Evidence
 GovActionProcessStep::RepoDiscoverySurvey::repo_deployment_evidence
 
 ### Description
-Per declared distribution (repo_manifest_parse's output): which deployment evidence exists — a console entry point, a __main__.py, an (unambiguous) Dockerfile/compose/Helm chart, a web-framework dependency — and the verdict that evidence supports: application (evidence found), library (importable, none found), or unknown (no manifest read yet). Layer 1 of 'Cataloguing in layers' (project owner, 2026-09-14): before a distribution is proposed to Egeria as a SoftwareCapability classified Application, this is the evidence that verdict rests on.
+Per declared distribution (repo_manifest_parse's output): which deployment evidence exists — a console entry point, a __main__.py, an (unambiguous) Dockerfile/compose/Helm chart, a web-framework dependency — and the verdict that evidence supports: application (evidence found), library (importable, none found), or unknown (no manifest read yet). Layer 1 of 'Cataloging in layers' (project owner, 2026-09-14): before a distribution is proposed to Egeria as a SoftwareCapability classified Application, this is the evidence that verdict rests on.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

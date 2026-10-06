@@ -2961,6 +2961,23 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_catalogue_commit_proofs_node "
                 "ON catalogue_commit_proofs(database_slug, node_kind, schema_name, table_name, id)"
             )
+            # group_changes: who put a resource in which group, and when. Append-only history of what
+            # HAPPENED (Curate's "saved · who · when" for the group line), additive, no foreign keys; the
+            # resource's current group stays where it was (the group_slug column on its own table).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS group_changes (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    group_slug   TEXT NOT NULL DEFAULT '',
+                    author       TEXT NOT NULL,
+                    changed_at   TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_group_changes_entity "
+                "ON group_changes(entity_type, entity_slug, id)"
+            )
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
             # `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`, slice 1 ("Declare
@@ -10414,7 +10431,7 @@ class ProjectRegistry:
         """Append one scope change. Never updates or removes a row."""
         slug = self._normalize_slug(slug)
         if not author:
-            raise ValueError("a catalogue scope change needs an author")
+            raise ValueError("a catalog scope change needs an author")
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO catalogue_scope_events
@@ -10532,7 +10549,7 @@ class ProjectRegistry:
                                         declared_at: str | None = None) -> None:
         slug = self._normalize_slug(slug)
         if not author:
-            raise ValueError("a catalogue scope declaration needs an author")
+            raise ValueError("a catalog scope declaration needs an author")
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO catalogue_scope_baselines
@@ -12532,6 +12549,29 @@ class ProjectRegistry:
             conn.execute("UPDATE file_systems SET group_slug = '' WHERE group_slug = ?", (slug,))
             cursor = conn.execute("DELETE FROM project_groups WHERE slug = ?", (slug,))
             return cursor.rowcount
+
+    def record_group_change(self, entity_type: str, entity_slug: str, group_slug: str, author: str,
+                            changed_at: str | None = None) -> str:
+        """Append who changed a resource's group and when; returns the timestamp. The author is the
+        signed-in person, resolved by the route from the session (never the request body)."""
+        if not author:
+            raise ValueError("a group change needs an author")
+        now = changed_at or datetime.utcnow().isoformat(timespec="seconds")
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO group_changes (entity_type, entity_slug, group_slug, author, changed_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (entity_type, self._normalize_slug(entity_slug), group_slug or "", author, now))
+        return now
+
+    def list_group_changes(self, entity_type: str, entity_slug: str) -> list[dict]:
+        """Every group change recorded for one resource, oldest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, entity_type, entity_slug, group_slug, author, changed_at FROM group_changes "
+                "WHERE entity_type = ? AND entity_slug = ? ORDER BY id",
+                (entity_type, self._normalize_slug(entity_slug))).fetchall()
+        return [dict(r) for r in rows]
 
     def set_project_group(self, resource_slug: str, group_slug: str) -> None:
         """Assign a repository to a group."""

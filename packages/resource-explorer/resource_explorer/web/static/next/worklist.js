@@ -43,7 +43,7 @@ import {
   setDisposition,
 } from '/static/re-api.js';
 import { saveCsv } from '/static/next/download.js';
-import { ago, daysSince, verdictLineHtml, changedTimesHtml } from '/static/next/format.js';
+import { ago, daysSince, verdictLineHtml, changedTimesHtml, readBackAt } from '/static/next/format.js';
 import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { shortName } from '/static/next/investigation-picker.js';
@@ -378,7 +378,7 @@ function renderActions(ctx) {
     <span class="text-ink-muted">${
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
-      : !runnable ? `<span class="text-accent-ink">No analyses are catalogued for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
+      : !runnable ? `<span class="text-accent-ink">No analyses are cataloged for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
       : n ? `${n} selected` : 'all rows'}</span>
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
       <select id="wl-disposition" ${n ? '' : 'disabled'}
@@ -397,7 +397,7 @@ function renderActions(ctx) {
         title="Create an investigation from this list: its name, its description, its members in scope"
         >${esc(START_LABEL)}</button>
       <button data-act="publish" class="cursor-pointer bg-transparent text-accent-ink underline"
-        >${grid.workList.egeria_guid ? 're-publish' : 'publish to Egeria'}</button>
+        >${grid.workList.egeria_guid ? 'Publish again' : 'Publish to Egeria'}</button>
     </span>`;
 
   host.querySelector('[data-act="run"]')?.addEventListener('click', () => runBatch(ctx));
@@ -2046,8 +2046,11 @@ async function publish(ctx) {
   try {
     const res = await publishWorkList(grid.workList.slug);
     grid.workList = await getWorkList(grid.workList.slug);
+    // "published · read back <when>" only once the re-read work list proves the collection exists in Egeria;
+    // until then it is "sent · waiting for Egeria" (the Egeria family's words follow the read-back).
+    const proven = !!(grid.workList && grid.workList.egeria_guid);
     const bits = [
-      `Published as a <strong>${esc(res.type_name)}</strong> collection
+      `${proven ? `published · ${readBackAt()}` : 'sent · waiting for Egeria'}: a <strong>${esc(res.type_name)}</strong> collection
        (<span class="font-mono">${esc(res.egeria_guid)}</span>).`,
       `<span class="tnum">${res.queued_members}</span> membership(s) queued —
        they are applied by the worker that drains the outbox, not here.`,

@@ -148,7 +148,7 @@ class TestMembershipHonesty:
     def test_an_accepted_but_unmaterialized_blueprint_says_so_honestly(self):
         app = _app()
         body = app[app.index("function blueprintRowHtml("):app.index("/** The rail: one cluster")]
-        assert "not yet catalogued in Egeria" in body
+        assert "not yet cataloged in Egeria" in body
 
 
 class TestDeferredStylingComesFromOneHelper:

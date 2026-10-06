@@ -362,7 +362,7 @@ test('signed out: every write control is disabled and says why', async () => {
   const text = host(document).textContent;
   assert.match(q(document, '[data-curate-findable-status]').textContent, /sign in to add or remove a tag — it needs an author/);
   assert.match(q(document, '[data-curate-ratings-status]').textContent, /sign in to rate or comment — it needs an author/);
-  assert.match(text, /sign in to write — an entry needs an author/);
+  assert.match(text, /sign in to save — an entry needs an author/);
   q(document, '[data-curate-tag-add]').click();
   q(document, '#journal-save').click();
   await wait(50);
@@ -391,7 +391,7 @@ test('a repository keeps its plan view in the middle, with the bands around it',
   const { document, server } = await setUp('repo');
   await openCurate(document);
   assert.match(band(document, 'kind').textContent, /disposition/, 'existing plan view still renders');
-  assert.doesNotMatch(band(document, 'kind').textContent, /Assembling what the catalogue/);
+  assert.doesNotMatch(band(document, 'kind').textContent, /Assembling what the catalog/);
   assert.ok(server.calls.some((c) => c.url.includes('/curate/plan')));
   assert.ok(band(document, 'findable').querySelector('[data-curate-tag-input]'));
   assert.ok(band(document, 'people').querySelector('[data-curate-fb-submit]'));
