@@ -221,7 +221,7 @@ function choiceCellCore(node, me) {
  *  A node with no state ('none') says nothing about Egeria rather than inventing a word. */
 const EGERIA_GLYPH = {
   catalogued: 'catalogued', attached_waiting: 'attached_waiting', queued: 'queued', sent: 'queued',
-  failed: 'catalogue_failed', removed: 'removed', archived: 'archived',
+  failed: 'catalogue_failed', archived: 'archived',
 };
 export function egeriaStateHtml(node, commit) {
   if (!commit) return '<div data-scope-egeria-state class="text-ink-muted">not read yet</div>';

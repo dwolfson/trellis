@@ -494,13 +494,14 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
                 "second": second, "proof": proof}
     if kind == P_REMOVED:
         # "removed" is RESERVED for "Remove from Resource Explorer", which only touches RE's record; an Egeria
-        # soft delete reads "deleted from Egeria". The state/proof kind names stay `removed`/`P_REMOVED`.
+        # soft delete is the state `deleted`, in words "deleted in Egeria". The stored proof kind keeps its
+        # old name `removed` (`P_REMOVED`): existing proof rows carry it and a rename would orphan them.
         was = "was cataloged" if had_elements else ""
         second = LINGERING_LINE if detached else ""
         if effective == CATALOGUE:
             second = "scope says catalog · the next commit re-creates it from the template"
         second = " · ".join(x for x in (was, second) if x)
-        return {"state": "removed", "words": f"deleted from Egeria · {_stamp(last['read_at'])}",
+        return {"state": "deleted", "words": f"deleted in Egeria · {_stamp(last['read_at'])}",
                 "second": second, "proof": proof}
     if kind == P_ARCHIVED:
         second = S19_SENTENCE if effective == CATALOGUE else (LINGERING_LINE if detached else "")
@@ -555,8 +556,8 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
                           "second": f"schema read back {_stamp(el['read_at'])}; this table was not under it"}
                 if t.get("effective") == LEAVE_OUT:
                     ts["second"] = WHOLE_SCHEMAS_LINE
-            elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "removed", "archived"):
-                ts = {"state": "follows_schema", "words": f"as its schema: {'deleted from Egeria' if st['state'] == 'removed' else st['state'].replace('_', ' ')}",
+            elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "deleted", "archived"):
+                ts = {"state": "follows_schema", "words": f"as its schema: {'deleted in Egeria' if st['state'] == 'deleted' else st['state'].replace('_', ' ')}",
                       "second": WHOLE_SCHEMAS_LINE if t.get("effective") == LEAVE_OUT else ""}
             else:
                 ts = {"state": "none", "words": "", "second": ""}
@@ -613,7 +614,7 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if n_cat:
         order = (("catalogued", "cataloged"), ("attached_waiting", "attached, waiting"),
                  ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("uncommitted", "not committed yet"),
-                 ("removed", "deleted from Egeria"), ("archived", "archived in Egeria"))
+                 ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
     if conn_d and conn_d.get("last_refresh_time"):
@@ -675,10 +676,10 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         node = next(s for s in view["schemas"] if s["name"] == name)
         tcount = node.get("table_count")
         row = {"schema": name, "tables": tcount}
-        if st.get("state") in ("removed", "archived", "left_out", "none", "uncommitted"):
+        if st.get("state") in ("deleted", "archived", "left_out", "none", "uncommitted"):
             row.update(form="none", blocked=False,
-                       text=f"{name}: nothing to remove" + (" · already " + ("deleted from Egeria" if st.get("state") == "removed" else "archived in Egeria")
-                                                                  if st.get("state") in ("removed", "archived") else " · never cataloged"))
+                       text=f"{name}: nothing to remove" + (" · already " + ("deleted in Egeria" if st.get("state") == "deleted" else "archived in Egeria")
+                                                                  if st.get("state") in ("deleted", "archived") else " · never cataloged"))
             leave.append(row)
             continue
         if gateway is None:
@@ -697,12 +698,12 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                        text=in_use_text(name, read["in_use"]))
         elif read["form"] == SOFT_DELETE:
             row.update(form=SOFT_DELETE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
-                       text=f"{name}: nothing hangs off it · will be deleted from Egeria"
+                       text=f"{name}: nothing hangs off it · will delete in Egeria"
                             + (f" with its {tcount} tables" if tcount else "") + " · delete · nothing depends on it")
         else:
             row.update(form=ARCHIVE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
-                       text=f"{name}: {read['hangs_off']['words']} hang off it · will be archived in Egeria, "
-                            f"not deleted · can't be re-included until Egeria restores archived elements"
+                       text=f"{name}: {read['hangs_off']['words']} hang off it · will archive in Egeria, "
+                            f"not delete · can't be re-included until Egeria restores archived elements"
                             + "".join(f" · archive · lineage to {n} would be lost"
                                       for n in read["hangs_off"].get("lineage_to", [])))
         leave.append(row)
@@ -758,9 +759,23 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     # The leave outs are drawn once, as their own rows (`leave_out` below); a joined copy here
     # repeated every one of them in the manifest (2026-10-06).
     lines.append({"id": "whole_schemas", "mechanism": 0, "text": WHOLE_SCHEMAS_LINE})
-    lines.append({"id": "survey_report_whole", "mechanism": 0,
-                  "text": (f"RE's survey report is published whole; it describes all {len(view['schemas'])} schemas; "
-                           f"elements are created for the {len(attach)} you chose.")})
+    # Two counts, two sources: what RE's own survey could read with its credential, and what Egeria's
+    # survey counted (the header's number). The sentence names both (live finding 2026-10-06: "all 8
+    # schemas" under a header that said 29).
+    try:
+        own = registry.latest_measured_database_survey(slug)
+    except Exception:
+        own = None
+    n_egeria = len(view["schemas"])
+    if own:
+        m_own = own.get("schema_count")
+        report_sentence = (f"RE's survey report is published whole; it describes the {m_own} schemas RE's own "
+                           f"{md(own.get('surveyed_at', ''))} survey could read (Egeria's survey counts {n_egeria}); "
+                           f"elements are created for the {len(attach)} you chose.")
+    else:
+        report_sentence = (f"RE has no survey of its own to publish (Egeria's survey counts {n_egeria} schemas); "
+                           f"elements are created for the {len(attach)} you chose.")
+    lines.append({"id": "survey_report_whole", "mechanism": 0, "text": report_sentence})
 
     something = bool(attach or [r for r in leave if r["form"] in (SOFT_DELETE, ARCHIVE)])
     if not something and not blockers:
@@ -1250,7 +1265,7 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
 
 
-_PAST = {"attach": "attached", "remove": "deleted from Egeria"}
+_PAST = {"attach": "attached", "remove": "deleted in Egeria"}
 
 
 def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, registry=None) -> None:
@@ -1262,6 +1277,21 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
         return
     verb = _PAST.get(what, what + "ed")
     parts = [f"{len(done)} of {len(rows)} {verb}, each with its proof row"]
+    if what == "attach" and registry is not None and done:
+        # Two of three may already have been attached by an earlier commit: say which (the proof
+        # row's mechanism is `already_attached` when the guard found the target already there).
+        slug = ((rows[0].get("payload") or {}).get("slug")) or ""
+        proofs = registry.list_catalogue_commit_proofs(slug) if slug else []
+        already = 0
+        for r in done:
+            sch = (r.get("payload") or {}).get("schema")
+            last = _latest([p for p in proofs if p["node_kind"] == "schema" and p["schema_name"] == sch], (P_TARGET,))
+            if last and (last["detail"] or {}).get("mechanism") == "already_attached":
+                already += 1
+        if already:
+            fresh = len(done) - already
+            parts = [" · ".join(x for x in ((f"{fresh} attached" if fresh else ""), f"{already} already attached") if x)
+                     + (f" (of {len(rows)} chosen)" if len(rows) != len(done) else "")]
     if what == "remove" and registry is not None and done:
         # what was actually done to each schema, from its proof row: an archive says "archived", never "removed"
         slug = ((rows[0].get("payload") or {}).get("slug")) or ""
@@ -1275,7 +1305,7 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
         if n_arch == len(kinds):
             parts = [f"{len(done)} of {len(rows)} archived in Egeria, each with its proof row"]
         elif n_arch:
-            parts = [f"{len(done)} of {len(rows)}: {len(kinds) - n_arch} deleted from Egeria, {n_arch} archived in Egeria, each with its proof row"]
+            parts = [f"{len(done)} of {len(rows)}: {len(kinds) - n_arch} deleted in Egeria, {n_arch} archived in Egeria, each with its proof row"]
     if wait:
         parts.append(f"{len(wait)} queued in the outbox (#{', #'.join(str(r['id']) for r in wait)})")
     more: list[str] = []
@@ -1290,20 +1320,27 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
 def report_step_words(res: dict, surveyed_at: str) -> tuple[str, str]:
     """The state and words of the "RE's own survey report" step, from what the publish returned.
 
-    `annotation_count` is how many annotations RE BUILT from its survey, not how many Egeria
-    accepted; the surveyor creates the report element first and the annotations under it, and an
-    empty `report_guid` means no report element came back. So "published" is said only with a guid;
-    a swallowed error is a failure with Egeria's word; "report not found" only when the publish
-    returned nothing at all."""
+    `annotation_count` is how many annotations RE BUILT from its survey. "published" is said only with
+    a report id and no error. A create refused as a duplicate of the SAME survey run is reused (the
+    surveyor looked the report up by its exact name): then the words give the count Egeria HOLDS,
+    never RE's local count, and RE's own number only when the two differ. Any other failure fails the
+    step with Egeria's first sentence."""
     n = res.get("annotation_count")
     when = md(surveyed_at) if surveyed_at else ""
     src = f" from the {when} survey" if when else ""
-    guid = str(res.get("report_guid") or "")
-    if guid:
-        return "done", (f"report {guid[:8]} · {n} annotations published ·{src}" if n is not None else f"report {guid[:8]} ·{src}")
+    guid = str(res.get("report_element_guid") or res.get("report_guid") or "")
     if res.get("report_error"):
         first, _ = egeria_first_sentence(str(res["report_error"]))
-        return "failed", f"Egeria did not take the report: {first} · {n} annotations built, none published ·{src}"
+        if guid:
+            return "failed", f"report {guid[:8]} was created, but its annotations were not: {first} · {n} annotations built"
+        return "failed", f"report not published · {first} · {n} annotations built, none published ·{src}".rstrip(" ·")
+    if res.get("report_reused"):
+        k = res.get("annotations_in_egeria")
+        held = f"{k} annotations in Egeria" if k is not None else "annotations in Egeria could not be counted"
+        local = f" · built locally: {n}" if (n is not None and k is not None and n != k) else ""
+        return "done", f"already in Egeria · report {guid[:8]} ·{src} · {held}{local}"
+    if guid:
+        return "done", (f"report {guid[:8]} · {n} annotations published ·{src}" if n is not None else f"report {guid[:8]} ·{src}")
     if n is None and not res:
         return "done", "report not found · the publish returned nothing"
     return "done", f"{n} annotations{src} · Egeria returned no report element id, so the report itself is not confirmed"
@@ -1313,6 +1350,11 @@ def _fail_step(cur, cid: str, step: str, exc: Exception | str, prefix: str = "")
     """A failed step reads Egeria's first sentence; the rest goes under "details"."""
     first, rest = egeria_first_sentence(str(exc) or type(exc).__name__)
     cur.set_step(cid, step, "failed", f"{prefix}{first}"[:400], more=rest)
+
+
+def _is_timeout(exc: Exception) -> bool:
+    text = " ".join(str(exc).split()).lower()
+    return "408" in text or "timeout" in text or "timed out" in text
 
 
 def _try_status(gateway):
@@ -1405,7 +1447,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         drain(curation_id)
         rows = [r for r in registry.list_catalogue_outbox_rows(slug)
                 if r["run_id"] == curation_id and r["element_kind"] == KIND_ATTACH]
-        _step_from_outbox(cur, curation_id, "schema_targets", rows, "attach")
+        _step_from_outbox(cur, curation_id, "schema_targets", rows, "attach", registry)
 
     # 2b ── leave outs
     leave = list(sel.get("leave_out") or [])
@@ -1432,10 +1474,16 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     else:
         try:
             res = gateway.publish_local_report(db, db.db_user, db.db_password, measured, registry=registry, submitted_by=author)
-            _proof(registry, slug, P_REPORT, node_kind="database", element_guid=res.get("report_guid", ""),
-                   curation_id=curation_id, detail={"annotation_count": res.get("annotation_count"),
-                                                    "surveyed_at": measured.get("surveyed_at", ""),
-                                                    "report_error": res.get("report_error", "")})
+            rep_guid = res.get("report_element_guid", res.get("report_guid", "")) or ""
+            _proof(registry, slug, P_REPORT, node_kind="database", element_guid=rep_guid,
+                   curation_id=curation_id,
+                   detail={"annotation_count": res.get("annotation_count"),
+                           "surveyed_at": measured.get("surveyed_at", ""),
+                           "report_error": res.get("report_error", ""),
+                           "outcome": ("failed" if res.get("report_error") else "reused" if res.get("report_reused") else "published"),
+                           "note": (f"reused existing report (same survey run {measured.get('surveyed_at', '')})"
+                                    if res.get("report_reused") else ""),
+                           "annotations_in_egeria": res.get("annotations_in_egeria")})
             state, words = report_step_words(res, measured.get("surveyed_at", ""))
             cur.set_step(curation_id, "survey_report", state, words)
         except Exception as exc:
@@ -1475,11 +1523,27 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         cur.set_step(curation_id, "refresh", "skipped", "no target to refresh")
     else:
         before = _try_status(gateway)
+        t_start = time.monotonic()
+        log.info("catalog commit %s: asking the daemon to refresh %s (status %s)", curation_id,
+                 getattr(before, "name", "") or "the cataloguer connector", (before.status if before else "") or "unreadable")
         try:
             gateway.refresh_connector(120)
         except Exception as exc:
-            _fail_step(cur, curation_id, "refresh", exc)
+            took = time.monotonic() - t_start
+            first, _ = egeria_first_sentence(str(exc) or type(exc).__name__)
+            timed_out = _is_timeout(exc)
+            now_status = _try_status(gateway)
+            seen = [x.status.upper() for x in (before, now_status) if x is not None and x.status]
+            if timed_out and "REFRESHING" in seen:
+                log.info("catalog commit %s: refresh timed out after %.0f s while the connector was REFRESHING: not a failure", curation_id, took)
+                cur.set_step(curation_id, "refresh", "skipped",
+                             "the cataloguer was already refreshing · elements arrive on its pass")
+            else:
+                log.info("catalog commit %s: refresh %s: %s", curation_id,
+                         f"timed out after {took:.0f} s (connector status {', '.join(seen) or 'unreadable'})" if timed_out else "refused", first)
+                _fail_step(cur, curation_id, "refresh", exc)
         else:
+            log.info("catalog commit %s: refresh finished in %.0f s", curation_id, time.monotonic() - t_start)
             after = _try_status(gateway)
             t0 = (before.last_refresh_time if before else "") or ""
             t1 = (after.last_refresh_time if after else "") or ""

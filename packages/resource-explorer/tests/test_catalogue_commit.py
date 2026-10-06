@@ -353,7 +353,7 @@ def test_leave_out_nothing_hangs_off_is_a_soft_delete_leaf_first_without_a_casca
     assert fake.targets == [] and fake.read_element(
         "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales") is None
     s = derived(world)["schemas"]["sales"]
-    assert s["state"] == "removed" and s["second"] == cc.LINGERING_LINE
+    assert s["state"] == "deleted" and s["second"] == cc.LINGERING_LINE
     assert step(rec, "leave_outs")["state"] == "done"
 
 
@@ -466,7 +466,7 @@ def test_re_inclusion_after_a_soft_delete_recreates_and_reattaches_with_new_guid
     old = fake.by_qn(sqn)["guid"]
     choose(world, "sales", "leave_out")
     press(world, fake)
-    assert derived(world)["schemas"]["sales"]["state"] == "removed"
+    assert derived(world)["schemas"]["sales"]["state"] == "deleted"
     choose(world, "sales", "catalogue")
     assert "the next commit re-creates it" in derived(world)["schemas"]["sales"]["second"]
     press(world, fake)

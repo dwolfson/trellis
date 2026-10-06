@@ -204,19 +204,19 @@ test('leave-out rows name their form before the press: soft delete, archive, and
   const preview = previewFor({
     button: 'Catalog · 2 schemas · removes 1 from Egeria · archives 1',
     leave_out: [
-      { schema: 'old', form: 'soft_delete', blocked: false, text: 'old: nothing hangs off it · will be deleted from Egeria with its 1 tables' },
-      { schema: 'ledger', form: 'archive', blocked: false, text: "ledger: 2 term assignments hang off it · will be archived in Egeria, not deleted · can't be re-included until Egeria restores archived elements" },
+      { schema: 'old', form: 'soft_delete', blocked: false, text: 'old: nothing hangs off it · will delete in Egeria with its 1 tables' },
+      { schema: 'ledger', form: 'archive', blocked: false, text: "ledger: 2 term assignments hang off it · will archive in Egeria, not delete · can't be re-included until Egeria restores archived elements" },
       { schema: 'tmp', form: 'cannot_check', blocked: true, text: "tmp: couldn't check what hangs off it" },
     ],
   });
   const { document } = await setUp(baseView(), preview);
   const rows = Object.fromEntries([...document.querySelectorAll('[data-scope-leave-out]')].map((r) => [r.dataset.scopeLeaveOut, r]));
   assert.equal(rows.old.dataset.form, 'soft_delete');
-  assert.match(flat(rows.old), /nothing hangs off it · will be deleted from Egeria/
+  assert.match(flat(rows.old), /nothing hangs off it · will delete in Egeria/
   );
   assert.doesNotMatch(flat(rows.old), /removed|soft-deleted/);
   assert.equal(rows.ledger.dataset.form, 'archive');
-  assert.match(flat(rows.ledger), /2 term assignments hang off it · will be archived in Egeria, not deleted/);
+  assert.match(flat(rows.ledger), /2 term assignments hang off it · will archive in Egeria, not delete/);
   assert.match(flat(rows.ledger), /can't be re-included until Egeria restores archived elements/);
   assert.match(flat(rows.tmp), /^⚠ tmp: couldn't check what hangs off it$/);
   assert.doesNotMatch(flat(rows.tmp), /nothing hangs off it/);
@@ -274,14 +274,14 @@ function committedView() {
     schemas: {
       sales: { state: 'catalogued', words: 'cataloged · 2 tables · read back 10-05 09:12', second: 'element · read back from Egeria' },
       archive: { state: 'attached_waiting', words: "attached · waiting for Egeria's next refresh", second: "connector's last refresh 09:05 (the connector's, not this schema's)" },
-      old: { state: 'removed', words: 'deleted from Egeria · 10-05 09:30', second: "was cataloged · Egeria's cataloguer still lists this schema until its connector restarts · nothing is recreated" },
+      old: { state: 'deleted', words: 'deleted in Egeria · 10-05 09:30', second: "was cataloged · Egeria's cataloguer still lists this schema until its connector restarts · nothing is recreated" },
       plain: { state: 'failed', words: 'failed · 500 Egeria says no', second: 'step: attach · outbox #7 · will retry' },
     },
     tables: {
       'sales.orders': { state: 'catalogued', words: 'cataloged · read back 10-05 09:12', second: 'element · read back from Egeria' },
       'sales.customers': { state: 'catalogued', words: 'cataloged · read back 10-05 09:12', second: 'Egeria catalogs whole schemas · table choices are kept for when it can' },
       'archive.orders': { state: 'follows_schema', words: 'as its schema: attached waiting', second: '' },
-      'old.things': { state: 'follows_schema', words: 'as its schema: deleted from Egeria', second: '' },
+      'old.things': { state: 'follows_schema', words: 'as its schema: deleted in Egeria', second: '' },
       'plain.p1': { state: 'none', words: '', second: '' },
     },
   };
@@ -303,7 +303,7 @@ test('every state word on a schema row is the server\'s, with its glyph and seco
   assert.match(flat(word('q')), /^◔ queued · outbox #4182$/);
   assert.match(flat(word('plain')), /^✕ failed · 500 Egeria says no$/);
   assert.match(flat(secondOf(document, 'schema:plain')), /step: attach · outbox #7 · will retry/);
-  assert.match(flat(word('old')), /^∅ deleted from Egeria · 10-05 09:30$/);
+  assert.match(flat(word('old')), /^deleted in Egeria · 10-05 09:30$/);
   assert.match(flat(secondOf(document, 'schema:old')), /still lists this schema until its connector restarts · nothing is recreated/);
   assert.match(flat(word('ledger')), /^□ archived in Egeria · 10-05 09:31$/);
   assert.match(flat(secondOf(document, 'schema:ledger')), /can't be re-included until Egeria restores archived elements/);

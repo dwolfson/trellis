@@ -62,6 +62,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class _GapsOncePerPlan:
+    """A FactLayer view for ONE `build_plan` call: `facts()` records the gaps once, not once per
+    analysis. Each fact read used to run `record_gaps_for` (about 111 statements); the plan reads
+    several analyses, so one plan paid for it several times (90% of a small fixture's plan, measured).
+    `gap_passes` is what the test counts."""
+
+    def __init__(self, layer):
+        self._layer = layer
+        self.gap_passes = 0
+        self.resource_type = getattr(layer, "resource_type", "repo")
+
+    def facts(self, slug: str, analysis_ids: list, level: str = "resource") -> list:
+        results = [self._layer.fact(slug, a, level) for a in analysis_ids]
+        if results and not self.gap_passes:
+            from resource_explorer.gaps import record_gaps_for
+
+            self.gap_passes += 1
+            try:
+                record_gaps_for(self._layer._registry, slug, self._layer.resource_type)
+            except ValueError:
+                pass
+        return results
+
+
 def _fact(layer, slug: str, analysis_id: str) -> dict:
     try:
         facts = layer.facts(slug, [analysis_id])
@@ -100,7 +124,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     project = registry.get(slug)
     if not project:
         raise KeyError(slug)
-    layer = FactLayer(registry)
+    layer = _GapsOncePerPlan(FactLayer(registry))
     disp = registry.get_disposition(project.github_url) if project.github_url else None
     disposition = (disp or {}).get("disposition") or "undecided"
 
