@@ -75,7 +75,7 @@ LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connect
 # The ISSUE-117 hard block lives in catalogue_gateway (`issue_117_blocked()`, `ISSUE_117_WORDS`): ON unless the
 # env var RE_ISSUE_117_BLOCK_OFF names a clearance; read at call time so one switch governs the preview, the
 # outbox handler and the real gateway.
-CATALOGED_STATES = ("catalogued", "attached_waiting", "queued", "sent", "failed")
+CATALOGED_STATES = ("catalogued", "attached_waiting", "queued", "sent", "failed", "restored")
 CANT_CHECK = "couldn't check what hangs off it"
 IN_USE = "in use by a running survey · wait or cancel"
 WAIT = "wait or cancel"
@@ -102,6 +102,10 @@ P_ELEMENTS = "elements_read_back"
 P_DETACHED = "target_detached"
 P_REMOVED = "removed"
 P_ARCHIVED = "archived"
+#: A restore script (never this module) appends this row by KIND NAME through append_catalogue_commit_proof when an
+#: archived element has been restored in Egeria: `element_guid` is the restored element, `detail["from_guid"]` the
+#: guid of the element it replaced, `detail["note"]` any free text (all in detail_json: no DDL).
+P_RESTORED = "restored"
 P_LEAVE_OUT_BLOCKED = "leave_out_blocked"   # a leave-out that was refused (ISSUE-117): kept, not sent
 KEPT_NOT_SENT = "kept, not sent · ISSUE-117 block"
 P_SURVEY = "survey_started"
@@ -109,7 +113,7 @@ P_CONNECTOR = "connector_read"
 P_READ_FAILED = "read_failed"
 
 #: Proofs that decide a schema's state in Egeria. Anything else is context.
-STATE_PROOFS = (P_ATTACH_REQUESTED, P_TARGET, P_ELEMENTS, P_REMOVED, P_ARCHIVED)
+STATE_PROOFS = (P_ATTACH_REQUESTED, P_TARGET, P_ELEMENTS, P_REMOVED, P_ARCHIVED, P_RESTORED)
 
 #: The curation record's steps, in the manifest's order.
 #: `zone_membership` is LAST among the writes (and absent unless zones are configured): a zone
@@ -510,6 +514,11 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
         second = " · ".join(x for x in (was, second) if x)
         return {"state": "deleted", "words": f"deleted in Egeria · {_stamp(last['read_at'])}",
                 "second": second, "proof": proof}
+    if kind == P_RESTORED:
+        d = last["detail"]
+        was = str(d.get("from_guid") or "")
+        words = f"restored · {str(last['element_guid'] or '')[:8]} · from {was[:8] or 'unknown'} · {_stamp(last['read_at'])}"
+        return {"state": "restored", "words": words, "second": str(d.get("note") or ""), "proof": proof}
     if kind == P_ARCHIVED:
         second = S19_SENTENCE if effective == CATALOGUE else (LINGERING_LINE if detached else "")
         return {"state": "archived", "words": f"archived in Egeria · {_stamp(last['read_at'])}",
@@ -563,7 +572,7 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
                           "second": f"schema read back {_stamp(el['read_at'])}; this table was not under it"}
                 if t.get("effective") == LEAVE_OUT:
                     ts["second"] = WHOLE_SCHEMAS_LINE
-            elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "deleted", "archived"):
+            elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "deleted", "archived", "restored"):
                 ts = {"state": "follows_schema", "words": f"as its schema: {'deleted in Egeria' if st['state'] == 'deleted' else st['state'].replace('_', ' ')}",
                       "second": WHOLE_SCHEMAS_LINE if t.get("effective") == LEAVE_OUT else ""}
             else:
@@ -632,7 +641,7 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
         parts.append(zones_text or "zones: not read back")
     if n_cat:
         order = (("catalogued", "cataloged"), ("attached_waiting", "attached, waiting"),
-                 ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("uncommitted", "not committed yet"),
+                 ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
                  ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))

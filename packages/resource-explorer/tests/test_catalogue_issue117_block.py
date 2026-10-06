@@ -178,3 +178,43 @@ def test_known_negative_with_a_clearance_apply_leave_out_sends(world, fake, monk
     choose(world, "sales", "leave_out")
     cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.SOFT_DELETE, "curation_id": "c1", "by": ME})
     assert fake.ops("delete_element")
+
+
+# ── P_RESTORED: a restore script appends the row by kind name; the word derives from it ───────────────────────
+
+def test_the_restored_proof_kind_name_is_a_stable_string():
+    assert cc.P_RESTORED == "restored" and cc.P_RESTORED in cc.STATE_PROOFS
+
+
+def _append_restored(world, schema="sales"):
+    return world["registry"].append_catalogue_commit_proof(
+        "db", proof="restored", node_kind="schema", schema_name=schema,
+        element_guid="aaaaaaaa-0000-0000-0000-000000000001",
+        detail={"from_guid": "bbbbbbbb-0000-0000-0000-000000000002", "note": "restored by the Egeria lead"},
+        recorded_by="restore-script", read_at="2026-10-06T16:40:00")
+
+
+def test_the_restored_word_derives_from_the_proof_row_and_goes_when_the_row_does(world, fake):
+    choose(world, "sales", "catalogue")
+    _append_restored(world)
+    d = derived(world)
+    st = d["schemas"]["sales"]
+    assert st["state"] == "restored"
+    assert st["words"] == "restored · aaaaaaaa · from bbbbbbbb · 10-06 16:40"
+    assert st["second"] == "restored by the Egeria lead"
+    assert "1 restored" in d["header"]["text"]
+    # the row text on the page is that state's words (egeriaStateHtml prints st.words): same string
+    with world["registry"]._conn() as c:
+        c.execute("DELETE FROM catalogue_commit_proofs WHERE proof = ?", ("restored",))
+    d2 = derived(world)
+    assert d2["schemas"]["sales"]["state"] != "restored" and "restored" not in d2["schemas"]["sales"]["words"]
+    assert "restored" not in d2["header"]["text"]
+
+
+def test_a_restored_schema_that_is_left_out_is_still_blocked_from_any_archive(world, fake):
+    choose(world, "sales", "leave_out")
+    choose(world, "archive", "catalogue")
+    _append_restored(world)
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == "issue_117" and not sent_to_egeria(fake)
