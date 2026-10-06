@@ -391,7 +391,7 @@ test('a repository keeps its plan view in the middle, with the bands around it',
   const { document, server } = await setUp('repo');
   await openCurate(document);
   assert.match(band(document, 'kind').textContent, /disposition/, 'existing plan view still renders');
-  assert.doesNotMatch(band(document, 'kind').textContent, /Assembling what the catalog/);
+  assert.doesNotMatch(band(document, 'kind').textContent, /plan loading/);
   assert.ok(server.calls.some((c) => c.url.includes('/curate/plan')));
   assert.ok(band(document, 'findable').querySelector('[data-curate-tag-input]'));
   assert.ok(band(document, 'people').querySelector('[data-curate-fb-submit]'));

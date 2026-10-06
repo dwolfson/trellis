@@ -61,6 +61,8 @@ async def _lifespan(app: FastAPI):
     from resource_explorer.surveyors.prefect_adapter import alog_prefect_reachability_at_startup
 
     await alog_prefect_reachability_at_startup()
+    from resource_explorer.catalogue_gateway import issue_117_state_line
+    logging.getLogger(__name__).info("%s", issue_117_state_line())   # on, or off with the clearance text
 
     # Re-project stored credentials if a redeploy deleted the secrets file.
     # Non-fatal by construction (heal_missing never raises) and no network.

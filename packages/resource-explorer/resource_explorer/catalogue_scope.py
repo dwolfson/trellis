@@ -1083,7 +1083,7 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
             "last_write": s_act, "rows_view": s_rows, "size_view": s_size,
             "data_classes": {"state": "not_established", "classes": [], "pii_columns": 0},
             "provenance": depth_provenance(depth, "schema"),
-            "conflict": None, "tables": [], **sv,
+            "tables": [], **sv,
         }
         if cls == "staging":
             node["notes"].append("name suggests staging")
@@ -1127,7 +1127,7 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
                                   "pii_columns": pii} if dc
                                  else {"state": "not_established", "classes": [], "pii_columns": 0}),
                 "provenance": depth_provenance(depth, "table"),
-                "conflict": None, **tv,
+                **tv,
             }
             if pii:
                 tnode["marks"].append(f"PII · {pii} column{'s' if pii != 1 else ''}")
@@ -1139,26 +1139,6 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
             node["marks"].append(f"PII · {pii_s} column{'s' if pii_s != 1 else ''}")
             node["data_classes"] = {"state": "measured", "classes": [], "pii_columns": pii_s}
         schemas_out.append(node)
-
-    # name-conflict check (designer section 4): the filter matches plain names
-    pairs, names = [], []
-    for tname, nodes in sorted(name_to_tables.items()):
-        yes = [n["schema"] for n in nodes if n["effective"] == CATALOGUE]
-        no = [n["schema"] for n in nodes if n["effective"] == LEAVE_OUT]
-        if yes and no:
-            names.append(tname)
-            involved = yes + no
-            text = (f"{tname} is chosen differently in "
-                    + (" and ".join(involved) if len(involved) <= 2
-                       else ", ".join(involved[:-1]) + " and " + involved[-1]))
-            for n in nodes:
-                if n["effective"] in CHOICES:
-                    n["conflict"] = {"name": tname, "text": text,
-                                     "catalogue_in": yes, "leave_out_in": no}
-            for a in yes:
-                for b in no:
-                    pairs.append({"name": tname, "catalogue_in": a, "leave_out_in": b})
-    conflicts = {"count": len(names), "names": names, "pairs": pairs}
 
     # A lens term found in table NAMES is a suggested rule, never a proposal (designer
     # round 2: a name substring is not "a measured match"). Only the sentence is built;
@@ -1188,7 +1168,6 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
                   "by": (depth_event or {}).get("author", ""), "at": (depth_event or {}).get("changed_at", ""),
                   "options": [dict(d) for d in DEPTHS], "help": DEPTH_HELP,
                   "commit_note": ("" if depth == "tables_and_columns" else DEPTH_NOT_HONOURED)},
-        "conflicts": conflicts,
     }
     view["counts"] = {
         "schemas_offered": len(schemas_out),
@@ -1231,14 +1210,6 @@ def _new_since_from_view(view: dict) -> dict:
     return {"declared": True, "schemas": n, "tables": m, "tables_in_known_schemas": len(known),
             "schema_names": [s["name"] for s in new_schemas], "text": text,
             "since": view["declared"]["at"]}
-
-
-def scope_conflicts(registry, slug: str, *, view: dict | None = None, **kw) -> dict:
-    """Choices Egeria's plain-name filter cannot express: `{count, names, pairs}`.
-
-    Slice B disables the Catalogue button while `count` > 0 ("N choices Egeria
-    can't express, resolve them above")."""
-    return (view or build_scope_view(registry, slug, **kw))["conflicts"]
 
 
 def new_since_declared(registry, slug: str, *, view: dict | None = None, **kw) -> dict:
@@ -1365,29 +1336,6 @@ def redeclare(registry, slug: str, author: str, *, now: str | None = None, **vie
         slug, baseline=keys, survey_at=keys.get("as_of") or _tree_survey_at(registry, slug), author=author,
         kind="redeclare" if explicit else "declare", declared_at=now or _now())
     return {"state": "declared"}
-
-
-def resolve_conflict(registry, slug: str, author: str, *, name: str, choice: str,
-                     now: str | None = None, **view_kw) -> dict:
-    """Resolve one name conflict the one way a person can: the same explicit
-    choice on every table of that name that is currently decided."""
-    if choice not in CHOICES:
-        raise ScopeError(400, f"choice must be one of {', '.join(CHOICES)}")
-    view = build_scope_view(registry, slug, **view_kw)
-    if name not in view["conflicts"]["names"]:
-        raise ScopeError(409, f"{name} is not in conflict now")
-    now = now or _now()
-    done = []
-    for s in view["schemas"]:
-        for t in s["tables"]:
-            if t["name"] == name and t["effective"] in CHOICES:
-                _declare_if_needed(registry, slug, author, _view_tree_keys(view), now)
-                registry.append_catalogue_scope_event(
-                    slug, node_kind="table", schema_name=s["name"], table_name=name,
-                    choice=choice, action="set", author=author, changed_at=now,
-                    reason="resolves a name conflict")
-                done.append(f"{s['name']}.{name}")
-    return {"state": "resolved", "nodes": done}
 
 
 def set_nodes_choice(registry, slug: str, author: str, *, nodes: list[dict] | None = None,

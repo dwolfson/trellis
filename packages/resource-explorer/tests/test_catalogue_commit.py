@@ -353,7 +353,7 @@ def test_leave_out_nothing_hangs_off_is_a_soft_delete_leaf_first_without_a_casca
     assert fake.targets == [] and fake.read_element(
         "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales") is None
     s = derived(world)["schemas"]["sales"]
-    assert s["state"] == "removed" and s["second"] == cc.LINGERING_LINE
+    assert s["state"] == "deleted" and s["second"] == cc.LINGERING_LINE
     assert step(rec, "leave_outs")["state"] == "done"
 
 
@@ -466,7 +466,7 @@ def test_re_inclusion_after_a_soft_delete_recreates_and_reattaches_with_new_guid
     old = fake.by_qn(sqn)["guid"]
     choose(world, "sales", "leave_out")
     press(world, fake)
-    assert derived(world)["schemas"]["sales"]["state"] == "removed"
+    assert derived(world)["schemas"]["sales"]["state"] == "deleted"
     choose(world, "sales", "catalogue")
     assert "the next commit re-creates it" in derived(world)["schemas"]["sales"]["second"]
     press(world, fake)
@@ -502,6 +502,13 @@ def test_like_matches_follows_jdbc_patterns():
     assert gw.like_matches("p%t", "plain_t") and not gw.like_matches("p%t", "plain_x")
     assert not gw.like_matches("aXb", "a_b")                                  # only the PATTERN side has wildcards
     assert not gw.like_matches("a.b", "aXb")                                  # a dot is a dot
+
+
+def test_same_named_tables_in_a_catalogued_and_a_left_out_schema_do_not_block_the_commit(world, fake):
+    choose(world, "sales", "catalogue")
+    choose(world, "archive", "leave_out")           # sales.orders and archive.orders share a name
+    p = cc.build_preview(world["registry"], "db", view(world), fake)
+    assert p["blockers"] == [] and p["can_commit"] is True and p["collisions"] == []
 
 
 def test_schema_collision_a_b_and_aXb_is_flagged_before_the_press_and_disables_it(world, fake):
@@ -935,3 +942,61 @@ def test_the_survey_definition_retry_uses_the_commit_and_never_the_unscoped_publ
     assert "/publish" not in body and "db_pwd" not in body
     assert "submitSurveyDefinitionRun()" not in body          # the commit is queued work: no automatic retry
     assert "/api/databases/${slug}/publish" not in html       # RE's own page calls the unscoped route nowhere
+
+
+def test_a_leave_out_is_in_the_manifest_once_as_its_own_row_not_twice(world, fake):
+    choose(world, "sales", "catalogue")
+    choose(world, "archive", "leave_out")                    # never catalogued: "nothing to remove"
+    p = cc.build_preview(world["registry"], "db", view(world), fake)
+    row_text = p["leave_out"][0]["text"]
+    assert row_text == "archive: nothing to remove · never cataloged"
+    manifest = " ".join(ln["text"] for ln in p["manifest"]["lines"])
+    assert "nothing to remove" not in manifest                # the rows carry it, once
+    assert all(ln["id"] != "leave_out" for ln in p["manifest"]["lines"])
+
+
+# ── RE's own survey report: the words say what came back (coco_pharma, 2026-10-06) ──────────────
+
+def _measured(world):
+    world["registry"].record_database_survey("db", 2, 5, 9, {"schema_info": {"sales": {}}}, source="local",
+                                             surveyed_at="2026-10-03T18:07:08")
+
+
+def test_report_step_with_annotations_and_no_guid_says_what_came_back_not_report_not_found(world, fake, monkeypatch):
+    _measured(world)
+    monkeypatch.setattr(fake, "publish_local_report",
+                        lambda *a, **k: {"annotation_count": 76, "asset_guid": "d1"})   # annotations only, no report element id
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    st = step(rec, "survey_report")
+    assert st["state"] == "done"
+    assert "report not found" not in st["detail"] and "report ?" not in st["detail"]
+    assert st["detail"] == ("76 annotations from the 10-03 survey · Egeria returned no report element id, "
+                            "so the report itself is not confirmed")
+
+
+def test_report_step_with_a_guid_names_it_and_the_survey_it_came_from(world, fake):
+    _measured(world)
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    d = step(rec, "survey_report")["detail"]
+    assert d.startswith("report ") and "3 annotations published · from the 10-03 survey" in d
+
+
+def test_report_step_reports_the_swallowed_publish_error_as_a_failure(world, fake, monkeypatch):
+    _measured(world)
+    monkeypatch.setattr(fake, "publish_local_report",
+                        lambda *a, **k: {"annotation_count": 76, "report_guid": "", "report_error": "403 not authorized"})
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    st = step(rec, "survey_report")
+    assert st["state"] == "failed" and "403 not authorized" in st["detail"]
+    assert "76 annotations built, none published" in st["detail"]
+
+
+def test_report_step_says_report_not_found_only_when_the_publish_returned_nothing(world, fake, monkeypatch):
+    _measured(world)
+    monkeypatch.setattr(fake, "publish_local_report", lambda *a, **k: {})
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    assert step(rec, "survey_report")["detail"] == "report not found · the publish returned nothing"

@@ -73,7 +73,7 @@ const DB_WORK_SECTIONS = [
  *  scope tree, curate-scope.js, fills `[data-curate-scope]`). It comes first
  *  because the two sections below act on its output. */
 export function databaseScopeHtml() {
-  return `<div data-curate-work="scope" class="mb-s3">
+  return `<div data-curate-work="scope" class="mb-s3 min-w-0">
     <div class="text-answer text-ink">What gets cataloged</div>
     <div data-curate-scope class="mt-s1 text-caveat text-ink-muted">Reading the catalog scope…</div></div>`;
 }

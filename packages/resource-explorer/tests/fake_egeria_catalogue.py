@@ -403,7 +403,7 @@ class FakeEgeria:
     def connector_status(self):
         self.calls.append(("connector_status",))
         self._boom("connector_status")
-        return ConnectorStatus("JDBCDatabaseCataloguer", "WAITING", self.connector_time)
+        return ConnectorStatus("JDBCDatabaseCataloguer", getattr(self, "connector_state", "WAITING"), self.connector_time)
 
     def refresh_connector(self, timeout=120):
         self.calls.append(("refresh_connector", timeout))

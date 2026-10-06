@@ -89,7 +89,7 @@ test('Curate on a repo draws the plan view, not an empty body', async () => {
   const host = document.getElementById('curate-host');
   assert.ok(host, 'Curate must have a host in the document');
   assert.match(host.textContent, /disposition/);
-  assert.doesNotMatch(host.textContent, /Assembling what the catalog/);
+  assert.doesNotMatch(host.textContent, /plan loading/);
 });
 
 test('Curate host survives the Questions rows blanking (sibling, not child)', async () => {

@@ -1137,6 +1137,9 @@ class EgeriaDatabaseSurveyor:
 
         # ── Publish local survey report & annotations to Egeria ──────────────────
         report_guid = ""
+        report_error = ""
+        report_reused = False
+        annotations_in_egeria = None
         annotations = []
         if db_guid:
             # Recreate annotations from local scan data using DatabaseSurveyor helpers
@@ -1174,14 +1177,9 @@ class EgeriaDatabaseSurveyor:
                     },
                 },
             }
-            try:
-                report_guid = self._asset_maker.create_asset(body=body)
-                log.info(f"Published SurveyReport in Egeria: {report_guid}")
-                
-                # Push annotations under the SurveyReport in Egeria
-                self._create_annotations(annotations, report_guid, db_entity.slug, surveyed_at)
-            except Exception as exc:
-                log.warning(f"Failed to publish SurveyReport to Egeria: {exc}")
+            pub = self._publish_survey_report(body, qualified_name, annotations, db_entity.slug, surveyed_at)
+            report_guid, report_error = pub["report_guid"], pub["report_error"]
+            report_reused, annotations_in_egeria = pub["reused"], pub["annotations_in_egeria"]
 
         # Use the created report GUID if available, otherwise fall back to Egeria's native action GUID
         effective_report_guid = report_guid or survey_action_guid
@@ -1207,8 +1205,72 @@ class EgeriaDatabaseSurveyor:
             "report_guid":        effective_report_guid,
             "server_survey_guid": server_survey_guid,
             "annotation_count":   len(annotations),
+            "report_error":       report_error,
+            "report_element_guid": report_guid,
+            "report_reused":      report_reused,
+            "annotation_error":   pub.get("annotation_error", "") if db_guid else "",
+            "annotations_in_egeria": annotations_in_egeria,
             "survey_submissions": result.get("survey_submissions", []),
         }
+
+    @staticmethod
+    def _is_duplicate_qualified_name(exc: Exception) -> bool:
+        """Egeria's 409 for a create whose qualifiedName is already taken (OMAG-COMMON-409-001)."""
+        text = " ".join(str(exc).split())
+        return "409" in text and ("is not available for use" in text or "OMAG-COMMON-409" in text
+                                  or "unique property" in text)
+
+    def _annotations_held_by(self, report_guid: str):
+        """How many annotations Egeria holds under this report, or None when the read failed (None is
+        "could not tell", never zero)."""
+        from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
+        try:
+            result = self._asset_maker.get_asset_by_guid(
+                report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1}, output_format="JSON")
+            return len(annotations_from_report(result)) if isinstance(result, dict) else None
+        except Exception as exc:
+            log.warning("could not count the annotations under report %s: %s", report_guid, exc)
+            return None
+
+    def _publish_survey_report(self, body: dict, qualified_name: str, annotations: list,
+                               db_slug: str, surveyed_at: str) -> dict:
+        """Create RE's SurveyReport and its annotations, or reuse the one Egeria already holds.
+
+        The report's qualifiedName is keyed on the survey run's timestamp, so publishing the SAME run
+        twice meets a 409. That one case looks the existing report up by its exact name and reuses it:
+        annotations already under it are counted (and not published again; `publish_annotations` also
+        looks each qualifiedName up before it creates, so a partial set only gains what is missing).
+        Every other failure is returned as `report_error` for the caller to FAIL on: never "published"."""
+        out = {"report_guid": "", "report_error": "", "annotation_error": "", "reused": False, "annotations_in_egeria": None}
+        try:
+            out["report_guid"] = self._asset_maker.create_asset(body=body)
+            log.info(f"Published SurveyReport in Egeria: {out['report_guid']}")
+            self._create_annotations(annotations, out["report_guid"], db_slug, surveyed_at)
+            out["annotations_in_egeria"] = len(annotations)
+            return out
+        except Exception as exc:
+            if not (not out["report_guid"] and self._is_duplicate_qualified_name(exc)):
+                log.warning(f"Failed to publish SurveyReport to Egeria: {exc}")
+                out["report_error"] = f"{exc}"[:400]
+                return out
+        existing = self._find_element_guid(qualified_name)
+        if not existing:
+            out["report_error"] = ("Egeria refused the report as a duplicate but no report with that name "
+                                   f"could be read ({qualified_name})")
+            log.warning(out["report_error"])
+            return out
+        out.update(report_guid=existing, reused=True)
+        log.info("SurveyReport %s already in Egeria (same survey run %s): reusing it", existing, surveyed_at)
+        held = self._annotations_held_by(existing)
+        if held is None or held < len(annotations):
+            try:
+                self._create_annotations(annotations, existing, db_slug, surveyed_at)   # adopts what is there
+            except Exception as exc:
+                log.warning("publishing the missing annotations under %s failed: %s", existing, exc)
+                out["annotation_error"] = f"{exc}"[:400]      # observable: the caller shows it
+            held = self._annotations_held_by(existing)
+        out["annotations_in_egeria"] = held
+        return out
 
     def _publish_column_lineage(self, db_entity: "DatabaseEntity", views: list[dict]) -> None:
         """Publish column-level lineage to Egeria using LineageLinker."""

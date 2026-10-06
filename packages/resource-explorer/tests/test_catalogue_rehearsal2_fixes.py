@@ -56,10 +56,10 @@ def test_a_schema_with_only_the_templates_own_relationships_plans_a_soft_delete(
     choose(world, "sales", "leave_out")
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
     assert row["form"] == gw.SOFT_DELETE and row["hangs_off"]["total"] == 0
-    assert "will be deleted from Egeria" in row["text"] and "archived" not in row["text"] and "removed" not in row["text"]
+    assert "will delete in Egeria" in row["text"] and "archived" not in row["text"] and "removed" not in row["text"]
     _, rec = press(world, fake)
     assert fake.by_qn(SALES_QN) is None and step(rec, "leave_outs")["state"] == "done"
-    assert derived(world)["schemas"]["sales"]["state"] == "removed"
+    assert derived(world)["schemas"]["sales"]["state"] == "deleted"
 
 
 def test_a_term_assignment_on_a_table_still_plans_an_archive(world, fake):
@@ -284,7 +284,7 @@ def test_an_archive_step_says_archived_and_a_removal_says_removed(world, fake):
     choose(world, "archive", "leave_out")
     _, rec = press(world, fake)
     d = step(rec, "leave_outs")["detail"]
-    assert "1 archived in Egeria" in d and "1 deleted from Egeria" in d and "2 of 2" in d and "removed" not in d
+    assert "1 archived in Egeria" in d and "1 deleted in Egeria" in d and "2 of 2" in d and "removed" not in d
 
 
 def test_a_failed_row_says_it_retries_when_the_worker_runs(world, fake):
@@ -311,7 +311,12 @@ def test_the_manifest_says_the_survey_report_is_published_whole_and_what_was_cho
     p = cc.build_preview(world["registry"], "db", view(world), fake)
     m = len([s for s in view(world)["schemas"]])
     lines = [ln["text"] for ln in p["manifest"]["lines"]]
-    assert f"RE's survey report is published whole; it describes all {m} schemas; elements are created for the 2 you chose." in lines
+    # no measured survey of RE's own: the sentence says so and names Egeria's count
+    assert f"RE has no survey of its own to publish (Egeria's survey counts {m} schemas); elements are created for the 2 you chose." in lines
+    world["registry"].record_database_survey("db", 8, 61, 90, {"schema_info": {"sales": {}}}, source="local", surveyed_at="2026-10-03T18:07:08")
+    lines = [ln["text"] for ln in cc.build_preview(world["registry"], "db", view(world), fake)["manifest"]["lines"]]
+    assert (f"RE's survey report is published whole; it describes the 8 schemas RE's own 10-03 survey could read "
+            f"(Egeria's survey counts {m}); elements are created for the 2 you chose.") in lines
 
 
 # ── D-E: the server shown is the SERVER element ───────────────────────────────────────────────
@@ -556,7 +561,7 @@ def test_a_soft_delete_walks_the_same_way_and_proves_each_element_gone(world, fa
     _, rec = press(world, fake)
     assert step(rec, "leave_outs")["state"] == "done" and fake.by_qn(SALES_QN) is None
     assert all(e["deleted"] for e in fake.elements.values() if e["qn"].startswith(SALES_QN))
-    assert derived(world)["schemas"]["sales"]["state"] == "removed"
+    assert derived(world)["schemas"]["sales"]["state"] == "deleted"
 
 
 def test_an_archive_that_leaves_an_element_readable_is_an_error_not_a_proof(world, fake):

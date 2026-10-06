@@ -187,7 +187,8 @@ export const STATES = {
   attached_waiting: { glyph: '◔', family: 'running',  word: 'attached, waiting', tone: 'text-ink-muted' },
   queued:           { glyph: '◔', family: 'running',  word: 'queued', tone: 'text-ink-muted' },
   catalogue_failed: { glyph: '✕', family: 'failed',   word: 'failed', tone: 'text-state-warn' },
-  removed:          { glyph: '∅', family: 'measured-nothing', word: 'deleted from Egeria', tone: 'text-ink-muted' },
+  // `deleted` has NO glyph (designer addendum 2026-10-06): ∅ keeps one meaning, "nothing found". A soft
+  // delete in Egeria is the word 'deleted' and a lowered row, nothing else.
   archived:         { glyph: '□', family: 'stored',   word: 'archived', tone: 'text-ink-muted' },
 
   // □ stored -- not one of the reply's merged families (it names a fifth

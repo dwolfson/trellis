@@ -396,36 +396,24 @@ def test_new_table_in_a_known_schema_is_reported_separately(world):
     assert node(view(world), "sales", "fresh")["new_since"] is True
 
 
-# ── the name conflict ────────────────────────────────────────────────────────
+# ── no "conflict" any more ───────────────────────────────────────────────────
+# A table name chosen differently in two schemas is not something Egeria cannot express
+# (the commit works by schema, and nothing reads such a pair), so the view computes none.
 
-def test_conflict_is_detected_marks_both_rows_and_resolves(world):
+def test_same_named_tables_chosen_differently_are_not_a_conflict(world):
     r = world["registry"]
-    cs.set_node_choice(r, "db", "alice", schema="sales", table="orders", choice="catalogue")
-    cs.set_node_choice(r, "db", "alice", schema="archive", table="orders", choice="leave_out")
+    cs.set_node_choice(r, "db", "alice", schema="sales", choice="catalogue")
+    cs.set_node_choice(r, "db", "alice", schema="archive", choice="leave_out")   # both hold "orders"
+    cs.set_node_choice(r, "db", "alice", schema="sales", table="orders", choice="leave_out")
+    cs.set_node_choice(r, "db", "alice", schema="archive", table="orders", choice="catalogue")
     v = view(world)
-    c = cs.scope_conflicts(r, "db")
-    assert c["count"] == 1 and c["names"] == ["orders"]
-    assert c["pairs"] == [{"name": "orders", "catalogue_in": "sales", "leave_out_in": "archive"}]
-    for sname in ("sales", "archive"):
-        assert node(v, sname, "orders")["conflict"]["text"] == "orders is chosen differently in sales and archive"
-    assert node(v, "sales", "customers")["conflict"] is None
-    cs.resolve_conflict(r, "db", "alice", name="orders", choice="catalogue")
-    assert cs.scope_conflicts(r, "db")["count"] == 0
-    assert node(view(world), "archive", "orders")["effective"] == "catalogue"
-
-
-def test_conflict_through_inheritance_and_undecided_is_not_a_conflict(world):
-    r = world["registry"]
-    cs.set_node_choice(r, "db", "alice", schema="sales", choice="catalogue")     # orders inherits catalogue
-    assert cs.scope_conflicts(r, "db")["count"] == 0                             # archive.orders undecided
-    cs.set_node_choice(r, "db", "alice", schema="archive", choice="leave_out")   # orders inherits leave_out
-    assert cs.scope_conflicts(r, "db")["names"] == ["orders"]
-
-
-def test_resolving_a_name_not_in_conflict_is_refused(world):
-    with pytest.raises(cs.ScopeError) as e:
-        cs.resolve_conflict(world["registry"], "db", "alice", name="orders", choice="catalogue")
-    assert e.value.status == 409
+    assert "conflicts" not in v
+    for s in v["schemas"]:
+        for t in s["tables"]:
+            assert "conflict" not in t
+        assert "conflict" not in s
+    assert node(v, "archive", "orders")["differs_from_schema"] is True      # the plain mark stays
+    assert not hasattr(cs, "resolve_conflict") and not hasattr(cs, "scope_conflicts")
 
 
 # ── depth, header, element ───────────────────────────────────────────────────
@@ -497,7 +485,6 @@ WRITES = [
     ("override", "post", "/api/catalogue-scope/db/node/override", {"schema_name": "empty_one"}),
     ("clear", "post", "/api/catalogue-scope/db/node/clear", {"schema_name": "sales"}),
     ("redeclare", "post", "/api/catalogue-scope/db/redeclare", None),
-    ("resolve", "post", "/api/catalogue-scope/db/resolve", {"name": "orders", "choice": "catalogue"}),
 ]
 
 
@@ -540,14 +527,14 @@ def test_set_confirm_override_clear_and_history_through_the_routes(client, regis
     assert len(registry.list_catalogue_scope_events("db")) == 3          # failures wrote nothing
 
 
-def test_conflicts_and_new_since_routes(client):
+def test_new_since_route_and_no_conflict_routes(client):
     a = as_user("alice")
     client.put("/api/catalogue-scope/db/node", json={"schema_name": "sales", "table_name": "orders",
                                                       "choice": "catalogue"}, headers=a)
-    client.put("/api/catalogue-scope/db/node", json={"schema_name": "archive", "table_name": "orders",
-                                                      "choice": "leave_out"}, headers=a)
-    assert client.get("/api/catalogue-scope/db/conflicts").json()["count"] == 1
     assert client.get("/api/catalogue-scope/db/new-since").json()["declared"] is True
+    assert client.get("/api/catalogue-scope/db/conflicts").status_code in (404, 405)
+    assert client.post("/api/catalogue-scope/db/resolve", json={"name": "orders", "choice": "catalogue"},
+                       headers=a).status_code in (404, 405)
 
 
 # ── slice A2: the tree reads the fullest, newest measured set ───────────────────

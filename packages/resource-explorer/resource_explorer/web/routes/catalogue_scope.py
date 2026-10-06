@@ -61,11 +61,6 @@ class DepthBody(BaseModel):
     depth: str
 
 
-class ResolveBody(BaseModel):
-    name: str
-    choice: str
-
-
 async def _run(fn, *args, **kwargs):
     try:
         return await asyncio.to_thread(fn, *args, **kwargs)
@@ -171,12 +166,6 @@ async def post_read_back(slug: str, request: Request) -> dict:
     return await _run(commit.run_with_loop, go)
 
 
-@router.get("/{slug}/conflicts")
-async def read_conflicts(slug: str) -> dict:
-    registry = _registry_for(slug)
-    return await asyncio.to_thread(scope.scope_conflicts, registry, slug)
-
-
 @router.get("/{slug}/new-since")
 async def read_new_since(slug: str) -> dict:
     registry = _registry_for(slug)
@@ -243,11 +232,3 @@ async def post_redeclare(slug: str, request: Request) -> dict:
     author = _require_author(request, "declare the scope")
     registry = _registry_for(slug)
     return await _run(scope.redeclare, registry, slug, author)
-
-
-@router.post("/{slug}/resolve")
-async def post_resolve(slug: str, body: ResolveBody, request: Request) -> dict:
-    author = _require_author(request, "resolve a name conflict")
-    registry = _registry_for(slug)
-    return await _run(scope.resolve_conflict, registry, slug, author,
-                      name=body.name, choice=body.choice)
