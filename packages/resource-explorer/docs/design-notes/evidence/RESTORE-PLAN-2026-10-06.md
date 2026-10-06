@@ -236,3 +236,21 @@ The architect asked whether the leftover schemas 4079a1d5 and 1f31b602 are ancho
 - Their Anchors classification names **def55997** (`anchorTypeName RelationalDatabase`, `anchorGUID def55997-...`), the same as the new connection d98b8ad5, which the archive DID take. So the anchoring is as RE's other elements: it is NOT the case that the adopt path anchored them elsewhere. def55997 itself is its own anchor (no anchorGUID).
 - What differs is the relationships. The archive walk follows relationships from the element and collects those whose Anchors name the anchor. At 17:35Z (read earlier today) each new schema had only 3 relationships (DataFlow, ActionTarget, CatalogTarget) and NO `DataSetContent` link to the database, unlike the restored old schemas, which have DataSetContent to the database. A schema anchored to def55997 but not linked to it by any relationship cannot be reached by a relationship walk from def55997, which fits the schemas surviving the archive.
 - So the walk is consistent with how it is written (it walks relationships), and the RE-side question is why the press created the new schemas anchored to def55997 but without the DataSetContent link to it (the architect's "created by the adopt-by-name path" candidate). Not diagnosed: the press's publish and schema-create calls were not read. Log as an RE defect candidate; the schemas also lack the ResourceConnection that stopped the cataloguer earlier (same family: the template create did not link what it should).
+
+## The press's own proof rows settle part of the adoption question (read-only, registry rows 36-47)
+
+PR/CI read the old 8813 log for the press (11:58:50 to 11:59:14 CDT): no schema-create, adopt or schema-name line at any level;
+the only non-poll line is the SurveyReport 409 at 11:59:13. The proof rows say more than the log:
+- **Rows 39 and 41** (`target_attached`, coco_sus 4079a1d5 and coco_ods 1f31b602) carry `create_error_adopted`: "creating the schema
+  element for coco_sus from the template failed: SERVER_ERROR_500 ... open-metadata/automated-curation/catalog-templates/new-element".
+  So the template create DID fail with a 500, RE adopted the element that existed anyway, and wrote `target_attached`. The text
+  stored is truncated before Egeria's own sentence, so the cause of the 500 (a name collision on the old, still-live schema-level
+  connection graph is the architect's candidate) is NOT shown. The page did not surface the adopted-after-error fact.
+- **Rows 45 and 46** (`elements_read_back`) claim, for the NEW schemas, 23 tables / 171 columns / 198 elements (coco_ods) and a
+  table list for coco_sus. A direct read of the same new schemas (17:35Z) found NO tables and 3 relationships. Likeliest
+  explanation, NOT verified: the read-back resolves by qualifiedName and found the OLD schema type (live, original name),
+  so it proved the old tree's tables for the new element.
+- **Row 42** (`report_published`, 76 annotations, surveyed 2026-10-03) was written although the log shows the report publish failed
+  with a 409 at 11:59:13. So a proof row said "published" for a publish that failed.
+- Net: three proof rows read as success for a press whose schemas were half-built, the report not published, and the tables
+  not present. This is the "status words derive from proof rows that prove it" rule failing at the proof-writing side.
