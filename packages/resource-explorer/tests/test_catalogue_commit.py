@@ -388,7 +388,7 @@ def test_the_preview_names_the_form_before_the_press_and_writes_nothing(world, f
     p = cc.build_preview(world["registry"], "db", view(world), fake)
     forms = {r["schema"]: r["form"] for r in p["leave_out"]}
     assert forms == {"sales": "soft_delete", "archive": "archive"}
-    assert p["button"] == "Catalogue · 0 schemas · removes 1 from Egeria · archives 1"
+    assert p["button"] == "Catalog · 0 schemas · removes 1 from Egeria · archives 1"
     assert len(fake.ops("delete_element")) == deletes_before and len(fake.targets) == 2
 
 
@@ -422,7 +422,7 @@ def test_a_leave_out_that_was_never_catalogued_removes_nothing(world, fake):
     choose(world, "sales", "leave_out")
     choose(world, "archive", "catalogue")
     p = cc.build_preview(world["registry"], "db", view(world), fake)
-    assert p["leave_out"][0]["form"] == "none" and "never catalogued" in p["leave_out"][0]["text"]
+    assert p["leave_out"][0]["form"] == "none" and "never cataloged" in p["leave_out"][0]["text"]
     assert fake.ops("relationships") == [] and fake.ops("elements_under") == []
 
 
@@ -588,7 +588,7 @@ def test_the_manifest_lists_three_mechanisms_the_target_count_and_the_survey_sch
     assert mech[2] == "Egeria's survey is limited to your chosen schemas: sales, archive"
     assert m["schema_targets"] == 2 and m["survey_schemas"] == ["sales", "archive"]
     assert m["whole_schemas_line"] == "Egeria catalogues whole schemas · table choices are kept for when it can"
-    assert p["button"] == "Catalogue · 2 schemas" and p["can_commit"]
+    assert p["button"] == "Catalog · 2 schemas" and p["can_commit"]
 
 
 def test_table_choices_are_kept_and_say_egeria_catalogues_whole_schemas(world, fake):
@@ -942,3 +942,14 @@ def test_the_survey_definition_retry_uses_the_commit_and_never_the_unscoped_publ
     assert "/publish" not in body and "db_pwd" not in body
     assert "submitSurveyDefinitionRun()" not in body          # the commit is queued work: no automatic retry
     assert "/api/databases/${slug}/publish" not in html       # RE's own page calls the unscoped route nowhere
+
+
+def test_a_leave_out_is_in_the_manifest_once_as_its_own_row_not_twice(world, fake):
+    choose(world, "sales", "catalogue")
+    choose(world, "archive", "leave_out")                    # never catalogued: "nothing to remove"
+    p = cc.build_preview(world["registry"], "db", view(world), fake)
+    row_text = p["leave_out"][0]["text"]
+    assert row_text == "archive: nothing to remove · never cataloged"
+    manifest = " ".join(ln["text"] for ln in p["manifest"]["lines"])
+    assert "nothing to remove" not in manifest                # the rows carry it, once
+    assert all(ln["id"] != "leave_out" for ln in p["manifest"]["lines"])

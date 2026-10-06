@@ -674,7 +674,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         row = {"schema": name, "tables": tcount}
         if st.get("state") in ("removed", "archived", "left_out", "none", "uncommitted"):
             row.update(form="none", blocked=False,
-                       text=f"{name}: nothing to remove" + (" · already " + st["state"] if st.get("state") in ("removed", "archived") else " · never catalogued"))
+                       text=f"{name}: nothing to remove" + (" · already " + st["state"] if st.get("state") in ("removed", "archived") else " · never cataloged"))
             leave.append(row)
             continue
         if gateway is None:
@@ -751,8 +751,8 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         n = len(nc["schemas"])
         nc["text"] = f"{n} schema{'s' if n != 1 else ''} not committed: {', '.join(nc['schemas'])} · {nc['reason']}"
         lines.append({"id": "not_committed", "mechanism": 0, "text": nc["text"]})
-    if leave:
-        lines.append({"id": "leave_out", "mechanism": 0, "text": "; ".join(r["text"] for r in leave)})
+    # The leave outs are drawn once, as their own rows (`leave_out` below); a joined copy here
+    # repeated every one of them in the manifest (2026-10-06).
     lines.append({"id": "whole_schemas", "mechanism": 0, "text": WHOLE_SCHEMAS_LINE})
     lines.append({"id": "survey_report_whole", "mechanism": 0,
                   "text": (f"RE's survey report is published whole; it describes all {len(view['schemas'])} schemas; "
@@ -761,7 +761,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     something = bool(attach or [r for r in leave if r["form"] in (SOFT_DELETE, ARCHIVE)])
     if not something and not blockers:
         blockers.append("nothing to commit: choose at least one schema to catalogue")
-    label = f"Catalogue · {len(attach)} schema{'s' if len(attach) != 1 else ''}"
+    label = f"Catalog · {len(attach)} schema{'s' if len(attach) != 1 else ''}"
     if removes:
         label += f" · removes {len(removes)} from Egeria"
     if archives:

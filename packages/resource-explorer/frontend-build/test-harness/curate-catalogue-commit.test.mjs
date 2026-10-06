@@ -235,7 +235,8 @@ test('a name collision is flagged on the row and in the panel, and the commit bu
   assert.match(flat(document.querySelector('[data-scope-collision-line]')), /^⚠ Egeria's listing for a_b would also return aXb$/);
   const btn = document.querySelector('[data-scope-commit-btn]');
   assert.equal(btn.disabled, true);
-  assert.match(btn.title, /1 name collision/);
+  assert.match(btn.title, /^name collisions: Egeria's listing for a_b would also return aXb$/);
+  assert.match(flat(document.querySelector('[data-scope-commit-why]')), /^name collisions: /);
 });
 
 test('an archived schema chosen again is refused with the S19 sentence', async () => {

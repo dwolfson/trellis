@@ -54,13 +54,17 @@ let filterText = '';
 /** A keystroke redraws the tree this long after the last one. */
 const FILTER_DEBOUNCE_MS = 150;
 let openFor = '';
+/** Rows whose choice was just saved: key -> {by, at}. A plain line on the row says so for a few seconds. */
+const savedNotes = new Map();
+let savedNoteMs = 6000;
+export function setSavedNoteMs(ms) { savedNoteMs = ms; }
 /** The last commit pressed on this pane, kept so its steps survive the re-draw that follows it. */
 let commitUi = null;
 /** How long between reads of a running commit's record (a test shortens it). */
 let commitPollMs = 2000;
 export function setCommitPollMs(ms) { commitPollMs = ms; }
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
+export function resetScopeUi() { savedNotes.clear(); openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
 
 /** Whether the whole section is open. Decided once per pane visit (from the remembered
  *  choice, else from whether a scope is declared) and then only a click changes it, so a
@@ -130,7 +134,23 @@ function proposalControls(node, me) {
 
 /** The left-hand choice cell: the person's choice, or the proposal, or what
  *  the row inherits, in the words the designer drew. */
-export function choiceCellHtml(node, me) {
+export function choiceCellHtml(node, me, commit = null) {
+  return choiceCellCore(node, me) + savedNoteHtml(node, commit);
+}
+
+/** "saved in Resource Explorer · who · when · not yet cataloged in Egeria": shown for a few seconds
+ *  after a choice write, so a choice is not read as a write to Egeria. The Egeria clause comes from the
+ *  node's commit state: a node already in Egeria is told it changes only when Catalog is pressed. */
+function savedNoteHtml(node, commit) {
+  const key = node.kind === 'schema' ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
+  const n = savedNotes.get(key);
+  if (!n) return '';
+  const st = node.kind === 'schema' ? ((commit || {}).schemas || {})[node.name] : ((commit || {}).tables || {})[`${node.schema}.${node.name}`];
+  const tail = !st || ['none', 'uncommitted', 'left_out'].includes(st.state) ? 'not yet cataloged in Egeria' : 'Egeria changes when you press Catalog';
+  return `<div data-scope-saved-note class="text-provenance text-ink-muted">saved in Resource Explorer · ${esc(n.by)} · ${esc(n.at)} · ${tail}</div>`;
+}
+
+function choiceCellCore(node, me) {
   const ex = node.explicit;
   const by = ex ? `${esc(ex.by)} ${esc(md(ex.at))}` : '';
   if (node.state === 'proposed' && node.proposal) {
@@ -308,7 +328,7 @@ function rowHtml(node, me, depth, kindWord, commit, open = false) {
   const src = srcLine ? `<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>` : '';
   return `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
     <div class="w-[2ch] shrink-0" data-scope-select-cell>${pick}</div>
-    <div class="w-[22ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me)}</div>
+    <div class="w-[22ch] shrink-0" data-scope-choice-cell>${choiceCellHtml(node, me, commit)}</div>
     <div class="min-w-[14ch] flex-1 break-words text-ink" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
     <div class="w-[8ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
     <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
@@ -510,28 +530,44 @@ export function commitStepsHtml(rec) {
 /** What pressing Catalogue would do, as the server's preview says it: the three mechanisms in the
  *  order they run, what leaving schemas out does and in which form, anything that blocks the
  *  press, and the button whose label carries the counts. */
-export function commitPanelHtml(preview, me, ui) {
+export function commitPanelHtml(preview, me, ui, declared = true) {
   const m = preview.manifest || {};
   const dis = (why) => `disabled title="${esc(why)}"`;
-  const reason = !me ? signInReason : (preview.can_commit ? '' : (preview.blockers || [])[0] || 'the commit is disabled');
+  const reason = !me ? signInReason : commitWhyNot(preview, declared);
   const lines = (m.lines || []).map((ln) => `<li data-scope-manifest-line="${esc(ln.id)}" class="${ln.mechanism ? 'text-ink' : 'text-ink-muted'}">${ln.mechanism ? `${ln.mechanism}. ` : ''}${esc(ln.text)}</li>`).join('');
   const refused = (preview.refused || []).map((r) => `<div data-scope-refused="${esc(r.schema)}" class="text-ink">${glyphSpan('human')} ${esc(r.text)}</div>`).join('');
   const collisions = (preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-ink">${esc(c.text)}</div>`).join('');
   const leave = (preview.leave_out || []).map((r) => `<div data-scope-leave-out="${esc(r.schema)}" data-form="${esc(r.form)}" class="${r.blocked ? 'text-ink' : 'text-ink-muted'}">${r.blocked ? `${glyphSpan('human')} ` : ''}${esc(r.text)}</div>`).join('');
   const blockers = (preview.blockers || []).map((b) => `<div data-scope-blocker class="text-ink">${glyphSpan('human')} ${esc(b)}</div>`).join('');
-  const off = !me || !preview.can_commit;
+  const off = !!reason;
+  const sent = ui && ui.polling ? '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>' : '';
   return `<div data-scope-commit-panel>
     <div class="mb-s1 text-answer text-ink">What this commit does</div>
     <ol data-scope-manifest class="mb-s1 list-none pl-0 text-caveat">${lines}</ol>
     ${refused}${collisions}${leave}${blockers}
-    <div class="mt-s1 flex flex-wrap items-baseline gap-s2 text-caveat text-ink">
-      <label class="inline-flex cursor-pointer items-baseline gap-[4px]"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloguer now (about 16 s; RE never restarts a connector)</label>
-      <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="${off ? 'opacity-60 text-ink-muted' : 'cursor-pointer text-accent-ink underline'} bg-transparent p-0">${esc(preview.button || 'Catalogue')}</button>
-      <button type="button" data-scope-read-back ${me ? '' : dis(signInReason)} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Read Egeria again</button>
+    <label class="mt-s1 flex cursor-pointer items-baseline gap-[4px] text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
+    <div data-scope-commit-row class="mt-s1 flex flex-wrap items-baseline gap-s3">
+      <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
+      ${off ? `<span data-scope-commit-why class="text-caveat text-ink">${esc(reason)}</span>` : ''}
     </div>
+    ${sent}
+    <div class="mt-s1 text-caveat"><button type="button" data-scope-read-back ${me ? '' : dis(signInReason)} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Read Egeria again</button></div>
     <div data-scope-commit-status class="mt-s1 text-provenance text-ink-muted"></div>
     ${commitStepsHtml(ui && ui.rec)}
   </div>`;
+}
+
+/** Why the commit button is off, in the words a person needs ('' when it is on). */
+export function commitWhyNot(preview, declared = true) {
+  if (!declared) return 'no scope declared: choose what to catalog first';
+  if (preview.can_commit) return '';
+  const first = (preview.blockers || [])[0] || '';
+  if (/^nothing to commit/.test(first)) return 'nothing chosen: choose at least one schema to catalog';
+  if (/name collision/.test(first)) {
+    const t = (preview.collisions || []).map((c) => String(c.text).replace(/^⚠\s*/, '')).join(' · ');
+    return `name collisions: ${t || first}`;
+  }
+  return first || 'the commit is disabled';
 }
 
 /** One line for the status area, derived from the record's own steps. */
@@ -542,7 +578,7 @@ function commitSummary(rec) {
   return `commit ${String(rec.id || '').slice(0, 8)} ${rec.state}: ${bits.join(' · ')}`;
 }
 
-async function loadCommitPanel(el, slug, me, redraw) {
+async function loadCommitPanel(el, slug, me, redraw, declared = true) {
   const host = el.querySelector('[data-scope-commit]');
   if (!host) return;
   host.innerHTML = '<div data-scope-commit-loading class="text-provenance text-ink-muted">Reading what the commit would do (this reads Egeria and writes nothing)…</div>';
@@ -556,7 +592,7 @@ async function loadCommitPanel(el, slug, me, redraw) {
     return;
   }
   if (stale(host, slug)) return;
-  host.innerHTML = commitPanelHtml(preview, me, commitUi && commitUi.slug === slug ? commitUi : null);
+  host.innerHTML = commitPanelHtml(preview, me, commitUi && commitUi.slug === slug ? commitUi : null, declared);
   const say = (msg, warn = false) => {
     const e = host.querySelector('[data-scope-commit-status]');
     if (!e) return;
@@ -585,11 +621,15 @@ async function loadCommitPanel(el, slug, me, redraw) {
   const btn = host.querySelector('[data-scope-commit-btn]');
   if (btn) btn.addEventListener('click', async () => {
     const refreshNow = host.querySelector('[data-scope-refresh-now]').checked;
+    const label = btn.textContent;
     btn.disabled = true;
+    btn.textContent = 'sending…';
     say('Queuing the commit…');
     let out;
-    try { out = await postCatalogueCommit(slug, refreshNow); } catch (err) { btn.disabled = false; say(fail(err, 'the commit'), true); return; }
+    try { out = await postCatalogueCommit(slug, refreshNow); } catch (err) { btn.disabled = false; btn.textContent = label; say(fail(err, 'the commit'), true); return; }
     commitUi = { slug, id: out.curation.id, rec: out.curation, polling: true };
+    btn.textContent = label;
+    if (!host.querySelector('[data-scope-commit-sent]')) host.querySelector('[data-scope-commit-row]').insertAdjacentHTML('afterend', '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>');
     say(`queued: commit ${String(out.curation.id).slice(0, 8)} · run ${String(out.run_id || '').slice(0, 8)}`);
     paintSteps();
     setTimeout(poll, commitPollMs);
@@ -646,7 +686,7 @@ function paintScope(el, slug, status, view) {
     // The preview READS Egeria, so it is read when the section is open and not before.
     if (shown && !el.querySelector('[data-scope-commit-panel], [data-scope-commit-loading]')) startCommitPanel();
   });
-  const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => renderCatalogueScope(el, slug, msg));
+  const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => renderCatalogueScope(el, slug, msg), !!(view.declared && view.declared.declared));
   const say = (msg, warn = false) => {
     const s = el.querySelector('[data-scope-status]');
     if (!s) return;
@@ -657,12 +697,30 @@ function paintScope(el, slug, status, view) {
 
   // After a write the words come from the re-read view, not from the click. The scope is read
   // ONCE here and handed to the redraw (it used to be read again by the redraw: two GETs a write).
-  const afterWrite = async (write, what, verify, spent = false) => {
-    try { await write(); } catch (err) { say(failure(err, what), true); return; }
+  const afterWrite = async (write, what, verify, spent = false, rowKey = '') => {
+    const rowEl = (k) => [...el.querySelectorAll('[data-scope-row]')].find((r) => r.dataset.scopeRow === k);
+    const cell = rowKey && rowEl(rowKey) ? rowEl(rowKey).querySelector('[data-scope-choice-cell]') : null;
+    if (cell) cell.insertAdjacentHTML('beforeend', '<div data-scope-saving class="text-provenance text-ink-muted">saving…</div>');
+    try { await write(); } catch (err) {
+      if (cell) cell.querySelectorAll('[data-scope-saving]').forEach((e) => e.remove());
+      say(failure(err, what), true); return;
+    }
     if (spent) { selected.clear(); selectedTables.clear(); }   // a finished bulk action spends the selection
     let again;
     try { again = await getCatalogueScope(slug); }
     catch (err) { say(`${what}: written, but the scope could not be re-read: ${err.message}`, true); return; }
+    if (rowKey) {
+      const [kind, rest] = [rowKey.split(':')[0], rowKey.slice(rowKey.indexOf(':') + 1)];
+      const dot = rest.indexOf('.');
+      const n = kind === 'table' ? find(again, rest.slice(0, dot), rest.slice(dot + 1)) : find(again, rest, '');
+      const ex = n && n.explicit;
+      savedNotes.set(rowKey, { by: ex ? ex.by : whoAmI(), at: ex ? md(ex.at) : md(new Date().toISOString()) });
+      setTimeout(() => {
+        savedNotes.delete(rowKey);
+        const r = rowEl(rowKey);
+        if (r) r.querySelectorAll('[data-scope-saved-note]').forEach((e) => e.remove());
+      }, savedNoteMs);
+    }
     await renderCatalogueScope(el, slug, verify(again) || '', again);
   };
 
@@ -778,6 +836,7 @@ function paintScope(el, slug, status, view) {
     host.querySelectorAll('[data-scope-act]').forEach((b) => b.addEventListener('click', () => {
       const { scopeAct: act, scopeSchema: schema, scopeTable: table, scopeChoice: choice } = b.dataset;
       const label = table ? `${schema}.${table}` : schema;
+      const rowKey = table ? `table:${schema}.${table}` : `schema:${schema}`;
       const check = (want) => (v) => {
         const n = find(v, schema, table);
         const got = n && n.explicit ? n.explicit.choice : '';
@@ -785,14 +844,14 @@ function paintScope(el, slug, status, view) {
           ? `${label}: ${words(want) || 'no choice'} is in the re-read scope${want ? ` · set by ${n.explicit.by}` : ''}`
           : `the write returned, but the re-read scope shows ${got ? words(got) : 'no choice'} for ${label}`;
       };
-      if (act === 'set') afterWrite(() => setCatalogueNode(slug, schema, table, choice), 'set the choice', check(choice));
-      else if (act === 'clear') afterWrite(() => clearCatalogueNode(slug, schema, table), 'clear the choice', check(''));
+      if (act === 'set') afterWrite(() => setCatalogueNode(slug, schema, table, choice), 'set the choice', check(choice), false, rowKey);
+      else if (act === 'clear') afterWrite(() => clearCatalogueNode(slug, schema, table), 'clear the choice', check(''), false, rowKey);
       else if (act === 'confirm') {
         const want = (find(view, schema, table) || {}).proposal;
-        afterWrite(() => confirmCatalogueNode(slug, schema, table), 'confirm the proposal', check(want ? want.choice : ''));
+        afterWrite(() => confirmCatalogueNode(slug, schema, table), 'confirm the proposal', check(want ? want.choice : ''), false, rowKey);
       } else if (act === 'override') {
         const want = (find(view, schema, table) || {}).proposal;
-        afterWrite(() => overrideCatalogueNode(slug, schema, table), 'override the proposal', check(want ? opposite(want.choice) : ''));
+        afterWrite(() => overrideCatalogueNode(slug, schema, table), 'override the proposal', check(want ? opposite(want.choice) : ''), false, rowKey);
       }
     }));
   };

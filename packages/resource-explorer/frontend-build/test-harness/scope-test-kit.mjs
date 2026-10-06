@@ -82,6 +82,12 @@ export function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/api/catalogue-scope/')) {
+      if (method === 'POST' && u.endsWith('/commit')) {
+        if (s.holdCommit) await s.holdCommit;
+        return ok({ curation: { id: 'cafe0123', state: 'queued', author: 'me', steps: [] }, run_id: 'r0000001' });
+      }
+      if (method === 'GET' && u.includes('/commits/')) return ok({ id: 'cafe0123', state: 'running', author: 'me', steps: [] });
+      if (method === 'PUT' && s.holdPut) await s.holdPut;
       if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalogue'], button: 'Catalogue · 0 schemas', leave_out: [], refused: [], collisions: [] });
       if (method === 'GET') return ok(s.view);
       if (!s.signedIn) return err(401, 'Sign in to change the scope');
