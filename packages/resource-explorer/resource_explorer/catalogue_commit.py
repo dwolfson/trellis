@@ -1338,6 +1338,9 @@ def report_step_words(res: dict, surveyed_at: str) -> tuple[str, str]:
         k = res.get("annotations_in_egeria")
         held = f"{k} annotations in Egeria" if k is not None else "annotations in Egeria could not be counted"
         local = f" · built locally: {n}" if (n is not None and k is not None and n != k) else ""
+        if res.get("annotation_error"):
+            first, _ = egeria_first_sentence(str(res["annotation_error"]))
+            return "failed", f"already in Egeria · report {guid[:8]} ·{src} · {held}{local} · the missing annotations were not published: {first}"
         return "done", f"already in Egeria · report {guid[:8]} ·{src} · {held}{local}"
     if guid:
         return "done", (f"report {guid[:8]} · {n} annotations published ·{src}" if n is not None else f"report {guid[:8]} ·{src}")

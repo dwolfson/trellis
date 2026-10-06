@@ -3,7 +3,7 @@
 * the reserved Egeria verb is **Catalog** (US spelling): no UK "catalogue" on any rendered control, row, manifest line,
   step word, header, preview, blocker or page, with a documented allow-list;
 * the group route records the signed-in person (`saved · who · when`) and answers 401 when signed out;
-* an Egeria soft delete reads "deleted from Egeria", never "removed" (reserved for "Remove from Resource Explorer").
+* an Egeria soft delete reads "deleted in Egeria", never "removed" (reserved for "Remove from Resource Explorer").
 
 The JS wording (controls and result lines) is pinned by the render harness: frontend-build/test-harness/wording-*.test.mjs.
 """
@@ -174,7 +174,7 @@ def test_a_refused_group_change_records_nothing(client, group_registry):
     assert r.status_code == 404 and group_registry.list_group_changes("repo", "p") == []
 
 
-# ── an Egeria soft delete says "deleted from Egeria", never "removed" ─────────────────────────
+# ── an Egeria soft delete says "deleted in Egeria", never "removed" ─────────────────────────
 
 def _attached(world, fake, *names):
     for n in names:
@@ -195,7 +195,7 @@ def test_the_preview_says_will_be_deleted_from_egeria(world, fake):
     choose(world, "sales", "leave_out")
     p = cc.build_preview(world["registry"], "db", view(world), fake)
     row = p["leave_out"][0]
-    assert row["text"].startswith("sales: nothing hangs off it · will be deleted from Egeria")
+    assert row["text"].startswith("sales: nothing hangs off it · will delete in Egeria")
     assert row["text"].endswith(" · delete · nothing depends on it") and "with its" not in row["text"] or " tables" in row["text"]
     assert "removed" not in row["text"] and "soft-deleted" not in row["text"]
     assert "deletes 1 from Egeria" in p["button"] and "removes" not in p["button"]
@@ -206,9 +206,9 @@ def test_the_row_and_the_step_say_deleted_from_egeria_not_removed(world, fake):
     choose(world, "sales", "leave_out")
     out, rec = press(world, fake)
     s = derived(world)["schemas"]["sales"]
-    assert s["state"] == "removed"                                    # the identifier stays
-    assert re.match(r"^deleted from Egeria · \d\d-\d\d \d\d:\d\d$", s["words"])
-    assert step(rec, "leave_outs")["detail"].startswith("1 of 1 deleted from Egeria, each with its proof row")
+    assert s["state"] == "deleted"                                    # the identifier stays
+    assert re.match(r"^deleted in Egeria · \d\d-\d\d \d\d:\d\d$", s["words"])
+    assert step(rec, "leave_outs")["detail"].startswith("1 of 1 deleted in Egeria, each with its proof row")
     for w in _all_words(world, fake, out["preview"], rec):
         assert "removed" not in w.lower().replace("remove from resource explorer", ""), w
 
@@ -219,7 +219,7 @@ def test_a_mixed_leave_out_says_how_many_were_deleted_and_how_many_archived(worl
     choose(world, "sales", "leave_out")
     choose(world, "archive", "leave_out")
     _, rec = press(world, fake)
-    assert step(rec, "leave_outs")["detail"].startswith("2 of 2: 1 deleted from Egeria, 1 archived in Egeria")
+    assert step(rec, "leave_outs")["detail"].startswith("2 of 2: 1 deleted in Egeria, 1 archived in Egeria")
 
 
 def test_an_all_archive_step_says_archived_in_egeria(world, fake):
@@ -235,7 +235,7 @@ def test_already_deleted_and_already_archived_read_in_those_words(world, fake):
     choose(world, "sales", "leave_out")
     press(world, fake)
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
-    assert row["text"] == "sales: nothing to remove · already deleted from Egeria"
+    assert row["text"] == "sales: nothing to remove · already deleted in Egeria"
 
 
 # ── the one additive table: group_changes ─────────────────────────────────────────────────────────

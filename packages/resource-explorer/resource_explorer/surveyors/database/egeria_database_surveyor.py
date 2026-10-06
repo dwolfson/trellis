@@ -1208,6 +1208,7 @@ class EgeriaDatabaseSurveyor:
             "report_error":       report_error,
             "report_element_guid": report_guid,
             "report_reused":      report_reused,
+            "annotation_error":   pub.get("annotation_error", "") if db_guid else "",
             "annotations_in_egeria": annotations_in_egeria,
             "survey_submissions": result.get("survey_submissions", []),
         }
@@ -1240,7 +1241,7 @@ class EgeriaDatabaseSurveyor:
         annotations already under it are counted (and not published again; `publish_annotations` also
         looks each qualifiedName up before it creates, so a partial set only gains what is missing).
         Every other failure is returned as `report_error` for the caller to FAIL on: never "published"."""
-        out = {"report_guid": "", "report_error": "", "reused": False, "annotations_in_egeria": None}
+        out = {"report_guid": "", "report_error": "", "annotation_error": "", "reused": False, "annotations_in_egeria": None}
         try:
             out["report_guid"] = self._asset_maker.create_asset(body=body)
             log.info(f"Published SurveyReport in Egeria: {out['report_guid']}")
@@ -1266,6 +1267,7 @@ class EgeriaDatabaseSurveyor:
                 self._create_annotations(annotations, existing, db_slug, surveyed_at)   # adopts what is there
             except Exception as exc:
                 log.warning("publishing the missing annotations under %s failed: %s", existing, exc)
+                out["annotation_error"] = f"{exc}"[:400]      # observable: the caller shows it
             held = self._annotations_held_by(existing)
         out["annotations_in_egeria"] = held
         return out

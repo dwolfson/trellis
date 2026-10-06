@@ -270,3 +270,11 @@ def test_build_plan_runs_the_gap_pass_once(tmp_path, monkeypatch):
     monkeypatch.setattr(facts_mod, "record_gaps_for", gaps.record_gaps_for, raising=False)
     build_plan(r, "p")
     assert len(calls) == 1, f"{len(calls)} gap passes in one plan"
+
+
+def test_a_reused_report_whose_missing_annotations_fail_to_publish_fails_the_step(world, fake, monkeypatch):
+    g = "11111111-2222-3333-4444-555555555555"
+    rec = _commit_with(world, fake, monkeypatch, {"report_element_guid": g, "annotation_count": 76, "report_reused": True,
+                                                  "annotations_in_egeria": 40, "annotation_error": "500 broke"})
+    st = step(rec, "survey_report")
+    assert st["state"] == "failed" and "missing annotations were not published: 500 broke" in st["detail"]
