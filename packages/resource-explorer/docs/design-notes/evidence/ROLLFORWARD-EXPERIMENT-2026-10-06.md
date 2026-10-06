@@ -92,9 +92,28 @@ B. S16 candidate, CONFIRMED as a latent blocker: the OLD schema types of coco_su
 C. 56 versus 76 annotations: NOT resolved. The related-element read returned one annotation per database at
    depth 0 and does not list the missing names; not diagnosed.
 
+## Connection-graph reads (read-only, ~17:50Z)
+
+- Database level: the OLD database 17f0a963 has its `::Connection` (VirtualConnection 24197efb) renamed with
+  `_archivedOn_` and Memento. The NEW database def55997 has a LIVE ResourceConnection to a new VirtualConnection
+  d98b8ad5 (`...coco_pharma::Connection`). The four exact database-level names (`::Connection`, `::Endpoint`,
+  `::SecretsStoreConnection`, `::SecretStoreEndpoint`) all resolve to live elements. So the database-level
+  connection graph WAS re-created; the architect's database-level candidate is not what blocks.
+- Schema level (the cause that fits): the OLD coco_sus 28bbde37 still has 7 relationships including a
+  ResourceConnection to its own schema connection `...coco_pharma.coco_sus::Connection` (VirtualConnection
+  1e236ecc), which is LIVE, not Memento, with its original name; its schema type 06b3e6c9 is live too. The NEW
+  coco_sus 4079a1d5 has 3 relationships (DataFlow, ActionTarget, CatalogTarget) and NO ResourceConnection. The
+  schema-level connection graph is named on the schema's qualifiedName, was not archived, and kept its name, so the
+  new schema's template create could not link its own. That matches the cataloguer's null jdbcResourceConnector.
+  Not proven by a controlled test: the template create's log was not read.
+- scratch_cat_test6: a name lookup of its database finds nothing, which does not show whether its target remains.
+  Unresolved.
+
 ## Conclusion
 
 Roll-forward of a database works at the asset level (new database, new schemas, new targets, new survey) and is
 blocked below it: the cataloguer never built tables, for reason A, and would meet reason B next, because the
 archive left some archived-lineage elements (the schema types of the two kept schemas) un-archived and keeping
-their names. Stated as observed; the cause of A is not established.
+their names. Prediction 3 is withdrawn as unproven: the target-list read does not show the connector's full list.
+Cause of A, best fit from the connection-graph reads: the schema-level connection graph and schema types of the old
+schemas were left live under their original names, so the new schemas could not get their own ResourceConnection.
