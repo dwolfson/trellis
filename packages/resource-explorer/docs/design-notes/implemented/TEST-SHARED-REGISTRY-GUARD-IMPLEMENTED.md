@@ -83,3 +83,64 @@ guard did not apply because it was a command, not a test.
 
 Known limit, unchanged: the guard only protects pytest. A non-test command in a
 worktree is only made visible (the `registry:` line), not blocked.
+
+## Addendum 2026-10-05 (2): the metrics leak, setting audit, isolation fixture
+
+PR/CI's full suite refused `test_integration_pgvector.py::TestEndToEndIntegration::test_ingest_then_query_returns_real_retrieved_content`:
+`RAGSystem._init_observability` opens a `MetricsCollector`, whose
+`METRICS_DATABASE_URL` is a separate setting that also defaults to the shared
+Postgres. The test patched the registry and vector store, not it. The shared
+`query_log` held 1381 rows, 1379 of them `fixtureproj`: every local run with
+pgvector reachable wrote there. Those rows were NOT touched; the owner decides.
+
+| Setting | Default | Guard covers it | Fix |
+|---|---|---|---|
+| `REGISTRY_DATABASE_URL` (registry; leader election and Prefect flows read it) | shared 5442/egeria_advisor, schema resource_explorer | yes (SQLAlchemy connect, strict) | conftest `isolate_database_url_settings` |
+| `METRICS_DATABASE_URL` (`MetricsCollector`) | same | yes | same fixture; the integration test also sets it explicitly |
+| `FEEDBACK_DATABASE_URL` (`FeedbackStore`) | same | yes | same fixture |
+| `PGVECTOR_HOST/PORT/DBNAME/SCHEMA` (`PgVectorStore`, raw psycopg2) | localhost:5442/egeria_advisor, schema resource_explorer | NO: raw psycopg2 without `search_path` is deliberately allowed (conftest's probe and `pg_test_schema` connect that way), and the store qualifies tables by schema name | not isolated by the fixture: it would break the pgvector integration tier. Tests use `PgVectorStore(schema=pg_test_schema)`; a test that builds a default `PgVectorStore()` with pgvector reachable still reaches the shared schema. OPEN GAP. |
+| `PREFECT_API_URL` | http://localhost:4200 | n/a (HTTP, not Postgres) | none |
+
+- The refusal message now names the setting, read from the calling module
+  (`metrics_collector` -> `METRICS_DATABASE_URL`, `feedback_store` ->
+  `FEEDBACK_DATABASE_URL`, `registry`/`leader_election` -> `REGISTRY_DATABASE_URL`),
+  because the three share one default and the address cannot tell them apart.
+- `isolate_database_url_settings` (autouse, conftest) sets each of the three to a
+  per-test temp SQLite file when it is unset or already addresses the shared
+  registry. A deliberate override is left alone, and CI (`GITHUB_ACTIONS=true`)
+  is untouched. A test overrides with its own `monkeypatch.setenv`.
+- Tests: `test_every_shared_default_url_setting_is_isolated_by_conftest`
+  (red without the fixture), `test_refusal_names_the_metrics_setting`,
+  `test_feedback_store_default_is_refused_and_named`, `test_setting_hint_reads_the_calling_module`.
+- Not verified: the integration test itself, which skips without a reachable
+  pgvector here. Its fix is covered by the isolation test plus the metrics
+  refusal test; a run with pgvector reachable is still needed.
+
+## Addendum 2026-10-05 (3): regression in 26fb2057, and the check that catches it
+
+The METRICS_DATABASE_URL block from the previous addendum landed in
+`TestVectorStoreIntegration::test_multi_collection_store_wrapper_real_round_trip`,
+which does not request `tmp_path`, instead of the e2e test that does. It
+raised NameError only where pgvector is reachable; the test skips elsewhere,
+so every local run passed. Fixed: that test is byte-identical to origin/main
+again and the block is in `test_ingest_then_query_returns_real_retrieved_content`.
+
+Guard against the class: `tests/test_no_undefined_names_in_tests.py` runs
+`ruff check --select F821` over `tests/` (skips if ruff is absent) and proves
+it catches an unrequested-fixture name. Two pre-existing false positives in
+quoted annotations were cleaned (`Path` in test_ingestion.py, `ast` in
+test_vendored.py) by importing the names at module level.
+
+## Addendum 2026-10-05 (4): CI-vs-local dependence in the isolation test
+
+`test_every_shared_default_url_setting_is_isolated_by_conftest` asserted sqlite
+unconditionally, but the fixture is deliberately a no-op under
+`GITHUB_ACTIONS=true`, so CI (service-container URL) failed it. The decision
+now lives in `shared_registry_guard.isolate_url_settings(environ, setenv,
+tmp_dir)`, a pure function the autouse fixture calls. Tests drive it with a
+fake environment, so they do not depend on the ambient flag: outside CI unset
+and shared URLs are replaced and a deliberate override is kept; under CI nothing
+is replaced. `test_autouse_fixture_applies_the_isolation_outside_ci` checks the
+real fixture's effect and skips under CI. The guard was not loosened. Swept the
+other tests added in this PR for the same dependence: none assert isolation
+without regard to the flag (the fake-connect tests clear `GITHUB_ACTIONS`).

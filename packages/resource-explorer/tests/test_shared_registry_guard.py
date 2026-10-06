@@ -161,3 +161,84 @@ def test_default_config_without_env_file_fails_closed(fake_connect, monkeypatch)
         ProjectRegistry()                                    # no args, as a command does
     assert fake_connect == []
     assert url not in ProjectRegistry._pg_schema_ready       # never reached migration
+
+
+SHARED_URL = SHARED
+
+
+def test_isolation_replaces_unset_and_shared_urls_outside_ci(tmp_path):
+    """Outside CI every unset or shared URL becomes temp SQLite. Fails if the
+    isolation stops replacing them. Driven by a fake environment, so it does
+    not depend on the ambient GITHUB_ACTIONS."""
+    env = {"METRICS_DATABASE_URL": SHARED_URL}          # one shared, two unset
+    set_ = {}
+    replaced = G.isolate_url_settings(env, set_.__setitem__, tmp_path)
+    assert sorted(replaced) == sorted(G.SHARED_DB_URL_SETTINGS)
+    assert all(v.startswith("sqlite:///") for v in set_.values())
+    assert len(set_) == 3
+
+
+def test_isolation_keeps_a_deliberate_override_outside_ci(tmp_path):
+    env = {"REGISTRY_DATABASE_URL": "sqlite:///mine.db",
+           "FEEDBACK_DATABASE_URL": TEST_SCHEMA}
+    set_ = {}
+    replaced = G.isolate_url_settings(env, set_.__setitem__, tmp_path)
+    assert replaced == ["METRICS_DATABASE_URL"] and list(set_) == replaced
+
+
+def test_isolation_leaves_the_environment_untouched_under_ci(tmp_path):
+    """CI's Postgres service container IS the registry: nothing is replaced."""
+    env = {"GITHUB_ACTIONS": "true", "REGISTRY_DATABASE_URL": SHARED_URL}
+    set_ = {}
+    assert G.isolate_url_settings(env, set_.__setitem__, tmp_path) == []
+    assert set_ == {}
+
+
+def test_autouse_fixture_applies_the_isolation_outside_ci():
+    """What the real fixture did to this process. Under CI it deliberately
+    does nothing, so only then is the ambient value not asserted."""
+    import os
+    from resource_explorer.config import get_config
+
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        pytest.skip("CI leaves the URL settings to the service container")
+    cfg = get_config()
+    for url in (cfg.registry.database_url, cfg.observability.metrics_database_url,
+                cfg.feedback.database_url):
+        assert url.startswith("sqlite:///"), url[:12]
+
+
+def test_refusal_names_the_metrics_setting(fake_connect, monkeypatch):
+    """The 2026-10-05 leak: MetricsCollector on its default URL."""
+    import resource_explorer.config as config
+    from resource_explorer.observability.metrics_collector import MetricsCollector
+
+    for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setitem(config.ObservabilityConfig.model_config, "env_file", None)
+    monkeypatch.setattr(config, "_config", None)
+    with pytest.raises(G.SharedRegistryAccessError) as exc:
+        MetricsCollector()
+    assert "METRICS_DATABASE_URL" in str(exc.value)
+    assert fake_connect == []
+
+
+def test_feedback_store_default_is_refused_and_named(fake_connect, monkeypatch):
+    import resource_explorer.config as config
+    from resource_explorer.feedback_store import FeedbackStore
+
+    for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setitem(config.FeedbackConfig.model_config, "env_file", None)
+    monkeypatch.setattr(config, "_config", None)
+    with pytest.raises(G.SharedRegistryAccessError) as exc:
+        FeedbackStore()
+    assert "FEEDBACK_DATABASE_URL" in str(exc.value)
+
+
+def test_setting_hint_reads_the_calling_module():
+    base = "/x/resource_explorer/"
+    assert "METRICS" in G.setting_hint([base + "metrics_collector.py"])
+    assert "FEEDBACK" in G.setting_hint([base + "feedback_store.py"])
+    assert "leader" in G.setting_hint([base + "registry.py", base + "leader_election.py"])
+    assert "unknown" in G.setting_hint(["/x/other.py"])

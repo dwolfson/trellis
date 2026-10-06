@@ -572,6 +572,29 @@ def clear_tech_type_catalog_singleton():
 
 
 @pytest.fixture(autouse=True)
+def isolate_database_url_settings(tmp_path, monkeypatch):
+    """Point every setting that defaults to the SHARED Postgres at a throwaway
+    SQLite file, so a test that forgets to override one cannot leak into it.
+
+    Found 2026-10-05: test_ingest_then_query_returns_real_retrieved_content
+    patched the registry and vector store but not MetricsCollector, whose
+    METRICS_DATABASE_URL has its own shared default; every local run with
+    pgvector reachable wrote 'fixtureproj' rows into the shared query_log.
+
+    A value that is unset, or that already addresses the shared registry (a
+    developer's exported URL), is replaced. A deliberate override (a temp
+    SQLite path, a resource_explorer_test* schema) is left alone, and so is
+    CI, whose service container deliberately IS the registry. A test overrides
+    afterwards with its own monkeypatch.setenv.
+    """
+    import resource_explorer.config as _config_module
+
+    shared_registry_guard.isolate_url_settings(os.environ, monkeypatch.setenv, tmp_path)
+    _config_module._config = None
+    yield
+
+
+@pytest.fixture(autouse=True)
 def reset_cached_config():
     """Drop `resource_explorer.config._config` before and after every test.
 

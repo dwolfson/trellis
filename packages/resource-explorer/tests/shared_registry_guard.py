@@ -121,6 +121,32 @@ def classify(params: Mapping[str, Any], *, strict: bool) -> str | None:
     return f"{host or 'localhost'}:{port}/{dbname}, {where}"
 
 
+_SETTING_BY_MODULE = (
+    ("metrics_collector", "METRICS_DATABASE_URL (observability.metrics_database_url)"),
+    ("feedback_store", "FEEDBACK_DATABASE_URL (feedback.database_url)"),
+    ("leader_election", "REGISTRY_DATABASE_URL (registry.database_url; leader election)"),
+    ("registry", "REGISTRY_DATABASE_URL (registry.database_url)"),
+)
+
+
+def setting_hint(frames: list[str] | None = None) -> str:
+    """Name the config setting behind a connection, from the calling modules.
+
+    The three Postgres URL settings share one default, so the address cannot
+    say which one a test forgot to override; the code that opened the engine
+    can. `frames` is for tests; by default the live stack is read.
+    """
+    if frames is None:
+        import traceback
+        frames = [f.filename for f in traceback.extract_stack()]
+    for name in reversed(frames):
+        base = os.path.basename(name)
+        for key, label in _SETTING_BY_MODULE:
+            if base.startswith(key) and "resource_explorer" in name:
+                return label
+    return "unknown (REGISTRY_DATABASE_URL, METRICS_DATABASE_URL or FEEDBACK_DATABASE_URL)"
+
+
 def check(params: Mapping[str, Any], *, strict: bool, test: str | None = None) -> None:
     """Raise SharedRegistryAccessError if the connection must be refused."""
     if _truthy(os.environ.get(ALLOW_ENV)):
@@ -133,7 +159,9 @@ def check(params: Mapping[str, Any], *, strict: bool, test: str | None = None) -
     test = test or os.environ.get("PYTEST_CURRENT_TEST") or "<collection / session setup>"
     raise SharedRegistryAccessError(
         f"REFUSED before connecting: test {test} tried to open the SHARED "
-        f"Resource Explorer registry ({reason}). A test must use a temp SQLite "
+        f"Resource Explorer database ({reason}) through setting "
+        f"{setting_hint()}. Point that setting at a temp SQLite file "
+        f"(monkeypatch.setenv, then reset resource_explorer.config._config). A test must use a temp SQLite "
         f"registry (sqlite:///tmp_path/...), a per-test Postgres schema named "
         f"{TEST_SCHEMA_PREFIX}_* (the pg_registry fixture), or pass an explicit "
         f"ProjectRegistry(database_url=...). If the config is cached "
@@ -176,3 +204,31 @@ def install() -> None:
         guarded_connect.__wrapped__ = _state["real_psycopg2_connect"]  # type: ignore[attr-defined]
         psycopg2.connect = guarded_connect
     _state["installed"] = True
+
+
+# --- default isolation of the URL settings (used by conftest's autouse fixture)
+
+SHARED_DB_URL_SETTINGS = ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL")
+
+
+def isolate_url_settings(environ: Mapping[str, str], setenv: Callable[[str, str], None],
+                         tmp_dir: Any) -> list[str]:
+    """Decide and apply the default isolation; return the names it replaced.
+
+    Pure over `environ`, so a test can drive both branches with a fake
+    environment instead of depending on the ambient CI flag. CI
+    (GITHUB_ACTIONS=true) is left untouched: its service container IS the
+    registry. Otherwise a setting that is unset, or already addresses the
+    shared registry, is pointed at a throwaway SQLite file.
+    """
+    from resource_explorer.registry_label import is_shared_registry
+
+    if environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        return []
+    replaced = []
+    for name in SHARED_DB_URL_SETTINGS:
+        current = environ.get(name)
+        if current is None or is_shared_registry(current):
+            setenv(name, f"sqlite:///{tmp_dir}/{name.lower()}.db")
+            replaced.append(name)
+    return replaced
