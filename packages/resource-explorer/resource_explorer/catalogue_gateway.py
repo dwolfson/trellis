@@ -55,6 +55,10 @@ DATABASE_TECH_TYPE = "PostgreSQL Relational Database"
 #: Egeria's own attach step: a GovernanceActionType (NOT the process) that attaches an EXISTING
 #: element, given as action target `newAsset`, to the JDBC cataloguer as a SCHEMA-kind target.
 CATALOG_SCHEMA_ACTION_TYPE = "PostgreSQLGovernance::catalog-postgres-schema"
+#: The relationship the JDBC cataloguer itself uses to put a schema under a database
+#: (`RelationalDatabaseCataloguer.java:255-259`): DataSetContent, the DATABASE at end 2.
+SCHEMA_PARENT_RELATIONSHIP = "DataSetContent"
+SCHEMA_PARENT_AT_END1 = False
 #: What a catalog target does with an element when its schema leaves the list.
 TARGET_DELETE_METHOD = "ARCHIVE"
 #: The honest value for a version RE has no record of.
@@ -95,6 +99,8 @@ class Relationship:
     activity_status: str = ""
     completion_time: str = ""
     completion_message: str = ""
+    #: The engine action's `requestType` (e.g. `survey-postgres-database`, `catalog-postgres-schema`).
+    action_kind: str = ""
 
 
 @dataclass
@@ -125,7 +131,11 @@ class SurveyOutcome:
 
 
 #: Engine action `activityStatus` values that mean the action did not complete.
-FAILED_ACTION_STATUSES = frozenset({"FAILED", "INVALID", "CANCELLED", "IGNORED"})
+FAILED_ACTION_STATUSES = frozenset({"FAILED", "INVALID", "CANCELLED"})
+#: ...and the ones that mean it is over, one way or the other.
+TERMINAL_ACTION_STATUSES = frozenset({"COMPLETED"}) | FAILED_ACTION_STATUSES
+#: Running. Any other value (and a missing one) is one Resource Explorer does not know.
+RUNNING_ACTION_STATUSES = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS"})
 
 
 @dataclass
@@ -311,14 +321,38 @@ def parse_initiate_answer(res: Any) -> str:
 
 def parse_engine_action_answer(res: Any) -> EngineActionStatus:
     """An EngineAction raw element -> its status. The attribute is `activityStatus` (NOT
-    `actionStatus`), seen live. An element without it is an error, never a guess."""
+    `actionStatus`), seen live. An element without one reads status "" (not stated), never a guess."""
     if not (isinstance(res, dict) and _guid_of(res)):
         raise GatewayError("unrecognised engine action answer from Egeria")
     ps = _strings_of(res)
-    if not ps.get("activityStatus"):
-        raise GatewayError("the engine action carries no activityStatus")
-    return EngineActionStatus(status=str(ps["activityStatus"]), message=str(ps.get("completionMessage") or ""),
+    # A missing activityStatus is "not stated yet" (about 1.5 s while an action starts), not an error:
+    # the callers treat "" as still running.
+    return EngineActionStatus(status=str(ps.get("activityStatus") or ""), message=str(ps.get("completionMessage") or ""),
                               completion_time=str(ps.get("completionTime") or ""))
+
+
+def parse_catalog_targets_answer(res: Any) -> list[CatalogTarget]:
+    """`get_catalog_targets`' answer -> targets. LIVE item (rehearsal 2): `elementHeader.guid` is the
+    TARGET element, `relatedBy.relationshipHeader.guid` the CatalogTarget relationship and
+    `relatedBy.relationshipProperties.catalogTargetName` its name. "No elements found" is an empty
+    list; ANY other shape raises, because an empty list here means "not attached" and RE would
+    initiate another attach (Egeria creates another CatalogTarget every time)."""
+    if _no_elements(res):
+        return []
+    if not isinstance(res, list):
+        raise GatewayError(f"unrecognised catalog targets answer from Egeria: {type(res).__name__}")
+    out = []
+    for item in res:
+        rb = item.get("relatedBy") if isinstance(item, dict) else None
+        rel = ((rb or {}).get("relationshipHeader") or {}).get("guid") if isinstance(rb, dict) else ""
+        eh = item.get("elementHeader") if isinstance(item, dict) else None
+        el = eh.get("guid") if isinstance(eh, dict) else ""
+        if not (rel and el):
+            raise GatewayError("unrecognised catalog target in Egeria's answer (no relatedBy/elementHeader guids)")
+        props = (rb.get("relationshipProperties") or {}) if isinstance(rb, dict) else {}
+        out.append(CatalogTarget(relationship_guid=str(rel), element_guid=str(el),
+                                 name=str(props.get("catalogTargetName") or "")))
+    return out
 
 
 def _no_elements(res: Any) -> bool:
@@ -376,7 +410,8 @@ def parse_related_answer(res: Any) -> list[Relationship]:
                 activity_status=str(rps.get("activityStatus") or ""),
                 completion_time=str(rps.get("completionTime") or ""),
                 completion_message=(str(_strings_of(other).get("completionMessage") or "")
-                                    if rel_type == "ActionTarget" else "")))
+                                    if rel_type == "ActionTarget" else ""),
+                action_kind=(str(_strings_of(other).get("requestType") or "") if rel_type == "ActionTarget" else "")))
         return out
     if isinstance(res, dict) and not res:
         return []
@@ -571,9 +606,12 @@ class PyegeriaCatalogueGateway:
                               description: str = "") -> str:
         """The DeployedDatabaseSchema, from the template, under the database element.
 
-        UNVERIFIED LIVE: `anchorGUID`/`parentGUID`/`parentRelationshipTypeName` put the schema
-        under the database. The read-back found that the template create (and Egeria's own
-        process) otherwise yields the same element for the same placeholders, by qualifiedName
+        The parent link is the JDBC cataloguer's OWN: `RelationalDatabaseCataloguer.getOrCreateSchema`
+        (egeria `RelationalDatabaseCataloguer.java:255-259`) anchors the schema to the database and
+        parents it by DataSetContent with the database at END 2 (`setParentAtEnd1(false)`). Rehearsal
+        2 sent the database at end 1 and Egeria rejected it (OMRS-REPOSITORY-400-047: end 1 must be a
+        DataSet), still creating the element unparented. Same element for the same placeholders as
+        Egeria's own process, by qualifiedName
         `PostgreSQL Relational Database Schema::<host:port>::<db>.<schema>`."""
         body = {
             "class": "TemplateRequestBody",
@@ -581,15 +619,16 @@ class PyegeriaCatalogueGateway:
             "isOwnAnchor": False,
             "anchorGUID": database_guid,
             "parentGUID": database_guid,
-            "parentRelationshipTypeName": "DataSetContent",
-            "parentAtEnd1": True,
+            "parentRelationshipTypeName": SCHEMA_PARENT_RELATIONSHIP,
+            "parentAtEnd1": SCHEMA_PARENT_AT_END1,
             "deepCopy": True,
             "placeholderPropertyValues": schema_placeholders(db_entity, schema, description),
         }
         try:
             guid = self._client("AutomatedCuration").create_elem_from_template(body)
         except Exception as exc:
-            raise GatewayError(_short(exc)) from exc
+            raise GatewayError(f"creating the schema element for {schema} from the template failed: "
+                               f"{_short(exc)}") from exc
         return guid if isinstance(guid, str) else _guid_of(guid)
 
     def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str:
@@ -632,18 +671,7 @@ class PyegeriaCatalogueGateway:
                 JDBC_CATALOGUER_GUID, body={"class": "ResultsRequestBody", "graphQueryDepth": 0})
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
-        if not isinstance(res, list):
-            return []              # "No elements found"
-        out = []
-        for item in res:
-            if not isinstance(item, dict):
-                continue
-            rel = (item.get("relationshipHeader") or {}).get("guid") or item.get("relationshipGUID") or ""
-            el = item.get("catalogTargetElement") or item.get("relatedElement") or item.get("element") or {}
-            out.append(CatalogTarget(
-                relationship_guid=str(rel), element_guid=_guid_of(el) or str(item.get("elementGUID") or ""),
-                name=str((item.get("properties") or {}).get("catalogTargetName") or "")))
-        return out
+        return parse_catalog_targets_answer(res)
 
     def add_catalog_target(self, element_guid: str, name: str) -> str:
         """A SCHEMA-kind target: no configuration lists, `deleteMethod` ARCHIVE."""

@@ -243,7 +243,7 @@ def test_queued_is_the_outbox_row_and_failed_is_egeria_s_word(world, fake):
     reg.mark_outbox_failed(oid, "OutboxApplyError: 500 Egeria says no")
     s = derived(world)["schemas"]["sales"]
     assert s["state"] == "failed" and s["words"] == "failed · 500 Egeria says no"
-    assert "step: attach" in s["second"] and "will retry" in s["second"]
+    assert "step: attach" in s["second"] and "waiting for a worker" in s["second"]
     assert derived(world)["schemas"]["archive"]["state"] == "attached_waiting"      # the other is untouched
     # a row that gave up
     with reg._conn() as conn:
@@ -293,7 +293,7 @@ def test_header_marker_is_state_derived_never_a_constant(world, fake):
     fake.run_cataloguer()
     cc.read_back(world["registry"], fake, "db", ["sales", "archive"])
     done = derived(world)["header"]["text"]
-    assert "2 schemas chosen: 2 catalogued" in done
+    assert "2 schemas chosen: 2 cataloged" in done
     assert len({before, waiting, done}) == 3                                  # three states, three sentences
     assert "Database element" in done and "in Egeria" in done
 
@@ -340,7 +340,10 @@ def test_leave_out_nothing_hangs_off_is_a_soft_delete_leaf_first_without_a_casca
     kinds = [t for _, t, f in fake.deleted_order]
     assert set(f for _, _, f in fake.deleted_order) == {"soft_delete"}
     # columns, then tables, then the schema element: the fake refuses a parent before its children
-    assert kinds == ["RelationalColumn"] * 4 + ["RelationalTable"] * 2 + ["DeployedDatabaseSchema"]
+    # (the template's own connection graph, 4 elements, goes with the schema; it is created with it)
+    assert kinds[:4] == ["RelationalColumn"] * 4 and kinds[4:6] == ["RelationalTable"] * 2
+    assert sorted(kinds[6:10]) == ["Connection", "Endpoint", "Endpoint", "VirtualConnection"]
+    assert kinds[10:] == ["DeployedDatabaseSchema"] and len(kinds) == 11
     assert fake.targets == [] and fake.read_element(
         "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales") is None
     s = derived(world)["schemas"]["sales"]

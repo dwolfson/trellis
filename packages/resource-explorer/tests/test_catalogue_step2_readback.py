@@ -166,8 +166,10 @@ def test_the_engine_action_status_is_activity_status_not_action_status(real):
     st = g.engine_action_status("ea")
     assert (st.status, st.completion_time) == ("FAILED", "1791237499898") and st.message.startswith("OMES-SURVEY-ACTION-0018")
     assert gw.parse_engine_action_answer(live.raw_engine_action("ea", "IN_PROGRESS")).status == "IN_PROGRESS"
+    # a missing activityStatus is "not stated yet" (never read from the wrong name), an unrecognised element raises
+    assert gw.parse_engine_action_answer({"elementGUID": "x", "elementProperties": {"propertiesAsStrings": {"actionStatus": "FAILED"}}}).status == ""
     with pytest.raises(gw.GatewayError):
-        gw.parse_engine_action_answer({"elementGUID": "x", "elementProperties": {"propertiesAsStrings": {"actionStatus": "FAILED"}}})
+        gw.parse_engine_action_answer({"unexpected": 1})
 
 
 def test_the_fake_s_initiation_and_engine_action_answers_have_the_live_shapes(world, fake):

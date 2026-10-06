@@ -81,6 +81,12 @@ class FakeEgeria:
         # pending (the action is IN_PROGRESS and attaches nothing until `finish_pending_actions`).
         self.catalog_action = "accept"
         self.actions: dict[str, dict] = {}          # engine action guid -> {status, message, schema}
+        # Read-back lag: the first N `list_catalog_targets` reads after an initiation do not show the target
+        # (the live attach takes about 4 s and the poll window is shorter than a slow one).
+        self.target_lag_reads = 0
+        self._lag_left = 0
+        self.initiations: dict[str, int] = {}           # schema guid -> times the action type was initiated
+        self.create_error_after_creating = False        # Egeria 500s on the create but the element exists (rehearsal 2)
         self.survey_behaviour = "pending"         # pending | annotated | failed | empty (a survey takes time)
         self.survey_failure = ("OMES-SURVEY-ACTION-0018 The survey service threw an exception. "
                                "Details are in the audit log.")
@@ -176,10 +182,11 @@ class FakeEgeria:
         """`get_all_related_elements`' answer (live shape): a dict with `elementList`."""
         items = []
         for r in self._relationship_list(guid):
-            if r.type_name == "ActionTarget" and getattr(r, "activity_status", ""):
+            if r.type_name == "ActionTarget":
                 other = _live.raw_engine_action(r.other_guid or "act", r.activity_status,
                                                 message=getattr(r, "completion_message", ""),
-                                                completion_ms=getattr(r, "completion_time", ""))
+                                                completion_ms=getattr(r, "completion_time", ""),
+                                                request_type=getattr(r, "action_kind", ""))
                 props = _live.relationship_properties("serverToSurvey", r.activity_status,
                                                       getattr(r, "completion_time", ""))
                 items.append((r.type_name, r.guid or f"rel-{len(items)}", other, props))
@@ -214,7 +221,14 @@ class FakeEgeria:
                                f"identifier {e['guid']} is not visible [Anchors, Memento]")
         if e is not None and not e["deleted"]:
             return e["guid"]
-        return self.add_element(qn, "DeployedDatabaseSchema", parent=database_guid)
+        g = self.add_element(qn, "DeployedDatabaseSchema", parent=database_guid)
+        for suffix, typ in (("Connection", "VirtualConnection"), ("Endpoint", "Endpoint"),
+                            ("SecretsStoreConnection", "Connection"), ("SecretStoreEndpoint", "Endpoint")):
+            self.add_element(f"{qn}::{suffix}", typ, parent=g)        # the template's own connection graph
+        if self.create_error_after_creating:
+            self.create_error_after_creating = False
+            raise GatewayError("SERVER_ERROR_500 => Egeria detected error: `https://localhost:9443/x/new-element`.")
+        return g
 
     def link_schema_type(self, schema_guid, schema_type_guid):
         self.calls.append(("link_schema_type", schema_guid, schema_type_guid))
@@ -224,7 +238,14 @@ class FakeEgeria:
     def list_catalog_targets(self):
         self.calls.append(("list_catalog_targets",))
         self._boom("list_catalog_targets")
-        return list(self.targets)
+        if self._lag_left > 0:                          # the attach exists on Egeria's side, not yet readable
+            self._lag_left -= 1
+            raw = "No elements found"
+        else:
+            raw = [_live.raw_catalog_target(t.relationship_guid, t.element_guid, t.name) for t in self.targets] \
+                or "No elements found"
+        self.last_wire = ("targets", raw)
+        return _gw.parse_catalog_targets_answer(raw)
 
     def add_catalog_target(self, element_guid, name):
         self.calls.append(("add_catalog_target", element_guid, name))
@@ -244,6 +265,10 @@ class FakeEgeria:
         self._boom("initiate_catalog_action")
         if self.catalog_action == "error":
             raise GatewayError("OMAG-GOVERNANCE-ACTION-400-001 the action type does not accept an existing element")
+        self.initiations[schema_guid] = self.initiations.get(schema_guid, 0) + 1
+        assert self.initiations[schema_guid] == 1 and not any(t.element_guid == schema_guid for t in self.targets), \
+            "Egeria creates ANOTHER CatalogTarget on every initiation: RE initiated an attach for a schema that has one"
+        self._lag_left = self.target_lag_reads
         guid = self._guid("a")
         resp = dict(_live.LIVE_INITIATE_RESPONSE, guid=guid)
         self.last_wire = ("initiate", resp)
@@ -300,20 +325,30 @@ class FakeEgeria:
     def _relationship_list(self, guid):
         out = list(self.rels.get(guid, []))
         e = self.elements.get(guid)
-        if e is not None and e["type"] == "DeployedDatabaseSchema":
+        typ = e["type"] if e is not None else ""
+        if typ == "DeployedDatabaseSchema":
             out.append(Relationship("AssetSchemaType", other_guid="st"))      # structural noise
             out.append(Relationship("CatalogTarget", other_guid="cat"))
+            # what the template and Egeria's own engines put on every schema (rehearsal 2, step 4)
+            for t in ("ResourceConnection", "SourcedFrom"):
+                out.append(Relationship(t, other_guid="own"))
+        elif typ == "VirtualConnection":
+            for t in ("ConnectToEndpoint", "ConnectionConnectorType", "EmbeddedConnection"):
+                out.append(Relationship(t, other_guid="own"))
+        elif typ == "RelationalTable":
+            out.append(Relationship("Schema", other_guid="own"))
         return out
 
     def add_engine_action(self, schema_qn: str, status: str, *, completion_time: str = "", message: str = "",
-                          guid: str = "") -> str:
+                          guid: str = "", kind: str = "") -> str:
         """An engine action targeting a schema (a survey, or the process's own step): the live
         ActionTarget relationship carries `activityStatus` and `completionTime`."""
         g = self.by_qn(schema_qn)["guid"]
         ag = guid or self._guid("ea")
         self.rels.setdefault(g, []).append(Relationship(
             "ActionTarget", other_guid=ag, other_type="EngineAction", guid=self._guid("rl"),
-            activity_status=status, completion_time=completion_time, completion_message=message))
+            activity_status=status, completion_time=completion_time, completion_message=message,
+            action_kind=kind))
         return ag
 
     def add_term_assignment(self, qn_suffix: str, schema_qn: str, n: int = 1) -> None:
@@ -355,6 +390,8 @@ class FakeEgeria:
             return SurveyOutcome("FAILED", self.survey_failure, self._guid("r"), 0)
         if b == "pending":
             return SurveyOutcome("IN_PROGRESS", "", "", None)
+        if b == "partial":                              # rehearsal 2: a report with some annotations, action running
+            return SurveyOutcome("IN_PROGRESS", "", self._guid("r"), 9)
         if b == "empty":
             return SurveyOutcome("COMPLETED", "", self._guid("r"), 0)
         return SurveyOutcome("COMPLETED", "", self._guid("r"), 23)
