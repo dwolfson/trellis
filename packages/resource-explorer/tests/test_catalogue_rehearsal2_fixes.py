@@ -331,3 +331,121 @@ def test_a_repeat_publish_does_not_mistake_the_stored_database_guid_for_the_serv
     res = s._catalog_and_survey(ent, "u", "p", registry=None, survey_after_catalog=False)
     assert res["database_guid"] == "db-guid-0000" and res["server_guid"] == "server-guid-0000"
     assert created == []
+
+
+# ── DataFlow by the OTHER END (architect, 2026-10-06) ─────────────────────────────────────────
+
+from fake_egeria_catalogue import CONNECTOR_JOB_QN  # noqa: E402
+
+
+def _schema_with_dataflow(world, fake, other_qn, other_type, other_name):
+    _catalogue(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    g = fake.by_qn(SALES_QN)["guid"]
+    fake.rels.setdefault(g, []).append(gw.Relationship(
+        "DataFlow", other_guid="far", other_type=other_type, other_qualified_name=other_qn, other_name=other_name))
+    return cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
+
+
+def test_a_schema_with_only_the_connectors_own_dataflow_plans_a_delete(world, fake):
+    _catalogue(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
+    assert row["form"] == gw.SOFT_DELETE and "delete · nothing depends on it" in row["text"]
+    _, rec = press(world, fake)
+    assert fake.by_qn(SALES_QN) is None                                   # the element went, DataFlow and all
+
+
+@pytest.mark.parametrize("qn,typ,name", [
+    ("Asset::warehouse::orders_mart", "DataFile", "orders_mart"),                                  # another asset
+    ("DeployedSoftwareComponent::MyJobs::nightly-load", "DeployedSoftwareComponent", "nightly-load"),  # a person's process
+    ("PostgreSQLDatabaseSchema::CreateAsCatalogTargetGovernanceActionProcess", "GovernanceActionProcess", "CreateAsCatalogTarget"),
+    ("PostgreSQL Relational Database Schema::h:1::shop.other", "DeployedDatabaseSchema", "other"),   # another schema
+])
+def test_a_dataflow_to_anything_else_plans_an_archive_naming_what_would_be_lost(world, fake, qn, typ, name):
+    row = _schema_with_dataflow(world, fake, qn, typ, name)
+    assert row["form"] == gw.ARCHIVE
+    assert f"archive · lineage to {name or qn or 'an element Resource Explorer could not name'} would be lost" in row["text"]
+
+
+def test_a_dataflow_to_the_connectors_job_component_is_machinery_only_by_its_exact_prefix(world, fake):
+    row = _schema_with_dataflow(world, fake, "DeployedSoftwareComponent::GovernanceActionsX::foo", "DeployedSoftwareComponent", "foo")
+    assert row["form"] == gw.ARCHIVE
+    row = _schema_with_dataflow(world, fake, CONNECTOR_JOB_QN.replace("PostgreSQLSurvey", "Other"), "DeployedSoftwareComponent", "x")
+    assert row["form"] == gw.ARCHIVE                                    # the connector's component PLUS a lineage to elsewhere
+
+
+def test_the_dataflow_other_end_is_read_from_the_live_item(real):
+    g, c, ent = real
+    schema = live.raw_element("sch1", SALES_QN, "DeployedDatabaseSchema")
+    job = live.raw_element("job1", CONNECTOR_JOB_QN, "DeployedSoftwareComponent", props={"displayName": "survey-postgres-database"})
+    c["MetadataExpert"].get_all_related_elements.return_value = live.raw_related(schema, [("DataFlow", "rl", job)])
+    [r] = g.relationships("sch1")
+    assert (r.other_qualified_name, r.other_name, r.other_type) == (CONNECTOR_JOB_QN, "survey-postgres-database", "DeployedSoftwareComponent")
+
+
+# ── a 3-target list (built from the single live item, distinct guids: the test6 run will give a live one) ──
+
+def _three():
+    return [live.raw_catalog_target(f"rel-{i}", f"el-{i}", f"scratch_cat_test5.{n}", {"schemaName": n})
+            for i, n in enumerate(("plain", "leave_clean", "leave_term"))]
+
+
+def test_a_three_target_list_parses_all_three_and_the_guard_matches_the_right_one(real):
+    g, c, ent = real
+    c["AssetMaker"].get_catalog_targets.return_value = _three()
+    ts = g.list_catalog_targets()
+    assert [(t.relationship_guid, t.element_guid, t.name) for t in ts] == [
+        ("rel-0", "el-0", "scratch_cat_test5.plain"), ("rel-1", "el-1", "scratch_cat_test5.leave_clean"),
+        ("rel-2", "el-2", "scratch_cat_test5.leave_term")]
+    db = DatabaseEntity(slug="x", display_name="x", db_type="postgresql", host="h", port=1, database_name="scratch_cat_test5")
+    assert [t.element_guid for t in cc._targets_for(ts, "el-1", db, "leave_clean")] == ["el-1"]
+    assert cc._targets_for(ts, "el-9", db, "nothing") == []
+    assert [t.element_guid for t in cc._targets_for(ts, "el-9", db, "leave_term")] == ["el-2"]      # by the target's own name
+
+
+# ── D-E: the server by EXACT qualifiedName; none or several is an error, never a guess ────────
+
+def _publish(real, matches):
+    g, c, ent = real
+    g._clients["surveyor"] = MagicMock()
+    g._clients["surveyor"].catalog_and_survey.return_value = {"server_guid": "dbguid", "database_guid": "dbguid"}
+    c["MetadataExpert"].find_metadata_elements_with_string.return_value = matches
+    return g.publish_database(ent, "u", "p")
+
+
+SERVER_QN = "PostgreSQL Server::host.docker.internal:5442"
+
+
+def test_the_server_is_the_one_element_with_the_exact_server_qualified_name(real):
+    pub = _publish(real, [live.raw_element("srv1", SERVER_QN, "SoftwareServer"),
+                          live.raw_element("dbx", SERVER_QN + "::shop", "RelationalDatabase"),        # a fuzzy neighbour
+                          live.raw_element("srv2", SERVER_QN + "-other", "SoftwareServer")])
+    assert pub.server_guid == "srv1" and pub.server_name == "host.docker.internal:5442"
+
+
+def test_no_server_reads_server_not_found_in_resource_explorers_own_words(real):
+    with pytest.raises(gw.GatewayError) as err:
+        _publish(real, "No elements found")
+    assert cc.egeria_first_sentence(str(err.value))[0].startswith("server not found") and SERVER_QN in str(err.value)
+
+
+def test_two_servers_read_server_ambiguous_and_the_commit_does_not_guess(real):
+    with pytest.raises(gw.GatewayError) as err:
+        _publish(real, [live.raw_element("a", SERVER_QN, "SoftwareServer"), live.raw_element("b", SERVER_QN, "SoftwareServer")])
+    assert cc.egeria_first_sentence(str(err.value))[0].startswith("server ambiguous · 2 matches")
+
+
+def test_an_ambiguous_server_fails_the_publish_step_with_the_cause_first(world, fake):
+    fake.fail["publish_database"] = "server ambiguous · 2 matches for PostgreSQL Server::h:1; Resource Explorer will not guess"
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    st = step(rec, "publish_elements")
+    assert st["state"] == "failed" and st["detail"].startswith("server ambiguous · 2 matches")
+    assert fake.targets == []
+
+
+def test_a_dataflow_whose_far_end_could_not_be_read_hangs_off_and_says_it_could_not_name_it():
+    r = gw.Relationship("DataFlow", other_guid="far")
+    h = cc.classify_hangs_off([[r]])
+    assert h["total"] == 1 and h["lineage_to"] == ["an element Resource Explorer could not name"]

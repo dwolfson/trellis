@@ -38,6 +38,8 @@ from resource_explorer.catalogue_gateway import (  # noqa: E402
     schema_type_qualified_name)
 
 PROCESS_QN = "PostgreSQLSurvey::survey-postgres-database"
+#: The job component the OpenLineage cataloguer made for Egeria's own survey action (READBACK note, last section).
+CONNECTOR_JOB_QN = "DeployedSoftwareComponent::GovernanceActions::PostgreSQLSurvey::survey-postgres-database"
 
 
 class FakeEgeria:
@@ -191,7 +193,9 @@ class FakeEgeria:
                                                       getattr(r, "completion_time", ""))
                 items.append((r.type_name, r.guid or f"rel-{len(items)}", other, props))
                 continue
-            other = _raw_element(r.other_guid or "other", f"other::{r.other_guid}", r.other_type or "Referenceable")
+            other = _raw_element(r.other_guid or "other", getattr(r, "other_qualified_name", "") or f"other::{r.other_guid}",
+                                 r.other_type or "Referenceable",
+                                 props=({"displayName": r.other_name} if getattr(r, "other_name", "") else None))
             items.append((r.type_name, r.guid or f"rel-{len(items)}", other))
         return _raw_related(self.raw_element(guid) if guid in self.elements else _raw_element(guid, "", ""), items)
 
@@ -332,6 +336,10 @@ class FakeEgeria:
             # what the template and Egeria's own engines put on every schema (rehearsal 2, step 4)
             for t in ("ResourceConnection", "SourcedFrom"):
                 out.append(Relationship(t, other_guid="own"))
+            # Egeria's OpenLineage cataloguer records the governance action that touched it (rehearsal 2,
+            # READBACK note): a DataFlow to the action's job component, `DeployedSoftwareComponent::GovernanceActions::...`
+            out.append(Relationship("DataFlow", other_guid="job", other_type="DeployedSoftwareComponent",
+                                    other_qualified_name=CONNECTOR_JOB_QN, other_name="survey-postgres-database"))
         elif typ == "VirtualConnection":
             for t in ("ConnectToEndpoint", "ConnectionConnectorType", "EmbeddedConnection"):
                 out.append(Relationship(t, other_guid="own"))

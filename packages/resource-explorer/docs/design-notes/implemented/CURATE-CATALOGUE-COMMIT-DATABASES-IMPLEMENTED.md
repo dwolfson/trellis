@@ -220,3 +220,32 @@ recorded live shapes (`tests/live_catalogue_payloads.py`); code and tests only, 
 | D5 | survey report whole | wording done | manifest line: "RE's survey report is published whole; it describes all <m> schemas; elements are created for the <n> you chose." |
 
 **Still unverified live:** the D-D parent link at end 2 (above); that the poll window and the 600 s give-up are right for a real attach; `DataFlow` by Egeria's own engines (above); the `Schema` link on every cataloged schema (read from the source, seen once in the rehearsal as one per schema); the `requestType` property of an engine action in the related-elements element (assumed from the read-back's property list).
+
+### Rulings after rehearsal 2 (architect, 2026-10-06)
+
+**DataFlow, split by the OTHER END, not by who made it.** A DataFlow is machinery (it goes with the element on a soft delete) only when its far end is
+Egeria's own governance-action job component: a `DeployedSoftwareComponent` whose qualifiedName starts `DeployedSoftwareComponent::GovernanceActions::`.
+Evidence: the OpenLineage cataloguer names the component it makes for every OpenLineage job `DeployedSoftwareComponent::<namespace>::<name>`
+(egeria `OpenLineageCataloguerIntegrationConnector.java:4665`; `openlineage-integration-connectors/docs/open-lineage-cataloguing.md:78`, jobs become
+`DeployedSoftwareComponent`s and inputs/outputs are linked by `DataFlow`, same doc line 94), and the READBACK note records the database's DataFlow
+going to `DeployedSoftwareComponent::GovernanceActions::PostgreSQLSurvey::survey-postgres-database`, which is that job component for Egeria's own survey.
+Anything else hangs off and forces an archive, whoever asserted it: another asset, a person's process, another schema, a `GovernanceActionProcess`,
+or an end that could not be read. **Not proven, so treated as hanging off:** the READBACK note's DataFlow from the process-created schema goes to the
+GovernanceActionProcess `eea77a85` (an `olcatnpa` write), and rehearsal 2's template-made schemas' DataFlow (the note says "1 DataFlow", far end not
+recorded). If either far end turns out to be a `GovernanceActions` job component it is machinery; until a live read shows it, a cataloged schema may still
+plan an archive. The preview says which: "archive · lineage to <name> would be lost" or "delete · nothing depends on it". Tests: a connector-only DataFlow
+plans delete; a DataFlow to another asset, a person's process, a governance process, another schema, or an unreadable end plans archive.
+
+**D-E, by-name accepted with conditions.** The server is read by the EXACT qualifiedName `PostgreSQL Server::<host:port>` (the SoftwareServer RE's publish
+created in rehearsal 1: `PostgreSQL Server::host.docker.internal:5442`, rehearsal 1 evidence note, "State left behind"); the lookup is a starts-with search
+filtered to exact equality, never a fuzzy name match. No match reads "server not found: ..."; several read "server ambiguous · N matches ...; Resource Explorer
+will not guess"; either fails the publish step with that sentence first and nothing else runs. **Why by name:** a database has no link to its server in
+anything recorded because coco_pharma's database element was made by RE's own publish, not by the cataloguer, so the absence proves nothing about the
+cataloguer's shape. The `scratch_cat_test6` read (cataloguer-made database to its server) decides it: if it finds a relationship, RE's publish gets a follow-up
+to create the same one, and D-E then reads by relationship and falls back to the name only when no link exists; if none, by-name stays as designed here.
+
+**Fixture note:** the catalog target list fixtures include a 3-target list, built from the single live item repeated with distinct guids (the duplicate case
+rehearsal 2 hit); the test6 run will replace it with a live one.
+
+**Backlog:** the missing worker heartbeat row is what would make "will retry" honest: today a failed row says "waiting for a worker" because nothing in the
+registry proves a worker is running.

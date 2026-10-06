@@ -99,6 +99,9 @@ class Relationship:
     activity_status: str = ""
     completion_time: str = ""
     completion_message: str = ""
+    #: The far end's qualifiedName and name (a DataFlow's meaning depends on WHAT is at the other end).
+    other_qualified_name: str = ""
+    other_name: str = ""
     #: The engine action's `requestType` (e.g. `survey-postgres-database`, `catalog-postgres-schema`).
     action_kind: str = ""
 
@@ -151,6 +154,12 @@ def server_name_for(db_entity) -> str:
     """The name Egeria's template carries for the server: `<egeria host>:<port>`."""
     host = getattr(db_entity, "egeria_host", "") or db_entity.host
     return f"{host}:{db_entity.port}"
+
+
+def server_qualified_name(server_name: str) -> str:
+    """The SoftwareServer RE's publish creates from the "PostgreSQL Server" template: `PostgreSQL Server::<host:port>`
+    (rehearsal 1 evidence: the created server `PostgreSQL Server::host.docker.internal:5442`)."""
+    return f"PostgreSQL Server::{server_name}"
 
 
 def database_qualified_name(server_name: str, database_name: str) -> str:
@@ -411,7 +420,9 @@ def parse_related_answer(res: Any) -> list[Relationship]:
                 completion_time=str(rps.get("completionTime") or ""),
                 completion_message=(str(_strings_of(other).get("completionMessage") or "")
                                     if rel_type == "ActionTarget" else ""),
-                action_kind=(str(_strings_of(other).get("requestType") or "") if rel_type == "ActionTarget" else "")))
+                action_kind=(str(_strings_of(other).get("requestType") or "") if rel_type == "ActionTarget" else ""),
+                other_qualified_name=_qn_of(other),
+                other_name=str(_strings_of(other).get("displayName") or "")))
         return out
     if isinstance(res, dict) and not res:
         return []
@@ -473,9 +484,36 @@ class PyegeriaCatalogueGateway:
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
         server = server_name_for(db_entity)
+        # The server is read by its EXACT qualifiedName, never by a name search and never from a stored
+        # variable (rehearsal 2, D-E: a repeat commit printed the database's own guid as the server).
+        server_guid = self.find_server(server)
         return PublishedDatabase(
-            server_guid=res.get("server_guid", ""), database_guid=res.get("database_guid", ""),
+            server_guid=server_guid, database_guid=res.get("database_guid", ""),
             server_name=server, database_qualified_name=database_qualified_name(server, db_entity.database_name))
+
+    def find_server(self, server_name: str) -> str:
+        """The one SoftwareServer whose qualifiedName is exactly `PostgreSQL Server::<host:port>` (as RE's
+        publish created it in rehearsal 1). None reads "server not found", several read "server ambiguous ·
+        N matches": the commit does not guess. A server element is shared by host:port."""
+        qn = server_qualified_name(server_name)
+        body = {"class": "SearchStringRequestBody", "searchString": qn, "startsWith": True, "ignoreCase": False,
+                "forLineage": True, "forDuplicateProcessing": True, "graphQueryDepth": 0}
+        try:
+            res = self._client("MetadataExpert").find_metadata_elements_with_string(
+                search_string=qn, starts_with=True, body=body)
+            found = [e for e in parse_elements_answer(res) if e.qualified_name == qn]
+        except GatewayError:
+            raise
+        except Exception as exc:
+            if "No elements found" in str(exc):
+                found = []
+            else:
+                raise GatewayError(f"could not look for the server {qn}: {_short(exc)}") from exc
+        if not found:
+            raise GatewayError(f"server not found: no element has the qualifiedName {qn}")
+        if len(found) > 1:
+            raise GatewayError(f"server ambiguous · {len(found)} matches for {qn}; Resource Explorer will not guess")
+        return found[0].guid
 
     def publish_local_report(self, db_entity, db_user: str, db_pwd: str, measured: dict, *,
                              registry=None, submitted_by: str = "") -> dict:

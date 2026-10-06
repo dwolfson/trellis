@@ -139,6 +139,7 @@ HANGS_OFF_WORDS = {
     "LineageMapping": ("lineage mapping", "lineage mappings"),
     "DataClassAssignment": ("data class assignment", "data class assignments"),
     "DataClassComposition": ("data class composition", "data class compositions"),
+    "DataFlow": ("lineage link", "lineage links"),
     "ImplementedBy": ("implementation link", "implementation links"),
 }
 
@@ -230,11 +231,33 @@ def wildcard_collisions(view: dict, schema_names: list[str]) -> list[dict]:
 
 # ── what hangs off a schema ──────────────────────────────────────────────────
 
+#: Egeria's OpenLineage cataloguer names the component it makes for each OpenLineage job
+#: `DeployedSoftwareComponent::<namespace>::<name>` (connector source line 4665; docs/open-lineage-cataloguing.md:78),
+#: and Egeria's own governance actions (the surveys, the attach action) emit their events in the namespace
+#: `GovernanceActions` (the READBACK evidence note: `DeployedSoftwareComponent::GovernanceActions::
+#: PostgreSQLSurvey::survey-postgres-database`, the far end of the database's DataFlow). A DataFlow to such a
+#: component records "Egeria's own machinery touched this" and goes with the element.
+MACHINERY_JOB_PREFIX = "DeployedSoftwareComponent::GovernanceActions::"
+
+
+def is_machinery_dataflow(r) -> bool:
+    """A DataFlow is machinery ONLY when its far end is Egeria's own governance-action job component. A DataFlow
+    to anything else (another asset, a person's process, a schema, a governance ACTION PROCESS, or an end that could
+    not be read) is lineage someone could rely on: it hangs off, whoever asserted it."""
+    return (r.type_name == "DataFlow" and r.other_type == "DeployedSoftwareComponent"
+            and str(r.other_qualified_name or "").startswith(MACHINERY_JOB_PREFIX))
+
+
 def classify_hangs_off(rels_per_element: list[list]) -> dict:
     """Group the non-structural relationships found on a schema's elements."""
     by_type: dict[str, int] = {}
+    lineage_to: list[str] = []
     for rels in rels_per_element:
         for r in rels:
+            if r.type_name == "DataFlow":
+                if is_machinery_dataflow(r):
+                    continue
+                lineage_to.append(r.other_name or r.other_qualified_name or "an element Resource Explorer could not name")
             if r.type_name and r.type_name not in STRUCTURAL_RELATIONSHIPS:
                 by_type[r.type_name] = by_type.get(r.type_name, 0) + 1
     total = sum(by_type.values())
@@ -242,7 +265,7 @@ def classify_hangs_off(rels_per_element: list[list]) -> dict:
     for t, n in sorted(by_type.items()):
         one, many = HANGS_OFF_WORDS.get(t, (t, t))
         parts.append(f"{n} {one if n == 1 else many}")
-    return {"total": total, "by_type": by_type, "words": " · ".join(parts)}
+    return {"total": total, "by_type": by_type, "words": " · ".join(parts), "lineage_to": lineage_to}
 
 
 def read_hangs_off(gateway: CatalogueGateway, db_entity, schema: str) -> dict:
@@ -620,11 +643,13 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         elif read["form"] == SOFT_DELETE:
             row.update(form=SOFT_DELETE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: nothing hangs off it · will be removed (soft-deleted) from Egeria"
-                            + (f" with its {tcount} tables" if tcount else ""))
+                            + (f" with its {tcount} tables" if tcount else "") + " · delete · nothing depends on it")
         else:
             row.update(form=ARCHIVE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: {read['hangs_off']['words']} hang off it · will be archived in Egeria, "
-                            f"not deleted · can't be re-included until Egeria restores archived elements")
+                            f"not deleted · can't be re-included until Egeria restores archived elements"
+                            + "".join(f" · archive · lineage to {n} would be lost"
+                                      for n in read["hangs_off"].get("lineage_to", [])))
         leave.append(row)
 
     blocked_names = {r["schema"] for r in leave if r.get("blocked")}
