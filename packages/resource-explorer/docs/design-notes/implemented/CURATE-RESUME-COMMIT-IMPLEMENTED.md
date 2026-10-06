@@ -27,8 +27,7 @@ reload and a second tab read the same registry rows.
 | none | nothing |
 
 Guards: no write on load (the first read-back is the 60 s tick, not the load); never more than one watch on a page (a new watch
-stops the previous); the watch stops at a terminal state and does not read while the page is hidden (the 2 s record poll also skips
-reads while hidden); a failed read of the route leaves the page working and draws nothing. A commit this tab starts itself keeps
+stops the previous); the watch stops at a terminal state and does not read while the page is hidden. The 2 s record poll is the page's existing one (a cheap registry read that ends at the terminal state); a failed read of the route leaves the page working and draws nothing. A commit this tab starts itself keeps
 its own state and is never replaced by the read.
 
 **Deviation from the brief, noted:** the 60 s watch resumes for any commit (non-terminal or finished) whose survey step is still

@@ -93,7 +93,7 @@ let pageWatchStop = null;
 /** A finished commit is drawn in full for this long; after that it is one line with its steps behind a disclosure. */
 const RESUME_FULL_HOURS = 24;
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { resumed = null; resumeFor = null; if (pageWatchStop) { pageWatchStop(); pageWatchStop = null; } savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
+export function resetScopeUi() { commitUi = null; resumed = null; resumeFor = null; if (pageWatchStop) { pageWatchStop(); pageWatchStop = null; } savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
 
 /** Whether the whole section is open. Decided once per pane visit (from the remembered
  *  choice, else from whether a scope is declared) and then only a click changes it, so a
@@ -660,7 +660,8 @@ function manifestTableHtml(preview, view) {
  *  finished or finished within 24 h; `one_line` (a summary and "show steps") when it is older; `unfinished` when it was
  *  requested hours ago and never finished (said, not watched). */
 export function resumeMode(latest) {
-  if (!latest || !latest.commit) return 'none';
+  // Anything that is not a commit record (an id and its steps) is no commit: the page must never follow a shape it does not know.
+  if (!latest || !latest.commit || !latest.commit.id || !Array.isArray(latest.commit.steps)) return 'none';
   if (!latest.terminal) return latest.stale_unfinished ? 'unfinished' : 'full';
   return latest.age_hours != null && latest.age_hours > RESUME_FULL_HOURS ? 'one_line' : 'full';
 }
@@ -749,7 +750,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
   // A reload or a second tab: nothing of the commit this page was watching survives in the tab, so the newest commit
   // was read from the registry (renderCatalogueScope) and is shown from its rows. Never a write.
   let resumedPoll = false;
-  if ((!commitUi || commitUi.slug !== slug) && resumed && resumed.slug === slug && resumed.latest && resumed.latest.commit) {
+  if ((!commitUi || commitUi.slug !== slug) && resumed && resumed.slug === slug && resumeMode(resumed.latest) !== 'none') {
     const latest = resumed.latest;
     const mode = resumeMode(latest);
     const rec = latest.commit;
@@ -838,7 +839,6 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
   bindCheckAgain();
   const poll = async () => {
     if (stale(host, slug) || !commitUi || commitUi.slug !== slug) return;
-    if (globalThis.document && globalThis.document.hidden) { setTimeout(poll, commitPollMs); return; }   // a hidden page does not read
     let rec;
     try { rec = await getCatalogueCommitRecord(slug, commitUi.id); } catch (err) { say(`could not read the commit record: ${err.message}`, true); offerSignIn(err); return; }
     commitUi.rec = rec;

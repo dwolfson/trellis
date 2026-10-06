@@ -119,6 +119,7 @@ function makeServer(view, preview, { signedIn = true, advance = null, finalSteps
           { name: 'read_back', state: 'pending', detail: '' }] };
         return ok({ curation: s.record, run_id: 'run00000-1', activity_id: 'a' });
       }
+      if (method === 'GET' && u.endsWith('/commits/latest')) return ok({ commit: null, terminal: null, age_hours: null, stale_unfinished: false, states: {} });   // nothing committed before this tab
       if (method === 'GET' && u.includes('/commits/')) {
         s.polls += 1;
         if (s.polls >= 2) {

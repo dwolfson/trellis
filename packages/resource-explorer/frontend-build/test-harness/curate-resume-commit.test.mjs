@@ -34,7 +34,7 @@ async function open(latest, opts = {}) {
       server.preview = PREVIEW;
       server.latest = latest;
       if (opts.latestFails) server.latestFails = true;
-      if (latest && latest.commit) server.record = latest.commit;
+      if (latest && latest.commit && Array.isArray(latest.commit.steps)) server.record = latest.commit;
       Object.defineProperty(document, 'hidden', { value: false, configurable: true });   // jsdom reports a hidden page by default
       mod.setScopeClock({ now: () => clock.t, every: (fn, ms) => { const e = { fn, ms }; clock.ticks.push(e); return () => { clock.ticks = clock.ticks.filter((x) => x !== e); }; } });
       mod.setCommitPollMs(25);
@@ -47,6 +47,14 @@ async function open(latest, opts = {}) {
   const fold = ctx.document.querySelector('[data-scope-collapse]');
   if (opts.openSection && fold && fold.getAttribute('aria-expanded') === 'false') { fold.click(); await wait(150); }
   return { ...ctx, clock, mod: theMod };
+}
+/** Ends the commit so the resumed record poll (a timer) stops and the process can exit. */
+async function finish(ctx, ...others) {
+  ctx.server.record = REC(STEPS({ survey: { state: 'done', detail: 'done' }, read_back: { state: 'done', detail: 'ok' } }).map((st) => (st.state === 'pending' || st.state === 'submitted' ? { ...st, state: 'done' } : st)), { state: 'done' });
+  ctx.clock.ticks.length = 0;
+  await wait(150);
+  ctx.mod.setCommitPollMs(2000);
+  for (const m of others) m.setCommitPollMs(2000);
 }
 const stepsEl = (d) => d.querySelector('[data-scope-commit-panel] > [data-scope-commit-steps], [data-scope-commit-panel] [data-scope-commit-steps]');
 const posts = (server) => server.calls.filter((c) => c.method === 'POST');
@@ -63,7 +71,7 @@ test('load with a commit still running: the stepper is drawn from the registry a
   assert.equal(clock.ticks.filter((t) => t.ms === 60000).length, 1, 'the survey watch resumed (one)');
   await tick(clock, 60000);
   assert.equal(posts(server).filter((c) => c.url.endsWith('/read-back')).length, 1, 'the watch reads back: a read, on the 60 s tick, not on load');
-  ctx.clock.ticks.length = 0;
+  await finish(ctx);
 });
 
 test('load with a commit that finished within 24 h: the steps are drawn, and no watch starts when its survey is over', async () => {
@@ -131,7 +139,9 @@ test('a reload mid-watch resumes: a fresh page (second tab) reads the same regis
   assert.equal(flat(host2.querySelector('[data-scope-steps-head]')), first, 'both tabs read the same state');
   assert.equal(clock2.ticks.filter((t) => t.ms === 60000).length, 1, 'the second page resumed its own single watch');
   assert.deepEqual(posts(server), [], 'neither load wrote anything');
-  ctx.clock.ticks.length = 0; clock2.ticks.length = 0;
+  clock2.ticks.length = 0;
+  host2.remove();                                   // the second page goes away: its record poll stops (it is stale)
+  await finish(ctx, fresh);
 });
 
 test('never more than one watch on a page: drawing the panel again does not start a second', async () => {
@@ -140,7 +150,7 @@ test('never more than one watch on a page: drawing the panel again does not star
   document.querySelector('[data-scope-read-back]').click();      // redraws the panel from the registry
   await wait(150);
   assert.ok(clock.ticks.filter((t) => t.ms === 60000).length <= 1, `watches: ${clock.ticks.filter((t) => t.ms === 60000).length}`);
-  clock.ticks.length = 0;
+  await finish(ctx);
 });
 
 test('the resumed watch stops at a terminal state and does not read while the page is hidden', async () => {
@@ -155,4 +165,11 @@ test('the resumed watch stops at a terminal state and does not read while the pa
   server.record = REC(STEPS({ survey: { state: 'done', detail: 'done · report abcd1234 · 9 annotations' }, read_back: { state: 'done', detail: 'ok' } }), { state: 'done' });
   await tick(clock, 60000);
   assert.equal(clock.ticks.filter((t) => t.ms === 60000).length, 0, 'stopped at the terminal state');
+});
+
+test('an answer that is not a commit record is no commit: the page never follows a shape it does not know', async () => {
+  const { document, clock } = await open({ commit: { header: { state: 'committed' }, schemas: {} }, terminal: false }, { openSection: true });
+  assert.equal(document.querySelector('[data-scope-commit-steps]'), null);
+  assert.equal(document.querySelector('[data-scope-last-commit]'), null);
+  assert.equal(clock.ticks.length, 0);
 });
