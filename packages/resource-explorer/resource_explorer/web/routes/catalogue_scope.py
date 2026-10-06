@@ -136,6 +136,43 @@ async def list_commits(slug: str) -> dict:
     return {"commits": recs}
 
 
+#: A commit still "running" this long after it was requested did not finish: the page says so and does not watch it.
+STALE_UNFINISHED_HOURS = 6
+
+
+@router.get("/{slug}/commits/latest")
+async def read_latest_commit(slug: str) -> dict:
+    """The NEWEST catalog commit for this database, for a page that has just loaded: its record (steps and run state,
+    which the run writes from proof rows), whether it is terminal, how old it is, and the proof-derived state of
+    every schema. Read-only: it writes nothing and never contacts Egeria, so a reload and a second tab both read the
+    same registry rows and see the same thing. `commit` is null when nothing was ever committed."""
+    from datetime import datetime, timezone
+    from resource_explorer.curate_plan import Curations
+    registry = _registry_for(slug)
+
+    def build() -> dict:
+        recs = [r for r in Curations(registry).for_resource("database", slug) if r.get("kind") == "catalogue"]
+        if not recs:
+            return {"commit": None, "terminal": None, "age_hours": None, "stale_unfinished": False, "states": {}}
+        rec = recs[0]                                   # for_resource orders newest first
+        terminal = rec.get("state") in ("done", "failed")
+        age = None
+        try:
+            then = datetime.fromisoformat(str(rec.get("requested_at") or "").replace("Z", "+00:00"))
+            if then.tzinfo is not None:
+                then = then.astimezone(timezone.utc).replace(tzinfo=None)
+            age = round((datetime.now(timezone.utc).replace(tzinfo=None) - then).total_seconds() / 3600, 2)
+        except ValueError:
+            pass
+        view = scope.build_scope_view(registry, slug)
+        states = commit.derive_commit_state(registry, slug, view)["schemas"]
+        return {"commit": rec, "terminal": terminal, "age_hours": age,
+                "stale_unfinished": bool(not terminal and age is not None and age > STALE_UNFINISHED_HOURS),
+                "states": states}
+
+    return await asyncio.to_thread(build)
+
+
 @router.get("/{slug}/commits/{curation_id}")
 async def read_commit(slug: str, curation_id: str) -> dict:
     from resource_explorer.curate_plan import Curations

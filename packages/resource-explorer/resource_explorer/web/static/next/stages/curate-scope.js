@@ -26,7 +26,7 @@ import {
   getCatalogueScope, setCatalogueDepth, setCatalogueNode, confirmCatalogueNode,
   overrideCatalogueNode, clearCatalogueNode, redeclareCatalogueScope,
   setCatalogueNodes, getCatalogueCommitPreview,
-  postCatalogueCommit, getCatalogueCommitRecord, postCatalogueReadBack,
+  postCatalogueCommit, getCatalogueCommitRecord, getCatalogueLatestCommit, postCatalogueReadBack,
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
@@ -84,8 +84,16 @@ let commitUi = null;
 /** How long between reads of a running commit's record (a test shortens it). */
 let commitPollMs = 2000;
 export function setCommitPollMs(ms) { commitPollMs = ms; }
+/** What this page has read of the newest commit in the registry, once per database per page load. A reload or a second
+ *  tab starts with none of this: it is read again, from the same rows. `resumeFor` is the slug it was read for. */
+let resumed = null;
+let resumeFor = null;
+/** The one survey watch on this page: starting another stops the first. */
+let pageWatchStop = null;
+/** A finished commit is drawn in full for this long; after that it is one line with its steps behind a disclosure. */
+const RESUME_FULL_HOURS = 24;
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
+export function resetScopeUi() { resumed = null; resumeFor = null; if (pageWatchStop) { pageWatchStop(); pageWatchStop = null; } savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
 
 /** Whether the whole section is open. Decided once per pane visit (from the remembered
  *  choice, else from whether a scope is declared) and then only a click changes it, so a
@@ -648,6 +656,27 @@ function manifestTableHtml(preview, view) {
   </div>`;
 }
 
+/** How a commit read from the registry is shown on load: `full` (its steps, and a watch while it runs) when it is not
+ *  finished or finished within 24 h; `one_line` (a summary and "show steps") when it is older; `unfinished` when it was
+ *  requested hours ago and never finished (said, not watched). */
+export function resumeMode(latest) {
+  if (!latest || !latest.commit) return 'none';
+  if (!latest.terminal) return latest.stale_unfinished ? 'unfinished' : 'full';
+  return latest.age_hours != null && latest.age_hours > RESUME_FULL_HOURS ? 'one_line' : 'full';
+}
+
+/** `last commit <id> · <when> · <outcome>`, with the steps behind a disclosure, never the list by default. */
+export function lastCommitHtml(latest) {
+  const rec = latest.commit;
+  const when = String(rec.finished_at || rec.requested_at || '');
+  const nFailed = (rec.steps || []).filter((st) => st.state === 'failed').length;
+  const outcome = !latest.terminal ? 'did not finish'
+    : rec.state === 'failed' ? `failed${nFailed ? ` · ${nFailed} step${nFailed === 1 ? '' : 's'} failed` : ''}` : esc(rec.state || 'done');
+  return `<div data-scope-last-commit class="mt-s1 text-provenance text-ink-muted">
+    <span data-scope-last-commit-line>last commit ${esc(String(rec.id || '').slice(0, 8))} · ${esc(`${md(when)} ${hm(when)}`.trim())} · ${outcome}</span>
+    <details class="inline"><summary class="inline cursor-pointer text-accent-ink underline">show steps</summary>${commitStepsHtml(rec)}</details></div>`;
+}
+
 /** What pressing Catalog would do: the manifest table with the button at its top right, anything that
  *  blocks it listed directly under the button, the refresh box under that. */
 export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
@@ -672,6 +701,7 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
     </div>
     ${sent}
     ${commitStepsHtml(ui && ui.rec)}
+    ${ui && ui.last ? lastCommitHtml(ui.last) : ''}
     <div class="mt-s1 text-caveat"><button type="button" data-scope-read-back ${me ? '' : dis(signInReason)} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Read Egeria again</button></div>
     <div data-scope-commit-status class="mt-s1 text-provenance text-ink-muted"></div>
   </div>`;
@@ -716,6 +746,20 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     return;
   }
   if (stale(host, slug)) return;
+  // A reload or a second tab: nothing of the commit this page was watching survives in the tab, so the newest commit
+  // was read from the registry (renderCatalogueScope) and is shown from its rows. Never a write.
+  let resumedPoll = false;
+  if ((!commitUi || commitUi.slug !== slug) && resumed && resumed.slug === slug && resumed.latest && resumed.latest.commit) {
+    const latest = resumed.latest;
+    const mode = resumeMode(latest);
+    const rec = latest.commit;
+    if (mode === 'full') {
+      commitUi = { slug, id: rec.id, rec, polling: !latest.terminal, sig: stepSig(rec), resumed: true };
+      resumedPoll = !latest.terminal;
+    } else {
+      commitUi = { slug, id: rec.id, rec: null, polling: false, sig: stepSig(rec), last: latest, resumed: true };
+    }
+  }
   host.innerHTML = commitPanelHtml(preview, me, commitUi && commitUi.slug === slug ? commitUi : null, declared, getView());
   const say = (msg, warn = false) => {
     const e = host.querySelector('[data-scope-commit-status]');
@@ -784,13 +828,17 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
         if (stale(host, slug) || !surveyOpen(commitUi && commitUi.rec)) { stopWatch && stopWatch(); stopWatch = null; return; }
         checkSurvey(false);
       }, SURVEY_CHECK_S * 1000);
-      stopWatch = () => { stopMin(); stopPoll(); };
+      const mine = () => { stopMin(); stopPoll(); };
+      if (pageWatchStop) pageWatchStop();               // never more than one watch on a page
+      pageWatchStop = mine;
+      stopWatch = () => { mine(); if (pageWatchStop === mine) pageWatchStop = null; };
     }
     void el1;
   }
   bindCheckAgain();
   const poll = async () => {
     if (stale(host, slug) || !commitUi || commitUi.slug !== slug) return;
+    if (globalThis.document && globalThis.document.hidden) { setTimeout(poll, commitPollMs); return; }   // a hidden page does not read
     let rec;
     try { rec = await getCatalogueCommitRecord(slug, commitUi.id); } catch (err) { say(`could not read the commit record: ${err.message}`, true); offerSignIn(err); return; }
     commitUi.rec = rec;
@@ -804,6 +852,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     await onSteps(rec);
     setTimeout(poll, commitPollMs);
   };
+  if (resumedPoll) setTimeout(poll, commitPollMs);        // a commit still running: follow it to its end
   const btn = host.querySelector('[data-scope-commit-btn]');
   if (btn) btn.addEventListener('click', async () => {
     const refreshNow = host.querySelector('[data-scope-refresh-now]').checked;
@@ -849,6 +898,11 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
     return;
   }
   if (stale(el, slug)) return;
+  if (resumeFor !== slug && (!commitUi || commitUi.slug !== slug)) {
+    resumeFor = slug;
+    try { resumed = { slug, latest: await getCatalogueLatestCommit(slug) }; } catch { resumed = null; }   // the page works without it
+    if (stale(el, slug)) return;
+  }
   try {
     paintScope(el, slug, status, view);
   } catch (err) {
@@ -861,6 +915,8 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
 function paintScope(el, slug, status, view) {
   const me = whoAmI();
   if (sectionOpen === null) sectionOpen = scopeStartsOpen(view, readScopePref(storage(), me, slug));
+  // A commit still running (or just finished) is what a reload must put in front of the person: open the section for it.
+  if (!sectionOpen && resumed && resumed.slug === slug && resumeMode(resumed.latest) === 'full') sectionOpen = true;
   el.innerHTML = scopeSectionHtml(view, me, status, sectionOpen);
   const fold = el.querySelector('[data-scope-collapse]');
   if (fold) fold.addEventListener('click', () => {

@@ -191,6 +191,8 @@ export const postCatalogueCommit = (slug, refreshNow = false) =>
   post(scopeUrl(slug, '/commit'), { refresh_now: !!refreshNow });
 export const getCatalogueCommitRecord = (slug, id) =>
   get(scopeUrl(slug, `/commits/${encodeURIComponent(id)}`));
+/** The newest commit for the database, read from the registry (a reload and a second tab see the same). Read-only. */
+export const getCatalogueLatestCommit = (slug) => get(scopeUrl(slug, '/commits/latest'));
 export const postCatalogueReadBack = (slug) => post(scopeUrl(slug, '/read-back'));
 
 /* ── Database servers (web/routes/db_servers.py) ────────────────────────
