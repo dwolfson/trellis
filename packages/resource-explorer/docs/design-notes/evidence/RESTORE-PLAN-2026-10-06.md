@@ -254,3 +254,25 @@ the only non-poll line is the SurveyReport 409 at 11:59:13. The proof rows say m
   with a 409 at 11:59:13. So a proof row said "published" for a publish that failed.
 - Net: three proof rows read as success for a press whose schemas were half-built, the report not published, and the tables
   not present. This is the "status words derive from proof rows that prove it" rule failing at the proof-writing side.
+
+## Curate backlog rules accepted by the architect (for the docs batch; not built)
+
+1. A proof row proves exactly one element, by GUID, and is written only after a read of that GUID returns what the row claims:
+   `target_attached` after reading the target relationship on that element; `elements_read_back` by the created schema's GUID
+   and its own Schema link, never by name; `report_published` only with the report's GUID from a successful create or a verified reuse.
+2. A proof row stores Egeria's full response sentence, never truncated. Any adoption after an error is its own row kind
+   (`create_error_adopted`) and the page shows it in the row's first sentence: "adopted after a create error · <Egeria's sentence>",
+   never "attached".
+3. After a create error, reuse of an existing element requires its DataSetContent link to the database and its ResourceConnection;
+   otherwise the row fails with "schema created without its connection · <Egeria's sentence>".
+4. Test: a fake whose create fails and whose name-read returns the old tree must yield zero success rows.
+5. Also logged: log every archive/delete call RE sends (GUID, type, flags, response) with a proof row per call; one resolver for
+   the survey step and the publish step that reads the proof row's GUID first and the name second ("created · previous element
+   archived" row when a rename forces a new element); an outbox drain must never retry an archive or delete row, only report it
+   (the 16:15 retry wrote only "already archived when read"; all 299 suffix timestamps are 16:03 or 16:04, so the retry added none).
+
+## Conclusion line
+
+Three success rows on a half-built press (`target_attached` after an adopted create error, `elements_read_back` from the old tree,
+`report_published` after a 409) are why the roll-forward looked better than it was. The rows were the status words' source, and the
+rows were wrong.
