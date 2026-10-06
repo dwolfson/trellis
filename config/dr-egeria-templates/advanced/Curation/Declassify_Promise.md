@@ -1,34 +1,14 @@
 ___
 
-## Link Action to Target
-> Links a governance action to an element that is a target of that action, giving the target a name that the governance service uses to identify it.
+## Declassify Promise
+> Remove the Promise classification from an element - typically because the promised resource has now been delivered. The Target Element is looked up with For Lineage = true, since a promised element is otherwise invisible.
 
-### Governance Action
+### Target Element
 >	**Input Required**: True
 
 >	**Attribute Type**: Reference Name
 
->	**Description**: The governance action to attach a target element to.
-
-
-### Element Id
->	**Input Required**: True
-
->	**Attribute Type**: Reference Name
-
->	**Description**: The unique identifier (qualified name or GUID) of the element being referenced.
-
->	**Alternative Labels**: Element Name; Member Id
-
-
-### Label
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: A label used to identify or categorise a relationship link.
-
->	**Alternative Labels**: Wire Label
+>	**Description**: Qualified name of the existing element being classified or linked.
 
 
 ### Journal Entry
@@ -37,22 +17,6 @@ ___
 >	**Attribute Type**: Simple
 
 >	**Description**: A text entry into a journal.
-
-
-### Description
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: A description.
-
-
-### Action Target Name
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The name an element is given when it is passed as an action target to a governance service.
 
 
 ### Effective From
@@ -117,24 +81,6 @@ ___
 >	**Attribute Type**: Simple
 
 >	**Description**: A user provided or system generated request id for a conversation.
-
-
-### Anchor Scope IDs
->	**Input Required**: False
-
->	**Attribute Type**: Reference Name List
-
->	**Description**: A list of IDs that are anchor scopes for this element.
-
-
-### Make Anchor
->	**Input Required**: False
-
->	**Attribute Type**: Bool
-
->	**Description**: Is the element at end2 an anchor to end1?
-
->	**Default Value**: false
 
 
 ___
