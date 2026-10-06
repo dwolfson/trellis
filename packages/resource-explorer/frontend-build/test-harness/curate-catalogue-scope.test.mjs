@@ -618,8 +618,8 @@ test('the STATE column is fully present and the tree scrolls sideways inside its
 test('select all schemas ticks every schema row, and the bulk bar counts them', async () => {
   const { document, window } = await setUp(baseView());
   const bar = document.querySelector('[data-scope-bulk]');
-  assert.match(flat(bar), /select all schemas/);
-  assert.match(flat(bar), /0 of 3 selected/);
+  assert.match(flat(bar), /select all shown/);
+  assert.match(flat(bar), /0 of 3 schemas/);
   assert.ok(document.querySelector('[data-scope-bulk-act="catalogue"]').disabled, 'nothing selected: nothing to apply');
   const all = document.querySelector('[data-scope-all-box]');
   all.checked = true;
@@ -627,9 +627,9 @@ test('select all schemas ticks every schema row, and the bulk bar counts them', 
   const boxes = [...document.querySelectorAll('[data-scope-select]')];
   assert.equal(boxes.length, 3);
   assert.ok(boxes.every((b) => b.checked));
-  assert.match(flat(document.querySelector('[data-scope-bulk]')), /3 of 3 selected/);
+  assert.match(flat(document.querySelector('[data-scope-bulk]')), /3 of 3 schemas/);
   assert.equal(document.querySelector('[data-scope-bulk-act="leave_out"]').disabled, false);
-  assert.equal(row(document, 'table:sales.orders'), null, 'tables carry no tick (schema rows only)');
+  assert.equal(row(document, 'table:sales.orders'), null, 'tables are collapsed: no table row (and no table tick) is drawn');
 });
 
 test('catalogue selected: one POST naming the ticked schemas, and the status is derived from the re-read', async () => {
@@ -639,14 +639,14 @@ test('catalogue selected: one POST naming the ticked schemas, and the status is 
     b.checked = true;
     b.dispatchEvent(new window.Event('change', { bubbles: true }));
   }
-  assert.match(flat(document.querySelector('[data-scope-selected-count]')), /2 of 3 selected/);
+  assert.match(flat(document.querySelector('[data-scope-selected-count]')), /2 of 3 schemas/);
   document.querySelector('[data-scope-bulk-act="catalogue"]').click();
   await wait();
   const [c] = calls(server, 'POST', '/nodes');
   assert.deepEqual(c.body, { nodes: [{ schema_name: 'sales', table_name: '' }, { schema_name: 'archive', table_name: '' }], choice: 'catalogue', all_schemas: false });
   assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas now set to catalogue by me$/);
   assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalogue · set by me/);
-  assert.match(flat(document.querySelector('[data-scope-selected-count]')), /0 of 3 selected/, 'the selection is spent');
+  assert.match(flat(document.querySelector('[data-scope-selected-count]')), /0 of 3 schemas/, 'the selection is spent');
 });
 
 test('leave out selected and clear choice send their own choice', async () => {
@@ -660,7 +660,7 @@ test('leave out selected and clear choice send their own choice', async () => {
   await wait();
   const posts = calls(server, 'POST', '/nodes');
   assert.deepEqual(posts.map((p) => p.body.choice), ['leave_out', '']);
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now have no choice in the re-read scope$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now has no choice in the re-read scope$/);
 });
 
 test('catalogue all N schemas: one click, one POST asking for all of them, "3 schemas now set to catalogue by me"', async () => {

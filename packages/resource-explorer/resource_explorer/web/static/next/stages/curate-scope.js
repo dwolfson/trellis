@@ -44,8 +44,15 @@ const num = (n) => Number(n).toLocaleString('en-US');
 
 /** Which schemas are expanded survives a redraw (a write redraws the tree). */
 const openSchemas = new Set();
-/** Which schema rows are ticked for a bulk choice (cleared after every write). */
+/** Which schema rows are ticked for a bulk choice (spent when a bulk action completes). */
 const selected = new Set();
+/** Which table rows are ticked, as `schema` + TAB + `table`. */
+const selectedTables = new Set();
+const tkey = (schema, tbl) => `${schema}\t${tbl}`;
+/** The name filter over schemas and tables; it survives a redraw. */
+let filterText = '';
+/** A keystroke redraws the tree this long after the last one. */
+const FILTER_DEBOUNCE_MS = 150;
 let openFor = '';
 /** The last commit pressed on this pane, kept so its steps survive the re-draw that follows it. */
 let commitUi = null;
@@ -53,7 +60,7 @@ let commitUi = null;
 let commitPollMs = 2000;
 export function setCommitPollMs(ms) { commitPollMs = ms; }
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { openSchemas.clear(); selected.clear(); openFor = ''; sectionOpen = null; commitUi = null; }
+export function resetScopeUi() { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
 
 /** Whether the whole section is open. Decided once per pane visit (from the remembered
  *  choice, else from whether a scope is declared) and then only a click changes it, so a
@@ -283,19 +290,20 @@ function sizeCell(node) {
 
 /* Column widths, shared by the header, rows and the column lines so they stay aligned.
  * Written out as literal classes (Tailwind scans this file; it cannot see a built string). */
-function rowHtml(node, me, depth, kindWord, commit) {
+function rowHtml(node, me, depth, kindWord, commit, open = false) {
   const isSchema = node.kind === 'schema';
   const key = isSchema ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
   const toggle = isSchema
-    ? `<button type="button" data-scope-toggle="${esc(node.name)}" aria-expanded="${openSchemas.has(node.name) ? 'true' : 'false'}"
-        class="cursor-pointer bg-transparent p-0 text-ink-muted">${openSchemas.has(node.name) ? '▾' : '▸'}</button> ` : '';
+    ? `<button type="button" data-scope-toggle="${esc(node.name)}" aria-expanded="${open ? 'true' : 'false'}"
+        class="cursor-pointer bg-transparent p-0 text-ink-muted">${open ? '▾' : '▸'}</button> ` : '';
   const nameTail = isSchema
     ? (node.table_count == null ? ' <span class="text-ink-muted">· tables not established</span>'
       : ` <span class="text-ink-muted" data-scope-table-count>· ${esc(String(node.table_count))} table${node.table_count === 1 ? '' : 's'}</span>`)
     : ` <span class="text-ink-muted" data-scope-kind>· ${esc(kindWord)}</span>`;
   const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
   const pick = isSchema
-    ? `<input type="checkbox" data-scope-select="${esc(node.name)}" aria-label="select schema ${esc(node.name)}" ${selected.has(node.name) ? 'checked' : ''} ${dis}>` : '';
+    ? `<input type="checkbox" data-scope-select="${esc(node.name)}" aria-label="select schema ${esc(node.name)}" ${selected.has(node.name) ? 'checked' : ''} ${dis}>`
+    : `<input type="checkbox" data-scope-select-schema="${esc(node.schema)}" data-scope-select-table="${esc(node.name)}" aria-label="select table ${esc(node.schema)}.${esc(node.name)}" ${selectedTables.has(tkey(node.schema, node.name)) ? 'checked' : ''} ${dis}>`;
   const srcLine = nodeSourceLine(node);
   const src = srcLine ? `<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>` : '';
   return `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
@@ -324,6 +332,27 @@ function columnRowsHtml(table) {
 
 const TABLE_KIND = { 'BASE TABLE': 'table', VIEW: 'view', 'MATERIALIZED VIEW': 'matview', FOREIGN: 'foreign table' };
 
+/** What the tree shows: every schema, or (with a filter) the schemas that match by name or hold a
+ *  matching table, expanded, with the matching tables (all of them when the schema's own name matches).
+ *  `shown` / `total` count schema and table rows for the "showing X of Y" line. Select all and clear
+ *  act on `rows`: the rows actually drawn. */
+export function treePlan(view) {
+  const f = filterText.trim().toLowerCase();
+  const rows = [];
+  let shown = 0; let total = 0;
+  for (const s of view.schemas || []) {
+    const tabs = s.tables || [];
+    total += 1 + tabs.length;
+    const selfHit = !f || s.name.toLowerCase().includes(f);
+    const hits = !f || selfHit ? tabs : tabs.filter((t) => t.name.toLowerCase().includes(f));
+    if (f && !selfHit && !hits.length) continue;
+    shown += 1 + hits.length;
+    const open = f ? true : openSchemas.has(s.name);
+    rows.push({ s, tables: hits, open });
+  }
+  return { rows, shown, total };
+}
+
 export function treeHtml(view, me) {
   if (!(view.schemas || []).length && !view.system) {
     return `<div class="text-caveat text-ink-muted">No stored schema rows yet: run a survey first. Nothing to scope until Egeria's survey or RE's has listed the schemas.</div>`;
@@ -335,12 +364,12 @@ export function treeHtml(view, me) {
     <div class="w-[14ch] shrink-0 break-words" data-scope-activity-head title="Activity: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">Activity</div>
     <div class="w-[14ch] shrink-0 break-words" data-scope-classes-head title="Data classes found in the columns">Classification</div>
     <div class="w-[18ch] shrink-0 break-words" data-scope-state-head title="State in Egeria">In Egeria</div></div>`;
-  const body = (view.schemas || []).map((s) => {
-    const open = openSchemas.has(s.name);
-    const tables = open ? s.tables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
+  const plan = treePlan(view);
+  const body = plan.rows.map(({ s, tables: shownTables, open }) => {
+    const tables = open ? shownTables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
       || '<div class="ml-s3 text-caveat text-ink-muted">No tables.</div>' : '';
-    return `<div data-scope-schema-block="${esc(s.name)}">${rowHtml(s, me, 0, '', view.commit)}${tables}</div>`;
-  }).join('');
+    return `<div data-scope-schema-block="${esc(s.name)}">${rowHtml(s, me, 0, '', view.commit, open)}${tables}</div>`;
+  }).join('') || `<div data-scope-filter-empty class="py-s1 text-caveat text-ink-muted">Nothing matches “${esc(filterText.trim())}”.</div>`;
   const sys = view.system
     ? `<div data-scope-system class="mt-s1 text-caveat text-ink-muted">${esc(String(view.system.folded))} system schemas folded · ${esc(view.system.text)}</div>` : '';
   // A fixed floor (not max-content, which let one long sentence widen every row): at about
@@ -349,18 +378,42 @@ export function treeHtml(view, me) {
   return `<div class="min-w-[52rem]">${head + body + sys}</div>`;
 }
 
+/** The rows select all and clear act on: the schemas and tables the tree is drawing now. */
+function visibleRows(view) {
+  const rows = treePlan(view).rows;
+  return {
+    schemas: rows.map((r) => r.s.name),
+    tables: rows.flatMap((r) => (r.open ? r.tables : []).map((t) => ({ schema: r.s.name, table: t.name }))),
+  };
+}
+const countTables = (view) => (view.schemas || []).reduce((a, s) => a + (s.tables || []).length, 0);
+
+/** "showing X of Y": the rows (schemas and tables) that match the filter, of all of them. */
+export function filterBarHtml(view) {
+  const p = treePlan(view);
+  return `<div data-scope-filterbar class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat text-ink">
+    <label class="inline-flex items-baseline gap-[4px]">filter
+      <input type="search" data-scope-filter value="${esc(filterText)}" placeholder="schema or table name" autocomplete="off" class="rounded-sm border border-rule bg-transparent px-[4px] py-[1px] font-mono"></label>
+    <span data-scope-filter-count class="text-ink-muted" title="schema and table rows that match the filter, of all rows">showing ${p.shown} of ${p.total}</span></div>`;
+}
+
 /** The tick-everything box and the bulk bar above the tree. */
 export function bulkBarHtml(view, me) {
   const n = (view.schemas || []).length;
   if (!n) return '';
   const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
-  const none = selected.size === 0;
-  const need = (on) => (!me ? `disabled title="${esc(signInReason)}"` : (on ? '' : 'disabled title="select at least one schema first"'));
+  const none = selected.size === 0 && selectedTables.size === 0;
+  const vis = visibleRows(view);
+  const nVis = vis.schemas.length + vis.tables.length;
+  const nSelVis = vis.schemas.filter((x) => selected.has(x)).length
+    + vis.tables.filter((t) => selectedTables.has(tkey(t.schema, t.table))).length;
+  const need = (on) => (!me ? `disabled title="${esc(signInReason)}"` : (on ? '' : 'disabled title="select at least one schema or table first"'));
   const bulk = (act, label) => `<button type="button" data-scope-bulk-act="${act}" ${need(!none)} class="${me && !none ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">${label}</button>`;
   return `<div data-scope-bulk class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat text-ink">
-    <label class="inline-flex cursor-pointer items-baseline gap-[4px]"><input type="checkbox" data-scope-all-box ${selected.size === n ? 'checked' : ''} ${dis}> select all schemas</label>
-    <span data-scope-selected-count class="text-ink-muted">${selected.size} of ${n} selected</span>
-    ${bulk('catalogue', 'catalogue selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'clear choice')}
+    <label class="inline-flex cursor-pointer items-baseline gap-[4px]"><input type="checkbox" data-scope-all-box ${nVis && nSelVis === nVis ? 'checked' : ''} ${dis}> select all shown</label>
+    <button type="button" data-scope-clear-selection ${nSelVis ? '' : 'disabled'} class="${nSelVis ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">clear selection</button>
+    <span data-scope-selected-count class="text-ink-muted">${selected.size} of ${n} schemas · ${selectedTables.size} of ${countTables(view)} tables selected</span>
+    ${bulk('catalogue', 'catalog selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'clear choice')}
     <span class="text-ink-muted">|</span>
     <button type="button" data-scope-catalogue-all ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">catalogue all ${n} schemas</button></div>`;
 }
@@ -415,7 +468,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
     <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
     ${activitySummaryHtml(view)}
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
-    ${bulkBarHtml(view, me)}
+    ${(view.schemas || []).length ? filterBarHtml(view) : ''}${bulkBarHtml(view, me)}
     <div data-scope-tree class="min-w-0 max-w-full overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
     <div data-scope-commit class="mt-s2"></div>
     </div>
@@ -552,7 +605,7 @@ async function loadCommitPanel(el, slug, me, redraw) {
 
 export async function renderCatalogueScope(el, slug, status = '') {
   if (!el) throw new Error('Catalogue scope host missing');
-  if (openFor !== slug) { openSchemas.clear(); selected.clear(); openFor = slug; sectionOpen = null; }
+  if (openFor !== slug) { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = slug; sectionOpen = null; }
   let view;
   try {
     view = await getCatalogueScope(slug);
@@ -593,8 +646,9 @@ export async function renderCatalogueScope(el, slug, status = '') {
   const failure = (err, what) => (err.status === 401 ? signInReason : `${what} failed: ${err.message}`);
 
   // After a write the words come from the re-read view, not from the click.
-  const afterWrite = async (write, what, verify) => {
+  const afterWrite = async (write, what, verify, spent = false) => {
     try { await write(); } catch (err) { say(failure(err, what), true); return; }
+    if (spent) { selected.clear(); selectedTables.clear(); }   // a finished bulk action spends the selection
     let again;
     try { again = await getCatalogueScope(slug); }
     catch (err) { say(`${what}: written, but the scope could not be re-read: ${err.message}`, true); return; }
@@ -602,70 +656,115 @@ export async function renderCatalogueScope(el, slug, status = '') {
   };
 
   const offered = (view.schemas || []).map((x) => x.name);
+  // keep only ticks that still name a row in this view
+  [...selected].forEach((n) => { if (!offered.includes(n)) selected.delete(n); });
+  [...selectedTables].forEach((k) => { const [sn, tn] = k.split('\t'); if (!find(view, sn, tn)) selectedTables.delete(k); });
+  const treeHost = () => el.querySelector('[data-scope-tree]');
+  const repaintBar = () => {
+    const bar = el.querySelector('[data-scope-bulk]');
+    if (bar) { bar.outerHTML = bulkBarHtml(view, me); bindBulk(); }
+  };
+  const syncChecks = () => {
+    el.querySelectorAll('[data-scope-select]').forEach((b) => { b.checked = selected.has(b.dataset.scopeSelect); });
+    el.querySelectorAll('[data-scope-select-table]').forEach((b) => {
+      b.checked = selectedTables.has(tkey(b.dataset.scopeSelectSchema, b.dataset.scopeSelectTable));
+    });
+  };
+  const redrawTree = () => {
+    const host = treeHost();
+    if (host) host.innerHTML = treeHtml(view, me);
+    const c = el.querySelector('[data-scope-filter-count]');
+    if (c) c.textContent = `showing ${treePlan(view).shown} of ${treePlan(view).total}`;
+    bindTree();
+    repaintBar();
+  };
   /** The bulk bar and the row ticks are re-drawn from `selected`, never from the DOM. */
   const bindBulk = () => {
     const bar = el.querySelector('[data-scope-bulk]');
-    if (bar) {
-      const all = bar.querySelector('[data-scope-all-box]');
-      if (all) {
-        all.indeterminate = selected.size > 0 && selected.size < offered.length;
-        all.addEventListener('change', () => {
-          selected.clear();
-          if (all.checked) offered.forEach((n) => selected.add(n));
-          refreshBulk();
-        });
-      }
-      bar.querySelectorAll('[data-scope-bulk-act]').forEach((b) => b.addEventListener('click', () => {
-        const act = b.dataset.scopeBulkAct;
-        runBulk([...selected].filter((n) => offered.includes(n)), act === 'clear' ? '' : act, false);
-      }));
-      const every = bar.querySelector('[data-scope-catalogue-all]');
-      if (every) every.addEventListener('click', () => runBulk(offered.slice(), 'catalogue', true));
-    }
-  };
-  const refreshBulk = () => {
-    const bar = el.querySelector('[data-scope-bulk]');
-    if (bar) bar.outerHTML = bulkBarHtml(view, me);
-    el.querySelector('[data-scope-tree]').innerHTML = treeHtml(view, me);
-    bindBulk();
-    bindTree();
-  };
-  /** Bulk choice: one write, then the sentence comes from the re-read scope. */
-  const runBulk = (names, choice, everySchema) => {
-    if (!names.length) { say('select at least one schema first', true); return; }
-    selected.clear();
-    const label = choice ? words(choice) : 'no choice';
-    afterWrite(() => setCatalogueNodes(slug, names.map((n) => ({ schema: n })), choice, everySchema),
-      'set the choices', (v) => {
-        const got = names.map((n) => find(v, n, '')).filter(Boolean);
-        const ok = got.filter((n) => (n.explicit ? n.explicit.choice : '') === choice);
-        const by = [...new Set(ok.map((n) => (n.explicit ? n.explicit.by : '')).filter(Boolean))];
-        const differ = got.reduce((acc, n) => acc + (n.tables || []).filter((t) => t.differs_from_schema).length, 0);
-        const tail = differ
-          ? (differ === 1 ? ' · 1 table keeps its own choice and differs from its schema'
-            : ` · ${differ} tables keep their own choice and differ from their schema`) : '';
-        if (ok.length !== names.length) {
-          return `the write returned, but the re-read scope shows only ${ok.length} of ${names.length} schemas set to ${label}`;
-        }
-        return choice
-          ? `${ok.length} schema${ok.length === 1 ? '' : 's'} now set to ${label} by ${by.join(', ')}${tail}`
-          : `${ok.length} schema${ok.length === 1 ? '' : 's'} now have no choice in the re-read scope${tail}`;
+    if (!bar) return;
+    const all = bar.querySelector('[data-scope-all-box]');
+    if (all) {
+      const vis = visibleRows(view);
+      const nSel = vis.schemas.filter((x) => selected.has(x)).length
+        + vis.tables.filter((t) => selectedTables.has(tkey(t.schema, t.table))).length;
+      all.indeterminate = nSel > 0 && nSel < vis.schemas.length + vis.tables.length;
+      all.addEventListener('change', () => {
+        const v = visibleRows(view);
+        if (all.checked) { v.schemas.forEach((n) => selected.add(n)); v.tables.forEach((t) => selectedTables.add(tkey(t.schema, t.table))); }
+        else { v.schemas.forEach((n) => selected.delete(n)); v.tables.forEach((t) => selectedTables.delete(tkey(t.schema, t.table))); }
+        syncChecks(); repaintBar();
       });
+    }
+    const clr = bar.querySelector('[data-scope-clear-selection]');
+    if (clr) clr.addEventListener('click', () => {
+      const v = visibleRows(view);
+      v.schemas.forEach((n) => selected.delete(n));
+      v.tables.forEach((t) => selectedTables.delete(tkey(t.schema, t.table)));
+      syncChecks(); repaintBar();
+    });
+    bar.querySelectorAll('[data-scope-bulk-act]').forEach((b) => b.addEventListener('click', () => {
+      const act = b.dataset.scopeBulkAct;
+      runBulk(act === 'clear' ? '' : act, false);
+    }));
+    const every = bar.querySelector('[data-scope-catalogue-all]');
+    if (every) every.addEventListener('click', () => runBulk('catalogue', true));
+  };
+  /** Bulk choice over the whole selection: the ticked schemas in one bulk write, then each ticked
+   *  table through the per-table node route (each signed and recorded by the server), then ONE
+   *  re-read; the sentence comes from that re-read. */
+  const runBulk = (choice, everySchema) => {
+    const names = everySchema ? offered.slice() : [...selected].filter((n) => offered.includes(n));
+    const tabs = everySchema ? [] : [...selectedTables].map((k) => { const [sn, tn] = k.split('\t'); return { schema: sn, table: tn }; })
+      .filter((t) => find(view, t.schema, t.table));
+    if (!names.length && !tabs.length) { say('select at least one schema or table first', true); return; }
+    const label = choice ? words(choice) : 'no choice';
+    const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    afterWrite(async () => {
+      if (names.length) await setCatalogueNodes(slug, names.map((n) => ({ schema: n })), choice, everySchema);
+      for (const t of tabs) {
+        if (choice) await setCatalogueNode(slug, t.schema, t.table, choice);
+        else await clearCatalogueNode(slug, t.schema, t.table);
+      }
+    }, 'set the choices', (v) => {
+      const mine = (n) => (n.explicit ? n.explicit.choice : '') === choice;
+      const got = names.map((n) => find(v, n, '')).filter(Boolean);
+      const ok = got.filter(mine);
+      const tgot = tabs.map((t) => find(v, t.schema, t.table)).filter(Boolean);
+      const tok = tgot.filter(mine);
+      if (ok.length !== names.length || tok.length !== tabs.length) {
+        const bits = [names.length ? `${ok.length} of ${plural(names.length, 'schema')}` : '', tabs.length ? `${tok.length} of ${plural(tabs.length, 'table')}` : ''].filter(Boolean).join(' and ');
+        return `the write returned, but the re-read scope shows only ${bits} set to ${label}`;
+      }
+      const by = [...new Set([...ok, ...tok].map((n) => (n.explicit ? n.explicit.by : '')).filter(Boolean))];
+      const differ = got.reduce((acc, n) => acc + (n.tables || []).filter((t) => t.differs_from_schema).length, 0);
+      const tail = differ
+        ? (differ === 1 ? ' · 1 table keeps its own choice and differs from its schema'
+          : ` · ${differ} tables keep their own choice and differ from their schema`) : '';
+      const what = [names.length ? plural(names.length, 'schema') : '', tabs.length ? plural(tabs.length, 'table') : ''].filter(Boolean).join(' and ');
+      return choice
+        ? `${what} now set to ${label} by ${by.join(', ')}${tail}`
+        : `${what} now ${names.length + tabs.length === 1 ? 'has' : 'have'} no choice in the re-read scope${tail}`;
+    }, true);
   };
 
   const bindTree = () => {
-    el.querySelectorAll('[data-scope-select]').forEach((box) => box.addEventListener('change', () => {
+    const host = treeHost();
+    if (!host) return;
+    host.querySelectorAll('[data-scope-select]').forEach((box) => box.addEventListener('change', () => {
       if (box.checked) selected.add(box.dataset.scopeSelect); else selected.delete(box.dataset.scopeSelect);
-      const bar = el.querySelector('[data-scope-bulk]');
-      if (bar) { bar.outerHTML = bulkBarHtml(view, me); bindBulk(); }
+      repaintBar();
     }));
-    el.querySelectorAll('[data-scope-toggle]').forEach((b) => b.addEventListener('click', () => {
+    host.querySelectorAll('[data-scope-select-table]').forEach((box) => box.addEventListener('change', () => {
+      const k = tkey(box.dataset.scopeSelectSchema, box.dataset.scopeSelectTable);
+      if (box.checked) selectedTables.add(k); else selectedTables.delete(k);
+      repaintBar();
+    }));
+    host.querySelectorAll('[data-scope-toggle]').forEach((b) => b.addEventListener('click', () => {
       const n = b.dataset.scopeToggle;
       if (openSchemas.has(n)) openSchemas.delete(n); else openSchemas.add(n);
-      el.querySelector('[data-scope-tree]').innerHTML = treeHtml(view, me);
-      bindTree();
+      redrawTree();
     }));
-    el.querySelectorAll('[data-scope-act]').forEach((b) => b.addEventListener('click', () => {
+    host.querySelectorAll('[data-scope-act]').forEach((b) => b.addEventListener('click', () => {
       const { scopeAct: act, scopeSchema: schema, scopeTable: table, scopeChoice: choice } = b.dataset;
       const label = table ? `${schema}.${table}` : schema;
       const check = (want) => (v) => {
@@ -688,6 +787,15 @@ export async function renderCatalogueScope(el, slug, status = '') {
   };
   bindTree();
   bindBulk();
+  // The filter redraws only the tree (not the page, not this box), a beat after the last keystroke.
+  const fbox = el.querySelector('[data-scope-filter]');
+  if (fbox) {
+    let timer = null;
+    fbox.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { filterText = fbox.value; redrawTree(); }, FILTER_DEBOUNCE_MS);
+    });
+  }
   el.querySelectorAll('[data-scope-depth-radio]').forEach((r) => r.addEventListener('change', () => {
     const want = r.dataset.scopeDepthRadio;
     afterWrite(() => setCatalogueDepth(slug, want), 'choose the depth', (v) =>
