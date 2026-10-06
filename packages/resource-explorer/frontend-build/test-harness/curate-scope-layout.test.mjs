@@ -20,7 +20,7 @@ test('every header is a full word that may wrap, never a clipped stub', async ()
   const { document } = await setUp(baseView());
   const head = scopeEl(document).querySelector('[data-scope-tree-head]');
   const words = [...head.children].map((c) => flat(c)).filter(Boolean);
-  assert.deepEqual(words, ['choice', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
+  assert.deepEqual(words, ['Include in catalog?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
   for (const c of [...head.children].filter((x) => flat(x))) {
     assert.ok(c.classList.contains('break-words'), 'header cells wrap instead of clipping');
     assert.ok(!/\b(truncate|text-ellipsis|overflow-hidden)\b/.test(c.className), 'no clipping class');

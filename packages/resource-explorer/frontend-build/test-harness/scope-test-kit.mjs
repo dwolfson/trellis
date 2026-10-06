@@ -83,10 +83,12 @@ export function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/api/catalogue-scope/')) {
       if (method === 'POST' && u.endsWith('/commit')) {
+        if (!s.signedIn) return err(401, 'Sign in to catalog');
         if (s.holdCommit) await s.holdCommit;
-        return ok({ curation: { id: 'cafe0123', state: 'queued', author: 'me', steps: [] }, run_id: 'r0000001' });
+        return ok({ curation: s.record || { id: 'cafe0123', state: 'queued', author: 'me', steps: [] }, run_id: 'r0000001' });
       }
-      if (method === 'GET' && u.includes('/commits/')) return ok({ id: 'cafe0123', state: 'running', author: 'me', steps: [] });
+      if (method === 'GET' && u.includes('/commits/')) return ok(s.record || { id: 'cafe0123', state: 'running', author: 'me', steps: [] });
+      if (method === 'POST' && u.endsWith('/read-back')) { s.readBacks = (s.readBacks || 0) + 1; if (s.holdReadBack) await s.holdReadBack; return ok({ catalogued: 0, attached_waiting: 0 }); }
       if (method === 'PUT' && s.holdPut) await s.holdPut;
       if (method === 'POST' && u.endsWith('/nodes') && s.holdPut) await s.holdPut;
       if (method === 'PUT' && s.failPut) return err(500, s.failPut);

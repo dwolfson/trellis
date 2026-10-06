@@ -17,7 +17,7 @@ import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
 const wait = (ms = 250) => new Promise((r) => setTimeout(r, ms));
 const flat = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 /** The choice cell's words without its state mark and its transient 'saved'. */
-const words = (el) => { const c = el.cloneNode(true); c.querySelectorAll('[data-scope-mark-line], [data-scope-saved-note]').forEach((n) => n.remove()); return flat(c); };
+const words = (el) => { const c = el.cloneNode(true); c.querySelectorAll('[data-scope-selector], [data-scope-saved-note]').forEach((n) => n.remove()); return flat(c); };
 
 const node = (kind, name, over = {}) => ({
   kind, name, key: name, state: 'undecided', proposal: null, live_proposal: null, overridden: null,
@@ -327,7 +327,7 @@ test('a proposal row: the proposal glyph and word, its reason, confirm and the o
   const { document } = await setUp(withProposal());
   const r = row(document, 'schema:empty_one');
   assert.equal(words(r.querySelector('[data-scope-choice-cell]')),
-    '⏵ proposed: leave out · 0 tables, measured 10-02 confirm · catalog instead');
+    '⏵ proposed: leave out · 0 tables, measured 10-02 confirm · include instead');
   assert.equal(r.dataset.scopeEffective, '', 'an unconfirmed proposal is still undecided');
   assert.ok(r.querySelector('[aria-label="proposal"]'), 'the glyph carries the existing word');
 });
@@ -338,7 +338,7 @@ test('confirm POSTs the node and the row reads confirmed from the re-read', asyn
   await wait();
   const [c] = calls(server, 'POST', '/node/confirm');
   assert.deepEqual(c.body, { schema_name: 'empty_one', table_name: '' });
-  assert.match(words(row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]')), /^leave out · confirmed by me 10-04/);
+  assert.match(words(row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]')), /leave out · confirmed by me 10-04/);
   assert.match(flat(document.querySelector('[data-scope-status]')), /empty_one: leave out is in the re-read scope/);
 });
 
@@ -348,7 +348,7 @@ test('override POSTs the node; the row shows the other choice and the proposal r
   await wait();
   assert.equal(calls(server, 'POST', '/node/override').length, 1);
   const cell = row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]');
-  assert.match(words(cell), /^catalog · overridden by me 10-04/);
+  assert.match(words(cell), /include · overridden by me 10-04/);
   const struck = cell.querySelector('[data-scope-struck]');
   assert.ok(struck && struck.className.includes('line-through'));
   assert.match(flat(struck), /proposed: leave out · 0 tables, measured 10-02/);
@@ -364,7 +364,7 @@ test('survey now disagrees: both values and the survey date, and the choice does
   const cell = row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]');
   assert.match(flat(cell.querySelector('[data-scope-disagrees]')),
     /survey now disagrees: Confirmed leave out on 10-04, when it had 0 tables; it now has 4 \(survey of 10-09\)\. The choice has not changed\./);
-  assert.match(words(cell), /^leave out/);
+  assert.match(words(cell), /leave out · set by dwolfson 10-04/);
   assert.ok(cell.querySelector('[data-scope-act="clear"]'), 'offers to reconsider');
 });
 
@@ -385,11 +385,11 @@ test('inherited and differing tables are drawn differently', async () => {
   const { document } = await setUp(v);
   document.querySelector('[data-scope-toggle="sales"]').click();
   const inherited = row(document, 'table:sales.orders').querySelector('[data-scope-state-word="inherited"]');
-  assert.equal(flat(inherited), 'catalog (from schema)');
+  assert.match(flat(inherited), /^\(schema\) details include · from its schema$/);
   assert.ok(inherited.className.includes('text-ink-muted'), 'muted ink');
   const differs = row(document, 'table:sales.customers').querySelector('[data-scope-choice-cell]');
   assert.match(flat(differs), /leave out · set by dwolfson 10-04 · differs from its schema/);
-  assert.ok(!differs.querySelector('[data-scope-state-word]').className.includes('text-ink-muted'), 'in ink');
+  assert.ok(differs.querySelector('[data-scope-tag="differs"]'), 'a bordered tag, not a sentence');
 });
 
 /* ── no conflicts: a table name chosen two ways is not something to resolve ───── */
@@ -497,7 +497,7 @@ test('a 401 from a write says to sign in, in words', async () => {
   server.signedIn = false;
   row(document, 'schema:sales').querySelector('[data-scope-act="set"][data-scope-choice="leave_out"]').click();
   await wait();
-  assert.match(flat(document.querySelector('[data-scope-status]')), /sign in to change what gets cataloged/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /your session expired · sign in again/);
 });
 
 /* ── slice A2: sources on every row, activity, select-all and bulk, layout ── */
@@ -547,7 +547,7 @@ test('activity is a word with its window: active, dormant, or can\'t tell with t
 test('columns, left to right: choice, Schema / table, Rows, Size, Activity, Classification, In Egeria (full names in the titles)', async () => {
   const { document } = await setUp(baseView());
   const headEls = [...document.querySelector('[data-scope-tree-head]').children].filter((c) => flat(c));
-  assert.deepEqual(headEls.map(flat), ['choice', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
+  assert.deepEqual(headEls.map(flat), ['Include in catalog?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
   // every shortened header keeps its meaning on hover
   const byText = Object.fromEntries(headEls.map((c) => [flat(c), c.title]));
   assert.match(byText.Rows, /Row count/);
@@ -649,8 +649,8 @@ test('catalog selected: one POST naming the ticked schemas, and the status is de
   await wait();
   const [c] = calls(server, 'POST', '/nodes');
   assert.deepEqual(c.body, { nodes: [{ schema_name: 'sales', table_name: '' }, { schema_name: 'archive', table_name: '' }], choice: 'catalogue', all_schemas: false });
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas now set to catalog by me$/);
-  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalog · set by me/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas now set to include by me$/);
+  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /include · set by me/);
   assert.match(flat(document.querySelector('[data-scope-selected-count]')), /0 of 3 schemas/, 'the selection is spent');
 });
 
@@ -668,16 +668,16 @@ test('leave out selected and clear choice send their own choice', async () => {
   assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now has no choice in the re-read scope$/);
 });
 
-test('catalog all N schemas: one click, one POST asking for all of them, "3 schemas now set to catalog by me"', async () => {
+test('include all N schemas: one click, one POST asking for all of them, "3 schemas now set to include by me"', async () => {
   const { document, server } = await setUp(baseView());
   const btn = document.querySelector('[data-scope-catalogue-all]');
-  assert.equal(flat(btn), 'catalog all 3 schemas');
+  assert.equal(flat(btn), 'include all 3 schemas');
   btn.click();
   await wait();
   const [c] = calls(server, 'POST', '/nodes');
   assert.equal(c.body.all_schemas, true);
   assert.equal(c.body.choice, 'catalogue');
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^3 schemas now set to catalog by me$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^3 schemas now set to include by me$/);
 });
 
 test('bulk: a table with its own differing choice is reported from the re-read, not overwritten', async () => {
@@ -691,7 +691,7 @@ test('bulk: a table with its own differing choice is reported from the re-read, 
   await wait();
   assert.match(flat(document.querySelector('[data-scope-status]')), /^1 schema now set to leave out by me · 1 table keeps its own choice and differs from its schema$/);
   document.querySelector('[data-scope-toggle="sales"]').click();
-  assert.match(flat(row(document, 'table:sales.orders').querySelector('[data-scope-choice-cell]')), /catalog · set by dwolfson 10-04 · differs from its schema/);
+  assert.match(flat(row(document, 'table:sales.orders').querySelector('[data-scope-choice-cell]')), /include · set by dwolfson 10-04 · differs from its schema/);
 });
 
 test('bulk, signed out: every bulk control is disabled with the reason and nothing is sent', async () => {
@@ -713,7 +713,7 @@ test('KNOWN-NEGATIVE: a bulk write the server drops is not reported as done', as
   await wait();
   assert.equal(calls(server, 'POST', '/nodes').length, 1);
   const s = flat(document.querySelector('[data-scope-status]'));
-  assert.match(s, /the write returned, but the re-read scope shows only 0 of 3 schemas set to catalog/);
+  assert.match(s, /the write returned, but the re-read scope shows only 0 of 3 schemas set to include/);
   assert.doesNotMatch(s, /now set to/);
 });
 

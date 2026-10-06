@@ -38,7 +38,7 @@ import {
 
 const whoAmI = () =>
   (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
-const words = (choice) => (choice === 'leave_out' ? 'leave out' : choice === 'catalogue' ? 'catalog' : '');
+const words = (choice) => (choice === 'leave_out' ? 'leave out' : choice === 'catalogue' ? 'include' : '');
 const opposite = (choice) => (choice === 'leave_out' ? 'catalogue' : 'leave_out');
 const signInReason = 'sign in to change what gets cataloged: every choice needs an author';
 const num = (n) => Number(n).toLocaleString('en-US');
@@ -65,20 +65,19 @@ const flashRows = new Set();
 let flashMs = 1500;
 export function setFlashMs(ms) { flashMs = ms; }
 const rowKeyOf = (node) => (node.kind === 'schema' ? `schema:${node.name}` : `table:${node.schema}.${node.name}`);
-/** The state mark: shape and place, never colour alone and never an accent (accent is for controls). */
-const MARKS = {
-  catalogue: { glyph: '●', word: 'catalog', cls: 'text-ink' },
-  leave_out: { glyph: '⊘', word: 'left out', cls: 'text-ink-muted' },
-  none: { glyph: '○', word: 'undecided', cls: 'text-ink-muted' },
+/** A node is "lowered" (its whole row in muted ink) when it is not included: left out by the
+ *  person, or deleted in Egeria. Nothing else lowers a row, and nothing but superseded text is struck. */
+const isLowered = (node, commit) => {
+  if (node.effective === 'leave_out') return true;
+  const st = commit && (node.kind === 'schema' ? (commit.schemas || {})[node.name] : (commit.tables || {})[`${node.schema}.${node.name}`]);
+  return !!(st && st.state === 'deleted');
 };
-const STRIPS = ['border-l-ink', 'border-l-rule-strong', 'border-l-transparent'];
-const tone = (eff) => (eff === 'catalogue' ? 'border-l-ink' : eff === 'leave_out' ? 'border-l-rule-strong' : 'border-l-transparent');
-function markHtml(node) {
-  const k = node.effective === 'catalogue' || node.effective === 'leave_out' ? node.effective : 'none';
-  const m = MARKS[k];
-  const badge = k === 'leave_out' ? ' <span data-scope-badge class="text-provenance font-semibold text-ink-muted">left out</span>' : '';
-  return `<div data-scope-mark-line><span data-scope-mark="${k}" role="img" aria-label="${m.word}" title="${m.word}" class="inline-block w-[1.4ch] font-semibold ${k === 'catalogue' ? 'text-ink' : 'text-ink-muted'}">${m.glyph}</span>${badge}</div>`;
-}
+/** A left-edge rule means "this row needs you": the survey disagrees with a choice, or Egeria failed. */
+const needsYou = (node, commit) => {
+  if (node.state === 'disagrees') return true;
+  const st = commit && (node.kind === 'schema' ? (commit.schemas || {})[node.name] : (commit.tables || {})[`${node.schema}.${node.name}`]);
+  return !!(st && st.state === 'failed');
+};
 export function setSavedNoteMs(ms) { savedNoteMs = ms; }
 /** The last commit pressed on this pane, kept so its steps survive the re-draw that follows it. */
 let commitUi = null;
@@ -86,7 +85,7 @@ let commitUi = null;
 let commitPollMs = 2000;
 export function setCommitPollMs(ms) { commitPollMs = ms; }
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { savedNotes.clear(); openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
+export function resetScopeUi() { savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
 
 /** Whether the whole section is open. Decided once per pane visit (from the remembered
  *  choice, else from whether a scope is declared) and then only a click changes it, so a
@@ -132,18 +131,23 @@ export function scopeHeaderText(view) {
 
 /* ── one row ─────────────────────────────────────────────────────────── */
 
+/** The two-part selector under "Include in catalog?": the chosen segment filled in ink, the other
+ *  outlined, "×" back to undecided. A segment is an answer, not a verb; "catalog" is on the commit
+ *  button alone. Dimmed and disabled while the row's write is out. */
 function setterButtons(node, me) {
   const busy = pendingRows.has(rowKeyOf(node));
+  const off = !me || busy;
   const dis = me ? (busy ? 'disabled aria-busy="true"' : '') : `disabled title="${esc(signInReason)}"`;
   const sch = esc(node.kind === 'schema' ? node.name : node.schema);
   const tbl = node.kind === 'table' ? esc(node.name) : '';
   const own = node.explicit ? node.explicit.choice : '';
-  const btn = (choice, label) => `<button type="button" data-scope-act="set" data-scope-choice="${choice}"
-    data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis} ${own === choice ? 'aria-pressed="true"' : 'aria-pressed="false"'}
-    class="${me && !busy ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} ${busy && own === choice ? 'font-semibold' : ''} bg-transparent p-0">${label}</button>`;
-  const clear = node.explicit ? ` <button type="button" data-scope-act="clear" data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis}
-    class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">${node.state === 'disagrees' ? 'reconsider' : 'clear'}</button>` : '';
-  return `<span class="text-provenance">${btn('catalogue', 'catalog')} · ${btn('leave_out', 'leave out')}${clear}</span>`;
+  const seg = (choice, label) => `<button type="button" data-scope-act="set" data-scope-choice="${choice}"
+    data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis} aria-pressed="${own === choice ? 'true' : 'false'}"
+    class="${own === choice ? 'bg-ink text-paper border border-ink' : 'bg-transparent text-ink border border-rule-strong'} ${off ? 'opacity-60' : 'cursor-pointer'} px-[6px] py-[1px] text-provenance">${label}</button>`;
+  const clear = node.explicit ? `<button type="button" data-scope-act="clear" data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis}
+    aria-label="clear the choice (undecided)" title="${node.state === 'disagrees' ? 'reconsider: back to undecided' : 'back to undecided'}"
+    class="${off ? 'opacity-60' : 'cursor-pointer'} bg-transparent px-[4px] text-provenance text-ink-muted">×</button>` : '';
+  return `<div data-scope-selector role="group" aria-label="Include in catalog?" class="inline-flex items-baseline gap-[2px]">${seg('catalogue', 'Include')}${seg('leave_out', 'Leave out')}${clear}</div>`;
 }
 
 function proposalControls(node, me) {
@@ -155,65 +159,67 @@ function proposalControls(node, me) {
     <button type="button" data-scope-act="override" ${attrs} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">${esc(words(opposite(node.proposal.choice)))} instead</button>`;
 }
 
-/** The left-hand choice cell: the person's choice, or the proposal, or what
- *  the row inherits, in the words the designer drew. */
+/** The sentence one gesture away: a disclosure (touch) and the cell's title (hover). */
+const moreHtml = (sentence) => (sentence
+  ? ` <details data-scope-details class="inline text-provenance text-ink-muted"><summary class="inline cursor-pointer">details</summary> ${esc(sentence)}</details>` : '');
+const tagHtml = (kind, text) => `<span data-scope-tag="${kind}" class="border border-rule-strong px-[4px] text-provenance text-ink">${esc(text)}</span>`;
+const who = (by) => (by && by === whoAmI() ? 'you' : by);
+
+/** The left-hand choice cell: the selector, then a cue under it in the same cell (a short word, the
+ *  sentence behind "details"), tags for what differs or came from a rule, and, only for rows that need
+ *  a person, a visible second line (a proposal's reason, a survey disagreement). */
 export function choiceCellHtml(node, me, commit = null) {
-  return markHtml(node) + choiceCellCore(node, me) + savedNoteHtml(node, commit);
+  return choiceCellCore(node, me) + savedNoteHtml(node, commit);
 }
 
-/** "saved in Resource Explorer · who · when · not yet cataloged in Egeria": shown for a few seconds
- *  after a choice write, so a choice is not read as a write to Egeria. The Egeria clause comes from the
- *  node's commit state: a node already in Egeria is told it changes only when Catalog is pressed. */
+/** "saved · you · just now" in the cell that was pressed, for a few seconds; the full sentence rides
+ *  in its title ("saved in Resource Explorer · who · when · not yet cataloged in Egeria"). */
 function savedNoteHtml(node, commit) {
   const key = node.kind === 'schema' ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
   const n = savedNotes.get(key);
   if (!n) return '';
   const st = node.kind === 'schema' ? ((commit || {}).schemas || {})[node.name] : ((commit || {}).tables || {})[`${node.schema}.${node.name}`];
   const tail = !st || ['none', 'uncommitted', 'left_out'].includes(st.state) ? 'not yet cataloged in Egeria' : 'Egeria changes when you press Catalog';
-  return `<div><span data-scope-saved-note title="saved in Resource Explorer · ${esc(n.by)} · ${esc(n.at)} · ${tail}" class="text-provenance text-ink-muted">saved</span></div>`;
+  return `<div><span data-scope-saved-note title="saved in Resource Explorer · ${esc(n.by)} · ${esc(n.at)} · ${tail}" class="text-provenance text-ink-muted">saved · ${esc(who(n.by))} · just now</span></div>`;
 }
 
 function choiceCellCore(node, me) {
   const ex = node.explicit;
   const by = ex ? `${esc(ex.by)} ${esc(md(ex.at))}` : '';
+  const who1 = ex ? `${esc(who(ex.by))} · ${esc(md(ex.at))}` : '';
+  const sel = setterButtons(node, me);
   if (node.state === 'proposed' && node.proposal) {
-    return `<div data-scope-state-word="proposed">${glyphSpan('proposal')}
+    return `${sel}<div data-scope-state-word="proposed">${glyphSpan('proposal')}
       <span class="text-ink">proposed: <span class="font-semibold">${esc(words(node.proposal.choice))}</span></span>
       <span class="text-ink-muted"> · ${esc(node.proposal.reason)}</span></div>
       <div class="text-provenance">${proposalControls(node, me)}</div>`;
   }
   if (ex && node.state === 'confirmed') {
-    return `<div data-scope-state-word="confirmed" class="text-ink">${esc(words(ex.choice))}
-      <span class="text-ink-muted"> · confirmed by ${by}</span></div>
-      <div class="text-provenance text-ink-muted">${esc(ex.reason || '')}</div>${setterButtons(node, me)}`;
+    return `${sel}<div data-scope-state-word="confirmed" class="text-provenance text-ink-muted">${who1} ${tagHtml('rule', ex.source && ex.source !== 'person' ? ex.source : 'confirmed')}${moreHtml(`${words(ex.choice)} · confirmed by ${by}${ex.reason ? ` · ${ex.reason}` : ''}`)}</div>`;
   }
   if (ex && node.state === 'overridden') {
     const o = node.overridden || {};
-    return `<div data-scope-state-word="overridden" class="text-ink">${esc(words(ex.choice))}
-      <span class="text-ink-muted"> · overridden by ${by}</span></div>
-      <div data-scope-struck class="text-provenance text-ink-muted line-through">proposed: ${esc(words(o.choice))} · ${esc(o.reason || '')}</div>${setterButtons(node, me)}`;
+    return `${sel}<div data-scope-state-word="overridden" class="text-provenance text-ink-muted">${who1} ${tagHtml('rule', 'overridden')}${moreHtml(`${words(ex.choice)} · overridden by ${by}`)}</div>
+      <div data-scope-struck class="text-provenance text-ink-muted line-through">proposed: ${esc(words(o.choice))} · ${esc(o.reason || '')}</div>`;
   }
   if (ex && node.state === 'disagrees') {
     const d = node.disagrees || {};
     const was = ex.action === 'override' ? 'Overridden' : 'Confirmed';
     const choiceWord = ex.action === 'override' ? words(ex.proposal_choice) : words(ex.choice);
     const verb = ex.action === 'override' ? `${was} (proposal: ${choiceWord})` : `${was} ${words(ex.choice)}`;
-    return `<div data-scope-state-word="disagrees" class="text-ink">${esc(words(ex.choice))}
-      <span class="text-ink-muted"> · set by ${by}</span></div>
-      <div data-scope-disagrees class="text-provenance text-state-warn">${glyphSpan('human')} survey now disagrees: ${esc(verb)} on ${esc(md(ex.at))}, when ${esc(d.words || '')} (survey of ${esc(md(d.survey_at))}). The choice has not changed.</div>${setterButtons(node, me)}`;
+    return `${sel}<div data-scope-state-word="disagrees" class="text-provenance text-ink-muted">${who1}${moreHtml(`${words(ex.choice)} · set by ${by}`)}</div>
+      <div data-scope-disagrees class="text-provenance text-ink">${glyphSpan('human')} survey now disagrees: ${esc(verb)} on ${esc(md(ex.at))}, when ${esc(d.words || '')} (survey of ${esc(md(d.survey_at))}). The choice has not changed.</div>`;
   }
   if (ex) {
-    const differs = node.differs_from_schema
-      ? ' <span class="text-ink">· differs from its schema</span>' : '';
-    return `<div data-scope-state-word="chosen" class="text-ink">${esc(words(ex.choice))}
-      <span class="text-ink-muted"> · set by ${by}</span>${differs}</div>${setterButtons(node, me)}`;
+    const differs = node.differs_from_schema ? ` ${tagHtml('differs', 'differs')}` : '';
+    return `${sel}<div data-scope-state-word="chosen" class="text-provenance text-ink-muted">${who1}${differs}${moreHtml(`${words(ex.choice)} · set by ${by}${node.differs_from_schema ? ' · differs from its schema' : ''}`)}</div>`;
   }
   if (node.effective && node.effective_from === 'schema') {
-    return `<div data-scope-state-word="inherited" class="text-ink-muted">${esc(words(node.effective))} (from schema)</div>${setterButtons(node, me)}`;
+    return `${sel}<div data-scope-state-word="inherited" class="text-provenance text-ink-muted">(schema)${moreHtml(`${words(node.effective)} · from its schema`)}</div>`;
   }
   const tail = node.kind === 'schema' && node.undecided_words
     ? ` · <span data-scope-undecided-words>${esc(node.undecided_words)}</span>` : '';
-  return `<div data-scope-state-word="undecided" class="text-ink-muted">undecided${tail}</div>${setterButtons(node, me)}`;
+  return `${sel}<div data-scope-state-word="undecided" class="text-provenance text-ink-muted">undecided${tail}</div>`;
 }
 
 /** The "In Egeria" cell: the commit's derived state for this node, with its glyph and its
@@ -349,11 +355,12 @@ function rowHtml(node, me, depth, kindWord, commit, open = false) {
     : `<input type="checkbox" data-scope-select-schema="${esc(node.schema)}" data-scope-select-table="${esc(node.name)}" aria-label="select table ${esc(node.schema)}.${esc(node.name)}" ${selectedTables.has(tkey(node.schema, node.name)) ? 'checked' : ''} ${dis}>`;
   const srcLine = nodeSourceLine(node);
   const src = srcLine ? `<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>` : '';
-  const leaveOut = node.effective === 'leave_out';
-  return `<div class="flex items-baseline gap-s2 border-b border-rule border-l-[6px] pl-[4px] py-[3px] text-caveat ${node.effective === 'catalogue' ? 'border-l-ink' : node.effective === 'leave_out' ? 'border-l-rule-strong' : 'border-l-transparent'} ${flashRows.has(key) ? 'bg-paper-surface' : ''}" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}">
+  const lowered = isLowered(node, commit);
+  const edge = needsYou(node, commit);
+  return `<div class="flex items-baseline gap-s2 border-b border-rule border-l-[3px] pl-[4px] py-[3px] text-caveat ${edge ? 'border-l-ink' : 'border-l-transparent'} ${lowered ? 'text-ink-muted opacity-70' : ''} ${flashRows.has(key) ? 'bg-paper-surface' : ''}" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}"${lowered ? ' data-scope-lowered' : ''}>
     <div class="w-[2ch] shrink-0" data-scope-select-cell>${pick}</div>
-    <div class="w-[22ch] shrink-0" data-scope-choice-cell ${pendingRows.has(key) ? 'aria-busy="true"' : ''}>${choiceCellHtml(node, me, commit)}</div>
-    <div class="min-w-[14ch] flex-1 break-words ${leaveOut ? 'text-ink-muted line-through opacity-70' : 'text-ink'}" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
+    <div class="w-[24ch] shrink-0" data-scope-choice-cell ${pendingRows.has(key) ? 'aria-busy="true"' : ''}>${choiceCellHtml(node, me, commit)}</div>
+    <div class="min-w-[14ch] flex-1 break-words ${lowered ? 'text-ink-muted' : 'text-ink'}" data-scope-name-cell>${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
     <div class="w-[8ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
     <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
     <div class="w-[14ch] shrink-0 break-words" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
@@ -369,7 +376,7 @@ function columnRowsHtml(table) {
   const cols = table.columns || [];
   if (!cols.length) return '';
   return `<div data-scope-columns class="mb-[3px] flex gap-s2">
-    <div class="w-[2ch] shrink-0"></div><div class="w-[22ch] shrink-0"></div>
+    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0"></div>
     <div class="flex-1 border-l border-rule pl-s2">${cols.map((c) => `<div data-scope-column class="py-[1px] text-provenance text-ink-muted">
       <span aria-hidden="true" class="text-rule-strong">└</span> <span class="font-mono">${esc(c.name)}</span> <span>${esc(c.type || '')}</span> <span class="text-accent-ink">${esc(c.key_role || '')}</span></div>`).join('')}</div></div>`;
 }
@@ -402,7 +409,7 @@ export function treeHtml(view, me) {
     return `<div class="text-caveat text-ink-muted">No stored schema rows yet: run a survey first. Nothing to scope until Egeria's survey or RE's has listed the schemas.</div>`;
   }
   const head = `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" data-scope-tree-head>
-    <div class="w-[2ch] shrink-0"></div><div class="w-[22ch] shrink-0 break-words">choice</div><div class="min-w-[14ch] flex-1 break-words">Schema / table</div>
+    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0 break-words" data-scope-choice-head>Include in catalog?</div><div class="min-w-[14ch] flex-1 break-words">Schema / table</div>
     <div class="w-[8ch] shrink-0 break-words text-right" title="Row count; the source and date ride on each cell">Rows</div>
     <div class="w-[8ch] shrink-0 break-words text-right" title="Size on disk; the source and date ride on each cell">Size</div>
     <div class="w-[14ch] shrink-0 break-words" data-scope-activity-head title="Activity: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">Activity</div>
@@ -457,9 +464,9 @@ export function bulkBarHtml(view, me) {
     <label class="inline-flex cursor-pointer items-baseline gap-[4px]"><input type="checkbox" data-scope-all-box ${nVis && nSelVis === nVis ? 'checked' : ''} ${dis}> select all shown</label>
     <button type="button" data-scope-clear-selection ${nSelVis ? '' : 'disabled'} class="${nSelVis ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">clear selection</button>
     <span data-scope-selected-count class="text-ink-muted">${selected.size} of ${n} schemas · ${selectedTables.size} of ${countTables(view)} tables selected</span>
-    ${bulk('catalogue', 'catalog selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'clear choice')}
+    ${bulk('catalogue', 'include selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'clear choice')}
     <span class="text-ink-muted">|</span>
-    <button type="button" data-scope-catalogue-all ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">catalog all ${n} schemas</button></div>`;
+    <button type="button" data-scope-catalogue-all ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">include all ${n} schemas</button></div>`;
 }
 
 export function depthLineHtml(view, me) {
@@ -512,7 +519,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
     <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
     ${activitySummaryHtml(view)}
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
-    ${(view.schemas || []).length ? `<div data-scope-legend class="mb-s1 text-provenance text-ink-muted">● catalog · ⊘ left out (struck through) · ○ undecided</div>` : ''}
+    ${(view.schemas || []).length ? `<div data-scope-legend class="mb-s1 text-provenance text-ink-muted">filled = your choice · lowered row = not included · bordered tag = differs or from a rule</div>` : ''}
     ${(view.schemas || []).length ? filterBarHtml(view) : ''}${bulkBarHtml(view, me)}
     <div data-scope-tree class="min-w-0 max-w-full overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
     <div data-scope-commit class="mt-s2"></div>
@@ -531,11 +538,12 @@ const find = (view, schema, table) => {
 
 /* ── the commit (slice B) ───────────────────────────────────────────── */
 
+/** Two-word labels, one per step: a person scans these top to bottom. */
 const STEP_LABEL = {
-  publish_elements: 'publish the server and database', zone_membership: 'ZoneMembership on the database',
-  owner: 'owner from Context', schema_targets: 'attach the schema targets', leave_outs: 'leave outs',
-  survey_report: "RE's own survey report", survey: "Egeria's survey", refresh: 'refresh the cataloguer',
-  read_back: 'read Egeria back',
+  publish_elements: 'Publish elements', zone_membership: 'Zone membership',
+  owner: 'Set owner', schema_targets: 'Attach schemas', leave_outs: 'Leave outs',
+  survey_report: 'Survey report', survey: 'Egeria survey', refresh: 'Refresh cataloger',
+  read_back: 'Read back',
 };
 const STEP_GLYPH = { done: 'catalogued', failed: 'catalogue_failed', running: 'queued', pending: 'queued', submitted: 'queued', requested: 'queued' };
 
@@ -543,55 +551,126 @@ const STEP_GLYPH = { done: 'catalogued', failed: 'catalogue_failed', running: 'q
 const detailsHtml = (more, attr) => (more
   ? ` <details ${attr} class="inline text-provenance text-ink-muted"><summary class="inline cursor-pointer">details</summary><div class="whitespace-pre-wrap break-words">${esc(more)}</div></details>` : '');
 
-/** The steps of the curation record, exactly as the record holds them. A step's state word is
- *  the record's, which the server writes from rows (the outbox, the proof rows), never a guess. */
-export function commitStepsHtml(rec) {
-  if (!rec) return '';
-  // The step line already says its state; a detail that starts with the same word ("submitted · 10-06
-  // 13:25") would say it twice.
-  const bare = (st) => String(st.detail || '').replace(new RegExp(`^${String(st.state).replace(/[^a-z_]/gi, '')} · `, 'i'), '');
-  const rows = (rec.steps || []).map((st) => `<div data-scope-commit-step="${esc(st.name)}" data-state="${esc(st.state)}" class="text-provenance ${st.state === 'failed' ? 'text-state-warn' : 'text-ink-muted'}">
-    ${STEP_GLYPH[st.state] ? `${glyphSpan(STEP_GLYPH[st.state])} ` : ''}${esc(STEP_LABEL[st.name] || st.name)} · ${esc(st.state)}${bare(st) ? ` · ${esc(bare(st))}` : ''}${detailsHtml(st.more, 'data-scope-step-details')}${
-      st.name === 'survey' && st.state === 'submitted' ? ' <span data-scope-step-hint class="text-ink">check again in a minute with Read Egeria again</span>' : ''}</div>`).join('');
-  return `<div data-scope-commit-steps class="mt-s1"><div class="text-caveat text-ink">Commit ${esc(String(rec.id || '').slice(0, 8))} · ${esc(rec.state || '')} · by ${esc(rec.author || '')}</div>${rows}</div>`;
+/** How long a real database survey takes (measured on coco_pharma: 15 min for 2 schemas, 22 min for 3). */
+const SURVEY_TYPICAL = 'usually takes about 15-25 minutes';
+/** How often the open page reads the survey's status again (a read-back, never a write). */
+const SURVEY_CHECK_S = 60;
+const hm = (iso) => { const m = /T(\d\d:\d\d)/.exec(String(iso || '')); return m ? m[1] : ''; };
+const nowMs = () => scopeClock.now();
+const scopeClock = {
+  now: () => Date.now(),
+  every: (fn, ms) => { const id = setInterval(fn, ms); if (id && id.unref) id.unref(); return () => clearInterval(id); },   // unref: a Node test run is never held open by it
+};
+/** A test swaps the clock (and so the 60 s interval and the elapsed minutes) for a fake. */
+export function setScopeClock(c) { Object.assign(scopeClock, c); }
+
+/** The step now being worked on: the one running, else the first still waiting or submitted. */
+const currentStep = (rec) => {
+  const steps = rec.steps || [];
+  return steps.find((st) => st.state === 'running') || steps.find((st) => ['pending', 'submitted', 'requested'].includes(st.state)) || null;
+};
+
+/** The survey step while it runs in Egeria: elapsed time (ticking), annotations so far, the usual
+ *  duration, a "check again" control and the stated interval. No spinner. */
+function surveyRunningHtml(rec, st) {
+  const since = Date.parse(rec.requested_at || '');
+  const mins = Number.isFinite(since) ? Math.max(0, Math.floor((nowMs() - since) / 60000)) : null;
+  const so = /(\d+) annotations so far/.exec(st.detail || '');
+  const started = hm(rec.requested_at) || ((/^submitted · \S+ (\S+)/.exec(st.detail || '') || [])[1] || '');
+  const bits = ['running in Egeria', started ? `started ${started}` : '', mins != null ? `<span data-scope-survey-elapsed>${mins} min</span>` : '',
+    so ? `${so[1]} annotations so far` : ''].filter(Boolean).join(' · ');
+  return `<div data-scope-step-hint class="text-provenance text-ink">${bits} · ${SURVEY_TYPICAL}: come back and press Read Egeria again
+    · <button type="button" data-scope-check-again class="cursor-pointer bg-transparent p-0 text-accent-ink underline">check again</button>
+    · <span data-scope-checking-every>checking every ${SURVEY_CHECK_S} s</span></div>`;
 }
 
-/** What pressing Catalog would do, as the server's preview says it: the three mechanisms in the
- *  order they run, what leaving schemas out does and in which form, anything that blocks the
- *  press, and the button whose label carries the counts. */
-export function commitPanelHtml(preview, me, ui, declared = true) {
+/** The steps of the curation record as a numbered list: one line each (number, glyph, two-word label,
+ *  state word); the running step in normal weight and the rest muted; a failed step gets a left-edge
+ *  rule and its first sentence at once; every other sentence is behind "details". The state words and
+ *  details are the record's, which the server writes from rows, never a guess. */
+export function commitStepsHtml(rec) {
+  if (!rec) return '';
+  const steps = rec.steps || [];
+  const cur = currentStep(rec);
+  const nFailed = steps.filter((st) => st.state === 'failed').length;
+  const idx = cur ? steps.indexOf(cur) + 1 : steps.length;
+  const head = cur
+    ? `Catalog · commit ${esc(String(rec.id || '').slice(0, 8))} · step ${idx} of ${steps.length} · running: ${esc(STEP_LABEL[cur.name] || cur.name)} · ${nFailed} failed`
+    : `Catalog · commit ${esc(String(rec.id || '').slice(0, 8))} · ${steps.length} of ${steps.length} steps · ${esc(rec.state || '')} · ${nFailed} failed`;
+  // The step line already says its state; a detail that starts with the same word would say it twice.
+  const bare = (st) => String(st.detail || '').replace(new RegExp(`^${String(st.state).replace(/[^a-z_]/gi, '')} · `, 'i'), '');
+  const rows = steps.map((st, i) => {
+    const failed = st.state === 'failed';
+    const running = st === cur;
+    const first = failed ? ` <span data-scope-step-first>${esc(bare(st))}</span>` : (bare(st) ? moreHtml(bare(st)) : '');
+    const hint = running && st.name === 'survey' && st.state === 'submitted' ? surveyRunningHtml(rec, st) : '';
+    return `<li data-scope-commit-step="${esc(st.name)}" data-state="${esc(st.state)}" class="${failed ? 'border-l-[3px] border-l-ink pl-[4px] text-ink' : running ? 'text-ink' : 'text-ink-muted'} text-provenance">
+      <span class="tnum">${i + 1}.</span> ${STEP_GLYPH[st.state] ? `${glyphSpan(STEP_GLYPH[st.state])} ` : ''}${esc(STEP_LABEL[st.name] || st.name)} · ${esc(st.state)}${first}${detailsHtml(st.more, 'data-scope-step-details')}${hint}</li>`;
+  }).join('');
+  return `<div data-scope-commit-steps class="mt-s1"><div data-scope-steps-head class="text-caveat text-ink">${head}</div><ol class="list-none pl-0">${rows}</ol></div>`;
+}
+
+/** The manifest as a short table, one row per mechanism: what, how many, when. The long sentences
+ *  sit behind "details" on the row they qualify. */
+function manifestTableHtml(preview, view) {
   const m = preview.manifest || {};
+  const line = (id) => (m.lines || []).find((l) => l.id === id);
+  const detail = (...ids) => ids.map((id) => { const l = line(id); return l ? `<span data-scope-manifest-line="${esc(id)}" class="block">${l.mechanism ? `${l.mechanism}. ` : ''}${esc(l.text)}</span>` : ''; }).join('');
+  const attach = preview.attach || [];
+  const leave = preview.leave_out || [];
+  const c = (view && view.counts) || {};
+  const names = (xs) => (xs.length ? ` · ${xs.slice(0, 4).map(esc).join(', ')}${xs.length > 4 ? ` +${xs.length - 4}` : ''}` : '');
+  const forms = (r) => (r.form === 'soft_delete' ? 'will delete' : r.form === 'archive' ? 'will archive' : r.form === 'cannot_check' ? 'not committed' : r.form === 'in_use' ? 'not committed' : 'nothing to change');
+  const row = (id, who, what, howMany, when, more = '') => `<div role="row" data-scope-manifest-row="${id}" class="flex items-baseline gap-s2 text-ink">
+    <div role="cell" class="w-[14ch] shrink-0 font-semibold">${who}</div>
+    <div role="cell" class="min-w-[18ch] flex-1">${what}${more ? ` <details data-scope-details class="inline text-provenance text-ink-muted"><summary class="inline cursor-pointer">details</summary>${more}</details>` : ''}</div>
+    <div role="cell" class="w-[24ch] shrink-0 tnum">${howMany}</div><div role="cell" class="w-[22ch] shrink-0 text-ink-muted">${when}</div></div>`;
+  const leaveHow = leave.length ? `${leave.length}${names(leave.map((r) => r.schema))} · ${[...new Set(leave.map(forms))].join(', ')}` : '0';
+  return `<div data-scope-manifest role="table" aria-label="What this commit does" class="text-caveat">
+    <div role="row" class="flex items-baseline gap-s2 text-provenance text-ink-muted"><div role="columnheader" class="w-[14ch] shrink-0"></div><div role="columnheader" class="min-w-[18ch] flex-1">what</div><div role="columnheader" class="w-[24ch] shrink-0">how many</div><div role="columnheader" class="w-[22ch] shrink-0">when</div></div>
+    ${row('publishes', 'RE publishes', 'the server and database', '2 elements', 'now', detail('re_publishes', 'survey_report_whole'))}
+    ${row('catalogs', 'Egeria catalogs', 'your included schemas', `${attach.length}${names(attach)}`, 'next refresh (or now, if ticked)', detail('cataloguer_creates', 'whole_schemas'))}
+    ${row('surveys', 'Egeria surveys', 'the same schemas', `${((preview.survey || {}).schemas || []).length}`, 'after attach', detail('survey_measures'))}
+    ${row('left_out', 'Left out', leave.length ? 'what changes in Egeria' : 'nothing in Egeria to change', leaveHow, leave.length ? 'at this commit' : '—')}
+    ${row('undecided', 'Undecided', 'Egeria stays as it is', `${c.schemas_undecided ?? 0}`, '—')}
+  </div>`;
+}
+
+/** What pressing Catalog would do: the manifest table with the button at its top right, anything that
+ *  blocks it listed directly under the button, the refresh box under that. */
+export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
   const dis = (why) => `disabled title="${esc(why)}"`;
   const reason = !me ? signInReason : commitWhyNot(preview, declared);
-  const lines = (m.lines || []).map((ln) => `<li data-scope-manifest-line="${esc(ln.id)}" class="${ln.mechanism ? 'text-ink' : 'text-ink-muted'}">${ln.mechanism ? `${ln.mechanism}. ` : ''}${esc(ln.text)}</li>`).join('');
   const refused = (preview.refused || []).map((r) => `<div data-scope-refused="${esc(r.schema)}" class="text-ink">${glyphSpan('human')} ${esc(r.text)}</div>`).join('');
-  const collisions = (preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-ink">${esc(c.text)}</div>`).join('');
+  const collisions = (preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-right text-ink">${esc(c.text)}</div>`).join('');
   const leave = (preview.leave_out || []).map((r) => `<div data-scope-leave-out="${esc(r.schema)}" data-form="${esc(r.form)}" class="${r.blocked ? 'text-ink' : 'text-ink-muted'}">${r.blocked ? `${glyphSpan('human')} ` : ''}${esc(r.text)}</div>`).join('');
   const blockers = (preview.blockers || []).map((b) => `<div data-scope-blocker class="text-ink">${glyphSpan('human')} ${esc(b)}</div>`).join('');
   const off = !!reason;
   const sent = ui && ui.polling ? '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>' : '';
   return `<div data-scope-commit-panel>
     <div class="mb-s1 text-answer text-ink">What this commit does</div>
-    <ol data-scope-manifest class="mb-s1 list-none pl-0 text-caveat">${lines}</ol>
-    ${refused}${collisions}${leave}${blockers}
-    <label class="mt-s1 flex cursor-pointer items-baseline gap-[4px] text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
-    <div data-scope-commit-row class="mt-s1 flex flex-wrap items-baseline gap-s3">
-      <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
-      ${off ? `<span data-scope-commit-why class="text-caveat text-ink">${esc(reason)}</span>` : ''}
+    <div class="flex flex-wrap items-start justify-between gap-s3">
+      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view)}${refused}${leave}</div>
+      <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1">
+        <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
+        ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
+        ${collisions}${blockers}
+        <label class="flex cursor-pointer items-baseline gap-[4px] text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
+      </div>
     </div>
     ${sent}
+    ${commitStepsHtml(ui && ui.rec)}
     <div class="mt-s1 text-caveat"><button type="button" data-scope-read-back ${me ? '' : dis(signInReason)} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Read Egeria again</button></div>
     <div data-scope-commit-status class="mt-s1 text-provenance text-ink-muted"></div>
-    ${commitStepsHtml(ui && ui.rec)}
   </div>`;
 }
 
 /** Why the commit button is off, in the words a person needs ('' when it is on). */
 export function commitWhyNot(preview, declared = true) {
-  if (!declared) return 'no scope declared: choose what to catalog first';
+  if (!declared) return 'no scope declared: choose what to include first';
   if (preview.can_commit) return '';
   const first = (preview.blockers || [])[0] || '';
-  if (/^nothing to commit/.test(first)) return 'nothing chosen: choose at least one schema to catalog';
+  if (/^nothing to commit/.test(first)) return 'nothing chosen: include at least one schema';
   if (/name collision/.test(first)) {
     const t = (preview.collisions || []).map((c) => String(c.text).replace(/^⚠\s*/, '')).join(' · ');
     return `name collisions: ${t || first}`;
@@ -607,7 +686,11 @@ function commitSummary(rec) {
   return `commit ${String(rec.id || '').slice(0, 8)} ${rec.state}: ${bits.join(' · ')}`;
 }
 
-async function loadCommitPanel(el, slug, me, redraw, declared = true) {
+/** What changed in a record's steps: one string per step state, so a poll can tell. */
+const stepSig = (rec) => (rec && rec.steps ? rec.steps.map((st) => `${st.name}=${st.state}`).join('|') : '');
+const surveyOpen = (rec) => !!(rec && (rec.steps || []).some((st) => st.name === 'survey' && st.state === 'submitted'));
+
+async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshScope = null, getView = () => null) {
   const host = el.querySelector('[data-scope-commit]');
   if (!host) return;
   host.innerHTML = '<div data-scope-commit-loading class="text-provenance text-ink-muted">Reading what the commit would do (this reads Egeria and writes nothing)…</div>';
@@ -621,30 +704,92 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true) {
     return;
   }
   if (stale(host, slug)) return;
-  host.innerHTML = commitPanelHtml(preview, me, commitUi && commitUi.slug === slug ? commitUi : null, declared);
+  host.innerHTML = commitPanelHtml(preview, me, commitUi && commitUi.slug === slug ? commitUi : null, declared, getView());
   const say = (msg, warn = false) => {
     const e = host.querySelector('[data-scope-commit-status]');
     if (!e) return;
     e.textContent = msg;
     e.className = `mt-s1 text-provenance ${warn ? 'text-state-warn' : 'text-ink-muted'}`;
   };
-  const fail = (err, what) => (err.status === 401 ? signInReason : `${what} failed: ${err.message}`);
+  const expiredHtml = ' <button type="button" data-scope-sign-in class="cursor-pointer bg-transparent p-0 text-accent-ink underline">sign in</button>';
+  const fail = (err, what) => (err.status === 401 ? 'your session expired · sign in again' : `${what} failed: ${err.message}`);
+  const offerSignIn = (err) => {
+    if (err.status !== 401) return;
+    const e = host.querySelector('[data-scope-commit-status]');
+    if (!e) return;
+    e.insertAdjacentHTML('beforeend', expiredHtml);
+    e.querySelector('[data-scope-sign-in]').addEventListener('click', () => {
+      try { if (globalThis.Auth && globalThis.Auth.showLogin) globalThis.Auth.showLogin('Your session has expired. Please sign in again.'); } catch { /* the line above already says so */ }
+    });
+  };
   const paintSteps = () => {
     const old = host.querySelector('[data-scope-commit-steps]');
     const html = commitStepsHtml(commitUi && commitUi.rec);
     if (old) old.outerHTML = html; else host.querySelector('[data-scope-commit-panel]').insertAdjacentHTML('beforeend', html);
+    bindCheckAgain();
   };
+  /** A page must never show a row older than a step it shows: whenever a step changes state the scope
+   *  is read again and the tree redrawn (one read per change, not per tick). */
+  const onSteps = async (rec) => {
+    const sig = stepSig(rec);
+    if (commitUi && commitUi.sig !== sig) {
+      commitUi.sig = sig;
+      if (refreshScope) await refreshScope();
+    }
+  };
+  // The survey runs for minutes in Egeria. While it is open the page reads its status again at a
+  // stated interval: a read-back (never a write), one in flight at most, stopped when the survey
+  // reaches an end, the page is hidden, or the pane goes away.
+  let stopWatch = null;
+  let inFlight = false;
+  const checkSurvey = async (manual = false) => {
+    if (inFlight || stale(host, slug) || !commitUi || commitUi.slug !== slug) return;
+    if (!manual && globalThis.document && globalThis.document.hidden) return;
+    inFlight = true;
+    try {
+      await postCatalogueReadBack(slug);
+      const rec = await getCatalogueCommitRecord(slug, commitUi.id);
+      commitUi.rec = rec;
+      paintSteps();
+      await onSteps(rec);
+      if (!surveyOpen(rec) && stopWatch) { stopWatch(); stopWatch = null; }
+    } catch (err) {
+      say(`could not read how the survey is going: ${err.message}`, true);
+      offerSignIn(err);
+    } finally { inFlight = false; }
+  };
+  function bindCheckAgain() {
+    host.querySelectorAll('[data-scope-check-again]').forEach((b) => b.addEventListener('click', () => checkSurvey(true)));
+    const el1 = host.querySelector('[data-scope-survey-elapsed]');
+    if (surveyOpen(commitUi && commitUi.rec) && !stopWatch) {
+      const stopMin = scopeClock.every(() => {
+        if (stale(host, slug) || !surveyOpen(commitUi && commitUi.rec)) { stopMin(); return; }
+        const e = host.querySelector('[data-scope-survey-elapsed]');
+        const since = Date.parse((commitUi.rec || {}).requested_at || '');
+        if (e && Number.isFinite(since)) e.textContent = `${Math.max(0, Math.floor((nowMs() - since) / 60000))} min`;
+      }, 30000);
+      const stopPoll = scopeClock.every(() => {
+        if (stale(host, slug) || !surveyOpen(commitUi && commitUi.rec)) { stopWatch && stopWatch(); stopWatch = null; return; }
+        checkSurvey(false);
+      }, SURVEY_CHECK_S * 1000);
+      stopWatch = () => { stopMin(); stopPoll(); };
+    }
+    void el1;
+  }
+  bindCheckAgain();
   const poll = async () => {
     if (stale(host, slug) || !commitUi || commitUi.slug !== slug) return;
     let rec;
-    try { rec = await getCatalogueCommitRecord(slug, commitUi.id); } catch (err) { say(`could not read the commit record: ${err.message}`, true); return; }
+    try { rec = await getCatalogueCommitRecord(slug, commitUi.id); } catch (err) { say(`could not read the commit record: ${err.message}`, true); offerSignIn(err); return; }
     commitUi.rec = rec;
     paintSteps();
     if (rec.state === 'done' || rec.state === 'failed') {
       commitUi.polling = false;
+      commitUi.sig = stepSig(rec);
       await redraw(commitSummary(rec));          // the tree and header re-read from the proof rows
       return;
     }
+    await onSteps(rec);
     setTimeout(poll, commitPollMs);
   };
   const btn = host.querySelector('[data-scope-commit-btn]');
@@ -655,8 +800,15 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true) {
     btn.textContent = 'sending…';
     say('Queuing the commit…');
     let out;
-    try { out = await postCatalogueCommit(slug, refreshNow); } catch (err) { btn.disabled = false; btn.textContent = label; say(fail(err, 'the commit'), true); return; }
-    commitUi = { slug, id: out.curation.id, rec: out.curation, polling: true };
+    try { out = await postCatalogueCommit(slug, refreshNow); } catch (err) {
+      btn.disabled = false; btn.textContent = label; say(fail(err, 'the commit'), true); offerSignIn(err);
+      if (err.status === 401) {
+        const why = host.querySelector('[data-scope-commit-why]');
+        if (!why) btn.insertAdjacentHTML('afterend', '<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ your session expired · sign in again</span>');
+      }
+      return;
+    }
+    commitUi = { slug, id: out.curation.id, rec: out.curation, polling: true, sig: stepSig(out.curation) };
     btn.textContent = label;
     if (!host.querySelector('[data-scope-commit-sent]')) host.querySelector('[data-scope-commit-row]').insertAdjacentHTML('afterend', '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>');
     say(`queued: commit ${String(out.curation.id).slice(0, 8)} · run ${String(out.run_id || '').slice(0, 8)}`);
@@ -667,7 +819,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true) {
   if (rb) rb.addEventListener('click', async () => {
     say('Reading Egeria…');
     let r;
-    try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); return; }
+    try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); offerSignIn(err); return; }
     await redraw(`read back: ${r.catalogued || 0} cataloged · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
   });
 }
@@ -715,7 +867,19 @@ function paintScope(el, slug, status, view) {
     // The preview READS Egeria, so it is read when the section is open and not before.
     if (shown && !el.querySelector('[data-scope-commit-panel], [data-scope-commit-loading]')) startCommitPanel();
   });
-  const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => renderCatalogueScope(el, slug, msg), !!(view.declared && view.declared.declared));
+  // Re-read the scope (one GET) and redraw the tree and the markers in place: used whenever a commit
+  // step changes state, so no row shows a state older than a step on the same page.
+  const refreshScope = async () => {
+    let v;
+    try { v = await getCatalogueScope(slug); } catch { return; }
+    if (stale(el, slug) || !v || !Array.isArray(v.schemas)) return;
+    view = v;
+    redrawTree();
+    const mk = el.querySelector('[data-scope-commit-header]');
+    if (mk) { mk.textContent = commitHeaderText(v); mk.dataset.scopeCommitHeaderState = ((v.commit || {}).header || {}).state || 'unknown'; }
+  };
+  const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => renderCatalogueScope(el, slug, msg),
+    !!(view.declared && view.declared.declared), refreshScope, () => view);
   const say = (msg, warn = false) => {
     const s = el.querySelector('[data-scope-status]');
     if (!s) return;
@@ -743,21 +907,20 @@ function paintScope(el, slug, status, view) {
   const paintRow = (k, node) => {
     const r = rowEl(k);
     if (!r) return;
-    STRIPS.forEach((c) => r.classList.remove(c));
-    r.classList.add(tone(node.effective));
+    const low = isLowered(node, view.commit);
+    ['text-ink-muted', 'opacity-70'].forEach((c) => r.classList.toggle(c, low));
+    r.toggleAttribute('data-scope-lowered', low);
     r.dataset.scopeEffective = node.effective || '';
     const nm = r.querySelector('[data-scope-name-cell]');
-    if (nm) {
-      const out = node.effective === 'leave_out';
-      ['line-through', 'opacity-70', 'text-ink-muted'].forEach((c) => nm.classList.toggle(c, out));
-      nm.classList.toggle('text-ink', !out);
-    }
+    if (nm) { nm.classList.toggle('text-ink-muted', low); nm.classList.toggle('text-ink', !low); }
     const cell = r.querySelector('[data-scope-choice-cell]');
     if (cell) {
       if (pendingRows.has(k)) cell.setAttribute('aria-busy', 'true'); else cell.removeAttribute('aria-busy');
       cell.innerHTML = choiceCellHtml(node, me, view.commit);
     }
   };
+  const signIn = () => { try { if (globalThis.Auth && globalThis.Auth.showLogin) globalThis.Auth.showLogin('Your session has expired. Please sign in again.'); } catch { /* the page still says so */ } };
+  const EXPIRED = 'your session expired · sign in again';
   // After a write the words come from the re-read view, not from the click. The scope is read
   // ONCE here and handed to the redraw (it used to be read again by the redraw: two GETs a write).
   // `rowKey` names the one row the press was on: it changes at once, is ignored if pressed again
@@ -781,30 +944,42 @@ function paintScope(el, slug, status, view) {
     const release = () => { if (rowKey) pendingRows.delete(rowKey); };
     try { await write(); } catch (err) {
       release();
+      const expired = err.status === 401;
+      const again = () => afterWrite(write, what, verify, spent, rowKey, want);   // "save again" re-sends the same choice
       if (before) {
         const r = rowEl(rowKey);
         if (r) {
           paintRow(rowKey, before.node);
           r.querySelector('[data-scope-choice-cell]').insertAdjacentHTML('beforeend',
-            `<div data-scope-not-saved class="text-provenance font-semibold text-ink">✕ not saved · ${esc(err.status === 401 ? 'sign in first' : err.message)}</div>`);
+            `<div data-scope-not-saved class="text-provenance font-semibold text-ink">✕ ${expired ? `unsaved · ${EXPIRED}` : `not saved · ${esc(err.message)}`}</div>${
+              expired ? '<div class="text-provenance"><button type="button" data-scope-save-again class="cursor-pointer bg-transparent p-0 text-accent-ink underline">save again</button> · <button type="button" data-scope-sign-in class="cursor-pointer bg-transparent p-0 text-accent-ink underline">sign in</button></div>' : ''}`);
+          const sa = r.querySelector('[data-scope-save-again]'); if (sa) sa.addEventListener('click', again);
+          const si = r.querySelector('[data-scope-sign-in]'); if (si) si.addEventListener('click', signIn);
         }
       }
-      say(failure(err, what), true); return;
+      say(expired ? `${EXPIRED} · the choice was not saved` : failure(err, what), true);
+      if (expired && !before) {
+        const st = el.querySelector('[data-scope-status]');
+        if (st) {
+          st.insertAdjacentHTML('beforeend', ' <button type="button" data-scope-save-again class="cursor-pointer bg-transparent p-0 text-accent-ink underline">save again</button> · <button type="button" data-scope-sign-in class="cursor-pointer bg-transparent p-0 text-accent-ink underline">sign in</button>');
+          st.querySelector('[data-scope-save-again]').addEventListener('click', again);
+          st.querySelector('[data-scope-sign-in]').addEventListener('click', signIn);
+        }
+      }
+      return;
     }
     if (spent) { selected.clear(); selectedTables.clear(); }   // a finished bulk action spends the selection
     if (rowKey) {
-      // the server has taken it: say so on the row now, before the scope is read again
+      // the server has taken it: the cell shows the answer and says so NOW, in this same render,
+      // before the scope is read again (the selector is live again; the row flashes briefly)
       const r = rowEl(rowKey);
-      const mineNote = { by: whoAmI(), at: md(new Date().toISOString()) };
-      savedNotes.set(rowKey, mineNote);
+      savedNotes.set(rowKey, { by: whoAmI(), at: md(new Date().toISOString()) });
       flashRows.add(rowKey);
-      if (r) {
+      release();
+      const mine = nodeFor(rowKey);
+      if (r && mine) {
         r.classList.add('bg-paper-surface');
-        const cell = r.querySelector('[data-scope-choice-cell]');
-        if (cell) {
-          cell.querySelectorAll('[data-scope-saving]').forEach((e) => e.remove());
-          cell.insertAdjacentHTML('beforeend', savedNoteHtml(nodeFor(rowKey) || { kind: 'schema', name: '' }, view.commit));
-        }
+        paintRow(rowKey, want !== null ? guess(mine, want) : mine);
       }
       setTimeout(() => { flashRows.delete(rowKey); const rr = rowEl(rowKey); if (rr) rr.classList.remove('bg-paper-surface'); }, flashMs);
     }

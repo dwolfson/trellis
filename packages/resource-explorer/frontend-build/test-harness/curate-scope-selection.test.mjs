@@ -97,7 +97,7 @@ test('catalogue selected writes the schemas through the bulk route and each tabl
     { schema_name: 'sales', table_name: 'orders', choice: 'catalogue' },
     { schema_name: 'archive', table_name: 'orders', choice: 'catalogue' },
   ]);
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas and 2 tables now set to catalog by me$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas and 2 tables now set to include by me$/);
   assert.match(flat(document.querySelector('[data-scope-selected-count]')), /^0 of 3 schemas · 0 of 3 tables selected$/, 'a finished bulk action spends the selection');
 });
 
@@ -118,7 +118,7 @@ test('the selection survives the re-render that follows a single-row write', asy
   tick(document, window, '[data-scope-select="archive"]');
   document.querySelector('[data-scope-row="schema:empty_one"] [data-scope-act="set"][data-scope-choice="catalogue"]').click();
   await wait();
-  assert.match(flat(row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]')), /catalog · set by me/);
+  assert.match(flat(row(document, 'schema:empty_one').querySelector('[data-scope-choice-cell]')), /include · set by me/);
   assert.equal(tableBox(document, 'sales', 'customers').checked, true);
   assert.equal(document.querySelector('[data-scope-select="archive"]').checked, true);
   assert.match(flat(document.querySelector('[data-scope-selected-count]')), /^1 of 3 schemas · 1 of 3 tables selected$/);

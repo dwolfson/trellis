@@ -19,7 +19,7 @@ async function open(view, preview, opts) {
 }
 const btn = (d) => d.querySelector('[data-scope-commit-btn]');
 
-test('the commit control is a real primary button on its own line directly under the manifest and the refresh box', async () => {
+test('the commit control is a filled primary button at the top right of the manifest table, with the refresh box under it', async () => {
   const { document } = await open(declaredView(), PREVIEW());
   const b = btn(document);
   assert.equal(b.tagName, 'BUTTON');
@@ -27,23 +27,24 @@ test('the commit control is a real primary button on its own line directly under
   assert.ok(b.className.includes('bg-accent') && b.className.includes('font-semibold'), 'filled, not link-styled text');
   assert.ok(!b.className.includes('underline'));
   const rowEl = b.closest('[data-scope-commit-row]');
-  assert.ok(rowEl, 'it has its own row');
-  assert.equal(rowEl.querySelector('[data-scope-read-back]'), null, 'Read Egeria again is not on the primary row');
+  assert.ok(rowEl.querySelector('[data-scope-refresh-now]'), 'the refresh checkbox is under the button, in the same column');
+  assert.equal(rowEl.querySelector('[data-scope-read-back]'), null, 'Read Egeria again is not on the primary column');
   const panel = document.querySelector('[data-scope-commit-panel]');
-  const order = [...panel.querySelectorAll('[data-scope-manifest], [data-scope-refresh-now], [data-scope-commit-row], [data-scope-read-back]')]
-    .map((e) => (e.hasAttribute('data-scope-manifest') ? 'manifest' : e.hasAttribute('data-scope-refresh-now') ? 'refresh' : e.hasAttribute('data-scope-commit-row') ? 'button' : 'read'));
-  assert.deepEqual(order, ['manifest', 'refresh', 'button', 'read']);
+  const order = [...panel.querySelectorAll('[data-scope-manifest], [data-scope-commit-row], [data-scope-read-back]')]
+    .map((e) => (e.hasAttribute('data-scope-manifest') ? 'manifest' : e.hasAttribute('data-scope-commit-row') ? 'button' : 'read'));
+  assert.deepEqual(order, ['manifest', 'button', 'read']);
   assert.ok(document.querySelector('[data-scope-read-back]').className.includes('underline'), 'secondary stays a link-style control');
 });
 
-test('a disabled commit button says why, in words, beside it', async () => {
-  const nothing = await open(declaredView(), PREVIEW({ can_commit: false, button: 'Catalog · 0 schemas', blockers: ['nothing to commit: choose at least one schema to catalogue'] }));
+test('a disabled commit button says why, with a warning word, directly under it', async () => {
+  const nothing = await open(declaredView(), PREVIEW({ can_commit: false, button: 'Catalog · 0 schemas', blockers: ['nothing to commit: choose at least one schema to catalog'] }));
   assert.equal(btn(nothing.document).disabled, true);
-  assert.match(flat(nothing.document.querySelector('[data-scope-commit-why]')), /^nothing chosen/);
+  assert.match(flat(nothing.document.querySelector('[data-scope-commit-why]')), /^⚠ nothing chosen/);
+  assert.ok(btn(nothing.document).closest('[data-scope-commit-row]').contains(nothing.document.querySelector('[data-scope-commit-why]')));
   const coll = await open(declaredView(), PREVIEW({ can_commit: false, blockers: ["1 name collision Egeria's listing can't tell apart: leave the schema out, or rename it in the database"] }));
-  assert.match(flat(coll.document.querySelector('[data-scope-commit-why]')), /^name collisions: /);
-  const undeclared = await open(baseView(), PREVIEW({ can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalogue'] }));
-  assert.match(flat(undeclared.document.querySelector('[data-scope-commit-why]')), /^no scope declared/);
+  assert.match(flat(coll.document.querySelector('[data-scope-commit-why]')), /^⚠ name collisions: /);
+  const undeclared = await open(baseView(), PREVIEW({ can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalog'] }));
+  assert.match(flat(undeclared.document.querySelector('[data-scope-commit-why]')), /^⚠ no scope declared/);
   const out = await open(declaredView(), PREVIEW(), { signedIn: false });
   assert.match(flat(out.document.querySelector('[data-scope-commit-why]')), /sign in/);
 });
@@ -79,20 +80,20 @@ test('a choice write shows saving…, then a plain "saved in Resource Explorer" 
   await wait(60);
   const note = row(ctx.document, 'schema:sales').querySelector('[data-scope-saved-note]');
   assert.ok(note, 'the row says what happened');
-  assert.equal(flat(note), 'saved');
+  assert.equal(flat(note), 'saved · you · just now');
   assert.equal(note.getAttribute('title'), 'saved in Resource Explorer · me · 10-04 · not yet cataloged in Egeria');
   assert.equal(ctx.document.querySelector('[role="dialog"]'), null, 'not a modal');
   await wait(220);
   assert.equal(row(ctx.document, 'schema:sales').querySelector('[data-scope-saved-note]'), null);
-  assert.match(flat(row(ctx.document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /catalog · set by me/, 'the choice itself stays');
+  assert.match(flat(row(ctx.document, 'schema:sales').querySelector('[data-scope-choice-cell]')), /include · set by me/, 'the choice itself stays');
   mod.setSavedNoteMs(6000);
 });
 
-test('the per-row choice links keep their words', async () => {
+test('the per-row choice is a two-part selector: Include | Leave out, and "catalog" is not on the row', async () => {
   const { document } = await open(declaredView(), PREVIEW());
   const r = row(document, 'schema:sales');
-  assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="catalogue"]')), 'catalog');
-  assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="leave_out"]')), 'leave out');
+  assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="catalogue"]')), 'Include');
+  assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="leave_out"]')), 'Leave out');
 });
 
 test('a step never says its state twice: "survey · submitted · 10-06 13:25", not "submitted · submitted"', async () => {
@@ -105,10 +106,11 @@ test('a step never says its state twice: "survey · submitted · 10-06 13:25", n
   ] };
   const host = document.createElement('div'); host.innerHTML = commitStepsHtml(rec);
   const t = (n) => flat(host.querySelector(`[data-scope-commit-step="${n}"]`));
-  assert.match(t('survey'), /survey · submitted · 10-06 13:25 · Egeria's survey/);
+  assert.match(t('survey'), /Egeria survey · submitted/);
   assert.doesNotMatch(t('survey'), /submitted · submitted/);
   assert.doesNotMatch(t('read_back'), /done · done/);
-  assert.match(t('survey_report'), /report · done · report abcd1234 · 76 annotations published/);
+  assert.match(t('survey_report'), /Survey report · done/);
+  assert.match(t('survey_report'), /report abcd1234 · 76 annotations published/);
 });
 
 test('a survey still running in Egeria says so with the count so far and a plain "check again in a minute" hint, no spinner', async () => {
@@ -119,7 +121,7 @@ test('a survey still running in Egeria says so with the count so far and a plain
   const host = document.createElement('div'); host.innerHTML = commitStepsHtml(rec);
   const step = host.querySelector('[data-scope-commit-step="survey"]');
   assert.match(flat(step), /running in Egeria · IN_PROGRESS · 6 annotations so far/);
-  assert.match(flat(step.querySelector('[data-scope-step-hint]')), /^check again in a minute with Read Egeria again$/);
+  assert.match(flat(step.querySelector('[data-scope-step-hint]')), /^running in Egeria · started 13:25 · .*6 annotations so far · usually takes about 15-25 minutes: come back and press Read Egeria again · check again · checking every 60 s$/);
   assert.equal(host.querySelector('[class*="animate-spin"], [role="progressbar"]'), null);
   // a finished survey carries no hint
   rec.steps[0] = { name: 'survey', state: 'done', detail: 'done · report abcd1234 · 9 annotations' };

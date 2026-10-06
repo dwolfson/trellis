@@ -677,7 +677,7 @@ test('source scan: no resource-removal label or tooltip in static/next says "del
     /Unbind this investigation/,
     /The asset can be deleted there|deleted there/, // admin/resync, covered by admin/ anyway
     /saved entries are permanent: no edit, no delete/,   // the journal's permanence sentence, not a resource-removal label
-    /deleted from Egeria/,                     // the Curate commit's word for an Egeria soft delete (an Egeria element, not a resource in RE)
+    /deleted in Egeria|state === 'deleted'|'will delete'/,   // the Curate commit's word for an Egeria soft delete (an Egeria element, not a resource in RE)
   ];
   const offenders = [];
   const walk = (dir) => {

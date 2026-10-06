@@ -191,11 +191,17 @@ const commitEl = (d) => d.querySelector('[data-scope-commit]');
 test('the manifest lists the three mechanisms in order, the target count, the survey schemas and the whole-schemas line', async () => {
   const { document } = await setUp(baseView(), previewFor());
   const lines = [...document.querySelectorAll('[data-scope-manifest-line]')];
-  assert.deepEqual(lines.map((l) => l.dataset.scopeManifestLine), ['re_publishes', 'cataloguer_creates', 'survey_measures', 'whole_schemas']);
+  assert.deepEqual(lines.map((l) => l.dataset.scopeManifestLine), ['re_publishes', 'cataloguer_creates', 'whole_schemas', 'survey_measures']);
+  // the table: one row per mechanism, the long sentences behind "details" on the row they qualify
+  const rows = [...document.querySelectorAll('[data-scope-manifest-row]')].map((r) => r.dataset.scopeManifestRow);
+  assert.deepEqual(rows, ['publishes', 'catalogs', 'surveys', 'left_out', 'undecided']);
+  assert.match(flat(document.querySelector('[data-scope-manifest-row="catalogs"]')), /Egeria catalogs your included schemas.*2 · sales, archive.*next refresh/);
   assert.match(flat(lines[0]), /^1\. RE publishes .* before any target is attached/);
   assert.match(flat(lines[1]), /^2\. Egeria's cataloguer creates tables and columns for 2 schema targets .* never the database or the server/);
-  assert.match(flat(lines[2]), /^3\. Egeria's survey is limited to your chosen schemas: sales, archive$/);
-  assert.match(flat(lines[3]), /^Egeria catalogs whole schemas · table choices are kept for when it can$/);
+  assert.match(flat(lines[3]), /^3\. Egeria's survey is limited to your chosen schemas: sales, archive$/);
+  assert.match(flat(lines[2]), /^Egeria catalogs whole schemas · table choices are kept for when it can$/);
+  const btnBox = document.querySelector('[data-scope-commit-row]');
+  assert.ok(btnBox.querySelector('[data-scope-commit-btn]') && btnBox.querySelector('[data-scope-refresh-now]'), 'button, then the refresh box, in the same right-hand column');
   assert.equal(flat(document.querySelector('[data-scope-commit-btn]')), 'Catalog · 2 schemas');
   assert.equal(document.querySelector('[data-scope-commit-btn]').disabled, false);
 });
@@ -235,10 +241,11 @@ test('a name collision is flagged on the row and in the panel, and the commit bu
   const { document } = await setUp(view, preview);
   assert.match(flat(document.querySelector('[data-scope-row="schema:a_b"] [data-scope-collision]')), /Egeria's listing for a_b would also return aXb/);
   assert.match(flat(document.querySelector('[data-scope-collision-line]')), /^⚠ Egeria's listing for a_b would also return aXb$/);
+  assert.ok(document.querySelector('[data-scope-commit-row]').contains(document.querySelector('[data-scope-collision-line]')), 'listed directly under the button');
   const btn = document.querySelector('[data-scope-commit-btn]');
   assert.equal(btn.disabled, true);
   assert.match(btn.title, /^name collisions: Egeria's listing for a_b would also return aXb$/);
-  assert.match(flat(document.querySelector('[data-scope-commit-why]')), /^name collisions: /);
+  assert.match(flat(document.querySelector('[data-scope-commit-why]')), /^⚠ name collisions: /);
 });
 
 test('an archived schema chosen again is refused with the S19 sentence', async () => {
@@ -421,7 +428,9 @@ test('a survey that was only submitted reads submitted, and a step\'s long tail 
   await wait(300);
   const steps = Object.fromEntries([...document.querySelectorAll('[data-scope-commit-step]')].map((e) => [e.dataset.scopeCommitStep, e]));
   assert.equal(steps.survey.dataset.state, 'submitted');
-  assert.match(flat(steps.survey), /survey · submitted · 10-05 12:53/);
+  assert.match(flat(steps.survey), /Egeria survey · submitted/);
+  assert.match(flat(steps.survey), /10-05 12:53/);
+  assert.match(flat(steps.survey.querySelector('[data-scope-step-hint]')), /^running in Egeria · started 12:53/);
   assert.ok(!/survey · done/.test(flat(steps.survey)), 'initiation is never "done"');
   assert.equal(steps.refresh.dataset.state, 'requested');
   assert.match(flat(steps.zone_membership), /zones left to Egeria/);
@@ -436,7 +445,9 @@ test('a refused commit says why and draws no steps', async () => {
   server.signedIn = false;                          // the session lapsed between the draw and the press
   document.querySelector('[data-scope-commit-btn]').click();
   await wait(60);
-  assert.match(flat(document.querySelector('[data-scope-commit-status]')), /sign in to change what gets cataloged/);
+  assert.match(flat(document.querySelector('[data-scope-commit-status]')), /^your session expired · sign in again/);
+  assert.ok(document.querySelector('[data-scope-commit-status] [data-scope-sign-in]'), 'and offers the sign-in');
+  assert.ok(document.querySelector('[data-scope-commit-why]'), 'the button shows the reason');
   assert.equal(document.querySelector('[data-scope-commit-step]'), null);
 });
 
@@ -469,12 +480,12 @@ test('the commit control is "Catalog", the button without a server label falls b
   assert.doesNotMatch(panel.replace(/Egeria's cataloguer/g, '').replace(/refresh Egeria's cataloguer/g, ''), /[Cc]atalogu(e|ed|es|ing)\b/);
 });
 
-test('the choices keep their own words, spelled the US way: "catalog" and "leave out"', async () => {
+test('the choice selector says Include | Leave out; "catalog" is on the commit button alone', async () => {
   const { document } = await setUp(baseView());
   const cell = document.querySelector('[data-scope-row="schema:sales"] [data-scope-choice-cell]') || document.querySelector('[data-scope-row="schema:sales"]');
   const words = flat(cell);
-  assert.match(words, /\bcatalog\b/);
-  assert.doesNotMatch(words, /[Cc]atalogu/);
+  assert.match(words, /Include.*Leave out/);
+  assert.doesNotMatch(words, /[Cc]atalog/, 'the word catalog is on the commit button alone');
   const choiceValue = document.querySelector('[data-scope-row="schema:sales"] [data-scope-act="set"][data-scope-choice="catalogue"]');
   assert.ok(choiceValue, 'the API value stays "catalogue": an identifier, not a word on the page');
 });
