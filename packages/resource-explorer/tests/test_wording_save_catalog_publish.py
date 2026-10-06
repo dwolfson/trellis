@@ -276,3 +276,85 @@ def test_the_group_changes_sql_survives_the_postgres_translator_untouched_by_its
     assert t(ins).count("%s") == 5 and "?" not in t(ins)
     idx = "CREATE INDEX IF NOT EXISTS idx_group_changes_entity ON group_changes(entity_type, entity_slug, id)"
     assert t(idx) == idx
+
+
+# ── the local guard: a skipped tier's assertion cannot go stale ──────────────────────────────────
+
+#: Prose literals in tests that may keep the UK spelling, each for a stated reason.
+TEST_UK_ALLOW = (
+    "Has this resource already been catalogued in Egeria, and when?",   # the question catalog's stored KEY (a stored-answer key)
+    "- catalogued: true",   # test_fact_answer_rendering: a JS fixture KEY (`{catalogued: true}`) echoed by a formatter, not wording
+)
+
+#: Tests that assert on app wording the slice changed and are SKIPPED locally (the pg tier, live tiers): the guard reads their
+#: source, so a stale assertion fails here (not skipped in any tier), long before CI's Postgres service container runs them.
+SKIPPED_TIER_MARKERS = ("pg_registry", "pg_store", "pg_test_schema", "requires_pgvector", "requires_egeria", "live_")
+
+
+def _assert_literals(tree):
+    """String constants in the TEST EXPRESSION of an `assert` (not its failure message) and inside `.match(...)`/`match=`
+    expectations."""
+    for node in ast.walk(tree):
+        subtree = None
+        if isinstance(node, ast.Assert):
+            subtree = node.test
+        elif isinstance(node, ast.Call) and (getattr(node.func, "attr", "") in ("match", "search", "fullmatch")
+                                             or any(k.arg == "match" for k in node.keywords)):
+            subtree = node
+        if subtree is None:
+            continue
+        for n in ast.walk(subtree):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                yield n
+
+
+def test_no_test_assertion_expects_the_uk_spelling_in_app_prose():
+    bad = []
+    for p in sorted((Path(__file__).parent).rglob("*.py")):
+        if p.name == Path(__file__).name:
+            continue
+        try:
+            tree = ast.parse(p.read_text())
+        except SyntaxError:
+            continue
+        for n in _assert_literals(tree):
+            v = n.value
+            if re.search(r"\s", v) and UK_PROSE.search(v) and not any(a in v for a in TEST_UK_ALLOW):
+                bad.append(f"{p.name}:{n.lineno}: {v[:90]!r}")
+    assert bad == [], ("assertions that expect the UK spelling in app prose (the wording is US: catalog / cataloged); "
+                       "this includes tests skipped locally (the pg tier):\n" + "\n".join(bad))
+
+
+def test_no_test_assertion_expects_a_word_the_slice_retired_on_a_control_or_row():
+    """'Sync now', 'Create in Egeria', 'declare the scope again', 'add + probe' and 'will be removed (soft-deleted)'. An
+    assertion that the OLD word is GONE (`not in`, `not ...`) is fine; one that EXPECTS it is stale."""
+    retired = ("Sync now", "Create in Egeria", "declare the scope again", "add + probe", "will be removed (soft-deleted)")
+    bad = []
+    for p in sorted((Path(__file__).parent).rglob("*.py")):
+        if p.name == Path(__file__).name:
+            continue
+        try:
+            tree = ast.parse(p.read_text())
+        except SyntaxError:
+            continue
+        for a in ast.walk(tree):
+            if not isinstance(a, ast.Assert):
+                continue
+            negated = any(isinstance(n, ast.NotIn) or (isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not))
+                          for n in ast.walk(a.test))
+            if negated:
+                continue
+            for n in ast.walk(a.test):
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and any(r in n.value for r in retired):
+                    bad.append(f"{p.name}:{n.lineno}: {n.value[:90]!r}")
+    assert bad == [], "assertions that expect a retired word:\n" + "\n".join(bad)
+
+
+def test_the_guard_reads_the_pg_tier_files_that_pytest_skips_locally():
+    """The point of reading source: these files' tests are skipped without a Postgres, yet the guard still sees their literals."""
+    seen = set()
+    for p in (Path(__file__).parent).rglob("test_*.py"):
+        src = p.read_text()
+        if any(m in src for m in SKIPPED_TIER_MARKERS):
+            seen.add(p.name)
+    assert {"test_egeria_resync_definition_checks.py", "test_facts.py"} <= seen
