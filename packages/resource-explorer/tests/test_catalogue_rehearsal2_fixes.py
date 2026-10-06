@@ -52,7 +52,7 @@ def test_every_relationship_the_rehearsal_saw_on_a_template_made_schema_is_struc
 
 
 def test_a_schema_with_only_the_templates_own_relationships_plans_a_soft_delete(world, fake):
-    _catalogue(world, fake, "sales")
+    _catalogue(world, fake, "sales", refresh=False)
     choose(world, "sales", "leave_out")
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
     assert row["form"] == gw.SOFT_DELETE and row["hangs_off"]["total"] == 0
@@ -68,7 +68,7 @@ def test_a_term_assignment_on_a_table_still_plans_an_archive(world, fake):
     choose(world, "sales", "leave_out")
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
     assert row["form"] == gw.ARCHIVE and row["hangs_off"]["by_type"] == {"SemanticAssignment": 1}
-    assert "1 term assignment hang off it" in row["text"]
+    assert "1 term assignment" in row["text"] and "hang off it" in row["text"]
 
 
 # ── D-B: a non-empty target list parses, an unknown one raises, nothing is initiated twice ──────
@@ -277,7 +277,8 @@ def test_the_gateway_reads_the_request_type_and_a_missing_status_from_the_live_i
 
 
 def test_an_archive_step_says_archived_and_a_removal_says_removed(world, fake):
-    _catalogue(world, fake, "sales", "archive")
+    _catalogue(world, fake, "sales", "archive", refresh=False)
+    fake._cycle(fake.by_qn(SALES_QN)["guid"])                       # sales is cataloged (tables), archive is only attached
     fake.add_term_assignment("orders", SALES_QN)
     choose(world, "sales", "leave_out")
     choose(world, "archive", "leave_out")
@@ -348,7 +349,7 @@ def _schema_with_dataflow(world, fake, other_qn, other_type, other_name):
 
 
 def test_a_schema_with_only_the_connectors_own_dataflow_plans_a_delete(world, fake):
-    _catalogue(world, fake, "sales")
+    _catalogue(world, fake, "sales", refresh=False)
     choose(world, "sales", "leave_out")
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
     assert row["form"] == gw.SOFT_DELETE and "delete · nothing depends on it" in row["text"]
@@ -449,3 +450,126 @@ def test_a_dataflow_whose_far_end_could_not_be_read_hangs_off_and_says_it_could_
     r = gw.Relationship("DataFlow", other_guid="far")
     h = cc.classify_hangs_off([[r]])
     assert h["total"] == 1 and h["lineage_to"] == ["an element Resource Explorer could not name"]
+
+
+# ── the cataloguer's own links (live read 2026-10-06, confirming the source read) ─────────────────
+
+def test_RE_creates_no_schema_type_and_has_no_link_schema_type_call(world, fake):
+    """The cataloguer creates `<schemaQN>_schemaType` and the `Schema` link itself when it catalogues a schema-kind
+    target (rehearsal 2: tables appear under RE's schema; live read 2026-10-06). RE creates the schema element ONLY."""
+    assert not hasattr(gw.PyegeriaCatalogueGateway, "link_schema_type") and not hasattr(gw.PyegeriaCatalogueGateway, "find_schema_type")
+    choose(world, "sales", "catalogue")
+    press(world, fake, refresh=False)
+    assert [e["type"] for e in fake.elements.values() if e["type"] == "RelationalDBSchemaType"] == []      # no cataloguer cycle yet
+    assert {c[0] for c in fake.calls}.isdisjoint({"link_schema_type", "find_schema_type"})
+
+
+def test_the_type_name_AssetSchemaType_is_sent_nowhere_it_exists_in_no_egeria_source():
+    root = Path(__file__).resolve().parents[1] / "resource_explorer"
+    hits = [str(p.relative_to(root)) for p in root.rglob("*.py") if "AssetSchemaType" in p.read_text()]
+    assert hits == []
+
+
+def test_RE_attaches_schema_kind_targets_only_never_a_database_kind_target(world, fake):
+    """A database-kind pass would create a SECOND schema element for the same schema (qualifiedName
+    `<DBQN>::<schema>` against RE's `PostgreSQL Relational Database Schema::<host:port>::<db>.<schema>`; by source
+    reading, not run live), so RE only ever attaches DeployedDatabaseSchema elements."""
+    choose(world, "sales", "catalogue")
+    choose(world, "archive", "catalogue")
+    press(world, fake)
+    assert fake.targets and all(fake.elements[t.element_guid]["type"] == "DeployedDatabaseSchema" for t in fake.targets)
+    assert fake.db_guid not in {t.element_guid for t in fake.targets} and fake.server_guid not in {t.element_guid for t in fake.targets}
+    for _, guid, *_ in fake.ops("initiate_catalog_action"):
+        assert fake.elements[guid]["type"] == "DeployedDatabaseSchema"
+    for _, guid, _ in fake.ops("add_catalog_target"):
+        assert fake.elements[guid]["type"] == "DeployedDatabaseSchema"
+
+
+def test_the_template_create_anchors_the_schema_to_the_database_like_the_cataloguer_does(real):
+    g, c, ent = real
+    c["AutomatedCuration"].create_elem_from_template.return_value = "new"
+    g.create_schema_element(ent, "sales", "db-guid")
+    body = c["AutomatedCuration"].create_elem_from_template.call_args[0][0]
+    assert body["isOwnAnchor"] is False and body["anchorGUID"] == "db-guid"       # not its own anchor (cataloguer: anchor = database)
+
+
+# ── the walk and the leaf-first delete (anchors, live read 2026-10-06) ───────────────────────────
+
+def _cataloged(world, fake, *names):
+    for n in names:
+        choose(world, n, "catalogue")
+    press(world, fake, refresh=True)
+
+
+def test_tables_are_reached_only_through_the_schema_type_two_hops_from_the_schema(world, fake):
+    _cataloged(world, fake, "sales")
+    g = fake.by_qn(SALES_QN)["guid"]
+    direct = {r.type_name for r in fake.relationships(g)}
+    assert "AttributeForSchema" not in direct and "NestedSchemaAttribute" not in direct and "Schema" in direct
+    st = next(r.other_guid for r in fake.relationships(g) if r.type_name == "Schema")
+    assert {r.type_name for r in fake.relationships(st)} >= {"AttributeForSchema", "Schema"}
+
+
+def test_a_term_assignment_two_hops_away_is_found_by_walking_not_by_the_schemas_own_relationships(world, fake):
+    _cataloged(world, fake, "sales")
+    fake.add_term_assignment("orders", SALES_QN)
+    g = fake.by_qn(SALES_QN)["guid"]
+    assert "SemanticAssignment" not in {r.type_name for r in fake.relationships(g)}           # not on the schema itself
+    choose(world, "sales", "leave_out")
+    row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
+    assert row["form"] == gw.ARCHIVE and row["hangs_off"]["by_type"].get("SemanticAssignment") == 1
+
+
+def test_a_cataloged_schema_always_archives_even_with_nothing_asserted_on_it(world, fake):
+    _cataloged(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
+    assert row["form"] == gw.ARCHIVE and "2 cataloged tables hang off it" in row["text"]
+    assert row["hangs_off"]["by_type"] == {}                                                  # no steward link at all
+
+
+def test_a_schema_attached_but_not_yet_cataloged_still_plans_a_soft_delete(world, fake):
+    _catalogue(world, fake, "sales", refresh=False)
+    choose(world, "sales", "leave_out")
+    row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
+    assert row["form"] == gw.SOFT_DELETE
+
+
+def test_the_archive_order_is_columns_tables_connection_graph_schema_type_then_the_schema_each_by_guid(world, fake):
+    _cataloged(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    _, rec = press(world, fake)
+    kinds = [t for _, t, f in fake.deleted_order]
+    assert {f for _, _, f in fake.deleted_order} == {gw.ARCHIVE} and step(rec, "leave_outs")["state"] == "done"
+    assert kinds[:4] == ["RelationalColumn"] * 4 and kinds[4:6] == ["RelationalTable"] * 2
+    assert sorted(kinds[6:10]) == ["Connection", "Endpoint", "Endpoint", "VirtualConnection"]
+    assert kinds[10:] == ["RelationalDBSchemaType", "DeployedDatabaseSchema"] and len(kinds) == 12
+    deletes = [c for c in fake.calls if c[0] == "delete_element"]
+    assert len({c[1] for c in deletes}) == len(deletes) == 12                                  # every element by its own guid
+    s = derived(world)["schemas"]["sales"]
+    assert s["state"] == "archived"
+
+
+def test_a_soft_delete_walks_the_same_way_and_proves_each_element_gone(world, fake):
+    _catalogue(world, fake, "sales", refresh=False)
+    choose(world, "sales", "leave_out")
+    _, rec = press(world, fake)
+    assert step(rec, "leave_outs")["state"] == "done" and fake.by_qn(SALES_QN) is None
+    assert all(e["deleted"] for e in fake.elements.values() if e["qn"].startswith(SALES_QN))
+    assert derived(world)["schemas"]["sales"]["state"] == "removed"
+
+
+def test_an_archive_that_leaves_an_element_readable_is_an_error_not_a_proof(world, fake):
+    _cataloged(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    orig = fake.delete_element
+
+    def forget_one(guid, form):
+        if fake.elements[guid]["type"] == "RelationalTable" and not getattr(forget_one, "done", False):
+            forget_one.done = True
+            fake.calls.append(("delete_element", guid, form))          # the call is made, Egeria does nothing
+            return
+        return orig(guid, form)
+    fake.delete_element = forget_one
+    _, rec = press(world, fake)
+    assert step(rec, "leave_outs")["state"] == "failed"

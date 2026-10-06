@@ -110,7 +110,7 @@ no constraint, so the new kind needs nothing. Covered by `test_migration_is_addi
 2. The shape of a non-empty `get_catalog_targets` answer (relationship GUID and element keys), of `get_all_related_elements`
    (relationship type names), and of the daemon status (`connectorName`, `lastRefreshTime`): parsed tolerantly, not observed.
 3. `elements_under` uses a starts-with name search then filters client-side; whether the server treats the string as a literal or a regex was not established.
-4. Adoption of a pre-existing `<dbQN>::<schema>_schemaType` links it with an `AssetSchemaType` relationship; whether the cataloguer's schema-kind scheme even
+4. Adoption of a pre-existing `<dbQN>::<schema>_schemaType` links it with the `Schema` relationship (schema at end 1; it was `AssetSchemaType` until 2026-10-06, a name that is in no Egeria source); whether the cataloguer's schema-kind scheme even
    produces that name was not observed.
 5. The structural relationship list, and that a term assignment on a column is seen by the relationships read of the table and column elements.
 6. The Ownership read-before-write shape; the zone read-first (`current_zones`) against a real security connector.
@@ -249,3 +249,64 @@ rehearsal 2 hit); the test6 run will replace it with a live one.
 
 **Backlog:** the missing worker heartbeat row is what would make "will retry" honest: today a failed row says "waiting for a worker" because nothing in the
 registry proves a worker is running.
+
+### Live read of the cataloguer's own links (2026-10-06, `READBACK-CATALOGUER-PARENT-LINK-2026-10-06.md`, branch re/readback-cataloguer-parent-link-evidence)
+
+It AGREES with the source read behind D-D: the cataloguer-made `DeployedDatabaseSchema` is linked to the database by `DataSetContent`
+`227526de-bc2c-43db-9231-ab9920b3e8f7` with the SCHEMA at END 1 and the DATABASE at END 2, and is anchored to the database (`Anchors.anchorGUID` = the
+database). So RE's `parentAtEnd1: false` is the confirmed direction. The schema's only other relationship is `Schema` (type id
+815b004d-73c6-4728-9dd9-536f4fe803cd; end 1 the schema, end 2 its `RelationalDBSchemaType` `<schemaQN>_schemaType`); tables link to the schema TYPE by
+`AttributeForSchema` and are anchored to the database; there is no relationship between the server and the database, schema or tables, so D-E stays by name.
+
+- **Anchor:** RE's template create passes `isOwnAnchor: false` and `anchorGUID` = the database, so the schema is anchored to the database like the
+  cataloguer's (rehearsal 2 read the same on RE's schemas: `Anchors anchorGUID` = the database). Same direction, same anchor.
+- **What differs, noted:** RE's schema is made from the schema template, so it also carries the template's connection graph (`ResourceConnection` to a
+  VirtualConnection and its endpoints), which the cataloguer's own schema does not, and its qualifiedName is
+  `PostgreSQL Relational Database Schema::<host:port>::<db>.<schema>` where the cataloguer's is `<DBQN>::<schema>`.
+- **`AssetSchemaType` was wrong, and the call is gone:** `link_schema_type` (orphan schema-type adoption) sent `AssetSchemaType`, a name that is in no Egeria
+  Java source and not a live type (type `Schema`, id 815b004d-73c6-4728-9dd9-536f4fe803cd, schema at end 1). Per the architect RE creates the schema element ONLY:
+  `find_schema_type`, `link_schema_type` and the adoption in `apply_attach` are removed as dead code (the cataloguer makes `<schemaQN>_schemaType` and the `Schema`
+  link itself when it catalogs the target; rehearsal 2 shows tables under RE's schema), and a test fails if the string `AssetSchemaType` appears anywhere in
+  `resource_explorer`. **Does the template create a schema type? No:** the schema the template makes carries `CatalogTarget`, `ResourceConnection`, `SourcedFrom`,
+  `ActionTarget` and `DataFlow` and no `Schema` relationship (READBACK note, process-created schema; rehearsal 2 read the same on RE's), and its 4 template
+  elements are the connection graph, not a schema type. (An orphan `<dbQN>::<schema>_schemaType` is a database-kind-pass leftover and cannot clash with
+  RE's `<schemaQN>_schemaType`, whose name has RE's schema qualifiedName.)
+- **RE uses schema-kind targets only.** By source reading (not run live), a database-kind pass would create a SECOND schema element for the same schema, with
+  the cataloguer's qualifiedName, beside RE's. A test pins that every target and every attach RE makes is a `DeployedDatabaseSchema`, never the database or the server.
+
+### Anchors change the leave-out scan and the delete order (architect, 2026-10-06; live read of the cataloguer's links)
+
+Tables, columns and the schema type are anchored to the DATABASE, not the schema, and the schema's own relationships are exactly two. A table is reached only by
+schema `--Schema-->` schema type `--AttributeForSchema-->` table `--NestedSchemaAttribute-->` column. So:
+- **"Hangs off" is found by WALKING that graph** (`_walk_schema`: schema, schema type, tables, columns, then each element's relationships, plus whatever the
+  qualifiedName prefix finds, e.g. the template's connection graph), never by listing the schema's direct relationships. A term assignment two hops away plans an
+  archive (tested with a fake graph where the schema's own list has no `SemanticAssignment`).
+- **A CATALOGED schema (tables found) always archives**, because deleting the schema element never cascades its content; its row reads "N cataloged tables hang off
+  it". A schema attached but not yet cataloged, with only the template's machinery, plans a soft delete.
+- **Delete order, each element by its own GUID with its own read-back:** columns, tables, the template's connection graph, the schema type, then the schema
+  (`_prove_gone` reads each back: gone for a soft delete, a Memento for an archive; the fake no longer cascades an archive and refuses a parent that still holds
+  visible content). Interaction with the DataFlow rule: a machinery DataFlow (far end a `GovernanceActions` job component) is a relationship of the schema
+  element and goes with it; any other lineage forces the archive, and the elements around it are archived leaf first like the rest.
+
+### qualifiedName: NOT changed (architect asked; decision left open)
+
+The ruling would give RE's schema the cataloguer's form `<DBQN>::<schema>` so a database-kind pass adopts it instead of making a second element. NOT applied,
+because it cannot be proven safe from the source and the notes, and it conflicts with the earlier ruling that Egeria's own process adopts RE's schema by the
+TEMPLATE's name. Facts: the template create takes the schema's qualifiedName from the template's placeholders (`PostgreSQL Relational Database Schema::<serverName>::
+<databaseName>.<schemaName>`, rehearsal 1 and 2). The request body also has `replacementProperties` (`TemplateRequestBody.java`, overlay properties) that the
+automated-curation endpoint passes straight through (`AutomatedCurationRESTServices.java:412-416` into `MetadataElementHandler.java:2374-2440`'s builder, then
+`createBeanFromTemplate`), so an override is possible in principle. Not shown: the JSON class `replacementProperties` needs for a `DeployedDatabaseSchema`
+(pyegeria never sent one), whether the deep-copied connection graph (`<schemaQN>::Connection`, `::Endpoint`, `::SecretsStoreConnection`, `::SecretStoreEndpoint`)
+is named from the template's pattern or from the overlaid qualifiedName, and whether `allowRetrieve` (return the element that already has this name) behaves.
+Against it: Egeria's own `CreateAsCatalogTarget` process creates the schema from the template's placeholders, so with the cataloguer's name a later process run
+would NOT find RE's schema and would create a second one (the opposite of the adoption the earlier ruling relied on, and shown live: template-first then process
+adopted by qualifiedName). The schema-kind target RE uses does not depend on the schema's name (`<schemaQN>::<table>` is built from whatever name the element
+has), so the schema-kind door works either way. **Question for the architect:** which adoption matters more, a later Egeria process run (template name) or a
+later database-kind pass (cataloguer name)? RE only uses schema-kind targets, and a database-kind pass would, by source reading and not live, create a SECOND
+schema element for the same schema.
+
+### D-E stays by name (live read, evidence note 899bb292)
+
+Neither the cataloguer nor the template links a database to its server: the live read of a cataloguer-made database, schema and tables found NO relationship
+between the server element (or its DatabaseManager capability) and any of them. So the exact-qualifiedName lookup (`PostgreSQL Server::<host:port>`) stays and
+no relationship-based follow-up is planned.

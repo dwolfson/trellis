@@ -219,9 +219,10 @@ def test_the_gateway_reads_zones_from_the_raw_classifications_and_none_is_an_emp
 # ── (3) an engine action still running blocks THAT schema's leave-out ───────
 
 def _catalogued(world, fake, *names):
+    """Attached, NOT yet cataloged: a cataloged schema (tables read back) always archives, which these tests are not about."""
     for n in names:
         choose(world, n, "catalogue")
-    press(world, fake, refresh=True)
+    press(world, fake, refresh=False)
     for n in names:
         choose(world, n, "leave_out")
 
@@ -298,7 +299,7 @@ def test_the_gateway_reads_the_live_action_target_item(real):
 def test_every_name_the_commit_builds_is_deterministic_and_every_guid_is_stored(world, fake):
     ent = entity(world)
     uuid = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}|@\d{8,}|\d{10,}")
-    for qn in (cc.schema_qn(ent, "sales"), cc.schema_type_qn(ent, "sales"), cc.names_for(ent)["server"],
+    for qn in (cc.schema_qn(ent, "sales"), cc.names_for(ent)["server"],
                cc.target_name(ent, "sales")):
         assert qn == qn.strip() and not uuid.search(qn), qn
     assert cc.schema_qn(ent, "sales") == SALES_QN

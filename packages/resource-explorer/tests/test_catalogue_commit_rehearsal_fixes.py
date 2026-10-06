@@ -235,7 +235,7 @@ def test_a_failed_step_shows_the_first_sentence_with_the_rest_under_more_and_no_
 
 def test_a_clean_run_says_attached_and_removed_in_full_words(world, fake):
     choose(world, "sales", "catalogue")
-    _, rec = press(world, fake)
+    _, rec = press(world, fake, refresh=False)
     assert step(rec, "schema_targets")["detail"].startswith("1 of 1 attached")
     choose(world, "sales", "leave_out")
     _, rec2 = press(world, fake)

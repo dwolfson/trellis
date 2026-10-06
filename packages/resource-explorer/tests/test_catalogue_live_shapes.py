@@ -83,7 +83,7 @@ def test_a_live_term_assignment_makes_the_leave_out_an_archive_not_a_soft_delete
     def related(guid, body=None):
         if guid == "tab1":
             return live.raw_related(table, [("SemanticAssignment", "ra", term)])
-        return live.raw_related(schema, [("AssetSchemaType", "rb", live.raw_element("st", "st", "SchemaType"))])
+        return live.raw_related(schema, [("Schema", "rb", live.raw_element("st", "st", "SchemaType"))])
     c["MetadataExpert"].get_all_related_elements.side_effect = related
     read = cc.read_hangs_off(g, ent, "sales")
     assert read["state"] == "read" and read["form"] == gw.ARCHIVE

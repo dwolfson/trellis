@@ -171,11 +171,6 @@ def schema_qualified_name(server_name: str, database_name: str, schema: str) -> 
     return f"{SCHEMA_TECH_TYPE}::{server_name}::{database_name}.{schema}"
 
 
-def schema_type_qualified_name(server_name: str, database_name: str, schema: str) -> str:
-    """The orphan-case schema type an older cataloguer left behind."""
-    return f"{database_qualified_name(server_name, database_name)}::{schema}_schemaType"
-
-
 def schema_placeholders(db_entity, schema: str, description: str = "") -> dict[str, str]:
     """The placeholders the schema template takes AND the request parameters Egeria's attach action
     copies into the target: one dict, so the template create and the action type cannot disagree."""
@@ -209,10 +204,8 @@ class CatalogueGateway(Protocol):
     def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome: ...
     def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
-    def find_schema_type(self, qualified_name: str) -> str: ...
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str: ...
-    def link_schema_type(self, schema_guid: str, schema_type_guid: str) -> None: ...
     def list_catalog_targets(self) -> list[CatalogTarget]: ...
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
@@ -636,10 +629,6 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(_short(exc)) from exc
         return parse_element_answer(res)
 
-    def find_schema_type(self, qualified_name: str) -> str:
-        el = self.read_element(qualified_name)
-        return el.guid if el else ""
-
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str:
         """The DeployedDatabaseSchema, from the template, under the database element.
@@ -693,14 +682,6 @@ class PyegeriaCatalogueGateway:
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
         return parse_initiate_answer(res)
-
-    def link_schema_type(self, schema_guid: str, schema_type_guid: str) -> None:
-        body = {"class": "NewRelatedElementsRequestBody", "typeName": "AssetSchemaType",
-                "metadataElement1GUID": schema_guid, "metadataElement2GUID": schema_type_guid}
-        try:
-            self._client("MetadataExpert").create_related_elements(body=body)
-        except Exception as exc:
-            raise GatewayError(_short(exc)) from exc
 
     def list_catalog_targets(self) -> list[CatalogTarget]:
         """Read the cataloguer's targets FIRST, with the body pyegeria's default lacks."""

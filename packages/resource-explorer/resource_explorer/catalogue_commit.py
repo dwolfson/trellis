@@ -54,7 +54,7 @@ from typing import Any, Callable
 
 from resource_explorer.catalogue_gateway import (
     ARCHIVE, CATALOG_SCHEMA_ACTION_TYPE, FAILED_ACTION_STATUSES, RUNNING_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
-    schema_qualified_name, schema_type_qualified_name, server_name_for)
+    schema_qualified_name, server_name_for)
 from resource_explorer.catalogue_scope import CATALOGUE, LEAVE_OUT, current_schema_choice, md
 
 log = logging.getLogger(__name__)
@@ -97,7 +97,6 @@ P_ELEMENTS = "elements_read_back"
 P_DETACHED = "target_detached"
 P_REMOVED = "removed"
 P_ARCHIVED = "archived"
-P_ADOPTED = "schema_type_adopted"
 P_SURVEY = "survey_started"
 P_CONNECTOR = "connector_read"
 P_READ_FAILED = "read_failed"
@@ -120,7 +119,7 @@ KIND_LEAVE_OUT = "catalogue_schema_leave_out"
 #: keeps it) and never towards a soft delete (which removes it). The owner's gate
 #: confirms the list against a live schema with a term assignment.
 STRUCTURAL_RELATIONSHIPS = frozenset({
-    "CatalogTarget", "DataSetContent", "AssetSchemaType", "AttributeForSchema",
+    "CatalogTarget", "DataSetContent", "Schema", "AttributeForSchema",
     "NestedSchemaAttribute", "SchemaTypeOption", "LinkedType", "Anchors",
     "ConnectionToAsset", "ServerAssetUse", "AssetConnection", "ReportSubject",
     "TemplateSource", "SourcedFrom", "ResourceList",
@@ -181,10 +180,6 @@ def names_for(db_entity) -> dict:
 
 def schema_qn(db_entity, schema: str) -> str:
     return schema_qualified_name(server_name_for(db_entity), db_entity.database_name, schema)
-
-
-def schema_type_qn(db_entity, schema: str) -> str:
-    return schema_type_qualified_name(server_name_for(db_entity), db_entity.database_name, schema)
 
 
 def target_name(db_entity, schema: str) -> str:
@@ -268,25 +263,81 @@ def classify_hangs_off(rels_per_element: list[list]) -> dict:
     return {"total": total, "by_type": by_type, "words": " · ".join(parts), "lineage_to": lineage_to}
 
 
-def read_hangs_off(gateway: CatalogueGateway, db_entity, schema: str) -> dict:
-    """What hangs off one catalogued schema, from a relationships read of its elements.
+def _walk_schema(gateway: CatalogueGateway, schema_guid: str, rels_of) -> dict:
+    """Walk the schema's content as the cataloguer wired it (live read 2026-10-06): tables, columns and the schema type are
+    ANCHORED TO THE DATABASE, not to the schema, and the schema's own relationships are exactly two (DataSetContent to the
+    database, `Schema` to its schema type). A table is reached ONLY by schema --Schema--> schema type --AttributeForSchema-->
+    table --NestedSchemaAttribute--> column. Returns `{"schema_types", "tables", "columns"}` as `(guid, type, qualifiedName)`."""
+    out = {"schema_types": [], "tables": [], "columns": []}
+    seen: set[str] = set()
+    for r in rels_of(schema_guid):
+        if r.type_name == "Schema" and r.other_guid and r.other_guid not in seen:
+            seen.add(r.other_guid)
+            out["schema_types"].append((r.other_guid, r.other_type or "RelationalDBSchemaType", r.other_qualified_name))
+    for st_guid, _, _ in list(out["schema_types"]):
+        for r in rels_of(st_guid):
+            if r.type_name == "AttributeForSchema" and r.other_guid and r.other_guid not in seen:
+                seen.add(r.other_guid)
+                out["tables"].append((r.other_guid, r.other_type or "RelationalTable", r.other_qualified_name))
+    for t_guid, _, _ in list(out["tables"]):
+        for r in rels_of(t_guid):
+            if r.type_name == "NestedSchemaAttribute" and r.other_guid and r.other_guid not in seen \
+                    and (r.other_type in ("RelationalColumn", "")):
+                seen.add(r.other_guid)
+                out["columns"].append((r.other_guid, r.other_type or "RelationalColumn", r.other_qualified_name))
+    return out
 
-    Returns `{"state": "absent"}` when Egeria holds no such schema element,
-    `{"state": "read", "form", "hangs_off", "element_guid", "checked"}` when the
-    read completed, and `{"state": "cannot_check", "error"}` when any read
-    failed. A failed read is never reported as "nothing hangs off it"."""
+
+def read_hangs_off(gateway: CatalogueGateway, db_entity, schema: str) -> dict:
+    """What hangs off one catalogued schema, from a relationships read of everything under it.
+
+    The scan WALKS the graph (`_walk_schema`) and unions it with what the qualifiedName prefix finds (the connection
+    graph the template made, and tables the walk could not reach), reading each element's relationships once.
+    Returns `{"state": "absent"}` when Egeria holds no such schema element, `{"state": "read", "form", "hangs_off",
+    "element_guid", "checked", "delete_order", "content"}` when the read completed, and `{"state": "cannot_check",
+    "error"}` when any read failed. A failed read is never reported as "nothing hangs off it".
+
+    A schema with CATALOGED CONTENT (tables read back) always archives: deleting the schema element never cascades its
+    tables, columns or schema type (they are anchored to the database), so the form is not decided by relationships alone."""
     qn = schema_qn(db_entity, schema)
+    cache: dict[str, list] = {}
+
+    def rels_of(guid: str) -> list:
+        if guid not in cache:
+            cache[guid] = gateway.relationships(guid)
+        return cache[guid]
     try:
         el = gateway.read_element(qn)
         if el is None:
             return {"state": "absent"}
+        walked = _walk_schema(gateway, el.guid, rels_of)
         under = gateway.elements_under(qn + "::")
-        rels = [gateway.relationships(el.guid)] + [gateway.relationships(u.guid) for u in under]
+        members: dict[str, tuple] = {}
+        for kind in ("columns", "tables", "schema_types"):
+            for g, t, n in walked[kind]:
+                members[g] = (g, t, n)
+        for u in under:
+            members.setdefault(u.guid, (u.guid, u.type_name, u.qualified_name))
+        for g in members:
+            rels_of(g)
+        rels = [rels_of(el.guid)] + [cache[g] for g in members]
     except GatewayError as exc:
         return {"state": "cannot_check", "error": str(exc)}
     h = classify_hangs_off(rels)
+    tables = {g for g, t, _ in members.values() if t == "RelationalTable"}
+    columns = {g for g, t, _ in members.values() if t == "RelationalColumn"}
+    content = {"tables": len(tables), "columns": len(columns)}
+    if content["tables"]:
+        h["words"] = " · ".join(([h["words"]] if h["words"] else [])
+                                + [f"{content['tables']} cataloged table{'s' if content['tables'] != 1 else ''}"])
+        h["total"] += content["tables"]
+    # leaf first, each by GUID: columns, tables, anything else under the name (the template's connection graph),
+    # the schema type, then the schema (the caller deletes the schema last)
+    rank = {"RelationalColumn": 0, "RelationalTable": 1, "RelationalDBSchemaType": 3}
+    order = sorted(members.values(), key=lambda m: (rank.get(m[1], 2), -(m[2] or "").count("::")))
     return {"state": "read", "form": ARCHIVE if h["total"] else SOFT_DELETE, "hangs_off": h,
-            "element_guid": el.guid, "checked": 1 + len(under), "in_use": running_actions(rels)}
+            "element_guid": el.guid, "checked": 1 + len(members), "in_use": running_actions(rels),
+            "delete_order": order, "content": content}
 
 
 def running_actions(rels_per_element: list[list]) -> list[dict]:
@@ -819,7 +870,6 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     el = gateway.read_element(qn)
     create_note = ""
     if el is None:
-        orphan = gateway.find_schema_type(schema_type_qn(e, schema))
         try:
             guid = gateway.create_schema_element(e, schema, payload.get("database_guid", ""))
         except GatewayError as exc:
@@ -831,11 +881,6 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
             guid, create_note = again.guid, egeria_first_sentence(str(exc))[0]
         if not guid:
             raise GatewayError(f"Egeria created no schema element for {schema}")
-        if orphan:
-            gateway.link_schema_type(guid, orphan)
-            _proof(registry, slug, P_ADOPTED, schema=schema, element_guid=guid, qualified_name=schema_type_qn(e, schema),
-                   curation_id=payload.get("curation_id", ""), outbox_id=outbox_id,
-                   detail={"schema_type_guid": orphan, "note": "adopted the existing schema type rather than create a second"})
     else:
         guid = el.guid
     # THE GUARD: read the targets FIRST. A target for this schema (by element or by name) means it is
@@ -906,9 +951,6 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     return guid
 
 
-_RANK = {"RelationalColumn": 0, "RelationalTable": 1}
-
-
 def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbox_id: int | None = None) -> str:
     """Detach the schema's target and remove or archive its element. Idempotent.
 
@@ -950,27 +992,42 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     if read.get("in_use"):
         raise GatewayError(in_use_text(schema, read["in_use"]))
     form = ARCHIVE if (payload.get("form") == ARCHIVE or read.get("form") == ARCHIVE) else SOFT_DELETE
+    # Every element by GUID, leaf first (columns, tables, the template's connection graph, the schema type), then the
+    # schema: tables, columns and the schema type are anchored to the database, so deleting the schema never cascades
+    # them. Each is read back; the schema's own read-back is the proof row.
+    order = list(read["delete_order"])
+    for g, _typ, mqn in order:
+        gateway.delete_element(g, form)
+    gateway.delete_element(guid, form)
+    for g, _typ, mqn in order:
+        if mqn:
+            _prove_gone(gateway, mqn, form, schema)
+    now = gateway.read_element(qn)
+    seen = gateway.read_element(qn, for_lineage=True)
     if form == ARCHIVE:
-        gateway.delete_element(guid, ARCHIVE)
-        now = gateway.read_element(qn)
-        seen = gateway.read_element(qn, for_lineage=True)
         if now is not None or seen is None or not seen.archived:
             raise GatewayError(f"{schema}: the archive was sent but the read-back does not show it archived")
         _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
                outbox_id=outbox_id, recorded_by=payload.get("by", ""),
-               detail={"form": ARCHIVE, "hangs_off": read["hangs_off"]["by_type"]})
+               detail={"form": ARCHIVE, "hangs_off": read["hangs_off"]["by_type"], "content": read["content"],
+                       "elements_archived": len(order) + 1})
         return guid
-    under = gateway.elements_under(qn + "::")
-    under.sort(key=lambda u: (-u.qualified_name.count("::"), _RANK.get(u.type_name, 2)))
-    for u in under:
-        gateway.delete_element(u.guid, SOFT_DELETE)
-    gateway.delete_element(guid, SOFT_DELETE)
-    if gateway.read_element(qn) is not None or gateway.elements_under(qn + "::"):
+    if now is not None or gateway.elements_under(qn + "::"):
         raise GatewayError(f"{schema}: the delete was sent but the read-back still finds elements")
     _proof(registry, slug, P_REMOVED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
            outbox_id=outbox_id, recorded_by=payload.get("by", ""),
-           detail={"form": SOFT_DELETE, "elements_deleted": len(under) + 1})
+           detail={"form": SOFT_DELETE, "elements_deleted": len(order) + 1})
     return guid
+
+
+def _prove_gone(gateway: CatalogueGateway, qualified_name: str, form: str, schema: str) -> None:
+    """The read-back that proves one element gone (soft delete) or archived (a Memento, visible with `forLineage`)."""
+    if gateway.read_element(qualified_name) is not None:
+        raise GatewayError(f"{schema}: {qualified_name} is still readable after its {form}")
+    if form == ARCHIVE:
+        seen = gateway.read_element(qualified_name, for_lineage=True)
+        if seen is None or not seen.archived:
+            raise GatewayError(f"{schema}: {qualified_name} was archived but the read-back does not show it")
 
 
 def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str], *,
