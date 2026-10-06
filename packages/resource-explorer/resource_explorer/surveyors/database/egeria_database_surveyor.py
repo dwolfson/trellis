@@ -487,18 +487,28 @@ class EgeriaDatabaseSurveyor:
         server_name = f"{egeria_host}:{db_entity.port}"
 
         # ── 1. Create / find PostgreSQL Server element ─────────────────────────
-        server_guid = db_entity.egeria_asset_guid  # reuse if already stored as server
+        # The database element is compared against the server: `egeria_asset_guid` is the DATABASE's guid in every
+        # current flow (`set_database_egeria_guid`), so on a repeat commit "reuse the stored guid as the
+        # server" printed the database as the server (rehearsal 2, D-E). A stored guid is reused as the
+        # server only when it is not the database element; a name search that lands on the database is
+        # not the server either. NOTE a server element is SHARED by host:port: a commit attaches to
+        # whatever server already carries that name, including one an earlier run left behind.
+        server_guid = db_entity.egeria_asset_guid
         if not server_guid:
             server_guid = self._find_element_guid(server_name)
+        db_guid_lookup = self._find_element_guid(db_entity.database_name)
+        if server_guid and server_guid == db_guid_lookup:
+            # the stored guid, or a name search, landed on the DATABASE: that is not the server
+            server_guid = self._find_element_guid(server_name)
+            if server_guid == db_guid_lookup:
+                server_guid = ""
 
-        # Look up the database element before deciding whether a secrets
-        # write is needed at all: reusing both existing elements by name is
+        # Whether a secrets write is needed at all: reusing both existing elements by name is
         # the common re-survey path, and a reused element's deepCopy already
         # ran (or didn't) long before this call, so writing a fresh secret for
         # it here would be a wasted live write, not a fix -- see
         # _create_postgres_element_from_template's own docstring on why reuse
         # never re-runs deepCopy.
-        db_guid_lookup = self._find_element_guid(db_entity.database_name)
         secret_placeholders: dict = {}
         if not server_guid or not db_guid_lookup:
             secrets_collection_name, secrets_store_path = self._save_database_secret(

@@ -166,8 +166,10 @@ def test_the_engine_action_status_is_activity_status_not_action_status(real):
     st = g.engine_action_status("ea")
     assert (st.status, st.completion_time) == ("FAILED", "1791237499898") and st.message.startswith("OMES-SURVEY-ACTION-0018")
     assert gw.parse_engine_action_answer(live.raw_engine_action("ea", "IN_PROGRESS")).status == "IN_PROGRESS"
+    # a missing activityStatus is "not stated yet" (never read from the wrong name), an unrecognised element raises
+    assert gw.parse_engine_action_answer({"elementGUID": "x", "elementProperties": {"propertiesAsStrings": {"actionStatus": "FAILED"}}}).status == ""
     with pytest.raises(gw.GatewayError):
-        gw.parse_engine_action_answer({"elementGUID": "x", "elementProperties": {"propertiesAsStrings": {"actionStatus": "FAILED"}}})
+        gw.parse_engine_action_answer({"unexpected": 1})
 
 
 def test_the_fake_s_initiation_and_engine_action_answers_have_the_live_shapes(world, fake):
@@ -217,9 +219,10 @@ def test_the_gateway_reads_zones_from_the_raw_classifications_and_none_is_an_emp
 # ── (3) an engine action still running blocks THAT schema's leave-out ───────
 
 def _catalogued(world, fake, *names):
+    """Attached, NOT yet cataloged: a cataloged schema (tables read back) always archives, which these tests are not about."""
     for n in names:
         choose(world, n, "catalogue")
-    press(world, fake, refresh=True)
+    press(world, fake, refresh=False)
     for n in names:
         choose(world, n, "leave_out")
 
@@ -296,7 +299,7 @@ def test_the_gateway_reads_the_live_action_target_item(real):
 def test_every_name_the_commit_builds_is_deterministic_and_every_guid_is_stored(world, fake):
     ent = entity(world)
     uuid = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}|@\d{8,}|\d{10,}")
-    for qn in (cc.schema_qn(ent, "sales"), cc.schema_type_qn(ent, "sales"), cc.names_for(ent)["server"],
+    for qn in (cc.schema_qn(ent, "sales"), cc.names_for(ent)["server"],
                cc.target_name(ent, "sales")):
         assert qn == qn.strip() and not uuid.search(qn), qn
     assert cc.schema_qn(ent, "sales") == SALES_QN

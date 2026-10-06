@@ -170,7 +170,7 @@ export function choiceCellHtml(node, me) {
  *  second line. `commit` is `view.commit`; a server that predates it says "not read yet".
  *  A node with no state ('none') says nothing about Egeria rather than inventing a word. */
 const EGERIA_GLYPH = {
-  catalogued: 'catalogued', attached_waiting: 'attached_waiting', queued: 'queued',
+  catalogued: 'catalogued', attached_waiting: 'attached_waiting', queued: 'queued', sent: 'queued',
   failed: 'catalogue_failed', removed: 'removed', archived: 'archived',
 };
 export function egeriaStateHtml(node, commit) {

@@ -55,6 +55,10 @@ DATABASE_TECH_TYPE = "PostgreSQL Relational Database"
 #: Egeria's own attach step: a GovernanceActionType (NOT the process) that attaches an EXISTING
 #: element, given as action target `newAsset`, to the JDBC cataloguer as a SCHEMA-kind target.
 CATALOG_SCHEMA_ACTION_TYPE = "PostgreSQLGovernance::catalog-postgres-schema"
+#: The relationship the JDBC cataloguer itself uses to put a schema under a database
+#: (`RelationalDatabaseCataloguer.java:255-259`): DataSetContent, the DATABASE at end 2.
+SCHEMA_PARENT_RELATIONSHIP = "DataSetContent"
+SCHEMA_PARENT_AT_END1 = False
 #: What a catalog target does with an element when its schema leaves the list.
 TARGET_DELETE_METHOD = "ARCHIVE"
 #: The honest value for a version RE has no record of.
@@ -95,6 +99,11 @@ class Relationship:
     activity_status: str = ""
     completion_time: str = ""
     completion_message: str = ""
+    #: The far end's qualifiedName and name (a DataFlow's meaning depends on WHAT is at the other end).
+    other_qualified_name: str = ""
+    other_name: str = ""
+    #: The engine action's `requestType` (e.g. `survey-postgres-database`, `catalog-postgres-schema`).
+    action_kind: str = ""
 
 
 @dataclass
@@ -125,7 +134,11 @@ class SurveyOutcome:
 
 
 #: Engine action `activityStatus` values that mean the action did not complete.
-FAILED_ACTION_STATUSES = frozenset({"FAILED", "INVALID", "CANCELLED", "IGNORED"})
+FAILED_ACTION_STATUSES = frozenset({"FAILED", "INVALID", "CANCELLED"})
+#: ...and the ones that mean it is over, one way or the other.
+TERMINAL_ACTION_STATUSES = frozenset({"COMPLETED"}) | FAILED_ACTION_STATUSES
+#: Running. Any other value (and a missing one) is one Resource Explorer does not know.
+RUNNING_ACTION_STATUSES = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS"})
 
 
 @dataclass
@@ -143,6 +156,12 @@ def server_name_for(db_entity) -> str:
     return f"{host}:{db_entity.port}"
 
 
+def server_qualified_name(server_name: str) -> str:
+    """The SoftwareServer RE's publish creates from the "PostgreSQL Server" template: `PostgreSQL Server::<host:port>`
+    (rehearsal 1 evidence: the created server `PostgreSQL Server::host.docker.internal:5442`)."""
+    return f"PostgreSQL Server::{server_name}"
+
+
 def database_qualified_name(server_name: str, database_name: str) -> str:
     return f"PostgreSQL Relational Database::{server_name}::{database_name}"
 
@@ -150,11 +169,6 @@ def database_qualified_name(server_name: str, database_name: str) -> str:
 def schema_qualified_name(server_name: str, database_name: str, schema: str) -> str:
     """The qualifiedName the schema template produces (evidence, 2026-10-05)."""
     return f"{SCHEMA_TECH_TYPE}::{server_name}::{database_name}.{schema}"
-
-
-def schema_type_qualified_name(server_name: str, database_name: str, schema: str) -> str:
-    """The orphan-case schema type an older cataloguer left behind."""
-    return f"{database_qualified_name(server_name, database_name)}::{schema}_schemaType"
 
 
 def schema_placeholders(db_entity, schema: str, description: str = "") -> dict[str, str]:
@@ -190,10 +204,8 @@ class CatalogueGateway(Protocol):
     def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome: ...
     def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
-    def find_schema_type(self, qualified_name: str) -> str: ...
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str: ...
-    def link_schema_type(self, schema_guid: str, schema_type_guid: str) -> None: ...
     def list_catalog_targets(self) -> list[CatalogTarget]: ...
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
@@ -311,14 +323,38 @@ def parse_initiate_answer(res: Any) -> str:
 
 def parse_engine_action_answer(res: Any) -> EngineActionStatus:
     """An EngineAction raw element -> its status. The attribute is `activityStatus` (NOT
-    `actionStatus`), seen live. An element without it is an error, never a guess."""
+    `actionStatus`), seen live. An element without one reads status "" (not stated), never a guess."""
     if not (isinstance(res, dict) and _guid_of(res)):
         raise GatewayError("unrecognised engine action answer from Egeria")
     ps = _strings_of(res)
-    if not ps.get("activityStatus"):
-        raise GatewayError("the engine action carries no activityStatus")
-    return EngineActionStatus(status=str(ps["activityStatus"]), message=str(ps.get("completionMessage") or ""),
+    # A missing activityStatus is "not stated yet" (about 1.5 s while an action starts), not an error:
+    # the callers treat "" as still running.
+    return EngineActionStatus(status=str(ps.get("activityStatus") or ""), message=str(ps.get("completionMessage") or ""),
                               completion_time=str(ps.get("completionTime") or ""))
+
+
+def parse_catalog_targets_answer(res: Any) -> list[CatalogTarget]:
+    """`get_catalog_targets`' answer -> targets. LIVE item (rehearsal 2): `elementHeader.guid` is the
+    TARGET element, `relatedBy.relationshipHeader.guid` the CatalogTarget relationship and
+    `relatedBy.relationshipProperties.catalogTargetName` its name. "No elements found" is an empty
+    list; ANY other shape raises, because an empty list here means "not attached" and RE would
+    initiate another attach (Egeria creates another CatalogTarget every time)."""
+    if _no_elements(res):
+        return []
+    if not isinstance(res, list):
+        raise GatewayError(f"unrecognised catalog targets answer from Egeria: {type(res).__name__}")
+    out = []
+    for item in res:
+        rb = item.get("relatedBy") if isinstance(item, dict) else None
+        rel = ((rb or {}).get("relationshipHeader") or {}).get("guid") if isinstance(rb, dict) else ""
+        eh = item.get("elementHeader") if isinstance(item, dict) else None
+        el = eh.get("guid") if isinstance(eh, dict) else ""
+        if not (rel and el):
+            raise GatewayError("unrecognised catalog target in Egeria's answer (no relatedBy/elementHeader guids)")
+        props = (rb.get("relationshipProperties") or {}) if isinstance(rb, dict) else {}
+        out.append(CatalogTarget(relationship_guid=str(rel), element_guid=str(el),
+                                 name=str(props.get("catalogTargetName") or "")))
+    return out
 
 
 def _no_elements(res: Any) -> bool:
@@ -376,7 +412,10 @@ def parse_related_answer(res: Any) -> list[Relationship]:
                 activity_status=str(rps.get("activityStatus") or ""),
                 completion_time=str(rps.get("completionTime") or ""),
                 completion_message=(str(_strings_of(other).get("completionMessage") or "")
-                                    if rel_type == "ActionTarget" else "")))
+                                    if rel_type == "ActionTarget" else ""),
+                action_kind=(str(_strings_of(other).get("requestType") or "") if rel_type == "ActionTarget" else ""),
+                other_qualified_name=_qn_of(other),
+                other_name=str(_strings_of(other).get("displayName") or "")))
         return out
     if isinstance(res, dict) and not res:
         return []
@@ -438,9 +477,36 @@ class PyegeriaCatalogueGateway:
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
         server = server_name_for(db_entity)
+        # The server is read by its EXACT qualifiedName, never by a name search and never from a stored
+        # variable (rehearsal 2, D-E: a repeat commit printed the database's own guid as the server).
+        server_guid = self.find_server(server)
         return PublishedDatabase(
-            server_guid=res.get("server_guid", ""), database_guid=res.get("database_guid", ""),
+            server_guid=server_guid, database_guid=res.get("database_guid", ""),
             server_name=server, database_qualified_name=database_qualified_name(server, db_entity.database_name))
+
+    def find_server(self, server_name: str) -> str:
+        """The one SoftwareServer whose qualifiedName is exactly `PostgreSQL Server::<host:port>` (as RE's
+        publish created it in rehearsal 1). None reads "server not found", several read "server ambiguous ·
+        N matches": the commit does not guess. A server element is shared by host:port."""
+        qn = server_qualified_name(server_name)
+        body = {"class": "SearchStringRequestBody", "searchString": qn, "startsWith": True, "ignoreCase": False,
+                "forLineage": True, "forDuplicateProcessing": True, "graphQueryDepth": 0}
+        try:
+            res = self._client("MetadataExpert").find_metadata_elements_with_string(
+                search_string=qn, starts_with=True, body=body)
+            found = [e for e in parse_elements_answer(res) if e.qualified_name == qn]
+        except GatewayError:
+            raise
+        except Exception as exc:
+            if "No elements found" in str(exc):
+                found = []
+            else:
+                raise GatewayError(f"could not look for the server {qn}: {_short(exc)}") from exc
+        if not found:
+            raise GatewayError(f"server not found: no element has the qualifiedName {qn}")
+        if len(found) > 1:
+            raise GatewayError(f"server ambiguous · {len(found)} matches for {qn}; Resource Explorer will not guess")
+        return found[0].guid
 
     def publish_local_report(self, db_entity, db_user: str, db_pwd: str, measured: dict, *,
                              registry=None, submitted_by: str = "") -> dict:
@@ -563,17 +629,16 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(_short(exc)) from exc
         return parse_element_answer(res)
 
-    def find_schema_type(self, qualified_name: str) -> str:
-        el = self.read_element(qualified_name)
-        return el.guid if el else ""
-
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str:
         """The DeployedDatabaseSchema, from the template, under the database element.
 
-        UNVERIFIED LIVE: `anchorGUID`/`parentGUID`/`parentRelationshipTypeName` put the schema
-        under the database. The read-back found that the template create (and Egeria's own
-        process) otherwise yields the same element for the same placeholders, by qualifiedName
+        The parent link is the JDBC cataloguer's OWN: `RelationalDatabaseCataloguer.getOrCreateSchema`
+        (egeria `RelationalDatabaseCataloguer.java:255-259`) anchors the schema to the database and
+        parents it by DataSetContent with the database at END 2 (`setParentAtEnd1(false)`). Rehearsal
+        2 sent the database at end 1 and Egeria rejected it (OMRS-REPOSITORY-400-047: end 1 must be a
+        DataSet), still creating the element unparented. Same element for the same placeholders as
+        Egeria's own process, by qualifiedName
         `PostgreSQL Relational Database Schema::<host:port>::<db>.<schema>`."""
         body = {
             "class": "TemplateRequestBody",
@@ -581,15 +646,16 @@ class PyegeriaCatalogueGateway:
             "isOwnAnchor": False,
             "anchorGUID": database_guid,
             "parentGUID": database_guid,
-            "parentRelationshipTypeName": "DataSetContent",
-            "parentAtEnd1": True,
+            "parentRelationshipTypeName": SCHEMA_PARENT_RELATIONSHIP,
+            "parentAtEnd1": SCHEMA_PARENT_AT_END1,
             "deepCopy": True,
             "placeholderPropertyValues": schema_placeholders(db_entity, schema, description),
         }
         try:
             guid = self._client("AutomatedCuration").create_elem_from_template(body)
         except Exception as exc:
-            raise GatewayError(_short(exc)) from exc
+            raise GatewayError(f"creating the schema element for {schema} from the template failed: "
+                               f"{_short(exc)}") from exc
         return guid if isinstance(guid, str) else _guid_of(guid)
 
     def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str:
@@ -617,14 +683,6 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(_short(exc)) from exc
         return parse_initiate_answer(res)
 
-    def link_schema_type(self, schema_guid: str, schema_type_guid: str) -> None:
-        body = {"class": "NewRelatedElementsRequestBody", "typeName": "AssetSchemaType",
-                "metadataElement1GUID": schema_guid, "metadataElement2GUID": schema_type_guid}
-        try:
-            self._client("MetadataExpert").create_related_elements(body=body)
-        except Exception as exc:
-            raise GatewayError(_short(exc)) from exc
-
     def list_catalog_targets(self) -> list[CatalogTarget]:
         """Read the cataloguer's targets FIRST, with the body pyegeria's default lacks."""
         try:
@@ -632,18 +690,7 @@ class PyegeriaCatalogueGateway:
                 JDBC_CATALOGUER_GUID, body={"class": "ResultsRequestBody", "graphQueryDepth": 0})
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
-        if not isinstance(res, list):
-            return []              # "No elements found"
-        out = []
-        for item in res:
-            if not isinstance(item, dict):
-                continue
-            rel = (item.get("relationshipHeader") or {}).get("guid") or item.get("relationshipGUID") or ""
-            el = item.get("catalogTargetElement") or item.get("relatedElement") or item.get("element") or {}
-            out.append(CatalogTarget(
-                relationship_guid=str(rel), element_guid=_guid_of(el) or str(item.get("elementGUID") or ""),
-                name=str((item.get("properties") or {}).get("catalogTargetName") or "")))
-        return out
+        return parse_catalog_targets_answer(res)
 
     def add_catalog_target(self, element_guid: str, name: str) -> str:
         """A SCHEMA-kind target: no configuration lists, `deleteMethod` ARCHIVE."""

@@ -34,10 +34,11 @@ from live_catalogue_payloads import raw_element as _raw_element, raw_related as 
 import resource_explorer.catalogue_gateway as _gw  # noqa: E402  (new parsers are looked up at call time)
 from resource_explorer.catalogue_gateway import (  # noqa: E402
     ARCHIVE, CatalogTarget, ConnectorStatus, ElementRead, GatewayError, PublishedDatabase,
-    Relationship, SurveyOutcome, like_matches, parse_element_answer, parse_elements_answer, parse_related_answer,
-    schema_type_qualified_name)
+    Relationship, SurveyOutcome, like_matches, parse_element_answer, parse_elements_answer, parse_related_answer)
 
 PROCESS_QN = "PostgreSQLSurvey::survey-postgres-database"
+#: The job component the OpenLineage cataloguer made for Egeria's own survey action (READBACK note, last section).
+CONNECTOR_JOB_QN = "DeployedSoftwareComponent::GovernanceActions::PostgreSQLSurvey::survey-postgres-database"
 
 
 class FakeEgeria:
@@ -47,8 +48,6 @@ class FakeEgeria:
         self.elements: dict[str, dict] = {}
         self.targets: list[CatalogTarget] = []
         self.calls: list[tuple] = []
-        self.schema_types: dict[str, str] = {}
-        self.links: list[tuple[str, str]] = []
         self.rels: dict[str, list[Relationship]] = {}
         self.deleted_order: list[tuple[str, str, str]] = []   # (qn, type, form)
         self.surveys: list[tuple[str, dict]] = []
@@ -81,6 +80,12 @@ class FakeEgeria:
         # pending (the action is IN_PROGRESS and attaches nothing until `finish_pending_actions`).
         self.catalog_action = "accept"
         self.actions: dict[str, dict] = {}          # engine action guid -> {status, message, schema}
+        # Read-back lag: the first N `list_catalog_targets` reads after an initiation do not show the target
+        # (the live attach takes about 4 s and the poll window is shorter than a slow one).
+        self.target_lag_reads = 0
+        self._lag_left = 0
+        self.initiations: dict[str, int] = {}           # schema guid -> times the action type was initiated
+        self.create_error_after_creating = False        # Egeria 500s on the create but the element exists (rehearsal 2)
         self.survey_behaviour = "pending"         # pending | annotated | failed | empty (a survey takes time)
         self.survey_failure = ("OMES-SURVEY-ACTION-0018 The survey service threw an exception. "
                                "Details are in the audit log.")
@@ -118,7 +123,6 @@ class FakeEgeria:
         """An Egeria reset: everything RE ever wrote is gone."""
         self.elements.clear()
         self.targets.clear()
-        self.schema_types.clear()
         self.lingering.clear()
         self.db_guid = self.server_guid = ""
 
@@ -176,15 +180,18 @@ class FakeEgeria:
         """`get_all_related_elements`' answer (live shape): a dict with `elementList`."""
         items = []
         for r in self._relationship_list(guid):
-            if r.type_name == "ActionTarget" and getattr(r, "activity_status", ""):
+            if r.type_name == "ActionTarget":
                 other = _live.raw_engine_action(r.other_guid or "act", r.activity_status,
                                                 message=getattr(r, "completion_message", ""),
-                                                completion_ms=getattr(r, "completion_time", ""))
+                                                completion_ms=getattr(r, "completion_time", ""),
+                                                request_type=getattr(r, "action_kind", ""))
                 props = _live.relationship_properties("serverToSurvey", r.activity_status,
                                                       getattr(r, "completion_time", ""))
                 items.append((r.type_name, r.guid or f"rel-{len(items)}", other, props))
                 continue
-            other = _raw_element(r.other_guid or "other", f"other::{r.other_guid}", r.other_type or "Referenceable")
+            other = _raw_element(r.other_guid or "other", getattr(r, "other_qualified_name", "") or f"other::{r.other_guid}",
+                                 r.other_type or "Referenceable",
+                                 props=({"displayName": r.other_name} if getattr(r, "other_name", "") else None))
             items.append((r.type_name, r.guid or f"rel-{len(items)}", other))
         return _raw_related(self.raw_element(guid) if guid in self.elements else _raw_element(guid, "", ""), items)
 
@@ -198,10 +205,6 @@ class FakeEgeria:
         self.last_wire = ("element", self.raw_element(e["guid"]))
         return parse_element_answer(self.last_wire[1])
 
-    def find_schema_type(self, qualified_name):
-        self.calls.append(("find_schema_type", qualified_name))
-        return self.schema_types.get(qualified_name, "")
-
     def create_schema_element(self, db_entity, schema, database_guid, *, description=""):
         self.calls.append(("create_schema_element", schema, database_guid))
         self._boom("create_schema_element")
@@ -214,17 +217,27 @@ class FakeEgeria:
                                f"identifier {e['guid']} is not visible [Anchors, Memento]")
         if e is not None and not e["deleted"]:
             return e["guid"]
-        return self.add_element(qn, "DeployedDatabaseSchema", parent=database_guid)
-
-    def link_schema_type(self, schema_guid, schema_type_guid):
-        self.calls.append(("link_schema_type", schema_guid, schema_type_guid))
-        self.links.append((schema_guid, schema_type_guid))
+        g = self.add_element(qn, "DeployedDatabaseSchema", parent=database_guid)
+        for suffix, typ in (("Connection", "VirtualConnection"), ("Endpoint", "Endpoint"),
+                            ("SecretsStoreConnection", "Connection"), ("SecretStoreEndpoint", "Endpoint")):
+            self.add_element(f"{qn}::{suffix}", typ, parent=g)        # the template's own connection graph
+        if self.create_error_after_creating:
+            self.create_error_after_creating = False
+            raise GatewayError("SERVER_ERROR_500 => Egeria detected error: `https://localhost:9443/x/new-element`.")
+        return g
 
     # -- targets -----------------------------------------------------------
     def list_catalog_targets(self):
         self.calls.append(("list_catalog_targets",))
         self._boom("list_catalog_targets")
-        return list(self.targets)
+        if self._lag_left > 0:                          # the attach exists on Egeria's side, not yet readable
+            self._lag_left -= 1
+            raw = "No elements found"
+        else:
+            raw = [_live.raw_catalog_target(t.relationship_guid, t.element_guid, t.name) for t in self.targets] \
+                or "No elements found"
+        self.last_wire = ("targets", raw)
+        return _gw.parse_catalog_targets_answer(raw)
 
     def add_catalog_target(self, element_guid, name):
         self.calls.append(("add_catalog_target", element_guid, name))
@@ -244,6 +257,10 @@ class FakeEgeria:
         self._boom("initiate_catalog_action")
         if self.catalog_action == "error":
             raise GatewayError("OMAG-GOVERNANCE-ACTION-400-001 the action type does not accept an existing element")
+        self.initiations[schema_guid] = self.initiations.get(schema_guid, 0) + 1
+        assert self.initiations[schema_guid] == 1 and not any(t.element_guid == schema_guid for t in self.targets), \
+            "Egeria creates ANOTHER CatalogTarget on every initiation: RE initiated an attach for a schema that has one"
+        self._lag_left = self.target_lag_reads
         guid = self._guid("a")
         resp = dict(_live.LIVE_INITIATE_RESPONSE, guid=guid)
         self.last_wire = ("initiate", resp)
@@ -300,20 +317,41 @@ class FakeEgeria:
     def _relationship_list(self, guid):
         out = list(self.rels.get(guid, []))
         e = self.elements.get(guid)
-        if e is not None and e["type"] == "DeployedDatabaseSchema":
-            out.append(Relationship("AssetSchemaType", other_guid="st"))      # structural noise
+        typ = e["type"] if e is not None else ""
+        if typ == "DeployedDatabaseSchema":
             out.append(Relationship("CatalogTarget", other_guid="cat"))
+            # what the template and Egeria's own engines put on every schema (rehearsal 2, step 4)
+            for t in ("ResourceConnection", "SourcedFrom"):
+                out.append(Relationship(t, other_guid="own"))
+            # Egeria's OpenLineage cataloguer records the governance action that touched it (rehearsal 2,
+            # READBACK note): a DataFlow to the action's job component, `DeployedSoftwareComponent::GovernanceActions::...`
+            out.append(Relationship("DataFlow", other_guid="job", other_type="DeployedSoftwareComponent",
+                                    other_qualified_name=CONNECTOR_JOB_QN, other_name="survey-postgres-database"))
+        elif typ == "VirtualConnection":
+            for t in ("ConnectToEndpoint", "ConnectionConnectorType", "EmbeddedConnection"):
+                out.append(Relationship(t, other_guid="own"))
+        # the graph the cataloguer wired: schema --Schema--> schema type --AttributeForSchema--> table --Nested...--> column
+        kid_rel = {"DeployedDatabaseSchema": ("Schema", "RelationalDBSchemaType"),
+                   "RelationalDBSchemaType": ("AttributeForSchema", "RelationalTable"),
+                   "RelationalTable": ("NestedSchemaAttribute", "RelationalColumn")}.get(typ)
+        if kid_rel:
+            for c, x in self.elements.items():
+                if x["parent"] == guid and x["type"] == kid_rel[1] and self._visible(x):
+                    out.append(Relationship(kid_rel[0], other_guid=c, other_type=x["type"], other_qualified_name=x["qn"]))
+        if typ == "RelationalDBSchemaType" and e["parent"]:
+            out.append(Relationship("Schema", other_guid=e["parent"], other_type="DeployedDatabaseSchema"))
         return out
 
     def add_engine_action(self, schema_qn: str, status: str, *, completion_time: str = "", message: str = "",
-                          guid: str = "") -> str:
+                          guid: str = "", kind: str = "") -> str:
         """An engine action targeting a schema (a survey, or the process's own step): the live
         ActionTarget relationship carries `activityStatus` and `completionTime`."""
         g = self.by_qn(schema_qn)["guid"]
         ag = guid or self._guid("ea")
         self.rels.setdefault(g, []).append(Relationship(
             "ActionTarget", other_guid=ag, other_type="EngineAction", guid=self._guid("rl"),
-            activity_status=status, completion_time=completion_time, completion_message=message))
+            activity_status=status, completion_time=completion_time, completion_message=message,
+            action_kind=kind))
         return ag
 
     def add_term_assignment(self, qn_suffix: str, schema_qn: str, n: int = 1) -> None:
@@ -324,15 +362,16 @@ class FakeEgeria:
         self.calls.append(("delete_element", guid, form))
         self._boom("delete_element")
         e = self.elements[guid]
+        kids = [c for c, x in self.elements.items() if x["parent"] == guid and self._visible(x)]
         if form == ARCHIVE:
-            stack = [guid]
-            while stack:
-                g = stack.pop()
-                self.elements[g]["archived"] = True
-                stack += [c for c, x in self.elements.items() if x["parent"] == g]
+            # NO cascade (the content is anchored to the database): an element still holding visible content is
+            # refused, so a parent-first archive order fails in the test, never silently passes.
+            if kids:
+                raise GatewayError(f"400 OMAG-REPOSITORY-HANDLER-400-010 an archive of {e['type']} element {guid} would "
+                                   f"leave its dependent element {kids[0]} behind")
+            e["archived"] = True
             self.deleted_order.append((e["qn"], e["type"], form))
             return
-        kids = [c for c, x in self.elements.items() if x["parent"] == guid and self._visible(x)]
         if kids:
             raise GatewayError(f"401 OMAG-GENERIC-HANDLERS-403-005 A delete of {e['type']} element {guid} is not "
                                f"permitted because it still has a dependent element {kids[0]}")
@@ -355,6 +394,8 @@ class FakeEgeria:
             return SurveyOutcome("FAILED", self.survey_failure, self._guid("r"), 0)
         if b == "pending":
             return SurveyOutcome("IN_PROGRESS", "", "", None)
+        if b == "partial":                              # rehearsal 2: a report with some annotations, action running
+            return SurveyOutcome("IN_PROGRESS", "", self._guid("r"), 9)
         if b == "empty":
             return SurveyOutcome("COMPLETED", "", self._guid("r"), 0)
         return SurveyOutcome("COMPLETED", "", self._guid("r"), 23)
@@ -391,12 +432,17 @@ class FakeEgeria:
             return
         # the schema name is everything after `<db>.`; qualified names are `...::<db>.<schema>`
         pattern = e["qn"].split("::", 2)[2].split(".", 1)[1]
+        # The cataloguer makes the schema type itself (`<schemaQN>_schemaType`, `Schema` link) when it catalogues the
+        # target; tables hang off the schema TYPE (AttributeForSchema), columns off the table (NestedSchemaAttribute),
+        # and all of them are anchored to the DATABASE, so nothing cascades from the schema (live read 2026-10-06).
+        stqn = f"{e['qn']}_schemaType"
+        st = (self.by_qn(stqn) or {}).get("guid") or self.add_element(stqn, "RelationalDBSchemaType", parent=schema_guid)
         for sname, tables in self.source.items():
             if not like_matches(pattern, sname):        # JDBC pattern: a_b also returns aXb
                 continue
             for tname, cols in tables.items():
                 tqn = f"{e['qn']}::{tname}"
-                tg = (self.by_qn(tqn) or {}).get("guid") or self.add_element(tqn, "RelationalTable", parent=schema_guid)
+                tg = (self.by_qn(tqn) or {}).get("guid") or self.add_element(tqn, "RelationalTable", parent=st)
                 allcols = list(cols)
                 for t2, c2 in tables.items():              # column pattern: x_y also returns xZy's columns
                     if t2 != tname and like_matches(tname, t2):
@@ -405,9 +451,3 @@ class FakeEgeria:
                     cqn = f"{tqn}::{c}"
                     if self.by_qn(cqn) is None:
                         self.add_element(cqn, "RelationalColumn", parent=tg)
-
-    def orphan_schema_type(self, db_entity, schema: str) -> str:
-        server = f"{getattr(db_entity, 'egeria_host', '') or db_entity.host}:{db_entity.port}"
-        qn = schema_type_qualified_name(server, db_entity.database_name, schema)
-        self.schema_types[qn] = self._guid("o")
-        return self.schema_types[qn]

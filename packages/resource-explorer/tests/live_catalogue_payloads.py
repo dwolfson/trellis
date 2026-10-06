@@ -88,24 +88,32 @@ def _enum(symbol: str) -> dict:
 
 def relationship_properties(name: str, status: str, completion_ms: str = "") -> dict:
     """`ActionTarget` relationshipProperties, live shape: typed map and string map side by side."""
-    pv = {"actionTargetName": {"class": "PrimitiveTypePropertyValue", "primitiveValue": name},
-          "activityStatus": _enum(status)}
-    ps = {"actionTargetName": name, "activityStatus": status}
+    pv = {"actionTargetName": {"class": "PrimitiveTypePropertyValue", "primitiveValue": name}}
+    ps = {"actionTargetName": name}
+    if status:
+        pv["activityStatus"] = _enum(status)
+        ps["activityStatus"] = status
     if completion_ms:
         pv["completionTime"] = {"class": "PrimitiveTypePropertyValue", "primitiveValue": completion_ms}
         ps["completionTime"] = completion_ms
     return {"propertyValueMap": pv, "propertiesAsStrings": ps}
 
 
-def raw_engine_action(guid: str, status: str, *, message: str = "", completion_ms: str = "") -> dict:
+def raw_engine_action(guid: str, status: str, *, message: str = "", completion_ms: str = "",
+                      request_type: str = "") -> dict:
     """An EngineAction raw element: the status attribute is `activityStatus` (NOT `actionStatus`)."""
-    ps = {"qualifiedName": f"EngineAction::{guid}", "activityStatus": status}
+    ps = {"qualifiedName": f"EngineAction::{guid}"}
+    if status:                                   # the live ActionTarget has NO status for ~1.5 s while it runs
+        ps["activityStatus"] = status
+    if request_type:
+        ps["requestType"] = request_type
     if message:
         ps["completionMessage"] = message
     if completion_ms:
         ps["completionTime"] = completion_ms
     el = raw_element(guid, ps["qualifiedName"], "EngineAction", props={k: v for k, v in ps.items() if k != "qualifiedName"})
-    el["elementProperties"]["propertyValueMap"] = {"activityStatus": _enum(status)}
+    if status:
+        el["elementProperties"]["propertyValueMap"] = {"activityStatus": _enum(status)}
     return el
 
 
@@ -136,3 +144,26 @@ def raw_related(start: dict, items: list[tuple]) -> dict:
             item["relationshipProperties"] = it[3]
         out.append(item)
     return {"startingElement": start, "elementList": out, "mermaidGraph": "graph TD"}
+
+
+#: A non-empty `get_catalog_targets` item, LIVE (rehearsal 2): the TARGET element is `elementHeader`,
+#: the CatalogTarget relationship is `relatedBy`. (The invented shape had `relationshipHeader` and
+#: `catalogTargetElement` at the top, and every live target read back as empty names and GUIDs.)
+CATALOG_TARGET_ITEM_KEYS = frozenset({"class", "elementHeader", "relatedBy", "properties"})
+
+
+def raw_catalog_target(rel_guid: str, element_guid: str, name: str, config: dict | None = None,
+                       qualified_name: str = "") -> dict:
+    return {"class": "OpenMetadataRootElement",
+            "elementHeader": {"guid": element_guid, "type": {"typeName": "DeployedDatabaseSchema"}},
+            "relatedBy": {"class": "RelatedBy",
+                          "relationshipHeader": {"guid": rel_guid, "type": {"typeName": "CatalogTarget"}},
+                          "relationshipProperties": {"class": "CatalogTargetProperties", "catalogTargetName": name,
+                                                     "configurationProperties": dict(config or {})}},
+            "properties": {"qualifiedName": qualified_name}}
+
+
+#: The relationship types the 2026-10-05 rehearsals saw on a catalogued schema with NOTHING of a
+#: steward's on it (the schema element and the template's own connection graph under it).
+TEMPLATE_OWN_RELATIONSHIPS = ("ConnectToEndpoint", "ConnectionConnectorType", "EmbeddedConnection",
+                              "ResourceConnection", "Schema", "CatalogTarget", "SourcedFrom", "ActionTarget")

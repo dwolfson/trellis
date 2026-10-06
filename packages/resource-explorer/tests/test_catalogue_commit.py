@@ -243,7 +243,7 @@ def test_queued_is_the_outbox_row_and_failed_is_egeria_s_word(world, fake):
     reg.mark_outbox_failed(oid, "OutboxApplyError: 500 Egeria says no")
     s = derived(world)["schemas"]["sales"]
     assert s["state"] == "failed" and s["words"] == "failed · 500 Egeria says no"
-    assert "step: attach" in s["second"] and "will retry" in s["second"]
+    assert "step: attach" in s["second"] and "waiting for a worker" in s["second"]
     assert derived(world)["schemas"]["archive"]["state"] == "attached_waiting"      # the other is untouched
     # a row that gave up
     with reg._conn() as conn:
@@ -293,7 +293,7 @@ def test_header_marker_is_state_derived_never_a_constant(world, fake):
     fake.run_cataloguer()
     cc.read_back(world["registry"], fake, "db", ["sales", "archive"])
     done = derived(world)["header"]["text"]
-    assert "2 schemas chosen: 2 catalogued" in done
+    assert "2 schemas chosen: 2 cataloged" in done
     assert len({before, waiting, done}) == 3                                  # three states, three sentences
     assert "Database element" in done and "in Egeria" in done
 
@@ -331,20 +331,29 @@ def _catalogued(world, fake, *names):
     press(world, fake)
 
 
+def _attached(world, fake, *names):
+    """Attached to the cataloguer but not yet cataloged: no tables read back, so nothing but the template's own graph."""
+    for n in names:
+        choose(world, n, "catalogue")
+    press(world, fake, refresh=False)
+
+
 def test_leave_out_nothing_hangs_off_is_a_soft_delete_leaf_first_without_a_cascade(world, fake):
-    _catalogued(world, fake, "sales")
+    _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     out, rec = press(world, fake)
     row = out["preview"]["leave_out"][0]
     assert row["form"] == "soft_delete" and "nothing hangs off it" in row["text"]
     kinds = [t for _, t, f in fake.deleted_order]
     assert set(f for _, _, f in fake.deleted_order) == {"soft_delete"}
-    # columns, then tables, then the schema element: the fake refuses a parent before its children
-    assert kinds == ["RelationalColumn"] * 4 + ["RelationalTable"] * 2 + ["DeployedDatabaseSchema"]
+    # the template's own connection graph (4 elements) first, then the schema element: the fake refuses a parent
+    # before its children. (A CATALOGED schema archives instead: see test_catalogue_rehearsal2_fixes.)
+    assert sorted(kinds[:4]) == ["Connection", "Endpoint", "Endpoint", "VirtualConnection"]
+    assert kinds[4:] == ["DeployedDatabaseSchema"] and len(kinds) == 5
     assert fake.targets == [] and fake.read_element(
         "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales") is None
     s = derived(world)["schemas"]["sales"]
-    assert s["state"] == "removed" and "was catalogued" in s["words"] and s["second"] == cc.LINGERING_LINE
+    assert s["state"] == "removed" and s["second"] == cc.LINGERING_LINE
     assert step(rec, "leave_outs")["state"] == "done"
 
 
@@ -357,8 +366,11 @@ def test_leave_out_with_a_term_assignment_is_an_archive_through_the_delete_endpo
     row = out["preview"]["leave_out"][0]
     assert row["form"] == "archive" and "2 term assignments" in row["text"]
     assert "can't be re-included until Egeria restores archived elements" in row["text"]
-    # one call, the delete endpoint's ARCHIVE form, on the schema element; the tree went with it
-    assert [(t, f) for _, t, f in fake.deleted_order] == [("DeployedDatabaseSchema", "archive")]
+    # the delete endpoint's ARCHIVE form, per element, leaf first: tables, columns and the schema type are anchored to the
+    # database, so archiving the schema NEVER cascades them (live read 2026-10-06)
+    kinds = [t for _, t, f in fake.deleted_order]
+    assert {f for _, _, f in fake.deleted_order} == {"archive"} and kinds[-2:] == ["RelationalDBSchemaType", "DeployedDatabaseSchema"]
+    assert kinds.index("RelationalTable") > kinds.index("RelationalColumn")
     assert all(e["archived"] for e in fake.elements.values() if e["qn"].startswith(sqn))
     assert fake.read_element(sqn) is None and fake.read_element(sqn, for_lineage=True).archived
     s = derived(world)["schemas"]["archive"]
@@ -367,7 +379,8 @@ def test_leave_out_with_a_term_assignment_is_an_archive_through_the_delete_endpo
 
 
 def test_the_preview_names_the_form_before_the_press_and_writes_nothing(world, fake):
-    _catalogued(world, fake, "sales", "archive")
+    _attached(world, fake, "sales", "archive")
+    fake._cycle(fake.by_qn("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.archive")["guid"])
     fake.add_term_assignment("orders", "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.archive")
     choose(world, "sales", "leave_out")
     choose(world, "archive", "leave_out")
@@ -414,13 +427,14 @@ def test_a_leave_out_that_was_never_catalogued_removes_nothing(world, fake):
 
 
 def test_the_form_is_re_derived_at_press_time_and_the_safer_wins(world, fake):
-    _catalogued(world, fake, "sales")
+    _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     out = cc.start_commit(world["registry"], "db", ME, gateway=fake)          # preview said soft delete
     assert out["curation"]["selection"]["leave_out"] == [{"schema": "sales", "form": "soft_delete"}]
+    fake._cycle(fake.by_qn("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales")["guid"])   # the cataloguer filled it meanwhile
     fake.add_term_assignment("customers::id", "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales")
     cc.execute_commit(world["registry"], out["curation"]["id"], gateway=fake)
-    assert [f for _, _, f in fake.deleted_order] == ["archive"]               # something hung off it by then
+    assert {f for _, _, f in fake.deleted_order} == {"archive"}               # something hung off it by then
 
 
 def test_a_leave_out_whose_read_fails_at_press_time_deletes_nothing(world, fake):
@@ -447,7 +461,7 @@ def test_choosing_again_after_queuing_a_leave_out_does_not_remove_it(world, fake
 
 def test_re_inclusion_after_a_soft_delete_recreates_and_reattaches_with_new_guids(world, fake):
     fake.zone_lockout = False          # not about zones: the configured zone is one this identity may write in
-    _catalogued(world, fake, "sales")
+    _attached(world, fake, "sales")
     sqn = "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales"
     old = fake.by_qn(sqn)["guid"]
     choose(world, "sales", "leave_out")
@@ -482,19 +496,6 @@ def test_re_inclusion_after_an_archive_is_refused_with_the_s19_sentence(world, f
     with pytest.raises(cc.SchemaRefused, match="restores archived elements"):
         cc.apply_attach(world["registry"], fake, {"slug": "db", "schema": "archive", "database_guid": fake.db_guid})
 
-
-def test_a_pre_existing_schema_type_is_adopted_not_duplicated(world, fake):
-    orphan = fake.orphan_schema_type(entity(world), "sales")
-    choose(world, "sales", "catalogue")
-    press(world, fake, refresh=False)
-    sales_guid = fake.by_qn("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales")["guid"]
-    assert fake.links == [(sales_guid, orphan)] and len(fake.schema_types) == 1
-    row = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_ADOPTED][0]
-    assert row["detail"]["schema_type_guid"] == orphan
-    assert fake.ops("find_schema_type")[0][1] == "PostgreSQL Relational Database::host.docker.internal:5442::shop::sales_schemaType"
-
-
-# ── `_` and `%`: the collision check ─────────────────────────────────────────
 
 def test_like_matches_follows_jdbc_patterns():
     assert gw.like_matches("a_b", "aXb") and gw.like_matches("a_b", "a_b") and not gw.like_matches("a_b", "ab")
@@ -713,7 +714,7 @@ def test_the_scope_read_carries_every_state_and_the_header_from_rows_only(client
 
 
 def test_preview_route_reads_egeria_and_writes_nothing(client, world, fake):
-    _catalogued(world, fake, "sales")
+    _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     n = len(fake.ops("delete_element"))
     j = client.get("/api/catalogue-scope/db/commit-preview").json()

@@ -53,8 +53,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from resource_explorer.catalogue_gateway import (
-    ARCHIVE, CATALOG_SCHEMA_ACTION_TYPE, FAILED_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
-    schema_qualified_name, schema_type_qualified_name, server_name_for)
+    ARCHIVE, CATALOG_SCHEMA_ACTION_TYPE, FAILED_ACTION_STATUSES, RUNNING_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
+    schema_qualified_name, server_name_for)
 from resource_explorer.catalogue_scope import CATALOGUE, LEAVE_OUT, current_schema_choice, md
 
 log = logging.getLogger(__name__)
@@ -73,9 +73,12 @@ LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connect
                   "· nothing is recreated")
 CANT_CHECK = "couldn't check what hangs off it"
 IN_USE = "in use by a running survey · wait or cancel"
-#: An engine action's `activityStatus` that does NOT hold a schema: it finished, one way or the other.
-#: Anything else (REQUESTED, APPROVED, IN_PROGRESS, and any value never seen) holds it.
-FINISHED_ACTIVITY = frozenset({"COMPLETED", "FAILED"})
+WAIT = "wait or cancel"
+#: An engine action's `activityStatus` that does NOT hold a schema: it is over (terminal). Anything
+#: else, a running status, a value never seen, or NO status at all (the live ActionTarget states none
+#: for about 1.5 s while an action runs), holds it: a leave-out never deletes under an unstated action.
+FINISHED_ACTIVITY = frozenset({"COMPLETED", "FAILED", "CANCELLED", "INVALID"})
+WORKER_WORDS = "waiting for a worker"
 OWNER_REFUSED = "owner set by Egeria's source · can't change from RE"
 NO_SCOPE_SENTENCE = "no scope declared · nothing catalogued"
 NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet catalogued in Egeria"
@@ -85,6 +88,7 @@ NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet catalogued in Eger
 P_DATABASE = "database_published"
 P_ZONES = "zones_set"                 # RE wrote a zone (only when EXPLORER_PUBLISH_ZONES is configured)
 P_ZONES_READ = "zones_read"           # what Egeria says the element's zones are, read back
+P_ATTACH_REQUESTED = "attach_requested"   # Egeria's attach action was initiated (its engine action guid is kept)
 P_SURVEY_RESULT = "survey_result"     # a settled native survey: a report with annotations, or a failed action
 P_OWNER = "owner_result"
 P_REPORT = "report_published"
@@ -93,13 +97,12 @@ P_ELEMENTS = "elements_read_back"
 P_DETACHED = "target_detached"
 P_REMOVED = "removed"
 P_ARCHIVED = "archived"
-P_ADOPTED = "schema_type_adopted"
 P_SURVEY = "survey_started"
 P_CONNECTOR = "connector_read"
 P_READ_FAILED = "read_failed"
 
 #: Proofs that decide a schema's state in Egeria. Anything else is context.
-STATE_PROOFS = (P_TARGET, P_ELEMENTS, P_REMOVED, P_ARCHIVED)
+STATE_PROOFS = (P_ATTACH_REQUESTED, P_TARGET, P_ELEMENTS, P_REMOVED, P_ARCHIVED)
 
 #: The curation record's steps, in the manifest's order.
 #: `zone_membership` is LAST among the writes (and absent unless zones are configured): a zone
@@ -116,13 +119,18 @@ KIND_LEAVE_OUT = "catalogue_schema_leave_out"
 #: keeps it) and never towards a soft delete (which removes it). The owner's gate
 #: confirms the list against a live schema with a term assignment.
 STRUCTURAL_RELATIONSHIPS = frozenset({
-    "CatalogTarget", "DataSetContent", "AssetSchemaType", "AttributeForSchema",
+    "CatalogTarget", "DataSetContent", "Schema", "AttributeForSchema",
     "NestedSchemaAttribute", "SchemaTypeOption", "LinkedType", "Anchors",
     "ConnectionToAsset", "ServerAssetUse", "AssetConnection", "ReportSubject",
     "TemplateSource", "SourcedFrom", "ResourceList",
     # An engine action that targets a schema is Egeria's own machinery (the survey), never
     # something a person attached (architect, 2026-10-05). It never makes a leave-out an archive.
     "ActionTarget",
+    # Machinery RE's own template creates for the element and anchors to it (the connection graph
+    # of every template-made schema, rehearsal 2 step 4), and the cataloguer's own link from a schema
+    # to its schema type (`RelationalDatabaseCataloguer.java:444-448`: `Schema`, parent at end 1).
+    # `DataFlow` is deliberately NOT here: lineage someone asserted hangs off the schema (archive).
+    "ConnectToEndpoint", "ConnectionConnectorType", "EmbeddedConnection", "ResourceConnection", "Schema",
 })
 
 HANGS_OFF_WORDS = {
@@ -130,6 +138,7 @@ HANGS_OFF_WORDS = {
     "LineageMapping": ("lineage mapping", "lineage mappings"),
     "DataClassAssignment": ("data class assignment", "data class assignments"),
     "DataClassComposition": ("data class composition", "data class compositions"),
+    "DataFlow": ("lineage link", "lineage links"),
     "ImplementedBy": ("implementation link", "implementation links"),
 }
 
@@ -171,10 +180,6 @@ def names_for(db_entity) -> dict:
 
 def schema_qn(db_entity, schema: str) -> str:
     return schema_qualified_name(server_name_for(db_entity), db_entity.database_name, schema)
-
-
-def schema_type_qn(db_entity, schema: str) -> str:
-    return schema_type_qualified_name(server_name_for(db_entity), db_entity.database_name, schema)
 
 
 def target_name(db_entity, schema: str) -> str:
@@ -221,11 +226,33 @@ def wildcard_collisions(view: dict, schema_names: list[str]) -> list[dict]:
 
 # ── what hangs off a schema ──────────────────────────────────────────────────
 
+#: Egeria's OpenLineage cataloguer names the component it makes for each OpenLineage job
+#: `DeployedSoftwareComponent::<namespace>::<name>` (connector source line 4665; docs/open-lineage-cataloguing.md:78),
+#: and Egeria's own governance actions (the surveys, the attach action) emit their events in the namespace
+#: `GovernanceActions` (the READBACK evidence note: `DeployedSoftwareComponent::GovernanceActions::
+#: PostgreSQLSurvey::survey-postgres-database`, the far end of the database's DataFlow). A DataFlow to such a
+#: component records "Egeria's own machinery touched this" and goes with the element.
+MACHINERY_JOB_PREFIX = "DeployedSoftwareComponent::GovernanceActions::"
+
+
+def is_machinery_dataflow(r) -> bool:
+    """A DataFlow is machinery ONLY when its far end is Egeria's own governance-action job component. A DataFlow
+    to anything else (another asset, a person's process, a schema, a governance ACTION PROCESS, or an end that could
+    not be read) is lineage someone could rely on: it hangs off, whoever asserted it."""
+    return (r.type_name == "DataFlow" and r.other_type == "DeployedSoftwareComponent"
+            and str(r.other_qualified_name or "").startswith(MACHINERY_JOB_PREFIX))
+
+
 def classify_hangs_off(rels_per_element: list[list]) -> dict:
     """Group the non-structural relationships found on a schema's elements."""
     by_type: dict[str, int] = {}
+    lineage_to: list[str] = []
     for rels in rels_per_element:
         for r in rels:
+            if r.type_name == "DataFlow":
+                if is_machinery_dataflow(r):
+                    continue
+                lineage_to.append(r.other_name or r.other_qualified_name or "an element Resource Explorer could not name")
             if r.type_name and r.type_name not in STRUCTURAL_RELATIONSHIPS:
                 by_type[r.type_name] = by_type.get(r.type_name, 0) + 1
     total = sum(by_type.values())
@@ -233,28 +260,84 @@ def classify_hangs_off(rels_per_element: list[list]) -> dict:
     for t, n in sorted(by_type.items()):
         one, many = HANGS_OFF_WORDS.get(t, (t, t))
         parts.append(f"{n} {one if n == 1 else many}")
-    return {"total": total, "by_type": by_type, "words": " · ".join(parts)}
+    return {"total": total, "by_type": by_type, "words": " · ".join(parts), "lineage_to": lineage_to}
+
+
+def _walk_schema(gateway: CatalogueGateway, schema_guid: str, rels_of) -> dict:
+    """Walk the schema's content as the cataloguer wired it (live read 2026-10-06): tables, columns and the schema type are
+    ANCHORED TO THE DATABASE, not to the schema, and the schema's own relationships are exactly two (DataSetContent to the
+    database, `Schema` to its schema type). A table is reached ONLY by schema --Schema--> schema type --AttributeForSchema-->
+    table --NestedSchemaAttribute--> column. Returns `{"schema_types", "tables", "columns"}` as `(guid, type, qualifiedName)`."""
+    out = {"schema_types": [], "tables": [], "columns": []}
+    seen: set[str] = set()
+    for r in rels_of(schema_guid):
+        if r.type_name == "Schema" and r.other_guid and r.other_guid not in seen:
+            seen.add(r.other_guid)
+            out["schema_types"].append((r.other_guid, r.other_type or "RelationalDBSchemaType", r.other_qualified_name))
+    for st_guid, _, _ in list(out["schema_types"]):
+        for r in rels_of(st_guid):
+            if r.type_name == "AttributeForSchema" and r.other_guid and r.other_guid not in seen:
+                seen.add(r.other_guid)
+                out["tables"].append((r.other_guid, r.other_type or "RelationalTable", r.other_qualified_name))
+    for t_guid, _, _ in list(out["tables"]):
+        for r in rels_of(t_guid):
+            if r.type_name == "NestedSchemaAttribute" and r.other_guid and r.other_guid not in seen \
+                    and (r.other_type in ("RelationalColumn", "")):
+                seen.add(r.other_guid)
+                out["columns"].append((r.other_guid, r.other_type or "RelationalColumn", r.other_qualified_name))
+    return out
 
 
 def read_hangs_off(gateway: CatalogueGateway, db_entity, schema: str) -> dict:
-    """What hangs off one catalogued schema, from a relationships read of its elements.
+    """What hangs off one catalogued schema, from a relationships read of everything under it.
 
-    Returns `{"state": "absent"}` when Egeria holds no such schema element,
-    `{"state": "read", "form", "hangs_off", "element_guid", "checked"}` when the
-    read completed, and `{"state": "cannot_check", "error"}` when any read
-    failed. A failed read is never reported as "nothing hangs off it"."""
+    The scan WALKS the graph (`_walk_schema`) and unions it with what the qualifiedName prefix finds (the connection
+    graph the template made, and tables the walk could not reach), reading each element's relationships once.
+    Returns `{"state": "absent"}` when Egeria holds no such schema element, `{"state": "read", "form", "hangs_off",
+    "element_guid", "checked", "delete_order", "content"}` when the read completed, and `{"state": "cannot_check",
+    "error"}` when any read failed. A failed read is never reported as "nothing hangs off it".
+
+    A schema with CATALOGED CONTENT (tables read back) always archives: deleting the schema element never cascades its
+    tables, columns or schema type (they are anchored to the database), so the form is not decided by relationships alone."""
     qn = schema_qn(db_entity, schema)
+    cache: dict[str, list] = {}
+
+    def rels_of(guid: str) -> list:
+        if guid not in cache:
+            cache[guid] = gateway.relationships(guid)
+        return cache[guid]
     try:
         el = gateway.read_element(qn)
         if el is None:
             return {"state": "absent"}
+        walked = _walk_schema(gateway, el.guid, rels_of)
         under = gateway.elements_under(qn + "::")
-        rels = [gateway.relationships(el.guid)] + [gateway.relationships(u.guid) for u in under]
+        members: dict[str, tuple] = {}
+        for kind in ("columns", "tables", "schema_types"):
+            for g, t, n in walked[kind]:
+                members[g] = (g, t, n)
+        for u in under:
+            members.setdefault(u.guid, (u.guid, u.type_name, u.qualified_name))
+        for g in members:
+            rels_of(g)
+        rels = [rels_of(el.guid)] + [cache[g] for g in members]
     except GatewayError as exc:
         return {"state": "cannot_check", "error": str(exc)}
     h = classify_hangs_off(rels)
+    tables = {g for g, t, _ in members.values() if t == "RelationalTable"}
+    columns = {g for g, t, _ in members.values() if t == "RelationalColumn"}
+    content = {"tables": len(tables), "columns": len(columns)}
+    if content["tables"]:
+        h["words"] = " · ".join(([h["words"]] if h["words"] else [])
+                                + [f"{content['tables']} cataloged table{'s' if content['tables'] != 1 else ''}"])
+        h["total"] += content["tables"]
+    # leaf first, each by GUID: columns, tables, anything else under the name (the template's connection graph),
+    # the schema type, then the schema (the caller deletes the schema last)
+    rank = {"RelationalColumn": 0, "RelationalTable": 1, "RelationalDBSchemaType": 3}
+    order = sorted(members.values(), key=lambda m: (rank.get(m[1], 2), -(m[2] or "").count("::")))
     return {"state": "read", "form": ARCHIVE if h["total"] else SOFT_DELETE, "hangs_off": h,
-            "element_guid": el.guid, "checked": 1 + len(under), "in_use": running_actions(rels)}
+            "element_guid": el.guid, "checked": 1 + len(members), "in_use": running_actions(rels),
+            "delete_order": order, "content": content}
 
 
 def running_actions(rels_per_element: list[list]) -> list[dict]:
@@ -267,7 +350,8 @@ def running_actions(rels_per_element: list[list]) -> list[dict]:
             if r.type_name != "ActionTarget" or (r.activity_status or "") in FINISHED_ACTIVITY:
                 continue
             out.append({"status": r.activity_status or "no status stated", "action_guid": r.other_guid,
-                        "completion_time": r.completion_time, "message": r.completion_message})
+                        "completion_time": r.completion_time, "message": r.completion_message,
+                        "kind": r.action_kind})
     return out
 
 
@@ -279,9 +363,16 @@ def _ms_stamp(ms: str) -> str:
         return str(ms)
 
 
+def _in_use_phrase(first: dict) -> str:
+    """"in use by a running survey" only when the running action IS a survey (or its kind is not stated);
+    otherwise "in use by <action type>"."""
+    kind = (first.get("kind") or "").strip()
+    return "in use by a running survey" if (not kind or "survey" in kind) else f"in use by {kind}"
+
+
 def in_use_text(schema: str, in_use: list[dict]) -> str:
     first = in_use[0]
-    bits = [f"{schema}: {IN_USE}", " / ".join(sorted({a["status"] for a in in_use}))]
+    bits = [f"{schema}: {_in_use_phrase(first)} · {WAIT}", " / ".join(sorted({a["status"] for a in in_use}))]
     if first.get("completion_time"):
         bits.append(f"completionTime {_ms_stamp(first['completion_time'])}")
     if first.get("message"):
@@ -348,20 +439,24 @@ def _failed_state(ob: dict, second: str) -> dict:
 
 
 def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, connector: dict | None) -> dict:
-    """One schema's state, from its proof rows and its newest outbox row."""
+    """One schema's state: the NEWEST fact by time, whether it is a proof row (read back from Egeria) or
+    the schema's newest outbox row. A failed or queued row older than a proof does not outrank it (the
+    header and every row come from this one derivation). Ladder: queued, sent, attached, cataloged."""
     step = ""
+    last = _latest(rows, STATE_PROOFS)
     if ob is not None:
         step = "leave out" if ob["element_kind"] == KIND_LEAVE_OUT else "attach"
         status = ob.get("status")
-        if status in ("pending", "running"):
+        row_at = str(ob.get("created_at") or "")
+        proof_newer = last is not None and str(last["read_at"] or "") >= row_at
+        if status in ("pending", "running") and not proof_newer:
             return {"state": "queued", "words": f"queued · outbox #{ob['id']}",
                     "second": f"step: {step}",
                     "proof": {"kind": "outbox", "outbox_id": ob["id"], "status": status}}
-        if status == "failed":
-            return _failed_state(ob, f"step: {step} · outbox #{ob['id']} · will retry")
-        if status == "dead":
+        if status == "failed" and not proof_newer:
+            return _failed_state(ob, f"step: {step} · outbox #{ob['id']} · {WORKER_WORDS}")
+        if status == "dead" and not proof_newer:
             return _failed_state(ob, f"step: {step} · outbox #{ob['id']} · gave up after {ob.get('attempts')} attempts")
-    last = _latest(rows, STATE_PROOFS)
     had_elements = _latest(rows, (P_ELEMENTS,)) is not None
     detached = _latest(rows, (P_DETACHED,)) is not None
     if last is None:
@@ -375,10 +470,16 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
     proof = {"kind": last["proof"], "at": last["read_at"], "element_guid": last["element_guid"],
              "outbox_id": last.get("outbox_id")}
     kind = last["proof"]
+    if kind == P_ATTACH_REQUESTED:
+        guid = str(last["detail"].get("engine_action") or "")
+        second = "scope says leave out · still being attached" if effective == LEAVE_OUT else \
+            "Egeria's attach action was started; its target is not in the cataloguer's list yet"
+        return {"state": "sent", "words": f"sent to Egeria · attach action {guid[:8]} · waiting for the target",
+                "second": second, "proof": proof}
     if kind == P_ELEMENTS:
         d = last["detail"]
         n = len(d.get("tables") or [])
-        words = f"catalogued · {n} table{'s' if n != 1 else ''} · read back {_stamp(last['read_at'])}"
+        words = f"cataloged · {n} table{'s' if n != 1 else ''} · read back {_stamp(last['read_at'])}"
         second = "element · read back from Egeria"
         if effective == LEAVE_OUT:
             second = "scope says leave out · still in Egeria until the next commit"
@@ -451,7 +552,7 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
                           "second": f"schema read back {_stamp(el['read_at'])}; this table was not under it"}
                 if t.get("effective") == LEAVE_OUT:
                     ts["second"] = WHOLE_SCHEMAS_LINE
-            elif st["state"] in ("attached_waiting", "queued", "failed", "removed", "archived"):
+            elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "removed", "archived"):
                 ts = {"state": "follows_schema", "words": f"as its schema: {st['state'].replace('_', ' ')}",
                       "second": WHOLE_SCHEMAS_LINE if t.get("effective") == LEAVE_OUT else ""}
             else:
@@ -461,7 +562,7 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     # What the chosen schemas would be, for the collision check shown on the tree.
     chosen = [n for n, s in ((x["name"], x) for x in view.get("schemas") or [])
               if s.get("effective") == CATALOGUE
-              or (s.get("effective") is None and schemas[n]["state"] in ("catalogued", "attached_waiting", "queued"))]
+              or (s.get("effective") is None and schemas[n]["state"] in ("catalogued", "attached_waiting", "queued", "sent"))]
     collisions = wildcard_collisions(view, chosen)
 
     counts: dict[str, int] = {}
@@ -507,8 +608,8 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if published:
         parts.append(zones_text or "zones: not read back")
     if n_cat:
-        order = (("catalogued", "catalogued"), ("attached_waiting", "attached, waiting"),
-                 ("queued", "queued"), ("failed", "failed"), ("uncommitted", "not committed yet"),
+        order = (("catalogued", "cataloged"), ("attached_waiting", "attached, waiting"),
+                 ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("uncommitted", "not committed yet"),
                  ("removed", "removed"), ("archived", "archived"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
@@ -529,7 +630,7 @@ def _chosen_and_kept(view: dict, states: dict) -> tuple[list[str], list[str]]:
     chosen = [s["name"] for s in view["schemas"] if s.get("effective") == CATALOGUE]
     kept = [s["name"] for s in view["schemas"]
             if s.get("effective") is None and states.get(s["name"], {}).get("state") in
-            ("catalogued", "attached_waiting", "queued")]
+            ("catalogued", "attached_waiting", "queued", "sent")]
     return chosen, kept
 
 
@@ -587,16 +688,19 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         elif read["state"] == "cannot_check":
             row.update(form="cannot_check", blocked=True, text=f"{name}: {CANT_CHECK}", error=read["error"])
         elif read.get("in_use"):
-            row.update(form="in_use", blocked=True, reason=IN_USE, in_use=read["in_use"],
+            row.update(form="in_use", blocked=True, reason=f"{_in_use_phrase(read['in_use'][0])} · {WAIT}",
+                       in_use=read["in_use"],
                        text=in_use_text(name, read["in_use"]))
         elif read["form"] == SOFT_DELETE:
             row.update(form=SOFT_DELETE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: nothing hangs off it · will be removed (soft-deleted) from Egeria"
-                            + (f" with its {tcount} tables" if tcount else ""))
+                            + (f" with its {tcount} tables" if tcount else "") + " · delete · nothing depends on it")
         else:
             row.update(form=ARCHIVE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: {read['hangs_off']['words']} hang off it · will be archived in Egeria, "
-                            f"not deleted · can't be re-included until Egeria restores archived elements")
+                            f"not deleted · can't be re-included until Egeria restores archived elements"
+                            + "".join(f" · archive · lineage to {n} would be lost"
+                                      for n in read["hangs_off"].get("lineage_to", [])))
         leave.append(row)
 
     blocked_names = {r["schema"] for r in leave if r.get("blocked")}
@@ -615,7 +719,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     zones = configured_publish_zones()
     removes = [r for r in leave if r["form"] == SOFT_DELETE]
     archives = [r for r in leave if r["form"] == ARCHIVE]
-    n_new = sum(1 for n in attach if states.get(n, {}).get("state") not in ("catalogued", "attached_waiting", "queued"))
+    n_new = sum(1 for n in attach if states.get(n, {}).get("state") not in ("catalogued", "attached_waiting", "queued", "sent"))
     lines = [
         {"id": "re_publishes", "mechanism": 1,
          "text": ("RE publishes the server and database assets and RE's own survey report, supplying the database "
@@ -650,6 +754,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     if leave:
         lines.append({"id": "leave_out", "mechanism": 0, "text": "; ".join(r["text"] for r in leave)})
     lines.append({"id": "whole_schemas", "mechanism": 0, "text": WHOLE_SCHEMAS_LINE})
+    lines.append({"id": "survey_report_whole", "mechanism": 0,
+                  "text": (f"RE's survey report is published whole; it describes all {len(view['schemas'])} schemas; "
+                           f"elements are created for the {len(attach)} you chose.")})
 
     something = bool(attach or [r for r in leave if r["form"] in (SOFT_DELETE, ARCHIVE)])
     if not something and not blockers:
@@ -697,10 +804,42 @@ def gw_schema_placeholders(db_entity, schema: str) -> dict:
     return schema_placeholders(db_entity, schema)
 
 
-def _wait_for_target(gateway: CatalogueGateway, guid: str) -> list:
+#: A COMPLETED attach action whose target has still not appeared after this long is not "lag": the
+#: target is gone (someone removed it), and a new attach may be started.
+LAG_GIVE_UP_SECONDS = 600
+
+
+def _targets_for(targets: list, guid: str, db_entity, schema: str) -> list:
+    """The targets that ARE this schema: by element GUID, or by the name Egeria's own attach gives it
+    (`<db>.<schema>`, the schema's displayName) or RE's fallback name."""
+    names = {f"{db_entity.database_name}.{schema}", target_name(db_entity, schema)}
+    return [t for t in targets if t.element_guid == guid or (t.name and t.name in names)]
+
+
+def _unsettled_request(registry, slug: str, schema: str) -> dict | None:
+    """The newest attach request for this schema that nothing has since detached, removed or archived."""
+    rows = [p for p in registry.list_catalogue_commit_proofs(slug)
+            if p["node_kind"] == "schema" and p["schema_name"] == schema]
+    req = _latest(rows, (P_ATTACH_REQUESTED,))
+    if req is None:
+        return None
+    gone = _latest(rows, (P_DETACHED, P_REMOVED, P_ARCHIVED))
+    return None if (gone is not None and str(gone["read_at"]) >= str(req["read_at"])) else req
+
+
+def _older_than(iso: str, seconds: int) -> bool:
+    try:
+        return (datetime.utcnow() - datetime.fromisoformat(str(iso))).total_seconds() > seconds
+    except ValueError:
+        return False
+
+
+def _wait_for_target(gateway: CatalogueGateway, guid: str, db_entity=None, schema: str = "") -> list:
     """Egeria's action attaches on its own side: look for the target a few times before concluding."""
     for i in range(CATALOG_POLLS):
-        mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+        found = gateway.list_catalog_targets()
+        mine = _targets_for(found, guid, db_entity, schema) if db_entity is not None else \
+            [t for t in found if t.element_guid == guid]
         if mine:
             return mine
         if i + 1 < CATALOG_POLLS:
@@ -729,43 +868,71 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     if seen is not None and seen.archived:
         raise SchemaRefused(f"{schema}: {S19_SENTENCE}")
     el = gateway.read_element(qn)
+    create_note = ""
     if el is None:
-        orphan = gateway.find_schema_type(schema_type_qn(e, schema))
-        guid = gateway.create_schema_element(e, schema, payload.get("database_guid", ""))
+        try:
+            guid = gateway.create_schema_element(e, schema, payload.get("database_guid", ""))
+        except GatewayError as exc:
+            # Egeria answered an error but the element may exist (rehearsal 2: a 500 on the parent link
+            # still created it). Read before believing the error: an element that is there is adopted.
+            again = gateway.read_element(qn)
+            if again is None:
+                raise
+            guid, create_note = again.guid, egeria_first_sentence(str(exc))[0]
         if not guid:
             raise GatewayError(f"Egeria created no schema element for {schema}")
-        if orphan:
-            gateway.link_schema_type(guid, orphan)
-            _proof(registry, slug, P_ADOPTED, schema=schema, element_guid=guid, qualified_name=schema_type_qn(e, schema),
-                   curation_id=payload.get("curation_id", ""), outbox_id=outbox_id,
-                   detail={"schema_type_guid": orphan, "note": "adopted the existing schema type rather than create a second"})
     else:
         guid = el.guid
-    mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+    # THE GUARD: read the targets FIRST. A target for this schema (by element or by name) means it is
+    # attached: no initiation, no add_catalog_target. Egeria creates ANOTHER CatalogTarget on every
+    # initiation (9 targets for 3 schemas in rehearsal 2), so nothing below runs when one is there.
+    mine = _targets_for(gateway.list_catalog_targets(), guid, e, schema)
     mechanism, action_guid, fallback = "already_attached", "", ""
     if not mine:
-        # Prefer Egeria's own attach: its GovernanceActionType takes the EXISTING schema element as
-        # action target `newAsset`. Fall back to add_catalog_target only when that is refused or
-        # errors. Never both: a still-running action is an error to retry, not a reason to attach.
-        try:
-            action_guid = gateway.initiate_catalog_action(guid, gw_schema_placeholders(e, schema))
-        except GatewayError as exc:
-            fallback = egeria_first_sentence(str(exc))[0]
-        else:
-            mechanism = "action_type"
-            mine = _wait_for_target(gateway, guid)
-            if not mine:
-                st = gateway.engine_action_status(action_guid)
-                if st.status in FAILED_ACTION_STATUSES:
-                    fallback = egeria_first_sentence(st.message or f"the action ended {st.status}")[0]
-                else:
+        req = _unsettled_request(registry, slug, schema)
+        if req is not None and req["element_guid"] != guid:
+            req = None          # that request was for a schema element Egeria no longer has (a reset): it settles nothing
+        if req is not None:
+            # An attach was started earlier and its target is not readable yet (the read-back lags).
+            # Never initiate again while that action is not over-and-failed.
+            action_guid = str(req["detail"].get("engine_action") or "")
+            st = gateway.engine_action_status(action_guid)
+            if st.status in FAILED_ACTION_STATUSES or (st.status == "COMPLETED" and _older_than(req["read_at"], LAG_GIVE_UP_SECONDS)):
+                action_guid, req = "", None
+            else:
+                mechanism = "action_type"
+                mine = _wait_for_target(gateway, guid, e, schema)
+                if not mine:
                     raise GatewayError(
-                        f"Egeria's attach action {action_guid[:8]} is {st.status} but the target for {schema} is not "
-                        "in the cataloguer's list yet (still waiting; not attaching a second time)")
-        if not mine and fallback:
-            mechanism = "add_catalog_target"
-            gateway.add_catalog_target(guid, target_name(e, schema))
-            mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+                        f"Egeria's attach action {action_guid[:8]} is {st.status or 'status not stated'} but the target for "
+                        f"{schema} is not in the cataloguer's list yet (still waiting; not attaching a second time)")
+        if not mine and req is None:
+            # Prefer Egeria's own attach: its GovernanceActionType takes the EXISTING schema element as
+            # action target `newAsset`. Fall back to add_catalog_target only when that is refused or
+            # errors. Never both: a still-running action is an error to retry, not a reason to attach.
+            try:
+                action_guid = gateway.initiate_catalog_action(guid, gw_schema_placeholders(e, schema))
+            except GatewayError as exc:
+                fallback = egeria_first_sentence(str(exc))[0]
+                action_guid = ""
+            else:
+                _proof(registry, slug, P_ATTACH_REQUESTED, schema=schema, element_guid=guid, qualified_name=qn,
+                       curation_id=payload.get("curation_id", ""), outbox_id=outbox_id, recorded_by=payload.get("by", ""),
+                       detail={"engine_action": action_guid, "action_type": CATALOG_SCHEMA_ACTION_TYPE})
+                mechanism = "action_type"
+                mine = _wait_for_target(gateway, guid, e, schema)
+                if not mine:
+                    st = gateway.engine_action_status(action_guid)
+                    if st.status in FAILED_ACTION_STATUSES:
+                        fallback = egeria_first_sentence(st.message or f"the action ended {st.status}")[0]
+                    else:
+                        raise GatewayError(
+                            f"Egeria's attach action {action_guid[:8]} is {st.status or 'status not stated'} but the target for "
+                            f"{schema} is not in the cataloguer's list yet (still waiting; not attaching a second time)")
+            if not mine and fallback:
+                mechanism = "add_catalog_target"
+                gateway.add_catalog_target(guid, target_name(e, schema))
+                mine = _targets_for(gateway.list_catalog_targets(), guid, e, schema)
         if not mine:
             raise GatewayError(f"the target for {schema} was added but is not in the cataloguer's list on read-back")
     status = None
@@ -778,13 +945,10 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
            recorded_by=payload.get("by", ""),
            detail={"targets_for_schema": len(mine), "mechanism": mechanism,
                    "action_type": CATALOG_SCHEMA_ACTION_TYPE if action_guid else "",
-                   "engine_action": action_guid, "fallback_reason": fallback,
+                   "engine_action": action_guid, "fallback_reason": fallback, "create_error_adopted": create_note,
                    "connector_last_refresh": status.last_refresh_time if status else "",
                    "connector_note": "the connector's last refresh, not this target's"})
     return guid
-
-
-_RANK = {"RelationalColumn": 0, "RelationalTable": 1}
 
 
 def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbox_id: int | None = None) -> str:
@@ -828,27 +992,42 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     if read.get("in_use"):
         raise GatewayError(in_use_text(schema, read["in_use"]))
     form = ARCHIVE if (payload.get("form") == ARCHIVE or read.get("form") == ARCHIVE) else SOFT_DELETE
+    # Every element by GUID, leaf first (columns, tables, the template's connection graph, the schema type), then the
+    # schema: tables, columns and the schema type are anchored to the database, so deleting the schema never cascades
+    # them. Each is read back; the schema's own read-back is the proof row.
+    order = list(read["delete_order"])
+    for g, _typ, mqn in order:
+        gateway.delete_element(g, form)
+    gateway.delete_element(guid, form)
+    for g, _typ, mqn in order:
+        if mqn:
+            _prove_gone(gateway, mqn, form, schema)
+    now = gateway.read_element(qn)
+    seen = gateway.read_element(qn, for_lineage=True)
     if form == ARCHIVE:
-        gateway.delete_element(guid, ARCHIVE)
-        now = gateway.read_element(qn)
-        seen = gateway.read_element(qn, for_lineage=True)
         if now is not None or seen is None or not seen.archived:
             raise GatewayError(f"{schema}: the archive was sent but the read-back does not show it archived")
         _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
                outbox_id=outbox_id, recorded_by=payload.get("by", ""),
-               detail={"form": ARCHIVE, "hangs_off": read["hangs_off"]["by_type"]})
+               detail={"form": ARCHIVE, "hangs_off": read["hangs_off"]["by_type"], "content": read["content"],
+                       "elements_archived": len(order) + 1})
         return guid
-    under = gateway.elements_under(qn + "::")
-    under.sort(key=lambda u: (-u.qualified_name.count("::"), _RANK.get(u.type_name, 2)))
-    for u in under:
-        gateway.delete_element(u.guid, SOFT_DELETE)
-    gateway.delete_element(guid, SOFT_DELETE)
-    if gateway.read_element(qn) is not None or gateway.elements_under(qn + "::"):
+    if now is not None or gateway.elements_under(qn + "::"):
         raise GatewayError(f"{schema}: the delete was sent but the read-back still finds elements")
     _proof(registry, slug, P_REMOVED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
            outbox_id=outbox_id, recorded_by=payload.get("by", ""),
-           detail={"form": SOFT_DELETE, "elements_deleted": len(under) + 1})
+           detail={"form": SOFT_DELETE, "elements_deleted": len(order) + 1})
     return guid
+
+
+def _prove_gone(gateway: CatalogueGateway, qualified_name: str, form: str, schema: str) -> None:
+    """The read-back that proves one element gone (soft delete) or archived (a Memento, visible with `forLineage`)."""
+    if gateway.read_element(qualified_name) is not None:
+        raise GatewayError(f"{schema}: {qualified_name} is still readable after its {form}")
+    if form == ARCHIVE:
+        seen = gateway.read_element(qualified_name, for_lineage=True)
+        if seen is None or not seen.archived:
+            raise GatewayError(f"{schema}: {qualified_name} was archived but the read-back does not show it")
 
 
 def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str], *,
@@ -888,7 +1067,9 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
                         if u.type_name == "RelationalTable" and "::" not in u.qualified_name[len(qn) + 2:])
         cols = sum(1 for u in under if u.type_name == "RelationalColumn")
         mine = [t for t in targets if t.element_guid == el.guid]
-        if under:
+        # Only tables and columns count as cataloged content: the template's own connection graph
+        # (4 elements, rehearsal 2) is under every schema from the moment it is created.
+        if tables or cols:
             _proof(registry, slug, P_ELEMENTS, schema=schema, element_guid=el.guid, qualified_name=qn,
                    curation_id=curation_id, recorded_by=by, target_guid=mine[0].relationship_guid if mine else "",
                    detail={"tables": tables, "columns": cols, "elements": len(under)})
@@ -970,7 +1151,7 @@ def settle_survey(registry, gateway: CatalogueGateway, slug: str) -> str:
         if cid:
             cur.settle_step(cid, "survey", "failed", f"Egeria's survey failed: {first}", more=rest)
         return "failed"
-    if out.annotations:
+    if status == "COMPLETED" and out.annotations:
         _proof(registry, slug, P_SURVEY_RESULT, node_kind="database", element_guid=out.report_guid, curation_id=cid,
                detail={"outcome": "annotated", "engine_action": action, "annotations": out.annotations,
                        "action_status": out.action_status})
@@ -979,10 +1160,16 @@ def settle_survey(registry, gateway: CatalogueGateway, slug: str) -> str:
                             f"done · report {out.report_guid[:8]} · {out.annotations} annotations · read back "
                             f"{_stamp(_now())} · {SURVEY_LINE}: {', '.join(names)}")
         return "done"
-    seen = (f" · read back {_stamp(_now())}: " + (f"report {out.report_guid[:8]} holds 0 annotations"
-                                                  if out.report_guid and out.annotations == 0
-                                                  else "no survey report seen yet")
-            + (f" · Egeria says {out.action_status}" if out.action_status else ""))
+    if status in RUNNING_ACTION_STATUSES or not status:
+        # not over: "running in Egeria", with the annotations counted so far (never "done")
+        so_far = (f" · {out.annotations} annotations so far" if out.annotations is not None else "")
+        seen = f" · read back {_stamp(_now())}: running in Egeria · {out.action_status or 'status not stated yet'}{so_far}"
+    elif status == "COMPLETED":
+        seen = (f" · read back {_stamp(_now())}: the action COMPLETED but "
+                + (f"report {out.report_guid[:8]} holds 0 annotations" if out.report_guid else "no survey report was seen"))
+    else:
+        seen = (f" · read back {_stamp(_now())}: status '{out.action_status}' · not one Resource Explorer knows"
+                + (f" · {out.annotations} annotations so far" if out.annotations is not None else ""))
     if cid:
         cur.settle_step(cid, "survey", "submitted", _submitted_words(submitted_at, names, bad, action) + seen)
     return "submitted"
@@ -1062,14 +1249,29 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
 _PAST = {"attach": "attached", "remove": "removed"}
 
 
-def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str) -> None:
+def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, registry=None) -> None:
     done = [r for r in rows if r["status"] == "done"]
     bad = [r for r in rows if r["status"] in ("failed", "dead")]
     wait = [r for r in rows if r["status"] in ("pending", "running")]
     if not rows:
         cur.set_step(cid, step, "skipped", f"no schema to {what}")
         return
-    parts = [f"{len(done)} of {len(rows)} {_PAST.get(what, what + 'ed')}, each with its proof row"]
+    verb = _PAST.get(what, what + "ed")
+    parts = [f"{len(done)} of {len(rows)} {verb}, each with its proof row"]
+    if what == "remove" and registry is not None and done:
+        # what was actually done to each schema, from its proof row: an archive says "archived", never "removed"
+        slug = ((rows[0].get("payload") or {}).get("slug")) or ""
+        proofs = registry.list_catalogue_commit_proofs(slug) if slug else []
+        kinds = []
+        for r in done:
+            sch = (r.get("payload") or {}).get("schema")
+            last = _latest([p for p in proofs if p["node_kind"] == "schema" and p["schema_name"] == sch], (P_REMOVED, P_ARCHIVED))
+            kinds.append("archived" if last and last["proof"] == P_ARCHIVED else "removed")
+        n_arch = kinds.count("archived")
+        if n_arch == len(kinds):
+            parts = [f"{len(done)} of {len(rows)} archived, each with its proof row"]
+        elif n_arch:
+            parts = [f"{len(done)} of {len(rows)} done: {len(kinds) - n_arch} removed, {n_arch} archived, each with its proof row"]
     if wait:
         parts.append(f"{len(wait)} queued in the outbox (#{', #'.join(str(r['id']) for r in wait)})")
     more: list[str] = []
@@ -1193,7 +1395,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         drain(curation_id)
         rows = [r for r in registry.list_catalogue_outbox_rows(slug)
                 if r["run_id"] == curation_id and r["element_kind"] == KIND_LEAVE_OUT]
-        _step_from_outbox(cur, curation_id, "leave_outs", rows, "remove")
+        _step_from_outbox(cur, curation_id, "leave_outs", rows, "remove", registry)
 
     # 3 ── RE's own survey report and annotations (no native survey started here)
     measured = registry.latest_measured_database_survey(slug)
@@ -1208,7 +1410,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                    curation_id=curation_id, detail={"annotation_count": res.get("annotation_count"),
                                                     "surveyed_at": measured.get("surveyed_at", "")})
             cur.set_step(curation_id, "survey_report", "done",
-                         f"report {str(res.get('report_guid') or '?')[:8]} · {res.get('annotation_count')} annotations")
+                         (f"report {str(res['report_guid'])[:8]}" if res.get("report_guid") else "report not found")
+                         + f" · {res.get('annotation_count')} annotations")
         except Exception as exc:
             _fail_step(cur, curation_id, "survey_report", exc)
 

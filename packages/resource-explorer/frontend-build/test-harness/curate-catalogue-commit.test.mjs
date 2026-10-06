@@ -307,6 +307,16 @@ test('every state word on a schema row is the server\'s, with its glyph and seco
   assert.match(flat(secondOf(document, 'schema:ledger')), /can't be re-included until Egeria restores archived elements/);
 });
 
+test('a schema whose attach action was sent reads "sent", between queued and attached (D-C ladder)', async () => {
+  const v = committedView();
+  v.commit.schemas.q = { state: 'sent', words: 'sent to Egeria · attach action a0008 · waiting for the target',
+    second: "Egeria's attach action was started; its target is not in the cataloguer's list yet" };
+  const { document } = await setUp(v, previewFor());
+  const w = stateOf(document, 'schema:q');
+  assert.equal(w.dataset.scopeEgeriaWord, 'sent');
+  assert.match(flat(w), /^◔ sent to Egeria · attach action a0008 · waiting for the target$/);
+});
+
 test('table rows show their own read-back, follow their schema, and a left-out table says whole schemas', async () => {
   const { document } = await setUp(committedView(), previewFor());
   document.querySelector('[data-scope-toggle="sales"]').click();
