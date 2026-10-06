@@ -17,6 +17,17 @@ schemas 28bbde37 coco_sus, a358abb3 coco_ods, 87271b37 us_sales all Memento; tab
 Cataloguer targets as read now: an EMPTY list (not the 3 the architect expected). Empty may mean the
 targets were removed, or hidden because their elements are Mementos; NOT yet determined.
 
+## Pre-state refreshed 2026-10-06T16:58Z (minutes before the press)
+
+- Registry: us_sales = catalogue (set 16:57:33 by the owner); coco_sus, coco_ods catalogue; eu_sales and
+  target_sales leave_out.
+- Egeria lookup by template qualifiedName for eu_sales, target_sales, us_sales: "No elements found" (us_sales
+  is a hidden Memento, the other two were never created by RE). Nothing for a leave_out to remove.
+- FINDING in its own right: the JDBC cataloguer's catalog-target list reads EMPTY at 16:58Z (read twice,
+  16:5x and 16:58). Cause undetermined: removed, or hidden because the elements are Mementos.
+- Database 17f0a963, schemas 28bbde37, a358abb3, 87271b37 and table 9863e995 all still Memento.
+- Peer round: Portal clear, egeria-python-20 clear, PR/CI not yet answered, architect: owner presses.
+
 ## Predictions
 
 1. Publish: the database name no longer resolves, so RE creates a NEW database element with the original
