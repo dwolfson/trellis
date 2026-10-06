@@ -71,9 +71,29 @@ ARCHIVE = "archive"
 #: HARD BLOCK (2026-10-06, ISSUE-117): in this Egeria build, archiving ANY element that is not its own
 #: anchor (a schema, a table, a column, a schema type) archives the anchor's WHOLE tree: leaving out us_sales
 #: archived the coco_pharma database element and both demo schemas. Soft delete is frozen too until a
-#: throwaway proves delete does not walk the same way. While this is True NOTHING is sent for any archive or
-#: delete: `delete_element` raises before it reaches the client. Choices are still recorded in RE.
-ISSUE_117_BLOCK = True
+#: throwaway proves delete does not walk the same way. The block is ON in every process; it is lifted ONLY by
+#: the environment variable below, set to a non-empty clearance ("<who>/<UTC time>"), read at CALL time. There
+#: is no code constant to edit. While it is on, `delete_element` raises before it touches a client and
+#: nothing is sent; choices are still recorded in RE.
+ISSUE_117_ENV = "RE_ISSUE_117_BLOCK_OFF"
+
+
+def issue_117_clearance() -> str:
+    """The clearance text that lifts the block ('' means the block is on)."""
+    import os
+    return (os.environ.get(ISSUE_117_ENV) or "").strip()
+
+
+def issue_117_blocked() -> bool:
+    return not issue_117_clearance()
+
+
+def issue_117_state_line() -> str:
+    c = issue_117_clearance()
+    return ("ISSUE-117 archive/delete block: ON (Egeria archives a database's whole tree when any part is archived)"
+            if not c else f"ISSUE-117 archive/delete block: OFF by clearance {c!r} ({ISSUE_117_ENV})")
+
+
 ISSUE_117_WORDS = ("Egeria archives the whole database tree when any part of it is archived "
                    "(ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent")
 
@@ -749,7 +769,7 @@ class PyegeriaCatalogueGateway:
         """One element, never a cascade. An archive is the delete endpoint with
         ARCHIVE and forLineage and forDuplicateProcessing true (the archive
         endpoint answers 500 on this build)."""
-        if ISSUE_117_BLOCK:
+        if issue_117_blocked():
             raise GatewayError(ISSUE_117_WORDS)          # before any client is built: nothing is sent
         method = "ARCHIVE" if form == ARCHIVE else "SOFT_DELETE"
         body = {"class": "DeleteElementRequestBody", "deleteMethod": method,

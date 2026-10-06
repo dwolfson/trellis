@@ -1,11 +1,12 @@
 """ISSUE-117 hard block: Egeria archives the WHOLE database tree when any part of it is archived (leaving
 out us_sales archived the coco_pharma database element and both demo schemas, 2026-10-06). While
-`catalogue_gateway.ISSUE_117_BLOCK` is on, NOTHING reaches Egeria for any archive or delete of a database's
+the block is on (the DEFAULT: env var RE_ISSUE_117_BLOCK_OFF unset), NOTHING reaches Egeria for any archive or delete of a database's
 tree (schema, table, column, schema type), soft delete included; the choice stays recorded in RE.
 
-These tests run with the block ON (conftest turns it off for every other catalogue test, which exercise the
-frozen delete path against the fake). `test_known_negative_*` proves the guard can fail: with the block off the
-same scenario DOES reach the delete path."""
+These tests run with the block at its DEFAULT (the env var is removed for each test; conftest sets it only for
+the older catalogue tests that exercise the frozen delete path against the fake). The block can be lifted ONLY by
+RE_ISSUE_117_BLOCK_OFF=<who>/<UTC>, read at call time: there is no code constant. `test_known_negative_*` proves
+the guard can fail: with the variable set, the same scenarios DO reach the delete path."""
 from __future__ import annotations
 
 import sys
@@ -27,13 +28,19 @@ WORDS = ("Egeria archives the whole database tree when any part of it is archive
          "(ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent")
 
 
+@pytest.fixture(autouse=True)
+def _default_state(monkeypatch):
+    monkeypatch.delenv("RE_ISSUE_117_BLOCK_OFF", raising=False)
+
+
 def sent_to_egeria(fake):
     """Every call that would change Egeria on the leave-out path."""
     return fake.ops("delete_element") + fake.ops("remove_catalog_target")
 
 
 def test_the_block_is_on_as_shipped():
-    assert gw.ISSUE_117_BLOCK is True and gw.ISSUE_117_WORDS == WORDS
+    assert gw.issue_117_blocked() is True and gw.ISSUE_117_WORDS == WORDS
+    assert not hasattr(gw, "ISSUE_117_BLOCK"), "no code constant to edit"
 
 
 # ── the real gateway: every kind of element, both forms ─────────────────────────────────────────────
@@ -89,9 +96,85 @@ def test_a_schema_that_was_never_cataloged_is_still_just_nothing_to_remove(world
 
 # ── the guard can fail ─────────────────────────────────────────────────────────────────────────────────────
 
-def test_known_negative_with_the_block_off_the_same_scenario_reaches_the_delete_path(world, fake, monkeypatch):
-    monkeypatch.setattr(gw, "ISSUE_117_BLOCK", False)
+# ── the switch: only the env var, only with a clearance, read at call time ────────────────────────────────
+
+def test_only_a_non_empty_clearance_lifts_the_block(monkeypatch):
+    for blank in ("", "   "):
+        monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", blank)
+        assert gw.issue_117_blocked() is True
+    monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "dwolfson/2026-10-07T01:00Z")
+    assert gw.issue_117_blocked() is False
+
+
+def test_the_state_line_says_on_or_off_with_the_clearance_text(monkeypatch):
+    assert gw.issue_117_state_line().startswith("ISSUE-117 archive/delete block: ON")
+    monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "dwolfson/2026-10-07T01:00Z")
+    assert "OFF by clearance 'dwolfson/2026-10-07T01:00Z'" in gw.issue_117_state_line()
+
+
+def test_the_session_start_logs_the_state(caplog):
+    import logging
+    from resource_explorer.web import app as web_app
+    src = Path(web_app.__file__).read_text(encoding="utf-8")
+    assert "issue_117_state_line()" in src, "the lifespan logs the state at start"
+
+
+# ── the proof row: "0 archived" comes from a row, not from the absence of one ──────────────────────────────
+
+def _blocked_commit(world, fake):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    choose(world, "archive", "catalogue")
+    return press(world, fake)
+
+
+def test_a_refused_leave_out_is_a_proof_row_and_the_header_and_row_derive_from_it(world, fake):
+    out, rec = _blocked_commit(world, fake)
+    rows = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_LEAVE_OUT_BLOCKED]
+    assert len(rows) == 1 and rows[0]["schema_name"] == "sales"
+    assert rows[0]["detail"]["note"] == "kept, not sent · ISSUE-117 block"
+    d = derived(world)
+    assert "1 left out, kept, not sent · ISSUE-117 block · 0 archived or deleted in Egeria" in d["header"]["text"]
+    assert d["schemas"]["sales"]["blocked_117"] is True and d["schemas"]["sales"]["second"].startswith("kept, not sent · ISSUE-117 block")
+    assert "sales" in step(rec, "leave_outs")["detail"] and "kept, not sent" in step(rec, "leave_outs")["detail"]
+    # delete the row: the claim goes with it (a word on screen derives from a proof row)
+    conn = world["registry"]._conn
+    with conn() as c:
+        c.execute("DELETE FROM catalogue_commit_proofs WHERE proof = ?", (cc.P_LEAVE_OUT_BLOCKED,))
+    d2 = derived(world)
+    assert "ISSUE-117" not in d2["header"]["text"] and "blocked_117" not in d2["schemas"]["sales"]
+
+
+def test_the_outbox_refusal_also_writes_the_row(world, fake):
+    _attached(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    with pytest.raises(GatewayError):
+        cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.ARCHIVE, "curation_id": "c1", "by": ME})
+    assert [p["detail"]["note"] for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_LEAVE_OUT_BLOCKED] == ["kept, not sent · ISSUE-117 block"]
+
+
+# ── the guard can fail: with the variable set the same scenarios reach the delete path ───────────────────────────
+
+def test_known_negative_with_a_clearance_the_commit_reaches_the_delete_path(world, fake, monkeypatch):
+    monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "test/clearance")
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     press(world, fake)
     assert fake.ops("delete_element"), "if this does not fail the other tests prove nothing"
+
+
+def test_known_negative_with_a_clearance_the_real_gateway_reaches_its_client(monkeypatch):
+    monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "test/clearance")
+    g = gw.PyegeriaCatalogueGateway(entity_stub())
+    md = MagicMock()
+    g._clients.update({"MetadataExpert": md})
+    g.delete_element("guid", gw.ARCHIVE)
+    assert md.delete_metadata_element.called
+
+
+def test_known_negative_with_a_clearance_apply_leave_out_sends(world, fake, monkeypatch):
+    monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "test/clearance")
+    _attached(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.SOFT_DELETE, "curation_id": "c1", "by": ME})
+    assert fake.ops("delete_element")

@@ -72,8 +72,9 @@ WHOLE_SCHEMAS_LINE = "Egeria catalogs whole schemas · table choices are kept fo
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
-# The ISSUE-117 hard block lives in catalogue_gateway (`ISSUE_117_BLOCK`, `ISSUE_117_WORDS`); it is read at
-# call time through `gw` so one switch governs the preview, the outbox handler and the real gateway.
+# The ISSUE-117 hard block lives in catalogue_gateway (`issue_117_blocked()`, `ISSUE_117_WORDS`): ON unless the
+# env var RE_ISSUE_117_BLOCK_OFF names a clearance; read at call time so one switch governs the preview, the
+# outbox handler and the real gateway.
 CATALOGED_STATES = ("catalogued", "attached_waiting", "queued", "sent", "failed")
 CANT_CHECK = "couldn't check what hangs off it"
 IN_USE = "in use by a running survey · wait or cancel"
@@ -101,6 +102,8 @@ P_ELEMENTS = "elements_read_back"
 P_DETACHED = "target_detached"
 P_REMOVED = "removed"
 P_ARCHIVED = "archived"
+P_LEAVE_OUT_BLOCKED = "leave_out_blocked"   # a leave-out that was refused (ISSUE-117): kept, not sent
+KEPT_NOT_SENT = "kept, not sent · ISSUE-117 block"
 P_SURVEY = "survey_started"
 P_CONNECTOR = "connector_read"
 P_READ_FAILED = "read_failed"
@@ -573,12 +576,23 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
               or (s.get("effective") is None and schemas[n]["state"] in ("catalogued", "attached_waiting", "queued", "sent"))]
     collisions = wildcard_collisions(view, chosen)
 
+    # A leave-out that was refused (ISSUE-117) is a ROW: the schema says "kept, not sent" and the header counts
+    # it, so "0 archived" is derived from rows, not from the absence of one.
+    blocked_names = []
+    for s in view.get("schemas") or []:
+        rows = by.get(("schema", s["name"], ""), [])
+        bl = _latest(rows, (P_LEAVE_OUT_BLOCKED,))
+        if bl is not None and s.get("effective") == LEAVE_OUT and schemas[s["name"]]["state"] not in ("archived", "deleted"):
+            blocked_names.append(s["name"])
+            schemas[s["name"]] = {**schemas[s["name"]], "blocked_117": True,
+                                  "second": f"{KEPT_NOT_SENT} · {_stamp(bl['read_at'])}"}
     counts: dict[str, int] = {}
     for s in view.get("schemas") or []:
         if s.get("effective") == CATALOGUE:
             k = schemas[s["name"]]["state"]
             counts[k] = counts.get(k, 0) + 1
-    header = _header(published, counts, conn_d, failed_read, view, bool(proofs or ob_by_schema), zones_text)
+    n_gone = sum(1 for st in schemas.values() if st.get("state") in ("archived", "deleted"))
+    header = _header(published, counts, conn_d, failed_read, view, bool(proofs or ob_by_schema), zones_text, blocked_names, n_gone)
     zr = _latest(db_rows, (P_ZONES_READ,))
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
@@ -603,7 +617,8 @@ def _zones_text(written: dict | None, read: dict | None) -> str:
     return f"zones: {', '.join(zones)} · set by {by}"
 
 
-def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_text: str = "") -> dict:
+def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_text: str = "",
+            blocked: list | None = None, n_gone: int = 0) -> dict:
     """The state-derived marker line: never a constant (the owner's gate, item 6)."""
     if not anything:
         return {"state": "not_committed", "text": NOT_COMMITTED_HEADER}
@@ -621,6 +636,8 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
                  ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
+    if blocked:
+        parts.append(f"{len(blocked)} left out, {KEPT_NOT_SENT} · {n_gone} archived or deleted in Egeria")
     if conn_d and conn_d.get("last_refresh_time"):
         parts.append(f"cataloguer connector's last refresh {_stamp(conn_d['last_refresh_time'])} (the connector's, not a schema's)")
     if failed_read:
@@ -686,7 +703,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                                                                   if st.get("state") in ("deleted", "archived") else " · never cataloged"))
             leave.append(row)
             continue
-        if gw.ISSUE_117_BLOCK and st.get("state") in CATALOGED_STATES:
+        if gw.issue_117_blocked() and st.get("state") in CATALOGED_STATES:
             row.update(form="issue_117", blocked=True, reason=gw.ISSUE_117_WORDS, text=f"{name}: {gw.ISSUE_117_WORDS}")
             leave.append(row)
             continue
@@ -996,8 +1013,11 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
         return ""
     el = gateway.read_element(qn)
     guid = el.guid if el else ""
-    if gw.ISSUE_117_BLOCK and el is not None:
-        # Defence behind the preview: whatever queued this, nothing is sent for a schema Egeria holds.
+    if gw.issue_117_blocked() and el is not None:
+        # Defence behind the preview: whatever queued this, nothing is sent for a schema Egeria holds,
+        # and the refusal is a ROW, so the header derives "0 archived" from it rather than from silence.
+        _proof(registry, slug, P_LEAVE_OUT_BLOCKED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
+               outbox_id=outbox_id, recorded_by=payload.get("by", ""), detail={"note": KEPT_NOT_SENT, "form": payload.get("form", "")})
         raise GatewayError(f"{schema}: {gw.ISSUE_117_WORDS}")
     if guid:
         for t in [t for t in gateway.list_catalog_targets() if t.element_guid == guid]:
@@ -1259,6 +1279,7 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         "attach": preview["attach"],
         "leave_out": [{"schema": r["schema"], "form": r["form"]} for r in preview["leave_out"]
                       if r["form"] in (SOFT_DELETE, ARCHIVE)],
+        "blocked_117": [r["schema"] for r in preview["leave_out"] if r["form"] == "issue_117"],
         "survey_schemas": preview["survey"]["schemas"],
         "survey_not_scopable": preview["survey"]["not_scopable"],
         "refresh_now": bool(refresh_now),
@@ -1465,8 +1486,15 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
 
     # 2b ── leave outs
     leave = list(sel.get("leave_out") or [])
+    blocked117 = list(sel.get("blocked_117") or [])
+    for nm in blocked117:
+        # nothing is sent; the refusal is recorded as a row so the header can say "0 archived" from it
+        _proof(registry, slug, P_LEAVE_OUT_BLOCKED, schema=nm, qualified_name=schema_qn(db, nm), curation_id=curation_id,
+               recorded_by=author, detail={"note": KEPT_NOT_SENT, "form": "issue_117"})
     if not leave:
-        cur.set_step(curation_id, "leave_outs", "skipped", "no schema to delete or archive")
+        cur.set_step(curation_id, "leave_outs", "skipped",
+                     (f"{len(blocked117)} left out, {KEPT_NOT_SENT}: {', '.join(blocked117)}" if blocked117
+                      else "no schema to delete or archive"))
     else:
         cur.set_step(curation_id, "leave_outs", "running")
         for item in leave:
