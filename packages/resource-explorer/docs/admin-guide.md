@@ -158,6 +158,9 @@ EXPLORER_DRAFT_ZONE=resource-explorer-draft
 # Where curate-accept promotes an element. Default: egeria-runtime, which is what the
 # quickstart deployment configures.
 EXPLORER_PUBLISH_ZONES=egeria-runtime
+# A Curate catalogue commit for a database writes this zone only when it is set, and as its last
+# write. Unverified for a second commit (it may lock the service identity, the survey engine and
+# the cataloguer out of the element): first use on a throwaway database, with TWO commits.
 ```
 
 ### Observability (optional)

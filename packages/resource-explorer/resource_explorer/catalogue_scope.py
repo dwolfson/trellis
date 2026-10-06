@@ -1357,10 +1357,13 @@ def redeclare(registry, slug: str, author: str, *, now: str | None = None, **vie
     if not author:
         raise ScopeError(401, "a declaration needs an author")
     keys = _tree_keys(resolve_node_set(registry, slug, view_kw.get("tree")))
-    first = not registry.list_catalogue_scope_baselines(slug)
+    # The implicit baseline a first choice makes is kind "first". The first EXPLICIT declaration is
+    # "declare" (the rehearsal of 2026-10-05 saw it recorded as "redeclare" because that implicit
+    # baseline already existed); only a declaration after an explicit one is a re-declaration.
+    explicit = [b for b in registry.list_catalogue_scope_baselines(slug) if b.get("kind") in ("declare", "redeclare")]
     registry.append_catalogue_scope_baseline(
         slug, baseline=keys, survey_at=keys.get("as_of") or _tree_survey_at(registry, slug), author=author,
-        kind="first" if first else "redeclare", declared_at=now or _now())
+        kind="redeclare" if explicit else "declare", declared_at=now or _now())
     return {"state": "declared"}
 
 

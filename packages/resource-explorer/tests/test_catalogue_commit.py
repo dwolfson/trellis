@@ -119,13 +119,13 @@ def entity(w):
 
 # ── the commit's steps, in the manifest's order ──────────────────────────────
 
-def test_commit_publishes_then_zones_then_targets_and_attaches_schema_kind_only(world, fake):
+def test_commit_publishes_then_targets_and_writes_a_configured_zone_last_attaching_schema_kind_only(world, fake):
     choose(world, "sales", "catalogue")
     choose(world, "archive", "catalogue")
     out, rec = press(world, fake, refresh=False)
     names = [c[0] for c in fake.calls]
-    # RE publishes first; the ZoneMembership is on the database element BEFORE any target is attached
-    assert names.index("publish_database") < names.index("set_zone_membership") < names.index("add_catalog_target")
+    # RE publishes first; a configured ZoneMembership is the LAST write, after every target (D1)
+    assert names.index("publish_database") < names.index("initiate_catalog_action") < names.index("set_zone_membership")
     zone_call = fake.ops("set_zone_membership")[0]
     assert zone_call[1] == fake.db_guid and zone_call[2] == ("zone-a", "zone-b")
     # one SCHEMA-kind target per chosen schema, never the database or the server
@@ -135,7 +135,8 @@ def test_commit_publishes_then_zones_then_targets_and_attaches_schema_kind_only(
     assert fake.server_guid not in {t.element_guid for t in fake.targets}
     # the schema element carries the qualified name the template produces
     assert fake.by_qn("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales") is not None
-    assert [s["state"] for s in rec["steps"]][:4] == ["done", "done", "skipped", "done"]
+    assert [(s["name"], s["state"]) for s in rec["steps"]][:3] == [
+        ("publish_elements", "done"), ("owner", "skipped"), ("schema_targets", "done")]
     assert cc.STEPS_DB == tuple(s["name"] for s in rec["steps"])
     # RE never restarts a connector, and with no refresh asked it does not even refresh one
     assert fake.restarts == 0 and fake.refreshes == 0
@@ -146,19 +147,10 @@ def test_never_attaches_the_same_schema_twice(world, fake):
     choose(world, "sales", "catalogue")
     press(world, fake, refresh=False)
     press(world, fake, refresh=False)
-    assert len(fake.ops("add_catalog_target")) == 1 and len(fake.targets) == 1
-    # and it READ the targets before adding anything
+    assert len(fake.ops("initiate_catalog_action")) == 1 and len(fake.targets) == 1
+    # and it READ the targets before attaching anything
     names = [c[0] for c in fake.calls]
-    assert names.index("list_catalog_targets") < names.index("add_catalog_target")
-
-
-def test_zone_failure_attaches_nothing_and_says_why(world, fake):
-    fake.zones_ok = False
-    choose(world, "sales", "catalogue")
-    out, rec = press(world, fake)
-    assert step(rec, "zone_membership")["state"] == "failed"
-    assert step(rec, "schema_targets")["state"] == "skipped" and "ZoneMembership" in step(rec, "schema_targets")["detail"]
-    assert fake.targets == [] and fake.ops("create_schema_element") == []
+    assert names.index("list_catalog_targets") < names.index("initiate_catalog_action")
 
 
 def test_owner_from_context_is_added_after_the_database_exists(world, fake):
@@ -260,7 +252,8 @@ def test_queued_is_the_outbox_row_and_failed_is_egeria_s_word(world, fake):
 
 
 def test_a_refused_attach_is_a_failed_state_with_egeria_s_word(world, fake):
-    fake.fail["add_catalog_target"] = "500 Egeria says no"
+    fake.catalog_action = "error"                       # Egeria's action type refuses, so the fallback runs ...
+    fake.fail["add_catalog_target"] = "500 Egeria says no"        # ... and that is refused too
     choose(world, "sales", "catalogue")
     _, rec = press(world, fake, refresh=False)
     assert step(rec, "schema_targets")["state"] == "failed"
@@ -453,6 +446,7 @@ def test_choosing_again_after_queuing_a_leave_out_does_not_remove_it(world, fake
 # ── re-inclusion ─────────────────────────────────────────────────────────────
 
 def test_re_inclusion_after_a_soft_delete_recreates_and_reattaches_with_new_guids(world, fake):
+    fake.zone_lockout = False          # not about zones: the configured zone is one this identity may write in
     _catalogued(world, fake, "sales")
     sqn = "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales"
     old = fake.by_qn(sqn)["guid"]
@@ -580,7 +574,7 @@ def test_the_manifest_lists_three_mechanisms_the_target_count_and_the_survey_sch
     m = p["manifest"]
     mech = [ln["text"] for ln in m["lines"] if ln["mechanism"]]
     assert len(mech) == 3
-    assert "RE publishes" in mech[0] and "zone-a, zone-b" in mech[0] and "before any target" in mech[0]
+    assert "RE publishes" in mech[0] and "zone-a, zone-b" in mech[0] and "LAST write" in mech[0]
     assert "2 schema targets (2 to attach now)" in mech[1] and "never the database or the server" in mech[1]
     assert "next refresh, not now" in mech[1]
     assert mech[2] == "Egeria's survey is limited to your chosen schemas: sales, archive"

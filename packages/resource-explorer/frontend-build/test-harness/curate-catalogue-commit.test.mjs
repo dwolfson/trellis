@@ -99,7 +99,7 @@ function previewFor(over = {}) {
   };
 }
 
-function makeServer(view, preview, { signedIn = true, advance = null } = {}) {
+function makeServer(view, preview, { signedIn = true, advance = null, finalSteps = null } = {}) {
   const s = { calls: [], view, preview, signedIn, record: null, polls: 0 };
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
@@ -123,7 +123,7 @@ function makeServer(view, preview, { signedIn = true, advance = null } = {}) {
       if (method === 'GET' && u.includes('/commits/')) {
         s.polls += 1;
         if (s.polls >= 2) {
-          s.record = { ...s.record, state: 'done', steps: [
+          s.record = { ...s.record, state: 'done', steps: finalSteps || [
             { name: 'publish_elements', state: 'done', detail: 'server s · database d' },
             { name: 'schema_targets', state: 'done', detail: '2 of 2 attached, each with its proof row' },
             { name: 'read_back', state: 'done', detail: '0 catalogued · 2 attached, waiting' }] };
@@ -147,7 +147,7 @@ function makeServer(view, preview, { signedIn = true, advance = null } = {}) {
 async function setUp(view, preview, opts = {}) {
   const { document, window } = makeDomEnvironment();
   const signedIn = opts.signedIn !== false;
-  const server = makeServer(view, preview, { signedIn, advance: opts.advance });
+  const server = makeServer(view, preview, { signedIn, advance: opts.advance, finalSteps: opts.finalSteps });
   ensureLoaderRegistered();
   const scope = await import('/static/next/stages/curate-scope.js');
   scope.resetScopeUi();
@@ -377,6 +377,46 @@ test('pressing Catalogue posts the refresh choice, shows the record\'s steps as 
   assert.match(flat(stateOf(document, 'schema:sales')), /^✓ catalogued · 2 tables/);
   assert.match(flat(document.querySelector('[data-scope-commit-header]')), /^Database element d0000001 in Egeria/);
   assert.match(flat(document.querySelector('[data-scope-status]')), /^commit cafe0123 done: 3 done$/);
+});
+
+test('a failed row reads Egeria\'s first sentence and folds the rest under details (D4)', async () => {
+  const v = committedView();
+  v.commit.schemas.plain = {
+    state: 'failed', words: 'failed · AUTHORIZATION_ERROR_401 => User not authorized received for user - ``.',
+    second: 'step: attach · outbox #7 · will retry', details: '* Context: * class name=`BaseServerClient` * caller method=`_async_create_element_from_template`',
+  };
+  const { document } = await setUp(v, previewFor());
+  const row = stateOf(document, 'schema:plain');
+  assert.match(flat(row), /^✕ failed · AUTHORIZATION_ERROR_401 => User not authorized received for user - ``\. details/);
+  const d = row.querySelector('[data-scope-egeria-details]');
+  assert.ok(d, 'the long tail is under a details element');
+  assert.equal(d.hasAttribute('open'), false, 'collapsed until asked');
+  assert.match(d.textContent, /Context:.*BaseServerClient/);
+  // a row with no tail draws no details element
+  assert.equal(stateOf(document, 'schema:sales').querySelector('[data-scope-egeria-details]'), null);
+});
+
+test('a survey that was only submitted reads submitted, and a step\'s long tail is folded (D3, D4)', async () => {
+  const finalSteps = [
+    { name: 'schema_targets', state: 'failed', detail: '0 of 1 attached, each with its proof row · plain: AUTHORIZATION_ERROR_401 => not authorized.',
+      more: 'plain: * Context: * class name=`BaseServerClient`' },
+    { name: 'survey', state: 'submitted', detail: 'submitted · 10-05 12:53 · Egeria\'s survey is limited to your chosen schemas: plain · engine action 6c5100b1' },
+    { name: 'refresh', state: 'requested', detail: 'refresh requested · the connector\'s last refresh time did not move on the status read' },
+    { name: 'zone_membership', state: 'skipped', detail: 'zones left to Egeria · RE writes no ZoneMembership (EXPLORER_PUBLISH_ZONES is not configured)' },
+  ];
+  const { document } = await setUp(baseView(), previewFor(), { finalSteps });
+  document.querySelector('[data-scope-commit-btn]').click();
+  await wait(300);
+  const steps = Object.fromEntries([...document.querySelectorAll('[data-scope-commit-step]')].map((e) => [e.dataset.scopeCommitStep, e]));
+  assert.equal(steps.survey.dataset.state, 'submitted');
+  assert.match(flat(steps.survey), /survey · submitted · submitted · 10-05 12:53/);
+  assert.ok(!/survey · done/.test(flat(steps.survey)), 'initiation is never "done"');
+  assert.equal(steps.refresh.dataset.state, 'requested');
+  assert.match(flat(steps.zone_membership), /zones left to Egeria/);
+  const d = steps.schema_targets.querySelector('[data-scope-step-details]');
+  assert.ok(d && !d.hasAttribute('open'));
+  assert.ok(!/Context/.test(steps.schema_targets.textContent.replace(d.textContent, '')), 'the row itself carries no Context block');
+  assert.match(flat(document.querySelector('[data-scope-status]')), /1 submitted · 1 requested · 1 failed · 1 skipped/);
 });
 
 test('a refused commit says why and draws no steps', async () => {

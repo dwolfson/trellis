@@ -182,7 +182,7 @@ export function egeriaStateHtml(node, commit) {
   const glyph = EGERIA_GLYPH[st.state] ? `${glyphSpan(EGERIA_GLYPH[st.state])} ` : '';
   const isMuted = ['uncommitted', 'left_out', 'follows_schema', 'not_read_back'].includes(st.state);
   const second = st.second ? `<div data-scope-egeria-second class="text-provenance text-ink-muted">${esc(st.second)}</div>` : '';
-  return `<div data-scope-egeria-state data-scope-egeria-word="${esc(st.state)}" class="${isMuted ? 'text-ink-muted' : 'text-ink'}">${glyph}${esc(st.words)}</div>${second}`;
+  return `<div data-scope-egeria-state data-scope-egeria-word="${esc(st.state)}" class="${isMuted ? 'text-ink-muted' : 'text-ink'}">${glyph}${esc(st.words)}${detailsHtml(st.details, 'data-scope-egeria-details')}</div>${second}`;
 }
 
 function collisionLines(node, commit) {
@@ -452,14 +452,18 @@ const STEP_LABEL = {
   survey_report: "RE's own survey report", survey: "Egeria's survey", refresh: 'refresh the cataloguer',
   read_back: 'read Egeria back',
 };
-const STEP_GLYPH = { done: 'catalogued', failed: 'catalogue_failed', running: 'queued', pending: 'queued' };
+const STEP_GLYPH = { done: 'catalogued', failed: 'catalogue_failed', running: 'queued', pending: 'queued', submitted: 'queued', requested: 'queued' };
+
+/** Egeria's long tail (the `* Context:` block) folded under "details": the row reads its first sentence. */
+const detailsHtml = (more, attr) => (more
+  ? ` <details ${attr} class="inline text-provenance text-ink-muted"><summary class="inline cursor-pointer">details</summary><div class="whitespace-pre-wrap break-words">${esc(more)}</div></details>` : '');
 
 /** The steps of the curation record, exactly as the record holds them. A step's state word is
  *  the record's, which the server writes from rows (the outbox, the proof rows), never a guess. */
 export function commitStepsHtml(rec) {
   if (!rec) return '';
   const rows = (rec.steps || []).map((st) => `<div data-scope-commit-step="${esc(st.name)}" data-state="${esc(st.state)}" class="text-provenance ${st.state === 'failed' ? 'text-state-warn' : 'text-ink-muted'}">
-    ${STEP_GLYPH[st.state] ? `${glyphSpan(STEP_GLYPH[st.state])} ` : ''}${esc(STEP_LABEL[st.name] || st.name)} · ${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</div>`).join('');
+    ${STEP_GLYPH[st.state] ? `${glyphSpan(STEP_GLYPH[st.state])} ` : ''}${esc(STEP_LABEL[st.name] || st.name)} · ${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}${detailsHtml(st.more, 'data-scope-step-details')}</div>`).join('');
   return `<div data-scope-commit-steps class="mt-s1"><div class="text-caveat text-ink">Commit ${esc(String(rec.id || '').slice(0, 8))} · ${esc(rec.state || '')} · by ${esc(rec.author || '')}</div>${rows}</div>`;
 }
 
@@ -494,7 +498,7 @@ export function commitPanelHtml(preview, me, ui) {
 function commitSummary(rec) {
   const c = {};
   (rec.steps || []).forEach((st) => { c[st.state] = (c[st.state] || 0) + 1; });
-  const bits = ['done', 'failed', 'skipped'].filter((k) => c[k]).map((k) => `${c[k]} ${k}`);
+  const bits = ['done', 'submitted', 'requested', 'failed', 'skipped'].filter((k) => c[k]).map((k) => `${c[k]} ${k}`);
   return `commit ${String(rec.id || '').slice(0, 8)} ${rec.state}: ${bits.join(' · ')}`;
 }
 
