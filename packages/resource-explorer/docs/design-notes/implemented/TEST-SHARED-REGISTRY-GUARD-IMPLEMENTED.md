@@ -130,3 +130,17 @@ Guard against the class: `tests/test_no_undefined_names_in_tests.py` runs
 it catches an unrequested-fixture name. Two pre-existing false positives in
 quoted annotations were cleaned (`Path` in test_ingestion.py, `ast` in
 test_vendored.py) by importing the names at module level.
+
+## Addendum 2026-10-05 (4): CI-vs-local dependence in the isolation test
+
+`test_every_shared_default_url_setting_is_isolated_by_conftest` asserted sqlite
+unconditionally, but the fixture is deliberately a no-op under
+`GITHUB_ACTIONS=true`, so CI (service-container URL) failed it. The decision
+now lives in `shared_registry_guard.isolate_url_settings(environ, setenv,
+tmp_dir)`, a pure function the autouse fixture calls. Tests drive it with a
+fake environment, so they do not depend on the ambient flag: outside CI unset
+and shared URLs are replaced and a deliberate override is kept; under CI nothing
+is replaced. `test_autouse_fixture_applies_the_isolation_outside_ci` checks the
+real fixture's effect and skips under CI. The guard was not loosened. Swept the
+other tests added in this PR for the same dependence: none assert isolation
+without regard to the flag (the fake-connect tests clear `GITHUB_ACTIONS`).
