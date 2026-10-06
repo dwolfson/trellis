@@ -20,7 +20,7 @@ const flat = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const node = (kind, name, over = {}) => ({
   kind, name, key: name, state: 'undecided', proposal: null, live_proposal: null, overridden: null,
   disagrees: null, notes: [], marks: [], explicit: null, effective: null, effective_from: null,
-  new_since: false, conflict: null, access: 'established', provenance: '',
+  new_since: false, access: 'established', provenance: '',
   last_write: { state: 'not_established', from: '', to: '', text: 'not established' },
   source: { kind: 'egeria', as_of: '2026-10-04T06:00:00', text: 'from Egeria survey 10-04' }, facts_from: {},
   data_classes: { state: 'not_established', classes: [], pii_columns: 0 }, ...over,
@@ -64,7 +64,6 @@ function baseView(over = {}) {
     system: { folded: 3, text: 'not catalogued: system schemas are never offered' },
     counts: { schemas_offered: 3, schemas_catalogue: 0, schemas_leave_out: 0, schemas_undecided: 3 },
     new_since: { declared: false, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' },
-    conflicts: { count: 0, names: [], pairs: [] },
     // what the server derives from proof rows when nothing has been committed
     commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet catalogued in Egeria' },
       database: null, collisions: [], schemas: {}, tables: {} },
@@ -126,14 +125,6 @@ function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
         if (u.endsWith('/node/clear')) {
           const n = find(body.schema_name, body.table_name);
           n.explicit = null; n.effective = null; n.state = 'undecided';
-        }
-        if (u.endsWith('/resolve')) {
-          for (const sc of s.view.schemas) for (const t of sc.tables) {
-            if (t.name === body.name && t.conflict) {
-              t.explicit = person(body.choice, 'me'); t.effective = body.choice; t.state = 'chosen'; t.conflict = null;
-            }
-          }
-          s.view.conflicts = { count: 0, names: [], pairs: [] };
         }
         if (u.endsWith('/redeclare')) { s.view.new_since = { declared: true, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' }; for (const sc of s.view.schemas) { sc.new_since = false; sc.tables.forEach((t) => { t.new_since = false; }); } }
       }
@@ -399,33 +390,24 @@ test('inherited and differing tables are drawn differently', async () => {
   assert.ok(!differs.querySelector('[data-scope-state-word]').className.includes('text-ink-muted'), 'in ink');
 });
 
-/* ── conflicts ─────────────────────────────────────────────────────────── */
+/* ── no conflicts: a table name chosen two ways is not something to resolve ───── */
 
-function withConflict() {
+test('same-named tables chosen differently draw no banner, no "needs a person" line, and force no tree open', async () => {
+  // An older server may still send the retired fields: the pane must not draw them.
   const v = baseView();
   const text = 'orders is chosen differently in sales and archive';
   const conflict = { name: 'orders', text, catalogue_in: ['sales'], leave_out_in: ['archive'] };
   v.schemas[0].tables[0].explicit = person('catalogue'); v.schemas[0].tables[0].effective = 'catalogue'; v.schemas[0].tables[0].conflict = conflict;
   v.schemas[1].tables[0].explicit = person('leave_out'); v.schemas[1].tables[0].effective = 'leave_out'; v.schemas[1].tables[0].conflict = conflict;
   v.conflicts = { count: 1, names: ['orders'], pairs: [{ name: 'orders', catalogue_in: 'sales', leave_out_in: 'archive' }] };
-  return v;
-}
-
-test('a name conflict marks BOTH rows with the designer’s words and two resolving controls, and says what the count blocks', async () => {
-  const { document, server } = await setUp(withConflict());
-  for (const key of ['table:sales.orders', 'table:archive.orders']) {
-    const r = row(document, key);
-    assert.ok(r, `${key} is visible without opening anything by hand (a conflict is never hidden)`);
-    assert.match(flat(r.querySelector('[data-scope-conflict]')),
-      /^⚠ needs a person: orders is chosen differently in sales and archive\. Egeria's filter can't tell them apart · catalogue both · leave both out$/);
-  }
-  assert.match(flat(document.querySelector('[data-scope-conflict-summary]')), /1 choice Egeria can't express — resolve it below/);
-  row(document, 'table:sales.orders').querySelector('[data-scope-resolve="catalogue"]').click();
-  await wait();
-  const [c] = calls(server, 'POST', '/resolve');
-  assert.deepEqual(c.body, { name: 'orders', choice: 'catalogue' });
-  assert.equal(document.querySelector('[data-scope-conflict]'), null, 'resolved: the marks are gone');
-  assert.match(flat(document.querySelector('[data-scope-status]')), /orders is no longer in conflict/);
+  const { document } = await setUp(v);
+  assert.equal(document.querySelector('[data-scope-conflict-summary]'), null);
+  assert.equal(document.querySelector('[data-scope-conflict]'), null);
+  assert.equal(document.querySelector('[data-scope-resolve]'), null);
+  assert.ok(!/needs a person|can't express|catalogue both|leave both out/.test(flat(scopeEl(document))), 'no conflict words anywhere');
+  assert.equal(row(document, 'table:sales.orders'), null, 'no tree is forced open');
+  assert.equal(row(document, 'table:archive.orders'), null, 'no tree is forced open');
+  assert.equal(document.querySelectorAll('[data-scope-toggle][aria-expanded="true"]').length, 0);
 });
 
 /* ── new since ─────────────────────────────────────────────────────────── */

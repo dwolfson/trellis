@@ -25,7 +25,7 @@
 import {
   getCatalogueScope, setCatalogueDepth, setCatalogueNode, confirmCatalogueNode,
   overrideCatalogueNode, clearCatalogueNode, redeclareCatalogueScope,
-  resolveCatalogueConflict, setCatalogueNodes, getCatalogueCommitPreview,
+  setCatalogueNodes, getCatalogueCommitPreview,
   postCatalogueCommit, getCatalogueCommitRecord, postCatalogueReadBack,
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
@@ -192,17 +192,8 @@ function collisionLines(node, commit) {
     .map((c) => `<div data-scope-collision class="text-ink">${esc(c.text)}</div>`).join('');
 }
 
-function stateCellHtml(node, me) {
+function stateCellHtml(node) {
   const lines = [];
-  if (node.conflict) {
-    const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
-    const name = esc(node.conflict.name);
-    lines.push(`<div data-scope-conflict="${name}" class="text-ink">${glyphSpan('human')}
-      needs a person: <span class="font-mono">${esc(node.conflict.name)}</span> is chosen differently in ${esc(node.conflict.text.replace(/^.* is chosen differently in /, ''))}.
-      Egeria's filter can't tell them apart ·
-      <button type="button" data-scope-resolve="catalogue" data-scope-name="${name}" ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">catalogue both</button> ·
-      <button type="button" data-scope-resolve="leave_out" data-scope-name="${name}" ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">leave both out</button></div>`);
-  }
   if (node.new_since) {
     lines.push(`<div data-scope-new-since-row class="text-ink">new since your scope was declared${node.explicit ? '' : ' · undecided'}</div>`);
   }
@@ -315,7 +306,7 @@ function rowHtml(node, me, depth, kindWord, commit) {
     <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
     <div class="w-[18ch] shrink-0" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
     <div class="w-[10ch] shrink-0 break-words" data-scope-classes-cell>${dataClassCell(node)}</div>
-    <div class="w-[20ch] shrink-0" data-scope-state-cell>${egeriaStateHtml(node, commit)}${collisionLines(node, commit)}${stateCellHtml(node, me)}</div>
+    <div class="w-[20ch] shrink-0" data-scope-state-cell>${egeriaStateHtml(node, commit)}${collisionLines(node, commit)}${stateCellHtml(node)}</div>
   </div>`;
 }
 
@@ -345,8 +336,7 @@ export function treeHtml(view, me) {
     <div class="w-[10ch] shrink-0" data-scope-classes-head title="Data classes found in the columns">Classes</div>
     <div class="w-[20ch] shrink-0" data-scope-state-head title="State in Egeria">In Egeria</div></div>`;
   const body = (view.schemas || []).map((s) => {
-    const open = openSchemas.has(s.name) || s.tables.some((t) => t.conflict);
-    if (open) openSchemas.add(s.name);
+    const open = openSchemas.has(s.name);
     const tables = open ? s.tables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
       || '<div class="ml-s3 text-caveat text-ink-muted">No tables.</div>' : '';
     return `<div data-scope-schema-block="${esc(s.name)}">${rowHtml(s, me, 0, '', view.commit)}${tables}</div>`;
@@ -408,9 +398,6 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
     ? `<div data-scope-new-since class="mb-s1 text-caveat text-ink">${esc(ns.text)}
         · <button type="button" data-scope-redeclare ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">declare the scope again</button>
         <span class="text-provenance text-ink-muted">counts new things from the day you do</span></div>` : '';
-  const cf = (view.conflicts || {}).count || 0;
-  const cfLine = cf
-    ? `<div data-scope-conflict-summary class="mb-s1 text-caveat text-ink">${glyphSpan('human')} ${cf} choice${cf === 1 ? '' : 's'} Egeria can't express — resolve ${cf === 1 ? 'it' : 'them'} below</div>` : '';
   const declared = !!(view.declared && view.declared.declared);
   open = open || !declared;   // nothing to collapse to until a scope is declared
   const line = open ? scopeHeaderText(view) : scopeCollapsedText(view);
@@ -422,7 +409,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
       class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header><span data-scope-header-line>${esc(line)}</span></span></button></div>
     <div id="scope-section-body" data-scope-body${open ? '' : ' hidden'}>
     ${me ? '' : `<div data-scope-signed-out class="mb-s1 text-caveat text-ink-muted">You can read the scope as it stands. ${esc(signInReason)}.</div>`}
-    ${nsLine}${cfLine}
+    ${nsLine}
     ${depthLineHtml(view, me)}
     <div data-scope-tree-header class="mb-s1 text-provenance text-ink-muted">${element} · ${esc(treeSourceText(view))}</div>
     <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
@@ -697,14 +684,6 @@ export async function renderCatalogueScope(el, slug, status = '') {
         const want = (find(view, schema, table) || {}).proposal;
         afterWrite(() => overrideCatalogueNode(slug, schema, table), 'override the proposal', check(want ? opposite(want.choice) : ''));
       }
-    }));
-    el.querySelectorAll('[data-scope-resolve]').forEach((b) => b.addEventListener('click', () => {
-      const name = b.dataset.scopeName;
-      const choice = b.dataset.scopeResolve;
-      afterWrite(() => resolveCatalogueConflict(slug, name, choice), 'resolve the conflict', (v) =>
-        ((v.conflicts || {}).names || []).includes(name)
-          ? `the write returned, but ${name} is still in conflict in the re-read scope`
-          : `${name} is no longer in conflict`);
     }));
   };
   bindTree();

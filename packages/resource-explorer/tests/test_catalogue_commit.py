@@ -504,6 +504,13 @@ def test_like_matches_follows_jdbc_patterns():
     assert not gw.like_matches("a.b", "aXb")                                  # a dot is a dot
 
 
+def test_same_named_tables_in_a_catalogued_and_a_left_out_schema_do_not_block_the_commit(world, fake):
+    choose(world, "sales", "catalogue")
+    choose(world, "archive", "leave_out")           # sales.orders and archive.orders share a name
+    p = cc.build_preview(world["registry"], "db", view(world), fake)
+    assert p["blockers"] == [] and p["can_commit"] is True and p["collisions"] == []
+
+
 def test_schema_collision_a_b_and_aXb_is_flagged_before_the_press_and_disables_it(world, fake):
     choose(world, "a_b", "catalogue")
     p = cc.build_preview(world["registry"], "db", view(world), fake)

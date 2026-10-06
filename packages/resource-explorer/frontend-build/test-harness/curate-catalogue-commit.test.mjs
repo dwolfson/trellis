@@ -18,7 +18,7 @@ const flat = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const node = (kind, name, over = {}) => ({
   kind, name, key: name, state: 'undecided', proposal: null, live_proposal: null, overridden: null,
   disagrees: null, notes: [], marks: [], explicit: null, effective: null, effective_from: null,
-  new_since: false, conflict: null, access: 'established', provenance: '',
+  new_since: false, access: 'established', provenance: '',
   last_write: { state: 'not_established', from: '', to: '', text: 'not established' },
   source: { kind: 'egeria', as_of: '2026-10-04T06:00:00', text: 'from Egeria survey 10-04' }, facts_from: {},
   data_classes: { state: 'not_established', classes: [], pii_columns: 0 }, ...over,
@@ -54,7 +54,6 @@ function baseView(over = {}) {
     system: null,
     counts: { schemas_offered: 6, schemas_catalogue: 2, schemas_leave_out: 1, schemas_undecided: 3 },
     new_since: { declared: true, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' },
-    conflicts: { count: 0, names: [], pairs: [] },
     schemas: [
       schema('sales', [table('sales', 'orders'), table('sales', 'customers', { explicit: chose('leave_out'), effective: 'leave_out' })],
         { explicit: chose('catalogue'), effective: 'catalogue', state: 'chosen' }),
