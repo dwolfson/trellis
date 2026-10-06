@@ -83,3 +83,52 @@ When the PUT answers (before the scope is read again): `saving…` becomes `save
 `✕ not saved · <cause>`.
 Catalog is `●` with `border-l-ink`; the legend above the table reads `● catalog · ⊘ left out (struck
 through) · ○ undecided`. State uses shape, weight, strike-through and opacity only (no accent colour).
+
+## Round 3 (2026-10-06): the designer's panels and the owner's two real commits on coco_pharma
+
+Built to `REPLY-DESIGNER-STATE-AS-VISUAL-CUE.md` and its addendum. Panels A (selector), B (numbered steps), C
+(manifest table); cue vocabulary: fill = chosen, lowered row = not included, strike-through = superseded text
+only, left-edge rule = needs you, no accent for state. (The round-2 marks, strips and badge were replaced: they
+were the first reading of the owner's feedback, not the designer's drawing.)
+
+- **Survey report (Part 7 cause, from 8813's log).** Both commits (bd32f1a0, 0ccd9c32) logged
+  `Failed to publish SurveyReport ... relatedHTTPCode=409 ... OMAG-COMMON-409-001 ... qualifiedName
+  SurveyReport::PostgreSQL::localhost_docker_coco_pharma::2026-10-03T18:07:08.668511 is not available for
+  use`. The report's qualifiedName is keyed on the survey RUN's timestamp, so republishing the same 10-03 run
+  meets a 409; `publish_local_survey` logged a warning and carried on with no guid (the 76 is RE's local count).
+  Fix: on that 409 the surveyor looks the report up by its exact name (`_find_element_guid`, not a search),
+  reuses it, counts the annotations Egeria holds under it (`get_asset_by_guid` graph depth 1) and publishes
+  only the missing ones; `publish_annotations` already looks each annotation's qualifiedName up before it
+  creates (`annotation_props.publish_annotations`), so a replay never duplicates. The step reads `already in
+  Egeria · report <id> · from the 10-03 survey · <k> annotations in Egeria` (`· built locally: <n>` only when
+  they differ); every other create failure FAILS the step (`report not published · <cause> · 76 annotations
+  built, none published`) and the proof row records the failure. A 409 whose report cannot be read fails with
+  `Egeria refused the report as a duplicate but no report with that name could be read`.
+- **Minor failure, kept on record (the refresh step).** `refresh the cataloguer · failed · TIMEOUT_ERROR_408 =>
+  Request timed out for endpoint .../integration-daemon/integration-connectors/refresh` while the connector_read
+  proof row said REFRESHING: the daemon was already on its own pass, the elements WERE created and read back.
+  A 408 while the connector reports REFRESHING (before or after) is now `skipped · the cataloguer was already
+  refreshing · elements arrive on its pass`, not counted as failed; a 408 with any other or unreadable status,
+  and any non-timeout refusal, stays a failure with Egeria's word first. INFO lines now bracket the refresh
+  (`asking the daemon to refresh <connector> (status <s>)`; `refresh finished in <t> s` / `timed out after
+  <t> s ...` / `refused: <first sentence>`).
+- **Measured survey duration.** A real database survey in Egeria takes 15-22 minutes (engine action 63547d8a:
+  15 min for 2 schemas; 42448ea2: 22 min for 3), not the seconds a toy takes. The running step reads `running in
+  Egeria · started <time> · <n> min · <k> annotations so far · usually takes about 15-25 minutes ... · check
+  again · checking every 60 s`; while the page is open it reads the survey's status every 60 s (a read-back, never
+  a write, one in flight, stopped at an end or when the page is hidden). A page reload loses the commit it was
+  watching (the record is not looked up again): that is not built.
+- **Attach step**: `1 attached · 2 already attached` from the proof rows' `mechanism`.
+- **Page re-reads on step change**: whenever a polled commit record's step states change the scope is read again
+  (one GET) and the tree and header marker redrawn, so no row is older than a step on the same page (live finding:
+  `not committed yet` next to an attach step that was already done).
+- **Manifest sentence** names both counts: `RE's survey report is published whole; it describes the <m> schemas RE's
+  own <date> survey could read (Egeria's survey counts <M>); elements are created for the <n> you chose.`
+- **Collision**: a soft delete is the state `deleted` (`deleted in Egeria · <when>`), no glyph (the `removed`
+  glyph entry is gone from `glyphs.js`), the row lowers, the preview says `will delete` beside `will archive`.
+  The stored proof kind keeps the name `removed` (existing rows carry it; renaming would orphan them).
+- **401**: on a choice the row returns to its previous look and shows `✕ unsaved · your session expired · sign in
+  again` with `save again` (re-sends the same choice: nothing is lost) and `sign in`; on a bulk press and on the
+  commit the status line / button reason says the same with a sign-in link.
+- **build_plan** runs the gap pass once per plan (a test counts it); the 25 s stays on the backlog with the
+  measured 669 statements.
