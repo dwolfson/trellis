@@ -174,3 +174,35 @@ is replaced. `test_autouse_fixture_applies_the_isolation_outside_ci` checks the
 real fixture's effect and skips under CI. The guard was not loosened. Swept the
 other tests added in this PR for the same dependence: none assert isolation
 without regard to the flag (the fake-connect tests clear `GITHUB_ACTIONS`).
+
+## Addendum 2026-10-05 (5): the live Egeria tiers are opt-in
+
+Until now the live READ tier (`requires_egeria`, the narrower `live_egeria`
+marker; `test_egeria_live_smoke.py`, `TestAgainstLiveEgeria`,
+`test_sub_resource_templates.py`) ran whenever a 2 s probe reached the
+platform, so every full suite from any worktree talked to the shared dev
+Egeria as the configured user (steady refusals in the platform log).
+
+Rule now, decided by pure functions in `tests/live_egeria_tier.py`:
+
+| Run | Reads | Writes |
+|---|---|---|
+| default | skipped: "live Egeria tier is opt-in: run with --live-egeria-reads (or RE_LIVE_EGERIA_READS=1) after a peer round"; NO probe is made | skipped |
+| `--live-egeria-reads` / `RE_LIVE_EGERIA_READS=1` | run if reachable | skipped |
+| `--live-egeria-writes` without `RE_LIVE_EGERIA_WRITES_CLEARED` (missing or blank) | run (writes imply reads) | skipped, not failed: "live Egeria writes need RE_LIVE_EGERIA_WRITES_CLEARED=<who>/<UTC time> naming the peer round" |
+| `--live-egeria-writes` + non-empty clearance | run | run |
+| `GITHUB_ACTIONS=true` | always skipped | always skipped |
+
+- The reachability probe moved from import time to a lazy call made only when a
+  tier is opted in, so a default run does not contact the platform at all.
+- Session header (`pytest_report_header`), only when reads are ON:
+  `live Egeria tier: <platform url> as <user> · reads ON`, or with writes
+  `... · writes ON · cleared by <value>`. URL and user id only; never a password or token.
+- `live_egeria_write_target` also refuses (skips) without the clearance, prints
+  `live Egeria write: cleared by <value>`, records it as the test property
+  `live_egeria_writes_cleared_by` (appears in the junit/report) and on
+  `LiveEgeriaWriteTarget.cleared_by`.
+- No live test's assertions were changed; only whether they run. The existing
+  gate function `_live_egeria_writes_should_skip` and its tests are unchanged.
+- Tests: `tests/test_live_egeria_tier.py`, fake environment and fake items.
+- Another session's done is a statement about itself, never a clearance from the others; the peer round is a question to every live peer, and the answer set is what goes in the variable.
