@@ -171,3 +171,33 @@ and every body carried forLineage true instead; the hand-built type and relation
 **Left on the platform:** the trial tree is archived and renamed, at the bottom of this list. Hard removal is a
 separate decision: database c9842fd3, schemas f3c86a1a and 6645f226, schema type 1c6ac3a4, table 3d3fe8ec,
 column 117f75f6 (all names start `rftrial_202610061842`), plus one SemanticAssignment 9a03366a to an existing term.
+
+## Dry-run plan for the real restore (2026-10-06 ~18:50Z; read-only; no write, no `--go`)
+
+The full per-element plan is `RESTORE-DRYRUN-PLAN-2026-10-06.txt` in this folder. The script itself is not committed.
+It refuses `--go` unless env `RESTORE_CLEARED=<who>/<UTC>` is set, and its guard allows only the 149 old GUIDs plus the
+7 new elements it found; the guard test refused 8 of 8 wrong cases.
+
+Counts, from reads: all 149 old elements are Memento and read with forLineage; 148 carry `_archivedOn_` suffixes
+(1 suffix on 131 elements, 3 on 4, 12 on 13), only us_sales 87271b37 has none; no two stripped old names collide.
+A plain read of the old database returns the 500. Writes per step: detach new targets 2; rename-aside 7 (the new
+database, its 4 connection elements, the 2 new schemas); restore-old 297 (149 declassify + 148 renames); verify 0;
+retire new tree 1; registry proof 2 registry writes; cataloguer 1 refresh trigger.
+
+**Corrections to earlier statements:**
+- No annotation name collisions exist. The new database has 56 annotations and 1 SurveyReport; none shares a name with
+  an old element (the per-measurement GUID in an annotation's name differs; checked by exact-name search of all 149
+  stripped names and by traversal). My earlier "about twenty collided" idea for 56 versus 76 is WRONG; 56 versus 76
+  is still unexplained.
+- `get_catalog_targets` lists only the 2 new-schema targets. The old schemas' CatalogTarget relationships (one each, to
+  the JDBC connector 70dcd0b7) show only in a read of the element's relationships, probably hidden while Memento. So my
+  "target list is empty" reads were incomplete in a second way. Verification must read the relationship.
+- Old coco_sus still has 30 live tables under its schema type (so the cataloguer HAD built tables there before).
+
+**Registry side:** the database record's pointer is `databases.egeria_asset_guid`, set by
+`set_database_egeria_guid(slug, guid)` (the roll-forward commit set it, `catalogue_commit.py:1341`). A "restored" proof
+row is free text in `catalogue_commit_proofs.proof` with the sentence in `detail_json['text']`; per-schema state words
+derive only from the STATE_PROOFS set, so a new `P_RESTORED` constant (a code change, not a schema change) is needed
+if the page should show it. Not done. The slug `coco_pharma` is assumed; the shared registry was not read.
+
+**Not run:** every Egeria write, every `--go` path, the registry write, the cataloguer refresh.
