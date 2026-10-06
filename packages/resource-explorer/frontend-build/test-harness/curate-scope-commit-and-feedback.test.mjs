@@ -93,3 +93,35 @@ test('the per-row choice links keep their words', async () => {
   assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="catalogue"]')), 'catalogue');
   assert.equal(flat(r.querySelector('[data-scope-act="set"][data-scope-choice="leave_out"]')), 'leave out');
 });
+
+test('a step never says its state twice: "survey · submitted · 10-06 13:25", not "submitted · submitted"', async () => {
+  await setUp(baseView());   // loads the real module graph
+  const { commitStepsHtml } = await import('/static/next/stages/curate-scope.js');
+  const rec = { id: 'cafe0123', state: 'running', author: 'me', steps: [
+    { name: 'survey', state: 'submitted', detail: "submitted · 10-06 13:25 · Egeria's survey is limited to your chosen schemas: a, b · engine action 63547d8a · read back 10-06 13:27: running in Egeria · IN_PROGRESS · 6 annotations so far" },
+    { name: 'survey_report', state: 'done', detail: 'report abcd1234 · 76 annotations published · from the 10-03 survey' },
+    { name: 'read_back', state: 'done', detail: 'done · 2 of 2 read back' },
+  ] };
+  const host = document.createElement('div'); host.innerHTML = commitStepsHtml(rec);
+  const t = (n) => flat(host.querySelector(`[data-scope-commit-step="${n}"]`));
+  assert.match(t('survey'), /survey · submitted · 10-06 13:25 · Egeria's survey/);
+  assert.doesNotMatch(t('survey'), /submitted · submitted/);
+  assert.doesNotMatch(t('read_back'), /done · done/);
+  assert.match(t('survey_report'), /report · done · report abcd1234 · 76 annotations published/);
+});
+
+test('a survey still running in Egeria says so with the count so far and a plain "check again in a minute" hint, no spinner', async () => {
+  await setUp(baseView());
+  const { commitStepsHtml } = await import('/static/next/stages/curate-scope.js');
+  const rec = { id: 'cafe0123', state: 'running', author: 'me', steps: [
+    { name: 'survey', state: 'submitted', detail: 'submitted · 10-06 13:25 · read back 10-06 13:27: running in Egeria · IN_PROGRESS · 6 annotations so far' } ] };
+  const host = document.createElement('div'); host.innerHTML = commitStepsHtml(rec);
+  const step = host.querySelector('[data-scope-commit-step="survey"]');
+  assert.match(flat(step), /running in Egeria · IN_PROGRESS · 6 annotations so far/);
+  assert.match(flat(step.querySelector('[data-scope-step-hint]')), /^check again in a minute with Read Egeria again$/);
+  assert.equal(host.querySelector('[class*="animate-spin"], [role="progressbar"]'), null);
+  // a finished survey carries no hint
+  rec.steps[0] = { name: 'survey', state: 'done', detail: 'done · report abcd1234 · 9 annotations' };
+  host.innerHTML = commitStepsHtml(rec);
+  assert.equal(host.querySelector('[data-scope-step-hint]'), null);
+});

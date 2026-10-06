@@ -28,3 +28,37 @@ Cause, measured on a temp-SQLite fixture (no Egeria, no shared registry), `build
   is about 37 ms each, which fits a Postgres round trip plus pool checkout under load, but that is an
   inference from the arithmetic, not a measurement. The next measurement belongs on the gate server:
   time `record_gaps_for` once inside `_fact`.
+
+## Part 6: the dead triangle, the commit button, choice feedback
+
+- Cause of the dead coco_sus triangle (reproduced on unchanged origin/main in
+  `curate-scope-toggle.test.mjs`, tests 4 and 5 fail there): the render computed
+  `open = openSchemas.has(name) || tables.some(conflict)` and wrote the result back into
+  `openSchemas`. While any table of the schema carried a name conflict (23 on coco_pharma once coco_ods
+  was left out next to coco_sus) the click removed a flag the render re-added: a dead toggle. After the
+  conflicts went away the schema stayed open from the remembered flag until a second click: "started
+  working again". Part 1 removed the conflicts; the tests pin that open state is only what the person set.
+- The commit control is a filled primary `Catalog · n schemas` button on its own row under the manifest
+  and the refresh box, with the reason beside it when off; `Read Egeria again` is a separate secondary link.
+- A choice write shows `saving…`, then `saved in Resource Explorer · who · when · not yet cataloged in
+  Egeria` for six seconds (the clause becomes `Egeria changes when you press Catalog` for a node already
+  in Egeria). The per-row verbs are unchanged.
+
+## Part 7: RE's own survey report step, and long surveys
+
+- `RE's own survey report · done · report not found · 76 annotations` was wrong twice. In
+  `publish_local_survey` the SurveyReport element is created first and the annotations under it; a failure
+  of that create was only a `log.warning`, `report_guid` stayed empty, and `annotation_count` is
+  `len(annotations)` BUILT locally, so 76 never meant 76 published. There is no "annotations without a
+  report element" path: an empty guid means the report was not confirmed. The surveyor now returns
+  `report_error`; the step says `report <id> · n annotations published · from the 10-03 survey` only with a
+  guid, `failed` with Egeria's word when the create raised, `n annotations from the 10-03 survey · Egeria
+  returned no report element id, so the report itself is not confirmed` when nothing says why, and
+  `report not found` only when the publish returned nothing at all. The proof row's empty `element_guid`
+  on coco_pharma (76 annotations, 2026-10-03T18:07:08) therefore most likely records a swallowed create
+  failure, not a success; the next commit shows which.
+- A step line no longer says its state twice (`submitted · submitted · 10-06 13:25`).
+- A real database survey takes minutes (engine action 63547d8a was IN_PROGRESS seven minutes after start
+  on a 2-schema scope, 6 annotations so far). The step reads `running in Egeria · IN_PROGRESS · N annotations
+  so far`, with the hint `check again in a minute with Read Egeria again`, no spinner; the leave-out
+  in-progress block will matter for the same reason.

@@ -1283,6 +1283,28 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
     cur.set_step(cid, step, "done" if len(done) == len(rows) else "failed", " · ".join(parts), more="\n".join(more))
 
 
+def report_step_words(res: dict, surveyed_at: str) -> tuple[str, str]:
+    """The state and words of the "RE's own survey report" step, from what the publish returned.
+
+    `annotation_count` is how many annotations RE BUILT from its survey, not how many Egeria
+    accepted; the surveyor creates the report element first and the annotations under it, and an
+    empty `report_guid` means no report element came back. So "published" is said only with a guid;
+    a swallowed error is a failure with Egeria's word; "report not found" only when the publish
+    returned nothing at all."""
+    n = res.get("annotation_count")
+    when = md(surveyed_at) if surveyed_at else ""
+    src = f" from the {when} survey" if when else ""
+    guid = str(res.get("report_guid") or "")
+    if guid:
+        return "done", (f"report {guid[:8]} · {n} annotations published ·{src}" if n is not None else f"report {guid[:8]} ·{src}")
+    if res.get("report_error"):
+        first, _ = egeria_first_sentence(str(res["report_error"]))
+        return "failed", f"Egeria did not take the report: {first} · {n} annotations built, none published ·{src}"
+    if n is None and not res:
+        return "done", "report not found · the publish returned nothing"
+    return "done", f"{n} annotations{src} · Egeria returned no report element id, so the report itself is not confirmed"
+
+
 def _fail_step(cur, cid: str, step: str, exc: Exception | str, prefix: str = "") -> None:
     """A failed step reads Egeria's first sentence; the rest goes under "details"."""
     first, rest = egeria_first_sentence(str(exc) or type(exc).__name__)
@@ -1408,10 +1430,10 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             res = gateway.publish_local_report(db, db.db_user, db.db_password, measured, registry=registry, submitted_by=author)
             _proof(registry, slug, P_REPORT, node_kind="database", element_guid=res.get("report_guid", ""),
                    curation_id=curation_id, detail={"annotation_count": res.get("annotation_count"),
-                                                    "surveyed_at": measured.get("surveyed_at", "")})
-            cur.set_step(curation_id, "survey_report", "done",
-                         (f"report {str(res['report_guid'])[:8]}" if res.get("report_guid") else "report not found")
-                         + f" · {res.get('annotation_count')} annotations")
+                                                    "surveyed_at": measured.get("surveyed_at", ""),
+                                                    "report_error": res.get("report_error", "")})
+            state, words = report_step_words(res, measured.get("surveyed_at", ""))
+            cur.set_step(curation_id, "survey_report", state, words)
         except Exception as exc:
             _fail_step(cur, curation_id, "survey_report", exc)
 

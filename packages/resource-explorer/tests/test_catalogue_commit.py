@@ -953,3 +953,50 @@ def test_a_leave_out_is_in_the_manifest_once_as_its_own_row_not_twice(world, fak
     manifest = " ".join(ln["text"] for ln in p["manifest"]["lines"])
     assert "nothing to remove" not in manifest                # the rows carry it, once
     assert all(ln["id"] != "leave_out" for ln in p["manifest"]["lines"])
+
+
+# ── RE's own survey report: the words say what came back (coco_pharma, 2026-10-06) ──────────────
+
+def _measured(world):
+    world["registry"].record_database_survey("db", 2, 5, 9, {"schema_info": {"sales": {}}}, source="local",
+                                             surveyed_at="2026-10-03T18:07:08")
+
+
+def test_report_step_with_annotations_and_no_guid_says_what_came_back_not_report_not_found(world, fake, monkeypatch):
+    _measured(world)
+    monkeypatch.setattr(fake, "publish_local_report",
+                        lambda *a, **k: {"annotation_count": 76, "asset_guid": "d1"})   # annotations only, no report element id
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    st = step(rec, "survey_report")
+    assert st["state"] == "done"
+    assert "report not found" not in st["detail"] and "report ?" not in st["detail"]
+    assert st["detail"] == ("76 annotations from the 10-03 survey · Egeria returned no report element id, "
+                            "so the report itself is not confirmed")
+
+
+def test_report_step_with_a_guid_names_it_and_the_survey_it_came_from(world, fake):
+    _measured(world)
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    d = step(rec, "survey_report")["detail"]
+    assert d.startswith("report ") and "3 annotations published · from the 10-03 survey" in d
+
+
+def test_report_step_reports_the_swallowed_publish_error_as_a_failure(world, fake, monkeypatch):
+    _measured(world)
+    monkeypatch.setattr(fake, "publish_local_report",
+                        lambda *a, **k: {"annotation_count": 76, "report_guid": "", "report_error": "403 not authorized"})
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    st = step(rec, "survey_report")
+    assert st["state"] == "failed" and "403 not authorized" in st["detail"]
+    assert "76 annotations built, none published" in st["detail"]
+
+
+def test_report_step_says_report_not_found_only_when_the_publish_returned_nothing(world, fake, monkeypatch):
+    _measured(world)
+    monkeypatch.setattr(fake, "publish_local_report", lambda *a, **k: {})
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    assert step(rec, "survey_report")["detail"] == "report not found · the publish returned nothing"

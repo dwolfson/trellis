@@ -419,7 +419,7 @@ test('a survey that was only submitted reads submitted, and a step\'s long tail 
   await wait(300);
   const steps = Object.fromEntries([...document.querySelectorAll('[data-scope-commit-step]')].map((e) => [e.dataset.scopeCommitStep, e]));
   assert.equal(steps.survey.dataset.state, 'submitted');
-  assert.match(flat(steps.survey), /survey · submitted · submitted · 10-05 12:53/);
+  assert.match(flat(steps.survey), /survey · submitted · 10-05 12:53/);
   assert.ok(!/survey · done/.test(flat(steps.survey)), 'initiation is never "done"');
   assert.equal(steps.refresh.dataset.state, 'requested');
   assert.match(flat(steps.zone_membership), /zones left to Egeria/);

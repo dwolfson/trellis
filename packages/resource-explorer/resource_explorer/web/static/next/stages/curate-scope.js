@@ -522,8 +522,12 @@ const detailsHtml = (more, attr) => (more
  *  the record's, which the server writes from rows (the outbox, the proof rows), never a guess. */
 export function commitStepsHtml(rec) {
   if (!rec) return '';
+  // The step line already says its state; a detail that starts with the same word ("submitted · 10-06
+  // 13:25") would say it twice.
+  const bare = (st) => String(st.detail || '').replace(new RegExp(`^${String(st.state).replace(/[^a-z_]/gi, '')} · `, 'i'), '');
   const rows = (rec.steps || []).map((st) => `<div data-scope-commit-step="${esc(st.name)}" data-state="${esc(st.state)}" class="text-provenance ${st.state === 'failed' ? 'text-state-warn' : 'text-ink-muted'}">
-    ${STEP_GLYPH[st.state] ? `${glyphSpan(STEP_GLYPH[st.state])} ` : ''}${esc(STEP_LABEL[st.name] || st.name)} · ${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}${detailsHtml(st.more, 'data-scope-step-details')}</div>`).join('');
+    ${STEP_GLYPH[st.state] ? `${glyphSpan(STEP_GLYPH[st.state])} ` : ''}${esc(STEP_LABEL[st.name] || st.name)} · ${esc(st.state)}${bare(st) ? ` · ${esc(bare(st))}` : ''}${detailsHtml(st.more, 'data-scope-step-details')}${
+      st.name === 'survey' && st.state === 'submitted' ? ' <span data-scope-step-hint class="text-ink">check again in a minute with Read Egeria again</span>' : ''}</div>`).join('');
   return `<div data-scope-commit-steps class="mt-s1"><div class="text-caveat text-ink">Commit ${esc(String(rec.id || '').slice(0, 8))} · ${esc(rec.state || '')} · by ${esc(rec.author || '')}</div>${rows}</div>`;
 }
 

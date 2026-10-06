@@ -1137,6 +1137,7 @@ class EgeriaDatabaseSurveyor:
 
         # ── Publish local survey report & annotations to Egeria ──────────────────
         report_guid = ""
+        report_error = ""
         annotations = []
         if db_guid:
             # Recreate annotations from local scan data using DatabaseSurveyor helpers
@@ -1182,6 +1183,7 @@ class EgeriaDatabaseSurveyor:
                 self._create_annotations(annotations, report_guid, db_entity.slug, surveyed_at)
             except Exception as exc:
                 log.warning(f"Failed to publish SurveyReport to Egeria: {exc}")
+                report_error = f"{exc}"[:400]   # the caller says so; it used to be a log line only
 
         # Use the created report GUID if available, otherwise fall back to Egeria's native action GUID
         effective_report_guid = report_guid or survey_action_guid
@@ -1207,6 +1209,7 @@ class EgeriaDatabaseSurveyor:
             "report_guid":        effective_report_guid,
             "server_survey_guid": server_survey_guid,
             "annotation_count":   len(annotations),
+            "report_error":       report_error,
             "survey_submissions": result.get("survey_submissions", []),
         }
 
