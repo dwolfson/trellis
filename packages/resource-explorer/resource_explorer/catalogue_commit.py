@@ -67,7 +67,7 @@ CATALOG_POLL_SECONDS = 2
 # ── words the screen uses (one place, so tests and the UI pin the same text) ──
 
 S19_SENTENCE = "can't be re-included until Egeria restores archived elements"
-WHOLE_SCHEMAS_LINE = "Egeria catalogues whole schemas · table choices are kept for when it can"
+WHOLE_SCHEMAS_LINE = "Egeria catalogs whole schemas · table choices are kept for when it can"
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
@@ -80,8 +80,8 @@ WAIT = "wait or cancel"
 FINISHED_ACTIVITY = frozenset({"COMPLETED", "FAILED", "CANCELLED", "INVALID"})
 WORKER_WORDS = "waiting for a worker"
 OWNER_REFUSED = "owner set by Egeria's source · can't change from RE"
-NO_SCOPE_SENTENCE = "no scope declared · nothing catalogued"
-NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet catalogued in Egeria"
+NO_SCOPE_SENTENCE = "no scope declared · nothing cataloged"
+NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet cataloged in Egeria"
 
 # ── proof kinds (rows in catalogue_commit_proofs) ────────────────────────────
 
@@ -461,7 +461,7 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
     detached = _latest(rows, (P_DETACHED,)) is not None
     if last is None:
         if effective == LEAVE_OUT:
-            return {"state": "left_out", "words": "left out", "second": "scope record · never catalogued",
+            return {"state": "left_out", "words": "left out", "second": "scope record · never cataloged",
                     "proof": None}
         if effective == CATALOGUE:
             return {"state": "uncommitted", "words": "not committed yet",
@@ -493,11 +493,14 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
         return {"state": "attached_waiting", "words": "attached · waiting for Egeria's next refresh",
                 "second": second, "proof": proof}
     if kind == P_REMOVED:
-        was = " · was catalogued" if had_elements else ""
+        # "removed" is RESERVED for "Remove from Resource Explorer", which only touches RE's record; an Egeria
+        # soft delete reads "deleted from Egeria". The state/proof kind names stay `removed`/`P_REMOVED`.
+        was = "was cataloged" if had_elements else ""
         second = LINGERING_LINE if detached else ""
         if effective == CATALOGUE:
-            second = "scope says catalogue · the next commit re-creates it from the template"
-        return {"state": "removed", "words": f"removed{was} · {_stamp(last['read_at'])}",
+            second = "scope says catalog · the next commit re-creates it from the template"
+        second = " · ".join(x for x in (was, second) if x)
+        return {"state": "removed", "words": f"deleted from Egeria · {_stamp(last['read_at'])}",
                 "second": second, "proof": proof}
     if kind == P_ARCHIVED:
         second = S19_SENTENCE if effective == CATALOGUE else (LINGERING_LINE if detached else "")
@@ -545,7 +548,7 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
             key = f"{name}.{t['name']}"
             if st["state"] == "catalogued":
                 if t["name"] in found:
-                    ts = {"state": "catalogued", "words": f"catalogued · read back {_stamp(el['read_at'])}",
+                    ts = {"state": "catalogued", "words": f"cataloged · read back {_stamp(el['read_at'])}",
                           "second": "element · read back from Egeria"}
                 else:
                     ts = {"state": "not_read_back", "words": "in the survey · not in Egeria's listing",
@@ -553,7 +556,7 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
                 if t.get("effective") == LEAVE_OUT:
                     ts["second"] = WHOLE_SCHEMAS_LINE
             elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "removed", "archived"):
-                ts = {"state": "follows_schema", "words": f"as its schema: {st['state'].replace('_', ' ')}",
+                ts = {"state": "follows_schema", "words": f"as its schema: {'deleted from Egeria' if st['state'] == 'removed' else st['state'].replace('_', ' ')}",
                       "second": WHOLE_SCHEMAS_LINE if t.get("effective") == LEAVE_OUT else ""}
             else:
                 ts = {"state": "none", "words": "", "second": ""}
@@ -610,7 +613,7 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if n_cat:
         order = (("catalogued", "cataloged"), ("attached_waiting", "attached, waiting"),
                  ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("uncommitted", "not committed yet"),
-                 ("removed", "removed"), ("archived", "archived"))
+                 ("removed", "deleted from Egeria"), ("archived", "archived in Egeria"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
     if conn_d and conn_d.get("last_refresh_time"):
@@ -674,7 +677,8 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         row = {"schema": name, "tables": tcount}
         if st.get("state") in ("removed", "archived", "left_out", "none", "uncommitted"):
             row.update(form="none", blocked=False,
-                       text=f"{name}: nothing to remove" + (" · already " + st["state"] if st.get("state") in ("removed", "archived") else " · never catalogued"))
+                       text=f"{name}: nothing to remove" + (" · already " + ("deleted from Egeria" if st.get("state") == "removed" else "archived in Egeria")
+                                                                  if st.get("state") in ("removed", "archived") else " · never cataloged"))
             leave.append(row)
             continue
         if gateway is None:
@@ -693,7 +697,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                        text=in_use_text(name, read["in_use"]))
         elif read["form"] == SOFT_DELETE:
             row.update(form=SOFT_DELETE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
-                       text=f"{name}: nothing hangs off it · will be removed (soft-deleted) from Egeria"
+                       text=f"{name}: nothing hangs off it · will be deleted from Egeria"
                             + (f" with its {tcount} tables" if tcount else "") + " · delete · nothing depends on it")
         else:
             row.update(form=ARCHIVE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
@@ -760,10 +764,10 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
 
     something = bool(attach or [r for r in leave if r["form"] in (SOFT_DELETE, ARCHIVE)])
     if not something and not blockers:
-        blockers.append("nothing to commit: choose at least one schema to catalogue")
-    label = f"Catalogue · {len(attach)} schema{'s' if len(attach) != 1 else ''}"
+        blockers.append("nothing to commit: choose at least one schema to catalog")
+    label = f"Catalog · {len(attach)} schema{'s' if len(attach) != 1 else ''}"
     if removes:
-        label += f" · removes {len(removes)} from Egeria"
+        label += f" · deletes {len(removes)} from Egeria"
     if archives:
         label += f" · archives {len(archives)}"
     return {
@@ -860,7 +864,7 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     if current_schema_choice(registry, slug, schema) == LEAVE_OUT:
         # The person left it out after this was queued. Attaching it now would
         # undo their choice; nothing is written and the row is simply done.
-        log.info("catalogue commit: %s/%s was left out after its attach was queued; not attaching", slug, schema)
+        log.info("catalog commit: %s/%s was left out after its attach was queued; not attaching", slug, schema)
         return ""
     # Re-inclusion after an archive is refused: the archived element still holds the
     # qualified name, the template create fails 400, and nothing can be adopted.
@@ -965,7 +969,7 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     qn = schema_qn(e, schema)
     cid = payload.get("curation_id", "")
     if current_schema_choice(registry, slug, schema) == CATALOGUE:
-        log.info("catalogue commit: %s/%s was chosen again after its leave-out was queued; not removing", slug, schema)
+        log.info("catalog commit: %s/%s was chosen again after its leave-out was queued; not removing", slug, schema)
         return ""
     el = gateway.read_element(qn)
     guid = el.guid if el else ""
@@ -1206,7 +1210,7 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
     from resource_explorer.catalogue_scope import build_scope_view
     from resource_explorer.curate_plan import Curations
     if not author:
-        raise CommitBlocked(401, "Sign in to catalogue: the record needs an author.")
+        raise CommitBlocked(401, "Sign in to catalog: the record needs an author.")
     db_entity = registry.get_database(slug, allow_unreadable=True)
     if db_entity is None:
         raise CommitBlocked(404, f"Database '{slug}' not found")
@@ -1220,7 +1224,7 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         try:
             gateway = make_gateway(db_entity)
         except Exception as exc:  # no client at all: every read-dependent row will say so
-            log.warning("catalogue commit: no Egeria gateway for %s: %s", slug, exc)
+            log.warning("catalog commit: no Egeria gateway for %s: %s", slug, exc)
             gateway = None
     preview = build_preview(registry, slug, view, gateway, db_entity=db_entity, derived=derived)
     if not preview["can_commit"]:
@@ -1238,7 +1242,7 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         registry, entity_type="database", entity_slug=slug, entity_name=db_entity.display_name,
         entity_location=f"{db_entity.host}:{db_entity.port}/{db_entity.database_name}",
         intent="curate", status="running",
-        summary=f"Cataloguing {db_entity.display_name}: {len(selection['attach'])} schema targets…")
+        summary=f"Cataloging {db_entity.display_name}: {len(selection['attach'])} schema targets…")
     rec = Curations(registry).create("database", slug, author=author, selection=selection,
                                      manifest=preview["manifest"], steps=list(STEPS_DB), activity_id=activity_id)
     run_id = registry.enqueue_run("catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
@@ -1246,7 +1250,7 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
 
 
-_PAST = {"attach": "attached", "remove": "removed"}
+_PAST = {"attach": "attached", "remove": "deleted from Egeria"}
 
 
 def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, registry=None) -> None:
@@ -1266,12 +1270,12 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
         for r in done:
             sch = (r.get("payload") or {}).get("schema")
             last = _latest([p for p in proofs if p["node_kind"] == "schema" and p["schema_name"] == sch], (P_REMOVED, P_ARCHIVED))
-            kinds.append("archived" if last and last["proof"] == P_ARCHIVED else "removed")
+            kinds.append("archived" if last and last["proof"] == P_ARCHIVED else "deleted")
         n_arch = kinds.count("archived")
         if n_arch == len(kinds):
-            parts = [f"{len(done)} of {len(rows)} archived, each with its proof row"]
+            parts = [f"{len(done)} of {len(rows)} archived in Egeria, each with its proof row"]
         elif n_arch:
-            parts = [f"{len(done)} of {len(rows)} done: {len(kinds) - n_arch} removed, {n_arch} archived, each with its proof row"]
+            parts = [f"{len(done)} of {len(rows)}: {len(kinds) - n_arch} deleted from Egeria, {n_arch} archived in Egeria, each with its proof row"]
     if wait:
         parts.append(f"{len(wait)} queued in the outbox (#{', #'.join(str(r['id']) for r in wait)})")
     more: list[str] = []
@@ -1384,7 +1388,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     # 2b ── leave outs
     leave = list(sel.get("leave_out") or [])
     if not leave:
-        cur.set_step(curation_id, "leave_outs", "skipped", "no schema to remove or archive")
+        cur.set_step(curation_id, "leave_outs", "skipped", "no schema to delete or archive")
     else:
         cur.set_step(curation_id, "leave_outs", "running")
         for item in leave:
@@ -1482,7 +1486,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         try:
             gateway.set_zone_membership(db_guid, zones)
         except Exception as exc:
-            log.warning("catalogue commit %s: zone write refused: %s", curation_id, exc)
+            log.warning("catalog commit %s: zone write refused: %s", curation_id, exc)
             _fail_step(cur, curation_id, "zone_membership", exc, prefix="Egeria did not accept the ZoneMembership: ")
         else:
             try:
@@ -1509,7 +1513,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             cur.set_step(curation_id, "read_back", "failed", f"{s['read_failed']} read(s) of Egeria failed; states are unchanged")
         else:
             cur.set_step(curation_id, "read_back", "done",
-                         f"{s['catalogued']} catalogued · {s['attached_waiting']} attached, waiting")
+                         f"{s['catalogued']} cataloged · {s['attached_waiting']} attached, waiting")
     except Exception as exc:
         _fail_step(cur, curation_id, "read_back", exc)
     return cur.finish(curation_id)

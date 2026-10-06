@@ -110,7 +110,7 @@ export function nativeSurveyRowHtml(row) {
     </div>
     ${row.runnable ? `<button type="button" data-native-run="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border ${busy ? 'border-rule-strong text-ink-muted' : 'border-accent text-accent-ink'} bg-transparent px-2 py-[2px] text-caveat"
-      >${busy ? 'in flight' : (ran ? 're-run →' : 'run →')}</button>` : ''}
+      >${busy ? 'in flight' : (ran ? 'Run again in Egeria →' : 'Run in Egeria →')}</button>` : ''}
     <span data-native-error="${esc(row.qualified_name)}" class="hidden w-full text-provenance text-state-warn"></span>
   </div>`;
 }

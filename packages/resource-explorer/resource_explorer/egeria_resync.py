@@ -686,9 +686,9 @@ class EgeriaResync:
                     # regression caught by the test written for the original
                     # distinction — the counts alone cannot tell a reader that
                     # the repo in front of them never had an asset to lose.
-                    "cause": ("asset lost — it was catalogued before"
+                    "cause": ("asset lost — it was cataloged before"
                               if published_before else
-                              "never catalogued — no publish has run for it"),
+                              "never cataloged — no publish has run for it"),
                 })
 
         # Inheritance is asked OUTSIDE the connection above: it opens its own.
@@ -741,7 +741,7 @@ class EgeriaResync:
         lost = sum(1 for i in items if i["was_published"])
         return Finding(
             key="needs_catalog",
-            title=(f"Repos with no Egeria asset that can be catalogued "
+            title=(f"Repos with no Egeria asset that can be cataloged "
                    f"({lost} lost an asset, {len(items) - lost} never had one)"),
             detail=("Publishes " + "/".join(CATALOG_STEPS) + " for each — enough to "
                     "register the asset, and deliberately nothing that downloads an "
@@ -813,7 +813,7 @@ class EgeriaResync:
         """
         return Finding(
             key="registration_only",
-            title=("Catalogued assets with no survey results published"),
+            title=("Cataloged assets with no survey results published"),
             detail=("Runs the FULL survey for each and publishes it as a SurveyReport. "
                     "This is the slow path: it includes steps that download the "
                     "repository archive, so across a large corpus it is minutes and "
@@ -843,7 +843,7 @@ class EgeriaResync:
             items.append(i)
         return Finding(
             key="registration_blocked",
-            title="Catalogued assets with no survey results and no Project to publish under",
+            title="Cataloged assets with no survey results and no Project to publish under",
             detail=("Assign an Egeria Project to these, or add them to an investigation "
                     "that has one. No button: the publish is refused (428) until then."),
             items=items, repair_step="", needs_decision=True,

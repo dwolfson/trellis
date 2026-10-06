@@ -24,6 +24,7 @@ _HIDDEN_DISPOSITIONS = {"ignored", "abandoned"}
 # trellis-auth (plan §4) — imported rather than hard-coded so adopting auth is
 # one edit in run_queue.py, not a sweep of every enqueue site.
 from resource_explorer.run_queue import requested_by as _requested_by  # noqa: E402
+from resource_explorer.auth import get_current_user  # noqa: E402
 
 
 class ProjectSummary(BaseModel):
@@ -308,10 +309,17 @@ async def delete_group(slug: str) -> dict:
 
 
 @router.post("/{slug}/group")
-async def assign_group(slug: str, body: GroupAssign) -> dict:
+async def assign_group(slug: str, body: GroupAssign, request: Request) -> dict:
+    """Put a resource in a group, recording WHO did it (the session's user, never the body): the Curate line after
+    the change reads "saved · who · when" (REPLY-DESIGNER-SAVE-AND-PUBLISH-VERBS.md). Signed out is a 401, like the
+    other Curate writes."""
     from resource_explorer.registry import ProjectRegistry
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to change the group — a change needs an author.")
     registry = ProjectRegistry()
-    
+
     if body.group_slug and not registry.get_group(body.group_slug):
         raise HTTPException(status_code=404, detail=f"Group '{body.group_slug}' not found")
         
@@ -329,8 +337,10 @@ async def assign_group(slug: str, body: GroupAssign) -> dict:
         registry.set_filesystem_group(slug, body.group_slug)
     else:
         raise HTTPException(status_code=400, detail=f"Invalid resource type '{body.resource_type}'")
-        
-    return {"slug": slug, "resource_type": body.resource_type, "group_slug": body.group_slug}
+
+    saved_at = registry.record_group_change(body.resource_type, slug, body.group_slug, author)
+    return {"slug": slug, "resource_type": body.resource_type, "group_slug": body.group_slug,
+            "saved_by": author, "saved_at": saved_at}
 
 
 @router.get("/{slug}", response_model=ProjectSummary)
@@ -1021,7 +1031,7 @@ async def record_catalogue_depth_offer(slug: str, cid: str, body: CatalogueDepth
     curations = Curations(registry)
     rec = curations.get(cid)
     if not rec or rec.get("entity_slug") != slug:
-        raise HTTPException(status_code=404, detail=f"Catalogue record {cid!r} not found for {slug!r}")
+        raise HTTPException(status_code=404, detail=f"Catalog record {cid!r} not found for {slug!r}")
     try:
         return curations.record_layer2_offer(cid, body.outcome, decided_by)
     except ValueError as exc:
@@ -1873,7 +1883,7 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     user = get_current_user(request)
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
     if not author:
-        raise HTTPException(status_code=401, detail="Sign in to catalogue — the record needs an author, and the asset an owner.")
+        raise HTTPException(status_code=401, detail="Sign in to catalog — the record needs an author, and the asset an owner.")
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
@@ -1894,7 +1904,7 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
         registry, entity_type="repo", entity_slug=slug,
         entity_name=project.display_name, entity_location=project.github_url,
         intent="curate", status="running",
-        summary=f"Cataloguing {project.display_name}: {len(body.confirm)} entities, {len(body.sub_resources)} sub-resources…",
+        summary=f"Cataloging {project.display_name}: {len(body.confirm)} entities, {len(body.sub_resources)} sub-resources…",
     )
     rec = Curations(registry).create(
         "repo", slug, author=author, selection=body.model_dump(), manifest=manifest,

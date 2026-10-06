@@ -248,7 +248,7 @@ def test_verdict_never_proposes():
 def test_system_schemas_are_folded_never_offered(world):
     v = view(world)
     assert all(s["name"] for s in v["schemas"]) and "pg_catalog" not in str(v["schemas"])
-    assert v["system"]["text"] == "not catalogued: system schemas are never offered"
+    assert v["system"]["text"] == "not cataloged: system schemas are never offered"
     with pytest.raises(cs.ScopeError) as e:
         cs.set_node_choice(world["registry"], "db", "alice", schema="pg_catalog", choice="catalogue")
     assert e.value.status == 404
@@ -447,10 +447,10 @@ def test_depth_is_stored_with_author_and_changes_what_the_tree_shows(world):
 
 
 def test_depth_provenance_is_a_view_claim_and_names_no_lever_the_commit_does_not_use():
-    assert cs.depth_provenance("schemas", "table") == "tables hidden in this view · the commit still catalogues them"
-    assert cs.depth_provenance("schemas_and_tables", "table") == "columns hidden in this view · the commit still catalogues them"
+    assert cs.depth_provenance("schemas", "table") == "tables hidden in this view · the commit still catalogs them"
+    assert cs.depth_provenance("schemas_and_tables", "table") == "columns hidden in this view · the commit still catalogs them"
     assert cs.depth_provenance("tables_and_columns", "table") == ""
-    assert "the commit still catalogues whole schemas" in cs.depth_provenance("database_only", "schema")
+    assert "the commit still catalogs whole schemas" in cs.depth_provenance("database_only", "schema")
     # slice B takes the schema-kind door: there are no include lists, so no text may claim one
     for d in cs.DEPTHS:
         assert "include" not in d["how"] and d["commit_honours"] is (d["id"] == "tables_and_columns")

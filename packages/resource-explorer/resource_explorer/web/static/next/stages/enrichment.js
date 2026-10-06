@@ -217,7 +217,7 @@ export function fieldRowHtml(def, kind) {
     <div class="min-w-0">
       <div class="flex items-baseline gap-s2">${fieldControlHtml(def, field, kind)}
         <button type="button" data-save="${def.key}" data-kind="${kind}"
-          class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">save</button></div>
+          class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Save</button></div>
       <div class="text-provenance text-ink-muted">${who}</div>
       ${st ? observationStateHtml(def, field, st) : noSurvey}
       ${def.key === 'owner' ? ownerMaterialHtml() + ownerNoteHtml(field) : ''}
@@ -340,7 +340,7 @@ function renderEnrichmentForm(slug) {
 
   const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
   host.innerHTML = `
-    <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here is written to the catalogue until you catalogue it (Curate).
+    <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here is written to the catalog until you catalog it (Curate).
       What you set here is testimony — yours, dated — and the surveys' findings in the rail are material to read, not answers to accept.</p>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading text-question text-ink">What we judge</span>
@@ -507,10 +507,10 @@ function probeWording(src) {
 // the header note) — see `derive_doc_source_egeria_state` (backend) for the
 // exact rule.
 const EGERIA_STATE_TEXT = {
-  catalogued: () => 'catalogued in Egeria',
+  catalogued: () => 'cataloged in Egeria',
   publishing: () => 'local — publishing…',
   publish_failed: (src) => `local — publish failed: ${src.egeria_state_detail || 'unknown error'}, retrying`,
-  not_catalogued: () => 'local — not catalogued (publish needed)',
+  not_catalogued: () => 'local — not cataloged (publish needed)',
   local_only: () => 'local only — resource not published',
 };
 const EGERIA_STATE_TONE = {
@@ -675,7 +675,7 @@ function renderDocSourcesFromData(slug, entityType, data, deadline) {
       <select id="doc-source-type" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink">
         ${DOC_SOURCE_TYPES.map((t) => `<option value="${t.value}">${esc(t.label)}</option>`).join('')}
       </select>
-      <button type="button" id="doc-source-add" class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">add + probe</button>
+      <button type="button" id="doc-source-add" class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Save and probe</button>
     </div>
     <div id="doc-source-add-status" class="mt-[2px] text-provenance text-ink-muted"></div>`;
 
@@ -709,13 +709,13 @@ function renderDocSourcesFromData(slug, entityType, data, deadline) {
     const sourceType = $('doc-source-type')?.value || 'other';
     const statusEl = $('doc-source-add-status');
     if (!url) { statusEl.textContent = 'enter a URL first'; return; }
-    addBtn.disabled = true; addBtn.textContent = 'adding…';
+    addBtn.disabled = true; addBtn.textContent = 'saving…';
     if (statusEl) statusEl.textContent = 'probing…';
     try {
       await addDocSource(entityType, slug, { url, label, sourceType });
       renderDocSources(slug);
     } catch (err) {
-      addBtn.disabled = false; addBtn.textContent = 'add + probe';
+      addBtn.disabled = false; addBtn.textContent = 'Save and probe';
       if (statusEl) statusEl.textContent = err.status === 401 ? 'sign in to add a source' : `not added: ${err.message}`;
     }
   });
@@ -752,7 +752,7 @@ export function renderEnrichmentEvidence(slug) {
   const none = !applicable
     ? `Could not read which analyses apply to ${esc(kindNoun())}.`
     : !ENRICHMENT_EVIDENCE.some((id) => applicable.has(id))
-      ? `no enrichment evidence is catalogued for ${esc(kindNoun())} yet`
+      ? `no enrichment evidence is cataloged for ${esc(kindNoun())} yet`
       : 'No measurements to show yet.';
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">

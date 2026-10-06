@@ -71,10 +71,10 @@ test('the five sections render in order, each row saying what it feeds', async (
   }
 
   // Every judgement/observation row says what it feeds.
-  assert.match(html, /feeds → Curate \(catalogue record\)/);
+  assert.match(html, /feeds → Curate \(catalog record\)/);
   // License additionally names its survey source (`fromAnalysis`), not a
   // fabricated cross-reference.
-  assert.match(html, /feeds → Curate \(catalogue record\) · sourced from license_classification/);
+  assert.match(html, /feeds → Curate \(catalog record\) · sourced from license_classification/);
 
   // The human question row (section 4): no declared consumer (no
   // `analysis_ids`), so the honest line -- never the catalog's prose.
@@ -225,4 +225,29 @@ test('no feeds line ever carries catalog note prose ("N/A", "may also"); a quest
   }
   assert.ok(feeds.includes('feeds → nothing reads this yet'));
   assert.ok(feeds.includes('feeds → doc_evidence_check'));
+});
+
+test('every form-ending control on Context says "Save" (capitalised), and no page word is a UK "catalogue"', async () => {
+  makeDomEnvironment();
+  await loadAppModule();
+  const app = await import('/static/next/app.js');
+  const { renderContext } = await import('/static/next/stages/context.js');
+  app.state.resourceType = 'db';
+  app.state.selectedSlug = 'adventureworks';
+  app.state.investigation = '';
+  app.state.investigations = [];
+  app.state.questions = [{ question: 'What does it cost to run?', kind: 'human', note: '', answering_mechanism: '', analysis_ids: [] }];
+  app.state.editingContextAnswer = 'What does it cost to run?';
+  const host = document.createElement('div');
+  host.id = 'content';
+  document.body.appendChild(host);
+  host.innerHTML = '<div id="context-form"></div>';
+  stubContextFetch({ enrichment: {}, question_answers: {} });
+  await renderContext('adventureworks');
+  const form = document.getElementById('context-form');
+  const fieldSaves = [...form.querySelectorAll('[data-save]')];
+  assert.ok(fieldSaves.length >= 5, 'judgement and observation rows each have a save control');
+  for (const b of fieldSaves) assert.equal(b.textContent.trim(), 'Save');
+  assert.equal(form.querySelector('[data-context-answer-save]').textContent.trim(), 'Save', 'the human-question editor');
+  assert.doesNotMatch(form.textContent, /[Cc]atalogu(e|ed|ing)\b/);
 });

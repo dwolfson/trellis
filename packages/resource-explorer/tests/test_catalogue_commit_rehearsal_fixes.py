@@ -239,8 +239,8 @@ def test_a_clean_run_says_attached_and_removed_in_full_words(world, fake):
     assert step(rec, "schema_targets")["detail"].startswith("1 of 1 attached")
     choose(world, "sales", "leave_out")
     _, rec2 = press(world, fake)
-    assert step(rec2, "leave_outs")["detail"].startswith("1 of 1 removed")
-    assert "attachd" not in str(rec) + str(rec2) and "removd" not in str(rec2)
+    assert step(rec2, "leave_outs")["detail"].startswith("1 of 1 deleted from Egeria")
+    assert "attachd" not in str(rec) + str(rec2) and "removed" not in step(rec2, "leave_outs")["detail"]
 
 
 # ── D7: the server template gets its own description and a version ────────────

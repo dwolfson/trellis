@@ -23,7 +23,7 @@
  * way classic's nav-level Investigations tab and its per-repo "add to
  * investigation" toggle always have.
  */
-import { ago } from '/static/next/format.js';
+import { ago, readBackAt } from '/static/next/format.js';
 import {
   listInvestigations, getInvestigationPurposes, getInvestigationClassifications,
   getInvestigation, createInvestigation, updateInvestigation,
@@ -259,7 +259,7 @@ export async function openCreateDialog({ onCreated = null } = {}) {
     }
     const btn = body.querySelector('#inv-new-submit');
     btn.disabled = true;
-    btn.textContent = 'Creating…';
+    btn.textContent = 'Publishing…';
     try {
       const inv = await createInvestigation({
         displayName: name,
@@ -394,7 +394,7 @@ function egeriaSectionHtml(inv) {
         Bound to <span class="font-mono">${esc(inv.egeria_project_qualified_name || inv.egeria_project_guid)}</span>.
       </p>
       <div class="flex flex-wrap gap-s2">
-        <button data-act="inv-sync" class="${btnCls()}">Sync now</button>
+        <button data-act="inv-sync" class="${btnCls()}">Publish again</button>
         <button data-act="inv-relink" class="${btnCls()}">Relink members</button>
         <button data-act="inv-unbind" class="${btnCls()}">Unbind</button>
       </div>`;
@@ -405,7 +405,7 @@ function egeriaSectionHtml(inv) {
     </p>
     <div class="flex flex-wrap gap-s2">
       <button data-act="inv-bind" class="${btnCls()}">Bind existing project…</button>
-      <button data-act="inv-promote" class="${btnCls()}">Create in Egeria →</button>
+      <button data-act="inv-promote" class="${btnCls()}">Publish to Egeria →</button>
     </div>`;
 }
 
@@ -694,7 +694,7 @@ function bindDetail(inv, members) {
           ? 'could not verify the classification took'
           : `requested ${esc(result.classification_requested)}, Egeria reports ${esc(result.classification_confirmed)}`;
       host.innerHTML = `<div class="mt-s2 text-caveat ${result.ok ? 'text-state-ok' : 'text-state-warn'}">
-        ${result.ok ? 'Created.' : 'Partial — see below.'} ${confirmedLine}.
+        ${result.ok ? (result.classification_confirmed != null ? `published · ${readBackAt()}` : 'sent · waiting for Egeria') : 'Partial — see below.'} ${confirmedLine}.
         ${result.members_linked?.length ? ` Linked: ${result.members_linked.map(esc).join(', ')}.` : ''}
         ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(
           m => esc(`${m.entity_slug || m.entity_type || '?'}${m.reason ? ` (${m.reason})` : ''}`)
@@ -710,7 +710,7 @@ function bindDetail(inv, members) {
       await refreshInvestigationsAndSidebar();
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = 'Create in Egeria →';
+      btn.textContent = 'Publish to Egeria →';
       host.innerHTML = `<div class="mt-s2 text-caveat text-state-warn">${esc(err.message)}</div>`;
     }
   });
@@ -718,15 +718,15 @@ function bindDetail(inv, members) {
   el.querySelector('[data-act="inv-sync"]')?.addEventListener('click', async () => {
     const btn = el.querySelector('[data-act="inv-sync"]');
     btn.disabled = true;
-    btn.textContent = 'Syncing…';
+    btn.textContent = 'Publishing…';
     try {
       await syncInvestigationEgeria(inv.slug);
       btn.disabled = false;
-      btn.textContent = 'Synced';
-      setTimeout(() => { btn.textContent = 'Sync now'; }, 3000);
+      btn.textContent = 'Sent · waiting for Egeria';
+      setTimeout(() => { btn.textContent = 'Publish again'; }, 3000);
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = `Not synced: ${err.message}`;
+      btn.textContent = `Not published: ${err.message}`;
     }
   });
 

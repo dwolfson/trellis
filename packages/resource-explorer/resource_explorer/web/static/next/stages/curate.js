@@ -55,7 +55,7 @@ import {
 // others are counts whose members are reviewed, and the contained set is
 // taken whole (the checkbox under the manifest) -- the wireframe's shape.
 const CURATE_COLUMNS = [
-  { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalogue', pick: true },
+  { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalog', pick: true },
   { key: 'what_it_holds', title: "what's in it",    sub: 'each becomes its own asset, related to this one' },
   { key: 'made_of',       title: "what it's made of", sub: 'components, with ports and wires derived — review stays on Architecture verdicts' },
   { key: 'relates',       title: 'how it relates',  sub: '' },
@@ -144,7 +144,7 @@ function curateWritesHtml(plan, picks, subCount) {
     : `no authored classifications — nothing set on the Enrichment pane yet`);
   lines.push(w.owner?.value
     ? `Owner · ${esc(w.owner.value)}${w.owner.interim ? ' · interim' : ''}`
-    : `Owner · the person who catalogues, as interim`);
+    : `Owner · the person who catalogs, as interim`);
   lines.push(w.licence ? `License · ${esc(w.licence)}` : `License · not confirmed on the Enrichment pane`);
   lines.push(`<span class="tnum">${w.survey_reports_linked || 0}</span> survey report${w.survey_reports_linked === 1 ? '' : 's'} already linked, not copied${
     w.last_published_at ? ` · last <span class="tnum">${esc(ago(w.last_published_at))}</span>` : ''}${
@@ -168,7 +168,7 @@ function curateRecordHtml(rec) {
   if (!rec) return '';
   const g = (taskState) => factGlyph(CURATE_TASK_TO_FACT_STATE[taskState] || 'unclassified');
   return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
-    <div class="text-provenance text-ink-muted">catalogued by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
+    <div class="text-provenance text-ink-muted">cataloged by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
       · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
     ${rec.state === 'running' && (rec.steps || []).some((st) => st.state === 'running') ? `<div class="text-caveat text-accent-ink">${g('running').glyph} ${
       esc((rec.steps.find((st) => st.state === 'running') || {}).name)} is running — the survey step takes minutes; this line updates as steps land.</div>` : ''}
@@ -251,13 +251,13 @@ export async function renderCurate(slug) {
       bands.push(renderCatalogueScope(host.querySelector('[data-curate-scope]'), slug)
         .catch((err) => {
           const slot = host.querySelector('[data-curate-scope]');
-          if (slot && slot.isConnected) slot.innerHTML = `<div class="text-caveat text-state-warn">The catalogue scope could not be drawn: ${esc(err.message)}</div>`;
+          if (slot && slot.isConnected) slot.innerHTML = `<div class="text-caveat text-state-warn">The catalog scope could not be drawn: ${esc(err.message)}</div>`;
         }));
     }
     await Promise.all(bands);
     return;
   }
-  host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalogue would learn…</div>`;
+  host.innerHTML = `<div class="text-caveat text-ink-muted">Assembling what the catalog would learn…</div>`;
   let plan;
   try {
     plan = await getCuratePlan(slug);
@@ -281,7 +281,7 @@ export async function renderCurate(slug) {
       </div>
       ${plan.in_population ? '' : `<p class="mb-s3 max-w-[70ch] text-answer text-accent-ink">Only worthy things get curated. Curate's population is
         disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
-        sub-tab) and this screen commits. Everything below still shows what the catalogue would learn.</p>`}
+        sub-tab) and this screen commits. Everything below still shows what the catalog would learn.</p>`}
       ${curateSectionNavHtml()}
       ${curateSectionHtml('curate-sec-what-it-is', CURATE_COLUMNS[0].title,
         `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>
@@ -303,11 +303,11 @@ export async function renderCurate(slug) {
       <label class="mt-s2 flex cursor-pointer items-baseline gap-s2 text-caveat text-ink">
         <input type="checkbox" data-curate-subs ${state.curate.subs === false ? '' : 'checked'}> include the <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
-      <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloguing, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
+      <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloging, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
       <div class="mt-s3 flex items-baseline gap-s3">
         <button type="button" data-curate-go ${plan.in_population && me ? '' : 'disabled'}
-          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalogue →</button>
-        <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalogue — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
+          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalog →</button>
+        <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalog — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
       </div>
       ${curateRecordHtml(latest)}
       <div id="catalogue-depth-offer"></div>`)}`;
@@ -326,7 +326,7 @@ export async function renderCurate(slug) {
       // The first step re-surveys before it publishes -- minutes on a large
       // repository, and "nothing obvious happening" was the owner's report
       // from the first live press. Say what is happening, from the record.
-      b.textContent = 'Cataloguing… surveying first, then publishing';
+      b.textContent = 'Cataloging… surveying first, then publishing';
       try {
         const out = await curateCommit(slug, {
           confirm: [...picks], sub_resources: state.curate.subs === false ? [] : subLocators, data_files: false,
@@ -345,8 +345,8 @@ export async function renderCurate(slug) {
         draw();
         renderCatalogueDepthOffer(slug, host);
       } catch (err) {
-        b.disabled = false; b.textContent = 'Catalogue →';
-        const why = err.status === 401 ? 'sign in to catalogue' : err.status === 409 ? err.message : `not catalogued: ${err.message}`;
+        b.disabled = false; b.textContent = 'Catalog →';
+        const why = err.status === 401 ? 'sign in to catalog' : err.status === 409 ? err.message : `not cataloged: ${err.message}`;
         host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
       }
     });
@@ -395,10 +395,10 @@ async function renderCatalogueDepthOffer(slug, host) {
   slot.innerHTML = `
     <div data-catalogue-depth-offer class="mt-s3 border-t border-rule pt-s2">
       <div class="text-caveat text-ink"><span class="tnum">${offer.total_components}</span> component${offer.total_components === 1 ? '' : 's'} recovered ·
-        <span class="tnum">${offer.remaining_components}</span> not catalogued.</div>
+        <span class="tnum">${offer.remaining_components}</span> not cataloged.</div>
       <div class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat">
         <button data-catalogue-depth="accepted" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
-          >catalogue the next layer · <span class="tnum">${offer.remaining_components}</span> component${offer.remaining_components === 1 ? '' : 's'} · ${priceLine()} ›</button>
+          >catalog the next layer · <span class="tnum">${offer.remaining_components}</span> component${offer.remaining_components === 1 ? '' : 's'} · ${priceLine()} ›</button>
         <button data-catalogue-depth="declined" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">Not now</button>
         <span data-catalogue-depth-status class="text-provenance text-ink-muted"></span>
       </div>
@@ -414,7 +414,7 @@ async function renderCatalogueDepthOffer(slug, host) {
       return;
     }
     if (outcome === 'declined') {
-      box.innerHTML = `<div class="text-provenance text-ink-muted">not now · on the catalogue record</div>`;
+      box.innerHTML = `<div class="text-provenance text-ink-muted">not now · on the catalog record</div>`;
     } else {
       box.remove();
       document.getElementById('component-tree')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -750,7 +750,7 @@ function membershipHonestyLine(bp) {
   const materializedChildren = (bp.child_status || []).filter((c) => c.materialized).length;
   const total = materializedMembers + materializedChildren;
   if (!total) {
-    return `<div class="text-caveat text-ink-muted">its members are not yet linked — none of its proposed members are catalogued as their own Egeria elements yet, so there is nothing to link</div>`;
+    return `<div class="text-caveat text-ink-muted">its members are not yet linked — none of its proposed members are cataloged as their own Egeria elements yet, so there is nothing to link</div>`;
   }
   const parts = [];
   if (materializedMembers) parts.push(`<span class="tnum">${materializedMembers}</span> accepted component${materializedMembers === 1 ? '' : 's'}`);
@@ -781,9 +781,9 @@ function blueprintRowHtml(bp) {
     </div>
     ${accepted
       ? (bp.materialized
-          ? `<div class="mt-[2px] text-caveat text-ink">catalogued as a Solution Blueprint · <span class="font-mono">${esc((bp.materialized.guid || '').slice(0, 8))}…</span></div>
+          ? `<div class="mt-[2px] text-caveat text-ink">cataloged as a Solution Blueprint · <span class="font-mono">${esc((bp.materialized.guid || '').slice(0, 8))}…</span></div>
              ${membershipHonestyLine(bp)}`
-          : `<div class="mt-[2px] text-caveat text-accent-ink">accepted, but not yet catalogued in Egeria — the write may not have completed; re-accepting will retry</div>`)
+          : `<div class="mt-[2px] text-caveat text-accent-ink">accepted, but not yet cataloged in Egeria — the write may not have completed; re-accepting will retry</div>`)
       : rejected ? `<div class="mt-[2px] text-caveat text-ink-muted">rejected · nothing created</div>` : ''}
   </div>`;
 }
@@ -803,12 +803,12 @@ function openBlueprintMembersInRail(slug, bp, { standApartOnly = false } = {}) {
   }
   const rows = [...members, ...children];
   railFrame('Members', slug, `
-    <div class="mb-s1 text-caps text-chrome-muted">${esc(bp.cluster_name)} · ${esc(bp.perspective)} reading${standApartOnly ? ' · catalogued but not confirmed linked to the blueprint' : ''}</div>
+    <div class="mb-s1 text-caps text-chrome-muted">${esc(bp.cluster_name)} · ${esc(bp.perspective)} reading${standApartOnly ? ' · cataloged but not confirmed linked to the blueprint' : ''}</div>
     ${rows.length ? rows.map((m) => `<div class="flex items-baseline gap-s2 border-b border-chrome-line-soft py-[3px] text-caps">
       <span class="font-mono text-chrome-ink">${esc(m.slug)}</span>
       <span class="text-chrome-muted">${m.kind === 'blueprint' ? 'child blueprint' : 'component'}</span>
       <span class="text-chrome-muted">${m.verdict ? esc(m.verdict.verdict) : 'undecided'}</span>
-      <span class="text-chrome-muted">${m.materialized ? 'catalogued in Egeria' : 'not catalogued'}</span>
+      <span class="text-chrome-muted">${m.materialized ? 'cataloged in Egeria' : 'not cataloged'}</span>
     </div>`).join('') : `<div class="text-caps text-chrome-muted">nothing to show</div>`}`,
     { sub: `${rows.length} of ${(bp.member_status || []).length + (bp.child_status || []).length}` });
 }
@@ -887,10 +887,10 @@ function recordBlueprintVerdict(slug, bp, verdict) {
   const body = el.querySelector('#wl-detail-body');
   const memberCount = (bp.members || []).length;
   body.innerHTML = `
-    <p class="text-caveat text-ink">Catalogues <span class="font-mono">${esc(bp.cluster_name)}</span> as a real Egeria <span class="font-mono">SolutionBlueprint</span> —
+    <p class="text-caveat text-ink">Catalogs <span class="font-mono">${esc(bp.cluster_name)}</span> as a real Egeria <span class="font-mono">SolutionBlueprint</span> —
       the type is pinned (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §0), unlike an individual component's.</p>
     <p class="text-caveat text-ink-muted">${memberCount ? `<span class="tnum">${memberCount}</span> proposed member${memberCount === 1 ? '' : 's'}, but this does not accept or materialize them —
-      only members already accepted and catalogued on their own get queued to link, and that queue is not confirmed done by the time this pane reads it back.` : 'This cluster has no proposed members.'}</p>
+      only members already accepted and cataloged on their own get queued to link, and that queue is not confirmed done by the time this pane reads it back.` : 'This cluster has no proposed members.'}</p>
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
       <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Accept</button>

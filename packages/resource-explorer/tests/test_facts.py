@@ -771,7 +771,7 @@ class TestDatabaseResourceStateSources:
 
         no = fl._resource_state_fact("db_cat_no", resolver, subject)
         assert no.state == NOTHING_FOUND
-        assert "not yet catalogued" in no.headline.lower()
+        assert "not yet cataloged" in no.headline.lower()
 
     def test_existing_use_names_the_group_and_investigation(self, pg_registry):
         from resource_explorer.facts import DATABASE_RESOURCE_STATE_SOURCES

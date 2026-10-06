@@ -561,7 +561,7 @@
       <div id="analysis-sub-resources-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
       <!-- Discovery's analysis cards. Added 2026-08-24: all five discovery-intent
            analyses (repo_classification, architecture_recovery,
-           license_classification, maturity, repo_conventions) were catalogued,
+           license_classification, maturity, repo_conventions) were cataloged,
            step-mapped and runnable via POST /{slug}/analyses/{id}/run, and had
            no control anywhere in the UI — _loadAnalysisCatalogPanel was called
            only for 'assessment' and 'analysis'. The pane rendered Survey
@@ -2914,7 +2914,7 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, intent,
       ? la.last_published_scope && la.last_published_scope !== 'analysis'
         ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The resource was published at ${_esc(la.last_published_at)}.">☁ Resource published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
         : `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>${staleSuffix}`
-      : `<span class="text-slate-600">☁ Not published</span>${la.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not catalogued, publish needed</span>` : ''}`;
+      : `<span class="text-slate-600">☁ Not published</span>${la.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not cataloged, publish needed</span>` : ''}`;
     // Scheduling is a cross-cutting, per-analysis action — available from
     // whichever card surfaced it (Assessment, Analysis, or Discovery),
     // rather than a separate admin page. Reuses the same schedules backend
@@ -3303,7 +3303,7 @@ const _FACT_SUBJECT_DISPLAY_NAMES = {
   change_since_last_survey: 'Change Since Last Survey',
   description: 'Description',
   disposition: 'Disposition',
-  egeria_catalogue_state: 'Egeria Catalogue State',
+  egeria_catalogue_state: 'Egeria Catalog State',
   license: 'License',
   project_commits: 'Maintainers',
   related_resources: 'Related Resources',
@@ -8488,7 +8488,7 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
     // (as nothing), while the local cards beside these said "Not published".
     : c.publishes_itself
       ? `<span class="text-slate-500" title="Every step of this survey runs natively in Egeria, so its annotations are written there as it runs — there is nothing held locally to publish">☁ Publishes itself</span>`
-      : `<span class="text-slate-600">☁ Not published</span>${c.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not catalogued, publish needed</span>` : ''}`;
+      : `<span class="text-slate-600">☁ Not published</span>${c.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not cataloged, publish needed</span>` : ''}`;
   const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
   const speedTag = c.run_time ? `<span class="analysis-tag ${speedTagClass[c.run_time] || ''}">${_esc(c.run_time)}</span>` : '';
   // Same tags the local cards carry. A Survey Definition declares none in
@@ -8740,7 +8740,7 @@ function _renderResultsCardStatusHtml(d) {
     ? `<span class="text-slate-500" title="Last published: ${_esc(d.last_published_at)}">☁ Published ${_relTime(d.last_published_at)}</span>${
         d.publish_stale ? ` <span class="text-amber-400">⚠ these elements are no longer in the store</span>` : ''}`
     : d.has_results
-      ? `<span class="text-slate-600">☁ Not published</span>${d.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not catalogued, publish needed</span>` : ''}`
+      ? `<span class="text-slate-600">☁ Not published</span>${d.publish_uncatalogued ? ` <span class="text-amber-400">⚠ not cataloged, publish needed</span>` : ''}`
       : '';
   return `<div class="text-xs mb-1.5 flex flex-wrap gap-2.5">${statusHtml}${surveyedHtml}${publishedHtml}</div>`;
 }
@@ -9191,7 +9191,7 @@ async function submitSurveyDefinitionRun() {
           <div class="text-amber-300">This database isn't cataloged in Egeria yet, so its Egeria-side step(s) couldn't run.</div>
           <button id="survey-def-catalog-retry-btn" onclick="catalogAndRetrySurveyDefinition()"
             class="mt-1.5 text-xs px-2 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
-            ☁ Catalogue from its scope, then retry →
+            ☁ Catalog from its scope, then retry →
           </button>
         </div>`
       : '';
@@ -9246,9 +9246,9 @@ async function catalogAndRetrySurveyDefinition() {
   if (!_surveyDefRun) return;
   const { slug } = _surveyDefRun;
   const btn = document.getElementById('survey-def-catalog-retry-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Queuing the catalogue commit…'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Queuing the catalog commit…'; }
   const opId = logOp({ type:'publish', slug, status:'running',
-    summary:`Queuing the catalogue commit for ${slug} from its stored scope…` });
+    summary:`Queuing the catalog commit for ${slug} from its stored scope…` });
   try {
     const res = await fetch(`/api/catalogue-scope/${encodeURIComponent(slug)}/commit`, {
       method: 'POST',
@@ -9257,19 +9257,19 @@ async function catalogAndRetrySurveyDefinition() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const msg = data.detail || data.error || 'The catalogue commit was refused';
-      updateOp(opId, 'error', `Not catalogued: ${msg}`, msg);
+      const msg = data.detail || data.error || 'The catalog commit was refused';
+      updateOp(opId, 'error', `Not cataloged: ${msg}`, msg);
       showToast('error', `<strong>${_esc(slug)}</strong>: ${_esc(msg)}`, 10000);
-      if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
+      if (btn) { btn.disabled = false; btn.textContent = '☁ Catalog from its scope, then retry →'; }
       return;
     }
-    updateOp(opId, 'ok', `Catalogue commit queued for ${slug}`, '');
-    showToast('success', `Catalogue commit queued for <strong>${_esc(slug)}</strong>. Run the Survey Definition again when it has finished (Curate shows its steps).`, 10000);
-    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
+    updateOp(opId, 'ok', `Catalog commit queued for ${slug}`, '');
+    showToast('success', `Catalog commit queued for <strong>${_esc(slug)}</strong>. Run the Survey Definition again when it has finished (Curate shows its steps).`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalog from its scope, then retry →'; }
   } catch(e) {
-    updateOp(opId, 'error', `Catalogue commit failed to queue: ${e.message}`, e.message);
-    showToast('error', `Could not queue the catalogue commit: ${_esc(e.message)}`, 10000);
-    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalogue from its scope, then retry →'; }
+    updateOp(opId, 'error', `Catalog commit failed to queue: ${e.message}`, e.message);
+    showToast('error', `Could not queue the catalog commit: ${_esc(e.message)}`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '☁ Catalog from its scope, then retry →'; }
   }
 }
 
@@ -10807,7 +10807,7 @@ function _investigationBindingLabel(inv) {
   const ctx = inv.egeria_context || {};
   switch (ctx.status) {
     case 'linked':   return `📁 ${_esc((ctx.egeria_project_qualified_name || '').split('::')[0] || 'linked to an Egeria Project')}`;
-    case 'personal': return '👤 personal exploration — not catalogued';
+    case 'personal': return '👤 personal exploration — not cataloged';
     case 'declined': return '🚫 deliberately not associated';
     case 'deferred': return `⏳ ${_esc(ctx.free_text_name || 'deferred')}`;
     default:         return 'local only — not in Egeria';
@@ -10851,7 +10851,7 @@ async function _loadNextSteps(slug) {
   if (!data || data.complete) {
     // Deliberately says something rather than rendering nothing: an empty area
     // where offers used to be reads as a failed load.
-    box.innerHTML = `<div class="text-[11px] text-slate-500">✓ Nothing outstanding — scoped, judged and catalogued.</div>`;
+    box.innerHTML = `<div class="text-[11px] text-slate-500">✓ Nothing outstanding — scoped, judged and cataloged.</div>`;
     return;
   }
   box.innerHTML = (data.steps || []).map(st => {
@@ -11003,7 +11003,7 @@ async function _promoteInvestigation(slug) {
         <div class="text-emerald-300 font-semibold">Created in Egeria.</div>
         <div class="text-slate-300">Project <span class="font-mono">${_esc((r.project_guid || '').slice(0, 8))}</span>${r.resource_list_linked ? ' · working set linked' : ''} · ${linked} member(s) attached.</div>
         ${cLine}
-        ${missedNow ? `<div class="text-slate-400">${missedNow} member(s) have no Egeria asset yet. They now inherit this Project, so they can be catalogued: <span class="text-cyan-300">Admin → Egeria Alignment → "Repos with no Egeria asset that can be catalogued"</span>, then re-scan and relink.</div>` : ''}
+        ${missedNow ? `<div class="text-slate-400">${missedNow} member(s) have no Egeria asset yet. They now inherit this Project, so they can be cataloged: <span class="text-cyan-300">Admin → Egeria Alignment → "Repos with no Egeria asset that can be cataloged"</span>, then re-scan and relink.</div>` : ''}
       </div>`;
     }
   } catch (e) {
@@ -12445,7 +12445,7 @@ async function _publishScopedSteps(slug, steps, btn, label, surveyDefinitionRef 
 // later shows what's already catalogued without disturbing it. ──────────
 
 let _subResFindings = [];      // last-loaded findings, cached for client-side sort/filter
-let _subResCataloged = {};     // locator -> sub_resources row, for "already catalogued" state
+let _subResCataloged = {};     // locator -> sub_resources row, for "already cataloged" state
 let _subResSortKey = null;
 let _subResSortDir = 1;
 let _subResFilterText = '';
@@ -12586,12 +12586,12 @@ function _renderAnalysisSubResourcesView(slug) {
     const catalogedBadge = cataloged
       ? (cataloged.egeria_guid
           ? '<span class="text-cyan-400" title="Published to Egeria">☁ Published</span>'
-          : '<span class="text-slate-400" title="Tracked locally only">🗂 Catalogued</span>')
+          : '<span class="text-slate-400" title="Tracked locally only">🗂 Cataloged</span>')
       : '';
     return `<tr class="border-b border-slate-800 ${f.label !== 'worthy' ? 'opacity-60' : ''}">
       <td class="px-3 py-2">
         ${cataloged
-          ? `<input type="checkbox" disabled checked title="Already catalogued — uncatalog first to re-select">`
+          ? `<input type="checkbox" disabled checked title="Already cataloged — uncatalog first to re-select">`
           : `<input type="checkbox" id="subres-${idx}" data-locator="${_esc(locator)}" data-kind="${_esc(f.kind)}" ${checkedDefault ? 'checked' : ''}>`}
       </td>
       <td class="px-3 py-2 font-mono text-xs text-slate-200 truncate">${_esc(locator) || '(root)'}</td>
@@ -12610,7 +12610,7 @@ function _renderAnalysisSubResourcesView(slug) {
         <h2 class="text-sm font-semibold text-slate-200">Sub-Resources: ${_esc(slug)}</h2>
         <p class="text-xs text-slate-500 mt-1">Review the recommendation list, select which folders/files are worth
           tracking as their own Egeria assets, then catalog the selection. Repeatable — come back anytime with more
-          information and add to what's already catalogued.</p>
+          information and add to what's already cataloged.</p>
       </div>
 
       <div class="flex items-center gap-2 flex-wrap">
@@ -12810,8 +12810,8 @@ async function _submitSubResourceCatalog(slug, btn) {
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     const publishedCount = Object.keys(data.published || {}).length;
     const msg = publishToEgeria
-      ? `Catalogued ${data.cataloged.length} sub-resource(s), published ${publishedCount} to Egeria.`
-      : `Catalogued ${data.cataloged.length} sub-resource(s) locally.`;
+      ? `Cataloged ${data.cataloged.length} sub-resource(s), published ${publishedCount} to Egeria.`
+      : `Cataloged ${data.cataloged.length} sub-resource(s) locally.`;
     showToast('success', msg, 5000);
     if (fb) fb.innerHTML = `<span class="text-emerald-400">✓ ${_esc(msg)}</span>`;
     loadAnalysisSubResourcesView();
@@ -13315,8 +13315,8 @@ function renderDbSurveyReport(db, surveys) {
   // database's Curate pane in /next is the publish, with a manifest of what it does and a
   // proof row behind every state it shows. Nothing here claims a state either way.
   const publishBtn = `<span class="text-xs text-slate-400 whitespace-nowrap"
-    title="Publishing a database is now the Catalogue button on its Curate pane in /next, which shows what it will do and what Egeria holds afterwards.">
-    Publish: Curate → Catalogue in /next</span>`;
+    title="Publishing a database is now the Catalog button on its Curate pane in /next, which shows what it will do and what Egeria holds afterwards.">
+    Publish: Curate → Catalog in /next</span>`;
 
   // Header
   let html = `
@@ -17677,10 +17677,10 @@ async function _applyResync() {
         + 'documents, then reconciles their step links. This writes to the catalog '
         + 'and can take a few minutes — leave the page open.' : '',
     steps.includes('catalog_assets')
-      ? 'CREATES AN ASSET IN EGERIA for each uncatalogued repo, publishing only the '
+      ? 'CREATES AN ASSET IN EGERIA for each uncataloged repo, publishing only the '
         + 'repository-health step. No repository archives are downloaded.' : '',
     steps.includes('republish_survey_results')
-      ? 'Runs the FULL survey for each catalogued repo and publishes the results to '
+      ? 'Runs the FULL survey for each cataloged repo and publishes the results to '
         + 'Egeria. This DOWNLOADS REPOSITORY ARCHIVES — across a large corpus expect '
         + 'minutes and real GitHub API budget. Leave the page open.' : '',
     steps.includes('relink_investigation_members')

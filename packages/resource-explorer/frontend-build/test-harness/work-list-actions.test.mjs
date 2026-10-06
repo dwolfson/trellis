@@ -89,6 +89,11 @@ function stubBackend() {
       const inv = INVESTIGATIONS.find((i) => i.slug === body.investigation);
       return ok({ investigation: body.investigation, investigation_name: inv.display_name, added, already_in_scope: already });
     }
+    m = u.match(/^\/api\/work-lists\/([^/?]+)\/publish$/);
+    if (m && method === 'POST') {
+      WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
+      return ok({ type_name: 'WorkList', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 2, members_without_an_egeria_asset: [] });
+    }
     m = u.match(/^\/api\/work-lists\/([^/?]+)\/investigation$/);
     if (m && method === 'PUT') {
       WORK_LISTS.find((w) => w.slug === m[1]).investigation = body.investigation;
@@ -383,4 +388,15 @@ test('no "working set" label, no new glyph file entry, no delete wording', async
   assert.doesNotMatch(src, /delete/i);
   const { document } = await setUp({ investigation: 'c360', open: 'sales-databases' });
   assert.doesNotMatch(document.body.textContent, /working set/i);
+});
+
+
+test('the work list send reads "Publish to Egeria", then "Publish again"; the line says sent until the re-read proves it, then published', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  assert.equal(act(document, 'publish').textContent.trim(), 'Publish to Egeria');
+  act(document, 'publish').click();
+  await tick(250);
+  assert.match(note(document), /^published · read back \d\d:\d\d/);
+  assert.equal(act(document, 'publish').textContent.trim(), 'Publish again');
+  assert.doesNotMatch(text(document.getElementById('wl-actions')), /re-publish|\bpublish to Egeria/);
 });

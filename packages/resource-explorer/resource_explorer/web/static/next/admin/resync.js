@@ -58,7 +58,7 @@ const SCHEDULE_INTERVAL_TEXT = 'every ~600s';
 const BLAST_RADIUS = {
   clear_stale_assets: (n) =>
     `Clears the local "has an Egeria asset" pointer on ${n} record(s) whose asset no `
-    + `longer resolves in Egeria. Local only — writes nothing to Egeria, and re-cataloguing `
+    + `longer resolves in Egeria. Local only — writes nothing to Egeria, and re-cataloging `
     + `later restores the pointer. Reversible.`,
   clear_orphan_publish_claims: (n) =>
     `Clears ${n} local publish-claim record(s) that point at a survey report Egeria no `
