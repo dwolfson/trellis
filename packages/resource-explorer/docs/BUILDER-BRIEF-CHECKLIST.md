@@ -8,3 +8,5 @@ Put these in every brief handed to a builder session.
 - Never set `RE_TESTS_ALLOW_SHARED_REGISTRY`.
 
 See `docs/design-notes/implemented/TEST-SHARED-REGISTRY-GUARD-IMPLEMENTED.md`.
+- Live Egeria tiers are opt-in. A default pytest run never contacts Egeria. Reads: `--live-egeria-reads` (or `RE_LIVE_EGERIA_READS=1`) after a peer round. Writes: `--live-egeria-writes` AND `RE_LIVE_EGERIA_WRITES_CLEARED=<who>/<UTC time>` (non-empty); the flag alone skips the tier. Never in CI.
+- Another session's done is a statement about itself, never a clearance from the others; the peer round is a question to every live peer, and the answer set is what goes in the variable.

@@ -47,6 +47,8 @@ All imports use `from resource_explorer.X import Y`. The package was ported from
 
 A worktree has no .env; RE defaults its registry to the shared Postgres. Set REGISTRY_DATABASE_URL to a temp SQLite file before any command or test that opens the registry; the guard will fail you otherwise.
 
+Live Egeria tests are opt-in: a default run never contacts Egeria. Reads need `--live-egeria-reads` (or `RE_LIVE_EGERIA_READS=1`) after a peer round; writes also need `--live-egeria-writes` AND a non-empty `RE_LIVE_EGERIA_WRITES_CLEARED=<who>/<UTC time>` (the flag alone skips the tier). Another session's done is a statement about itself, never a clearance from the others; the peer round is a question to every live peer, and the answer set is what goes in the variable.
+
 ```bash
 uv sync
 uv sync --extra dev --extra phoenix

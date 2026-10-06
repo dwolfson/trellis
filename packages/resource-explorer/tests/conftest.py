@@ -25,7 +25,7 @@ import pytest
 # Installed at import, before any probe below opens a connection, at the
 # SQLAlchemy/psycopg2 connect choke point so a cached config cannot defeat it.
 # Opt-in for a deliberate run: RE_TESTS_ALLOW_SHARED_REGISTRY=1.
-from tests import shared_registry_guard
+from tests import live_egeria_tier, shared_registry_guard
 
 shared_registry_guard.install()
 
@@ -134,7 +134,15 @@ def _egeria_reachable() -> bool:
         return False
 
 
-_EGERIA_AVAILABLE = _egeria_reachable()
+#: Probed lazily and only when a live tier was opted into (see
+#: tests/live_egeria_tier.py): a default run must not contact the platform.
+_egeria_probe_cache: list[bool] = []
+
+
+def _egeria_available() -> bool:
+    if not _egeria_probe_cache:
+        _egeria_probe_cache.append(_egeria_reachable())
+    return _egeria_probe_cache[0]
 
 
 @pytest.fixture
@@ -207,14 +215,42 @@ def pytest_addoption(parser):
              "session can turn them red in files nobody touched)",
     )
     parser.addoption(
+        "--live-egeria-reads", action="store_true", default=False,
+        help="run the live READ tier (requires_egeria / live_egeria) against "
+             "the shared dev Egeria platform (or set RE_LIVE_EGERIA_READS=1). "
+             "Skipped by default even when Egeria is reachable; run it after "
+             "a peer round. Never runs in CI.",
+    )
+    parser.addoption(
         "--live-egeria-writes", action="store_true", default=False,
-        help="run tests marked live_egeria_writes, which perform real "
+        help="ALSO needs RE_LIVE_EGERIA_WRITES_CLEARED=<who>/<UTC time> "
+             "naming the peer round, else the tier is skipped. Implies reads. "
+             "run tests marked live_egeria_writes, which perform real "
              "catalogue/delete writes against the shared dev Egeria platform "
              "(skipped by default even when Egeria is reachable — this is a "
              "bigger commitment than requires_egeria's read-only reachability "
              "check, and needs live-peer coordination before every run; see "
              "tests/live_egeria_write_fixtures.py)",
     )
+
+
+def pytest_report_header(config):
+    """One line naming the live Egeria tier when it is ON: URL and user id only."""
+    decision = getattr(config, "_live_egeria_decision", None)
+    if decision is None:   # header prints before collection: decide now, same inputs
+        decision = live_egeria_tier.decide(
+            os.environ,
+            reads_flag=config.getoption("--live-egeria-reads"),
+            writes_flag=config.getoption("--live-egeria-writes"),
+            reachable=_egeria_available,
+        )
+        config._live_egeria_decision = decision
+    if not decision.reads_on:
+        return None
+    from resource_explorer.config import get_config
+
+    cfg = get_config().egeria
+    return live_egeria_tier.banner(decision, cfg.platform_url, cfg.user_id)
 
 
 def pytest_configure(config):
@@ -225,9 +261,11 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "requires_egeria: needs a live reachable Egeria platform "
-        "(auto-skipped when one isn't available). Read-only-safe: this only "
-        "certifies reachability, never that the test writes anything. A test "
+        "requires_egeria: the live READ tier. OPT-IN since 2026-10-05: skipped "
+        "by default even when Egeria is reachable; run with --live-egeria-reads "
+        "(or RE_LIVE_EGERIA_READS=1) after a peer round. Never runs in CI. "
+        "Also skipped when the platform is unreachable. Read-only-safe: this "
+        "only certifies reachability, never that the test writes anything. A test "
         "that writes to dev Egeria — even throwaway writes — must additionally "
         "carry live_egeria_writes below; requires_egeria alone is not enough "
         "of a gate for that.",
@@ -241,8 +279,12 @@ def pytest_configure(config):
         "markers",
         "live_egeria_writes: performs REAL writes (catalogue, then delete) "
         "against the shared dev Egeria platform. Skipped by default even when "
-        "Egeria is reachable — pass --live-egeria-writes to opt in, and get "
-        "live-peer coordination first (see tests/live_egeria_write_fixtures.py "
+        "Egeria is reachable — needs --live-egeria-writes AND "
+        "RE_LIVE_EGERIA_WRITES_CLEARED=<who>/<UTC time> (non-empty; the flag "
+        "alone skips the tier) naming the peer round: another session's done "
+        "is a statement about itself, never a clearance from the others; the "
+        "peer round is a question to every live peer, and the answer set is "
+        "what goes in the variable. Get live-peer coordination first (see tests/live_egeria_write_fixtures.py "
         "and the coordinate-shared-writes skill). Deliberately separate from, "
         "and stricter than, requires_egeria — see that marker's own docstring.",
     )
@@ -318,22 +360,22 @@ def pytest_collection_modifyitems(config, items):
     run_corpus = config.getoption("--corpus")
 
     skip_pgvector = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
-    skip_egeria = pytest.mark.skip(reason="Egeria platform not reachable at the configured platform_url")
-
-    run_live_egeria_writes = config.getoption("--live-egeria-writes")
-    skip_live_writes = pytest.mark.skip(
-        reason="performs real writes against shared dev Egeria — needs both a "
-               "reachable platform AND --live-egeria-writes (plus live-peer "
-               "coordination before you pass that flag); requires_egeria's "
-               "reachability check alone is not enough of a gate for a "
-               "write-capable test"
+    decision = live_egeria_tier.decide(
+        os.environ,
+        reads_flag=config.getoption("--live-egeria-reads"),
+        writes_flag=config.getoption("--live-egeria-writes"),
+        reachable=_egeria_available,
     )
-    should_skip_live_writes = _live_egeria_writes_should_skip(_EGERIA_AVAILABLE, run_live_egeria_writes)
+    config._live_egeria_decision = decision
+    skip_egeria = pytest.mark.skip(reason=decision.read_skip_reason or "")
+    skip_live_writes = pytest.mark.skip(reason=decision.write_skip_reason or "")
+    should_skip_live_writes = _live_egeria_writes_should_skip(decision.reads_on, decision.writes_on)
 
     for item in items:
         if not _PGVECTOR_AVAILABLE and "requires_pgvector" in item.keywords:
             item.add_marker(skip_pgvector)
-        if not _EGERIA_AVAILABLE and "requires_egeria" in item.keywords:
+        if not decision.reads_on and (
+                "requires_egeria" in item.keywords or "live_egeria" in item.keywords):
             item.add_marker(skip_egeria)
         if not run_corpus and "corpus" in item.keywords:
             item.add_marker(skip_corpus)
