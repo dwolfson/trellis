@@ -173,9 +173,58 @@ def check(params: Mapping[str, Any], *, strict: bool, test: str | None = None) -
     )
 
 
+# --- vector store (PGVECTOR_SCHEMA) -------------------------------------------
+
+VECTOR_SCHEMA_ENV = "PGVECTOR_SCHEMA"
+
+
+def shared_vector_schema() -> str:
+    """The shared vector-store schema name, from PgVectorConfig's declared default."""
+    from resource_explorer.config import PgVectorConfig
+
+    return str(PgVectorConfig.model_fields["schema_name"].default)
+
+
+def check_vector_schema(schema: str | None, *, test: str | None = None) -> None:
+    """Refuse a PgVectorStore built on the shared (default) schema.
+
+    The raw-psycopg2 allowance in `check` cannot see this: the vector store
+    qualifies its tables by schema NAME, so a store built with the default
+    schema reads and writes the shared `resource_explorer` schema over a
+    connection with no search_path. Closed here, at the store's construction
+    (which does not connect), so the refusal happens before any connect.
+    Any other schema name is a test's own override and is left alone.
+    """
+    if _truthy(os.environ.get(ALLOW_ENV)):
+        return
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        return
+    if (schema or "") != shared_vector_schema():
+        return
+    test = test or os.environ.get("PYTEST_CURRENT_TEST") or "<collection / session setup>"
+    raise SharedRegistryAccessError(
+        f"REFUSED before connecting: test {test} built a PgVectorStore on the "
+        f"SHARED vector-store schema {schema!r} (the {VECTOR_SCHEMA_ENV} default). "
+        f"The suite's autouse fixture `isolate_pgvector_schema` sets "
+        f"{VECTOR_SCHEMA_ENV} to a per-test scratch schema "
+        f"({TEST_SCHEMA_PREFIX}_*), so something overrode it back to the real "
+        f"one: an explicit schema={schema!r} argument, or {VECTOR_SCHEMA_ENV} set "
+        f"to it. Use the pg_store fixture, or pass a schema named "
+        f"{TEST_SCHEMA_PREFIX}_*. To deliberately run against the shared schema "
+        f"set {ALLOW_ENV}=1 (nobody does by default; coordinate with live peers "
+        f"first)."
+    )
+
+
 # --- installation -----------------------------------------------------------
 
-_state: dict[str, Any] = {"installed": False, "real_psycopg2_connect": None}
+_state: dict[str, Any] = {
+    "installed": False,
+    "real_psycopg2_connect": None,
+    # Schemas of PgVectorStore instances built under the test prefix, so the
+    # per-test scratch schema is dropped only if a test actually used it.
+    "vector_schemas_built": set(),
+}
 
 
 def _do_connect_listener(dialect, conn_rec, cargs, cparams):  # noqa: ARG001
@@ -203,6 +252,18 @@ def install() -> None:
 
         guarded_connect.__wrapped__ = _state["real_psycopg2_connect"]  # type: ignore[attr-defined]
         psycopg2.connect = guarded_connect
+    from resource_explorer.vector_store_pg import PgVectorStore
+
+    real_init = PgVectorStore.__init__
+
+    def guarded_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)   # builds config only; never connects
+        schema = self._config.schema
+        check_vector_schema(schema)
+        _state["vector_schemas_built"].add(schema)
+
+    guarded_init.__wrapped__ = real_init  # type: ignore[attr-defined]
+    PgVectorStore.__init__ = guarded_init  # type: ignore[method-assign]
     _state["installed"] = True
 
 

@@ -84,6 +84,36 @@ guard did not apply because it was a command, not a test.
 Known limit, unchanged: the guard only protects pytest. A non-test command in a
 worktree is only made visible (the `registry:` line), not blocked.
 
+## Addendum 2026-10-05: PGVECTOR schema gap closed
+
+The "known gap" above (a raw connection that writes the real schema by qualified
+name) is closed for the one case that mattered: a `PgVectorStore` built on the
+DEFAULT (shared) schema.
+
+Audit table row: PGVECTOR_* raw psycopg2 vector store, default schema
+`resource_explorer` -> COVERED.
+
+- `tests/shared_registry_guard.py`: `install()` wraps `PgVectorStore.__init__`
+  (construction only builds config, never connects) and `check_vector_schema`
+  raises `SharedRegistryAccessError` naming `PGVECTOR_SCHEMA` and the test when
+  the resolved schema equals `PgVectorConfig`'s declared default. An explicit
+  `schema="resource_explorer"` is refused the same way. Any other name is a
+  test's own override and is left alone. `RE_TESTS_ALLOW_SHARED_REGISTRY=1` and
+  `GITHUB_ACTIONS=true` exempt it, as for the connect guard.
+- `tests/conftest.py`: autouse `isolate_pgvector_schema` sets `PGVECTOR_SCHEMA`
+  to `resource_explorer_test_<pid>_v<n>` per test. It is lazy: the env var
+  connects to nothing; the store creates the schema itself on connect, and the
+  fixture drops it at teardown only if a store was actually built on it and
+  pgvector is reachable. The orphan sweeper now also recognises `<pid>_v<n>`.
+- The raw-psycopg2 allowance for the setup connection (`pg_test_schema`) stays.
+- Tests: `tests/test_shared_registry_guard.py` (FAKE connect only; refusal,
+  explicit arg, scratch name, own override, opt-in/CI exemptions).
+
+Not run by the builder (pgvector unreachable, PGVECTOR_PORT=1): per-test scratch
+schema creation and DROP at teardown against a real Postgres, and a real default
+store connecting under the scratch schema. The full suite on a pgvector-reachable
+machine/CI verifies them.
+
 ## Addendum 2026-10-05 (2): the metrics leak, setting audit, isolation fixture
 
 PR/CI's full suite refused `test_integration_pgvector.py::TestEndToEndIntegration::test_ingest_then_query_returns_real_retrieved_content`:
