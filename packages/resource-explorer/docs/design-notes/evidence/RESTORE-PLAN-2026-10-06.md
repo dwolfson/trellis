@@ -70,3 +70,24 @@ schemas. Unclear how without re-running the template create; weaker.
 ## Not decided
 
 Whether to restore at all or to roll forward. The project owner decides, with the Egeria lead's answers.
+
+## Added after the project owner's message (2026-10-06)
+
+- **Possible regression.** The project owner says some of this is a regression in Egeria's behaviour that the
+  Egeria lead will look at tomorrow. Consistent with the source: a comment above the anchor check says
+  archiving is supported only on the anchor entity, yet the check cannot fire. Whether it ever worked, and
+  since which build, is for her to say. Rehearsal 2's clean archive is a data point (cause not established).
+  If it is a regression, the restore plan may be superseded by a fixed build, so nothing here should run
+  before her answer.
+- **Nested anchors for cataloguing (each layer an anchor).** Under consideration; pros and cons as seen from
+  RE's side, not decided:
+  - Pro: an archive or delete of a schema, table or column would walk only its own subtree, which removes
+    the cross-schema cascade that caused this incident.
+  - Pro: a schema could be retired on its own without hiding the database.
+  - Con: RE's live-proven shapes (all elements anchored to the DATABASE) and its leave-out order, proofs and
+    read-back all assume that; each would need rework and re-proof.
+  - Con: existing elements are anchored to the database already; changing anchors probably means
+    re-creating them, which is the same name-collision problem as this restore.
+  - Con: anchors also decide visibility and delete cascade for everything under them, so a table anchored
+    on its own schema changes what a database-level delete reaches. Behaviour of the template create and
+    the JDBC cataloguer with nested anchors is not known; they would need a throwaway trial.
