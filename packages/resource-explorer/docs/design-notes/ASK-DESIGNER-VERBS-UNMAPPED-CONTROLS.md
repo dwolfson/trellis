@@ -62,6 +62,16 @@ your word for each, or "keep", so that no page carries a verb nobody ruled.
    not read as a publish to somewhere?
 6. Anything in Automate's schedule and subscription controls that your rule
    should reach.
+7. **The per-row choice words on the Curate scope table.** A press on a
+   schema row's "catalogue" or "leave out" records a choice in Resource
+   Explorer's record and writes nothing to Egeria until the commit button is
+   pressed. At the gate today (2026-10-06) the owner read "catalogue" on a row
+   as the write itself. The slice adds a result line after each press ("saved
+   in Resource Explorer · who · when · not yet cataloged in Egeria") with the
+   choice words unchanged, since your reply keeps choices in their own words.
+   Should the row verbs change so they cannot read as the write ("Choose to
+   catalog" / "Choose to leave out", or a checkbox column headed "Catalog?"),
+   or does the result line carry it?
 
 ## Constraints
 
