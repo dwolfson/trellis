@@ -480,7 +480,9 @@ class Curations:
                 (entity_type, slug)).fetchall()
         return [self._decode(r) for r in rows]
 
-    def set_step(self, cid: str, name: str, state: str, detail: str = "") -> None:
+    def set_step(self, cid: str, name: str, state: str, detail: str = "", more: str = "") -> None:
+        """Record a step's state. `more` is the long tail of Egeria's own message, kept apart so
+        the screen can show the first sentence and fold the rest under "details"."""
         cur = self.get(cid)
         if not cur:
             return
@@ -488,9 +490,31 @@ class Curations:
         for s in steps:
             if s["name"] == name:
                 s.update({"state": state, "detail": detail[:2000], "at": _now()})
+                if more:
+                    s["more"] = more[:4000]
+                else:
+                    s.pop("more", None)
         with self._conn() as conn:
             conn.execute("UPDATE resource_curation SET steps = ?, state = 'running' WHERE id = ?",
                          (json.dumps(steps), cid))
+
+    def settle_step(self, cid: str, name: str, state: str, detail: str = "", more: str = "") -> None:
+        """Update one step of a record that may already be finished, WITHOUT reopening it:
+        `set_step` marks the record running, which is wrong for a later read-back that only
+        learns how an earlier step turned out."""
+        cur = self.get(cid)
+        if not cur:
+            return
+        steps = cur["steps"]
+        for s in steps:
+            if s["name"] == name:
+                s.update({"state": state, "detail": detail[:2000], "at": _now()})
+                if more:
+                    s["more"] = more[:4000]
+                else:
+                    s.pop("more", None)
+        with self._conn() as conn:
+            conn.execute("UPDATE resource_curation SET steps = ? WHERE id = ?", (json.dumps(steps), cid))
 
     def finish(self, cid: str) -> dict:
         cur = self.get(cid)

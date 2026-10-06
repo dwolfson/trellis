@@ -14,9 +14,15 @@ tables directly under the database whatever its lists say.
 Three mechanisms run, in this order, and the manifest names all three:
 
 1. RE publishes the server and database elements (description and version
-   supplied so no `~{...}~` placeholder remains), writes the publish
-   ZoneMembership on the database element BEFORE any target is attached (the
-   cataloguer's dependents copy it at creation), then Owner from Context.
+   supplied, the server's own description, so no `~{...}~` placeholder remains),
+   then Owner from Context. **RE writes no ZoneMembership unless the deployment
+   configured `EXPLORER_PUBLISH_ZONES`** (the rehearsal of 2026-10-05 found that a
+   zone written first locks the service identity, Egeria's survey engine and the
+   cataloguer out of the database element, and RE cannot undo it). With the setting
+   configured the zone is the LAST write, after the targets, the survey submission,
+   the refresh and the owner, is read back, and a refusal is reported in Egeria's
+   words and never retried. Without it the element's zones are Egeria's defaults,
+   shown as a read-back fact: "zones: <list> · set by Egeria".
 2. Egeria's cataloguer creates the schemas' tables and columns on its next
    refresh. RE attaches one schema-kind target per chosen schema (reading the
    targets first, never attaching twice).
@@ -42,15 +48,21 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from resource_explorer.catalogue_gateway import (
-    ARCHIVE, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
+    ARCHIVE, CATALOG_SCHEMA_ACTION_TYPE, FAILED_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
     schema_qualified_name, schema_type_qualified_name, server_name_for)
 from resource_explorer.catalogue_scope import CATALOGUE, LEAVE_OUT, current_schema_choice, md
 
 log = logging.getLogger(__name__)
+
+#: A seam for tests: how the attach waits for Egeria's own action to put the target in the list.
+_sleep = time.sleep
+CATALOG_POLLS = 4
+CATALOG_POLL_SECONDS = 2
 
 # ── words the screen uses (one place, so tests and the UI pin the same text) ──
 
@@ -60,6 +72,10 @@ SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
 CANT_CHECK = "couldn't check what hangs off it"
+IN_USE = "in use by a running survey · wait or cancel"
+#: An engine action's `activityStatus` that does NOT hold a schema: it finished, one way or the other.
+#: Anything else (REQUESTED, APPROVED, IN_PROGRESS, and any value never seen) holds it.
+FINISHED_ACTIVITY = frozenset({"COMPLETED", "FAILED"})
 OWNER_REFUSED = "owner set by Egeria's source · can't change from RE"
 NO_SCOPE_SENTENCE = "no scope declared · nothing catalogued"
 NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet catalogued in Egeria"
@@ -67,7 +83,9 @@ NOT_COMMITTED_HEADER = "Saved in Resource Explorer · not yet catalogued in Eger
 # ── proof kinds (rows in catalogue_commit_proofs) ────────────────────────────
 
 P_DATABASE = "database_published"
-P_ZONES = "zones_set"
+P_ZONES = "zones_set"                 # RE wrote a zone (only when EXPLORER_PUBLISH_ZONES is configured)
+P_ZONES_READ = "zones_read"           # what Egeria says the element's zones are, read back
+P_SURVEY_RESULT = "survey_result"     # a settled native survey: a report with annotations, or a failed action
 P_OWNER = "owner_result"
 P_REPORT = "report_published"
 P_TARGET = "target_attached"
@@ -84,8 +102,10 @@ P_READ_FAILED = "read_failed"
 STATE_PROOFS = (P_TARGET, P_ELEMENTS, P_REMOVED, P_ARCHIVED)
 
 #: The curation record's steps, in the manifest's order.
-STEPS_DB = ("publish_elements", "zone_membership", "owner", "schema_targets",
-            "leave_outs", "survey_report", "survey", "refresh", "read_back")
+#: `zone_membership` is LAST among the writes (and absent unless zones are configured): a zone
+#: written earlier locks the identity out of the element for every step that follows.
+STEPS_DB = ("publish_elements", "owner", "schema_targets", "leave_outs", "survey_report",
+            "survey", "refresh", "zone_membership", "read_back")
 
 KIND_ATTACH = "catalogue_schema_attach"
 KIND_LEAVE_OUT = "catalogue_schema_leave_out"
@@ -100,6 +120,9 @@ STRUCTURAL_RELATIONSHIPS = frozenset({
     "NestedSchemaAttribute", "SchemaTypeOption", "LinkedType", "Anchors",
     "ConnectionToAsset", "ServerAssetUse", "AssetConnection", "ReportSubject",
     "TemplateSource", "SourcedFrom", "ResourceList",
+    # An engine action that targets a schema is Egeria's own machinery (the survey), never
+    # something a person attached (architect, 2026-10-05). It never makes a leave-out an archive.
+    "ActionTarget",
 })
 
 HANGS_OFF_WORDS = {
@@ -231,7 +254,39 @@ def read_hangs_off(gateway: CatalogueGateway, db_entity, schema: str) -> dict:
         return {"state": "cannot_check", "error": str(exc)}
     h = classify_hangs_off(rels)
     return {"state": "read", "form": ARCHIVE if h["total"] else SOFT_DELETE, "hangs_off": h,
-            "element_guid": el.guid, "checked": 1 + len(under)}
+            "element_guid": el.guid, "checked": 1 + len(under), "in_use": running_actions(rels)}
+
+
+def running_actions(rels_per_element: list[list]) -> list[dict]:
+    """Engine actions still holding the schema, from their `ActionTarget` relationships' own
+    `activityStatus`. `ActionTarget` stays structural for archive-versus-delete; this is the other
+    question: deleting under a running action is what ISSUE-90 loops on."""
+    out = []
+    for rels in rels_per_element:
+        for r in rels:
+            if r.type_name != "ActionTarget" or (r.activity_status or "") in FINISHED_ACTIVITY:
+                continue
+            out.append({"status": r.activity_status or "no status stated", "action_guid": r.other_guid,
+                        "completion_time": r.completion_time, "message": r.completion_message})
+    return out
+
+
+def _ms_stamp(ms: str) -> str:
+    """Epoch milliseconds (a string, as the raw relationship carries it) as `10-05 17:00`."""
+    try:
+        return _stamp(datetime.fromtimestamp(int(ms) / 1000, timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return str(ms)
+
+
+def in_use_text(schema: str, in_use: list[dict]) -> str:
+    first = in_use[0]
+    bits = [f"{schema}: {IN_USE}", " / ".join(sorted({a["status"] for a in in_use}))]
+    if first.get("completion_time"):
+        bits.append(f"completionTime {_ms_stamp(first['completion_time'])}")
+    if first.get("message"):
+        bits.append(egeria_first_sentence(first["message"])[0])
+    return " · ".join(bits)
 
 
 # ── deriving every state word from proof rows ────────────────────────────────
@@ -264,6 +319,34 @@ def _egeria_word(text: str) -> str:
     return re.sub(r"^\w+(Error|Exception): ", "", str(text or "")).strip() or "no reason recorded"
 
 
+def egeria_first_sentence(text: str) -> tuple[str, str]:
+    """(the first sentence of Egeria's message, the rest).
+
+    Egeria's errors arrive as a sentence followed by a `* Context: * class name=...` block (and
+    sometimes a leading `=>`). The screen shows the sentence and folds the rest under "details".
+    A message with no second part returns `(message, "")`."""
+    t = " ".join(_egeria_word(text).split())
+    t = re.sub(r"^(=>\s*)+", "", t)
+    bullet = t.find(" * ")
+    m = re.search(r"(?<=[.!?])\s+", t)
+    if m and (bullet < 0 or m.start() <= bullet):
+        cut, skip = m.start(), m.end()
+    elif bullet >= 0:
+        cut, skip = bullet, bullet + 1
+    else:
+        return t, ""
+    return t[:cut].strip(), t[skip:].strip()
+
+
+def _failed_state(ob: dict, second: str) -> dict:
+    first, rest = egeria_first_sentence(ob.get("last_error"))
+    out = {"state": "failed", "words": f"failed · {first}", "second": second,
+           "proof": {"kind": "outbox", "outbox_id": ob["id"], "status": ob.get("status")}}
+    if rest:
+        out["details"] = rest
+    return out
+
+
 def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, connector: dict | None) -> dict:
     """One schema's state, from its proof rows and its newest outbox row."""
     step = ""
@@ -275,13 +358,9 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
                     "second": f"step: {step}",
                     "proof": {"kind": "outbox", "outbox_id": ob["id"], "status": status}}
         if status == "failed":
-            return {"state": "failed", "words": f"failed · {_egeria_word(ob.get('last_error'))}",
-                    "second": f"step: {step} · outbox #{ob['id']} · will retry",
-                    "proof": {"kind": "outbox", "outbox_id": ob["id"], "status": status}}
+            return _failed_state(ob, f"step: {step} · outbox #{ob['id']} · will retry")
         if status == "dead":
-            return {"state": "failed", "words": f"failed · {_egeria_word(ob.get('last_error'))}",
-                    "second": f"step: {step} · outbox #{ob['id']} · gave up after {ob.get('attempts')} attempts",
-                    "proof": {"kind": "outbox", "outbox_id": ob["id"], "status": status}}
+            return _failed_state(ob, f"step: {step} · outbox #{ob['id']} · gave up after {ob.get('attempts')} attempts")
     last = _latest(rows, STATE_PROOFS)
     had_elements = _latest(rows, (P_ELEMENTS,)) is not None
     detached = _latest(rows, (P_DETACHED,)) is not None
@@ -349,6 +428,7 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     conn_d = ({"last_refresh_time": connector["detail"].get("last_refresh_time", ""),
                "read_at": connector["read_at"]} if connector else None)
     failed_read = _latest(db_rows, (P_READ_FAILED,))
+    zones_text = _zones_text(_latest(db_rows, (P_ZONES,)), _latest(db_rows, (P_ZONES_READ,)))
 
     schemas: dict[str, dict] = {}
     tables: dict[str, dict] = {}
@@ -389,14 +469,32 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
         if s.get("effective") == CATALOGUE:
             k = schemas[s["name"]]["state"]
             counts[k] = counts.get(k, 0) + 1
-    header = _header(published, counts, conn_d, failed_read, view, bool(proofs or ob_by_schema))
+    header = _header(published, counts, conn_d, failed_read, view, bool(proofs or ob_by_schema), zones_text)
+    zr = _latest(db_rows, (P_ZONES_READ,))
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
-                          "at": published["read_at"], "owner": (_latest(db_rows, (P_OWNER,)) or {}).get("detail")}
+                          "at": published["read_at"], "owner": (_latest(db_rows, (P_OWNER,)) or {}).get("detail"),
+                          "zones": list((zr or {}).get("detail", {}).get("zones") or []),
+                          "zones_text": zones_text}
                          if published else None)}
 
 
-def _header(published, counts, conn_d, failed_read, view, anything: bool) -> dict:
+def _zones_text(written: dict | None, read: dict | None) -> str:
+    """The element's zones as a read-back FACT. No ZoneMembership on the element reads "zones: none ·
+    everyone visible" (what the 2026-10-05 read-back found on every element it created); a zone
+    reads "zones: a, b · set by Egeria", or "set by RE" only when RE wrote a zone AND what Egeria
+    reports back is exactly what RE wrote. No read at all is "" (the header says "not read back")."""
+    if not read:
+        return ""
+    zones = list((read.get("detail") or {}).get("zones") or [])
+    if not zones:
+        return "zones: none · everyone visible"
+    mine = sorted((written or {}).get("detail", {}).get("zones") or [])
+    by = "RE (EXPLORER_PUBLISH_ZONES)" if mine and mine == sorted(zones) else "Egeria"
+    return f"zones: {', '.join(zones)} · set by {by}"
+
+
+def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_text: str = "") -> dict:
     """The state-derived marker line: never a constant (the owner's gate, item 6)."""
     if not anything:
         return {"state": "not_committed", "text": NOT_COMMITTED_HEADER}
@@ -406,6 +504,8 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool) -> dic
         parts.append(f"Database element {published['element_guid'][:8]} in Egeria · published {_stamp(published['read_at'])}")
     else:
         parts.append("Database element not read back from Egeria")
+    if published:
+        parts.append(zones_text or "zones: not read back")
     if n_cat:
         order = (("catalogued", "catalogued"), ("attached_waiting", "attached, waiting"),
                  ("queued", "queued"), ("failed", "failed"), ("uncommitted", "not committed yet"),
@@ -486,6 +586,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
             row.update(form="none", blocked=False, text=f"{name}: not in Egeria any more · nothing to remove")
         elif read["state"] == "cannot_check":
             row.update(form="cannot_check", blocked=True, text=f"{name}: {CANT_CHECK}", error=read["error"])
+        elif read.get("in_use"):
+            row.update(form="in_use", blocked=True, reason=IN_USE, in_use=read["in_use"],
+                       text=in_use_text(name, read["in_use"]))
         elif read["form"] == SOFT_DELETE:
             row.update(form=SOFT_DELETE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: nothing hangs off it · will be removed (soft-deleted) from Egeria"
@@ -508,16 +611,20 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     ok_names, comma_names = survey_schema_list(attach)
     ctx = registry.get_context("database", slug) or {}
     owner = ((ctx.get("enrichment") or {}).get("owner") or {}).get("value") or ""
-    from resource_explorer.egeria_identity import publish_zones
-    zones = publish_zones()
+    from resource_explorer.egeria_identity import configured_publish_zones
+    zones = configured_publish_zones()
     removes = [r for r in leave if r["form"] == SOFT_DELETE]
     archives = [r for r in leave if r["form"] == ARCHIVE]
     n_new = sum(1 for n in attach if states.get(n, {}).get("state") not in ("catalogued", "attached_waiting", "queued"))
     lines = [
         {"id": "re_publishes", "mechanism": 1,
          "text": ("RE publishes the server and database assets and RE's own survey report, supplying the database "
-                  "description and version, and joins the deployment's publish zones: "
-                  f"{', '.join(zones)}. That is written before any target is attached. "
+                  "description and version and the server's own description and version. "
+                  + (f"The deployment configured publish zones ({', '.join(zones)}): joining them is RE's LAST write, "
+                     "after the targets, the survey and the owner, read back, and a refusal is reported in Egeria's "
+                     "words, not retried (unverified for a second commit). "
+                     if zones else
+                     "RE writes no ZoneMembership: zones left to Egeria (EXPLORER_PUBLISH_ZONES is not configured). ")
                   + (f"Owner from Context: {owner}." if owner else "Not carried: owner, not declared on Context."))},
         {"id": "cataloguer_creates", "mechanism": 2,
          "text": (f"Egeria's cataloguer creates tables and columns for {len(attach)} schema target"
@@ -532,7 +639,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     held: dict[str, list[str]] = {}
     for r in leave:
         if r.get("blocked"):
-            held.setdefault(CANT_CHECK, []).append(r["schema"])
+            held.setdefault(r.get("reason", CANT_CHECK), []).append(r["schema"])
     for r in refused:
         held.setdefault(S19_SENTENCE, []).append(r["schema"])
     not_committed = [{"reason": why, "schemas": names} for why, names in held.items()]
@@ -564,7 +671,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         "collisions": collisions,
         "survey": {"schemas": ok_names, "not_scopable": comma_names, "line": SURVEY_LINE},
         "manifest": {"lines": lines, "not_committed": not_committed, "schema_targets": len(attach), "new_targets": n_new,
-                     "survey_schemas": ok_names, "zones": zones, "owner": owner,
+                     "survey_schemas": ok_names, "zones": zones, "zones_written": bool(zones), "owner": owner,
                      "whole_schemas_line": WHOLE_SCHEMAS_LINE},
         "tables_line": WHOLE_SCHEMAS_LINE,
     }
@@ -583,6 +690,22 @@ def _entity(registry, slug: str):
     if e is None:
         raise GatewayError(f"database {slug!r} is no longer registered")
     return e
+
+
+def gw_schema_placeholders(db_entity, schema: str) -> dict:
+    from resource_explorer.catalogue_gateway import schema_placeholders
+    return schema_placeholders(db_entity, schema)
+
+
+def _wait_for_target(gateway: CatalogueGateway, guid: str) -> list:
+    """Egeria's action attaches on its own side: look for the target a few times before concluding."""
+    for i in range(CATALOG_POLLS):
+        mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+        if mine:
+            return mine
+        if i + 1 < CATALOG_POLLS:
+            _sleep(CATALOG_POLL_SECONDS)
+    return []
 
 
 def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_id: int | None = None) -> str:
@@ -618,11 +741,31 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
                    detail={"schema_type_guid": orphan, "note": "adopted the existing schema type rather than create a second"})
     else:
         guid = el.guid
-    targets = gateway.list_catalog_targets()
-    mine = [t for t in targets if t.element_guid == guid]
+    mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+    mechanism, action_guid, fallback = "already_attached", "", ""
     if not mine:
-        gateway.add_catalog_target(guid, target_name(e, schema))
-        mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
+        # Prefer Egeria's own attach: its GovernanceActionType takes the EXISTING schema element as
+        # action target `newAsset`. Fall back to add_catalog_target only when that is refused or
+        # errors. Never both: a still-running action is an error to retry, not a reason to attach.
+        try:
+            action_guid = gateway.initiate_catalog_action(guid, gw_schema_placeholders(e, schema))
+        except GatewayError as exc:
+            fallback = egeria_first_sentence(str(exc))[0]
+        else:
+            mechanism = "action_type"
+            mine = _wait_for_target(gateway, guid)
+            if not mine:
+                st = gateway.engine_action_status(action_guid)
+                if st.status in FAILED_ACTION_STATUSES:
+                    fallback = egeria_first_sentence(st.message or f"the action ended {st.status}")[0]
+                else:
+                    raise GatewayError(
+                        f"Egeria's attach action {action_guid[:8]} is {st.status} but the target for {schema} is not "
+                        "in the cataloguer's list yet (still waiting; not attaching a second time)")
+        if not mine and fallback:
+            mechanism = "add_catalog_target"
+            gateway.add_catalog_target(guid, target_name(e, schema))
+            mine = [t for t in gateway.list_catalog_targets() if t.element_guid == guid]
         if not mine:
             raise GatewayError(f"the target for {schema} was added but is not in the cataloguer's list on read-back")
     status = None
@@ -633,7 +776,9 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     _proof(registry, slug, P_TARGET, schema=schema, element_guid=guid, target_guid=mine[0].relationship_guid,
            qualified_name=qn, curation_id=payload.get("curation_id", ""), outbox_id=outbox_id,
            recorded_by=payload.get("by", ""),
-           detail={"targets_for_schema": len(mine),
+           detail={"targets_for_schema": len(mine), "mechanism": mechanism,
+                   "action_type": CATALOG_SCHEMA_ACTION_TYPE if action_guid else "",
+                   "engine_action": action_guid, "fallback_reason": fallback,
                    "connector_last_refresh": status.last_refresh_time if status else "",
                    "connector_note": "the connector's last refresh, not this target's"})
     return guid
@@ -680,6 +825,8 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     read = read_hangs_off(gateway, e, schema)
     if read["state"] == "cannot_check":
         raise GatewayError(f"{schema}: {CANT_CHECK}: {read['error']}")
+    if read.get("in_use"):
+        raise GatewayError(in_use_text(schema, read["in_use"]))
     form = ARCHIVE if (payload.get("form") == ARCHIVE or read.get("form") == ARCHIVE) else SOFT_DELETE
     if form == ARCHIVE:
         gateway.delete_element(guid, ARCHIVE)
@@ -754,7 +901,91 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
                            "connector_note": "the connector's last refresh, not this target's"})
             summary["attached_waiting"] += 1
             summary["schemas"][schema] = "attached_waiting"
+    _read_database_facts(registry, gateway, slug, curation_id, summary)
     return summary
+
+
+def _read_database_facts(registry, gateway: CatalogueGateway, slug: str, curation_id: str, summary: dict) -> None:
+    """The database element's zones (a fact read back, whoever set them) and how its survey ended."""
+    published = _latest(_by_node(registry.list_catalogue_commit_proofs(slug)).get(("database", "", ""), []),
+                        (P_DATABASE,))
+    if published is None:
+        return
+    try:
+        zones: list[str] | None = list(gateway.read_zones(published["element_guid"]))
+    except GatewayError as exc:
+        _proof(registry, slug, P_READ_FAILED, node_kind="database", curation_id=curation_id,
+               detail={"error": str(exc), "what": "the database element's zones"})
+        summary["read_failed"] += 1
+        zones = None
+    if zones is not None:   # a read that failed is None; `[]` is a read that found no ZoneMembership
+        _proof(registry, slug, P_ZONES_READ, node_kind="database", element_guid=published["element_guid"],
+               curation_id=curation_id, detail={"zones": zones})
+    try:
+        summary["survey"] = settle_survey(registry, gateway, slug)
+    except GatewayError as exc:
+        _proof(registry, slug, P_READ_FAILED, node_kind="database", curation_id=curation_id,
+               detail={"error": str(exc), "what": "how the survey ended"})
+        summary["read_failed"] += 1
+
+
+
+
+def _submitted_words(submitted_at: str, names: list[str], bad: list[str], guid: str) -> str:
+    return (f"submitted · {_stamp(submitted_at)} · {SURVEY_LINE}: {', '.join(names)} · engine action {guid[:8]}"
+            + (f" · not scopable (comma): {', '.join(bad)}" if bad else ""))
+
+
+def settle_survey(registry, gateway: CatalogueGateway, slug: str) -> str:
+    """Read how the newest native survey turned out and say so on its curation step.
+
+    "done" only when the read-back shows the survey report WITH annotations; a failed engine
+    action reads Egeria's word; anything else stays "submitted" (with what was seen). Initiation
+    is never completion. Returns "" (no survey), "settled" (already final), "done", "failed" or
+    "submitted". Writes a proof row only for a final outcome, so a pending survey is read again."""
+    from resource_explorer.curate_plan import Curations
+    rows = registry.list_catalogue_commit_proofs(slug)
+    db_rows = _by_node(rows).get(("database", "", ""), [])
+    started = _latest(db_rows, (P_SURVEY,))
+    published = _latest(db_rows, (P_DATABASE,))
+    if started is None or published is None:
+        return ""
+    d = started["detail"]
+    action = d.get("engine_action") or started["element_guid"]
+    for r in db_rows:
+        if r["proof"] == P_SURVEY_RESULT and r["detail"].get("engine_action") == action:
+            return "settled"
+    cur = Curations(registry)
+    cid = started.get("curation_id") or ""
+    names = list(d.get("includeSchemaNames") or [])
+    bad = list(d.get("not_scopable") or [])
+    submitted_at = d.get("submitted_at") or started["read_at"]
+    out = gateway.survey_outcome(published["element_guid"], action, submitted_at)
+    status = (out.action_status or "").upper()
+    if status in FAILED_ACTION_STATUSES:
+        first, rest = egeria_first_sentence(out.message or f"the engine action ended {out.action_status}")
+        _proof(registry, slug, P_SURVEY_RESULT, node_kind="database", element_guid=out.report_guid, curation_id=cid,
+               detail={"outcome": "failed", "engine_action": action, "action_status": out.action_status,
+                       "message": out.message, "annotations": out.annotations})
+        if cid:
+            cur.settle_step(cid, "survey", "failed", f"Egeria's survey failed: {first}", more=rest)
+        return "failed"
+    if out.annotations:
+        _proof(registry, slug, P_SURVEY_RESULT, node_kind="database", element_guid=out.report_guid, curation_id=cid,
+               detail={"outcome": "annotated", "engine_action": action, "annotations": out.annotations,
+                       "action_status": out.action_status})
+        if cid:
+            cur.settle_step(cid, "survey", "done",
+                            f"done · report {out.report_guid[:8]} · {out.annotations} annotations · read back "
+                            f"{_stamp(_now())} · {SURVEY_LINE}: {', '.join(names)}")
+        return "done"
+    seen = (f" · read back {_stamp(_now())}: " + (f"report {out.report_guid[:8]} holds 0 annotations"
+                                                  if out.report_guid and out.annotations == 0
+                                                  else "no survey report seen yet")
+            + (f" · Egeria says {out.action_status}" if out.action_status else ""))
+    if cid:
+        cur.settle_step(cid, "survey", "submitted", _submitted_words(submitted_at, names, bad, action) + seen)
+    return "submitted"
 
 
 # ── the commit itself ────────────────────────────────────────────────────────
@@ -828,6 +1059,9 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
 
 
+_PAST = {"attach": "attached", "remove": "removed"}
+
+
 def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str) -> None:
     done = [r for r in rows if r["status"] == "done"]
     bad = [r for r in rows if r["status"] in ("failed", "dead")]
@@ -835,12 +1069,29 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str) -> 
     if not rows:
         cur.set_step(cid, step, "skipped", f"no schema to {what}")
         return
-    parts = [f"{len(done)} of {len(rows)} {what}d, each with its proof row"]
+    parts = [f"{len(done)} of {len(rows)} {_PAST.get(what, what + 'ed')}, each with its proof row"]
     if wait:
         parts.append(f"{len(wait)} queued in the outbox (#{', #'.join(str(r['id']) for r in wait)})")
+    more: list[str] = []
     for r in bad:
-        parts.append(f"{(r['payload'] or {}).get('schema')}: {r.get('last_error')}")
-    cur.set_step(cid, step, "done" if len(done) == len(rows) else "failed", " · ".join(parts))
+        first, rest = egeria_first_sentence(r.get("last_error"))
+        parts.append(f"{(r['payload'] or {}).get('schema')}: {first}")
+        if rest:
+            more.append(f"{(r['payload'] or {}).get('schema')}: {rest}")
+    cur.set_step(cid, step, "done" if len(done) == len(rows) else "failed", " · ".join(parts), more="\n".join(more))
+
+
+def _fail_step(cur, cid: str, step: str, exc: Exception | str, prefix: str = "") -> None:
+    """A failed step reads Egeria's first sentence; the rest goes under "details"."""
+    first, rest = egeria_first_sentence(str(exc) or type(exc).__name__)
+    cur.set_step(cid, step, "failed", f"{prefix}{first}"[:400], more=rest)
+
+
+def _try_status(gateway):
+    try:
+        return gateway.connector_status()
+    except Exception:
+        return None
 
 
 def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | None = None,
@@ -859,7 +1110,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     try:
         db = registry.get_database(slug)       # credentials may be needed: not allow_unreadable
     except Exception as exc:                   # e.g. the stored password cannot be decrypted
-        cur.set_step(curation_id, "publish_elements", "failed", f"{type(exc).__name__}: {exc}"[:400])
+        _fail_step(cur, curation_id, "publish_elements", exc)
         return cur.finish(curation_id)
     if db is None:
         cur.set_step(curation_id, "publish_elements", "failed", "database no longer registered")
@@ -886,55 +1137,36 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                qualified_name=pub.database_qualified_name, curation_id=curation_id, recorded_by=author,
                detail={"server_guid": pub.server_guid, "server_name": pub.server_name})
         cur.set_step(curation_id, "publish_elements", "done",
-                     f"server {pub.server_guid[:8]} · database {db_guid[:8]} · description and version supplied")
+                     f"server {pub.server_guid[:8]} · database {db_guid[:8]} · descriptions and versions supplied")
     except Exception as exc:
-        cur.set_step(curation_id, "publish_elements", "failed", f"{type(exc).__name__}: {exc}"[:400])
+        _fail_step(cur, curation_id, "publish_elements", exc)
 
-    # 1b ── ZoneMembership on the database element BEFORE any target
-    zones_ok = False
-    if not db_guid:
-        cur.set_step(curation_id, "zone_membership", "skipped", "no database element: the publish step did not produce one")
-    else:
-        from resource_explorer.egeria_identity import publish_zones
-        zones = publish_zones()
-        try:
-            zones_ok = bool(gateway.set_zone_membership(db_guid, zones))
-        except Exception as exc:
-            log.warning("catalogue commit %s: zone write raised: %s", curation_id, exc)
-            zones_ok = False
-        if zones_ok:
-            _proof(registry, slug, P_ZONES, node_kind="database", element_guid=db_guid,
-                   curation_id=curation_id, detail={"zones": zones})
-        cur.set_step(curation_id, "zone_membership", "done" if zones_ok else "failed",
-                     (f"ZoneMembership {', '.join(zones)} written before any target" if zones_ok else
-                      "Egeria did not accept the ZoneMembership: no target is attached, because the cataloguer's "
-                      "elements copy the database's zones at creation"))
-
-    # 1c ── owner, added after the database element is read back
+    # 1b ── owner, added after the database element is read back
     owner = (((registry.get_context("database", slug) or {}).get("enrichment") or {}).get("owner") or {}).get("value") or ""
     if not db_guid:
         cur.set_step(curation_id, "owner", "skipped", "no database element")
     elif not owner:
         cur.set_step(curation_id, "owner", "skipped", "not carried: owner, not declared on Context")
     else:
+        failed_text = ""
         try:
             outcome, detail = gateway.set_owner(db_guid, owner)
         except Exception as exc:
-            outcome, detail = "failed", f"{type(exc).__name__}: {exc}"[:300]
+            outcome, detail, failed_text = "failed", "", str(exc) or type(exc).__name__
         if outcome in ("set", "already", "refused"):
             _proof(registry, slug, P_OWNER, node_kind="database", element_guid=db_guid, curation_id=curation_id,
                    detail={"outcome": outcome, "owner": owner, "egeria_said": detail})
-        cur.set_step(curation_id, "owner", "failed" if outcome == "failed" else "done",
-                     OWNER_REFUSED if outcome == "refused" else f"{detail}")
+        if outcome == "failed":
+            _fail_step(cur, curation_id, "owner", failed_text)
+        else:
+            cur.set_step(curation_id, "owner", "done", OWNER_REFUSED if outcome == "refused" else f"{detail}")
 
     # 2 ── one schema-kind target per schema, through the outbox
     attach = list(sel.get("attach") or [])
     if not attach:
         cur.set_step(curation_id, "schema_targets", "skipped", "no schema to attach")
-    elif not db_guid or not zones_ok:
-        cur.set_step(curation_id, "schema_targets", "skipped",
-                     "needs the database element and its ZoneMembership first: " +
-                     ("no database element" if not db_guid else "the ZoneMembership was not written"))
+    elif not db_guid:
+        cur.set_step(curation_id, "schema_targets", "skipped", "needs the database element first: no database element")
     else:
         cur.set_step(curation_id, "schema_targets", "running")
         for schema in attach:
@@ -978,9 +1210,11 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             cur.set_step(curation_id, "survey_report", "done",
                          f"report {str(res.get('report_guid') or '?')[:8]} · {res.get('annotation_count')} annotations")
         except Exception as exc:
-            cur.set_step(curation_id, "survey_report", "failed", f"{type(exc).__name__}: {exc}"[:400])
+            _fail_step(cur, curation_id, "survey_report", exc)
 
-    # 4 ── Egeria's survey, limited to the chosen schemas by request parameter
+    # 4 ── Egeria's survey, limited to the chosen schemas by request parameter.
+    # Initiation is not completion: the step reads "submitted · <time>" and becomes "done" only
+    # when a read-back shows the survey report WITH annotations (`settle_survey`).
     names = list(sel.get("survey_schemas") or [])
     bad = list(sel.get("survey_not_scopable") or [])
     if not db_guid:
@@ -992,31 +1226,78 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     else:
         try:
             guid, process_qn = gateway.initiate_survey(db_guid, {"includeSchemaNames": ",".join(names)})
-            registry.record_native_survey_submission("database", slug, process_qn, _now(),
+            submitted_at = _now()
+            registry.record_native_survey_submission("database", slug, process_qn, submitted_at,
                                                      engine_action_guid=guid, submitted_by=author)
             _proof(registry, slug, P_SURVEY, node_kind="database", element_guid=guid, curation_id=curation_id,
-                   detail={"includeSchemaNames": names, "not_scopable": bad, "process": process_qn})
-            cur.set_step(curation_id, "survey", "done",
-                         f"{SURVEY_LINE}: {', '.join(names)} · engine action {guid[:8]}"
-                         + (f" · not scopable (comma): {', '.join(bad)}" if bad else ""))
+                   detail={"includeSchemaNames": names, "not_scopable": bad, "process": process_qn,
+                           "submitted_at": submitted_at, "engine_action": guid})
+            cur.set_step(curation_id, "survey", "submitted", _submitted_words(submitted_at, names, bad, guid))
         except Exception as exc:
             registry.record_native_survey_submission("database", slug, "PostgreSQLSurvey::survey-postgres-database", _now(),
                                                      submit_error=f"{exc}"[:300], submitted_by=author)
-            cur.set_step(curation_id, "survey", "failed", f"{type(exc).__name__}: {exc}"[:400])
+            _fail_step(cur, curation_id, "survey", exc)
 
-    # 5 ── optional forced refresh (never a restart)
+    # 5 ── optional forced refresh (never a restart). "refreshed" only when the connector's own
+    # last-refresh time moved on a status read; otherwise "refresh requested".
     if not sel.get("refresh_now"):
         cur.set_step(curation_id, "refresh", "skipped", "not asked: the cataloguer's own cycle will pick the targets up")
     elif not attach:
         cur.set_step(curation_id, "refresh", "skipped", "no target to refresh")
     else:
+        before = _try_status(gateway)
         try:
             gateway.refresh_connector(120)
-            cur.set_step(curation_id, "refresh", "done", "the JDBC cataloguer connector was asked to refresh (about 16 s)")
         except Exception as exc:
-            cur.set_step(curation_id, "refresh", "failed", f"{type(exc).__name__}: {exc}"[:400])
+            _fail_step(cur, curation_id, "refresh", exc)
+        else:
+            after = _try_status(gateway)
+            t0 = (before.last_refresh_time if before else "") or ""
+            t1 = (after.last_refresh_time if after else "") or ""
+            if t0 and t1 and t1 != t0:
+                cur.set_step(curation_id, "refresh", "done",
+                             f"refreshed · connector time moved {_stamp(t0)} → {_stamp(t1)} "
+                             "(the JDBC cataloguer connector's own time, not a schema's)")
+            else:
+                why = ("the connector's status could not be read before and after, so a move cannot be shown"
+                       if not (t0 and t1) else "the connector's last refresh time did not move on the status read")
+                cur.set_step(curation_id, "refresh", "requested", f"refresh requested · {why}")
 
-    # 6 ── read back: the proof every state word rests on
+    # 6 ── the zone, LAST of the writes, and only when the deployment configured one
+    from resource_explorer.egeria_identity import configured_publish_zones
+    zones = configured_publish_zones()
+    steps_now = {s["name"]: s["state"] for s in cur.get(curation_id)["steps"]}
+    if not db_guid:
+        cur.set_step(curation_id, "zone_membership", "skipped", "no database element: the publish step did not produce one")
+    elif not zones:
+        cur.set_step(curation_id, "zone_membership", "skipped",
+                     "zones left to Egeria · RE writes no ZoneMembership (EXPLORER_PUBLISH_ZONES is not configured)")
+    elif any(steps_now.get(n) == "failed" for n in ("owner", "schema_targets", "leave_outs", "survey", "refresh")):
+        cur.set_step(curation_id, "zone_membership", "skipped",
+                     "not written: an earlier step failed, and a zone written now would stop that step being retried")
+    else:
+        try:
+            gateway.set_zone_membership(db_guid, zones)
+        except Exception as exc:
+            log.warning("catalogue commit %s: zone write refused: %s", curation_id, exc)
+            _fail_step(cur, curation_id, "zone_membership", exc, prefix="Egeria did not accept the ZoneMembership: ")
+        else:
+            try:
+                back = list(gateway.read_zones(db_guid))
+            except Exception:
+                back = []
+            if sorted(back) == sorted(zones):
+                _proof(registry, slug, P_ZONES, node_kind="database", element_guid=db_guid,
+                       curation_id=curation_id, detail={"zones": zones, "read_back": back})
+                cur.set_step(curation_id, "zone_membership", "done",
+                             f"ZoneMembership {', '.join(zones)} written last, read back from Egeria")
+            else:
+                cur.set_step(curation_id, "zone_membership", "failed",
+                             "Egeria accepted the ZoneMembership but the read-back shows "
+                             + (", ".join(back) if back else "no zones I could read")
+                             + f" (asked for {', '.join(zones)})")
+
+    # 7 ── read back: the proof every state word rests on
     cur.set_step(curation_id, "read_back", "running")
     try:
         schemas = sorted(set(attach))
@@ -1027,5 +1308,5 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             cur.set_step(curation_id, "read_back", "done",
                          f"{s['catalogued']} catalogued · {s['attached_waiting']} attached, waiting")
     except Exception as exc:
-        cur.set_step(curation_id, "read_back", "failed", f"{type(exc).__name__}: {exc}"[:400])
+        _fail_step(cur, curation_id, "read_back", exc)
     return cur.finish(curation_id)
