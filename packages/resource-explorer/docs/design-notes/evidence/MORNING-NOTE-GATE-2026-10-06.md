@@ -49,7 +49,7 @@ Compare what the page says with these. They are the strings the code and the evi
 the fixed build is marked (new)**. If a word differs, that is a finding, not necessarily a failure.
 
 1. **Manifest and press.** Open Curate, expand the scope. Expect the three mechanisms, the target count, the survey's schema
-   list "plain..." form `Egeria's survey is limited to your chosen schemas: coco_sus, coco_ods`, the line
+   list in the form `Egeria's survey is limited to your chosen schemas: coco_sus, coco_ods`, the line
    `Egeria catalogs whole schemas · table choices are kept for when it can` (US spelling is **(new)**; rehearsal 2 printed
    "catalogues"), and (new) `RE's survey report is published whole; it describes all <m> schemas; elements are created for the
    <n> you chose.` Header seen in rehearsal 2: `Database element <guid> in Egeria · published <time> · zones: none · everyone visible · ...`.
