@@ -63,6 +63,24 @@ the branch the code took.
    connector's `lastRefreshTime` is shown as the connector's, never a
    target's.
 
+## Decision: RE's own survey report is published whole
+
+**Decision (project owner, 2026-10-06):** "publish whole". Two levels of
+publishing run from RE to Egeria. The first pass catalogues the top
+element, the database, and attaches the survey reports to it, RE's and
+Egeria's, covering everything the credential can see; surveying is
+measurement, and measurement is published whole. Cataloguing at finer
+granularity is the explicit curation step, and nothing else creates
+schema, table or column elements; leaving a schema out means no element,
+not no measurement. Cutting RE's report to the declared scope would make
+the two reports disagree about the same database for no gain. The
+manifest sentence: "RE's survey report is published whole; it describes
+all *m* schemas; elements are created for the *n* you chose." The owner
+expects many security-related nuances later (a schema that must not be
+described in Egeria at all); those become a separate per-schema "don't
+survey" choice compiling into the survey's exclude list, in the rules
+work, not in this slice.
+
 ## Leave-out, two forms, chosen per schema and said in the preview
 
 Before the press, each schema being left out gets a relationships read of
