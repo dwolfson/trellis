@@ -43,9 +43,22 @@ That matches the incident: one request on `us_sales`, and the database plus both
 archived within two seconds (16:04:23 to 16:04:25). Why rehearsal 2 did not show this is NOT established: the likely reason is that its throwaway
 database had no sibling schemas, but that is an inference, not checked.
 
-This source already carries the two-pass rewrite; the running platform may be on an older build.
-The platform build was not checked, and the fixes listed as in source on oak2026 (90, 112, 117, 124,
-125) are not in any build.
+## Source and build
+
+Source read: `/Users/dwolfson/localGit/egeria-v6/egeria`, `origin/main` (`git describe`: V5.1-1452-gaf400039c2).
+Both files are under `open-metadata-implementation/common-services/`:
+
+- `generic-handlers/src/main/java/org/odpi/openmetadata/commonservices/generichandlers/OpenMetadataAPIGenericHandler.java`
+  - line 3103, in the public `archiveBeanInRepository`: `invalidParameterHandler.validateAnchorGUID(entityGUID, entityGUIDParameterName, anchorEntity, entityGUID, entityTypeName, methodName);`
+    (the entity is passed as its own expected anchor, so the guard cannot throw)
+  - line 2973, `private void collectArchiveTargets(...)`: `anchorToMatch = anchorEntity == null ? entity : anchorEntity`, then recurses into every related element whose Anchors classification names `anchorToMatch`.
+- `ffdc-services/src/main/java/org/odpi/openmetadata/commonservices/ffdc/InvalidParameterHandler.java`, `validateAnchorGUID`: throws only when `anchorGUID != anchorEntity.getGUID()` AND `anchorGUID != elementGUID`.
+
+Running platform: container `quickstart-egeria-main`, image `egeria-quickstart-platform:local`,
+built 2026-10-05T14:19Z, version label 6.2-SNAPSHOT, no revision label. The commit the image was built
+from is NOT known, so it is NOT established that the source above is what runs. The Egeria lead can
+confirm whether her pending ISSUE-117 fix covers this path. The fixes listed as in source on oak2026
+(90, 112, 117, 124, 125) are not in any build.
 
 ## Findings for the Egeria lead
 
@@ -62,7 +75,8 @@ The platform build was not checked, and the fixes listed as in source on oak2026
 
 ## RE response
 
-- Leave-out (archive and soft-delete) of any cataloged schema is blocked in code on the Curate UX
-  branch, with the message "Egeria cannot archive one schema without archiving its database yet
-  (ISSUE-117) · choice kept, nothing sent". The owner's choices are still recorded.
+- Every archive RE could issue on a database's tree (schema, table, column, schema type) is blocked
+  in code on the Curate UX branch, and soft delete stays frozen too until a throwaway proves the
+  delete path does not walk the same way. Message: "Egeria archives the whole database tree when any
+  part of it is archived (ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent". The owner's choices are still recorded.
 - 8813 is not rebuilt until it carries that block. All merges are frozen.
