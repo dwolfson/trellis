@@ -310,18 +310,32 @@ def test_setting_hint_reads_the_calling_module():
     assert "unknown" in G.setting_hint(["/x/other.py"])
 
 
-def test_both_isolation_fixtures_coexist_in_one_test(isolate_pgvector_schema, fake_connect):
-    """DB URL settings AND the vector schema are isolated together."""
+def test_both_isolation_fixtures_coexist_in_one_test(isolate_pgvector_schema, tmp_path):
+    """DB URL settings AND the vector schema are isolated together.
+
+    Deliberately NOT using `fake_connect`: it clears GITHUB_ACTIONS, so a CI
+    check inside the body would disagree with the autouse URL fixture, which
+    ran under the real flag (and is a deliberate no-op in CI, leaving the URL
+    variables unset). Constructing a PgVectorStore never connects, and
+    isolate_url_settings is driven with a fake environment, so nothing here
+    reads the ambient URL variables except under non-CI, where they are set.
+    """
     import os
     from resource_explorer.config import get_config
     from resource_explorer.registry_label import is_shared_registry
     from resource_explorer.vector_store_pg import PgVectorStore
 
-    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":   # URL isolation is a CI no-op
-        for name in ("REGISTRY_DATABASE_URL", "METRICS_DATABASE_URL", "FEEDBACK_DATABASE_URL"):
+    # URL half, independent of the ambient mode: a fake environment.
+    set_ = {}
+    G.isolate_url_settings({}, set_.__setitem__, tmp_path)
+    assert sorted(set_) == sorted(G.SHARED_DB_URL_SETTINGS)
+    assert not any(is_shared_registry(v) for v in set_.values())
+    # What the real fixture did to this process: only outside CI.
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        for name in G.SHARED_DB_URL_SETTINGS:
             assert not is_shared_registry(os.environ[name]), name
+    # Vector half, unconditional (this fixture runs in CI too).
     scratch = isolate_pgvector_schema
     assert get_config().pgvector.schema_name == scratch
     assert PgVectorStore()._config.schema == scratch
-    assert fake_connect == []
     G._state["vector_schemas_built"].discard(scratch)
