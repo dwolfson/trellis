@@ -603,12 +603,12 @@ async function loadCommitPanel(el, slug, me, redraw) {
   });
 }
 
-export async function renderCatalogueScope(el, slug, status = '') {
+export async function renderCatalogueScope(el, slug, status = '', known = null) {
   if (!el) throw new Error('Catalogue scope host missing');
   if (openFor !== slug) { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = slug; sectionOpen = null; }
   let view;
   try {
-    view = await getCatalogueScope(slug);
+    view = known || await getCatalogueScope(slug);
     if (!view || !Array.isArray(view.schemas)) throw new Error('the server answered with something that is not a scope');
   } catch (err) {
     if (stale(el, slug)) return;
@@ -616,6 +616,16 @@ export async function renderCatalogueScope(el, slug, status = '') {
     return;
   }
   if (stale(el, slug)) return;
+  try {
+    paintScope(el, slug, status, view);
+  } catch (err) {
+    // A throw while drawing must never leave a blank pane: say what broke and what to do.
+    el.innerHTML = `<div data-scope-render-error role="alert" class="text-caveat text-state-warn">The catalog scope could not be drawn: ${esc(err && err.message ? err.message : String(err))}. Reload the page to try again; nothing you chose was lost.</div>`;
+  }
+}
+
+/** Draws the scope pane from a view and wires it (synchronous; the commit preview loads after). */
+function paintScope(el, slug, status, view) {
   const me = whoAmI();
   if (sectionOpen === null) sectionOpen = scopeStartsOpen(view, readScopePref(storage(), me, slug));
   el.innerHTML = scopeSectionHtml(view, me, status, sectionOpen);
@@ -645,14 +655,15 @@ export async function renderCatalogueScope(el, slug, status = '') {
   };
   const failure = (err, what) => (err.status === 401 ? signInReason : `${what} failed: ${err.message}`);
 
-  // After a write the words come from the re-read view, not from the click.
+  // After a write the words come from the re-read view, not from the click. The scope is read
+  // ONCE here and handed to the redraw (it used to be read again by the redraw: two GETs a write).
   const afterWrite = async (write, what, verify, spent = false) => {
     try { await write(); } catch (err) { say(failure(err, what), true); return; }
     if (spent) { selected.clear(); selectedTables.clear(); }   // a finished bulk action spends the selection
     let again;
     try { again = await getCatalogueScope(slug); }
     catch (err) { say(`${what}: written, but the scope could not be re-read: ${err.message}`, true); return; }
-    await renderCatalogueScope(el, slug, verify(again) || '');
+    await renderCatalogueScope(el, slug, verify(again) || '', again);
   };
 
   const offered = (view.schemas || []).map((x) => x.name);
