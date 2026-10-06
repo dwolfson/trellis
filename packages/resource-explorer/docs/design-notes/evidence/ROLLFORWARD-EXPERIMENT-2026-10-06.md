@@ -68,3 +68,33 @@ Unexpected: the new schemas have NO tables or schema type at 17:35Z. Each has 3 
 the tables were NOT built by that refresh. Cause unknown (candidates: needs another refresh; the cataloguer
 looks up the schema by its own QN form `<DBQN>::<schema>` and RE's template form does not match).
 Nothing was detached, archived, restored or deleted by anyone.
+
+## Follow-up reads (read-only, ~17:40Z)
+
+**Two causes are visible for the missing tables, and the first one stops the cataloguer before the second is reached.**
+
+A. Daemon log, qs-integration-daemon, 17:03:51Z, refreshing action target `coco_pharma.coco_sus`:
+   `JDBC-INTEGRATION-CONNECTOR-0016 ... NullPointerException: Cannot invoke JDBCResourceConnector.getConnection()
+   because "jdbcResourceConnector" is null` at `JDBCIntegrationCatalogTargetProcessor.getJDBCSchemaName(...:314)`,
+   called from `refreshDatabaseSchema(...:207)`. The connector had no JDBC resource connector for the target,
+   so it could not even read the schema list. NOT a 409. Why the connector is null for the NEW database is not
+   established (candidate: the new database element lacks the connection/secrets link the cataloguer follows).
+   The same log shows the cataloguer still refreshing an action target `scratch_cat_test6_database` that my own
+   target read does not list, so the target list I read is not the whole list the connector works from.
+
+B. S16 candidate, CONFIRMED as a latent blocker: the OLD schema types of coco_sus and coco_ods are NOT Mementos
+   and kept their original qualifiedNames
+   (`PostgreSQL Relational Database Schema::host.docker.internal:5442::coco_pharma.coco_sus_schemaType`, same for
+   coco_ods). The old us_sales schema type is a Memento and was renamed (the suffix `_archivedOn_...` repeated
+   many times, one per archive pass). So a new schema type for the new coco_sus/coco_ods would collide on
+   qualifiedName if the cataloguer got that far. It did not, because of A. Not observed as a 409.
+
+C. 56 versus 76 annotations: NOT resolved. The related-element read returned one annotation per database at
+   depth 0 and does not list the missing names; not diagnosed.
+
+## Conclusion
+
+Roll-forward of a database works at the asset level (new database, new schemas, new targets, new survey) and is
+blocked below it: the cataloguer never built tables, for reason A, and would meet reason B next, because the
+archive left some archived-lineage elements (the schema types of the two kept schemas) un-archived and keeping
+their names. Stated as observed; the cause of A is not established.
