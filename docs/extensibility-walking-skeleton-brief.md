@@ -154,6 +154,63 @@ Checked against §1's reading, for the owner's question:
   `PYEGERIA_ISSUES.md` first as the repo's rule requires and committed only
   on the owner's word.
 
+## 3a. How a user extends the list (owner's question, 2026-10-07)
+
+The skeleton's own step is written the way a user would write one, so the
+path is the same; the brief makes each step of it a tested thing, not a
+convention:
+
+1. **Write it.** A Python package with a `StepManifest` or `RoutineManifest`
+   (R1's first form). The library ships a `cookiecutter`-style template
+   (`trellis-analytics new-step <name>`) that writes the package skeleton,
+   the manifest, a test with the four envelope states, and the example
+   notebook. Single-file and notebook forms come later (R1's order).
+2. **Install it where it will run.** `pip install` into the host's
+   environment: RE's venv (or the Prefect worker's) for a step; the Portal's
+   or a notebook's for a routine. The manifest is an entry point in the
+   package's `pyproject.toml` (`[project.entry-points."trellis.analytics"]`),
+   so installation is registration: at startup the registry loads every
+   entry point it finds. No file to edit, no call to make, no restart of
+   anything but the host whose environment changed.
+3. **See it.** It appears in the Portal's "Analytic Functions" tab (routines
+   and steps alike, with `kind`, `source`, `version`, `family`), in RE's
+   Analysis stage for the resource types it names (the catalog entry is
+   generated from the manifest at load), and in `trellis-analytics list`.
+4. **Declare it to Egeria, if wanted.** `trellis-analytics declare <name>`
+   writes the Dr.Egeria document; a person with the right hand creates the
+   element; retirement is a status, never a delete. Not required for
+   running locally; required for a context pack or another tool to find it
+   through Egeria.
+5. **Use it.** A report spec names the routine by dotted path, as today; a
+   Dashboard Sheet composes the report; RE runs the step from its Analysis
+   stage or a Survey Definition that lists it.
+
+Where user code runs (A6, unchanged): a routine runs in the caller's
+process, which is the caller's choice; a step never runs in the web
+process: RE's orchestrator runs `ExternalStep` through the run queue, so on
+a deployment with a Prefect worker the user's package must be installed in
+the worker's environment too, and the row says "step not installed on the
+worker" when it is not (the honest sentence, with the package name).
+Versioning (R3): two versions may be installed in different environments;
+every result carries the version from the manifest; a reader never
+reinterprets an old result under a new version.
+
+**Organisation of functions** (owner's aside): one field on the manifest,
+`family` (free text, the same word pyegeria's `FormatSet.family` already
+uses, so "Analytic" and "Analytic Function Demo" keep their places), plus
+`tags`. The Portal tab and `trellis-analytics list` group by `family`,
+then `kind`, then `source`; RE's Analysis stage groups by `resource_type`
+and `intent_tier` as today. In Egeria a family is a `Collection` the
+declaration joins, so a pack or a search can ask for a family. No
+hierarchy beyond that until there are enough functions to need one.
+
+**Name.** Owner: the library stays in trellis; "Analytic Routine Library"
+is open. Proposal: package name `trellis-analytics` (import
+`trellis_analytics`), display name **"Analytic Library"**, because it holds
+steps as well as routines and the two words stay distinct on every screen;
+if the owner prefers "Analytic Routine Library" the display name changes
+and the package name stays.
+
 ## 4. What is deliberately not in the skeleton
 
 A Prefect-hosted step; running a step in Egeria's engine host; the
@@ -203,9 +260,9 @@ uses the existing call, so the skeleton runs on pyegeria 6.1.29 as pinned.
 
 ## 8. Questions
 
-**Owner:** the name `trellis-analytics` (or another); whether the step's
-example package lives in the trellis repo or a separate examples repo (my
-proposal: trellis, under the library, until a second author exists).
+**Owner:** the display name ("Analytic Library" proposed; "Analytic Routine
+Library" if preferred). Decided: the library and the example step live in
+trellis.
 
 **Egeria leads:** the annotation-type extension's timing (interim ruling
 stands until then); whether a step's declaration as a
