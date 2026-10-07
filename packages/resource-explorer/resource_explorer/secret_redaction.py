@@ -91,23 +91,20 @@ def _factory(*args, **kwargs):
     if not forms:
         return record
     try:
-        try:
-            msg = record.getMessage()
-        except Exception:
-            msg = str(record.msg)
-        if any(f in msg for f in forms):
-            record.msg, record.args = _mask(msg, forms), ()
-        if record.exc_info:
-            text = logging.Formatter().formatException(record.exc_info)
-            if any(f in text for f in forms):
-                record.exc_text = _mask(text, forms)
-                record.exc_info = None
-        if record.exc_text and any(f in record.exc_text for f in forms):
-            record.exc_text = _mask(record.exc_text, forms)
-        if record.stack_info and any(f in record.stack_info for f in forms):
-            record.stack_info = _mask(record.stack_info, forms)
-    except Exception:  # redaction must never break logging
-        pass
+        msg = record.getMessage()
+    except (TypeError, ValueError):      # a malformed %-format: redact what is there
+        msg = str(record.msg)
+    if any(f in msg for f in forms):
+        record.msg, record.args = _mask(msg, forms), ()
+    if record.exc_info:
+        text = logging.Formatter().formatException(record.exc_info)
+        if any(f in text for f in forms):
+            record.exc_text = _mask(text, forms)
+            record.exc_info = None
+    if record.exc_text and any(f in record.exc_text for f in forms):
+        record.exc_text = _mask(record.exc_text, forms)
+    if record.stack_info and any(f in record.stack_info for f in forms):
+        record.stack_info = _mask(record.stack_info, forms)
     return record
 
 
