@@ -206,6 +206,13 @@ def start_in_process(target, *args, name: str) -> None:
     where it was received and dies with the process. Everything else goes
     through `registry.enqueue_run`.
     """
+    import contextvars
     import threading
 
-    threading.Thread(target=target, args=args, name=name, daemon=True).start()
+    # Run under a COPY of the caller's context, not a bare thread: the signed-in
+    # caller lives in a ContextVar and a plain Thread starts with an empty one,
+    # so the run's Egeria publish and private-zone reads would be attributed to
+    # '' (the shared bucket). Same mechanism as the chat turn in
+    # web/routes/query.py (found 2026-09-08).
+    ctx = contextvars.copy_context()
+    threading.Thread(target=ctx.run, args=(target, *args), name=name, daemon=True).start()

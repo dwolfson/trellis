@@ -297,3 +297,50 @@ def test_a_stored_credential_run_still_dispatches_to_prefect_unchanged(registry)
         res = ex.run("g2pf", "x", engine_override="resource-explorer")   # no whole-definition Prefect in a test
     assert len(seen) == 1 and seen[0]["db_user"] == "stored_user"
     assert next(s for s in res["steps"] if s["step"] == "Step::Soda")["status"] == "ok"
+
+
+# ── Finding 3: the override run is the caller's, and is reconcilable ────────
+
+def test_the_in_process_worker_thread_sees_the_signed_in_callers_identity():
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.registry import current_user_id
+    from resource_explorer.workflows.survey_definition import start_in_process
+
+    got, done = {}, threading.Event()
+
+    def target():
+        got["uid"] = current_user_id()
+        done.set()
+
+    reset = current_caller.set(CallerIdentity(user_id="dan", egeria_token=None, auth_source="test", role="user"))
+    try:
+        start_in_process(target, name="g2-identity-test")
+    finally:
+        current_caller.reset(reset)
+    assert done.wait(5)
+    assert got["uid"] == "dan", "a bare thread would have run as '' (the shared bucket)"
+
+
+def test_the_override_activity_row_carries_the_runner_marker_the_reconciler_reads(client, registry):
+    from resource_explorer.run_reconciler import owner_of, process_identity
+
+    with patch("resource_explorer.web.routes.survey_definitions._run_survey_definition_background"):
+        r = client.post("/api/survey-definitions/database/mydb/run", json={
+            "survey_definition_ref": "X", "db_user": "one_off_user", "db_pwd": FAKE_PW})
+    entry = registry.get_activity(r.json()["activity_id"])
+    owner = owner_of(entry["detail"])
+    assert owner["pid"] == process_identity()["pid"]
+    assert FAKE_PW not in json.dumps(entry, default=str)
+
+
+def test_an_interrupted_override_run_is_resolved_by_the_reconciler_when_its_process_is_gone(client, registry):
+    from resource_explorer import run_reconciler
+
+    with patch("resource_explorer.web.routes.survey_definitions._run_survey_definition_background"):
+        r = client.post("/api/survey-definitions/database/mydb/run", json={
+            "survey_definition_ref": "X", "db_user": "one_off_user", "db_pwd": FAKE_PW})
+    aid = r.json()["activity_id"]
+    with patch.object(run_reconciler, "_is_alive", return_value=False):
+        out = run_reconciler.reconcile(registry)
+    assert aid in out["resolved_ids"]
+    assert registry.get_activity(aid)["status"] == run_reconciler.INTERRUPTED

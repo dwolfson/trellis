@@ -20,6 +20,23 @@ Import check (must resolve into the worktree):
 * `secret_redaction.scrub` / `redacting_logs`: a driver error that echoes the password it was given is scrubbed from
   step rows, the result, the activity detail and every log line for the length of the run (any run, override or stored).
 
+* **Prefect never receives an override.** Prefect keeps a flow run's parameters. With a credential override, a step
+  that would dispatch to Prefect (`executes_at: prefect`, or the Prefect-only soda / great-expectations steps) is not
+  run: its row says "not run · this run's credentials are not sent to Prefect (they are never stored)" and the run
+  counts it as unfinished; whole-definition Prefect is refused too (`survey_definition_executor._execute`).
+* **Redaction covers every logger and handler** (`secret_redaction`): done through the log record factory, so
+  non-propagating loggers, handlers added mid-run and overlapping runs are covered, and percent-, form-, repr- and
+  JSON-encoded spellings (a DSN) are scrubbed too.
+* **The in-process run is the caller's and reconcilable.** `start_in_process` runs under `contextvars.copy_context()`
+  (as the chat turn does), so Egeria publish and private-zone reads see the signed-in user; the activity row carries
+  `_runner` (pid and start time), which the existing `run_reconciler.reconcile` reads: no further change needed.
+
+## Backlog row (not this slice)
+
+* **Stored password reaches Prefect flow-run parameters for soda/GE steps on main; own slice.** `runner_kwargs` is
+  filled from `entity.db_password` in `SurveyDefinitionExecutor.run`, and `prefect_adapter` puts `runner_kwargs` into
+  the flow-run `parameters`. Unchanged here.
+
 ## Rows
 
 | PI | State | What and where |
@@ -50,6 +67,6 @@ Import check (must resolve into the worktree):
 
 ## Tests
 
-`tests/test_parity_g2_registration.py`, `tests/test_parity_g2_override_run.py`;
+`tests/test_parity_g2_registration.py`, `tests/test_parity_g2_override_run.py`, `tests/test_secret_redaction.py`;
 `frontend-build/test-harness/g2-register-one-database.test.mjs`, `g2-run-credentials-and-hybrid.test.mjs`,
 `g2-change-credentials.test.mjs`. Not run: the whole pytest suite, the live page, any real database or Egeria.

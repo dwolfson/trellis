@@ -672,6 +672,7 @@ def _start_override_run(registry, entity_type: str, slug: str,
     import json
 
     from resource_explorer.activity_logger import log_survey
+    from resource_explorer.run_reconciler import process_identity
     from resource_explorer.workflows.survey_definition import start_in_process
 
     if not body.db_user:
@@ -684,7 +685,10 @@ def _start_override_run(registry, entity_type: str, slug: str,
         registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
         entity_location="", intent="assessment", status="running",
         summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug} as {body.db_user} ({OVERRIDE_SCOPE})…",
-        detail=json.dumps({"survey_definition_ref": body.survey_definition_ref, "ran_as": ran_as}),
+        # `_runner`: this process IS the runner (nothing queued it), so the
+        # startup reconciler can mark the row interrupted if it restarts.
+        detail=json.dumps({"survey_definition_ref": body.survey_definition_ref, "ran_as": ran_as,
+                           "_runner": process_identity()}),
     )
     start_in_process(
         _run_survey_definition_background, entity_type, slug, body, activity_id,
