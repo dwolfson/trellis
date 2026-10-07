@@ -388,6 +388,16 @@ async def list_candidates(
         )
         docs_by_qn = {f"{_PROCESS_PREFIX}{n}": d for n, d in documented_definitions().items()}
 
+        # Brief section 9: which analyses each definition runs, read from the definition's own
+        # `re_analysis_step` properties mapped through the adapter, never from a list kept by hand.
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses as _get_analyses
+        from resource_explorer.workflows.stage_page import analyses_run_by_definition
+
+        _catalog_entries = [a for a in _get_analyses(entity_type, include_egeria_live=False)
+                            if a.get("action") != "publish"]
+        _analysis_names = {a["id"]: a.get("name", "") or a["id"] for a in _catalog_entries}
+        _source_steps = adapter.analysis_source_steps() if adapter.analysis_source_steps else {}
+
         class _DocStep:
             __slots__ = ("qualified_name", "display_name", "description", "executes_at", "re_analysis_step")
             def __init__(self, key, doc):
@@ -488,6 +498,12 @@ async def list_candidates(
                 # carried on each so the button that reads it has it.
                 "auto_publishes": auto_publishes,
                 "run_time": get_survey_definition_speed_tag(steps),
+                "runs_analyses": {
+                    k: [{"analysis_id": a, "name": _analysis_names.get(a, a)} for a in v]
+                    for k, v in analyses_run_by_definition(
+                        {"kind": survey_def.survey_kind or "",
+                         "steps": [s["re_analysis_step"] for s in steps if s.get("re_analysis_step")]},
+                        _catalog_entries, _source_steps).items()},
                 # A Survey Definition has no perspectives of its own in Egeria,
                 # so the Survey tab's perspective filter could only ever filter
                 # the local half of the list -- a live-looking control acting on

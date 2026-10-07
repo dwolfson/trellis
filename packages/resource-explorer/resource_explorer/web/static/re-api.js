@@ -1434,6 +1434,12 @@ function _runAnalysisPath(entityType, slug, analysisId) {
 export const runAnalysis = (slug, analysisId, entityType) =>
   post(_runAnalysisPath(requireKind('runAnalysis', entityType), slug, analysisId));
 
+/** ONE database analysis with a credential typed for that run (brief section 8). The password goes in
+ *  the body of this call and nowhere else; the server runs it in its own process (not queued, not
+ *  stored, not retried) and no response carries the password back. Database only. */
+export const runAnalysisWithCredential = (slug, analysisId, { user, password }) =>
+  post(_runAnalysisPath('database', slug, analysisId), { db_user: user, db_pwd: password });
+
 /* ── Prerequisite proposals (design §17.1, web/routes/prerequisites.py) ───
  *
  * `/plan` asks what `stepKey` needs before it can answer, WITHOUT running

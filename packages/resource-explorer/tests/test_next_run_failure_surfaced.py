@@ -28,7 +28,8 @@ def _rerun() -> str:
 
 
 def _run_button_handler() -> str:
-    return _slice(_app(), "host.querySelectorAll('[data-analysis-run]')", "\n  }));\n")
+    # The click handler's body is `startRun` (brief section 8 shares it with the credential dialog).
+    return _slice(_app(), "const startRun = async (", "\n  };\n")
 
 
 def _helper() -> str:
