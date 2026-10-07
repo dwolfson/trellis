@@ -162,6 +162,9 @@ class EgeriaPublisher:
         #: `published` from "queued" to True (registry.
         #: complete_publish_run_if_done).
         self.publish_run_id: str = ""
+        #: True when the SurveyReport create met a 409 on its name and the report Egeria already
+        #: held was reused instead (parity slice G1, PI-001: never a second report). Reset per publish.
+        self.report_reused = False
         #: Set by `publish()` for a deferred publish only — see that
         #: assignment's own comment for what it carries and why.
         self.pending_published_record: dict | None = None
@@ -212,6 +215,7 @@ class EgeriaPublisher:
         if zone_names is not None:
             self.zone_names = zone_names
         self._defer_drain_override = defer_drain
+        self.report_reused = False
         # Privacy is decided here, before anything is written, and it OVERRIDES
         # the caller's zone_names rather than deferring to them. A caller that
         # passes explicit zones is asking where a normal publish should land;
@@ -1171,8 +1175,22 @@ class EgeriaPublisher:
                 },
             },
         }
-        with time_egeria_call(self._registry, "create_asset", "write", params={"typeName": "SurveyReport"}):
-            report_guid = self._asset_maker.create_asset(body=body)
+        try:
+            with time_egeria_call(self._registry, "create_asset", "write", params={"typeName": "SurveyReport"}):
+                report_guid = self._asset_maker.create_asset(body=body)
+        except Exception as exc:
+            # A 409 on the report's own name means this survey run's report is already in Egeria: reuse
+            # it (looked up by its exact name), never create a second one. Any other failure propagates.
+            text = " ".join(str(exc).split())
+            if not ("409" in text and ("is not available for use" in text or "OMAG-COMMON-409" in text)):
+                raise
+            report_guid = self._find_element_guid(qualified_name)
+            if not report_guid:
+                raise RuntimeError(
+                    "Egeria refused the report as a duplicate but no report with that name "
+                    f"could be read ({qualified_name})") from exc
+            self.report_reused = True
+            log.info("SurveyReport %s already in Egeria (same survey run): reusing it", report_guid)
 
         # Persist so the pull path (EgeriaReader) and CLI can reference it
         if self._registry:
