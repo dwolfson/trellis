@@ -17,13 +17,21 @@
  * not something this stage owns alone; only the actual per-stage entry
  * point (`loadChartsPane`) is Understanding's to keep changing.
  */
-import { REPO_CHARTS, getChart, getDbChart, getDatabaseDiff } from '/static/re-api.js';
+import {
+  REPO_CHARTS, getChart, getDbChart, getDatabaseDiff, getDatabaseSurveys, getDatabaseViews,
+  getRepoDiff, renderMermaidSvg,
+} from '/static/re-api.js';
 import {
   state, esc, $, paneMessage, bindSubTabs, resourceHeaderHtml, bindResourceHeader,
   asFigure, allPointDates, chartIsStale, drawChart, apiEntityType,
   chartLayout, loadScript,
 } from '/static/next/app.js';
 import { provenanceFromResponse, saveChartImage } from '/static/next/chart-export.js';
+import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
+import {
+  surveyHistoryHtml, readShowInvalid, writeShowInvalid, rankedTablesHtml, viewsSectionHtml,
+  viewFlowchartSource,
+} from '/static/next/stages/db-report.js';
 
 /* ── Understanding for a database ─────────────────────────────────────────
  *
@@ -291,6 +299,29 @@ export function sinceLastRunHtml(diff) {
     ? parts.join(', ') : 'no tables added or removed and no net change in columns'}.${blocks.join('')}`;
 }
 
+/** The one "since the last run" paragraph, for a database and for a repository alike: the same
+ *  element, the same classes, the same hook (`data-since-last-run`). Only the sentence differs,
+ *  because the two kinds are compared by different measures (tables vs file types). */
+export function sinceLastRunBannerHtml(inner) {
+  return `<p class="my-s2 text-answer text-ink" data-since-last-run>${inner}</p>`;
+}
+
+/** A repository's banner sentence from `/api/egeria/{slug}/diff`: the file total and the file types
+ *  that moved. The route keeps the ten largest moves, and the sentence says so when it hit that cap. */
+export function repoSinceLastRunHtml(diff) {
+  if (!diff || !diff.curr_date) return 'Only one run so far — nothing to compare.';
+  const since = String(diff.prev_date || '').slice(0, 10);
+  const d = diff.total_delta || 0;
+  const total = `${fmtN(diff.total_curr)} files, ${d === 0 ? 'no change in the count' : `${fmtN(Math.abs(d))} ${d > 0 ? 'more' : 'fewer'}`}`;
+  const changes = diff.changes || [];
+  if (!changes.length) return `Since the run of ${esc(since)}: ${esc(total)} · no file type changed.`;
+  const sign = (n) => `${n > 0 ? '+' : '−'}${fmtN(Math.abs(n))}`;
+  const label = changes.length >= 10 ? `the ${changes.length} largest file type changes`
+    : `${changes.length} file type${changes.length === 1 ? '' : 's'} changed`;
+  const names = namesToggle(label, changes.map((c) => `${c.label} ${fmtN(c.prev)} → ${fmtN(c.curr)} (${sign(c.delta)})`));
+  return `Since the run of ${esc(since)}: ${esc(total)} · ${names.label}.${names.block}`;
+}
+
 /** Understanding on a database. Draws into `#understanding-host`; a missing
  *  host throws (the caller writes the message), it never returns silently. */
 export async function renderDatabaseUnderstanding(slug) {
@@ -311,9 +342,11 @@ export async function renderDatabaseUnderstanding(slug) {
     <section data-section="time" class="mt-s6">
       <div class="flex items-baseline gap-s2"><h3 class="m-0 font-heading text-name font-normal">Over time</h3>
         <span class="text-caveat text-ink-muted" data-time-header></span></div>
-      <p class="my-s2 text-answer text-ink" data-since-last-run>Comparing the last two runs…</p>
+      ${sinceLastRunBannerHtml('Comparing the last two runs…')}
       <div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'time').map(slot).join('')}</div>
-    </section>`;
+    </section>
+    <section data-survey-history class="mt-s6"><div class="text-caveat text-ink-muted">Reading the survey history…</div></section>
+    <section data-section-views class="mt-s6"><div class="text-caveat text-ink-muted">Reading the views…</div></section>`;
   const cards = {};
   const chips = {};
   const chipsEl = host.querySelector('[data-chart-index]');
@@ -345,10 +378,12 @@ export async function renderDatabaseUnderstanding(slug) {
 
   const grab = (kind, params) => getDbChart(slug, kind, params)
     .catch((err) => ({ __error: err.message }));
-  const [dist, sizes, types, hist, growth, diff] = await Promise.all([
+  const [dist, sizes, types, hist, growth, diff, surveys, views] = await Promise.all([
     grab('schema_distribution'), grab('table_sizes', { measure: 'rows' }), grab('column_types'),
     grab('survey_history'), grab('table_growth'),
     getDatabaseDiff(slug).catch((err) => ({ __error: err.message })),
+    getDatabaseSurveys(slug).catch((err) => ({ __error: err.message })),
+    getDatabaseViews(slug).catch((err) => ({ __error: err.message })),
   ]);
   if (stale()) return;
 
@@ -373,8 +408,9 @@ export async function renderDatabaseUnderstanding(slug) {
   const drawSizes = async (resp, measure) => {
     await settle(specOf('table_sizes'), resp, {
       counts: ok(resp) ? resp.provenance || '' : '',
-      extraHtml: ok(resp) ? tableSizesExtra(resp, measure) : '',
+      extraHtml: ok(resp) ? tableSizesExtra(resp, measure) + rankedTablesHtml(resp, diff) : '',
     });
+    attachGrids(cards.table_sizes, () => RANKED_COLS);
     cards.table_sizes.querySelector('[data-card-title]').textContent =
       measure === 'size' ? 'Largest tables, by size' : 'Largest tables, by rows';
     const sw = cards.table_sizes.querySelector('[data-measure]');
@@ -409,6 +445,59 @@ export async function renderDatabaseUnderstanding(slug) {
   host.querySelector('[data-since-last-run]').innerHTML = diff && diff.__error
     ? `The comparison with the previous run could not be read: ${esc(diff.__error)}`
     : sinceLastRunHtml(diff);
+
+  drawSurveyHistory(host.querySelector('[data-survey-history]'), surveys);
+  drawViews(host.querySelector('[data-section-views]'), views);
+}
+
+/** PI-037: the survey history table and its "show invalid" toggle. The list was read once; the
+ *  toggle filters it and remembers its state in this browser (never anywhere else). */
+function drawSurveyHistory(slot, rows) {
+  if (!slot) return;
+  const storage = () => { try { return window.localStorage; } catch { return null; } };
+  const paint = () => {
+    const show = readShowInvalid(storage());
+    slot.innerHTML = rows && rows.__error
+      ? `<h3 class="m-0 font-heading text-name font-normal">Survey history</h3>
+         <div data-survey-history-unreadable class="text-caveat text-state-warn">The survey history could not be read: ${esc(rows.__error)}</div>`
+      : surveyHistoryHtml(rows, show);
+    attachGrids(slot, () => historyCols(show && Array.isArray(rows) && rows.some((r) => r.invalid_at)));
+    const box = slot.querySelector('[data-show-invalid]');
+    if (box) {
+      box.addEventListener('change', () => {
+        writeShowInvalid(storage(), box.checked);
+        paint();
+      });
+    }
+  };
+  paint();
+}
+
+/** PI-040: the Views section. A flowchart is drawn the first time its disclosure opens and not again;
+ *  while it draws, a second open does nothing. */
+function drawViews(slot, resp) {
+  if (!slot) return;
+  slot.innerHTML = viewsSectionHtml(resp);
+  attachGrids(slot, () => VIEWS_COLS);
+  const views = (resp && resp.views) || [];
+  slot.querySelectorAll('[data-view-flow]').forEach((d) => {
+    d.addEventListener('toggle', async () => {
+      if (!d.open || d.dataset.flowState === 'drawing' || d.dataset.flowState === 'drawn') return;
+      const body = d.querySelector('[data-view-flow-body]');
+      d.dataset.flowState = 'drawing';
+      body.textContent = 'Drawing…';
+      try {
+        const svg = await renderMermaidSvg(
+          `%%{init: {"theme":"neutral","flowchart":{"useMaxWidth":false,"htmlLabels":true}}}%%\n${
+            viewFlowchartSource(views[Number(d.dataset.viewFlow)])}`);
+        body.innerHTML = svg;
+        d.dataset.flowState = 'drawn';
+      } catch (err) {
+        body.textContent = `The flowchart could not be drawn: ${err.message}`;
+        d.dataset.flowState = '';
+      }
+    });
+  });
 }
 
 export async function loadChartsPane() {
@@ -435,7 +524,8 @@ export async function loadChartsPane() {
     </div>
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="my-s3 h-px bg-rule"></div>${entityType === 'repo'
-    ? `<div id="chart-index" class="flex flex-wrap gap-s2"></div>
+    ? `<div id="repo-diff-banner">${sinceLastRunBannerHtml('Comparing the last two runs…')}</div>
+    <div id="chart-index" class="flex flex-wrap gap-s2"></div>
     <div id="chart-body" class="mt-s4"></div>`
     : '<div id="understanding-host"></div>'}`;
   bindResourceHeader();
@@ -458,6 +548,21 @@ export async function loadChartsPane() {
     }
     return;
   }
+
+  // PI-049: the same banner as a database, read from this repository's own diff route.
+  const repoBanner = $('repo-diff-banner');
+  const paintRepoBanner = async () => {
+    let inner;
+    try {
+      inner = repoSinceLastRunHtml(await getRepoDiff(slug));
+    } catch (err) {
+      inner = `The comparison with the previous run could not be read: ${esc(err.message)}`;
+    }
+    if (slug !== state.selectedSlug || !repoBanner.isConnected) return;
+    repoBanner.querySelector('[data-since-last-run]').innerHTML = inner;
+  };
+  bindNamesToggles(repoBanner);
+  paintRepoBanner();
 
   const index = $('chart-index');
   index.innerHTML = REPO_CHARTS.map(([kind, label]) =>
