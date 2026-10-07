@@ -59,6 +59,9 @@ class SurveyDefinitionRunRequest(BaseModel):
     #: raises a clear 400 rather than silently degrading, since a stale
     #: client sending an unrecognized engine name should fail loudly.
     engine: str | None = None
+    #: Parity G2 / PI-018: True = do not try Egeria first; an egeria-adaptive
+    #: step scans locally only. Default False changes nothing for any caller.
+    force_custom: bool = False
 
 
 def _map_reader_executor_errors(exc: Exception) -> HTTPException:
@@ -625,14 +628,23 @@ from resource_explorer.workflows.survey_definition import (  # noqa: E402
 
 
 def _params(body: "SurveyDefinitionRunRequest") -> SurveyDefinitionRunParams:
+    override = bool(body.db_pwd)
     return SurveyDefinitionRunParams(
         survey_definition_ref=body.survey_definition_ref,
         refresh_definition=body.refresh_definition,
         db_user=body.db_user,
         db_pwd=body.db_pwd,
         publish=body.publish,
-        engine_override=body.engine,
+        # An override run stays on RE's own engine: a Prefect flow would carry
+        # the password as flow parameters, and Prefect keeps those.
+        engine_override="resource-explorer" if override else body.engine,
+        credential_scope=OVERRIDE_SCOPE if override else "",
+        force_custom=body.force_custom,
     )
+
+
+#: The word the run rows show for a credential typed for one run only.
+OVERRIDE_SCOPE = "this run"
 
 
 def _execute_survey_definition_sync(entity_type: str, slug: str,
@@ -645,6 +657,41 @@ def _run_survey_definition_background(
     entity_type: str, slug: str, body: "SurveyDefinitionRunRequest", activity_id: str,
 ) -> None:
     _execute_and_record_definition(entity_type, slug, _params(body), activity_id)
+
+
+def _start_override_run(registry, entity_type: str, slug: str,
+                        body: "SurveyDefinitionRunRequest") -> dict:
+    """A run with a credential typed for this run only (parity G2, PI-016).
+
+    The override is session memory: it must not be written to the registry, and
+    the run queue persists its payload there, so this run is NOT enqueued. It
+    runs on a thread in this process (the pre-queue shape, kept for exactly
+    this case), on RE's own engine, and the password is dropped from every row,
+    log line and response. The activity row names the user, never the password.
+    """
+    import json
+
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.workflows.survey_definition import start_in_process
+
+    if not body.db_user:
+        raise HTTPException(
+            status_code=400,
+            detail="A credential for this run needs both a user and a password; the password alone is not enough.",
+        )
+    ran_as = {"user": body.db_user, "scope": OVERRIDE_SCOPE}
+    activity_id = log_survey(
+        registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
+        entity_location="", intent="assessment", status="running",
+        summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug} as {body.db_user} ({OVERRIDE_SCOPE})…",
+        detail=json.dumps({"survey_definition_ref": body.survey_definition_ref, "ran_as": ran_as}),
+    )
+    start_in_process(
+        _run_survey_definition_background, entity_type, slug, body, activity_id,
+        name=f"survey-override-{activity_id}")
+    log.info("started survey_definition override run for %s/%s as %s (activity %s)",
+             entity_type, slug, body.db_user, activity_id)
+    return {"status": "started", "activity_id": activity_id, "run_id": None, "ran_as": ran_as}
 
 
 @router.post("/{entity_type}/{slug}/run")
@@ -678,6 +725,10 @@ async def run_survey_definition_route(entity_type: str, slug: str,
         )
 
     registry = ProjectRegistry()
+
+    if body.db_pwd:
+        return _start_override_run(registry, entity_type, slug, body)
+
     activity_id = log_survey(
         registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
         entity_location="", intent="assessment", status="running",

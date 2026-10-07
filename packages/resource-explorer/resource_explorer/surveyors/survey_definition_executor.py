@@ -173,6 +173,47 @@ class ResourceTypeAdapter:
     step_registry: Callable | None = None
 
 
+
+#: `answered_by` words an `egeria-adaptive` handler reports as `source`.
+_LOCAL_SOURCES = ("custom", "egeria-custom", "local")
+
+
+def _annotate_step_provenance(steps_report: list, survey_def, user: str, credential_scope: str) -> None:
+    """Add `answered_by` to every step entry, and `ran_as` to those that
+    connected with a credential override (parity G2, PI-016/PI-018).
+
+    `answered_by` is "egeria" when Egeria's own engine answered, "prefect" when
+    a Prefect worker ran it, "custom" / "egeria-custom" when an adaptive step
+    scanned locally (the second also published to Egeria), and "local" for a
+    plain RE step. It is read off the entry's own `source` / `engine` /
+    the step's `executes_at`, never guessed from the run as a whole.
+
+    `ran_as` ({"user", "scope"}) is stamped only when `credential_scope` says
+    this run used an override AND the step ran RE-side: an Egeria answer used
+    the engine host's own stored secret, so claiming the override ran it would
+    be wrong.
+    """
+    executes_at = {s.qualified_name: s.executes_at for s in getattr(survey_def, "steps", [])}
+    for entry in steps_report:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status") not in ("ok", "error", "failed", "triggered"):
+            continue                       # skipped / not executed: nothing answered it
+        where = executes_at.get(entry.get("step"), "")
+        src = entry.get("source")
+        if src:
+            answered = src
+        elif entry.get("engine") == "prefect" or where == "prefect":
+            answered = "prefect"
+        elif where == "egeria":
+            answered = "egeria"
+        else:
+            answered = "local"
+        entry.setdefault("answered_by", answered)
+        ran_here = answered in _LOCAL_SOURCES or answered == "prefect"
+        if credential_scope and user and ran_here:
+            entry["ran_as"] = {"user": user, "scope": credential_scope}
+
 _ADAPTERS: dict = {}
 
 
@@ -217,9 +258,16 @@ class SurveyDefinitionExecutor:
         engine_override: str | None = None,
         demanded_by: str = "",
         capability_consented: bool = False,
+        credential_scope: str = "",
         **runner_kwargs: Any,
     ) -> dict:
         """
+        credential_scope: "this run" when `db_user`/`db_pwd` are a credential
+        override for THIS run only (parity G2, PI-016). It is never forwarded
+        to a step runner; it only makes the report say "ran as <user> (this
+        run)" for the steps that connected with that credential. "" (the
+        default) claims nothing.
+
         engine_override: per-RUN choice of which engine runs this definition's
         `resource-explorer`-tagged steps, taking precedence over
         `config.prefect.enabled`/`route_local_steps` for the duration of THIS
@@ -307,17 +355,23 @@ class SurveyDefinitionExecutor:
                 "server (see docs/survey-definitions.md, Current Limitations)."
             )
 
-        return self._execute(
-            entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
-            process_guid=process_guid, process_qn=process_qn,
-            publish=publish, engine_override=engine_override, runner_kwargs=runner_kwargs,
-            # `demanded_by` used to be dropped here (a latent attribution bug
-            # named but deliberately left alone by the capability-axis change
-            # below) — fixed by re/survey-executor-demanded-by-run, forwarded
-            # like every other kwarg `_execute` already accepts.
-            demanded_by=demanded_by,
-            capability_consented=capability_consented,
-        )
+        from resource_explorer.secret_redaction import redacting_logs
+
+        # Whatever password this run connects with (an override or the stored
+        # one) is kept out of the log lines about its own failures.
+        with redacting_logs(runner_kwargs.get("db_pwd") or ""):
+            return self._execute(
+                entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
+                process_guid=process_guid, process_qn=process_qn,
+                publish=publish, engine_override=engine_override, runner_kwargs=runner_kwargs,
+                credential_scope=credential_scope,
+                # `demanded_by` used to be dropped here (a latent attribution bug
+                # named but deliberately left alone by the capability-axis change
+                # below) — fixed by re/survey-executor-demanded-by-run, forwarded
+                # like every other kwarg `_execute` already accepts.
+                demanded_by=demanded_by,
+                capability_consented=capability_consented,
+            )
 
     def _execute(
         self,
@@ -333,6 +387,7 @@ class SurveyDefinitionExecutor:
         runner_kwargs: dict,
         demanded_by: str = "",
         capability_consented: bool = False,
+        credential_scope: str = "",
     ) -> dict:
         """Run an already-resolved Survey Definition's steps.
 
@@ -1001,6 +1056,19 @@ class SurveyDefinitionExecutor:
                 msg = f"Failed to publish results to Egeria: {exc}"
                 log.exception(msg)
                 errors.append(msg)
+
+        # Parity G2 (PI-016/PI-018): say which source answered each step, and
+        # for a credential override say which steps ran as that user; then
+        # keep the run's own password out of every string it is about to
+        # store or return (a driver error can echo the password it was given).
+        _annotate_step_provenance(
+            steps_report, survey_def, runner_kwargs.get("db_user") or "", credential_scope)
+        _secret = runner_kwargs.get("db_pwd") or ""
+        if _secret and isinstance(_secret, str):
+            from resource_explorer.secret_redaction import scrub
+
+            steps_report[:] = scrub(steps_report, _secret)
+            errors[:] = scrub(errors, _secret)
 
         # Record that this Survey Definition ran.
         #
