@@ -131,10 +131,22 @@ survey (level 3) is already Egeria's.
   the question-id slice before this brief's step ships), the perspectives
   the answers serve, and **purpose as a qualifier** ("this step answers Q
   for purpose Find", so the same question can be answered differently per
-  purpose). There is no valid value set for purposes yet; the brief
-  proposes the first one from the investigation design, to be confirmed by
-  the owner: `understand`, `find`, `integrate`, `assess`, `govern`, `curate`,
-  with `general` as the default when a step does not qualify. The reader
+  purpose). The purposes already exist (owner: "we have already
+  discussed purposes and can use the ones we have"): the registry's
+  `VALID_PURPOSES` on an investigation are `Assess`, `Certify`, `Deploy`,
+  `Explore`, `Learn`, `Maintain`, `Select`, `Share` (`registry.py`, the
+  investigation framing design). The manifest's `purpose` qualifier takes
+  those values, with no qualifier meaning "any purpose". Two rules from the
+  owner: the set is a **valid value set, evolvable**, since the values
+  cannot be known in advance, so it must stop being a tuple in code and
+  become a value set RE reads (the registry today, Egeria's valid values
+  when the leads give it a home), with a new value added by a person, not a
+  release; and the wrapper validates a manifest's purposes against that set
+  at load, naming an unknown value rather than refusing silently. One
+  finding for the owner: the Find and Integrate purposes of
+  `DESIGN-FIND-AND-INTEGRATE-PURPOSES-AND-THE-DATA-LENS.md` are not in the
+  tuple (nearest: `Select` and `Deploy`); whether they are added as values
+  or mapped onto existing ones is the first use of the set's evolvability. The reader
   binds a question to annotation type plus predicate (R6), and the
   manifest's declaration is what makes a user step askable without editing
   the CSV.
@@ -375,7 +387,7 @@ uses the existing call, so the skeleton runs on pyegeria 6.1.29 as pinned.
 
 ## 8. Questions
 
-**Owner:** the first purpose value set (`understand`, `find`, `integrate`, `assess`, `govern`, `curate`, default `general`) proposed above; confirm or amend. Everything else is decided.
+**Owner:** whether Find and Integrate become purpose values or map onto `Select`/`Deploy`. Everything else is decided.
 
 **Egeria leads:** the annotation-type extension's timing (interim ruling
 stands until then); whether a step's declaration as a
