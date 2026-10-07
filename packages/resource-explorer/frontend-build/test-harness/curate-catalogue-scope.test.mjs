@@ -804,7 +804,7 @@ test('widths: the default columns fit a ~1300px content width, the name wraps, n
   assert.ok(floor <= 1300, `defaults + name floor + gaps (${floor}px) must fit about 1300px`);
   const head = document.querySelector('[data-scope-tree-head]');
   const nameHead = [...head.children].find((c) => flat(c) === 'Schema / table');
-  assert.ok(nameHead.className.includes('flex-1'), 'the name column takes what is left');
+  assert.match(nameHead.getAttribute('style'), /flex:0 0 auto/, 'the name column is a fixed width too, so no drag moves the columns to its left');
   const nameCell = row(document, 'schema:sales').querySelector('[data-scope-name-cell]');
   assert.ok(nameCell.className.includes('break-words'), 'the schema / table name may wrap');
   assert.ok(document.querySelector('[data-scope-tree]').className.includes('overflow-x-auto'), 'scroll stays the fallback');

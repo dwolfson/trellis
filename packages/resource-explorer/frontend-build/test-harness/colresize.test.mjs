@@ -11,8 +11,8 @@ ensureLoaderRegistered();
 const { attachColumnResize, handleHtml, cellStyle } = await import('/static/next/colresize.js');
 
 const SPEC = {
-  id: 't1', nameMin: 100, chrome: 20,
-  columns: [{ key: 'a', def: 100, min: 40 }, { key: 'b', def: 100, min: 40 }],
+  id: 't1', chrome: 20,
+  columns: [{ key: 'a', def: 100, min: 40 }, { key: 'n', def: 100, min: 40, align: 'left' }, { key: 'b', def: 100, min: 40 }],
 };
 
 function make({ clientWidth = 0, storage = 'ok' } = {}) {
@@ -86,19 +86,27 @@ test('with storage throwing, the table still resizes and nothing throws', () => 
   assert.equal(t.px('a'), '');
 });
 
-test('the columns together never make the table wider than its host', () => {
-  const t = make({ clientWidth: 500 });
-  t.drag('a', 100, 5000);
-  // 500 visible - other column 100 - name floor 100 - chrome 20 = 280
-  assert.equal(t.px('a'), '280px');
-  t.drag('b', 100, 5000);
-  const sum = Number.parseInt(t.px('a'), 10) + Number.parseInt(t.px('b') || '100', 10) + SPEC.nameMin + SPEC.chrome;
-  assert.ok(sum <= 500, `columns + name floor + chrome = ${sum}, within the 500px host`);
-  assert.equal(t.px('b'), '100px', 'b cannot grow once a fills the host');
+test('growing a column past the host scrolls the host: no other column is squeezed or moved', () => {
+  const t = make({ clientWidth: 400 });
+  t.drag('b', 100, 900);
+  assert.equal(t.px('b'), '900px', 'the dragged column takes the width asked for');
+  assert.equal(t.px('a'), '', 'a keeps its exact width');
+  assert.equal(t.px('n'), '', 'the name column keeps its exact width');
+  assert.equal(t.host.style.getPropertyValue('--rc-total'), '1120px', 'the table floor grows so the host scrolls (100+100+900+20)');
 });
 
-test('each cell carries its default as the var() fallback', () => {
-  assert.equal(cellStyle(SPEC, 'a'), 'width:var(--rc-a,100px);flex:none;min-width:0');
+test('the drag delta is applied to the width at drag start, not accumulated per event', () => {
+  const t = make();
+  t.ptr('pointerdown', 100, t.handle('a'));
+  for (const x of [110, 120, 130, 140]) t.ptr('pointermove', x);
+  assert.equal(t.px('a'), '140px', 'start 100 + (140-100), not 100 + 10+20+30+40');
+  t.ptr('pointerup', 140);
+});
+
+test('every column is fixed (flex 0 0 auto), only the dragged one changes, text centred except where align is left', () => {
+  assert.equal(cellStyle(SPEC, 'a'), 'width:var(--rc-a,100px);flex:0 0 auto;min-width:0;text-align:center');
+  assert.equal(cellStyle(SPEC, 'n'), 'width:var(--rc-n,100px);flex:0 0 auto;min-width:0;text-align:left');
+  assert.equal(cellStyle(SPEC, 'n', 14), 'width:calc(var(--rc-n,100px) - 14px);flex:0 0 auto;min-width:0;text-align:left');
 });
 
 test('Curate scope table: handles on the resizable headers, widths move every row, reset is live only when changed', async () => {
@@ -106,21 +114,40 @@ test('Curate scope table: handles on the resizable headers, widths move every ro
   const el = scopeEl(document);
   const host = el.querySelector('[data-scope-tree]');
   const handles = [...host.querySelectorAll('[data-scope-tree-head] [data-rc-handle]')].map((h) => h.dataset.rcHandle);
-  assert.deepEqual(handles, ['choice', 'rows', 'size', 'act', 'cls', 'egeria']);
+  assert.deepEqual(handles, ['choice', 'name', 'rows', 'size', 'act', 'cls', 'egeria']);
   const reset = el.querySelector('[data-rc-reset]');
   assert.equal(reset.disabled, true, 'nothing changed yet');
   const h = host.querySelector('[data-rc-handle="egeria"]');
   h.dispatchEvent(new window.MouseEvent('pointerdown', { clientX: 500, bubbles: true, cancelable: true }));
   document.dispatchEvent(new window.MouseEvent('pointermove', { clientX: 540 }));
   document.dispatchEvent(new window.MouseEvent('pointerup', { clientX: 540 }));
-  assert.equal(host.style.getPropertyValue('--rc-egeria'), '300px');
+  assert.equal(host.style.getPropertyValue('--rc-egeria'), '280px');
   const cell = host.querySelector('[data-scope-row="schema:sales"] [data-scope-state-cell]');
-  assert.match(cell.getAttribute('style'), /width:var\(--rc-egeria,260px\)/);
+  assert.match(cell.getAttribute('style'), /width:var\(--rc-egeria,240px\)/);
   assert.equal(reset.disabled, false, 'the reset control is live');
   host.querySelector('[data-scope-toggle="sales"]').click();   // a redraw keeps the width
-  assert.equal(host.style.getPropertyValue('--rc-egeria'), '300px');
-  assert.equal(host.querySelectorAll('[data-rc-handle]').length, 6);
+  assert.equal(host.style.getPropertyValue('--rc-egeria'), '280px');
+  assert.equal(host.querySelectorAll('[data-rc-handle]').length, 7);
   reset.click();
   assert.equal(host.style.getPropertyValue('--rc-egeria'), '');
   assert.equal(reset.disabled, true);
+});
+
+test('Curate scope table: no cell flexes, text is centred except Schema / table, table rows give the indent back', async () => {
+  const { document } = await setUp(baseView());
+  const host = scopeEl(document).querySelector('[data-scope-tree]');
+  host.querySelector('[data-scope-toggle="sales"]').click();
+  const rows = [host.querySelector('[data-scope-tree-head]'), host.querySelector('[data-scope-row="schema:sales"]'), host.querySelector('[data-scope-row="table:sales.orders"]')];
+  for (const r of rows) {
+    const cells = [...r.children];
+    assert.equal(cells.length, 8);
+    for (const c of cells) {
+      assert.ok(!c.classList.contains('flex-1'), 'no flexible cell: one column absorbing space moves the others');
+      assert.match(c.getAttribute('style'), /flex:0 0 auto/);
+    }
+    const aligns = cells.map((c) => c.getAttribute('style').match(/text-align:(\w+)/)[1]);
+    assert.deepEqual(aligns, ['center', 'center', 'left', 'center', 'center', 'center', 'center', 'center']);
+  }
+  assert.match(rows[1].querySelector('[data-scope-name-cell]').getAttribute('style'), /^width:var\(--rc-name,280px\)/);
+  assert.match(rows[2].querySelector('[data-scope-name-cell]').getAttribute('style'), /^width:calc\(var\(--rc-name,280px\) - 13\.8px\)/);
 });

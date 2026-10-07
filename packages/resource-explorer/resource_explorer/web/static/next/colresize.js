@@ -11,18 +11,24 @@
  * Widths live in CSS custom properties on the host (--rc-<key>), so a drag moves every row at
  * once without a re-draw; each cell's style carries the default as the var() fallback.
  * Rules kept here:
- *  - a column never goes below its minimum; the columns together never make the table wider
- *    than the host's visible width (the host scrolls inside its own box when the floor alone
- *    is wider than the pane);
+ *  - EVERY column, the name column included, is a fixed width (flex: none): dragging a handle
+ *    changes that one column's width and nothing else, so the columns to its left do not move
+ *    and the ones to its right shift by exactly the change. (An earlier version let one
+ *    "name" column absorb the difference: growing a column right of it shrank the name and
+ *    slid every column between them left, which looked like all of them resizing.) When the
+ *    columns together outgrow the host, the host scrolls inside its own box; nothing is
+ *    squeezed. A column never goes below its minimum nor above MAX_WIDTH;
  *  - double-click on a handle resets that column; Left/Right move a focused handle by 10px,
  *    Shift by 50px; the cue is a thin vertical bar on hover and on keyboard focus (see the
  *    `.rc-handle` rules in index.html);
  *  - widths persist per table id in localStorage, every access inside try/catch: with storage
  *    unavailable the table still resizes, it just forgets on reload.
- * A spec is { id, nameMin, chrome, columns: [{ key, def, min, resizable }] }, where the one
- * flexible "name" column is not listed (it takes what the others leave) and `chrome` is the
- * px of gaps, borders and indents around the cells.
+ * A spec is { id, chrome, columns: [{ key, def, min, resizable, align }] }, `chrome` being the
+ * px of gaps and borders around the cells; `align: 'left'` keeps a column's text left (all
+ * others are centred). A row drawn indented passes the indent as `offset`, which is taken off
+ * its first column so the cells still line up with the header.
  */
+const MAX_WIDTH = 1200;
 const VAR = (key) => `--rc-${key}`;
 const STORE = (spec) => `re.colwidths.${spec.id}`;
 const STEP = 10;
@@ -30,13 +36,16 @@ const STEP_BIG = 50;
 
 const col = (spec, key) => spec.columns.find((c) => c.key === key);
 
-export function cellStyle(spec, key) {
+export const alignStyle = (spec, key) => `text-align:${col(spec, key).align || 'center'}`;
+
+export function cellStyle(spec, key, offset = 0) {
   const c = col(spec, key);
-  return `width:var(${VAR(key)},${c.def}px);flex:none;min-width:0`;
+  const w = `var(${VAR(key)},${c.def}px)`;
+  return `width:${offset ? `calc(${w} - ${offset}px)` : w};flex:0 0 auto;min-width:0;${alignStyle(spec, key)}`;
 }
 
 export function totalFloor(spec, widths = {}) {
-  return spec.columns.reduce((a, c) => a + (widths[c.key] ?? c.def), 0) + spec.nameMin + spec.chrome;
+  return spec.columns.reduce((a, c) => a + (widths[c.key] ?? c.def), 0) + spec.chrome;
 }
 
 export function innerStyle(spec) {
@@ -52,7 +61,7 @@ export function handleHtml(spec, key, label) {
 }
 
 /** Header cell style: one line, ellipsis, the full text in the cell's title. */
-export const headCellStyle = 'position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:6px';
+export const headCellStyle = (spec, key) => `position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:6px;${alignStyle(spec, key)}`;
 
 function readStore(win, spec) {
   try {
@@ -82,15 +91,7 @@ export function attachColumnResize(host, spec, { onChange } = {}) {
   let widths = readStore(win, spec);
   const widthOf = (key) => widths[key] ?? col(spec, key).def;
 
-  /** The most `key` may take: what the host shows, less every other column and the name floor. */
-  const maxOf = (key) => {
-    const c = col(spec, key);
-    const avail = host.clientWidth;
-    if (!avail) return Infinity;
-    const others = spec.columns.reduce((a, x) => a + (x.key === key ? 0 : widthOf(x.key)), 0);
-    return Math.max(c.min, avail - others - spec.nameMin - spec.chrome);
-  };
-  const clamp = (key, w) => Math.round(Math.min(maxOf(key), Math.max(col(spec, key).min, w)));
+  const clamp = (key, w) => Math.round(Math.min(MAX_WIDTH, Math.max(col(spec, key).min, w)));
 
   const apply = () => {
     for (const c of spec.columns) {
