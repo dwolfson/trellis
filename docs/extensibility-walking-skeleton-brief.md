@@ -110,6 +110,35 @@ editing the definition document, not RE's code. "Running in Egeria's
 engine host" is then the question of where level 2 executes, and the
 survey (level 3) is already Egeria's.
 
+**Three decisions on steps (owner, 2026-10-07):**
+
+- **Credential tier:** a user step may ask for **read-only on the resource**
+  and nothing more; the wrapper refuses a manifest that declares a higher
+  tier, with the sentence naming the tier, until a publication-style profile
+  says otherwise. The host hands a connection opened at that tier, never a
+  password.
+- **Engine host: later, and by equivalence.** Egeria's engine host runs
+  Java; the RE/Prefect engine runs Python. The goal, not for this quarter,
+  is that **RE's engine appears to Egeria and behaves like a native engine
+  host**: the Survey Definition is Egeria's governance action process, its
+  steps are declared as governance action types, and Egeria dispatches a
+  Python step to RE's engine the way it dispatches a Java one to its own.
+  The skeleton keeps that door open by declaring the wrapper's element in
+  the governance-action family and by running steps only through RE's
+  queue, never inline, so an Egeria dispatch later lands on the same path.
+- **Questions, perspectives and purpose in the manifest: yes.** A manifest
+  declares the questions it answers (by stable question id, which commits
+  the question-id slice before this brief's step ships), the perspectives
+  the answers serve, and **purpose as a qualifier** ("this step answers Q
+  for purpose Find", so the same question can be answered differently per
+  purpose). There is no valid value set for purposes yet; the brief
+  proposes the first one from the investigation design, to be confirmed by
+  the owner: `understand`, `find`, `integrate`, `assess`, `govern`, `curate`,
+  with `general` as the default when a step does not qualify. The reader
+  binds a question to annotation type plus predicate (R6), and the
+  manifest's declaration is what makes a user step askable without editing
+  the CSV.
+
 ### 2c. One user step: `database_staleness`
 
 A Python package **outside** RE (`examples/steps/database_staleness/` in the
@@ -346,7 +375,7 @@ uses the existing call, so the skeleton runs on pyegeria 6.1.29 as pinned.
 
 ## 8. Questions
 
-**Owner:** none open; name, home and the CLI/Dr.Egeria split are decided above.
+**Owner:** the first purpose value set (`understand`, `find`, `integrate`, `assess`, `govern`, `curate`, default `general`) proposed above; confirm or amend. Everything else is decided.
 
 **Egeria leads:** the annotation-type extension's timing (interim ruling
 stands until then); whether a step's declaration as a
