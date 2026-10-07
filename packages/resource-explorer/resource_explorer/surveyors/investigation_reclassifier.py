@@ -158,6 +158,9 @@ class InvestigationReclassifier:
         """
         from resource_explorer.egeria_identity import current_zones, set_zone_membership
 
+        if not target:
+            return self._clear_zones(guid)
+
         before = current_zones(guid)
         if before and set(before) == set(target):
             return True, "already in the target zones"
@@ -179,6 +182,29 @@ class InvestigationReclassifier:
             # failure, and not proof of success either — so it is reported as
             # unverified rather than counted as moved.
             return False, "could not read the zones back to confirm the change"
+        return True, ""
+
+    def _clear_zones(self, guid: str) -> tuple[bool, str]:
+        """Loosen with NO configured zone: remove the `ZoneMembership` ("zones left to Egeria") and
+        confirm by a strict read that none remains. `[]` from the strict reader is a real answer
+        ("no zones"); an unreadable element raises and is reported, never counted as moved."""
+        from resource_explorer.egeria_identity import ZoneReadError, clear_zone_membership, read_zones
+
+        try:
+            before = read_zones(guid)
+        except ZoneReadError as exc:
+            return False, str(exc)
+        if not before:
+            return True, "already in no zone (zones left to Egeria)"
+        if not clear_zone_membership(guid):
+            return False, (f"Egeria did not accept clearing the zones (it is in {before}; moving out "
+                           "of a zone needs PUBLISH rights on that zone, which RE's account may not hold)")
+        try:
+            after = read_zones(guid)
+        except ZoneReadError as exc:
+            return False, f"could not read the zones back to confirm the clear: {exc}"
+        if after:
+            return False, f"zones read back as {after}, not cleared"
         return True, ""
 
     def _move_kind_classification(self, guid: str, from_kind: str, to_kind: str,
@@ -293,9 +319,12 @@ class InvestigationReclassifier:
         return False, "could not read the classification back to confirm the change"
 
     def _target_zones(self, direction: str, owner: str) -> list[str]:
-        from resource_explorer.egeria_identity import private_zones, publish_zones
+        from resource_explorer.egeria_identity import configured_publish_zones, private_zones
 
-        return private_zones(owner) if direction == TIGHTEN else publish_zones()
+        # Loosening goes to the CONFIGURED publish zones only (owner, 2026-10-07: no default zone).
+        # `[]` means "nothing configured": `_move_zones` then clears the private zones and leaves
+        # zones to Egeria, rather than inventing one.
+        return private_zones(owner) if direction == TIGHTEN else configured_publish_zones()
 
     def _report_guids(self, slug: str) -> tuple[list[str], list[str]]:
         """`(report_guids, members_that_could_not_be_enumerated)`.

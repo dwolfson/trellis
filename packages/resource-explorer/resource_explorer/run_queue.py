@@ -266,7 +266,12 @@ def _handle_materialize_components(target: dict, result_ref: str) -> RunOutcome:
     after a branch verdict. Each result is recorded on the activity entry;
     the run fails only if a materialization did (the detail says which)."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.workflows.curate import materialize_component_if_accepted
+    from resource_explorer.workflows.curate import (
+        NODE_PROMOTION_COMPONENT,
+        materialize_component_if_accepted,
+        promote_to_publish_zones,
+        record_promotion,
+    )
 
     registry = ProjectRegistry()
     slug = target["slug"]
@@ -278,6 +283,13 @@ def _handle_materialize_components(target: dict, result_ref: str) -> RunOutcome:
                 failed.append(f"{path}: {res.get('error')}")
             else:
                 done += 1
+                # Accept's Egeria-visible effect (configured-only zone rule): the same promotion the
+                # synchronous verdict route runs, with its proof row. A failed promotion is a row
+                # that says so; it does not fail the materialization that already happened.
+                guid = (res or {}).get("guid", "")
+                if guid:
+                    record_promotion(registry, slug, path, NODE_PROMOTION_COMPONENT,
+                                     promote_to_publish_zones(guid))
         except Exception as exc:
             failed.append(f"{path}: {type(exc).__name__}: {exc}")
     return RunOutcome(state="failed" if failed else "succeeded",

@@ -49,7 +49,6 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "DRAFT_ZONE",
-    "DEFAULT_PUBLISH_ZONES",
     "EgeriaIdentity",
     "apply_identity",
     "caller_credentials",
@@ -66,8 +65,9 @@ __all__ = [
     "private_zones",
     "identity_for_user",
     "ownership_body",
-    "publish_zones",
     "configured_publish_zones",
+    "clear_zone_membership",
+    "read_zones",
     "service_credentials",
     "set_ownership",
     "set_zone_membership",
@@ -102,18 +102,6 @@ DRAFT_ZONE = "resource-explorer-draft"
 #: with both entries present, and the owner still read the element.
 PRIVATE_ZONE = "resource-explorer-private"
 
-#: Where an accepted element is promoted to.
-#:
-#: `egeria-runtime` is not a guess: it is what the quickstart deployment
-#: actually configures. `egeria-workspaces-fs/compose-configs/egeria-freshstart/
-#: secrets/egeria-user-directory.omsecrets` sets `defaultZones: [egeria-runtime]`
-#: and `publishZones: [egeria-runtime]` for the platform's own account, and it
-#: is the only concrete zone value in the whole compose config. Deliberately
-#: NOT `quarantine`, which appears only as filler in pyegeria's own docstring
-#: examples and would put every accepted element somewhere the quickstart's
-#: view server does not serve.
-DEFAULT_PUBLISH_ZONES: tuple[str, ...] = ("egeria-runtime",)
-
 _OWNER_TYPE_NAME = "UserIdentity"
 
 #: `Ownership.ownerPropertyName` — which property of the owning element holds
@@ -144,34 +132,17 @@ def private_zones(owner: str) -> list[str]:
     return zones
 
 
-def publish_zones() -> list[str]:
-    """The zones a curate-accepted element is promoted into.
-
-    `EXPLORER_PUBLISH_ZONES` (comma-separated) wins; then RE's own
-    `egeria.default_catalog_zones` if a deployment already set it, since that
-    is the same question asked earlier under a different name; then
-    `DEFAULT_PUBLISH_ZONES`.
-    """
-    raw = os.environ.get("EXPLORER_PUBLISH_ZONES", "")
-    zones = [z.strip() for z in raw.split(",") if z.strip()]
-    if zones:
-        return zones
-    from resource_explorer.config import get_config
-
-    configured = list(get_config().egeria.default_catalog_zones or [])
-    if configured:
-        return configured
-    return list(DEFAULT_PUBLISH_ZONES)
-
-
 def configured_publish_zones() -> list[str]:
     """The publish zones this deployment CONFIGURED, or `[]` when it did not.
 
-    `publish_zones()` falls back to `DEFAULT_PUBLISH_ZONES` (`egeria-runtime`) so a promotion
-    always has somewhere to go. A catalogue commit must not: the 2026-10-05 rehearsal found that
-    writing that fallback onto a database element locks the service identity, Egeria's survey
-    engine and the cataloguer out of it. So the commit writes a zone ONLY when someone set
-    `EXPLORER_PUBLISH_ZONES` (or RE's `egeria.default_catalog_zones`) on purpose.
+    **The configured-only rule (project owner, 2026-10-07): no zone unless someone configured one.**
+    This is the ONLY source of a publish zone on any write path (catalogue commit, curate
+    promotion, investigation loosening). There is no default: the old fallback zone and its function
+    are removed, because the 2026-10-05 rehearsal
+    found that writing it onto an element locks the service identity, Egeria's survey engine and
+    the cataloguer out of it. A zone is written ONLY when someone set `EXPLORER_PUBLISH_ZONES`
+    (or RE's `egeria.default_catalog_zones`) on purpose; with nothing configured the writers leave
+    zones to Egeria, and promotion CLEARS RE's own draft zone instead of replacing it.
     """
     raw = os.environ.get("EXPLORER_PUBLISH_ZONES", "")
     zones = [z.strip() for z in raw.split(",") if z.strip()]
@@ -440,6 +411,71 @@ def set_zone_membership(
             zones, element_guid, type(exc).__name__, exc,
         )
         return False
+
+
+def clear_zone_membership(
+    element_guid: str,
+    *,
+    identity: Optional[EgeriaIdentity] = None,
+    client: Any = None,
+) -> bool:
+    """Remove the element's `ZoneMembership` classification ("zones left to Egeria"). True when
+    Egeria accepted the call. The documented clear call (`clear_zone_membership`, `0424`), used
+    when promotion has no CONFIGURED zone to move the element into: RE's draft zone must not stay
+    on an accepted element, and RE must not invent a zone to replace it.
+
+    UNVERIFIED LIVE: the body is `{"class": "DeleteClassificationRequestBody"}` per pyegeria's
+    model; the caller reads the zones back (`read_zones`) before it says anything is cleared."""
+    if not element_guid:
+        return False
+    try:
+        client = client or classification_client(identity)
+        client.clear_zone_membership(element_guid, {"class": "DeleteClassificationRequestBody"})
+        log.info("egeria: ZoneMembership cleared on %s", element_guid)
+        return True
+    except Exception as exc:
+        log.warning(
+            "egeria: could not clear ZoneMembership on %s — %s: %s",
+            element_guid, type(exc).__name__, exc,
+        )
+        return False
+
+
+def _metadata_client(identity: Optional[EgeriaIdentity] = None):
+    """A `MetadataExpert` authenticated as `identity` (the read side of zone checks)."""
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+
+    from resource_explorer.config import get_config
+
+    egeria = get_config().egeria
+    identity = identity or caller_credentials()
+    client = MetadataExpert(
+        egeria.view_server,
+        egeria.platform_url,
+        identity.user_id if identity.is_person else egeria.user_id,
+        identity.password or egeria.user_password,
+    )
+    apply_identity(client, identity)
+    return client
+
+
+class ZoneReadError(RuntimeError):
+    """The element's zones could not be read: not the same as "it has none"."""
+
+
+def read_zones(element_guid: str, identity: Optional[EgeriaIdentity] = None) -> list[str]:
+    """The element's zones as Egeria holds them NOW. `[]` means Egeria answered and the element has
+    no `ZoneMembership`; an unreadable answer RAISES `ZoneReadError`, never `[]`
+    (`current_zones` is the lenient reader whose `[]` means "could not tell")."""
+    from resource_explorer.catalogue_gateway import zones_of_element
+
+    if not element_guid:
+        raise ZoneReadError("no element to read")
+    try:
+        element = _metadata_client(identity).get_metadata_element_by_guid(element_guid)
+        return zones_of_element(element)
+    except Exception as exc:                      # re-raised as the one named error, never swallowed
+        raise ZoneReadError(f"could not read the zones of {element_guid[:8]}: {exc}") from exc
 
 
 def current_zones(element_guid: str, identity: Optional[EgeriaIdentity] = None) -> list[str]:

@@ -3508,6 +3508,8 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
     materialized_components = registry.get_materialized_components("repo", slug)
     materialized_blueprints = registry.get_materialized_blueprints("repo", slug)
     slug_to_scope = _blueprint_slug_to_scope_map(registry, slug)
+    from resource_explorer.workflows.curate import NODE_PROMOTION_BLUEPRINT, promotion_by_scope
+    promotions = promotion_by_scope(registry, slug, NODE_PROMOTION_BLUEPRINT)
 
     blueprints = []
     for (perspective, name), entry in sorted(by_key.items()):
@@ -3550,6 +3552,7 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
             "surveyed_at": r.get("surveyed_at", ""),
             "verdict": _verdict_view(verdicts.get(vkey)),
             "materialized": _materialized_view(materialized_blueprints.get(vkey)),
+            "promotion": promotions.get(vkey),
         })
     return blueprints
 

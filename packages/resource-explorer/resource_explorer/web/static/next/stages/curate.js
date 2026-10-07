@@ -128,6 +128,16 @@ export function stateCue(stateKey, word, title = '') {
   return `${open} data-cue="${esc(stateKey)}" title="${esc(title || e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
 }
 
+/** What accepting did to the element's zones, from the promotion's PROOF ROW (the server read the
+ *  element's zones before and after; this file never builds the sentence from the click). A short
+ *  word with a cue: a promotion that failed or was refused is a warning cue, never a check. Empty
+ *  when no promotion has been recorded for the row. */
+export function promotionHtml(p) {
+  if (!p || !p.words) return '';
+  const ok = p.status === 'promoted' || p.status === 'already_promoted' || p.status === 'already_unzoned';
+  return `<span data-promotion="${esc(p.status || '')}">· ${stateCue(ok ? 'measured' : (p.status === 'skipped' ? 'unrun' : 'error'), p.words)}</span>`;
+}
+
 /** What the mark at the left of a plan row means. It is NOT "accepted" or "published": the
  *  plan is a local read of the survey (curate_plan.py), so `candidate` only says the survey found
  *  something here that Catalog would create. A word in a bordered chip, not a check, so it cannot
@@ -611,7 +621,7 @@ function branchRowHtml(b, selected) {
  *  ("detect"/"coupling") renders as "found by"; `perspective` (physical/
  *  deployment/logical/dev) renders as "reading" -- two different axes that
  *  used to share one word (§0). */
-function leafRowHtml(l) {
+export function leafRowHtml(l) {
   const multi = (l.proposals || []).length >= 2;
   const proposalLines = multi ? l.proposals.map((p) => `
     <div class="pl-s2 text-provenance text-ink-muted">found by ${esc(p.run_label)}${p.type ? ` — ${esc(p.type)}` : ''} · ${esc(p.perspective || 'physical')} reading · confidence <span class="tnum">${p.confidence ?? 0}</span>%</div>
@@ -627,6 +637,7 @@ function leafRowHtml(l) {
       ${!multi && (l.low_confidence ? `<span class="text-state-warn">· ⚠ confidence <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· confidence <span class="tnum">${l.confidence}</span>%</span>` : '')}
       ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
       <span>· ${verdictBadge(l.verdict)}</span>
+      ${promotionHtml(l.promotion)}
       <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
       <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
     </div>
@@ -862,7 +873,7 @@ function membershipHonestyLine(bp) {
     class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${parts.join(' and ')} stand apart${icon('chevron-right', { size: 12 })}</button></div>`;
 }
 
-function blueprintRowHtml(bp) {
+export function blueprintRowHtml(bp) {
   const v = bp.verdict;
   const accepted = v?.verdict === 'accepted';
   const rejected = v?.verdict === 'rejected';
@@ -879,6 +890,7 @@ function blueprintRowHtml(bp) {
     </div>
     <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
       <span>${blueprintVerdictBadge(v)}</span>
+      ${promotionHtml(bp.promotion)}
       <button data-blueprint-verdict="accepted" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${accepted ? 'change' : 'accept'}</button>
       <button data-blueprint-verdict="rejected" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
     </div>

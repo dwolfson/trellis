@@ -86,7 +86,10 @@ from resource_explorer.workflows.curate import (  # noqa: E402
     materialize_blueprint_if_accepted as _materialize_blueprint_if_accepted,
     materialize_component_if_accepted as _materialize_if_accepted,
     owner_of as _owner_of,
+    NODE_PROMOTION_BLUEPRINT,
+    NODE_PROMOTION_COMPONENT,
     promote_to_publish_zones as _promote_to_publish_zones,
+    record_promotion as _record_promotion,
     require_curation_rights as _require_curation_rights,
     slug_to_scope_map as _slug_to_scope_map,
 )
@@ -419,6 +422,7 @@ def add_component_verdict(entity_type: str, slug: str, body: ComponentVerdictCre
         guid = materialization.get("guid", "")
         if body.verdict == "accepted" and guid:
             verdict["promotion"] = _promote_to_publish_zones(guid)
+            _record_promotion(registry, slug, body.scope_locator, NODE_PROMOTION_COMPONENT, verdict["promotion"])
     return verdict
 
 
@@ -487,4 +491,5 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
         guid = materialization.get("guid", "")
         if body.verdict == "accepted" and guid:
             verdict["promotion"] = _promote_to_publish_zones(guid)
+            _record_promotion(registry, slug, scope_locator, NODE_PROMOTION_BLUEPRINT, verdict["promotion"])
     return verdict

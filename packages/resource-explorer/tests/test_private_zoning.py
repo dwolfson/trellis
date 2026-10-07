@@ -359,12 +359,16 @@ def test_accepting_a_finding_does_not_publicise_a_private_element():
     import resource_explorer.egeria_identity as ident
     before_cz, before_set = ident.current_zones, ident.set_zone_membership
     moved = []
+    before_rz, before_cl = ident.read_zones, ident.clear_zone_membership
     ident.current_zones = lambda guid, *a, **k: [private_zone(), "alice"]
+    ident.read_zones = lambda guid, *a, **k: [private_zone(), "alice"]
     ident.set_zone_membership = lambda guid, zones, **k: moved.append(zones) or True
+    ident.clear_zone_membership = lambda guid, **k: moved.append("clear") or True
     try:
         out = curate.promote_to_publish_zones("g1")
     finally:
         ident.current_zones, ident.set_zone_membership = before_cz, before_set
+        ident.read_zones, ident.clear_zone_membership = before_rz, before_cl
 
     assert out["status"] == "skipped", out
     assert moved == [], "a private element was promoted into the publish zones"

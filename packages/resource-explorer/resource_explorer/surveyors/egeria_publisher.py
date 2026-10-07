@@ -183,8 +183,10 @@ class EgeriaPublisher:
         # draft zone and `curate accept` promotes it (see
         # `workflows/curate.promote_to_publish_zones`). `default_catalog_zones`
         # is still honoured as the *publish* target — see
-        # `egeria_identity.publish_zones` — which is the question it was
-        # actually asking.
+        # `egeria_identity.configured_publish_zones` — which is the question
+        # it was actually asking. There is no default publish zone
+        # (configured-only, 2026-10-07): with none configured promotion
+        # clears the draft zone instead.
         if zone_names is not None:
             self.zone_names = zone_names
         else:

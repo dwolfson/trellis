@@ -124,65 +124,92 @@ def owner_of(registry: ProjectRegistry, entity_type: str, slug: str,
     return str(row.get("decided_by") or "")
 
 
+#: What the verdict row says when promotion left zones to Egeria (nothing configured). The two
+#: halves are the whole claim: RE put the element in NO zone, and a read-back found none.
+ZONES_LEFT_TO_EGERIA_WORDS = "accepted · zones left to Egeria · everyone visible"
+
+
+def _zone_words(zones: list[str]) -> str:
+    return ZONES_LEFT_TO_EGERIA_WORDS if not zones else f"accepted · zone {', '.join(zones)}"
+
+
 def promote_to_publish_zones(guid: str) -> dict:
-    """Move an accepted element out of the draft zone. The Egeria-visible effect of "accept".
+    """Move an accepted element out of RE's draft zone. The Egeria-visible effect of "accept".
 
-    Plan §4: "promotion into the deployment's normal `publishZones` on
-    acceptance, so 'curate' has a zone transition as its Egeria-visible
-    effect". One `add_zone_membership` call replaces the classification's
-    property outright, so the element is never briefly in both.
+    **Configured-only (project owner, 2026-10-07).** The zone an accepted element moves into is
+    `egeria_identity.configured_publish_zones()` and nothing else: there is no default zone.
 
-    Best-effort and reported: the verdict is already saved and real, exactly as
-    materialization is, so a failed promotion is a line in the response rather
-    than a rolled-back decision.
+    * a zone IS configured: one `add_zone_membership` call replaces the draft zone with exactly
+      the configured zone(s) (never briefly in both); the row reads "accepted · zone <name>".
+    * NOTHING configured: RE writes no zone at all and CLEARS its own draft `ZoneMembership`
+      (the documented clear call), so the element is readable by everyone Egeria lets read it;
+      the row reads "accepted · zones left to Egeria · everyone visible". "Cleared" is said only
+      after a read of the element's classifications found no `ZoneMembership` on it. Materialization
+      stamps `[draft_zone()]` (or the private zones for a private investigation), never the
+      private zone for a public resource, so accept has to clear it or the element stays in the
+      draft zone the service identity cannot read from.
+
+    Best-effort and reported: the verdict is already saved and real, exactly as materialization
+    is, so a failed promotion is a line in the response rather than a rolled-back decision.
     """
     from resource_explorer.egeria_identity import (
+        ZoneReadError,
+        clear_zone_membership,
+        configured_publish_zones,
         current_zones,
-        publish_zones,
+        private_zone,
+        read_zones,
         set_zone_membership,
     )
 
-    zones = publish_zones()
+    zones = configured_publish_zones()
     if not guid:
-        return {"status": "skipped", "reason": "no Egeria element to promote", "zones": zones}
+        return {"status": "skipped", "reason": "no Egeria element to promote", "zones": zones,
+                "words": "accepted · no Egeria element to promote"}
 
-    # **A no-op promotion is an error in Egeria, not a nothing.** Its security
-    # connector refuses a zone change whose before and after are equal —
-    # observed live 2026-09-04:
-    #
-    #     OMAG-SERVER-SECURITY-403-005 User erinoverview is not authorized to
-    #     change the zone membership for element ... from [egeria-runtime] to
-    #     [egeria-runtime]
-    #
-    # Re-accepting an already-accepted element is an ordinary thing to do, so
-    # checking first is not an optimisation: without it, "this was already
-    # promoted" is reported to the user as a permissions failure.
+    if not zones:
+        # Nothing configured: read FIRST, strictly. `[]` from this reader is "Egeria answered, no
+        # ZoneMembership"; an unreadable answer raises and is reported, never read as "nothing to do".
+        try:
+            before = read_zones(guid)
+        except ZoneReadError as exc:
+            return {"status": "error", "guid": guid, "zones": [], "error": str(exc),
+                    "words": f"accepted · zones not changed · {exc}"}
+        if private_zone() in before:
+            return _private_skip(guid, before)
+        if not before:
+            return {"status": "already_unzoned", "guid": guid, "zones": [], "from_zones": [],
+                    "words": ZONES_LEFT_TO_EGERIA_WORDS}
+        if not clear_zone_membership(guid):
+            return {"status": "error", "guid": guid, "zones": [], "from_zones": before,
+                    "error": "Egeria did not accept clearing the ZoneMembership",
+                    "words": "accepted · zones not changed · Egeria did not accept clearing the draft zone"}
+        try:
+            after = read_zones(guid)
+        except ZoneReadError as exc:
+            return {"status": "error", "guid": guid, "zones": [], "from_zones": before,
+                    "error": str(exc), "words": f"accepted · could not confirm the zone was cleared · {exc}"}
+        if after:
+            return {"status": "error", "guid": guid, "zones": after, "from_zones": before,
+                    "error": f"the zones read back as {after}, not cleared",
+                    "words": f"accepted · still in zone {', '.join(after)} · the clear did not take"}
+        return {"status": "promoted", "guid": guid, "zones": [], "from_zones": before,
+                "words": ZONES_LEFT_TO_EGERIA_WORDS}
+
+    # **A no-op promotion is an error in Egeria, not a nothing.** Its security connector refuses a
+    # zone change whose before and after are equal (observed live 2026-09-04,
+    # OMAG-SERVER-SECURITY-403-005 ... from [egeria-runtime] to [egeria-runtime]). Re-accepting an
+    # already-accepted element is an ordinary thing to do, so checking first is not an
+    # optimisation: without it, "this was already promoted" reads as a permissions failure.
     already = current_zones(guid)
     if already and set(already) == set(zones):
-        return {"status": "already_promoted", "guid": guid, "zones": zones}
+        return {"status": "already_promoted", "guid": guid, "zones": zones, "words": _zone_words(zones)}
 
-    # **Never promote a private element into the publish zones.** Accepting a
-    # finding is a curation decision about quality; it is not a decision to
-    # make somebody's personal investigation public, and the two must not be
-    # the same click. Without this, "accept" would be an un-labelled
-    # publish-to-everyone button for exactly the artifacts that most need not
-    # to be.
-    #
-    # Keyed on the zone RE itself applies rather than on re-deriving privacy
-    # from the investigation: the element's own classification is what Egeria
-    # is enforcing, so it is the fact that matters here, and it stays correct
-    # even if the investigation's membership changed after publication.
-    from resource_explorer.egeria_identity import private_zone
-
+    # **Never promote a private element into the publish zones.** Accepting a finding is a
+    # curation decision about quality; it is not a decision to make somebody's personal
+    # investigation public. Keyed on the zone RE itself applies, which is what Egeria enforces.
     if private_zone() in (already or []):
-        return {
-            "status": "skipped",
-            "reason": ("this element belongs to a private investigation; accepting a "
-                       "finding does not make it public. Reclassify the investigation "
-                       "to share it."),
-            "guid": guid,
-            "zones": already,
-        }
+        return _private_skip(guid, already)
 
     ok = set_zone_membership(guid, zones)
     return {
@@ -190,7 +217,55 @@ def promote_to_publish_zones(guid: str) -> dict:
         "guid": guid,
         "zones": zones,
         "from_zones": already,
+        "words": _zone_words(zones) if ok else "accepted · zones not changed · Egeria did not accept the zone change",
         **({} if ok else {"error": "Egeria did not accept the ZoneMembership change"}),
+    }
+
+
+#: Proof rows for a promotion (`catalogue_commit_proofs`, no new table). A row is written AFTER the
+#: promotion read the element's zones, and carries the words the verdict row shows, so the screen
+#: reads a row and never re-derives the sentence from the branch the code took.
+P_PROMOTION = "promotion"
+NODE_PROMOTION_COMPONENT = "component_promotion"
+NODE_PROMOTION_BLUEPRINT = "blueprint_promotion"
+
+
+def record_promotion(registry: ProjectRegistry, slug: str, scope: str, node_kind: str,
+                     promotion: dict | None, recorded_by: str = "") -> None:
+    """Append the proof row for one promotion (`scope` is the component's scope_locator or the
+    blueprint's `<perspective>::<cluster>` key). Nothing is recorded for a promotion that was
+    never attempted."""
+    if not promotion:
+        return
+    registry.append_catalogue_commit_proof(
+        slug, proof=P_PROMOTION, node_kind=node_kind, table_name=scope,
+        element_guid=promotion.get("guid", ""), recorded_by=recorded_by,
+        detail={"status": promotion.get("status", ""), "words": promotion.get("words", ""),
+                "zones": promotion.get("zones", []), "from_zones": promotion.get("from_zones", []),
+                "error": promotion.get("error", "")})
+
+
+def promotion_by_scope(registry: ProjectRegistry, slug: str, node_kind: str) -> dict[str, dict]:
+    """{scope: latest promotion row} for a resource: `{words, status, read_at}`. The words are what
+    the verdict row shows; absent means no promotion has been recorded for that scope."""
+    out: dict[str, dict] = {}
+    for p in registry.list_catalogue_commit_proofs(slug):
+        if p["proof"] == P_PROMOTION and p["node_kind"] == node_kind:
+            d = p.get("detail") or {}
+            out[p["table_name"]] = {"words": d.get("words", ""), "status": d.get("status", ""),
+                                    "read_at": p["read_at"]}
+    return out
+
+
+def _private_skip(guid: str, in_zones: list[str]) -> dict:
+    return {
+        "status": "skipped",
+        "reason": ("this element belongs to a private investigation; accepting a "
+                   "finding does not make it public. Reclassify the investigation "
+                   "to share it."),
+        "guid": guid,
+        "zones": in_zones,
+        "words": "accepted · stays private · reclassify the investigation to share it",
     }
 
 
