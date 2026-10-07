@@ -131,6 +131,14 @@ class TestTheRecord:
             c.create("repo", "p", author="", selection={}, manifest={}, steps=[])
 
 
+def _keep_a_survey(registry):
+    """A kept survey: the commit publishes it, it does not run one (brief section 1)."""
+    from resource_explorer.surveyors import survey_snapshot
+    from resource_explorer.surveyors.survey_report import ClassificationAnnotation
+    survey_snapshot.record_step(registry, "p", "repo_language", "2026-10-07T01:00:00", [
+        ClassificationAnnotation(summary=t, analysis_step="repo_language", check_name="c", item_key=t) for t in "abc"])
+
+
 class TestTheCommitRoute:
     def test_it_refuses_outside_the_population(self, client, registry):
         _seed(registry)
@@ -139,6 +147,7 @@ class TestTheCommitRoute:
 
     def test_it_records_the_act_and_enqueues_the_run(self, client, registry):
         _seed(registry)
+        _keep_a_survey(registry)
         registry.set_disposition("https://github.com/x/p", "using", resource_slug="p")
         r = client.post("/api/projects/p/curate/commit",
                         json={"confirm": ["SoftwareCapability::pyegeria", "Endpoint"], "sub_resources": ["docs"], "note": "go"})
@@ -176,18 +185,21 @@ class TestTheCommitSteps:
         registry.set_project_context("repo", "p", status="personal")
         calls = []
 
-        class FakeSurvey:
-            annotations = [1, 2, 3]
+        _keep_a_survey(registry)
 
         class FakeOrch:
             def __init__(self, registry=None): pass
-            def run(self, slug, steps=None): return FakeSurvey()
+            def run(self, slug, steps=None): raise AssertionError("the commit must not run a survey")
 
         class FakePublisher:
-            def __init__(self, registry=None): pass
+            report_reused = False
+            def __init__(self, registry=None):
+                self._asset_maker = type("AM", (), {"get_asset_by_guid": staticmethod(lambda g, **k: {"guid": g})})()
             def publish(self, survey):
                 registry.set_egeria_asset_guid("p", "asset-1") if hasattr(registry, "set_egeria_asset_guid") else None
                 return "report-9"
+            def get_survey_reports_by_guid(self, guid):
+                return [{"guid": "report-9", "qualified_name": "x", "annotation_count": 3}]
             def publish_sub_resources(self, slug, url, guid, locators):
                 calls.append(("subs", guid, list(locators)))
                 return {l: f"g-{l}" for l in locators}
@@ -206,19 +218,14 @@ class TestTheCommitSteps:
                                          manifest={}, steps=list(wf.STEPS))
         out = wf.execute_curation(registry, rec["id"])
         by = {s["name"]: s for s in out["steps"]}
-        # _seed() stamps 7 analyses as having JUST run (log_analysis_run,
-        # status "success") and get_egeria_asset_guid is mocked to already
-        # return "asset-1" -- so the 2026-09-20 freshness gate
-        # (curate_commit.py's module docstring) finds nothing stale and an
-        # asset that already exists, and correctly skips re-surveying and
-        # re-publishing altogether rather than manufacturing "report-9".
+        # The commit publishes the kept survey (brief section 1); it surveyed nothing (FakeOrch raises).
         assert by["publish_asset"]["state"] == "done"
         assert "asset-1" in by["publish_asset"]["detail"]
-        assert "already fresh" in by["publish_asset"]["detail"]
-        assert "already published" in by["publish_asset"]["detail"]
+        assert "published · from the survey of 2026-10-07" in by["publish_asset"]["detail"]
+        assert "3 annotations linked" in by["publish_asset"]["detail"]
         assert by["classifications"]["state"] == "done" and "Confidentiality · internal" in by["classifications"]["detail"]
         assert by["sub_resources"]["state"] == "done"
-        assert by["sub_resources"]["detail"] == "1 of 1 published · plus 1 ancestor folder"   # not "2 of 1"
+        assert by["sub_resources"]["detail"] == "1 of 1 published · 2 read back · plus 1 ancestor folder"   # not "2 of 1"
         assert by["components"]["state"] == "skipped"
         assert out["state"] == "done"
         conf = next(c for c in calls if c[0] == "conf")
@@ -232,11 +239,13 @@ class TestTheCommitSteps:
         from resource_explorer.workflows import curate_commit as wf
         registry.set_project_context("repo", "p", status="personal")
 
+        _keep_a_survey(registry)
+
         class Boom:
             def __init__(self, registry=None): pass
-            def run(self, slug, steps=None): raise RuntimeError("Egeria unreachable")
+            def publish(self, survey): raise RuntimeError("Egeria unreachable")
 
-        monkeypatch.setattr("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator", Boom)
+        monkeypatch.setattr("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", Boom)
         rec = Curations(registry).create("repo", "p", author="peterprofile",
                                          selection={"sub_resources": ["docs"]}, manifest={}, steps=list(wf.STEPS))
         out = wf.execute_curation(registry, rec["id"])

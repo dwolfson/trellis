@@ -51,6 +51,12 @@ def _publishers(registry, *, publish_guid="rep-1", reports=None, publish_exc=Non
     pub = patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher")
     o, p = orch.start(), pub.start()
     o.return_value.run.return_value = _result()
+    # Brief section 1: a publish sends the survey already kept; it never runs one. Keep one here.
+    from resource_explorer.surveyors import survey_snapshot
+    from resource_explorer.surveyors.survey_report import ClassificationAnnotation
+    survey_snapshot.record_step(registry, "myproj", "repo_language", "2026-10-07T00:00:00", [
+        ClassificationAnnotation(summary=t, analysis_step="repo_language", check_name="c", item_key=t)
+        for t in ("a", "b", "c")])
 
     def _publish(result, *a, **k):
         if publish_exc:
@@ -99,7 +105,8 @@ class TestPublishWhole:
         assert [x["proof"] for x in proofs] == ["report_published"]
         assert proofs[0]["element_guid"] == "rep-1" and proofs[0]["target_guid"] == "asset-1"
         p.return_value.get_survey_reports_by_guid.assert_called_once_with("asset-1")   # read BY the asset's GUID
-        o.return_value.run.assert_called_once_with("myproj", steps=None)               # whole report, never scoped
+        o.return_value.run.assert_not_called()                  # publish never surveys (brief section 1)
+        assert proofs[0]["detail"]["surveyed_at"] == "2026-10-07T00:00:00"
         assert body["can_publish_again"] is True
 
     def test_the_word_is_sent_not_published_when_the_read_does_not_show_the_report(self, client, registry, stop):

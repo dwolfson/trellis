@@ -1856,6 +1856,9 @@ class CurateSelection(BaseModel):
     sub_resources: list[str] = Field(default_factory=list)    # locators from the sub-resource survey
     data_files: bool = False                                   # contained datasets -- recorded in the manifest; publish path not built
     note: str = ""
+    #: Re-survey the STALE steps before publishing (brief section 1). Off by default: unchecked, the
+    #: commit publishes the survey already kept and runs nothing.
+    resurvey_stale: bool = False
 
 
 @router.get("/{slug}/curate/plan")
@@ -1897,6 +1900,15 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     unknown = [k for k in body.confirm if k not in known]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Not candidates on this resource: {unknown}")
+    if not body.confirm and not body.sub_resources:
+        # A press that would send nothing the person chose is blocked, and writes nothing (brief section 2).
+        from resource_explorer.curate_plan import NOTHING_SELECTED_SENTENCE
+        raise HTTPException(status_code=409, detail=NOTHING_SELECTED_SENTENCE)
+    from resource_explorer.surveyors import survey_snapshot
+    if survey_snapshot.latest(registry, slug) is None:
+        # Publishing never surveys (brief section 1): with nothing surveyed the commit is blocked, and
+        # the first survey is a separate, explicit act.
+        raise HTTPException(status_code=409, detail=survey_snapshot.NO_SURVEY_SENTENCE)
     manifest = {**plan["writes"], "entities": list(body.confirm),
                 "contained": {"data_files": plan["writes"]["contained"]["data_files"] if body.data_files else 0,
                               "sub_resources": len(body.sub_resources)}}
@@ -1926,10 +1938,13 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
 def curate_commit_status(slug: str, curation_id: str) -> dict:
     from resource_explorer.curate_plan import Curations
     from resource_explorer.registry import ProjectRegistry
-    rec = Curations(ProjectRegistry()).get(curation_id)
+    registry = ProjectRegistry()
+    rec = Curations(registry).get(curation_id)
     if not rec or rec["entity_slug"] != slug:
         raise HTTPException(status_code=404, detail="No such curation")
-    return rec
+    # The state column of the commit table: from proof rows only (brief section 2).
+    from resource_explorer import repo_publish
+    return {**rec, "proof_summary": repo_publish.commit_proof_summary(registry, slug, rec)}
 
 
 # ── Records: the report record beside the catalogue record ───────────────

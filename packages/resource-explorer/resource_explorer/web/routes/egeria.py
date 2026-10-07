@@ -879,7 +879,29 @@ async def publish_report(slug: str, request: Request, req: PublishReportRequest 
         return JSONResponse(status_code=428, content={
             "detail": "egeria_project_context_required", "entity_type": "repo", "entity_slug": slug,
             "sentence": out["sentence"]})
+    if out.get("gate") == "no_survey":
+        # Publish never surveys (brief section 1): with nothing kept to publish it says so and sends nothing.
+        raise HTTPException(status_code=409, detail=out["sentence"])
     return out
+
+
+class ResurveyRequest(BaseModel):
+    #: Step keys to run (the stale ones). Omitted runs every step. Never a publish.
+    steps: list[str] | None = None
+
+
+@router.post("/{slug}/resurvey")
+async def resurvey_repo(slug: str, request: Request, req: ResurveyRequest | None = None):
+    """Run the survey and nothing else (brief section 1): no publish, no Egeria write. The band then
+    shows the new age. A survey already running for this resource is a 409, not a second one."""
+    from resource_explorer import repo_publish
+    _project, registry = _get_project_or_404(slug)
+    author = _publish_author(request, "re-survey")
+    try:
+        return await asyncio.to_thread(
+            repo_publish.resurvey, registry, slug, author, (req.steps if req else None) or None)
+    except repo_publish.AlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/{slug}/forget-links")

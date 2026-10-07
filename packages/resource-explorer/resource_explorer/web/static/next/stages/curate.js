@@ -16,7 +16,7 @@ import {
   getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
   getComponentTree, getComponentLeaves, postBranchVerdicts,
   getCatalogueDepthOffer, postCatalogueDepthOfferOutcome,
-  getComponentBlueprints, postBlueprintVerdict,
+  getComponentBlueprints, postBlueprintVerdict, setRepoProjectContext,
 } from '/static/re-api.js';
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
@@ -24,10 +24,11 @@ import {
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand } from '/static/next/stages/publish.js';
+import { repoCommitPanelHtml, commitHeaderHtml } from '/static/next/stages/repo-manifest.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
-  apiEntityType,
+  apiEntityType, openCurrentInvestigationStage,
 } from '/static/next/app.js';
 
 
@@ -57,10 +58,12 @@ import {
 // `pick` marks the one column whose rows are confirmed one by one; the
 // others are counts whose members are reviewed, and the contained set is
 // taken whole (the checkbox under the manifest) -- the wireframe's shape.
-/** What pressing Catalog really does (workflows/curate_commit.py `_resurvey_plan` + `execute_curation`). */
+/** What pressing Catalog really does (workflows/curate_commit.py `execute_curation`, brief section 1):
+ *  it publishes the survey ALREADY KEPT, plus what you ticked. It never surveys unless you tick the
+ *  box under the button, and then only the stale steps. */
 export const CATALOG_SENTENCE =
-  'Re-runs only the surveys that have run before and are now out of date (every survey the first time, none if all are fresh), '
-  + 'then publishes the survey report and what you ticked to Egeria. It does not publish an old survey unchecked.';
+  'Publishes the survey already kept on this repository, and what you ticked, to Egeria. It does not run a survey: '
+  + 'tick the box under the button to re-survey the stale steps first.';
 
 const CURATE_COLUMNS = [
   { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalog', pick: true },
@@ -237,14 +240,14 @@ function curateRecordHtml(rec) {
   if (!rec) return '';
   const g = (taskState) => factGlyph(CURATE_TASK_TO_FACT_STATE[taskState] || 'unclassified');
   return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
+    ${commitHeaderHtml(rec)}
     <div class="text-provenance text-ink-muted">cataloged by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
       · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
-    ${rec.state === 'running' && (rec.steps || []).some((st) => st.state === 'running') ? `<div class="text-caveat text-accent-ink">${g('running').glyph} ${
-      esc((rec.steps.find((st) => st.state === 'running') || {}).name)} is running — the survey step takes minutes; this line updates as steps land.</div>` : ''}
-    ${(rec.steps || []).map((st) => `<div class="flex items-baseline gap-s2 text-caveat">
+    <ol class="list-none pl-0">${(rec.steps || []).map((st, i) => `<li class="flex items-baseline gap-s2 text-caveat" data-commit-step="${esc(st.name)}" data-state="${esc(st.state)}">
+      <span class="tnum text-ink-muted">${i + 1}.</span>
       <span class="${g(st.state).tone} font-glyph">${g(st.state).glyph}</span>
       <span class="font-mono text-ink">${esc(st.name)}</span>
-      <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></div>`).join('')}
+      <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></li>`).join('')}</ol>
   </div>`;
 }
 
@@ -402,16 +405,24 @@ export async function renderCurate(slug) {
         <input type="checkbox" data-curate-subs ${chosenSubs().length ? 'checked' : ''}> include the <span class="tnum">${chosenSubs().length}</span> of <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
       <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloging, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
-      <div class="mt-s3 flex items-baseline gap-s3">
-        <button type="button" data-curate-go ${plan.in_population && me ? '' : 'disabled'}
-          title="${esc(CATALOG_SENTENCE)}"
-          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalog →</button>
-        <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalog — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
-      </div>
+      <div class="mt-s3">${repoCommitPanelHtml({
+        plan, picks, chosenSubs: chosenSubs(), fileTypePicks: curateFileTypePicks(), me,
+        resurvey: !!state.curate.resurvey, sentence: CATALOG_SENTENCE, rec: latest, ps: latest ? (latest.proof_summary || null) : null })}</div>
       ${curateRecordHtml(latest)}
       <div id="catalogue-depth-offer"></div>`)}`;
 
     bindCurateSectionNav(host);
+    const counts0Label = () => {
+      const n = [...picks].length + chosenSubs().length;
+      return n ? `Catalog ${n} item${n === 1 ? '' : 's'} →` : 'Catalog →';
+    };
+    host.querySelector('[data-commit-resurvey]')?.addEventListener('change', (ev) => { state.curate.resurvey = ev.target.checked; draw(); });
+    host.querySelector('[data-commit-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
+    host.querySelector('[data-commit-decline]')?.addEventListener('click', async (ev) => {
+      const b = ev.currentTarget; if (b.disabled) return; b.disabled = true; b.textContent = 'declining …';
+      try { await setRepoProjectContext(slug, 'declined'); plan.project = { status: 'declined', word: 'no project (chosen)', name: '' }; draw(); }
+      catch (err) { b.disabled = false; b.textContent = 'decline a project'; host.querySelector('[data-curate-go-hint]').textContent = `not declined · ${err.message}`; }
+    });
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
       state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
@@ -432,17 +443,16 @@ export async function renderCurate(slug) {
     }));
     host.querySelector('[data-curate-go]')?.addEventListener('click', async (ev) => {
       const b = ev.currentTarget; b.disabled = true;
-      // The first step may re-survey before it publishes -- minutes on a large
-      // repository. What it really does (workflows/curate_commit.py, `_resurvey_plan`): it re-runs
-      // only the analyses that have run before and are now stale (all of them on the very first
-      // catalog, none when everything is fresh and the asset already exists), then publishes.
-      // It never publishes an old survey unchecked. Say that, as a cue plus a short word.
+      // What the press does (workflows/curate_commit.py, brief section 1): it publishes the survey
+      // already kept. It re-surveys only if the box under the button is ticked, and then only the
+      // stale steps. Say which, as a cue plus a short word.
+      const resurvey = !!state.curate.resurvey;
       b.innerHTML = stateCue('running', 'Cataloging…', CATALOG_SENTENCE);
       const hint = b.nextElementSibling;
-      if (hint) hint.innerHTML = stateCue('running', 'refreshing stale surveys only, then publishing', CATALOG_SENTENCE);
+      if (hint) hint.innerHTML = stateCue('running', resurvey ? 're-surveying the stale steps, then publishing' : 'publishing the survey already kept', CATALOG_SENTENCE);
       try {
         const out = await curateCommit(slug, {
-          confirm: [...picks], sub_resources: chosenSubs(), data_files: false,
+          confirm: [...picks], sub_resources: chosenSubs(), data_files: false, resurvey_stale: resurvey,
         });
         plan.commits = [out.curation, ...(plan.commits || [])];
         draw();
@@ -455,10 +465,11 @@ export async function renderCurate(slug) {
           } catch { /* the next tick will */ }
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
+        try { plan.survey = (await getCuratePlan(slug)).survey || plan.survey; } catch { /* the table keeps the survey it had */ }
         draw();
         renderCatalogueDepthOffer(slug, host);
       } catch (err) {
-        b.disabled = false; b.textContent = 'Catalog →';
+        b.disabled = false; b.textContent = counts0Label();
         if (b.nextElementSibling) b.nextElementSibling.textContent = '';
         const why = err.status === 401 ? 'sign in to catalog' : err.status === 409 ? err.message : `not cataloged: ${err.message}`;
         host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
@@ -466,9 +477,20 @@ export async function renderCurate(slug) {
     });
   };
   draw();
+  // The file types ticked in the Publish band feed the table's "file types" row.
+  if (state.curateOnPicks) document.removeEventListener('re:curate-picks', state.curateOnPicks);
+  state.curateOnPicks = () => { if (host.isConnected && slug === state.selectedSlug) draw(); };
+  document.addEventListener('re:curate-picks', state.curateOnPicks);
   renderComponentTree(slug);
   renderBlueprintList(slug);
   renderCatalogueDepthOffer(slug, host);
+}
+
+/** The file types ticked in the Publish band (a Set of labels), kept on the Curate state. */
+function curateFileTypePicks() {
+  state.curate = state.curate || {};
+  if (!(state.curate.fileTypePicks instanceof Set)) state.curate.fileTypePicks = new Set();
+  return state.curate.fileTypePicks;
 }
 
 /* ── The layer-2 catalogue-depth offer ────────────────────────────────────

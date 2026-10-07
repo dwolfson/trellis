@@ -1860,6 +1860,15 @@ export const getRepoPublishState = (slug) => get(`/api/egeria/${encodeURICompone
 export const publishRepoReport = (slug, { withoutProject = false } = {}) =>
   post(`/api/egeria/${encodeURIComponent(slug)}/publish-report`, { without_project: withoutProject });
 
+/** Record the repository's Egeria project answer ("declined" = publish without one). RE's registry only. */
+export const setRepoProjectContext = (slug, status) =>
+  post(`/api/project-context/repo/${encodeURIComponent(slug)}`, { status });
+
+/** Run the survey and NOTHING else (brief section 1): no publish, no Egeria write. `steps` names the
+ *  steps to run (the stale ones); omitted runs them all. */
+export const resurveyRepo = (slug, { steps = null } = {}) =>
+  post(`/api/egeria/${encodeURIComponent(slug)}/resurvey`, steps ? { steps } : {});
+
 /** Forget RE's cached Egeria GUIDs and survey history for this resource. Egeria is not contacted. */
 export const forgetEgeriaLinks = (slug) => post(`/api/egeria/${encodeURIComponent(slug)}/forget-links`);
 
