@@ -237,6 +237,43 @@ honest about each other without ever repairing silently. Skeleton scope:
 Function` only; `Update`/`Retire`/`Link`/`View` follow once a second
 function exists.
 
+## 3b. Visibility across hosts (owner's two questions, 2026-10-07)
+
+**Yes to both, through the one registry; what differs by host is what can
+run, and the words say so.**
+
+- **Trellis sees pyegeria's analytic functions.** They are already in the
+  registry the skeleton joins, so RE's and the Advisor's report specs and
+  Portal tiles may name them by dotted path as today, and `trellis-analytics
+  list` shows them beside Trellis routines with `source=egeria`. They carry
+  no envelope, so a Trellis consumer renders them as "value only · no
+  envelope" rather than inventing a state; a context spec that needs a
+  state cannot bind to one until it gains an envelope (the five additive
+  fields make that possible per function, not required).
+- **pyegeria and the Portal see Trellis functions.** Installed Trellis
+  routines appear in `get_report_registry()` through the entry point, so
+  the Portal's "Analytic Functions" tab lists them and a report spec or
+  Dashboard Sheet may run them wherever `trellis-analytics` is installed.
+  Trellis **steps** are listed too but marked "runs in Resource Explorer
+  (step) · not runnable here": a step needs an executor and a resource,
+  which the Portal does not have; the Portal shows the declaration and the
+  latest result's state words read from Egeria's annotations, never a Run
+  button.
+- **Egeria is the view that does not depend on installation.** A declared
+  function is visible to every host through Egeria even where the package
+  is absent; `drift` says "declared · not installed here", and a report
+  spec naming an uninstalled routine fails with that sentence, not an
+  import error.
+- **One name, two hosts.** The dotted path is the identity in both
+  directions; `family` groups across origins; the registry never
+  distinguishes "ours" and "theirs" except by `source` and by the fields a
+  function fills.
+
+Test: with `trellis-analytics` installed, `get_report_registry()` lists a
+pyegeria function and a Trellis routine and a Trellis step with the right
+`kind` and `source`; `exec_report_spec` runs the first two and refuses the
+step with the sentence.
+
 ## 4. What is deliberately not in the skeleton
 
 A Prefect-hosted step; running a step in Egeria's engine host; the
