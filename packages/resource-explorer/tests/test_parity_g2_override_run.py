@@ -234,3 +234,66 @@ def test_the_recording_wrapper_scrubs_an_exception_that_echoes_the_password(regi
     assert FAKE_PW not in out.summary and FAKE_PW not in caplog.text
     detail = json.loads(registry.get_activity(aid)["detail"])
     assert detail["ran_as"] == {"user": "one_off_user", "scope": "this run"}
+
+
+# ── Finding 1: an override credential is never sent to Prefect ──────────────
+
+def _prefect_world(registry):
+    adapter = ResourceTypeAdapter(
+        entity_type="g2pf", technology_type="G2 PF",
+        re_analysis_steps={"local_step": lambda e, r, **kw: {"ok": True}},
+        get_entity=lambda r, slug: type("E", (), {"slug": slug, "db_user": "stored_user",
+                                                  "db_password": "stored-password-not-real",
+                                                  "display_name": slug})(),
+        publish=MagicMock(return_value=""),
+    )
+    register_adapter(adapter)
+    sd = SurveyDefinition(
+        process_guid="p2", display_name="G2pf", qualified_name="GovActionProcess::G2pf",
+        supported_technology_type="G2 PF",
+        steps=[
+            SurveyStep(guid="a", display_name="Local", qualified_name="Step::Local",
+                       executes_at="resource-explorer", re_analysis_step="local_step"),
+            SurveyStep(guid="b", display_name="Soda", qualified_name="Step::Soda",
+                       executes_at="prefect", re_analysis_step="soda_data_quality"),
+        ])
+    reader = MagicMock()
+    reader.fetch.return_value = sd
+    reader.find_candidate_process_guids.return_value = [
+        {"guid": "p2", "qualified_name": "GovActionProcess::G2pf", "display_name": "G2pf"}]
+    return SurveyDefinitionExecutor(registry, reader=reader)
+
+
+def test_an_override_credential_is_never_handed_to_prefect(registry):
+    seen = []
+
+    def fake_prefect(entity_type, slug, step_key, runner_kwargs, dispatch_info=None, **kw):
+        seen.append(json.dumps(runner_kwargs, default=str))
+        return {"ok": True}
+
+    ex = _prefect_world(registry)
+    with patch("resource_explorer.surveyors.prefect_adapter.run_prefect_step", fake_prefect):
+        res = ex.run("g2pf", "x", db_user="one_off_user", db_pwd=FAKE_PW, credential_scope="this run",
+                     engine_override="resource-explorer")
+    assert seen == [], "the Prefect step must not be dispatched with an override credential"
+    soda = next(s for s in res["steps"] if s["step"] == "Step::Soda")
+    assert soda["status"] == "not_run"
+    assert soda["detail"] == "not run · this run's credentials are not sent to Prefect (they are never stored)"
+    assert any("Step::Soda" in e for e in res["errors"]), "an incomplete run says so"
+    local = next(s for s in res["steps"] if s["step"] == "Step::Local")
+    assert local["status"] == "ok"
+    assert FAKE_PW not in json.dumps(res) and FAKE_PW not in _everything(registry)
+
+
+def test_a_stored_credential_run_still_dispatches_to_prefect_unchanged(registry):
+    seen = []
+
+    def fake_prefect(entity_type, slug, step_key, runner_kwargs, dispatch_info=None, **kw):
+        seen.append(runner_kwargs)
+        return {"ok": True}
+
+    ex = _prefect_world(registry)
+    with patch("resource_explorer.surveyors.prefect_adapter.run_prefect_step", fake_prefect):
+        res = ex.run("g2pf", "x", engine_override="resource-explorer")   # no whole-definition Prefect in a test
+    assert len(seen) == 1 and seen[0]["db_user"] == "stored_user"
+    assert next(s for s in res["steps"] if s["step"] == "Step::Soda")["status"] == "ok"

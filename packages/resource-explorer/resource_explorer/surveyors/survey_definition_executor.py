@@ -500,7 +500,8 @@ class SurveyDefinitionExecutor:
         #: opt-in, a separate, deliberately-deferred cost tradeoff.
         engine_note = ""
         _attempt_prefect = (
-            _prefect_orchestration_enabled(engine_override)
+            not credential_scope        # an override credential never goes to Prefect
+            and _prefect_orchestration_enabled(engine_override)
             and _all_steps_prefect_runnable(survey_def)
             and not self._any_step_needs_prerequisites(adapter, entity, survey_def, surveyed_at)
         )
@@ -756,6 +757,22 @@ class SurveyDefinitionExecutor:
                     continue
                 # group of exactly 1 — fall through to the identical
                 # single-step path below, unchanged from before batching.
+
+            if use_prefect and credential_scope:
+                # Prefect keeps a flow run's parameters (in its own database,
+                # visible in its UI). A credential typed for this run must not
+                # be written anywhere, so a Prefect-bound step is not run with
+                # it: said in the step's row and counted as an unfinished run.
+                msg = (f"Step '{step.qualified_name}' was not run: this run's credentials "
+                       "are not sent to Prefect")
+                errors.append(msg)
+                steps_report.append({
+                    "step": step.qualified_name, "re_analysis_step": _step_key(step),
+                    "status": "not_run",
+                    "detail": "not run · this run's credentials are not sent to Prefect (they are never stored)",
+                })
+                i += 1
+                continue
 
             if use_prefect:
                 try:
