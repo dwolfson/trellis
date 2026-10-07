@@ -65,6 +65,9 @@ class OutboxClients:
     #: build their own from the row's database when the drain was not given them.
     catalogue_gateway: object | None = None
     registry: object | None = None
+    #: The user id these clients were built for, so a refusal can say who was refused.
+    #: pyegeria's own 401 text names no user for an Egeria-wrapped response.
+    acting_as: str = ""
 
     def require(self, name: str):
         client = getattr(self, name, None)
@@ -85,6 +88,16 @@ class OutboxApplyError(RuntimeError):
     """One element could not be written. Carries no retry policy of its own —
     the caller decides, via `mark_outbox_failed`, whether this becomes another
     attempt or a dead letter."""
+
+
+class OutboxIdentityError(RuntimeError):
+    """The drain has no usable Egeria identity to call as: a configuration error.
+
+    Not an Egeria failure and not an outage. `drain_outbox` handles it on its own
+    path: no call is made, rows go back to 'pending' with no attempt burned and the
+    sentence on each row, and the pass is logged at ERROR with `config_error` in its
+    summary. It is never retried as an ordinary failure, which would burn the budget
+    of good writes and dead-letter them for a reason that had nothing to do with them."""
 
 
 class OutboxNotReadyError(RuntimeError):
@@ -650,6 +663,16 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
     if clients is None or find_element_guid is None:
         try:
             clients, find_element_guid = _default_clients()
+        except OutboxIdentityError as exc:
+            # A configuration error, not an outage: say so on every row and in the log, and
+            # make no Egeria call at all. Pending, attempts untouched, so the first drain after
+            # the configuration is fixed takes them as if nothing had happened.
+            for r in rows:
+                registry.mark_outbox_deferred(r["id"], f"Not attempted - configuration error: {exc}")
+            log.error("Outbox drain: %s (%d row(s) left pending, none attempted)", exc, len(rows))
+            summary["config_error"] = str(exc)
+            summary["skipped"] = len(rows)
+            return summary
         except Exception:
             # No platform reachable. Leave every row exactly as it is —
             # pending work is not failed work, and burning an attempt on
@@ -702,12 +725,13 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
                      row["id"], row["element_kind"], row["qualified_name"], exc)
             continue
         except Exception as exc:
+            exc_text = _describe_refusal(exc, clients)
             if row.get("element_kind") in DESTRUCTIVE_OUTBOX_KINDS:
                 # max_attempts=1: this failure is the last attempt. 'dead' is the existing terminal state.
-                status = registry.mark_outbox_failed(row["id"], f"{NOT_RETRIED} · {exc}", max_attempts=1)
+                status = registry.mark_outbox_failed(row["id"], f"{NOT_RETRIED} · {exc_text}", max_attempts=1)
                 summary["not_retried"] = summary.get("not_retried", 0) + 1
             else:
-                status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc}")
+                status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc_text}")
                 summary["dead" if status == "dead" else "failed"] += 1
             troubled_runs[row.get("run_id") or ""] = row.get("entity_slug") or ""
             log_at = log.error if status == "dead" else log.warning
@@ -759,6 +783,41 @@ def drain_outbox_row(registry, element_id: int, clients: "OutboxClients | None" 
     return drain_outbox(registry, clients, find_element_guid, element_id=element_id)
 
 
+def drain_identity():
+    """The identity the drain calls Egeria as: RE's configured service account, always.
+
+    The drain is the worker role's own loop (egeria_identity's module docstring names it
+    the one legitimate service-account caller). It must not inherit whatever the ContextVar
+    holds: a drain started from a request thread would run as that person on a bearer token
+    that dies within the hour. Rows record no requesting user, so there is no one else to
+    use. A blank user id raises `OutboxIdentityError` rather than reaching Egeria.
+    """
+    from resource_explorer import egeria_identity
+
+    identity = egeria_identity.service_credentials()
+    if not (identity.user_id or "").strip():
+        raise OutboxIdentityError(
+            "The Egeria service identity has no user id, so the outbox cannot write to Egeria. "
+            "Set EGERIA_USER_ID (and EGERIA_USER_PASSWORD) for the worker."
+        )
+    return identity
+
+
+def _describe_refusal(exc: Exception, clients: "OutboxClients") -> str:
+    """`str(exc)`, plus who was refused when Egeria said 401/403.
+
+    pyegeria fills the user into that message from a field its Egeria-wrapped branch never
+    sets, so the text ends "for user - ``" whoever was sent. Left alone, a row's last_error
+    reads as "no user was sent" and sends the next reader after the wrong cause.
+    """
+    text = str(exc)
+    if type(exc).__name__ != "PyegeriaUnauthorizedException":
+        return text
+    who = getattr(clients, "acting_as", "") or "(not recorded)"
+    return (f"{text} [Egeria refused the write for service identity {who!r}; pyegeria shows an "
+            "empty user for this response shape even when one was sent]")
+
+
 def _default_clients():
     """The repo publisher's own connected clients — one client path, not a
     second one to keep in step with it.
@@ -772,11 +831,14 @@ def _default_clients():
     kind); their members never actually got attached."""
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
-    publisher = EgeriaPublisher()
+    identity = drain_identity()
+    publisher = EgeriaPublisher(user_id=identity.user_id, user_password=identity.password,
+                                identity=identity)
     publisher._connect()
     return (
         OutboxClients(discovery=publisher._discovery, metadata_expert=publisher._metadata_expert,
-                      collection_manager=publisher._collection_manager),
+                      collection_manager=publisher._collection_manager,
+                      acting_as=identity.user_id),
         publisher._find_element_guid,
     )
 
