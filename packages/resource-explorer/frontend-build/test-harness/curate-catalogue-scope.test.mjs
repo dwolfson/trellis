@@ -585,10 +585,10 @@ test('rows and size: a scan, an estimate (≈), not measured, and "◐ sources d
 });
 
 test('a lens term found in table names is a muted suggestion sentence, not a proposal and not a rule control', async () => {
-  const v = baseView({ suggested_rules: [{ term: 'Sales', count: 14, text: 'The lens names Sales: 14 table names contain it · make that a rule?' }] });
+  const v = baseView({ suggested_rules: [{ term: 'Sales', count: 14, text: 'The lens names Sales: 14 table names contain it · make that a scope rule?' }] });
   const { document } = await setUp(v);
   const line = document.querySelector('[data-scope-suggested-rule]');
-  assert.equal(flat(line), 'The lens names Sales: 14 table names contain it · make that a rule?');
+  assert.equal(flat(line), 'The lens names Sales: 14 table names contain it · make that a scope rule?');
   assert.ok(line.className.includes('text-ink-muted'));
   assert.equal(line.querySelector('button'), null, 'rules are a later slice: no control');
   assert.equal(scopeEl(document).querySelectorAll('[data-scope-act="confirm"]').length, 0);

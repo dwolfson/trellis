@@ -1149,7 +1149,7 @@ def build_scope_view(registry, slug: str, *, tree: dict | None = None,
                     if str(term).lower() in tl.lower())
         if n_hit:
             suggested.append({"term": term, "count": n_hit,
-                              "text": f"The lens names {term}: {n_hit} table names contain it · make that a rule?"})
+                              "text": f"The lens names {term}: {n_hit} table names contain it · make that a scope rule?"})
 
     view = {
         "database": slug, "schemas": schemas_out,

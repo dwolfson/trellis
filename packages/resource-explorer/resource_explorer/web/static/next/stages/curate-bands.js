@@ -95,7 +95,7 @@ export function databaseWorkHtml() {
  * reader yet". It has no control and writes nothing. */
 export function rulesBlockShellHtml() {
   return `<div data-curate-rules class="mt-s2 min-w-0">
-    <div class="text-caveat text-ink">Rules Egeria applies</div>
+    <div class="text-caveat text-ink">Data-class rules Egeria applies</div>
     <div data-rules-body class="text-caveat text-ink-muted">Reading the data-class rules…</div></div>`;
 }
 
@@ -113,11 +113,11 @@ export function rulesBodyHtml(rules, error = '') {
   const fromEgeria = list.filter((r) => /^egeria/i.test(String(r.source || '')));
   const builtIn = list.filter((r) => !/^egeria/i.test(String(r.source || '')));
   const local = builtIn.length
-    ? `<details data-rules-local class="mt-[2px]"><summary class="cursor-pointer text-provenance text-accent-ink underline">RE's built-in keyword list, not read from Egeria (${builtIn.length})</summary>${builtIn.map(ruleRow).join('')}</details>`
+    ? `<details data-rules-local class="mt-[2px]"><summary class="cursor-pointer text-provenance text-accent-ink underline">RE's built-in data-class keyword list, not read from Egeria (${builtIn.length})</summary>${builtIn.map(ruleRow).join('')}</details>`
     : '';
   if (!fromEgeria.length) {
     return `<div data-rules-state="no_reader" class="text-caveat text-ink">no reader yet — Egeria's own data-class rules were not read${
-      list.length ? `; the server answered only RE's built-in keyword list (${list.length} rules)` : '; the server answered no rules'}.</div>${local}`;
+      list.length ? `; the server answered only RE's built-in data-class keyword list (${list.length} data-class rules)` : '; the server answered no data-class rules'}.</div>${local}`;
   }
   return `<div data-rules-state="read" data-rules-egeria>${fromEgeria.map(ruleRow).join('')}</div>${local}`;
 }

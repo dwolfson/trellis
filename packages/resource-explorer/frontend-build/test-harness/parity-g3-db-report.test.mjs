@@ -318,7 +318,7 @@ test('PI-041: the term section lists the data-class rules Egeria applies, read-o
   const { document, calls } = await setUp({ stage: 'curate', over: { rules: [RULE_EG, RULE_LOCAL] } });
   const b = document.querySelector('[data-curate-rules]');
   assert.ok(b);
-  assert.match(text(b), /Rules Egeria applies/);
+  assert.match(text(b), /Data-class rules Egeria applies/);
   assert.ok(b.closest('[data-curate-work="glossary"]'), 'on the term section, not beside it');
   assert.match(text(b), /Email Address.*email, mail_addr/);
   assert.doesNotMatch(text(b.querySelector('[data-rules-egeria]')), /Password/, 'a local fallback rule is not claimed as Egeria\'s');
