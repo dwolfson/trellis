@@ -119,32 +119,54 @@ needs) and runtime (what the deployed thing talks to).**
 - The repo→database "informs" relation from the Find/Integrate note §13 is
   a runtime dependency of this kind.
 
-## 4. The component diagram
+## 4. The component diagram: several blueprints, the kind in the name
 
-The owner did not choose the components shown and they are not Egeria's
-logical components. Before any design, one question for him, in his words:
-**which components do you expect to see for egeria_git?** Candidates, so the
-answer can be a pick rather than a description:
+The owner did not choose the components shown, and they are not Egeria's
+logical components. His answer (2026-10-07): *these are all valid blueprint
+diagrams; perhaps a classification for them later, but for now offer
+several to a user to select, and write several, with the kind of blueprint
+in the name: Egeria Logical Blueprint, Egeria Deployment Blueprint, Egeria
+Build Blueprint, and so on.*
 
-- (a) Egeria's **logical** components as its documentation names them
-  (OMAG Server Platform, metadata access store, view server, integration
-  daemon, engine host, the OMVS/OMAS/OMIS services), with the recovered
-  code clusters mapped under them;
-- (b) the **deployed** servers from the repository's artifacts, which is
-  what recovery shows today (the platform and its configured servers),
-  kept but renamed to say they are deployment units, not components;
-- (c) the **code** modules as the build defines them (Gradle subprojects),
-  with deployment units as a separate layer;
-- (d) something else: a hand-named list he supplies, which the recovery
-  then maps onto and the diagram draws from, treating recovery as the
-  proposal and his list as the confirmed set.
+**Rule: a blueprint has a kind, the kind is in its name, and a repository
+may have several.** The layers never share one box without the kind saying
+which.
 
-What is already decided, whatever the pick: components are proposals and a
-person's verdict wins (the designer's ports round); a diagram draws accepted
-components first and proposals in muted ink with the word "proposed"; a node
-carries its source ("from build.gradle", "from docker-compose.yml") one
-gesture away; and the layers (logical, deployed, code) never share one box
-without a word saying which. The fix is designed once the owner answers.
+| Blueprint kind | Nodes | Source in RE | Today |
+|---|---|---|---|
+| **Deployment Blueprint** | deployed servers and services, their ports and wires | architecture recovery over deployment artifacts (compose, Helm, Dockerfiles) | what the pane draws now, unnamed; becomes "Egeria Deployment Blueprint" |
+| **Build Blueprint** | the build's modules (Gradle subprojects, Maven modules, Python packages) and their declared dependencies | manifest parse and the dependency surveyor | partly present as recovered code clusters; named as its own blueprint |
+| **Logical Blueprint** | the components the project's own documentation names (for Egeria: the platform, metadata access store, view server, integration daemon, engine host, the service families) with code clusters mapped under them | documentation surveyor plus a mapping a person confirms; recovery proposes the mapping | not built; the first one that needs a person's confirmation to exist |
+| others later | a security blueprint, a data-flow blueprint | as declared | not designed |
+
+What the pane does:
+
+- "what it's made of" lists the blueprints RE can offer for this
+  repository, each with its kind, its source and its state: "Egeria
+  Deployment Blueprint · recovered from 3 artifacts · 12 units · proposed",
+  "Egeria Build Blueprint · from build.gradle · 41 modules · proposed",
+  "Egeria Logical Blueprint · needs your confirmation of 6 components ·
+  not yet drawn". A person selects which to view and which to write.
+- Each blueprint is drawn on its own; a node carries its source one gesture
+  away; accepted nodes in full ink, proposals muted with the word
+  "proposed" (the designer's ports round: components are proposals, ports
+  are readings, a person's verdict wins). Verdicts stay per blueprint, since
+  accepting a deployment unit says nothing about a logical component.
+- Writing to Egeria: each blueprint the person selects is written as its
+  own element with the kind in its name (the owner's rule), related to the
+  repository; the accepted nodes under it as its components, the proposed
+  ones not written. Proof rows by GUID as everywhere. A later blueprint
+  classification in Egeria is possible and not designed now; the kind lives
+  in the name until then.
+- Cross-blueprint links (a logical component is realised by these build
+  modules and deployed as that unit) are facts a person confirms, one per
+  pair, shown as a column on the logical blueprint's rows; they are the
+  valuable part and the slowest, so they come after the three kinds exist.
+
+Order: name the existing diagram as the Deployment Blueprint and add the
+selector (small); the Build Blueprint from the manifests already parsed;
+the Logical Blueprint last, since it needs a person's confirmations to be
+drawn at all.
 
 ## 5. What this changes elsewhere
 
@@ -158,7 +180,7 @@ without a word saying which. The fix is designed once the owner answers.
 
 ## 6. Questions
 
-**Owner:** §4's pick; §3's reading (two sections or one table with a kind
+**Owner:** §3's reading (two sections or one table with a kind
 column); whether file-system trees should appear now in design drawings
 even though their build waits.
 
