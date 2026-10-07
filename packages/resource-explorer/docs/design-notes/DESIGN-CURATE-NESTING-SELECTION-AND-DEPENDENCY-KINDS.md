@@ -87,6 +87,30 @@ them.** The "contained set whole" checkbox goes.
 - Selection persists as RE's record ("saved · you · just now") separately
   from publishing, so a person can select over several visits and publish
   once. The same scope-record pattern as databases (declare, then commit).
+**An option beside explicit selection, for discussion (the owner, 2026-10-07):
+a selected folder or component becomes a new top-tier asset.** It would be
+nested under its ancestor in the left-hand hierarchy and processed on its
+own by surveys and curation: the Trellis monorepo as three resources,
+Trellis with its common capabilities, Egeria Advisor and Resource Explorer,
+each surveyed and curated the way Egeria-Trellis is today. The owner's
+words: not the only way, an option for large complex components. My honest
+read, no recommendation:
+
+| | Explicit selection (above) | New top-tier asset |
+|---|---|---|
+| What it fixes | which files and folders become assets, with a preview | depth and scoping: a sub-tree gets its own surveys, questions, Curate scope, Egeria asset tree and investigations, at full depth, because it *is* a resource |
+| What it costs | nothing new in the registry; one scope record per repository | registration of the child as a resource (slug, path within the parent, ancestry), per-asset surveys (each child runs the repository surveys on its sub-tree, so a monorepo with three children runs four times), a parent–child relation RE must keep and show, and an Egeria shape for "part of" that is not decided (nested `FileFolder` assets, or a `SoftwareComponent` under the parent's asset) |
+| Where selection still applies | everywhere | inside each child, for its own files and folders, the same mechanism |
+| Honesty | state words per file | the parent's counts must say "excluding N children surveyed on their own", or they double-count |
+| When it pays | small explicit sets, which the owner expects to be the common case | a sub-tree that is a product in its own right, with its own owners, questions and lifecycle |
+
+The two are not rivals: the child-as-asset is a way to scope, and explicit
+selection is how anything inside a scope reaches Egeria. If the option is
+taken, the registration of a child is an act on the parent's Curate pane
+("make this a resource of its own"), previewed like any other write, and
+the child appears under the parent in the sidebar with the parent's name
+as its ancestry. Not designed further until the owner says it is wanted.
+
 - Not in scope: un-publishing. An item once published is left as history
   (roll-forward); the row can be "left out" for future publishes, with the
   word "published earlier · kept in Egeria".
@@ -102,7 +126,7 @@ needs) and runtime (what the deployed thing talks to).**
 | Source in RE | dependency surveyor over manifests | deployment evidence: compose services, Helm values, Dockerfile `FROM` and env, Kafka/Postgres connection strings, ports and wires already read by architecture recovery |
 | Row says | `<library> <version> · <ecosystem> · from <manifest>` | `<service or system> · <protocol or port> · from <artifact>` |
 | Direction | this code → library | this deployment → that system (or that system → this, for consumers) |
-| Egeria form on publish | as today (annotations per ecosystem; a `SoftwareComponent` dependency only on confirmation) | a relationship from the type list the Egeria lead is supplying; **never lineage** (owner, 2026-10-05); until the list exists, an annotation |
+| Egeria form on publish | as today (annotations per ecosystem; a `SoftwareComponent` dependency only on confirmation) | **not yet available:** Egeria plans new relationship types for "deployed by" and the other relations between a software library (a repository) and the things around it; until they exist and are deployed, a runtime dependency publishes as an annotation and nothing here is designed against a type that does not exist; **never lineage** (owner, 2026-10-05) |
 | State words | measured / not measured for this ecosystem | measured from artifacts / "no deployment artifact found" / "runtime not surveyed" |
 
 - The Analysis pane's "dependencies" becomes two sections with those
@@ -139,6 +163,30 @@ which.
 | **Logical Blueprint** | the components the project's own documentation names (for Egeria: the platform, metadata access store, view server, integration daemon, engine host, the service families) with code clusters mapped under them | documentation surveyor plus a mapping a person confirms; recovery proposes the mapping | not built; the first one that needs a person's confirmation to exist |
 | others later | a security blueprint, a data-flow blueprint | as declared | not designed |
 
+**Which Egeria type, verified from the code on main (not assumed).** The
+owner asked whether "component diagram" means a Solution Component
+Blueprint. Yes. What RE writes today, when a curator accepts a candidate
+blueprint, is a real Egeria **`SolutionBlueprint`** element
+(`surveyors/arch_recovery/blueprint_materializer.py`, through pyegeria's
+`SolutionArchitect.create_solution_blueprint`, properties class
+`SolutionBlueprintProperties`, `contentStatus` "DRAFT" so it reads as a
+proposal in Egeria too), qualifiedName
+`SolutionBlueprint::<entity_type>::<slug>::<perspective>::<cluster_name>`.
+Accepted components are real **`SolutionComponent`** elements
+(`materializer.py`, `SolutionComponentProperties`, with
+`solutionComponentType`), and membership is **`CollectionMembership`** from
+the blueprint to each component or child blueprint (`egeria_outbox.py`), which
+is correct because a `SolutionBlueprint` is a kind of `Collection` in
+Egeria's model. The materialiser writes **no zone**; if a blueprint on the
+platform carries a zone or a collection name such as "egeria-runtime", it
+did not come from this code path and should be read before it is explained.
+So the owner's rule maps directly: each blueprint kind is its own
+`SolutionBlueprint` with the kind in its `displayName` and in the
+`<perspective>` slot of the qualifiedName ("Egeria Deployment Blueprint",
+"Egeria Build Blueprint", "Egeria Logical Blueprint"); nothing new in
+Egeria is needed to write several, and a blueprint classification can come
+later without renaming.
+
 What the pane does:
 
 - "what it's made of" lists the blueprints RE can offer for this
@@ -162,6 +210,10 @@ What the pane does:
   modules and deployed as that unit) are facts a person confirms, one per
   pair, shown as a column on the logical blueprint's rows; they are the
   valuable part and the slowest, so they come after the three kinds exist.
+  **Their Egeria form is not yet available:** these are the same planned
+  "deployed by" family of relationship types as §3's runtime dependencies;
+  until deployed, a confirmed link is RE's record and an annotation, and
+  the design here names no type.
 
 Order: name the existing diagram as the Deployment Blueprint and add the
 selector (small); the Build Blueprint from the manifests already parsed;
@@ -180,7 +232,7 @@ drawn at all.
 
 ## 6. Questions
 
-**Owner:** §3's reading (two sections or one table with a kind
+**Owner:** §3's reading; whether the child-as-top-tier-asset option is wanted and for which repositories first (two sections or one table with a kind
 column); whether file-system trees should appear now in design drawings
 even though their build waits.
 
@@ -188,7 +240,6 @@ even though their build waits.
 the hollow container mark); the manifest table for a mixed selection; the
 two-kind dependency table.
 
-**Egeria lead:** the relationship type for runtime dependencies (the list
-already promised); whether a container folder that holds published files
+**Egeria lead:** the planned relationship types ("deployed by" and the rest) and when they land, so §3 and the cross-blueprint links can name them; whether a container folder that holds published files
 but is not itself "an asset of its own" should carry a classification
 saying so.
