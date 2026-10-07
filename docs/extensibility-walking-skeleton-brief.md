@@ -117,10 +117,12 @@ survey (level 3) is already Egeria's.
   tier, with the sentence naming the tier, until a publication-style profile
   says otherwise. The host hands a connection opened at that tier, never a
   password.
-- **Engine host: later, and by equivalence.** Egeria's engine host runs
-  Java; the RE/Prefect engine runs Python. The goal, not for this quarter,
-  is that **RE's engine appears to Egeria and behaves like a native engine
-  host**: the Survey Definition is Egeria's governance action process, its
+- **Engine host: later, and by equivalence; a standing plan, not a new
+  one.** The RE engine host has been planned for weeks (the owner,
+  2026-10-07; the working-assumptions note's A6 and the engine-host
+  executor already assume it). Egeria's engine host runs Java; the
+  RE/Prefect engine runs Python. The goal, not for this quarter, is that
+  **RE's engine appears to Egeria and behaves like a native engine host**: the Survey Definition is Egeria's governance action process, its
   steps are declared as governance action types, and Egeria dispatches a
   Python step to RE's engine the way it dispatches a Java one to its own.
   The skeleton keeps that door open by declaring the wrapper's element in
