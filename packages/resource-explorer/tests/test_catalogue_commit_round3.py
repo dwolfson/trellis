@@ -229,8 +229,11 @@ def test_failed_publish_step_reads_not_published_with_the_cause_and_records_the_
     st = step(rec, "survey_report")
     assert st["state"] == "failed"
     assert st["detail"].startswith("report not published · SERVER_ERROR_500") and "76 annotations built, none published" in st["detail"]
-    proof = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_REPORT][-1]
-    assert proof["detail"]["outcome"] == "failed" and proof["element_guid"] == ""
+    # Rewritten 2026-10-07 (proof rows by GUID): a failed publish is NOT a report_published row; it is a read_failed one.
+    proofs = world["registry"].list_catalogue_commit_proofs("db")
+    assert [p for p in proofs if p["proof"] == cc.P_REPORT] == []
+    failed = [p for p in proofs if p["proof"] == cc.P_READ_FAILED and p["detail"].get("what") == "RE's own survey report"]
+    assert len(failed) == 1 and failed[0]["detail"]["error"] == "SERVER_ERROR_500 something else broke"
 
 
 def test_success_path_still_says_published(world, fake, monkeypatch):

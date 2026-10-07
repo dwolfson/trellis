@@ -111,6 +111,11 @@ KEPT_NOT_SENT = "kept, not sent · ISSUE-117 block"
 P_SURVEY = "survey_started"
 P_CONNECTOR = "connector_read"
 P_READ_FAILED = "read_failed"
+#: A schema element RE found after Egeria answered a create error, and verified by its GUID (its
+#: DataSetContent link to the database AND its ResourceConnection). Context, never a state: the
+#: page's state words still come from the target / elements rows; this row only changes the
+#: first sentence, "adopted after a create error · <Egeria's sentence>". No DDL: the proof column is free text.
+P_ADOPTED = "create_error_adopted"
 
 #: Proofs that decide a schema's state in Egeria. Anything else is context.
 READ_SUCCESS_PROOFS = (P_ZONES_READ, P_ELEMENTS, P_CONNECTOR, P_DATABASE, P_RESTORED)
@@ -489,10 +494,15 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
             "Egeria's attach action was started; its target is not in the cataloguer's list yet"
         return {"state": "sent", "words": f"sent to Egeria · attach action {guid[:8]} · waiting for the target",
                 "second": second, "proof": proof}
+    adopted = _latest([r for r in rows if r["element_guid"] == last["element_guid"]], (P_ADOPTED,))
+    adopted_words = (f"adopted after a create error · {adopted['detail'].get('egeria_said', '')}"
+                     if adopted is not None and kind in (P_TARGET, P_ELEMENTS) else "")
     if kind == P_ELEMENTS:
         d = last["detail"]
         n = len(d.get("tables") or [])
         words = f"cataloged · {n} table{'s' if n != 1 else ''} · read back {_stamp(last['read_at'])}"
+        if adopted_words:
+            words = f"{adopted_words} · {words}"
         second = "element · read back from Egeria"
         if effective == LEAVE_OUT:
             second = "scope says leave out · still in Egeria until the next commit"
@@ -503,7 +513,8 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
                   if ct else "last cycle not reported")
         if effective == LEAVE_OUT:
             second = "scope says leave out · still attached until the next commit"
-        return {"state": "attached_waiting", "words": "attached · waiting for Egeria's next refresh",
+        return {"state": "attached_waiting",
+                "words": adopted_words or "attached · waiting for Egeria's next refresh",
                 "second": second, "proof": proof}
     if kind == P_REMOVED:
         # "removed" is RESERVED for "Remove from Resource Explorer", which only touches RE's record; an Egeria
@@ -916,6 +927,22 @@ def _wait_for_target(gateway: CatalogueGateway, guid: str, db_entity=None, schem
     return []
 
 
+def _own_catalog_targets(gateway: CatalogueGateway, guid: str) -> list:
+    """The CatalogTarget relationships on THIS element, read through a relationship read by its GUID."""
+    return [r for r in gateway.relationships(guid) if r.type_name == "CatalogTarget"]
+
+
+def _verify_adopted(gateway: CatalogueGateway, guid: str, database_guid: str, egeria_said: str) -> None:
+    """After a create error, an element that exists is reused only if it is whole: it has its
+    DataSetContent link to the database AND its ResourceConnection, read by its GUID. Otherwise the
+    create is reported as what it was, with Egeria's own sentence."""
+    rels = gateway.relationships(guid)
+    linked = any(r.type_name == "DataSetContent" and (not database_guid or r.other_guid == database_guid) for r in rels)
+    connected = any(r.type_name == "ResourceConnection" for r in rels)
+    if not (linked and connected):
+        raise GatewayError(f"schema created without its connection · {egeria_said}")
+
+
 def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_id: int | None = None) -> str:
     """Create the schema element and attach it as a schema-kind target. Idempotent.
 
@@ -947,7 +974,13 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
             again = gateway.read_element(qn)
             if again is None:
                 raise
-            guid, create_note = again.guid, egeria_first_sentence(str(exc))[0]
+            # Egeria's WHOLE sentence is kept (never cut to a first sentence): it is the evidence.
+            guid, create_note = again.guid, " ".join(_egeria_word(str(exc)).split())
+            _verify_adopted(gateway, guid, payload.get("database_guid", ""), create_note)
+            _proof(registry, slug, P_ADOPTED, schema=schema, element_guid=guid, qualified_name=qn,
+                   curation_id=payload.get("curation_id", ""), outbox_id=outbox_id, recorded_by=payload.get("by", ""),
+                   detail={"egeria_said": create_note,
+                           "verified": "DataSetContent link to the database and ResourceConnection, read by the element's GUID"})
         if not guid:
             raise GatewayError(f"Egeria created no schema element for {schema}")
     else:
@@ -1004,12 +1037,18 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
                 mine = _targets_for(gateway.list_catalog_targets(), guid, e, schema)
         if not mine:
             raise GatewayError(f"the target for {schema} was added but is not in the cataloguer's list on read-back")
+    # A proof row proves ONE element: the target must be readable as a relationship ON that element's GUID.
+    # (The cataloguer's target list hides a target whose element is archived, and matches by name too.)
+    own = _own_catalog_targets(gateway, guid)
+    if not own:
+        raise GatewayError(f"the target for {schema} is in the cataloguer's list but the element {guid[:8]} "
+                           f"shows no CatalogTarget relationship when read by its own GUID")
     status = None
     try:
         status = gateway.connector_status()
     except GatewayError:
         pass
-    _proof(registry, slug, P_TARGET, schema=schema, element_guid=guid, target_guid=mine[0].relationship_guid,
+    _proof(registry, slug, P_TARGET, schema=schema, element_guid=guid, target_guid=own[0].guid or mine[0].relationship_guid,
            qualified_name=qn, curation_id=payload.get("curation_id", ""), outbox_id=outbox_id,
            recorded_by=payload.get("by", ""),
            detail={"targets_for_schema": len(mine), "mechanism": mechanism,
@@ -1105,6 +1144,39 @@ def _prove_gone(gateway: CatalogueGateway, qualified_name: str, form: str, schem
             raise GatewayError(f"{schema}: {qualified_name} was archived but the read-back does not show it")
 
 
+def _guid_to_read(registry, slug: str, schema: str, by_name) -> str:
+    """The GUID whose own links the read-back walks: the element RE created or adopted (its newest
+    proof row that names one, unless a removal came after), else the one the name resolves to. The
+    name only ever says WHICH element; every fact then comes from that GUID's relationships."""
+    rows = _by_node(registry.list_catalogue_commit_proofs(slug)).get(("schema", schema, ""), [])
+    last = _latest(rows, (P_ATTACH_REQUESTED, P_TARGET, P_ELEMENTS, P_ADOPTED, P_RESTORED, P_REMOVED, P_ARCHIVED))
+    if last is not None and last["proof"] not in (P_REMOVED, P_ARCHIVED) and last["element_guid"]:
+        return last["element_guid"]
+    return by_name.guid
+
+
+def _read_schema_by_guid(gateway: CatalogueGateway, guid: str, qn: str):
+    """schema -> its own `Schema` link -> schema type -> `AttributeForSchema` tables ->
+    `NestedSchemaAttribute` columns, every hop a relationship read by GUID. Returns
+    (guid, the schema's own CatalogTarget relationships, table names, column count, element count)."""
+    rels = gateway.relationships(guid)
+    own = [r for r in rels if r.type_name == "CatalogTarget"]
+    tables: list[str] = []
+    cols = 0
+    n = 0
+    for st in (r for r in rels if r.type_name == "Schema" and r.other_guid):
+        n += 1
+        for t in (r for r in gateway.relationships(st.other_guid) if r.type_name == "AttributeForSchema"):
+            n += 1
+            tq = t.other_qualified_name or ""
+            tables.append(tq[len(qn) + 2:] if tq.startswith(qn + "::") else (tq.rsplit("::", 1)[-1] or t.other_name))
+            for c in gateway.relationships(t.other_guid):
+                if c.type_name == "NestedSchemaAttribute":
+                    cols += 1
+                    n += 1
+    return guid, own, sorted(tables), cols, n
+
+
 def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str], *,
               curation_id: str = "", by: str = "") -> dict:
     """Read Egeria and write what it says as proof rows. The one place a schema
@@ -1130,28 +1202,25 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
         qn = schema_qn(e, schema)
         try:
             el = gateway.read_element(qn)
-            under = gateway.elements_under(qn + "::") if el else []
+            found = _read_schema_by_guid(gateway, _guid_to_read(registry, slug, schema, el), qn) if el else None
         except GatewayError as exc:
             _proof(registry, slug, P_READ_FAILED, schema=schema, curation_id=curation_id,
                    detail={"error": str(exc)})
             summary["read_failed"] += 1
             continue
-        if el is None:
+        if el is None or found is None:
             continue
-        tables = sorted(u.qualified_name[len(qn) + 2:] for u in under
-                        if u.type_name == "RelationalTable" and "::" not in u.qualified_name[len(qn) + 2:])
-        cols = sum(1 for u in under if u.type_name == "RelationalColumn")
-        mine = [t for t in targets if t.element_guid == el.guid]
+        guid, own, tables, cols, n_elements = found
         # Only tables and columns count as cataloged content: the template's own connection graph
         # (4 elements, rehearsal 2) is under every schema from the moment it is created.
         if tables or cols:
-            _proof(registry, slug, P_ELEMENTS, schema=schema, element_guid=el.guid, qualified_name=qn,
-                   curation_id=curation_id, recorded_by=by, target_guid=mine[0].relationship_guid if mine else "",
-                   detail={"tables": tables, "columns": cols, "elements": len(under)})
+            _proof(registry, slug, P_ELEMENTS, schema=schema, element_guid=guid, qualified_name=qn,
+                   curation_id=curation_id, recorded_by=by, target_guid=own[0].guid if own else "",
+                   detail={"tables": tables, "columns": cols, "elements": n_elements})
             summary["catalogued"] += 1
             summary["schemas"][schema] = "catalogued"
-        elif mine:
-            _proof(registry, slug, P_TARGET, schema=schema, element_guid=el.guid, target_guid=mine[0].relationship_guid,
+        elif own:
+            _proof(registry, slug, P_TARGET, schema=schema, element_guid=guid, target_guid=own[0].guid,
                    qualified_name=qn, curation_id=curation_id, recorded_by=by,
                    detail={"connector_last_refresh": status.last_refresh_time if status else "",
                            "connector_note": "the connector's last refresh, not this target's"})
@@ -1542,15 +1611,26 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         try:
             res = gateway.publish_local_report(db, db.db_user, db.db_password, measured, registry=registry, submitted_by=author)
             rep_guid = res.get("report_element_guid", res.get("report_guid", "")) or ""
-            _proof(registry, slug, P_REPORT, node_kind="database", element_guid=rep_guid,
-                   curation_id=curation_id,
-                   detail={"annotation_count": res.get("annotation_count"),
-                           "surveyed_at": measured.get("surveyed_at", ""),
-                           "report_error": res.get("report_error", ""),
-                           "outcome": ("failed" if res.get("report_error") else "reused" if res.get("report_reused") else "published"),
-                           "note": (f"reused existing report (same survey run {measured.get('surveyed_at', '')})"
-                                    if res.get("report_reused") else ""),
-                           "annotations_in_egeria": res.get("annotations_in_egeria")})
+            failed_text = str(res.get("report_error") or res.get("annotation_error") or "")
+            if rep_guid and not failed_text:
+                # A success row only for a report that has a GUID and no error: a created one, or a reuse
+                # whose annotation count Egeria itself gave (`annotations_in_egeria`).
+                _proof(registry, slug, P_REPORT, node_kind="database", element_guid=rep_guid,
+                       curation_id=curation_id,
+                       detail={"annotation_count": res.get("annotation_count"),
+                               "surveyed_at": measured.get("surveyed_at", ""),
+                               "report_error": "",
+                               "outcome": "reused" if res.get("report_reused") else "published",
+                               "note": (f"reused existing report (same survey run {measured.get('surveyed_at', '')})"
+                                        if res.get("report_reused") else ""),
+                               "annotations_in_egeria": res.get("annotations_in_egeria")})
+            elif failed_text:
+                # A failed publish (a 409, a 500, annotations that did not land) is a failed read of what was
+                # asked for, never a success row, so no later word can derive "published" from it.
+                _proof(registry, slug, P_READ_FAILED, node_kind="database", curation_id=curation_id,
+                       element_guid=rep_guid,
+                       detail={"error": failed_text, "what": "RE's own survey report",
+                               "annotation_count": res.get("annotation_count"), "report_guid": rep_guid})
             state, words = report_step_words(res, measured.get("surveyed_at", ""))
             cur.set_step(curation_id, "survey_report", state, words)
         except Exception as exc:

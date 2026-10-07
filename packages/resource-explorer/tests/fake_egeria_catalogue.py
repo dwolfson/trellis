@@ -86,6 +86,12 @@ class FakeEgeria:
         self._lag_left = 0
         self.initiations: dict[str, int] = {}           # schema guid -> times the action type was initiated
         self.create_error_after_creating = False        # Egeria 500s on the create but the element exists (rehearsal 2)
+        # 2026-10-06: the create 500s halfway. The element exists but has NO DataSetContent link to the
+        # database and NO ResourceConnection (`create_error_half_built`), and a read by NAME can still land on
+        # the OLD schema's tree (`stale_under`: extra elements the prefix search returns).
+        self.create_error_half_built = False
+        self.create_error_text = "SERVER_ERROR_500 => Egeria detected error: `https://localhost:9443/x/new-element`."
+        self.stale_under: list[tuple[str, str]] = []
         self.survey_behaviour = "pending"         # pending | annotated | failed | empty (a survey takes time)
         self.survey_failure = ("OMES-SURVEY-ACTION-0018 The survey service threw an exception. "
                                "Details are in the audit log.")
@@ -218,12 +224,16 @@ class FakeEgeria:
         if e is not None and not e["deleted"]:
             return e["guid"]
         g = self.add_element(qn, "DeployedDatabaseSchema", parent=database_guid)
+        if self.create_error_half_built:
+            self.elements[g]["linked"] = self.elements[g]["connected"] = False
+            self.create_error_half_built = False
+            raise GatewayError(self.create_error_text)
         for suffix, typ in (("Connection", "VirtualConnection"), ("Endpoint", "Endpoint"),
                             ("SecretsStoreConnection", "Connection"), ("SecretStoreEndpoint", "Endpoint")):
             self.add_element(f"{qn}::{suffix}", typ, parent=g)        # the template's own connection graph
         if self.create_error_after_creating:
             self.create_error_after_creating = False
-            raise GatewayError("SERVER_ERROR_500 => Egeria detected error: `https://localhost:9443/x/new-element`.")
+            raise GatewayError(self.create_error_text)
         return g
 
     # -- targets -----------------------------------------------------------
@@ -305,6 +315,7 @@ class FakeEgeria:
         self._boom("elements_under")
         raw = [self.raw_element(g) for g, e in self.elements.items()
                if self._visible(e) and e["qn"].startswith(prefix)]
+        raw += [_raw_element(f"stale-{i}", qn, typ) for i, (qn, typ) in enumerate(self.stale_under) if qn.startswith(prefix)]
         self.last_wire = ("elements", raw or "No elements found")
         return parse_elements_answer(self.last_wire[1])
 
@@ -319,10 +330,15 @@ class FakeEgeria:
         e = self.elements.get(guid)
         typ = e["type"] if e is not None else ""
         if typ == "DeployedDatabaseSchema":
-            out.append(Relationship("CatalogTarget", other_guid="cat"))
+            for t in self.targets:                      # read by the element's own guid: only ITS target shows
+                if t.element_guid == guid:
+                    out.append(Relationship("CatalogTarget", other_guid="cat", guid=t.relationship_guid))
+            if e.get("linked", True) and e["parent"]:
+                out.append(Relationship("DataSetContent", other_guid=e["parent"], other_type="RelationalDatabase"))
             # what the template and Egeria's own engines put on every schema (rehearsal 2, step 4)
-            for t in ("ResourceConnection", "SourcedFrom"):
-                out.append(Relationship(t, other_guid="own"))
+            out.append(Relationship("SourcedFrom", other_guid="own"))
+            if e.get("connected", True):
+                out.append(Relationship("ResourceConnection", other_guid="own"))
             # Egeria's OpenLineage cataloguer records the governance action that touched it (rehearsal 2,
             # READBACK note): a DataFlow to the action's job component, `DeployedSoftwareComponent::GovernanceActions::...`
             out.append(Relationship("DataFlow", other_guid="job", other_type="DeployedSoftwareComponent",
