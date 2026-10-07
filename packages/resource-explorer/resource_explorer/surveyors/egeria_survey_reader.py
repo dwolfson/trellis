@@ -14,6 +14,7 @@ each listing RelatedMetadataElementSummary entries.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,26 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value) if value is not None else default
     except (ValueError, TypeError):
         return default
+
+
+def parse_json_properties(value) -> dict:
+    """An annotation's `jsonProperties` as a dict.
+
+    Egeria stores it as a JSON STRING (RE itself writes it that way). A dict
+    passes through; empty / None / blank is `{}`. A string that is not valid
+    JSON, or is valid JSON but not an object, is kept whole under `"raw"` so
+    no text is lost and nothing is dropped without a trace."""
+    if isinstance(value, dict):
+        return value
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return {}
+    if not isinstance(value, str):
+        return {"raw": str(value)}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {"raw": value}
+    return parsed if isinstance(parsed, dict) else {"raw": value}
 
 
 def get_survey_reports_by_guid(asset_maker, resource_guid: str) -> list[dict]:
@@ -101,7 +122,7 @@ def annotations_from_report(result: dict) -> list[dict]:
             "analysis_step": props.get("analysisStep", ""),
             "explanation": props.get("explanation", ""),
             "expression": props.get("expression", ""),
-            "json_properties": props.get("jsonProperties", {}),
+            "json_properties": parse_json_properties(props.get("jsonProperties")),
             # Egeria's `contentStatus` — whether the annotation's CONTENT
             # is complete. `DRAFT` means it is a PROPOSAL: a candidate
             # Data Class or reference-data set that no curator has

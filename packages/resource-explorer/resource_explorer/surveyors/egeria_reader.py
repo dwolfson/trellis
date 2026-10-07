@@ -11,7 +11,6 @@ no data for the project.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -223,13 +222,8 @@ def _safe_int(value) -> int | None:
 
 def _parse_annotation(header: dict, props: dict) -> dict:
     """Normalise a raw Egeria annotation element into a plain dict."""
-    json_props = {}
-    raw_jp = props.get("jsonProperties")
-    if raw_jp:
-        try:
-            json_props = json.loads(raw_jp)
-        except (json.JSONDecodeError, TypeError):
-            json_props = {"raw": raw_jp}
+    from resource_explorer.surveyors.egeria_survey_reader import parse_json_properties
+    json_props = parse_json_properties(props.get("jsonProperties"))
 
     # Subtype-specific native fields gathered into a single dict
     subtype_data: dict = {}

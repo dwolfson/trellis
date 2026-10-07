@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from resource_explorer.web.routes._annotation_items import build_annotation_items
 from resource_explorer.auth import get_current_user
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
@@ -399,7 +400,7 @@ async def get_repo_egeria_annotations(slug: str, report_guid: str) -> list[Egeri
         annotations = await asyncio.to_thread(publisher.get_annotations_by_report_guid, report_guid)
     except EgeriaConnectionError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    return [EgeriaAnnotationItem(**a) for a in annotations]
+    return build_annotation_items(EgeriaAnnotationItem, annotations)
 
 
 class ResetResult(BaseModel):
