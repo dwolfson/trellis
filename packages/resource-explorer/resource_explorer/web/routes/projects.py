@@ -1906,11 +1906,18 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
         intent="curate", status="running",
         summary=f"Cataloging {project.display_name}: {len(body.confirm)} entities, {len(body.sub_resources)} sub-resources…",
     )
-    rec = Curations(registry).create(
-        "repo", slug, author=author, selection=body.model_dump(), manifest=manifest,
-        steps=list(STEPS), activity_id=activity_id)
-    run_id = registry.enqueue_run("curate_commit", {"slug": slug, "curation_id": rec["id"]},
-                                  result_ref=activity_id, requested_by=_requested_by())
+    try:
+        rec = Curations(registry).create(
+            "repo", slug, author=author, selection=body.model_dump(), manifest=manifest,
+            steps=list(STEPS), activity_id=activity_id)
+        run_id = registry.enqueue_run("curate_commit", {"slug": slug, "curation_id": rec["id"]},
+                                      result_ref=activity_id, requested_by=_requested_by())
+    except Exception as exc:
+        # The row above was opened 'running'; nothing will ever run to close it.
+        registry.update_activity_status(
+            activity_id, "error",
+            summary=f"Cataloging {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
+        raise
     log.info("enqueued curate_commit %s for %s (activity %s)", run_id, slug, activity_id)
     return {"curation": rec, "activity_id": activity_id, "run_id": run_id}
 
@@ -2290,8 +2297,15 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
             entity_name=project.display_name, entity_location=project.github_url,
             intent="curate", status="running",
             summary=f"Materialising {len(accepted_paths)} accepted component(s) of {project.display_name}…")
-        run_id = registry.enqueue_run("materialize_components", {"slug": slug, "paths": accepted_paths},
-                                      result_ref=activity_id, requested_by=_requested_by())
+        try:
+            run_id = registry.enqueue_run("materialize_components", {"slug": slug, "paths": accepted_paths},
+                                          result_ref=activity_id, requested_by=_requested_by())
+        except Exception as exc:
+            # Opened 'running' above; nothing will run to close it.
+            registry.update_activity_status(
+                activity_id, "error",
+                summary=f"Materialising {len(accepted_paths)} accepted component(s) of {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
+            raise
         out.update({"run_id": run_id, "activity_id": activity_id, "queued": len(accepted_paths)})
     return out
 

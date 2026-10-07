@@ -12159,6 +12159,23 @@ class ProjectRegistry:
                 ),
             )
 
+    def close_activity_if_running(self, entry_id: str, status: str, summary: str) -> bool:
+        """Finalise an activity entry ONLY if it is still 'running'. Returns whether it closed one.
+
+        For the queue worker, which closes the entry of any run it finishes: a handler that already wrote
+        its own terminal status (analysis runs do) is left exactly as it wrote it, and an entry that was
+        reconciled or finished elsewhere is never overwritten. The condition is in the UPDATE itself, so a
+        concurrent finisher cannot be clobbered between a read and a write. `detail` is not touched.
+        """
+        if not entry_id:
+            return False
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE activity_log SET status = ?, summary = ? WHERE id = ? AND status = 'running'",
+                (status, summary, entry_id),
+            )
+        return (cur.rowcount or 0) > 0
+
     def upsert_rfa_note(self, rfa_id: str, entry_id: str, annotation_index: int, notes: str) -> None:
         """Real, persisted free-text notes on an RFA — addable independent
         of any status change (unlike resolution_note, recorded only when

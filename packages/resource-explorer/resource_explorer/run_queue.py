@@ -389,6 +389,63 @@ def _run_as_requester(row: dict):
         current_caller.reset(reset)
 
 
+def _first_sentence(text: str, limit: int = 240) -> str:
+    text = " ".join(str(text or "").split())
+    for i, ch in enumerate(text):
+        if ch == "." and (i + 1 == len(text) or text[i + 1] == " "):
+            text = text[:i]
+            break
+    return text[:limit]
+
+
+def _activity_words(registry, kind: str, target: dict, outcome: "RunOutcome") -> tuple[str, str]:
+    """(status, one sentence) for the activity entry of a run that just ended.
+
+    Says what happened. A failed commit names the step that failed and Egeria's/our own first sentence
+    about why, read from the curation record the handler already filled in.
+    """
+    slug = str(target.get("slug") or "") if isinstance(target, dict) else ""
+    ok = outcome.state == "succeeded"
+    status = "ok" if ok else "error"
+    if kind in ("curate_commit", "catalogue_commit"):
+        label = "Cataloging" if not ok else "Cataloged"
+        failed = []
+        steps = []
+        cid = target.get("curation_id") if isinstance(target, dict) else None
+        if cid:
+            from resource_explorer.curate_plan import Curations
+            rec = Curations(registry).get(cid) or {}
+            steps = rec.get("steps") or []
+            failed = [s for s in steps if s.get("state") == "failed"]
+        if ok:
+            done = sum(1 for s in steps if s.get("state") == "done")
+            return status, f"{label} {slug or 'the resource'}: {done} step(s) done."
+        if failed:
+            first = failed[0]
+            why = _first_sentence(first.get("detail") or outcome.error or "no reason recorded")
+            more = f" (and {len(failed) - 1} more step(s) failed)" if len(failed) > 1 else ""
+            return status, f"{label} {slug or 'the resource'} failed at step {first.get('name')}: {why}{more}."
+        return status, f"{label} {slug or 'the resource'} failed: {_first_sentence(outcome.error) or 'no reason recorded'}."
+    if kind == "materialize_components":
+        n = len(target.get("paths") or []) if isinstance(target, dict) else 0
+        if ok:
+            return status, f"Materialised {n} accepted component(s) of {slug or 'the resource'}."
+        return status, f"Materialising {n} accepted component(s) of {slug or 'the resource'} failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."
+    if ok:
+        return status, f"{kind.replace('_', ' ')} finished."
+    return status, f"{kind.replace('_', ' ')} failed: {_first_sentence(outcome.error) or 'no reason recorded'}."
+
+
+def _close_activity(registry, result_ref: str, kind: str, target: dict, outcome: "RunOutcome") -> None:
+    """Every exit of a run writes the final status on its activity entry (the entry the route opened as
+    'running' and handed over as `result_ref`). A no-op when the handler already closed it. Not wrapped:
+    if the registry cannot be written the caller must see that, not a row quietly left 'running'."""
+    if not result_ref:
+        return
+    status, summary = _activity_words(registry, kind, target, outcome)
+    registry.close_activity_if_running(result_ref, status, summary)
+
+
 def execute_run(row: dict, registry=None) -> RunOutcome:
     """Run one claimed row to a terminal state and record it.
 
@@ -417,7 +474,9 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
         error = f"no handler registered for run kind {kind!r}"
         log.error("run %s: %s", run_id, error)
         registry.finish_run(run_id, "failed", error=error)
-        return RunOutcome(state="failed", error=error)
+        outcome = RunOutcome(state="failed", error=error)
+        _close_activity(registry, result_ref, kind, target, outcome)
+        return outcome
 
     registry.mark_run_running(run_id)
     if result_ref:
@@ -450,7 +509,9 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         log.exception("run %s (%s) crashed", run_id, kind)
         registry.finish_run(run_id, "failed", error=f"{type(exc).__name__}: {exc}")
-        return RunOutcome(state="failed", error=str(exc))
+        outcome = RunOutcome(state="failed", error=f"{type(exc).__name__}: {exc}")
+        _close_activity(registry, result_ref, kind, target, outcome)
+        return outcome
 
     # LLM cost for this run, recorded OUTSIDE the try above on purpose: the
     # handler has already succeeded by here, and a metrics sink must not be able
@@ -479,6 +540,7 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
                       analysis_id=str(target.get("analysis_id") or "") if isinstance(target, dict) else "")
 
     registry.finish_run(run_id, outcome.state, error=outcome.error)
+    _close_activity(registry, result_ref, kind, target, outcome)
     log.info("run finished: id=%s kind=%s state=%s", run_id, kind, outcome.state)
     return outcome
 
