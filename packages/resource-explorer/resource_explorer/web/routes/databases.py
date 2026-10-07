@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from resource_explorer.web.routes._annotation_items import build_annotation_items
 from resource_explorer.credential_crypto import (
     CREDENTIAL_UNREADABLE_REASON,
     CredentialUnreadableError,
@@ -1040,7 +1041,7 @@ async def get_database_egeria_annotations(slug: str, report_guid: str) -> list[E
         annotations = await asyncio.to_thread(surveyor.get_annotations_by_report_guid, report_guid)
     except EgeriaDatabaseSurveyorError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    return [EgeriaAnnotationItem(**a) for a in annotations]
+    return build_annotation_items(EgeriaAnnotationItem, annotations)
 
 
 class PublishRequest(BaseModel):

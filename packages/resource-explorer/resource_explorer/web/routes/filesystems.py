@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from resource_explorer.web.routes._annotation_items import build_annotation_items
 from resource_explorer.registry import FileSystemEntity, ProjectRegistry, ProjectStatus
 
 log = logging.getLogger(__name__)
@@ -526,7 +527,7 @@ def get_filesystem_egeria_annotations(slug: str, report_guid: str) -> list[Egeri
         annotations = surveyor.get_annotations_by_report_guid(report_guid)
     except EgeriaFileSystemSurveyorError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    return [EgeriaAnnotationItem(**a) for a in annotations]
+    return build_annotation_items(EgeriaAnnotationItem, annotations)
 
 
 @router.post("/{slug}/publish")
