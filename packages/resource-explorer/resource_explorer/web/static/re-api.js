@@ -1768,7 +1768,7 @@ export const applyResyncSteps = (steps) => post('/api/egeria/resync/apply', { st
  * The Publish section of Curate (next/stages/publish.js). The state and the
  * words come from proof rows on the server; the browser never decides one. */
 
-const _reportsBase = (entityType, slug) => {
+export const egeriaReportsPath = (entityType, slug) => {
   requireKind('egeriaReportsPath', entityType);
   const s = encodeURIComponent(slug);
   return entityType === 'database' ? `/api/databases/${s}`
@@ -1788,11 +1788,11 @@ export const publishRepoReport = (slug, { withoutProject = false } = {}) =>
 export const forgetEgeriaLinks = (slug) => post(`/api/egeria/${encodeURIComponent(slug)}/forget-links`);
 
 /** SurveyReports that exist in Egeria right now for the resource's asset, whoever ran them. */
-export const getEgeriaReports = (entityType, slug) => get(`${_reportsBase(entityType, slug)}/egeria-surveys`);
+export const getEgeriaReports = (entityType, slug) => get(`${egeriaReportsPath(entityType, slug)}/egeria-surveys`);
 
 /** The annotations under one live SurveyReport, by the report's own GUID. */
 export const getEgeriaReportAnnotations = (entityType, slug, reportGuid) =>
-  get(`${_reportsBase(entityType, slug)}/egeria-surveys/${encodeURIComponent(reportGuid)}/annotations`);
+  get(`${egeriaReportsPath(entityType, slug)}/egeria-surveys/${encodeURIComponent(reportGuid)}/annotations`);
 
 /** Preview only: what cataloging file types would create. Nothing is sent. */
 export const getRepoFileTypes = (slug) => get(`/api/egeria/${encodeURIComponent(slug)}/file-types`);

@@ -1,6 +1,6 @@
 /* Publish to Egeria -- the section of Curate that says what Egeria holds for this resource.
  *
- * Parity slice G1 (BRIEF-PARITY-G1-G3-TO-ALPHA.md, rows PI-001..PI-009), Egeria on a repository. Classic
+ * Parity slice G1 (PARITY-G1-IMPLEMENTED.md, rows PI-001..PI-009), Egeria on a repository. Classic
  * had an "Egeria" tab per repository; /next had a publish-state line in the resource header and nothing
  * else. There is no separate Publish stage in STAGES, so this is the fourth band of the Curate pane
  * ([data-curate-band="publish"], after the kind's own work), one component for every kind:
