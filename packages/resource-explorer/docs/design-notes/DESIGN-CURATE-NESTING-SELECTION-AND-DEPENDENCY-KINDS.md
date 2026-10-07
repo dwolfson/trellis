@@ -208,10 +208,22 @@ configured (`configured_publish_zones()`), because writing the fallback onto
 a database element locked out the service identity, Egeria's survey engine
 and the cataloguer. The blueprint and component promotion still uses the
 falling-back helper, so an accepted blueprint on the dev platform lands in
-`egeria-runtime` by default. Either promotion adopts the commit's rule (no
-zone unless configured, and the verdict row says "zones left to Egeria"), or
-the two paths stay different on purpose and the note records why. The
-"several blueprints" design below does not depend on which. So the owner's
+`egeria-runtime` by default. **Decided (owner, 2026-10-07): promotion adopts the commit's
+configured-only rule.** RE writes a zone only when the deployment configured
+one (`EXPLORER_PUBLISH_ZONES` or `egeria.default_catalog_zones`); otherwise
+the accepted element carries no zone and the verdict row reads "accepted ·
+zones left to Egeria · everyone visible" (or "accepted · zone <name>"). One
+rule for every zone RE writes, the deployment's intent and never RE's guess.
+The builder reads first whether materialisation puts the Draft element into
+the private zone (`PRIVATE_ZONE`): if it does, accept must clear that zone
+when nothing is configured, or the element stays private; if it does not,
+accept is the content-status change alone. Tests: with no zone configured an
+accepted blueprint and component carry no ZoneMembership and are readable by
+the service identity; with a configured zone they carry exactly that zone.
+**Backlog (owner):** zone configuration in the Admin panel, so a deployment
+can set different defaults (publish zones, and later per-kind or per-group
+defaults) without an environment variable. The "several blueprints" design
+below does not depend on any of this. So the owner's
 rule maps directly: each blueprint kind is its own
 `SolutionBlueprint` with the kind in its `displayName` and in the
 `<perspective>` slot of the qualifiedName ("Egeria Deployment Blueprint",
