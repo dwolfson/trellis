@@ -418,11 +418,12 @@ export async function renderPeopleBand(el, slug, entityType) {
   ]);
 }
 
-/** The frame every kind shares. Returns the three band hosts; the kind's own
+/** The frame every kind shares (G1 added `publish`, the Egeria band, after the kind's own work). Returns the band hosts; the kind's own
  *  work goes in `kind`. `findable` and `people` are filled by the callers
  *  below so that a repo can fill `people` after its (slow) plan loads. */
 export function bandFrameHtml() {
   return `<section data-curate-band="findable" class="mb-s4 border-b border-rule pb-s2"></section>
     <section data-curate-band="kind" class="mb-s4"></section>
+    <section data-curate-band="publish" class="mb-s4 border-b border-rule pb-s2"></section>
     <section data-curate-band="people" class="mb-s4"></section>`;
 }

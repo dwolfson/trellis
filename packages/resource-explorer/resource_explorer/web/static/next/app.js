@@ -3107,6 +3107,18 @@ function setRailOpen(open, { persist = true } = {}) {
 
 let _restoringUrl = false;
 
+/** Switch to the Investigation stage on the current investigation's detail, for the publish gate's
+ *  "Bind this investigation to a project" (G1). The header's own "Open Investigation →" handler keeps its
+ *  inline body (a source-scanning test pins it). With no current investigation the stage still opens:
+ *  its list is where one is made. */
+export function openCurrentInvestigationStage() {
+  if (state.investigation) openInvestigationDetail(state.investigation);
+  state.stage = 'investigation';
+  writeUrl();
+  renderIntentNav();
+  loadPane();
+}
+
 function writeUrl() {
   if (_restoringUrl) return;
   const p = new URLSearchParams();

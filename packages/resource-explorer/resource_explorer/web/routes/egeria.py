@@ -5,10 +5,11 @@ import asyncio
 import json
 import os
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from resource_explorer.auth import get_current_user
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
 
@@ -752,39 +753,20 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     # forget the check. status "unset" (never decided, including no row at
     # all) blocks; every other status (personal/linked/deferred/declined —
     # all deliberate answers) proceeds.
-    context = registry.get_project_context("repo", slug)
-    if not context or context.get("status") == "unset":
-        # Before prompting, see whether an investigation already answers this.
-        # An investigation is "the context everything else runs inside" (design
-        # §1); if this repo is in the working set of one that is bound to an
-        # Egeria Project, that binding IS the answer, and asking again per
-        # resource asks a question already answered.
-        #
-        # The inherited context is WRITTEN, not just used: an inheritance that
-        # leaves no row would make the resource's context depend on membership
-        # at read time, so removing it from the working set later would silently
-        # un-answer a question the user considers settled. Recorded with the
-        # investigation that supplied it, so it is inspectable rather than
-        # magic.
-        inherited = registry.inherited_egeria_project_context("repo", slug)
-        if inherited:
-            registry.set_project_context(
-                "repo", slug,
-                status="linked",
-                egeria_project_guid=inherited["egeria_project_guid"],
-                egeria_project_qualified_name=inherited["egeria_project_qualified_name"],
-                free_text_name=f"inherited from investigation '{inherited['_inherited_from_name']}'",
-            )
-            context = registry.get_project_context("repo", slug)
-        else:
-            return JSONResponse(
-                status_code=428,
-                content={
-                    "detail": "egeria_project_context_required",
-                    "entity_type": "repo",
-                    "entity_slug": slug,
-                },
-            )
+    # The shared rule (repo_publish.resolve_project_context): a decided context proceeds; otherwise an
+    # investigation bound to an Egeria Project answers (and the answer is WRITTEN, with the investigation
+    # that supplied it); otherwise 428.
+    from resource_explorer import repo_publish as _rp
+    context = _rp.resolve_project_context(registry, slug)
+    if context is None:
+        return JSONResponse(
+            status_code=428,
+            content={
+                "detail": "egeria_project_context_required",
+                "entity_type": "repo",
+                "entity_slug": slug,
+            },
+        )
 
     steps = req.steps if req else None
 
@@ -851,6 +833,98 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
         annotation_count=len(result.annotations),
         surveyed_at=result.surveyed_at.isoformat(),
     )
+
+
+# ── Egeria on a repository (parity slice G1, PI-001..PI-006) ─────────────────
+# The Next UI's "Publish" section calls these. Every state word comes from proof rows
+# (resource_explorer/repo_publish.py); nothing below archives or deletes in Egeria.
+
+def _publish_author(request: Request, action: str) -> str:
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail=f"Sign in to {action}: the record needs an author.")
+    return author
+
+
+class PublishReportRequest(BaseModel):
+    #: "Publish without one" (PI-006): records the choice (status "declined") and proceeds. There is no
+    #: zones field: zones are never a per-press choice (they come from EXPLORER_PUBLISH_ZONES).
+    without_project: bool = False
+
+
+@router.get("/{slug}/publish-state")
+def get_publish_state(slug: str) -> dict:
+    """In Egeria or not, the asset GUID, the last report row and the project: RE's own records only."""
+    from resource_explorer import repo_publish
+    _project, registry = _get_project_or_404(slug)
+    return repo_publish.publish_state(registry, slug)
+
+
+@router.post("/{slug}/publish-report")
+async def publish_report(slug: str, request: Request, req: PublishReportRequest | None = None):
+    """Publish RE's survey report WHOLE, read it back, record the proof row (PI-001, PI-006)."""
+    from resource_explorer import repo_publish
+    _project, registry = _get_project_or_404(slug)
+    author = _publish_author(request, "publish to Egeria")
+    # to_thread copies the caller's context, so the project answer (per caller) is read as the caller.
+    try:
+        out = await asyncio.to_thread(
+            repo_publish.publish_report, registry, slug, author,
+            without_project=bool(req and req.without_project))
+    except repo_publish.AlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if out.get("gate") == "context_required":
+        return JSONResponse(status_code=428, content={
+            "detail": "egeria_project_context_required", "entity_type": "repo", "entity_slug": slug,
+            "sentence": out["sentence"]})
+    return out
+
+
+@router.post("/{slug}/forget-links")
+def forget_links(slug: str, request: Request) -> dict:
+    """"Forget Egeria links": RE drops its cached GUIDs and survey history for this resource (PI-005).
+    Nothing is sent to Egeria; nothing there is archived or deleted."""
+    from resource_explorer import repo_publish
+    _project, registry = _get_project_or_404(slug)
+    author = _publish_author(request, "forget Egeria links")
+    return repo_publish.forget_links(registry, slug, author)
+
+
+class FileTypesCommitRequest(BaseModel):
+    elements: list[CatalogElement]
+
+
+@router.get("/{slug}/file-types")
+def get_file_types(slug: str) -> dict:
+    """What cataloging file types WOULD create (PI-004). Preview only: nothing is sent."""
+    from resource_explorer import repo_publish
+    project, registry = _get_project_or_404(slug)
+    return repo_publish.file_types_preview(registry, project, slug)
+
+
+@router.post("/{slug}/file-types/commit")
+async def commit_file_types(slug: str, request: Request, req: FileTypesCommitRequest) -> dict:
+    """Catalog the chosen file types as DataSets, read each back by GUID, write the proof rows (PI-004)."""
+    from resource_explorer import repo_publish
+    project, registry = _get_project_or_404(slug)
+    author = _publish_author(request, "catalog file types")
+    if not registry.get_egeria_asset_guid(slug):
+        raise HTTPException(status_code=409, detail="The repository is not in Egeria yet: publish the report first.")
+    gateway = repo_publish.FileTypeGateway(registry=registry)
+    elements = [e.model_dump() for e in req.elements]
+
+    def _run() -> dict:
+        import asyncio as _aio
+        loop = _aio.new_event_loop()
+        _aio.set_event_loop(loop)           # pyegeria's sync wrappers want a loop in this thread
+        try:
+            return repo_publish.file_types_commit(registry, project, slug, elements, author, gateway)
+        finally:
+            loop.close()
+            _aio.set_event_loop(None)
+
+    return await asyncio.to_thread(_run)
 
 
 @router.post("/{slug}/materialize-annotations")

@@ -22,6 +22,7 @@ import {
   renderRulesBlock,
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
+import { renderPublishBand } from '/static/next/stages/publish.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
@@ -244,6 +245,9 @@ export async function renderCurate(slug) {
   const bands = [
     renderFindableBand(frame.querySelector('[data-curate-band="findable"]'), slug, entityType),
     renderPeopleBand(frame.querySelector('[data-curate-band="people"]'), slug, entityType),
+    // G1: what Egeria holds for this resource, the same band on every kind. It reads RE's own records
+    // first (no Egeria contact) and is independent of the repository plan below, which can take long.
+    renderPublishBand(frame.querySelector('[data-curate-band="publish"]'), slug, entityType),
   ].map((p) => p.catch((err) => {
     // A band that fails says so in its own slot; it never takes the pane down.
     const slot = frame.querySelector('[data-curate-band="people"]');

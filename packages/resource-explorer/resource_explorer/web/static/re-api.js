@@ -1800,6 +1800,43 @@ export const getResyncStatus = () => get('/api/egeria/resync/scheduler-status');
  *  name. `steps` is a plain array of `Finding.repair_step` values. */
 export const applyResyncSteps = (steps) => post('/api/egeria/resync/apply', { steps });
 
+/* ── Egeria on a resource (parity slice G1) ────────────────────────────────
+ * The Publish section of Curate (next/stages/publish.js). The state and the
+ * words come from proof rows on the server; the browser never decides one. */
+
+export const egeriaReportsPath = (entityType, slug) => {
+  requireKind('egeriaReportsPath', entityType);
+  const s = encodeURIComponent(slug);
+  return entityType === 'database' ? `/api/databases/${s}`
+    : entityType === 'filesystem' ? `/api/filesystems/${s}`
+    : `/api/egeria/${s}`;
+};
+
+/** RE's own records only: in Egeria or not, the asset GUID, the last report row, the project. */
+export const getRepoPublishState = (slug) => get(`/api/egeria/${encodeURIComponent(slug)}/publish-state`);
+
+/** Publish the survey report WHOLE. 428 (ApiError.status) means no project answer: the caller
+ *  shows the two choices and presses again with `withoutProject: true`. No zones: never a per-press choice. */
+export const publishRepoReport = (slug, { withoutProject = false } = {}) =>
+  post(`/api/egeria/${encodeURIComponent(slug)}/publish-report`, { without_project: withoutProject });
+
+/** Forget RE's cached Egeria GUIDs and survey history for this resource. Egeria is not contacted. */
+export const forgetEgeriaLinks = (slug) => post(`/api/egeria/${encodeURIComponent(slug)}/forget-links`);
+
+/** SurveyReports that exist in Egeria right now for the resource's asset, whoever ran them. */
+export const getEgeriaReports = (entityType, slug) => get(`${egeriaReportsPath(entityType, slug)}/egeria-surveys`);
+
+/** The annotations under one live SurveyReport, by the report's own GUID. */
+export const getEgeriaReportAnnotations = (entityType, slug, reportGuid) =>
+  get(`${egeriaReportsPath(entityType, slug)}/egeria-surveys/${encodeURIComponent(reportGuid)}/annotations`);
+
+/** Preview only: what cataloging file types would create. Nothing is sent. */
+export const getRepoFileTypes = (slug) => get(`/api/egeria/${encodeURIComponent(slug)}/file-types`);
+
+/** Catalog the chosen file types; each is read back by GUID before its row says cataloged. */
+export const commitRepoFileTypes = (slug, elements) =>
+  post(`/api/egeria/${encodeURIComponent(slug)}/file-types/commit`, { elements });
+
 /* ── Repair — per-repository correction (resource_explorer/repair.py) ──────
  * A different job from Resync: fixing one repo that was registered wrong,
  * not reconciling the store against Egeria. Every mutation below is a real
