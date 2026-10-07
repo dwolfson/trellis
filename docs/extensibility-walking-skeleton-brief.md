@@ -204,12 +204,38 @@ and `intent_tier` as today. In Egeria a family is a `Collection` the
 declaration joins, so a pack or a search can ask for a family. No
 hierarchy beyond that until there are enough functions to need one.
 
-**Name.** Owner: the library stays in trellis; "Analytic Routine Library"
-is open. Proposal: package name `trellis-analytics` (import
-`trellis_analytics`), display name **"Analytic Library"**, because it holds
-steps as well as routines and the two words stay distinct on every screen;
-if the owner prefers "Analytic Routine Library" the display name changes
-and the package name stays.
+**Name (decided, owner 2026-10-07).** Package `trellis-analytics` (import
+`trellis_analytics`), display name **"Analytic Library"**; it holds steps
+as well as routines. The library and the example step live in trellis.
+
+**CLI and Dr.Egeria commands, both, with a clear split (owner's question).**
+Two registries exist by design and answer different questions: the local
+registry answers *what can run here* (entry points found in this
+environment), Egeria answers *what exists and who declared it* (findable by
+other tools and by context packs). Neither should pretend to be the other.
+
+| Act | Where | Command |
+|---|---|---|
+| create a step or routine skeleton | library CLI | `trellis-analytics new-step <name>` / `new-routine <name>` |
+| validate a manifest and run its envelope tests | library CLI | `trellis-analytics validate <package>` |
+| register locally | nothing to run: `pip install` is the registration (entry point) | — |
+| list what can run here, by family | library CLI | `trellis-analytics list [--family]` |
+| write the Egeria declaration document from the manifest | library CLI | `trellis-analytics declare <name>` → a Dr.Egeria markdown file |
+| create, update, retire the declaration in Egeria; join a family Collection | **Dr.Egeria** | `Create Analytic Function`, `Update Analytic Function`, `Retire Analytic Function`, `Link Analytic Function to Family` (new Dr.Egeria commands, in egeria-python on the owner's word; the element shape is the §2c declaration) |
+| list what Egeria knows | **Dr.Egeria** / pyegeria | `View Analytic Functions [family]` (and the Portal tab reads the same) |
+| compare the two | library CLI | `trellis-analytics drift` prints, per function: "installed here · declared in Egeria", "installed here · not declared", "declared · not installed here (version X)", with no repair; the same shape as the credential drift check |
+
+Why the split: installation is already registration locally, so a CLI
+"register" command would be a second truth; Egeria writes go through
+Dr.Egeria because that is the sanctioned, reviewable, signed-document way
+every other declaration (survey definitions, report specs, dashboard
+sheets) reaches Egeria, and it gives a person the hand on each element;
+the `declare` command keeps the two from diverging in wording by generating
+the document from the manifest rather than by hand; `drift` keeps them
+honest about each other without ever repairing silently. Skeleton scope:
+`new-step`, `validate`, `list`, `declare`, `drift`, and `Create Analytic
+Function` only; `Update`/`Retire`/`Link`/`View` follow once a second
+function exists.
 
 ## 4. What is deliberately not in the skeleton
 
@@ -260,9 +286,7 @@ uses the existing call, so the skeleton runs on pyegeria 6.1.29 as pinned.
 
 ## 8. Questions
 
-**Owner:** the display name ("Analytic Library" proposed; "Analytic Routine
-Library" if preferred). Decided: the library and the example step live in
-trellis.
+**Owner:** none open; name, home and the CLI/Dr.Egeria split are decided above.
 
 **Egeria leads:** the annotation-type extension's timing (interim ruling
 stands until then); whether a step's declaration as a
