@@ -87,6 +87,10 @@ export function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
         if (s.holdCommit) await s.holdCommit;
         return ok({ curation: s.record || { id: 'cafe0123', state: 'queued', author: 'me', steps: [] }, run_id: 'r0000001' });
       }
+      if (method === 'GET' && u.endsWith('/commits/latest')) {
+        if (s.latestFails) return err(500, 'registry unreadable');
+        return ok(s.latest || { commit: null, terminal: null, age_hours: null, stale_unfinished: false, states: {} });
+      }
       if (method === 'GET' && u.includes('/commits/')) return ok(s.record || { id: 'cafe0123', state: 'running', author: 'me', steps: [] });
       if (method === 'POST' && u.endsWith('/read-back')) { s.readBacks = (s.readBacks || 0) + 1; if (s.holdReadBack) await s.holdReadBack; return ok({ catalogued: 0, attached_waiting: 0 }); }
       if (method === 'PUT' && s.holdPut) await s.holdPut;
@@ -143,7 +147,9 @@ export async function setUp(view, opts = {}) {
   const signedIn = opts.signedIn !== false;
   const server = makeServer(view, { signedIn, dropWrites: !!opts.dropWrites });
   ensureLoaderRegistered();
-  (await import('/static/next/stages/curate-scope.js')).resetScopeUi();
+  const scopeMod = await import('/static/next/stages/curate-scope.js');
+  scopeMod.resetScopeUi();
+  if (opts.beforeOpen) opts.beforeOpen({ server, mod: scopeMod, document, window });   // a test's chance to set the server's rows and the clock before the page loads
   globalThis.location = window.location;
   globalThis.history = window.history;
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
