@@ -174,6 +174,19 @@ class ResourceTypeAdapter:
 
 
 
+def _redactable(password, credential_scope: str) -> str:
+    """The password to keep out of stored and logged text, or "".
+
+    A credential override is always redacted, whatever its length. A STORED
+    password is redacted only when it is long enough to be an identifiable
+    string: replacing a one- or two-character secret everywhere would garble
+    every message (and no driver echoes a password it was not asked to).
+    """
+    if not password or not isinstance(password, str):
+        return ""
+    return password if (credential_scope or len(password) >= 8) else ""
+
+
 #: `answered_by` words an `egeria-adaptive` handler reports as `source`.
 _LOCAL_SOURCES = ("custom", "egeria-custom", "local")
 
@@ -359,7 +372,7 @@ class SurveyDefinitionExecutor:
 
         # Whatever password this run connects with (an override or the stored
         # one) is kept out of the log lines about its own failures.
-        with redacting_logs(runner_kwargs.get("db_pwd") or ""):
+        with redacting_logs(_redactable(runner_kwargs.get("db_pwd"), credential_scope)):
             return self._execute(
                 entity_type=entity_type, slug=slug, entity=entity, survey_def=survey_def,
                 process_guid=process_guid, process_qn=process_qn,
@@ -1063,8 +1076,8 @@ class SurveyDefinitionExecutor:
         # store or return (a driver error can echo the password it was given).
         _annotate_step_provenance(
             steps_report, survey_def, runner_kwargs.get("db_user") or "", credential_scope)
-        _secret = runner_kwargs.get("db_pwd") or ""
-        if _secret and isinstance(_secret, str):
+        _secret = _redactable(runner_kwargs.get("db_pwd"), credential_scope)
+        if _secret:
             from resource_explorer.secret_redaction import scrub
 
             steps_report[:] = scrub(steps_report, _secret)
