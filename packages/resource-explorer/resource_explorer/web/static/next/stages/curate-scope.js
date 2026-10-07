@@ -30,6 +30,7 @@ import {
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
+import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize } from '/static/next/colresize.js';
 import { savedLine } from '/static/next/format.js';
 import {
   SOURCE_WORD, md, nodeSourceLine, scopeCollapsedText,
@@ -357,8 +358,23 @@ function sizeCell(node) {
 }
 
 
-/* Column widths, shared by the header, rows and the column lines so they stay aligned.
- * Written out as literal classes (Tailwind scans this file; it cannot see a built string). */
+/* Column widths, shared by the header, rows and the column lines so they stay aligned. The
+ * defaults live here (px); the person's own widths ride on CSS variables set on the tree host by
+ * colresize.js, so a drag moves every row without a re-draw. "Schema / table" is the flexible
+ * column: it takes what the others leave. */
+export const SCOPE_COLS = {
+  id: 'curate-scope-tree', nameMin: 160, chrome: 80,
+  columns: [
+    { key: 'sel', def: 24, min: 24, resizable: false },
+    { key: 'choice', def: 200, min: 90 },
+    { key: 'rows', def: 84, min: 48 },
+    { key: 'size', def: 84, min: 48 },
+    { key: 'act', def: 150, min: 70 },
+    { key: 'cls', def: 150, min: 70 },
+    { key: 'egeria', def: 260, min: 90 },
+  ],
+};
+const cs = (key) => cellStyle(SCOPE_COLS, key);
 function rowHtml(node, me, depth, kindWord, commit, open = false) {
   const isSchema = node.kind === 'schema';
   const key = isSchema ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
@@ -377,15 +393,15 @@ function rowHtml(node, me, depth, kindWord, commit, open = false) {
   const src = srcLine ? `<div data-scope-source class="text-provenance text-ink-muted">${esc(srcLine)}</div>` : '';
   const lowered = isLowered(node, commit);
   const edge = needsYou(node, commit);
-  return `<div class="flex items-baseline gap-s2 border-b border-rule border-l-[3px] pl-[4px] py-[3px] text-caveat ${edge ? 'border-l-ink' : 'border-l-transparent'} ${lowered ? 'text-ink-muted opacity-70' : ''} ${flashRows.has(key) ? 'bg-paper-surface' : ''}" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}"${lowered ? ' data-scope-lowered' : ''}>
-    <div class="w-[2ch] shrink-0" data-scope-select-cell>${pick}</div>
-    <div class="w-[24ch] shrink-0" data-scope-choice-cell ${pendingRows.has(key) ? 'aria-busy="true"' : ''}>${choiceCellHtml(node, me, commit)}</div>
-    <div class="min-w-[14ch] flex-1 break-words ${lowered ? 'text-ink-muted' : 'text-ink'}" data-scope-name-cell><span data-scope-bullet aria-hidden="true" class="text-ink-muted">${isSchema ? '▪' : '·'}</span> ${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
-    <div class="w-[8ch] shrink-0" data-scope-rows-cell>${rowsCell(node)}</div>
-    <div class="w-[8ch] shrink-0" data-scope-size-cell>${sizeCell(node)}</div>
-    <div class="w-[14ch] shrink-0 break-words" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
-    <div class="w-[14ch] shrink-0 break-words" data-scope-classes-cell>${dataClassCell(node)}</div>
-    <div class="w-[18ch] shrink-0 break-words" data-scope-state-cell>${egeriaStateHtml(node, commit)}${collisionLines(node, commit)}${stateCellHtml(node)}</div>
+  return `<div class="flex items-start gap-s2 border-b border-rule border-l-[3px] pl-[4px] py-[3px] text-caveat ${edge ? 'border-l-ink' : 'border-l-transparent'} ${lowered ? 'text-ink-muted opacity-70' : ''} ${flashRows.has(key) ? 'bg-paper-surface' : ''}" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}"${lowered ? ' data-scope-lowered' : ''}>
+    <div class="shrink-0" style="${cs('sel')}" data-scope-select-cell>${pick}</div>
+    <div class="shrink-0 break-words" style="${cs('choice')}" data-scope-choice-cell ${pendingRows.has(key) ? 'aria-busy="true"' : ''}>${choiceCellHtml(node, me, commit)}</div>
+    <div class="min-w-0 flex-1 break-words ${lowered ? 'text-ink-muted' : 'text-ink'}" data-scope-name-cell><span data-scope-bullet aria-hidden="true" class="text-ink-muted">${isSchema ? '▪' : '·'}</span> ${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
+    <div class="shrink-0 break-words" style="${cs('rows')}" data-scope-rows-cell>${rowsCell(node)}</div>
+    <div class="shrink-0 break-words" style="${cs('size')}" data-scope-size-cell>${sizeCell(node)}</div>
+    <div class="shrink-0 break-words" style="${cs('act')}" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
+    <div class="shrink-0 break-words" style="${cs('cls')}" data-scope-classes-cell>${dataClassCell(node)}</div>
+    <div class="shrink-0 break-words" style="${cs('egeria')}" data-scope-state-cell>${egeriaStateHtml(node, commit)}${collisionLines(node, commit)}${stateCellHtml(node)}</div>
   </div>`;
 }
 
@@ -396,7 +412,7 @@ function columnRowsHtml(table) {
   const cols = table.columns || [];
   if (!cols.length) return '';
   return `<div data-scope-columns class="mb-[3px] flex gap-s2">
-    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0"></div>
+    <div class="shrink-0" style="${cs('sel')}"></div><div class="shrink-0" style="${cs('choice')}"></div>
     <div class="flex-1 border-l border-rule pl-s2">${cols.map((c) => `<div data-scope-column class="py-[1px] text-provenance text-ink-muted">
       <span aria-hidden="true" class="text-rule-strong">└</span> <span class="font-mono">${esc(c.name)}</span> <span>${esc(c.type || '')}</span> <span class="text-accent-ink">${esc(c.key_role || '')}</span></div>`).join('')}</div></div>`;
 }
@@ -428,13 +444,14 @@ export function treeHtml(view, me) {
   if (!(view.schemas || []).length && !view.system) {
     return `<div class="text-caveat text-ink-muted">No stored schema rows yet: run a survey first. Nothing to scope until Egeria's survey or RE's has listed the schemas.</div>`;
   }
-  const head = `<div class="flex items-baseline gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" data-scope-tree-head>
-    <div class="w-[2ch] shrink-0"></div><div class="w-[24ch] shrink-0 break-words" data-scope-choice-head>Include in catalog?</div><div class="min-w-[14ch] flex-1 break-words">Schema / table</div>
-    <div class="w-[8ch] shrink-0 break-words text-right" title="Row count; the source and date ride on each cell">Rows</div>
-    <div class="w-[8ch] shrink-0 break-words text-right" title="Size on disk; the source and date ride on each cell">Size</div>
-    <div class="w-[14ch] shrink-0 break-words" data-scope-activity-head title="Activity: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of counter evidence">Activity</div>
-    <div class="w-[14ch] shrink-0 break-words" data-scope-classes-head title="Data classes found in the columns">Classification</div>
-    <div class="w-[18ch] shrink-0 break-words" data-scope-state-head title="State in Egeria">In Egeria</div></div>`;
+  const hc = (key, label, title, right = false, attr = '') => `<div class="shrink-0" style="${cs(key)};${headCellStyle}${right ? ';text-align:right' : ''}"${attr}${title ? ` title="${esc(title)}"` : ` title="${esc(label)}"`}>${esc(label)}${handleHtml(SCOPE_COLS, key, label)}</div>`;
+  const head = `<div class="flex items-start gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" data-scope-tree-head>
+    <div class="shrink-0" style="${cs('sel')}"></div>${hc('choice', 'Include in catalog?', '', false, ' data-scope-choice-head')}<div class="min-w-0 flex-1" style="${headCellStyle}" title="Schema / table">Schema / table</div>
+    ${hc('rows', 'Rows', 'Row count; the source and date ride on each cell', true)}
+    ${hc('size', 'Size', 'Size on disk; the source and date ride on each cell', true)}
+    ${hc('act', 'Activity', `Activity: dormant means 0 writes in at least ${String(view.dormancy_days || 90)} days of counter evidence`, false, ' data-scope-activity-head')}
+    ${hc('cls', 'Classification', 'Data classes found in the columns', false, ' data-scope-classes-head')}
+    ${hc('egeria', 'In Egeria', 'State in Egeria', false, ' data-scope-state-head')}</div>`;
   const plan = treePlan(view);
   const body = plan.rows.map(({ s, tables: shownTables, open }) => {
     const tables = open ? shownTables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
@@ -446,7 +463,7 @@ export function treeHtml(view, me) {
   // A fixed floor (not max-content, which let one long sentence widen every row): at about
   // 1300px everything fits, and below the floor the host scrolls sideways inside its own
   // container instead of clipping at the edge.
-  return `<div class="min-w-[52rem]">${head + body + sys}</div>`;
+  return `<div data-rc-inner style="${innerStyle(SCOPE_COLS)}">${head + body + sys}</div>`;
 }
 
 /** The rows select all and clear act on: the schemas and tables the tree is drawing now. */
@@ -465,6 +482,7 @@ export function filterBarHtml(view) {
   return `<div data-scope-filterbar class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat text-ink">
     <label class="inline-flex items-baseline gap-[4px]">filter
       <input type="search" data-scope-filter value="${esc(filterText)}" placeholder="schema or table name" autocomplete="off" class="rounded-sm border border-rule bg-transparent px-[4px] py-[1px] font-mono"></label>
+    <button type="button" data-rc-reset disabled class="opacity-60 text-ink-muted bg-transparent p-0" title="Put every column back to its default width">reset widths</button>
     <span data-scope-filter-count class="text-ink-muted" title="schema and table rows that match the filter, of all rows">showing ${p.shown} of ${p.total}</span></div>`;
 }
 
@@ -1186,9 +1204,23 @@ function paintScope(el, slug, status, view) {
     }, true);
   };
 
+  /** Column widths: wired once per host (the handles are drawn inside it, re-drawn freely), and the
+   *  "reset widths" button shows its state: live when a width is changed, dim when all are default. */
+  const bindColumnResize = (host) => {
+    const btn = el.querySelector('[data-rc-reset]');
+    const paint = (custom) => {
+      if (!btn) return;
+      btn.disabled = !custom;
+      btn.className = `${custom ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0`;
+    };
+    const api = attachColumnResize(host, SCOPE_COLS, { onChange: paint });
+    paint(api.isCustom());
+    if (btn && !btn.dataset.rcBound) { btn.dataset.rcBound = '1'; btn.addEventListener('click', () => api.reset()); }
+  };
   const bindTree = () => {
     const host = treeHost();
     if (!host) return;
+    bindColumnResize(host);
     host.querySelectorAll('[data-scope-select]').forEach((box) => box.addEventListener('change', () => {
       if (box.checked) selected.add(box.dataset.scopeSelect); else selected.delete(box.dataset.scopeSelect);
       repaintBar();

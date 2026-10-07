@@ -33,6 +33,21 @@
      spans — it is a manual pass, so the class is deliberately short. */
   .tnum { font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; }
 
+  /* Resizable table columns (next/colresize.js): a thin vertical bar at a header cell's right
+     edge, drawn on hover, on keyboard focus and while dragging. currentColor, so it follows the
+     theme; the cursor says what a drag does. */
+  .rc-handle {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 7px;
+    cursor: col-resize; touch-action: none; user-select: none;
+  }
+  .rc-handle::after {
+    content: ""; position: absolute; top: 2px; bottom: 2px; right: 2px; width: 2px;
+    background: currentColor; opacity: 0; border-radius: 1px;
+  }
+  *:hover > .rc-handle::after { opacity: 0.25; }
+  .rc-handle:hover::after, .rc-handle:focus-visible::after, .rc-handle[data-rc-active]::after { opacity: 0.8; }
+  .rc-handle:focus-visible { outline: none; }
+
   /* Never the browser default. */
   :focus { outline: none; }
   :focus-visible { outline: 2px solid #b68235; outline-offset: 2px; }
