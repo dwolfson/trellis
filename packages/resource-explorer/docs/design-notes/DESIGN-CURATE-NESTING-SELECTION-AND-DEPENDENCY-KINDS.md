@@ -109,7 +109,17 @@ selection is how anything inside a scope reaches Egeria. If the option is
 taken, the registration of a child is an act on the parent's Curate pane
 ("make this a resource of its own"), previewed like any other write, and
 the child appears under the parent in the sidebar with the parent's name
-as its ancestry. Not designed further until the owner says it is wanted.
+as its ancestry.
+
+**Owner's placement (2026-10-07): backlog.** A child module or component as
+a resource of its own is wanted eventually, not now: it must not stand in
+the way of completion at this level. His reason, kept as the design's
+purpose statement: it is a way to handle the messy reality of systems,
+since navigating deeply nested structures becomes confusing and error-prone,
+so it compartmentalises information behind clear boundaries. Recorded in
+the backlog as "child module or component as a resource (compartmentalise a
+large repository behind clear boundaries)", with this section as its
+design seed.
 
 - Not in scope: un-publishing. An item once published is left as history
   (roll-forward); the row can be "left out" for future publishes, with the
