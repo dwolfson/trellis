@@ -44,6 +44,16 @@ export const FORGET_SENTENCE =
  * (the class-coverage tripwire counts those, and a literal is what Tailwind's scanner can see). */
 const button = (attrs, label, { disabled = false } = {}) =>
   `<button type="button" ${attrs} class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60"${disabled ? ' disabled' : ''}>${label}</button>`;
+
+/** What the Publish button really does (repo_publish.publish_report): it runs EVERY survey step again
+ *  (`SurveyOrchestrator.run(slug, steps=None)`, no freshness check), then publishes that whole report
+ *  to Egeria and reads it back. It is not "publish the surveys already on file". */
+export const PUBLISH_SENTENCE =
+  'Runs every survey step on this repository again (no freshness check), then publishes the whole survey report '
+  + 'to Egeria and reads it back. It does not reuse an earlier survey.';
+/** The short words beside the button, idle and while it runs. */
+export const PUBLISH_IDLE_WORDS = 're-surveys everything, then publishes';
+export const PUBLISH_RUNNING_WORDS = 're-surveying everything, then publishing';
 const linkButton = (attrs, label) =>
   `<button type="button" ${attrs} class="cursor-pointer bg-transparent text-accent-ink underline disabled:opacity-60">${label}</button>`;
 const num = (n) => `<span class="tnum">${esc(n ?? 0)}</span>`;
@@ -302,9 +312,9 @@ function controlsHtml(s, signedIn) {
   const label = s.can_publish_again ? 'Publish again' : 'Publish to Egeria →';
   const why = signedIn ? '' : 'sign in to publish — it needs an author';
   return `<div class="mt-s2 flex flex-wrap items-baseline gap-s3">
-    ${button('data-publish-go', esc(label), { disabled: !signedIn })}
+    ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !signedIn })}
     ${button('data-forget-open', 'Forget Egeria links…', { disabled: !(signedIn && s.in_egeria) })}
-    <span data-publish-feedback class="text-provenance text-ink-muted">${esc(why)}</span></div>
+    <span data-publish-feedback class="text-provenance text-ink-muted" title="${esc(PUBLISH_SENTENCE)}">${esc(why || PUBLISH_IDLE_WORDS)}</span></div>
     <div data-publish-gate></div><div data-forget-confirm></div>`;
 }
 
@@ -340,7 +350,7 @@ async function renderFileTypes(host, slug, signedIn) {
   }
   const canCommit = signedIn && !pv.blocker;
   host.innerHTML = `
-    <div class="text-provenance text-ink-muted">Each chosen type becomes a DataSet in Egeria, linked to the repository asset. Preview only until you press Catalog.</div>
+    <div class="text-provenance text-ink-muted">Each chosen type becomes a DataSet in Egeria, linked to the repository asset. This is separate from Publish below; it is a preview only until you press Catalog file types.</div>
     ${pv.blocker ? `<div class="mt-s1 text-caveat text-ink-muted" data-file-types-blocker>${esc(pv.blocker)}</div>` : ''}
     <div class="mt-s1" data-file-types-list>${pv.types.map((t) => `<label class="flex items-baseline gap-s2 py-[1px] text-caveat">
       <input type="checkbox" data-ft-label="${esc(t.label)}" data-ft-count="${esc(t.file_count)}" data-ft-exts="${esc(JSON.stringify(t.extensions))}"
@@ -350,7 +360,7 @@ async function renderFileTypes(host, slug, signedIn) {
       ${t.cataloged ? cue(t.linked ? 'measured' : 'partial', t.linked ? 'cataloged · read back' : 'cataloged, not linked') : ''}
       ${t.dataset_guid ? guidHtml(t.dataset_guid) : ''}</label>`).join('')}</div>
     <div class="mt-s2 flex items-baseline gap-s3">
-      ${button('data-file-types-go', 'Catalog →', { disabled: !canCommit })}
+      ${button('data-file-types-go title="Creates a DataSet in Egeria for each ticked file type, linked to the repository asset. It does not survey or publish the report."', 'Catalog file types →', { disabled: !canCommit })}
       <span data-file-types-feedback class="text-provenance text-ink-muted">${signedIn ? '' : 'sign in to catalog — it needs an author'}</span></div>`;
   bindCopy(host);
   const go = host.querySelector('[data-file-types-go]');
@@ -364,7 +374,7 @@ async function renderFileTypes(host, slug, signedIn) {
     if (!elements.length) { fb.textContent = 'choose at least one file type'; return; }
     go.dataset.pending = '1';
     go.disabled = true;
-    fb.textContent = `cataloging ${elements.length}…`;
+    fb.innerHTML = cue('running', `cataloging ${elements.length} file type${elements.length === 1 ? '' : 's'}…`);
     let result = null;
     let failure = '';
     try { result = await commitRepoFileTypes(slug, elements); } catch (err) { failure = err.message; }
@@ -398,10 +408,14 @@ export async function renderPublishBand(el, slug, entityType) {
   if (stale(el, slug)) return;
 
   const draw = (st, feedback = '') => {
-    el.innerHTML = `${head}${repoStatusHtml(st)}${controlsHtml(st, signedIn)}
-      <div class="mt-s3" data-egeria-reports-host></div>
-      <details class="mt-s3" data-file-types-section><summary class="cursor-pointer text-answer text-ink">File types</summary>
-        <div class="mt-s1" data-file-types-host></div></details>`;
+    // File types come BEFORE the Publish controls: they are a separate, optional catalog act (their own
+    // button, "Catalog file types →") and used to sit under Publish with a second bare "Catalog →".
+    el.innerHTML = `${head}${repoStatusHtml(st)}
+      <details class="mt-s2" data-file-types-section><summary class="cursor-pointer text-answer text-ink">File types
+        <span class="text-provenance text-ink-muted">· optional · each chosen type becomes a DataSet in Egeria</span></summary>
+        <div class="mt-s1" data-file-types-host></div></details>
+      ${controlsHtml(st, signedIn)}
+      <div class="mt-s3" data-egeria-reports-host></div>`;
     bindCopy(el);
     if (feedback) el.querySelector('[data-publish-feedback]').textContent = feedback;
     wire(st);
@@ -423,7 +437,8 @@ export async function renderPublishBand(el, slug, entityType) {
       go.disabled = true;
       const idle = go.textContent;
       go.textContent = `${idle} …`;
-      feedback.textContent = 'surveying, then publishing: this takes a while';
+      feedback.innerHTML = cue('running', PUBLISH_RUNNING_WORDS);
+      feedback.title = PUBLISH_SENTENCE;
       gate.innerHTML = '';
       try {
         await publishRepoReport(slug, { withoutProject });
@@ -439,7 +454,9 @@ export async function renderPublishBand(el, slug, entityType) {
         }
         try { await reread(); } catch { /* the failure below is what matters */ }
         const fb = el.querySelector('[data-publish-feedback]');
-        if (fb) fb.textContent = err.status === 409 ? 'a publish is already running for this resource' : `not published · ${err.message}`;
+        if (fb) fb.innerHTML = err.status === 409
+          ? cue('running', 'a publish is already running for this resource')
+          : cue('error', `not published · ${err.message}`);
       }
     };
     go?.addEventListener('click', () => press(false));
