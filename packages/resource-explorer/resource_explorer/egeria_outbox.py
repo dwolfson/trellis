@@ -167,6 +167,18 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
                          "catalogue_schema_attach", "catalogue_schema_leave_out"}
 
 
+#: Outbox kinds whose write ARCHIVES, DELETES or DETACHES something in Egeria. A retry of a destructive write is itself
+#: a destructive write (row 69822, 2026-10-06, was retried 11 minutes after it failed), so the drain NEVER reschedules
+#: one: a failure is terminal ('dead', the state the registry already has), carries "not retried: destructive write ·
+#: <Egeria's sentence>", and a person re-presses. Add every new destructive kind here; tests/test_destructive_calls_logged.py
+#: fails when a registered creator is neither listed here nor named non-destructive there.
+DESTRUCTIVE_OUTBOX_KINDS = frozenset({
+    "catalogue_schema_leave_out",   # detach the cataloguer target, archive / soft-delete the schema's elements
+    "doc_source_unpublish",         # detach and delete the removed source's ExternalReference
+})
+NOT_RETRIED = "not retried: destructive write"
+
+
 def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str],
                   resolve_row_guids: "Callable[[list[int]], dict[int, str]] | None" = None) -> str:
     """Write one outbox row to Egeria and return the element's GUID.
@@ -690,8 +702,13 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
                      row["id"], row["element_kind"], row["qualified_name"], exc)
             continue
         except Exception as exc:
-            status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc}")
-            summary["dead" if status == "dead" else "failed"] += 1
+            if row.get("element_kind") in DESTRUCTIVE_OUTBOX_KINDS:
+                # max_attempts=1: this failure is the last attempt. 'dead' is the existing terminal state.
+                status = registry.mark_outbox_failed(row["id"], f"{NOT_RETRIED} · {exc}", max_attempts=1)
+                summary["not_retried"] = summary.get("not_retried", 0) + 1
+            else:
+                status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc}")
+                summary["dead" if status == "dead" else "failed"] += 1
             troubled_runs[row.get("run_id") or ""] = row.get("entity_slug") or ""
             log_at = log.error if status == "dead" else log.warning
             log_at("Outbox row %s (%s %s) -> %s: %s",
@@ -1067,15 +1084,19 @@ def record_drain_outcome(
     entry per quarter-hour tick saying "nothing was wrong" is how a log stops
     being read.
     """
-    if not summary.get("failed") and not summary.get("dead"):
+    if not summary.get("failed") and not summary.get("dead") and not summary.get("not_retried"):
         return
     from resource_explorer.activity_logger import log_catalog, log_rfa
 
-    dead, failed = summary.get("dead", 0), summary.get("failed", 0)
+    not_retried = summary.get("not_retried", 0)
+    dead, failed = summary.get("dead", 0) + not_retried, summary.get("failed", 0)
     status = "error" if dead else "warning"
     parts = []
+    if not_retried:
+        parts.append(f"{not_retried} destructive write(s) failed and were NOT retried (press again to retry)")
     if dead:
-        parts.append(f"{dead} element(s) dead-lettered after exhausting retries")
+        if dead - not_retried:
+            parts.append(f"{dead - not_retried} element(s) dead-lettered after exhausting retries")
     if failed:
         parts.append(f"{failed} element(s) failed and will retry")
     # The entry is a SUMMARY and says so; the record itself is the outbox rows.
