@@ -247,6 +247,11 @@ def publish_snapshot(registry, slug: str, author: str, context: dict, snapshot) 
     project = project_words(context)
     registered = registry.get(slug)
     result = survey_snapshot.to_result(registered, snapshot)
+    # Runtime dependencies a person CONFIRMED travel as annotations only (brief section 3): Egeria's
+    # planned "deployed by" relationship types are not available, and nothing here writes a relationship.
+    from resource_explorer import dependency_table
+    for annotation in dependency_table.runtime_annotations(registry, slug):
+        result.add(annotation)
     surveyed_at = snapshot.surveyed_at
     publisher = EgeriaPublisher(registry=registry)           # zones: the publisher's own rule only
     try:

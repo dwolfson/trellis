@@ -1672,6 +1672,47 @@ async def get_analysis_measurements(slug: str, analysis_id: str,
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/{slug}/dependencies")
+def get_dependency_table(slug: str) -> dict:
+    """Dependencies as ONE table with a kind column (brief section 3): build-time (measured, from the
+    manifests) and runtime (proposed, from the deployment artifacts, until a person confirms them).
+    RE's own records only; nothing here contacts Egeria."""
+    from resource_explorer import dependency_table
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return dependency_table.build_table(registry, slug)
+
+
+class ConfirmDependencies(BaseModel):
+    keys: list[str]
+    verdict: str = "confirmed"        # confirmed | withdrawn
+
+
+@router.post("/{slug}/dependencies/confirm")
+def confirm_dependencies(slug: str, body: ConfirmDependencies, request: Request) -> dict:
+    """A person confirms (or withdraws) proposed RUNTIME dependency rows. Append-only: a change is a new
+    entry. Returns the table re-read, so the screen's words come from the record."""
+    from resource_explorer import dependency_table
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.registry import ProjectRegistry
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to confirm a dependency — it needs a person who made the call.")
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    try:
+        dependency_table.record_confirmations(registry, slug, body.keys, body.verdict, author)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return dependency_table.build_table(registry, slug)
+
+
 @router.get("/{slug}/analyses-index")
 async def get_analyses_index(slug: str, entity_type: str = _REQUIRED_KIND) -> dict:
     """Every catalog analysis for this resource, with the questions that

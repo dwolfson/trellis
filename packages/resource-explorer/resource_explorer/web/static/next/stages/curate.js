@@ -25,6 +25,7 @@ import {
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand } from '/static/next/stages/publish.js';
 import { repoCommitPanelHtml, commitHeaderHtml } from '/static/next/stages/repo-manifest.js';
+import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
@@ -397,7 +398,8 @@ export async function renderCurate(slug) {
       ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
         `<div id="blueprint-list"></div>`)}
       ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
-        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
+        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
+        + '<div class="mt-s2" data-dependency-table-host></div>')}
       ${curateSectionHtml('curate-sec-writes', 'what gets written',
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
         `${curateWritesHtml(plan, [...picks], chosenSubs().length)}
@@ -412,6 +414,8 @@ export async function renderCurate(slug) {
       <div id="catalogue-depth-offer"></div>`)}`;
 
     bindCurateSectionNav(host);
+    // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
+    mountDependencyTable(host.querySelector('[data-dependency-table-host]'), slug, { confirmable: true, me });
     const counts0Label = () => {
       const n = [...picks].length + chosenSubs().length;
       return n ? `Catalog ${n} item${n === 1 ? '' : 's'} →` : 'Catalog →';

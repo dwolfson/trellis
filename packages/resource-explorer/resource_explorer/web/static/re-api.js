@@ -1910,3 +1910,13 @@ export const repairRepointMembership = (slug, fromInvestigation, toInvestigation
 export const repairDropMembership = (slug, investigationSlug) =>
   request(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/`
           + `${encodeURIComponent(investigationSlug)}`, { method: 'DELETE' });
+
+/* ── Dependencies, one table with a kind column (brief section 3) ───────── */
+
+/** The repository's dependencies: `{heading, kinds, counts, rows, runtime_state, summary}`. */
+export const getDependencyTable = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/dependencies`);
+
+/** A person confirms (or withdraws) proposed runtime rows; the answer is the table re-read. */
+export const confirmRuntimeDependencies = (slug, keys, verdict) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/dependencies/confirm`, { keys, verdict });

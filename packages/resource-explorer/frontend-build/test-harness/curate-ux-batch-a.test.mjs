@@ -45,6 +45,10 @@ function makeServer(over = {}) {
     if (u.includes('/curate/commits/')) return ok({ id: 'c1', state: 'done', steps: [], author: 'dan', requested_at: '2026-10-07T00:00:00' });
     if (u.includes('/api/activity')) return ok({ id: 'a1', status: 'success' });
     if (u.includes('/curate/plan')) return ok(PLAN);
+    if (u.endsWith('/dependencies')) return ok(s.deps || { heading: 'Dependencies · by kind', kinds: ['build-time', 'runtime'], counts: { 'build-time': 1, runtime: 1 }, runtime_state: '',
+      rows: [{ kind: 'build-time', name: 'fastapi', target: '0.110', source: 'pyproject.toml', state: 'measured', state_words: 'measured · from pyproject.toml', key: 'k1' },
+             { kind: 'runtime', name: 'web', target: 'db', source: 'dc.yml:3', state: 'proposed', state_words: 'proposed · from dc.yml', key: 'k2' }] });
+    if (u.endsWith('/dependencies/confirm')) return ok({ heading: 'Dependencies · by kind', kinds: ['build-time', 'runtime'], counts: { 'build-time': 1, runtime: 1 }, runtime_state: '', rows: [] });
     if (u.includes('/components/tree')) return ok({ branches: [BRANCH], total_components: 1, accepted: 0, reviewed: 0, topology: '' });
     if (u.includes('/components/blueprints')) return ok({ blueprints: [], perspectives: [] });
     if (u.endsWith('/publish-state')) return ok({ slug: 's', in_egeria: false, asset_guid: '', row: { word: 'none' }, project: { status: 'unset', word: 'no project' }, can_publish_again: false, survey: { exists: true, surveyed_at: '2026-10-07T01:00:00', age_seconds: 7200, annotations: 42, steps: 12, stale_steps: 0, stale: [] } });
@@ -271,3 +275,18 @@ test('Catalog: the table with its button is in "what gets written", and the old 
   assert.match(panel.textContent.replace(/\s+/g, ' '), /1 report · 42 annotations/);
 });
 
+
+test('how it relates: the dependencies are ONE table with a kind column, and a runtime row can be confirmed there', async () => {
+  const { document, server } = await setUp();
+  await wait(100);
+  const host = document.getElementById('curate-sec-relates').querySelector('[data-dependency-table-host]');
+  assert.equal(host.querySelector('[data-dep-heading]').textContent.trim(), 'Dependencies · by kind');
+  assert.equal(host.querySelectorAll('[role=table]').length, 1);
+  assert.match(host.querySelector('[data-dep-counts]').textContent.replace(/\s+/g, ' '), /1 build-time · 1 runtime/);
+  const b = host.querySelector('[data-dep-confirm]');
+  assert.ok(b, 'a proposed runtime row offers confirm');
+  b.click();
+  await wait(80);
+  const posts = server.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/dependencies/confirm'));
+  assert.deepEqual(posts.map((p) => p.body), [{ keys: ['k2'], verdict: 'confirmed' }]);
+});

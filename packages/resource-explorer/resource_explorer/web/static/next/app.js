@@ -192,6 +192,7 @@ import {
 } from '/static/re-api.js';
 import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
+import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -7248,6 +7249,7 @@ function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, ent
           <p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(catalogDescription)}</p>
         </details>` : ''}
       ${overall ? headlineHtml(overall) : ''}
+      ${boardId === 'dependencies' ? '<div class="mt-s2" data-dependency-table-host></div>' : ''}
       ${board ? boardFindingsHtml(board) : ''}
       ${board ? boardCountsHtml(board, disagreeing) : ''}
       ${diagramHtml}
@@ -7429,6 +7431,11 @@ export async function loadByAnalysisPane() {
     )).join('');
     cardsEl.querySelectorAll('[data-by-analysis-card]').forEach((card) => {
       card.addEventListener('toggle', () => setByAnalysisCardOpen(slug, card.dataset.byAnalysisCard, card.open));
+    });
+    // Brief section 3: the dependencies board carries ONE table with a kind column (read-only here;
+    // confirming a runtime row happens under Curate's "how it relates").
+    cardsEl.querySelectorAll('[data-dependency-table-host]').forEach((h) => {
+      mountDependencyTable(h, slug, { confirmable: false, me: '' });
     });
     cardsEl.querySelectorAll('[data-measure]').forEach((n) => {
       n.addEventListener('click', () => openMeasurementDetail({
