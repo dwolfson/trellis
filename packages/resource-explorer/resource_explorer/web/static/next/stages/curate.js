@@ -138,6 +138,11 @@ export function stateCue(stateKey, word, title = '') {
  *  when no promotion has been recorded for the row. */
 export function promotionHtml(p) {
   if (!p || !p.words) return '';
+  // "left as is" is neither a success nor an error: the zones were not RE's to change. The short word
+  // shows; the sentence is on hover. (run_queue counts it as done, so it must not read as an error.)
+  if (p.status === 'left_as_is') {
+    return `<span data-promotion="left_as_is">· ${stateCue('unrun', 'left as is', p.words)}</span>`;
+  }
   const ok = p.status === 'promoted' || p.status === 'already_promoted' || p.status === 'already_unzoned';
   return `<span data-promotion="${esc(p.status || '')}">· ${stateCue(ok ? 'measured' : (p.status === 'skipped' ? 'unrun' : 'error'), p.words)}</span>`;
 }

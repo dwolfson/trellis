@@ -217,6 +217,13 @@ def promote_to_publish_zones(guid: str) -> dict:
     if private_zone() in (already or []):
         return _private_skip(guid, already)
 
+    # **Never remove a zone RE did not stamp.** `add_zone_membership` REPLACES the classification, so
+    # writing just the configured zones would drop a foreign zone someone put on an element RE adopted.
+    # The write is the configured zones UNIONED with the foreign ones (RE's draft zone goes; nothing
+    # else does). Chosen over "leave it and say so" because accept still has to make the element
+    # visible in the configured zone, and the union costs the foreign zone nothing.
+    foreign = [z for z in (already or []) if z not in {draft_zone(), private_zone()}]
+    zones = list(dict.fromkeys([*foreign, *zones]))
     ok = set_zone_membership(guid, zones)
     if not ok:
         return {"status": "error", "guid": guid, "zones": zones, "from_zones": already,

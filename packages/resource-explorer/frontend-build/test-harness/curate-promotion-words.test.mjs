@@ -52,3 +52,15 @@ test('a row with no promotion recorded says nothing about zones', async () => {
   box.innerHTML = mod.leafRowHtml({ path: 'a/b', verdict: null, promotion: null });
   assert.equal(box.querySelector('[data-promotion]'), null);
 });
+
+test('left_as_is is a neutral "left as is" cue with the sentence on hover, never the error cue', async () => {
+  const { mod, document } = await curate();
+  const box = document.createElement('div');
+  const words = "zones left as they are · egeria-runtime · not RE's draft zone";
+  box.innerHTML = mod.leafRowHtml({ path: 'a/b', verdict: { verdict: 'accepted' }, promotion: { status: 'left_as_is', words } });
+  const cue = box.querySelector('[data-promotion="left_as_is"] [data-cue]');
+  assert.equal(cue.dataset.cue, 'unrun');
+  assert.equal(cue.textContent.trim().endsWith('left as is'), true);
+  assert.equal(cue.getAttribute('title'), words);
+  assert.equal(box.querySelector('[data-cue="error"]'), null);
+});

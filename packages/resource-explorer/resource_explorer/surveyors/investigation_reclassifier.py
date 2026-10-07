@@ -142,7 +142,7 @@ class InvestigationReclassifier:
 
     # ── zone helpers ──────────────────────────────────────────────────────
 
-    def _move_zones(self, guid: str, target: list[str]) -> tuple[bool, str]:
+    def _move_zones(self, guid: str, target: list[str], owner: str = "") -> tuple[bool, str]:
         """Move one element's zones and CONFIRM it, by reading back.
 
         Returns `(moved, reason)`. `moved` is True only when the element's zones
@@ -159,7 +159,7 @@ class InvestigationReclassifier:
         from resource_explorer.egeria_identity import current_zones, set_zone_membership
 
         if not target:
-            return self._clear_zones(guid)
+            return self._clear_zones(guid, owner)
 
         before = current_zones(guid)
         if before and set(before) == set(target):
@@ -184,11 +184,17 @@ class InvestigationReclassifier:
             return False, "could not read the zones back to confirm the change"
         return True, ""
 
-    def _clear_zones(self, guid: str) -> tuple[bool, str]:
-        """Loosen with NO configured zone: remove the `ZoneMembership` ("zones left to Egeria") and
-        confirm by a strict read that none remains. `[]` from the strict reader is a real answer
-        ("no zones"); an unreadable element raises and is reported, never counted as moved."""
-        from resource_explorer.egeria_identity import ZoneReadError, clear_zone_membership, read_zones
+    def _clear_zones(self, guid: str, owner: str = "") -> tuple[bool, str]:
+        """Loosen with NO configured zone: take RE's own zones off the element and leave everyone else's.
+
+        RE's own zones are its private zone, the investigation owner's zone and its draft zone. If the
+        element carries only those, the `ZoneMembership` is removed ("zones left to Egeria"). The clear call
+        removes the WHOLE classification, so when a foreign zone is also there it is NOT used: the zones are
+        set to the foreign ones alone (a replace) and read back. Foreign zones only: nothing is touched.
+        Every outcome is confirmed by a strict read; an unreadable element is reported, never counted."""
+        from resource_explorer.egeria_identity import (
+            ZoneReadError, clear_zone_membership, draft_zone, private_zone, read_zones, set_zone_membership,
+        )
 
         try:
             before = read_zones(guid)
@@ -196,10 +202,20 @@ class InvestigationReclassifier:
             return False, str(exc)
         if not before:
             return True, "already in no zone (zones left to Egeria)"
-        from resource_explorer.egeria_identity import draft_zone, private_zone
-        if private_zone() not in before and before != [draft_zone()]:
-            # Not a zone RE stamped (its private zones or its draft zone): never strip someone else's.
-            return False, f"zones left as they are · {', '.join(before)} · not RE's private or draft zone"
+        own = {private_zone(), draft_zone()} | ({owner} if owner else set())
+        foreign = [z for z in before if z not in own]
+        if foreign and len(foreign) == len(before):
+            return True, f"zones left as they are · {', '.join(before)} · none is RE's"
+        if foreign:
+            if not set_zone_membership(guid, foreign):
+                return False, f"Egeria did not accept keeping only {foreign} (it is in {before})"
+            try:
+                after = read_zones(guid)
+            except ZoneReadError as exc:
+                return False, f"could not read the zones back to confirm the change: {exc}"
+            if set(after) != set(foreign):
+                return False, f"zones read back as {after}, not {foreign}"
+            return True, f"RE's zones removed · kept the zones that are not RE's: {', '.join(foreign)}"
         if not clear_zone_membership(guid):
             return False, (f"Egeria did not accept clearing the zones (it is in {before}; moving out "
                            "of a zone needs PUBLISH rights on that zone, which RE's account may not hold)")
@@ -451,7 +467,7 @@ class InvestigationReclassifier:
             # reason — which the connector rejects as a no-op anyway.
             return self._apply_locally(res, to_classification, hypothesis)
 
-        moved, reason = self._move_zones(project_guid, target)
+        moved, reason = self._move_zones(project_guid, target, owner)
         res.project_rezoned = moved
         if not moved:
             res.errors.append(f"could not move the investigation Project: {reason}")
@@ -468,7 +484,7 @@ class InvestigationReclassifier:
                            "reports were never checked or moved"),
             })
         for guid in guids:
-            ok, why = self._move_zones(guid, target)
+            ok, why = self._move_zones(guid, target, owner)
             if ok:
                 res.reports_moved.append(guid)
             else:

@@ -21,6 +21,7 @@ accept is not "the content-status change alone". `promote_to_publish_zones` now 
   promotion proof row (`catalogue_commit_proofs`, `node_kind` `component_promotion` / `blueprint_promotion`) carries the
   words the Curate rows show.
 * Accept clears ONLY RE's own stamp: an unconfigured accept leaves any other zone alone ("zones left as they are"), since an adopted element may belong to someone else; the configured branch reads the zones back before it says "accepted · zone X".
+* Never strip a foreign zone: the unconfigured clear removes the whole classification, so it runs only when every zone is RE's own (draft, private, the owner's); with a foreign zone beside them the zones are set to the foreign ones alone (read back); foreign only is untouched. The configured branch writes the configured zones UNIONED with any foreign ones (RE's draft zone goes, nothing else), read back; union chosen over "leave and say so" because accept must still publish to the configured zone and the union costs the foreign zone nothing.
 * RE's draft zone still stamps what RE creates (the 2026-09-04 design); the configured-only rule governs where accept
   moves things, and an unconfigured accept removes the draft zone.
 

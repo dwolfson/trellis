@@ -237,8 +237,8 @@ def test_the_reclassifier_clears_only_zones_re_stamped(monkeypatch):
         fake = FakeEgeria(zones)
         monkeypatch.setattr(ident, "classification_client", lambda identity=None, f=fake: f)
         monkeypatch.setattr(ident, "_metadata_client", lambda identity=None, f=fake: f)
-        ok, why = InvestigationReclassifier(MagicMock())._clear_zones("g")
-        assert ok is cleared, (zones, why)
+        ok, why = InvestigationReclassifier(MagicMock())._clear_zones("g", "alice")
+        assert ok is True, (zones, why)            # a foreign zone is left alone: nothing to do, not a failure
         assert (fake.zones == []) is cleared
 
 
@@ -272,3 +272,34 @@ def test_a_failed_promotion_is_not_counted_as_done_and_is_reported_separately(re
     assert out.state == "failed"
     assert out.error.startswith("0 materialised") and "promotion failed: src/a" in out.error
     assert "materialization failed" not in out.error
+
+
+# ── never strip a foreign zone (coordinator review) ─────────────────────────
+
+def test_the_configured_branch_keeps_a_foreign_zone_and_reads_back(egeria, monkeypatch):
+    monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "team-zone")
+    fake = egeria(FakeEgeria([DRAFT, "foreign-zone"]))
+    out = curate.promote_to_publish_zones("bp-1")
+    assert out["status"] == "promoted"
+    assert sorted(fake.zones) == ["foreign-zone", "team-zone"]          # draft gone, foreign kept
+    assert out["words"] == "accepted · zone foreign-zone, team-zone"
+
+
+def test_the_reclassifier_keeps_foreign_zones_beside_re_s(monkeypatch):
+    from resource_explorer.surveyors.investigation_reclassifier import InvestigationReclassifier
+    cases = [
+        ([ident.private_zone(), "alice"], [], True),                          # RE's only: cleared
+        ([ident.private_zone(), "alice", "foreign"], ["foreign"], True),      # only the foreign zone remains
+        (["foreign"], ["foreign"], True),                                     # foreign only: untouched
+    ]
+    for zones, remains, ok_expected in cases:
+        fake = FakeEgeria(zones)
+        monkeypatch.setattr(ident, "classification_client", lambda identity=None, f=fake: f)
+        monkeypatch.setattr(ident, "_metadata_client", lambda identity=None, f=fake: f)
+        ok, why = InvestigationReclassifier(MagicMock())._clear_zones("g", "alice")
+        assert ok is ok_expected, (zones, why)
+        assert fake.zones == remains, (zones, fake.zones)
+        if zones == ["foreign"]:
+            assert fake.writes() == [], "a foreign-only element was touched"
+        if "foreign" in zones and len(zones) > 1:
+            assert not any(c[0] == "clear_zone_membership" for c in fake.calls), "the whole classification was cleared"
