@@ -391,3 +391,84 @@ test('KNOWN-NEGATIVE: a missing host is a visible failure, not nothing', async (
   document.getElementById('content').remove();
   await assert.rejects(() => loadChartsPane(), /Understanding pane host missing: #content/);
 });
+
+/* ── chart labels: fitted, shortened, thinned (real-browser geometry is in
+ *    tests/test_understanding_chart_labels_browser.py) ───────────────────── */
+
+const LONG_TYPES = ['character varying', 'timestamp without time zone', 'integer', 'numeric', 'text',
+  'date', 'double precision', 'boolean', 'bytea', 'character', 'uuid', 'smallint', 'timestamp with time zone'];
+
+test('chart labels: thinIndexes keeps first and last and never lets two boxes touch', async () => {
+  const { thinIndexes } = await import('/static/next/chart-labels.js');
+  const pos = Array.from({ length: 30 }, (_, i) => (i * 600) / 29);
+  const widths = pos.map(() => 70);
+  const keep = thinIndexes(pos, widths, 12);
+  assert.equal(keep[0], 0);
+  assert.equal(keep[keep.length - 1], 29);
+  assert.ok(keep.length < 30 && keep.length > 2);
+  for (let k = 1; k < keep.length; k += 1) {
+    assert.ok(pos[keep[k]] - 35 >= pos[keep[k - 1]] + 35 + 12 - 1e-9, `labels ${keep[k - 1]} and ${keep[k]} are apart`);
+  }
+});
+
+test('chart labels: long category names are shortened in ticktext only, rotated, with room below', async () => {
+  const { fitFigure, ellipsize } = await import('/static/next/chart-labels.js');
+  assert.equal(ellipsize('timestamp without time zone', 16), 'timestamp witho…');
+  const data = [{ type: 'bar', x: LONG_TYPES, y: LONG_TYPES.map((_, i) => 100 - i) }];
+  const fit = fitFigure({ data, layout: {} }, 760, 'Column types');
+  const ax = fit.layout.xaxis;
+  assert.ok(ax.ticktext.every((s) => s.length <= 16), 'no label is longer than 16 characters');
+  assert.ok(ax.ticktext.includes('timestamp witho…'));
+  assert.deepEqual(data[0].x, LONG_TYPES, 'the data keeps the full names');
+  assert.ok(ax.tickvals.includes('timestamp without time zone'), 'ticks are keyed on the full names');
+  assert.notEqual(ax.tickangle, 0, 'long labels are rotated at this width');
+  assert.ok(fit.layout.margin.b >= 60, `bottom margin ${fit.layout.margin.b} holds the rotated labels`);
+  assert.match(fit.summary, /timestamp without time zone/, 'the full name is in the text alternative');
+});
+
+test('chart labels: the two schema panels have a gutter and the captions sit below the ticks', async () => {
+  const { fitFigure } = await import('/static/next/chart-labels.js');
+  const names = ['public', 'clinical', 'regulatory_affairs', 'manufacturing'];
+  const fig = { data: [
+    { type: 'bar', orientation: 'h', y: names, x: [1, 2, 3, 4], xaxis: 'x', yaxis: 'y' },
+    { type: 'bar', orientation: 'h', y: names, x: [10, 20, 30, 40], xaxis: 'x2', yaxis: 'y' }],
+  layout: { xaxis: { domain: [0, 0.45], title: { text: 'Tables' } },
+    xaxis2: { domain: [0.55, 1], title: { text: 'Columns' } }, yaxis: { autorange: 'reversed' } } };
+  for (const width of [1100, 760]) {
+    const { layout } = fitFigure(fig, width);
+    const plotW = width - layout.margin.l - layout.margin.r;
+    const gutterPx = (layout.xaxis2.domain[0] - layout.xaxis.domain[1]) * plotW;
+    assert.ok(gutterPx >= 55, `${width}px: ${gutterPx.toFixed(1)}px between the panels`);
+    assert.ok(layout.xaxis.nticks <= Math.floor(plotW / 2 / 50), 'fewer ticks than the panel can hold');
+    assert.ok(layout.xaxis.title.standoff > 0 && layout.xaxis2.title.standoff > 0, 'caption stands off the ticks');
+    assert.equal(layout.yaxis.autorange, 'reversed', 'the axis direction is unchanged');
+  }
+});
+
+test('chart labels: a 30-run date axis is thinned to labels that fit, first and last kept', async () => {
+  const { fitFigure } = await import('/static/next/chart-labels.js');
+  const runs = Array.from({ length: 30 }, (_, i) => `2026-09-${String(i + 1).padStart(2, '0')}T09:00:00`);
+  const fit = fitFigure({ data: [{ type: 'scatter', x: runs, y: runs.map((_, i) => i) }],
+    layout: { xaxis: { type: 'date' } } }, 760);
+  const t = fit.layout.xaxis;
+  assert.equal(t.tickvals[0], runs[0]);
+  assert.equal(t.tickvals[t.tickvals.length - 1], runs[runs.length - 1]);
+  assert.ok(t.tickvals.length < 30 && t.tickvals.length <= 16, `${t.tickvals.length} labels`);
+  assert.equal(new Set(t.ticktext).size, t.ticktext.length, 'no two labels read the same');
+});
+
+test('chart labels: Understanding hands Plotly the fitted layout and keeps the full names', async () => {
+  const types = envelope({
+    types: LONG_TYPES, counts: LONG_TYPES.map((_, i) => 100 - i), type_not_recorded: 0, column_count_total: 999,
+    figure: { data: [{ type: 'bar', x: LONG_TYPES, y: LONG_TYPES.map((_, i) => 100 - i) }], layout: {} },
+  });
+  const { document, rec } = await setUp({ stubs: { column_types: types } });
+  await openUnderstanding(document);
+  const c = card(document, 'column_types');
+  const drawn = rec.newPlot.find((p) => c.contains(p.el));
+  assert.ok(drawn.layout.xaxis.ticktext.includes('timestamp witho…'));
+  assert.deepEqual(drawn.data[0].x, LONG_TYPES, 'the bars are keyed on the full names');
+  assert.ok(drawn.layout.margin.b >= 60);
+  assert.match(drawn.el.getAttribute('aria-label'), /timestamp without time zone/);
+  assert.ok(c.querySelector('[data-save-image]'), 'Save image is still offered');
+});
