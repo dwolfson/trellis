@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from resource_explorer.config import WebUIConfig
 from resource_explorer.web.routes import work_lists as work_lists_routes
 from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
 
@@ -296,9 +298,37 @@ async def health_ready() -> JSONResponse:
     return JSONResponse(content={"status": "ok", "database": "ok"})
 
 
+def _resolve_default_ui(raw: Optional[str]) -> str:
+    """`next` unless the operator explicitly chose `classic`. An unrecognised
+    value falls back to `next` with a warning rather than failing startup."""
+    value = (raw or "").strip().lower()
+    if value in ("", "next"):
+        return "next"
+    if value == "classic":
+        return "classic"
+    logging.getLogger(__name__).warning(
+        "RE_DEFAULT_UI=%r is not 'next' or 'classic'; serving the Next UI at /", raw
+    )
+    return "next"
+
+
+#: Read once at startup (RE_DEFAULT_UI, via config.WebUIConfig so `.env` counts).
+_DEFAULT_UI = _resolve_default_ui(WebUIConfig().default_ui)
+
+_CLASSIC_SHELL = _STATIC / "index.html"
+_NEXT_SHELL = _STATIC / "next" / "index.html"
+
+
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(_STATIC / "index.html")
+    """The default UI: Next, unless RE_DEFAULT_UI=classic."""
+    return FileResponse(_NEXT_SHELL if _DEFAULT_UI == "next" else _CLASSIC_SHELL)
+
+
+@app.get("/classic")
+async def classic_ui() -> FileResponse:
+    """The Classic UI, explicitly. Same shell `/` served before Next became the default."""
+    return FileResponse(_CLASSIC_SHELL)
 
 
 @app.get("/admin/feedback")
@@ -335,10 +365,12 @@ async def _revalidate_experimental_assets(request, call_next):
 
 @app.get("/next")
 async def next_ui() -> FileResponse:
-    """The experimental `/next` UI — skin 1c, and the Questions pane rebuilt
-    to report the ANSWER rather than the mechanism.
+    """The Next UI at its original path, kept so existing bookmarks and links
+    work. Served directly (not redirected) so query state and a Portal `#sso=`
+    fragment arrive untouched; it also stays Next when RE_DEFAULT_UI=classic.
 
-    Served alongside `/`, not instead of it. The whole UI is a consumer of
+    Skin 1c, and the Questions pane rebuilt to report the ANSWER rather than
+    the mechanism. The whole UI is a consumer of
     `/api/*`: this route adds no endpoint, touches no schema, and shares this
     app's session, so the experiment is additive and reversible — if it is a
     dead end, this function and `static/next/` go away together.
@@ -348,4 +380,4 @@ async def next_ui() -> FileResponse:
     the shared `/static/` prefix; the shell itself is listed in
     `RE_PUBLIC_PATHS` for the same reason `/` is.
     """
-    return FileResponse(_STATIC / "next" / "index.html")
+    return FileResponse(_NEXT_SHELL)

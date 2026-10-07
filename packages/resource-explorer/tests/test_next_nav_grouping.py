@@ -151,7 +151,9 @@ class TestInvestigationHeaderScopeVisibility:
 
     def test_scope_badge_is_hidden_on_narrow_screens_like_the_name(self):
         html = (NEXT / "index.html").read_text(encoding="utf-8")
-        assert "#investigation-name, #investigation-scope, #switch-ui { display: none; }" in html
+        assert "#investigation-name, #investigation-scope { display: none; }" in html
+        # the Classic link stays visible: Classic-only features must stay reachable on a phone
+        assert "#switch-ui { display: none; }" not in html
 
     def test_render_top_bar_sets_scope_text_from_egeria_binding(self):
         app = _app()

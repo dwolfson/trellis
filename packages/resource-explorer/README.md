@@ -18,7 +18,7 @@ uv sync
 cp .env.example .env          # set GITHUB_TOKEN, EGERIA_*, LLM_BACKEND, …
 
 # Start the web UI
-uv run resource-explorer web  # → http://localhost:8810
+uv run resource-explorer web  # → http://localhost:8810  (Next UI; Classic at /classic)
 ```
 
 Start the external services required for RAG and Egeria integration:

@@ -293,6 +293,10 @@
     <span id="db-scope-badge" class="hidden text-xs bg-emerald-900 text-emerald-300 px-2 py-0.5 rounded-full"></span>
   </div>
   <div class="flex items-center gap-3">
+    <!-- Next is the default UI at `/` (2026-10-07); Classic is at `/classic`.
+         `/next` always serves Next, even if RE_DEFAULT_UI=classic. -->
+    <a id="open-new-ui" href="/next" title="Open the new UI"
+      class="text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded border border-slate-600" style="text-decoration:none">New UI</a>
     <button onclick="showMainView('activity')" id="nav-activity-hdr"
       class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded hover:bg-slate-700">
       📋 Activity

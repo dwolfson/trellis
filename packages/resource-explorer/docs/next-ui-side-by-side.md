@@ -1,5 +1,7 @@
 # `/` vs `/next` — a side-by-side walk on one resource
 
+> **Routing note (2026-10-07):** Next is now the default at `/`; Classic is at `/classic`. This walk was written when `/` was Classic, so read its `/` column as Classic (`/classic`) and `/next` as Next (`/`). Cross-links are now `Classic` (in Next) and `New UI` (in Classic).
+
 **Resource:** `egeria_workspaces_git` (display name `egeria-workspaces`)
 **Date:** 2026-09-09 · **Both UIs served by one process on port 8811**, same
 session, same registry, same investigation (`q3-health-review`).
