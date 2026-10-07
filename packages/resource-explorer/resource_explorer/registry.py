@@ -7419,7 +7419,10 @@ class ProjectRegistry:
 
     #: Terminal states. 'done' succeeded; 'dead' exhausted its attempts and
     #: needs a human. Neither is ever picked up again by the drain.
-    OUTBOX_TERMINAL = ("done", "dead")
+    #: 'superseded' (2026-10-07) is a third terminal state: the row's own write did NOT succeed and is not
+    #: wanted any more because other row(s) carry the same intent. It is not 'done' (that claims the write
+    #: succeeded) and not 'dead' (that asks a human to look). The status column is TEXT, so no migration.
+    OUTBOX_TERMINAL = ("done", "dead", "superseded")
 
     def enqueue_outbox_element(
         self, entity_type: str, entity_slug: str, element_kind: str,
@@ -7443,6 +7446,64 @@ class ProjectRegistry:
             raise ValueError("qualified_name is the idempotency key and cannot be empty")
         now = datetime.utcnow().isoformat()
         with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO egeria_outbox "
+                "(entity_type, entity_slug, run_id, element_kind, qualified_name, "
+                " payload_json, depends_on_id, status, attempts, next_attempt_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)",
+                (entity_type, entity_slug, run_id, element_kind, qualified_name,
+                 json.dumps(payload), depends_on_id, now, now),
+            )
+            row_id = getattr(cur, "lastrowid", None)
+            if row_id is None:
+                row_id = conn.execute(
+                    "SELECT id FROM egeria_outbox WHERE qualified_name=? "
+                    "ORDER BY id DESC LIMIT 1", (qualified_name,),
+                ).fetchone()["id"]
+        return int(row_id)
+
+    #: States in which a row for the same (entity, kind, qualified_name) already stands for the intent.
+    OUTBOX_LIVE_OR_DONE = ("pending", "failed", "running", "done")
+
+    def enqueue_outbox_element_once(
+        self, entity_type: str, entity_slug: str, element_kind: str,
+        qualified_name: str, payload: dict, *, run_id: str = "",
+        depends_on_id: int | None = None,
+    ) -> int:
+        """Idempotent `enqueue_outbox_element`: returns the existing row's id instead of adding a second.
+
+        For kinds whose qualified_name is a synthetic identity key (collection memberships), a repeated
+        request (the owner pressing a verdict twice, 2026-10-07) must not queue a second full set. The
+        lookup is by (entity_type, entity_slug, element_kind, qualified_name):
+
+        * a pending / failed / running / done row exists -> return the newest, add nothing;
+        * the newest row is 'dead' -> revive THAT row (attempts reset, same as `retry_outbox_element`) and
+          return it. A repeated request after a dead row is an explicit "try again", and one row per key
+          keeps the history on the row rather than stacking identical dead rows;
+        * only 'cancelled' / 'superseded' rows (deliberately retired) or none -> insert a new row.
+
+        There is no unique index to lean on (the table has none and this adds no DDL), so the check and the
+        insert share one connection/transaction.
+        """
+        if not qualified_name:
+            raise ValueError("qualified_name is the idempotency key and cannot be empty")
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, status FROM egeria_outbox WHERE entity_type=? AND entity_slug=? "
+                "AND element_kind=? AND qualified_name=? ORDER BY id DESC",
+                (entity_type, entity_slug, element_kind, qualified_name),
+            ).fetchall()
+            for r in rows:
+                if r["status"] in self.OUTBOX_LIVE_OR_DONE:
+                    return int(r["id"])
+            if rows and rows[0]["status"] == "dead":
+                conn.execute(
+                    "UPDATE egeria_outbox SET status='pending', claimed_at='', attempts=0, "
+                    "next_attempt_at=?, last_error='' WHERE id=? AND status='dead'",
+                    (now, rows[0]["id"]),
+                )
+                return int(rows[0]["id"])
             cur = conn.execute(
                 "INSERT INTO egeria_outbox "
                 "(entity_type, entity_slug, run_id, element_kind, qualified_name, "
@@ -7634,6 +7695,29 @@ class ProjectRegistry:
                 "completed_at=?, last_error='' WHERE id=?",
                 (egeria_guid, datetime.utcnow().isoformat(), row_id),
             )
+
+    def mark_outbox_superseded(self, row_id: int, by_ids: "list[int]", note: str) -> bool:
+        """Retire a row whose own write did not succeed and is no longer wanted because other row(s) carry
+        the same intent. Terminal: the drain never claims it, `retry_outbox_element` (dead only) leaves it.
+
+        Honest where 'done' was not: 'done' says the row's write succeeded. last_error records the note and
+        the superseding row ids. Only a row that is not already done/superseded is changed; returns whether
+        it changed one. `by_ids` must be non-empty (a supersede with no superseder is a lie) and must not
+        contain the row itself.
+        """
+        ids = [int(i) for i in by_ids or []]
+        if not ids:
+            raise ValueError("mark_outbox_superseded needs the id(s) of the row(s) that supersede it")
+        if int(row_id) in ids:
+            raise ValueError("a row cannot supersede itself")
+        text = f"superseded by outbox row(s) {', '.join(str(i) for i in ids)}: {note}".strip()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET status='superseded', claimed_at='', next_attempt_at='', "
+                "last_error=?, completed_at=? WHERE id=? AND status NOT IN ('done', 'superseded')",
+                (text[:2000], datetime.utcnow().isoformat(), int(row_id)),
+            )
+        return (cur.rowcount or 0) > 0
 
     def mark_outbox_deferred(self, row_id: int, note: str) -> None:
         """Hand one claimed row back to 'pending' without burning an attempt,
@@ -7900,7 +7984,7 @@ class ProjectRegistry:
 
     def outbox_counts(self) -> dict[str, int]:
         """Row count per status — what a health endpoint or the drain's own
-        log line reports."""
+        log line reports. 'superseded' is its own key, never folded into done or dead."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT status, COUNT(*) AS n FROM egeria_outbox GROUP BY status"
@@ -8017,7 +8101,9 @@ class ProjectRegistry:
     def purge_outbox_completed(self, older_than_days: int = 14) -> int:
         """Drop 'done' rows past the retention window. Returns rows removed.
 
-        Only 'done' — 'dead' rows are the ones a human still has to look at,
+        'superseded' rows are deliberately KEPT (decided 2026-10-07): they are the record of why a write
+        never happened and what carries its intent, they are rare (hand-retired), and purging them would
+        erase the only trace that the intent was handled elsewhere. Only 'done' — 'dead' rows are the ones a human still has to look at,
         and failed/pending rows are live work. Retention exists from day one
         because one proposal publish on egeria_git is ~2,100 rows at the
         largest run observed, not because today's 831-row total needs it.

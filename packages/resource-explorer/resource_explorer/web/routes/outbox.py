@@ -22,7 +22,7 @@ router = APIRouter()
 #: Statuses a caller may filter by. Rejecting anything else keeps a typo from
 #: silently returning the unfiltered table, which would read as "nothing is
 #: stuck" exactly when something is.
-_VALID_STATUSES = ("pending", "running", "failed", "dead", "done")
+_VALID_STATUSES = ("pending", "running", "failed", "dead", "done", "superseded")
 #: "running" means a drainer holds a claim on the row. It is a real,
 #: queryable state rather than an internal flag: a row stuck in it past
 #: CLAIM_LEASE_SECONDS is the signature of a drainer that died mid-batch.
@@ -92,7 +92,7 @@ def retry_outbox_element(row_id: int) -> dict:
 def purge_completed(older_than_days: int = 14) -> dict:
     """Drop completed rows past the retention window.
 
-    Only 'done' rows — dead ones still need a human and pending ones are live
+    Only 'done' rows — superseded ones are kept as the record, dead ones still need a human and pending ones are live
     work. See `purge_outbox_completed`.
     """
     removed = ProjectRegistry().purge_outbox_completed(older_than_days=older_than_days)
