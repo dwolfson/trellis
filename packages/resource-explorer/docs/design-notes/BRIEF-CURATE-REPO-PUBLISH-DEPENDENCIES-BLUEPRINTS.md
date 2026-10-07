@@ -197,6 +197,57 @@ kinds of rules."
   note is short and can wait for the demo; the switch alone is a slice of
   its own if the owner wants the count down sooner.
 
+## 8. Two buttons both called "re-run →" (owner, 2026-10-07; for this brief or the next UI batch)
+
+On a database's Scouting survey pane (seen on laz_local_adventureworks) the
+survey-definition row's button and every row of the analyses list read
+"re-run →", and they do different things: the definition row opens the plan
+dialog, which since G2 offers "Use different credentials for this run"; an
+analyses row enqueues one analysis with the stored credential and offers no
+override. The owner pressed the analyses buttons looking for the option.
+
+Verified from code (main 30de07da): an analysis re-run **enqueues** (the
+route's docstring: "Enqueues; does not run"), and the run queue refuses to
+persist a credential ("a credential in a plaintext JSON column" is named as
+the thing it will not do, `run_queue.py`); the override run of a survey
+definition **stays in-process on RE's own engine**, never Prefect, with the
+credential in session memory only (`survey_definitions.py`,
+`OVERRIDE_SCOPE`). So the difference is a design fact, not an omission.
+
+Rule: **same word, same effect; a button that opens a dialog says so, and a
+row says which credential it uses.**
+
+- The definition row's button reads "Run…" / "Re-run…" (the ellipsis is the
+  dialog cue, as on every other opener), and its dialog is unchanged.
+- Each analyses row's button keeps "re-run →" and gains, beside it, the
+  short word "uses stored credential" in muted ink, with the sentence one
+  gesture away: "runs in the background with the credential saved for this
+  database; to use another credential, run the survey definition above".
+- Tests: the two labels asserted; the analyses row's credential word present
+  on every row.
+
+**Optional slice: credential override for a single analysis.** The owner
+asked why the override should not apply to individual analyses. It can, by
+the same pattern as the definition run, and the cost is the queue:
+
+- Build: the analyses row's "re-run →" gains a second control "Re-run…"
+  that opens the same dialog; when a credential is given, the single
+  analysis runs **in-process** on RE's engine with the credential in session
+  memory, exactly as the definition's override run does, never through the
+  queue and never through Prefect; the row then reads "ran as <user> (this
+  run)". Without a credential the row enqueues as today.
+- Costs: an in-process run blocks a web worker for the analysis's duration
+  (the reason runs were moved to the queue in September; one analysis is
+  seconds to minutes, a whole definition longer, so the definition's
+  override already accepted this); two code paths for one button, which
+  the words above make visible; no retry (session memory is gone when the
+  session is), which the row says: "not retried · credential was for this
+  run only".
+- Not a cost: no new storage, no password in the registry, the same
+  redaction and activity row G2 built.
+- Recommendation: build it only if the owner wants it before the demo; the
+  wording fix above removes the surprise either way.
+
 ## Gate (egeria_git, by use)
 
 1. The Publish band shows the survey's age before the press; "Publish to
@@ -214,3 +265,5 @@ kinds of rules."
    "accepted · zones left to Egeria · everyone visible" and a read-only
    lookup shows no `ZoneMembership`.
 6. The Curate rules block reads "Data-class rules Egeria applies".
+7. On laz_local_adventureworks the definition row reads "Re-run…" and each
+   analyses row shows "uses stored credential" beside its button.
