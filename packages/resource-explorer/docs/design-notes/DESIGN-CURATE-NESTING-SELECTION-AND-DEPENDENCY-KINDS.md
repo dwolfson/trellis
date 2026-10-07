@@ -129,10 +129,13 @@ needs) and runtime (what the deployed thing talks to).**
 | Egeria form on publish | as today (annotations per ecosystem; a `SoftwareComponent` dependency only on confirmation) | **not yet available:** Egeria plans new relationship types for "deployed by" and the other relations between a software library (a repository) and the things around it; until they exist and are deployed, a runtime dependency publishes as an annotation and nothing here is designed against a type that does not exist; **never lineage** (owner, 2026-10-05) |
 | State words | measured / not measured for this ecosystem | measured from artifacts / "no deployment artifact found" / "runtime not surveyed" |
 
-- The Analysis pane's "dependencies" becomes two sections with those
-  titles, each with its own count, or one table with a `kind` column
-  filled from the two sources; the owner chooses the reading he prefers at
-  the gate. Either way the heading never says "dependencies" alone.
+- **Decided (owner, 2026-10-07): one table with a `kind` column**, because
+  it is the more extensible reading: a third kind (a data dependency, a
+  service contract) is a new value, not a new section. The table is sorted
+  and filterable by kind, each kind has its own count in the header line
+  ("12 build-time · 3 runtime · 0 data"), and the heading never says
+  "dependencies" alone. The source column names the manifest or artifact
+  the row came from.
 - For a database or a file system the build-time section does not apply and
   says so ("not applicable · no code"); the runtime section is where a
   Postgres server's clients and a Kafka topic's producers and consumers
@@ -251,7 +254,7 @@ drawn at all.
 
 ## 6. Questions
 
-**Owner:** whether blueprint and component promotion keep writing the default `egeria-runtime` zone or adopt the catalog commit's configured-only rule (§4); §3's reading; whether the child-as-top-tier-asset option is wanted and for which repositories first (two sections or one table with a kind
+**Owner:** whether blueprint and component promotion keep writing the default `egeria-runtime` zone or adopt the catalog commit's configured-only rule (§4); whether the child-as-top-tier-asset option is wanted and for which repositories first (two sections or one table with a kind
 column); whether file-system trees should appear now in design drawings
 even though their build waits.
 
