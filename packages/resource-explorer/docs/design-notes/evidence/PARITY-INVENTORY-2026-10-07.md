@@ -79,7 +79,7 @@
 | PI-069 | Accept / reject a blueprint | _archSubmitBlueprintVerdict; POST /curate/blueprint-verdicts/repo/{slug} | DONE | next/stages/curate.js postBlueprintVerdict | registry | other |
 | PI-070 | Publish missing components and accept blueprint | _curatePublishMissingComponents | PARTIAL | next/stages/curate.js postBlueprintVerdict (accepts and queues; no pre-step publishing unmet components) | Egeria | other |
 | PI-071 | Jump between blueprint and its components | _curateJumpToComponent / _curateJumpToBlueprint | MISSING | - (curate.js section nav is page-level anchors) | none | other |
-| PI-072 | Component search / structural toggle / perspective view | _curateSetComponentSearch, _archToggleStructural, _archShowPerspective | PARTIAL | next/stages/curate.js component tree (getComponentTree, getComponentLeaves); search and structural toggle not confirmed in code | none | other |
+| PI-072 | Component search / structural toggle / perspective view | _curateSetComponentSearch, _archToggleStructural, _archShowPerspective | PARTIAL | next/stages/curate.js component tree (getComponentTree, getComponentLeaves); component search and structural toggle: no match in curate.js | none | other |
 | PI-073 | Schedule a survey for one repo (Automate, Surveys sub-tab) | _saveSurveySchedule; POST /api/schedules/repo/{slug} | MISSING | - (stages/automate.js has no Surveys sub-tab) | registry | other |
 | PI-074 | Perspective filter on Survey / Questions | loadPerspectiveChips, togglePerspective | DONE | next/app.js perspective row | none | other |
 | PI-075 | Search GitHub for repos with filters | searchScoutRepos; POST /api/discovery/search | DONE | next/discovery-import.js runSearch | none | other |
@@ -221,6 +221,6 @@ The Alpha demo criterion is "no path that writes beyond intent". One line each, 
 
 - Whether any Next control behaves correctly at runtime; nothing was run. Every state is from reading code paths.
 - Rows outside G1-G3 were re-checked at route level against `re-api.js` and `next/`, not re-read function by function; their states mostly carry forward the 2026-09-30 baseline.
-- Whether `next/stages/curate.js` offers component search and the structural toggle (PI row marked PARTIAL on that basis).
+- Whether Curate offers component search or the structural toggle under other names (grep of curate.js found none; that row is PARTIAL on that basis).
 - Whether the top-tables ranked table exists anywhere in Next beyond the chart (searched for last-analyzed and pending-change fields; none found).
 - Which Classic routes the backend still serves but Classic no longer calls: `POST /api/databases/{slug}/publish` is no longer called from Classic (its modal was retired).
