@@ -1002,10 +1002,44 @@ export const getNativeSurveyReport = (slug, reportGuid, { entityType } = {}) =>
  *  (stage-page round, point 2). */
 export const listSurveyDefinitions = () => cached('survey-definitions', () => get('/api/survey-definitions/definitions'));
 
-/** Launch one Survey Definition. `ref` is its qualified_name or guid. */
-export const runSurveyDefinition = (slug, ref, { entityType } = {}) =>
-  post(`/api/survey-definitions/${encodeURIComponent(requireKind('runSurveyDefinition', entityType))}/${encodeURIComponent(slug)}/run`,
-       { survey_definition_ref: ref });
+/** Launch one Survey Definition. `ref` is its qualified_name or guid.
+ *
+ *  `credential` ({user, password}) is a credential for THIS run only (parity
+ *  G2, PI-016): it rides in the POST body (never the URL), is not stored by
+ *  the caller beyond browser memory, and the server does not queue or write
+ *  it down. `forceCustom` true means "do not try Egeria first" (PI-018). */
+export const runSurveyDefinition = (slug, ref, { entityType, credential = null, forceCustom = false } = {}) => {
+  const body = { survey_definition_ref: ref };
+  if (credential && credential.user && credential.password) {
+    body.db_user = credential.user;
+    body.db_pwd = credential.password;
+  }
+  if (forceCustom) body.force_custom = true;
+  return post(`/api/survey-definitions/${encodeURIComponent(requireKind('runSurveyDefinition', entityType))}/${encodeURIComponent(slug)}/run`, body);
+};
+
+/* ── Register one database, change a stored credential (parity G2) ─────────
+ * The password goes in the body of these calls and nowhere else: no response
+ * carries it, so nothing here can hand one back. */
+
+/** "Test connection" of test-then-register: {status: 'ok'|'error', sentence}. Stores nothing. */
+export const testDatabaseConnection = (payload) => post('/api/databases/_test-connection', payload);
+
+/** The existing register route. */
+export const registerDatabase = (payload) => post('/api/databases/register', payload);
+
+/** Who registered a database and when, read back from its registration row. */
+export const getDatabaseRegistration = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/registration`);
+
+/** Change the stored credential. The server connect-tests BEFORE saving, so a
+ *  refusal is an ApiError(400) whose message is the sentence to show. */
+export const changeDatabaseCredentials = (slug, { user, password }) =>
+  patch(`/api/databases/${encodeURIComponent(slug)}/credentials`, { db_user: user, db_password: password });
+
+/** The registry / .omsecrets drift check (collection presence, never a value). */
+export const getCredentialDrift = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/credential-drift`);
 
 /**
  * The dashboards registered for a resource, optionally scoped to a stage.

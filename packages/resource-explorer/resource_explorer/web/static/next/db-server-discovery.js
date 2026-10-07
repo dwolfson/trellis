@@ -50,6 +50,9 @@ import { refreshOpenInvestigation } from '/static/next/stages/investigation.js';
 import { credentialMarkHtml } from '/static/next/credential.js';
 import { saveCsv } from '/static/next/download.js';
 import { blankCredentialCells } from '/static/next/csv-guard.js';
+import {
+  registerOneDatabaseHtml, bindRegisterOneDatabase, resetRegisterOneDatabase,
+} from '/static/next/db-register.js';
 
 const emptyRegisterForm = () => ({
   slug: '', display_name: '', db_type: 'postgresql', host: '', port: 5432,
@@ -93,7 +96,7 @@ const emptyFile = () => ({
 
 const view = {
   tab: 'saved',          // 'saved' | 'discover' | 'file'
-  mode: 'list',          // within 'saved': 'list' | 'register'
+  mode: 'list',          // within 'saved': 'list' | 'register' (a server) | 'register-db' (one database)
   servers: [],
   groups: [],
   investigations: [],
@@ -192,18 +195,27 @@ function render(el) {
   const body = el.querySelector('#wl-detail-body');
   if (!body) return;
   captureInputs(el);
-  const panel = view.tab === 'saved' ? (view.mode === 'register' ? registerFormHtml() : savedHtml())
+  const panel = view.tab === 'saved'
+    ? (view.mode === 'register' ? registerFormHtml()
+      : view.mode === 'register-db' ? registerOneDatabaseHtml(view.groups) : savedHtml())
     : view.tab === 'discover' ? discoverHtml()
     : fileHtml();
   body.innerHTML = `
     ${tabsHtml()}
     ${statusLineHtml(view.status, view.statusIsError)}
     ${panel}
-    ${view.tab !== 'file' && view.mode !== 'register' ? candidatesHtml() : ''}
+    ${view.tab !== 'file' && view.mode !== 'register' && view.mode !== 'register-db' ? candidatesHtml() : ''}
   `;
   const pw = body.querySelector('[data-oo="db_password"]');
   if (pw) pw.value = view.oneOff.db_password;
   bind(el);
+  if (view.tab === 'saved' && view.mode === 'register-db') {
+    bindRegisterOneDatabase(body, {
+      rerender: () => render(el),
+      back: () => { view.mode = 'list'; view.status = ''; render(el); },
+      onRegistered: () => { refreshGroupsAndSidebar(); },
+    });
+  }
 }
 
 function tabsHtml() {
@@ -256,8 +268,12 @@ function savedHtml() {
   const header = `
     <div class="mb-s3 flex items-center justify-between">
       <span class="text-caveat text-ink-muted">${view.servers.length} saved source(s): the database servers registered once, with their credential</span>
-      <button data-act="new-server" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
-        >+ Register a server</button>
+      <span class="flex items-center gap-s2">
+        <button data-act="register-db" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
+          >Register one database…</button>
+        <button data-act="new-server" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
+          >+ Register a server</button>
+      </span>
     </div>`;
 
   if (!view.servers.length) {
@@ -1131,6 +1147,12 @@ function bind(el) {
     view.showEgeria = false;
     view.registerError = '';
     view.testResult = null;
+    render(el);
+  });
+  el.querySelector('[data-act="register-db"]')?.addEventListener('click', () => {
+    resetRegisterOneDatabase();
+    view.mode = 'register-db';
+    view.status = '';
     render(el);
   });
   el.querySelector('[data-act="back-to-servers"]')?.addEventListener('click', () => {
