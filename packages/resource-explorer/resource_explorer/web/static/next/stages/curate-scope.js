@@ -337,13 +337,13 @@ function factCell(v, fallback) {
   if (!v) return fallback;
   const tip = v.detail ? ` title="${esc(v.detail)}"` : '';
   if (v.state === 'disagree') {
-    return `<div data-scope-disagree class="text-right text-ink"${tip}>${esc(v.text)}</div>
-      <div class="text-right text-provenance text-ink-muted">${esc(v.detail)}</div>`;
+    return `<div data-scope-disagree class="text-center text-ink"${tip}>${esc(v.text)}</div>
+      <div class="text-center text-provenance text-ink-muted">${esc(v.detail)}</div>`;
   }
   if (v.state === 'not_measured' || v.state === 'not_established') {
-    return `<span class="block text-right text-ink-muted"${tip}>${esc(v.text)}</span>`;
+    return `<span class="block text-center text-ink-muted"${tip}>${esc(v.text)}</span>`;
   }
-  return `<span class="tnum block text-right"${tip}>${esc(v.text)}</span>`;
+  return `<span class="tnum block text-center"${tip}>${esc(v.text)}</span>`;
 }
 
 function rowsCell(node) {
@@ -363,18 +363,20 @@ function sizeCell(node) {
  * colresize.js, so a drag moves every row without a re-draw. "Schema / table" is the flexible
  * column: it takes what the others leave. */
 export const SCOPE_COLS = {
-  id: 'curate-scope-tree', nameMin: 160, chrome: 80,
+  id: 'curate-scope-tree', chrome: 80,
   columns: [
     { key: 'sel', def: 24, min: 24, resizable: false },
     { key: 'choice', def: 200, min: 90 },
+    { key: 'name', def: 280, min: 120, align: 'left' },
     { key: 'rows', def: 84, min: 48 },
     { key: 'size', def: 84, min: 48 },
     { key: 'act', def: 150, min: 70 },
     { key: 'cls', def: 150, min: 70 },
-    { key: 'egeria', def: 260, min: 90 },
+    { key: 'egeria', def: 240, min: 90 },
   ],
 };
-const cs = (key) => cellStyle(SCOPE_COLS, key);
+const INDENT_PX = 13.8;   // the s3 indent a table row sits under its schema; its name cell gives that much back
+const cs = (key, offset = 0) => cellStyle(SCOPE_COLS, key, offset);
 function rowHtml(node, me, depth, kindWord, commit, open = false) {
   const isSchema = node.kind === 'schema';
   const key = isSchema ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
@@ -396,7 +398,7 @@ function rowHtml(node, me, depth, kindWord, commit, open = false) {
   return `<div class="flex items-start gap-s2 border-b border-rule border-l-[3px] pl-[4px] py-[3px] text-caveat ${edge ? 'border-l-ink' : 'border-l-transparent'} ${lowered ? 'text-ink-muted opacity-70' : ''} ${flashRows.has(key) ? 'bg-paper-surface' : ''}" data-scope-row="${esc(key)}" data-scope-effective="${esc(node.effective || '')}"${lowered ? ' data-scope-lowered' : ''}>
     <div class="shrink-0" style="${cs('sel')}" data-scope-select-cell>${pick}</div>
     <div class="shrink-0 break-words" style="${cs('choice')}" data-scope-choice-cell ${pendingRows.has(key) ? 'aria-busy="true"' : ''}>${choiceCellHtml(node, me, commit)}</div>
-    <div class="min-w-0 flex-1 break-words ${lowered ? 'text-ink-muted' : 'text-ink'}" data-scope-name-cell><span data-scope-bullet aria-hidden="true" class="text-ink-muted">${isSchema ? '▪' : '·'}</span> ${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
+    <div class="shrink-0 break-words ${lowered ? 'text-ink-muted' : 'text-ink'}" style="${cs('name', depth ? INDENT_PX : 0)}" data-scope-name-cell><span data-scope-bullet aria-hidden="true" class="text-ink-muted">${isSchema ? '▪' : '·'}</span> ${toggle}<span class="${isSchema ? 'font-mono font-semibold' : 'font-mono'}">${esc(node.name)}</span>${nameTail}${src}</div>
     <div class="shrink-0 break-words" style="${cs('rows')}" data-scope-rows-cell>${rowsCell(node)}</div>
     <div class="shrink-0 break-words" style="${cs('size')}" data-scope-size-cell>${sizeCell(node)}</div>
     <div class="shrink-0 break-words" style="${cs('act')}" data-scope-lastwrite-cell>${lastWriteCell(node)}</div>
@@ -444,14 +446,14 @@ export function treeHtml(view, me) {
   if (!(view.schemas || []).length && !view.system) {
     return `<div class="text-caveat text-ink-muted">No stored schema rows yet: run a survey first. Nothing to scope until Egeria's survey or RE's has listed the schemas.</div>`;
   }
-  const hc = (key, label, title, right = false, attr = '') => `<div class="shrink-0" style="${cs(key)};${headCellStyle}${right ? ';text-align:right' : ''}"${attr}${title ? ` title="${esc(title)}"` : ` title="${esc(label)}"`}>${esc(label)}${handleHtml(SCOPE_COLS, key, label)}</div>`;
-  const head = `<div class="flex items-start gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" data-scope-tree-head>
-    <div class="shrink-0" style="${cs('sel')}"></div>${hc('choice', 'Include in catalog?', '', false, ' data-scope-choice-head')}<div class="min-w-0 flex-1" style="${headCellStyle}" title="Schema / table">Schema / table</div>
-    ${hc('rows', 'Rows', 'Row count; the source and date ride on each cell', true)}
-    ${hc('size', 'Size', 'Size on disk; the source and date ride on each cell', true)}
-    ${hc('act', 'Activity', `Activity: dormant means 0 writes in at least ${String(view.dormancy_days || 90)} days of counter evidence`, false, ' data-scope-activity-head')}
-    ${hc('cls', 'Classification', 'Data classes found in the columns', false, ' data-scope-classes-head')}
-    ${hc('egeria', 'In Egeria', 'State in Egeria', false, ' data-scope-state-head')}</div>`;
+  const hc = (key, label, title, attr = '') => `<div class="shrink-0" style="${cs(key)};${headCellStyle(SCOPE_COLS, key)}"${attr} title="${esc(title || label)}">${esc(label)}${handleHtml(SCOPE_COLS, key, label)}</div>`;
+  const head = `<div class="flex items-start gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" style="padding-left:7px" data-scope-tree-head>
+    <div class="shrink-0" style="${cs('sel')}"></div>${hc('choice', 'Include in catalog?', '', ' data-scope-choice-head')}${hc('name', 'Schema / table')}
+    ${hc('rows', 'Rows', 'Row count; the source and date ride on each cell')}
+    ${hc('size', 'Size', 'Size on disk; the source and date ride on each cell')}
+    ${hc('act', 'Activity', `Activity: dormant means 0 writes in at least ${String(view.dormancy_days || 90)} days of counter evidence`, ' data-scope-activity-head')}
+    ${hc('cls', 'Classification', 'Data classes found in the columns', ' data-scope-classes-head')}
+    ${hc('egeria', 'In Egeria', 'State in Egeria', ' data-scope-state-head')}</div>`;
   const plan = treePlan(view);
   const body = plan.rows.map(({ s, tables: shownTables, open }) => {
     const tables = open ? shownTables.map((t) => `<div class="ml-s3">${rowHtml(t, me, 1, TABLE_KIND[t.table_type] || 'table', view.commit)}${columnRowsHtml(t)}</div>`).join('')
