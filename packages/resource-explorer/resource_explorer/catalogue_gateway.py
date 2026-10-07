@@ -248,7 +248,12 @@ class CatalogueGateway(Protocol):
 
 # ── the real one ─────────────────────────────────────────────────────────────
 
-def _short(exc: Exception, n: int = 300) -> str:
+#: Egeria's own sentence is kept whole: a proof row's text was once cut at 300 characters, before
+#: the sentence that said why. 4000 is a safety bound for a runaway body, not a display width.
+MAX_EGERIA_TEXT = 4000
+
+
+def _short(exc: Exception, n: int = MAX_EGERIA_TEXT) -> str:
     return " ".join(str(exc).split())[:n] or type(exc).__name__
 
 
