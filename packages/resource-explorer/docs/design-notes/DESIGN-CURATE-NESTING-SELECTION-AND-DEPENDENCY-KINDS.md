@@ -276,13 +276,17 @@ drawn at all.
 
 ## 6. Questions
 
-**Owner:** whether blueprint and component promotion keep writing the default `egeria-runtime` zone or adopt the catalog commit's configured-only rule (§4); whether the child-as-top-tier-asset option is wanted and for which repositories first (two sections or one table with a kind
-column); whether file-system trees should appear now in design drawings
-even though their build waits.
+**Owner:** none open. The decisions of 2026-10-07 are recorded in place:
+dependencies as one table with a kind column (§3); several blueprints with
+the kind in the name (§4); promotion adopts the configured-only zone rule
+(§4); the child-as-resource option and Admin zone configuration go to the
+backlog (§2, §4). Only whether file-system trees should appear in the
+designer's drawings now, even though their build waits, is his to say.
 
 **Designer:** the tree rows' cues at depth (indent, the "…" for unscanned,
 the hollow container mark); the manifest table for a mixed selection; the
-two-kind dependency table.
+dependency table with its kind column and per-kind counts; the blueprint
+selector and how several blueprints read side by side.
 
 **Egeria lead:** the planned relationship types ("deployed by" and the rest) and when they land, so §3 and the cross-blueprint links can name them; whether a container folder that holds published files
 but is not itself "an asset of its own" should carry a classification
