@@ -10322,7 +10322,8 @@ class ProjectRegistry:
             ).fetchone()
         return (row[0], row[1]) if row else (None, 0)
 
-    def get_database_surveys(self, slug: str, include_invalid: bool = False) -> list[dict]:
+    def get_database_surveys(self, slug: str, include_invalid: bool = False,
+                             with_survey_data: bool = True) -> list[dict]:
         """Return all survey records for a database, newest first.
 
         Rows marked invalid (`invalid_at IS NOT NULL` — see
@@ -10358,10 +10359,14 @@ class ProjectRegistry:
         """
         slug = self._normalize_slug(slug)
         if include_invalid:
+            # `with_survey_data=False` (the history table, G3 / PI-037) leaves the
+            # blob out of the SELECT: a database with 57 surveys holds ~61MB of it,
+            # and a table of dates and counts needs none of it.
+            blob = "survey_data, " if with_survey_data else ""
             with self._conn() as conn:
                 rows = conn.execute(
-                    """SELECT database_slug, surveyed_at, egeria_report_guid,
-                              schema_count, table_count, column_count, survey_data, source,
+                    f"""SELECT database_slug, surveyed_at, egeria_report_guid,
+                              schema_count, table_count, column_count, {blob}source,
                               surveyed_as, invalid_at, invalid_reason, published_at
                        FROM database_surveys
                        WHERE database_slug = ?

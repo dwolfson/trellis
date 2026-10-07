@@ -1940,6 +1940,9 @@ def schema_inventory_tree(registry, slug: str) -> dict | None:
                     "nullable": None if is_nullable is None else bool(is_nullable),
                     "key_role": "PK" if is_pk else ("FK" if fk else ""),
                     "foreign_key": fk if isinstance(fk, dict) else None,
+                    # "" is "none recorded": the table cannot tell no default
+                    # from a default never captured, and the screen says so.
+                    "default": c.get("column_default") or "",
                     "comment": c.get("description") or "",
                 })
             table_nodes.append({

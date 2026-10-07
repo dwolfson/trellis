@@ -269,6 +269,35 @@ def schema_distribution(registry, slug: str) -> dict:
 # ── table_sizes ──────────────────────────────────────────────────────────────
 
 
+def _ranked_with_activity(registry, slug: str, run: dict, top: list[dict]) -> list[dict]:
+    """The ranked tables of `table_sizes` as rows a table can show: rows, size,
+    and what the same run's activity rows say about analysis and pending changes.
+
+    A table with no activity row is `activity_state: not_collected` with `None`
+    for both, never a date it does not have and never a zero.
+    """
+    activity: dict[str, dict] = {}
+    try:
+        for a in registry.query_detail_rows(
+                "database_table_activity", slug, run["surveyed_at"], run.get("source") or None):
+            activity[_qualified(a)] = a
+    except Exception:  # an unreadable activity table is "not collected", not a failure of the chart
+        activity = {}
+    out = []
+    for t in top:
+        a = activity.get(_qualified(t))
+        out.append({
+            "name": _qualified(t),
+            "row_count": t.get("row_count"),
+            "size_bytes": t.get("size_bytes"),
+            "last_analyzed": ((a.get("last_analyze") or a.get("last_autoanalyze") or None)
+                              if a else None),
+            "pending_changes": a.get("pending_changes") if a else None,
+            "activity_state": "measured" if a else "not_collected",
+        })
+    return out
+
+
 def table_sizes(registry, slug: str, limit: int = 20, measure: str = "rows") -> dict:
     if measure not in ("rows", "size"):
         raise ValueError("measure must be 'rows' or 'size'")
@@ -280,7 +309,7 @@ def table_sizes(registry, slug: str, limit: int = 20, measure: str = "rows") -> 
         "tables": [], "row_counts": [], "sizes_mb": [],
         "table_count_total": 0, "views_excluded": 0,
         "not_established_count": 0, "not_established_tables": [],
-        "ranked_count": 0, "truncated_by_limit": 0,
+        "ranked_count": 0, "truncated_by_limit": 0, "ranked": [],
         "provenance": "",
     })
     if not run:
@@ -309,6 +338,7 @@ def table_sizes(registry, slug: str, limit: int = 20, measure: str = "rows") -> 
     env["tables"] = [_qualified(t) for t in top]
     env["row_counts"] = [t.get("row_count") for t in top]
     env["sizes_mb"] = [mb(t.get("size_bytes")) for t in top]
+    env["ranked"] = _ranked_with_activity(registry, slug, run, top)
     env["provenance"] = (
         "rows, as estimated by the server's statistics" if measure == "rows"
         else "relation size on disk, in MB"
