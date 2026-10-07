@@ -177,10 +177,29 @@ Accepted components are real **`SolutionComponent`** elements
 `solutionComponentType`), and membership is **`CollectionMembership`** from
 the blueprint to each component or child blueprint (`egeria_outbox.py`), which
 is correct because a `SolutionBlueprint` is a kind of `Collection` in
-Egeria's model. The materialiser writes **no zone**; if a blueprint on the
-platform carries a zone or a collection name such as "egeria-runtime", it
-did not come from this code path and should be read before it is explained.
-So the owner's rule maps directly: each blueprint kind is its own
+Egeria's model. **The zone comes from the step after materialisation, not
+from the materialiser** (corrected 2026-10-07 after the coordinator read the
+live 8813 log: "ZoneMembership['egeria-runtime'] set on 254dbbe6" on the
+owner's blueprint-verdicts press). The chain, read from code: the
+blueprint-verdicts route (`web/routes/curate.py`, the accepted branch)
+materialises the `SolutionBlueprint`, then calls
+`workflows/curate.promote_to_publish_zones(guid)`, which calls
+`egeria_identity.publish_zones()` and `set_zone_membership`; `publish_zones()`
+takes `EXPLORER_PUBLISH_ZONES`, else RE's `egeria.default_catalog_zones`, else
+**falls back to `DEFAULT_PUBLISH_ZONES = ("egeria-runtime",)`**. The
+component-verdicts route does the same for each accepted `SolutionComponent`.
+"egeria-runtime" is therefore RE's own default promotion zone, not a
+collection name. **A decision for the owner, not changed here:** the catalog
+commit for databases was ruled on 2026-10-05 to write a zone only when one is
+configured (`configured_publish_zones()`), because writing the fallback onto
+a database element locked out the service identity, Egeria's survey engine
+and the cataloguer. The blueprint and component promotion still uses the
+falling-back helper, so an accepted blueprint on the dev platform lands in
+`egeria-runtime` by default. Either promotion adopts the commit's rule (no
+zone unless configured, and the verdict row says "zones left to Egeria"), or
+the two paths stay different on purpose and the note records why. The
+"several blueprints" design below does not depend on which. So the owner's
+rule maps directly: each blueprint kind is its own
 `SolutionBlueprint` with the kind in its `displayName` and in the
 `<perspective>` slot of the qualifiedName ("Egeria Deployment Blueprint",
 "Egeria Build Blueprint", "Egeria Logical Blueprint"); nothing new in
@@ -232,7 +251,7 @@ drawn at all.
 
 ## 6. Questions
 
-**Owner:** §3's reading; whether the child-as-top-tier-asset option is wanted and for which repositories first (two sections or one table with a kind
+**Owner:** whether blueprint and component promotion keep writing the default `egeria-runtime` zone or adopt the catalog commit's configured-only rule (§4); §3's reading; whether the child-as-top-tier-asset option is wanted and for which repositories first (two sections or one table with a kind
 column); whether file-system trees should appear now in design drawings
 even though their build waits.
 
