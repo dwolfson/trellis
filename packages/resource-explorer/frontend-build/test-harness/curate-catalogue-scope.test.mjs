@@ -617,7 +617,7 @@ test('the STATE column is fully present and the tree scrolls sideways inside its
   // pane scrolls. (jsdom does no layout: the fit itself is reasoned from these widths, not measured.)
   assert.equal(host.querySelector('.min-w-max'), null, 'no max-content floor');
   // the floor is now the sum of the column widths (+ the name floor), carried on --rc-total
-  assert.match(host.querySelector('[data-rc-inner]').getAttribute('style'), /^min-width:var\(--rc-total,\d+px\)$/, 'a fixed floor instead');
+  assert.match(host.querySelector('[data-rc-inner]').getAttribute('style'), /^min-width:var\(--rc-total,\d+px\);padding-right:8px$/, 'a fixed floor instead');
   assert.ok(row(document, 'schema:sales').querySelector('[data-scope-state-cell]'));
   // jsdom does no layout: whether STATE is fully visible at ~1300px is NOT measured here.
 });
@@ -801,7 +801,9 @@ test('widths: the default columns fit a ~1300px content width, the name wraps, n
   const { document } = await setUp(baseView());
   const inner = document.querySelector('[data-rc-inner]');
   const floor = Number(inner.getAttribute('style').match(/--rc-total,(\d+)px/)[1]);
-  assert.ok(floor <= 1300, `defaults + name floor + gaps (${floor}px) must fit about 1300px`);
+  // 2026-10-07: 1300 -> 1420. "not measured" and "not established" broke mid-word in the 84px Rows/Size
+  // columns, so the defaults were widened to keep a word whole; a narrower pane scrolls inside its box.
+  assert.ok(floor <= 1420, `defaults + name floor + gaps (${floor}px) must fit about 1420px`);
   const head = document.querySelector('[data-scope-tree-head]');
   const nameHead = [...head.children].find((c) => flat(c) === 'Schema / table');
   assert.match(nameHead.getAttribute('style'), /flex:0 0 auto/, 'the name column is a fixed width too, so no drag moves the columns to its left');

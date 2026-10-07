@@ -75,7 +75,7 @@ const DB_WORK_SECTIONS = [
 export function databaseScopeHtml() {
   return `<div data-curate-work="scope" class="mb-s3 min-w-0">
     <div class="text-answer text-ink">What gets cataloged</div>
-    <div data-curate-scope class="mt-s1 text-caveat text-ink-muted">Reading the catalog scope…</div></div>`;
+    <div data-curate-scope class="mt-s1 min-w-0 max-w-full text-caveat text-ink-muted">Reading the catalog scope…</div></div>`;
 }
 
 export function databaseWorkHtml() {

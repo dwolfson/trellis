@@ -541,7 +541,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
     <div class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
       aria-controls="scope-section-body" title="${open ? 'Collapse to one line' : 'Show the whole scope'}"
       class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header><span data-scope-header-line>${esc(line)}</span></span></button></div>
-    <div id="scope-section-body" data-scope-body${open ? '' : ' hidden'}>
+    <div id="scope-section-body" data-scope-body class="min-w-0 max-w-full"${open ? '' : ' hidden'}>
     ${me ? '' : `<div data-scope-signed-out class="mb-s1 text-caveat text-ink-muted">You can read the scope as it stands. ${esc(signInReason)}.</div>`}
     ${nsLine}
     ${depthLineHtml(view, me)}
@@ -703,15 +703,16 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
   const blockers = (preview.blockers || []).map((b) => `<div data-scope-blocker class="text-ink">${glyphSpan('human')} ${esc(b)}</div>`).join('');
   const off = !!reason;
   const sent = ui && ui.polling ? '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>' : '';
-  return `<div data-scope-commit-panel>
-    <div class="mb-s1 flex flex-wrap items-baseline gap-s3"><span class="text-answer text-ink">What this commit does</span><button type="button" data-rc-reset-commit disabled class="opacity-60 text-ink-muted bg-transparent p-0 text-caveat" title="Put every column back to its default width">reset widths</button></div>
+  return `<div data-scope-commit-panel class="min-w-0 max-w-full">
+    <div class="text-answer text-ink">What this commit does</div>
+    <div class="mb-s1"><button type="button" data-rc-reset-commit disabled class="opacity-60 text-ink-muted bg-transparent p-0 text-caveat" title="Put every column back to its default width">reset widths</button></div>
     <div class="flex flex-wrap items-start justify-between gap-s3">
       <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, refused + leave)}</div>
       <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
         <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
         ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
         ${collisions}${blockers}
-        <label class="flex cursor-pointer items-start gap-[4px] text-right text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
+        <label class="flex min-w-0 max-w-full cursor-pointer items-start gap-[4px] break-words text-right text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
       </div>
     </div>
     ${sent}

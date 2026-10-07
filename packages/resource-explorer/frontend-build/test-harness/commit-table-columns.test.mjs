@@ -89,9 +89,27 @@ test('the notes (nothing to remove...) are rows inside the table; the refresh bo
   assert.ok(!when.contains(row));
 });
 
-test('details sit on their own line inside the cell, and a reset control starts disabled', () => {
+test('details sit on their own line inside the cell; reset widths is its own line UNDER the heading, starting disabled', () => {
   const p = panel();
   for (const d of p.querySelectorAll('[data-scope-details]')) assert.ok(d.classList.contains('block'));
   assert.equal(p.querySelector('[data-rc-reset-commit]').disabled, true);
   assert.equal(p.querySelector('[data-rc-reset-commit]').textContent, 'reset widths');
+  const head = [...p.querySelectorAll('div')].find((d) => d.textContent === 'What this commit does');
+  const resetLine = p.querySelector('[data-rc-reset-commit]').parentElement;
+  assert.ok(!head.contains(p.querySelector('[data-rc-reset-commit]')), 'not beside the heading');
+  assert.equal(head.nextElementSibling, resetLine, 'directly under it, on its own line');
+});
+
+test('no cell breaks a word mid-word, each column keeps its longest word whole, and the label and containers wrap and shrink', () => {
+  const p = panel();
+  for (const c of p.querySelectorAll('[data-scope-manifest] [role=cell], [data-scope-manifest] [role=columnheader]')) {
+    if (c.closest('[data-scope-manifest-notes]')) continue;
+    assert.match(c.getAttribute('style'), /overflow-wrap:normal;word-break:normal;hyphens:none/);
+  }
+  assert.ok(MANIFEST_COLS.columns.every((c) => c.min >= 100), 'a minimum that keeps the longest word whole');
+  const label = p.querySelector('[data-scope-refresh-now]').closest('label');
+  for (const k of ['min-w-0', 'max-w-full', 'break-words']) assert.ok(label.classList.contains(k), k);
+  const panelEl = p.querySelector('[data-scope-commit-panel]');
+  assert.ok(panelEl.classList.contains('min-w-0') && panelEl.classList.contains('max-w-full'), 'the panel can shrink inside the page column');
+  assert.ok(p.querySelector('[data-scope-manifest-host]').className.includes('max-w-full'));
 });

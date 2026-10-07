@@ -41,7 +41,10 @@ export const alignStyle = (spec, key) => `text-align:${col(spec, key).align || '
 export function cellStyle(spec, key, offset = 0) {
   const c = col(spec, key);
   const w = `var(${VAR(key)},${c.def}px)`;
-  return `width:${offset ? `calc(${w} - ${offset}px)` : w};flex:0 0 auto;min-width:0;${alignStyle(spec, key)}`;
+  // Wrap at spaces only; a column's `min` keeps its longest word whole. A column that holds
+  // identifiers (`breakLong`) may break an over-long one rather than run into its neighbour.
+  const wrap = c.breakLong ? 'overflow-wrap:break-word' : 'overflow-wrap:normal;word-break:normal;hyphens:none';
+  return `width:${offset ? `calc(${w} - ${offset}px)` : w};flex:0 0 auto;min-width:0;${wrap};${alignStyle(spec, key)}`;
 }
 
 export function totalFloor(spec, widths = {}) {
@@ -49,7 +52,7 @@ export function totalFloor(spec, widths = {}) {
 }
 
 export function innerStyle(spec) {
-  return `min-width:var(--rc-total,${totalFloor(spec)}px)`;
+  return `min-width:var(--rc-total,${totalFloor(spec)}px);padding-right:8px`;
 }
 
 /** The right-edge handle. Focusable, so the keyboard can reach it. */
