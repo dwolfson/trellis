@@ -27,6 +27,7 @@ import {
   chartLayout, loadScript,
 } from '/static/next/app.js';
 import { provenanceFromResponse, saveChartImage } from '/static/next/chart-export.js';
+import { fitFigure, annotateTicks } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
 import {
   surveyHistoryHtml, readShowInvalid, writeShowInvalid, rankedTablesHtml, viewsSectionHtml,
@@ -170,13 +171,31 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
   }
   const layout = JSON.parse(JSON.stringify(fig.layout || {}));
   delete layout.title;
-  const horizontal = fig.data.some((t) => t.orientation === 'h');
-  const themed = Object.assign(chartLayout(layout), {
-    margin: { l: horizontal ? 150 : 56, r: 16, t: 12, b: 40 },
-  });
+  const themedFor = (w) => {
+    const f = fitFigure({ data: fig.data, layout }, w, spec.title);
+    return { fit: f, themed: Object.assign(chartLayout(f.layout), { margin: f.layout.margin }) };
+  };
+  const widthNow = () => (plot.clientWidth || 600);
+  let { fit, themed } = themedFor(widthNow());
   try {
     const Plotly = await plotlyGlobal();
-    await Plotly.newPlot(plot, fig.data, themed, { displaylogo: false, responsive: true });
+    // Not autosized: the fitted margins and tick thinning are for this width,
+    // and a resize below refits them.
+    await Plotly.newPlot(plot, fig.data, Object.assign(themed, { width: widthNow(), height: 260 }),
+      { displaylogo: false, responsive: false });
+    annotateTicks(plot, fit.alt, fit.summary);
+    if (typeof window.addEventListener === 'function' && Plotly.react) {
+      let last = widthNow();
+      window.addEventListener('resize', () => {
+        const w = widthNow();
+        if (!plot.isConnected || Math.abs(w - last) < 8) return;
+        last = w;
+        const again = themedFor(w);
+        fit = again.fit;
+        Plotly.react(plot, fig.data, Object.assign(again.themed, { width: w, height: 260 }),
+          { displaylogo: false, responsive: false }).then(() => annotateTicks(plot, fit.alt, fit.summary));
+      });
+    }
   } catch (err) {
     plot.outerHTML = `<div class="text-answer text-state-warn">${esc(spec.title)} could not be drawn: ${esc(err.message)}</div>`;
   }
@@ -188,8 +207,11 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
       const title = card.querySelector('[data-card-title]').textContent;
       const out = await saveChartImage({
         Plotly,
-        figure: { data: fig.data, layout: Object.assign({}, themed, {
-          title: { text: title }, margin: Object.assign({}, themed.margin, { t: 48 }) }) },
+        figure: (() => {
+          const ex = themedFor(1000).themed;   // refit for the export's own width
+          return { data: fig.data, layout: Object.assign({}, ex, {
+            title: { text: title }, margin: Object.assign({}, ex.margin, { t: 48 }) }) };
+        })(),
         provenance: provenanceFromResponse(slug, title, resp),
       });
       status.textContent = ' saved';
