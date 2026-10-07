@@ -191,6 +191,7 @@ import {
 } from '/static/re-api.js';
 import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
+import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
 
 /* ════════════════════════════════════════════════════════════════════════
  * State
@@ -3294,8 +3295,21 @@ export function resourceHeaderHtml(slug) {
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
     ${credentialBanner}
+    ${state.resourceType === 'db' ? changeCredentialsLineHtml(p) : ''}
     ${isCredentialUnreadable(p) ? `<div class="mt-s1 text-provenance" data-credential-banner>${credentialMarkHtml(p)} — surveys and runs are disabled until the credential is re-entered.</div>` : ''}
     <div id="resource-action" class="mt-s2"></div>`;
+}
+
+/** Parity G2, PI-021: the header's door to the stored credential. It names when
+ *  the credential last changed (the registry's own `credential_changed_at`, or
+ *  says it predates that being recorded) and opens the test-before-save form. */
+function changeCredentialsLineHtml(p) {
+  const changed = p && p.credential_changed_at
+    ? `credential changed ${esc(ago(p.credential_changed_at))}`
+    : 'credential change date not recorded';
+  return `<div class="mt-s1 text-provenance text-ink-muted">${changed} ·
+    <button type="button" data-act="change-credentials"
+      class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Change credentials…</button></div>`;
 }
 
 /** The dated verdict trail for one repo. */
@@ -3540,6 +3554,20 @@ export function bindResourceHeader() {
     writeUrl();
     renderIntentNav();
     loadPane();
+  });
+
+  el.querySelector('[data-act="change-credentials"]')?.addEventListener('click', () => {
+    if (!p) return;
+    slot.innerHTML = credentialChangeHtml(p);
+    bindCredentialChange(slot, p.slug, {
+      onSaved: (summary) => {
+        // The list row follows what the server saved (never a password).
+        p.db_user = summary.db_user || p.db_user;
+        p.credential_changed_at = summary.credential_changed_at || p.credential_changed_at;
+        p.credential_status = 'ok';
+      },
+      onCancel: () => { slot.innerHTML = ''; },
+    });
   });
 
   el.querySelector('[data-act="disposition"]')?.addEventListener('click', () => {

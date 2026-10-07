@@ -50,6 +50,8 @@ import { refreshOpenInvestigation } from '/static/next/stages/investigation.js';
 import { credentialMarkHtml } from '/static/next/credential.js';
 import { saveCsv } from '/static/next/download.js';
 import { blankCredentialCells } from '/static/next/csv-guard.js';
+import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
+import { ago } from '/static/next/format.js';
 import {
   registerOneDatabaseHtml, bindRegisterOneDatabase, resetRegisterOneDatabase,
 } from '/static/next/db-register.js';
@@ -309,16 +311,35 @@ function savedHtml() {
             >Remove</button>
         </div>
       </div>
+      ${serverEgeriaHtml(s)}
       <div class="mt-s2 text-provenance text-ink-muted">
         ${(s.databases || []).length
-          ? `${s.databases.length} registered from this server: ${s.databases.map((d) => esc(d.display_name)).join(', ')}`
+          ? `${s.databases.length} registered from this server:`
           : 'None registered from this server yet.'}
       </div>
+      ${(s.databases || []).map((d) => `<div data-server-db="${esc(d.slug)}" class="mt-[2px] flex flex-wrap items-baseline gap-s2 text-provenance text-ink-muted">
+        <span class="text-ink">${esc(d.display_name)}</span> · ${
+          d.last_surveyed_at ? `surveyed ${esc(ago(d.last_surveyed_at))}` : 'never surveyed'}
+        <button type="button" data-change-cred="${esc(d.slug)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Change credentials…</button>
+        <div data-cred-host="${esc(d.slug)}" class="w-full"></div>
+      </div>`).join('')}
       <div data-test-result="${esc(s.slug)}"></div>
     </div>`;
   }).join('');
 
   return `${header}${rows}`;
+}
+
+/** PI-014, read only: the server's Egeria connection as registered (never a
+ *  password: the summary does not carry one). */
+function serverEgeriaHtml(s) {
+  const parts = [];
+  if (s.egeria_url) parts.push(esc(s.egeria_url));
+  if (s.egeria_server) parts.push(`view server ${esc(s.egeria_server)}`);
+  if (s.egeria_user) parts.push(`user ${esc(s.egeria_user)}`);
+  if (s.egeria_host) parts.push(`host ${esc(s.egeria_host)}`);
+  return `<div data-server-egeria class="mt-[2px] text-provenance text-ink-muted">${
+    parts.length ? `Egeria · ${parts.join(' · ')}` : 'no Egeria connection recorded'}</div>`;
 }
 
 async function runServerTest(el, slug) {
@@ -1168,6 +1189,13 @@ function bind(el) {
   el.querySelector('[data-act="test-inline"]')?.addEventListener('click', () => testInline(el));
   el.querySelector('[data-act="submit-register"]')?.addEventListener('click', () => submitRegister(el));
 
+  el.querySelectorAll('[data-change-cred]').forEach((b) => b.addEventListener('click', () => {
+    const slug = b.dataset.changeCred;
+    const hostEl = el.querySelector(`[data-cred-host="${cssEsc(slug)}"]`);
+    if (!hostEl) return;
+    hostEl.innerHTML = credentialChangeHtml({ slug, db_user: '' });
+    bindCredentialChange(hostEl, slug, { onCancel: () => { hostEl.innerHTML = ''; } });
+  }));
   el.querySelectorAll('[data-test]').forEach((b) =>
     b.addEventListener('click', () => runServerTest(el, b.dataset.test)));
   el.querySelectorAll('[data-run]').forEach((b) =>
