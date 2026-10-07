@@ -62,3 +62,45 @@ def check_database_credential(db, user: str, password: str) -> None:
             "unreachable",
             f"Credential not saved: could not reach {where} ({msg})",
         ) from None
+
+
+def probe_database_connection(db_type: str, host: str, port: int, database_name: str,
+                              user: str, password: str) -> dict:
+    """Test one database's connection BEFORE it is registered (parity G2,
+    PI-015: test-then-register). Never raises, never stores anything.
+
+    Returns ``{"status": "ok"|"error", "sentence": str}``. The sentence is the
+    only thing shown: it names where and as whom the connection was made and
+    how many tables that credential can read, or says why nothing was
+    registered. The supplied password is scrubbed from every sentence and is
+    never part of the returned dict.
+
+    Blocking: call off the event loop from async code.
+    """
+    from resource_explorer.registry import DatabaseEntity
+    from resource_explorer.surveyors.database import connection
+
+    where = f"{host}:{port}/{database_name}"
+    if not user or not password:
+        return {"status": "error", "sentence":
+                f"Not registered: a user and a password are both required to test the connection to {where}."}
+    entity = DatabaseEntity(slug="_probe", display_name="_probe", db_type=db_type or "postgresql",
+                            host=host, port=int(port), database_name=database_name)
+    try:
+        with connection.database_connection(
+            entity, {"user": user, "password": password},
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+        ) as conn:
+            who = (conn.execute_query("SELECT current_user AS who") or [{}])[0].get("who") or user
+            n = (conn.execute_query(
+                "SELECT count(*) AS n FROM information_schema.tables "
+                "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')") or [{}])[0].get("n")
+        return {"status": "ok", "sentence": scrub(
+            f"Connected to {where} as {who} · {n} table(s) readable with this credential.", password)}
+    except Exception as exc:  # driver errors; classified below
+        msg = " ".join(scrub(str(exc), password).split())
+        if "FATAL" in msg or "authentication" in msg.lower():
+            return {"status": "error", "sentence":
+                    f"Not registered: the server at {host}:{port} refused this credential ({msg})"}
+        return {"status": "error", "sentence":
+                f"Not registered: could not reach {host}:{port} ({msg})"}

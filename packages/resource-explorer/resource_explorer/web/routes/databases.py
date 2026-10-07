@@ -122,6 +122,16 @@ class DatabaseRegistration(BaseModel):
     group_slug: str = ""
 
 
+class ConnectionTestRequest(BaseModel):
+    """Body of the register form's "Test connection". Nothing is stored."""
+    host: str
+    port: int = 5432
+    database_name: str
+    db_type: str = "postgresql"
+    db_user: str = ""
+    db_password: str = ""
+
+
 class DatabaseCredentialsUpdate(BaseModel):
     """Request body for updating a registered database's stored credentials."""
     db_user: str = ""
@@ -447,6 +457,22 @@ async def get_database_questions(
     )
 
 
+@router.post("/_test-connection")
+async def test_database_connection_before_register(req: ConnectionTestRequest) -> dict:
+    """Parity G2 / PI-015: the "Test connection" of test-then-register.
+
+    Connects with the typed credential (short timeout, off the event loop) and
+    answers with one sentence. Registers nothing, writes no row, logs no
+    credential; a refusal is a 200 whose status is "error", the same shape as
+    `/api/db-servers/_test-inline`, so the form shows the sentence either way.
+    """
+    from resource_explorer.credential_check import probe_database_connection
+
+    return await asyncio.to_thread(
+        probe_database_connection, req.db_type, req.host, req.port,
+        req.database_name, req.db_user, req.db_password)
+
+
 @router.post("/register", response_model=DatabaseSummary)
 async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     """Register a new database."""
@@ -487,9 +513,59 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     # Register in registry
     registry.register_database(database)
 
+    # One proof row naming who and when (PI-015's "saved · you · just now"
+    # reads it back). The summary carries the slug only: no credential, no
+    # user name, no host.
+    import uuid
+    from datetime import datetime, timezone
+
+    from resource_explorer.registry import ActivityEntry, current_user_id
+
+    registry.write_activity(ActivityEntry(
+        id=str(uuid.uuid4()), ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        operation="register", intent="discovery", entity_type="database",
+        entity_slug=req.slug, entity_name=req.display_name, status="ok",
+        summary=f"Registered database {req.slug}", detail=current_user_id() or "",
+    ))
+
     _project_credential_to_omsecrets(req.slug, req.db_user, req.db_password)
 
     return _to_summary(database)
+
+
+@router.get("/{slug}/registration")
+async def get_database_registration(slug: str) -> dict:
+    """Who registered this database and when, read back from its registration
+    row. `registered_by` is "" when no registration row exists (a database
+    registered before rows were written, or by the CLI): unknown is said, not
+    guessed."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    database = registry.get_database(slug, allow_unreadable=True)
+    if not database:
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+    rows = registry.list_activity(
+        entity_type="database", entity_slug=database.slug, operation="register", limit=1)
+    return {
+        "slug": database.slug,
+        "registered_at": database.registered_at or "",
+        "registered_by": (rows[0].get("detail") or "") if rows else "",
+    }
+
+
+@router.get("/{slug}/credential-drift")
+async def get_database_credential_drift(slug: str) -> dict:
+    """The drift check, as the CLI's `check-credential-drift` prints it:
+    whether RE's registry and the `.omsecrets` file both hold this database's
+    secrets collection. Collection presence only, never a value. `in_sync` is
+    None (not False, not True) when no `.omsecrets` path is configured."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug, allow_unreadable=True):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+    return registry.check_credential_drift(slug)
 
 
 def _project_credential_to_omsecrets(slug: str, db_user: str, db_password: str) -> None:
