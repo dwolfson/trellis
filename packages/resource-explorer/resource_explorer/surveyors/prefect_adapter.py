@@ -38,6 +38,7 @@ import time
 from typing import Any, Awaitable, Callable
 from prefect.client.orchestration import PrefectClient
 from resource_explorer.config import DEFAULT_PREFECT_STEP_TIMEOUT_SECONDS, get_config
+from resource_explorer.credential_handoff import assert_no_credentials
 from resource_explorer.prefect.flows import run_surveyor_step_task
 
 log = logging.getLogger(__name__)
@@ -330,14 +331,18 @@ async def _run_prefect_step_api(
         # it through SurveyDefinitionExecutor.run()'s whole call chain is a
         # bigger change than this pass makes; slug+step is enough for "what's
         # running/stuck for resource X").
+        parameters = {
+            "entity_type": entity_type,
+            "slug": slug,
+            "step_name": step_name,
+            "runner_kwargs": runner_kwargs,
+        }
+        # Prefect persists these in its own database and shows them in its UI.
+        # A credential here is a bug somewhere upstream: fail loud, never send.
+        assert_no_credentials(parameters, where="Prefect flow-run parameters")
         flow_run = await client.create_flow_run_from_deployment(
             deployment_id=deployment.id,
-            parameters={
-                "entity_type": entity_type,
-                "slug": slug,
-                "step_name": step_name,
-                "runner_kwargs": runner_kwargs,
-            },
+            parameters=parameters,
             tags=[f"entity_type:{entity_type}", f"slug:{slug}", f"step:{step_name}"],
         )
         flow_run_id = str(flow_run.id)
@@ -381,6 +386,48 @@ async def _run_prefect_step_api(
             await sleep(poll_interval)
 
 
+def _in_process_step_flow() -> Callable[..., dict]:
+    """The flow an override-credential step runs as. One seam so tests can
+    substitute a fake that records every parameter it is given."""
+    from resource_explorer.prefect.flows import re_survey_step_in_process_flow
+
+    return re_survey_step_in_process_flow
+
+
+def _run_step_in_process_flow(
+    entity_type: str, slug: str, step_name: str, runner_kwargs: dict[str, Any],
+    credential_ref: str,
+) -> tuple[dict[str, Any], str]:
+    """Run one step as a Prefect flow INSIDE this process, so Prefect records
+    the run (state, logs, flow-run id) while the one-run credential stays in
+    RE's memory: the flow is handed `credential_ref`, an opaque reference to
+    it, and nothing else. A worker could not do this -- it is another process.
+
+    Raises RuntimeError when Prefect is unreachable, so `run_prefect_step`
+    degrades to its local path exactly as it does for the REST dispatch.
+    """
+    reachable, detail = check_prefect_reachable_sync()
+    if not reachable:
+        raise RuntimeError(f"Prefect API unreachable: {detail}")
+    parameters = {
+        "entity_type": entity_type, "slug": slug, "step_name": step_name,
+        "runner_kwargs": runner_kwargs, "credential_ref": credential_ref,
+    }
+    assert_no_credentials(parameters, where="Prefect flow-run parameters")
+    flow_fn = _in_process_step_flow()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        from resource_explorer.concurrency import run_sync
+
+        out = run_sync(lambda: flow_fn(**parameters))
+    else:
+        out = flow_fn(**parameters)
+    return (out.get("result") or {}), str(out.get("flow_run_id") or "")
+
+
 def run_prefect_step(
     entity_type: str,
     slug: str,
@@ -388,6 +435,7 @@ def run_prefect_step(
     runner_kwargs: dict[str, Any],
     *,
     dispatch_info: dict[str, Any] | None = None,
+    credential_ref: str = "",
 ) -> dict[str, Any]:
     """Dispatch step execution to Prefect, via its API when enabled, else in-process.
 
@@ -413,6 +461,12 @@ def run_prefect_step(
     integration. Optional and additive -- every existing caller/test that
     ignores it sees the same return value as before.
     """
+    # `runner_kwargs` crosses into Prefect: it must carry no credential. The
+    # stored credential is resolved by the step's own task from the registry;
+    # a one-run override travels only as `credential_ref` (see
+    # credential_handoff.py). Outside the try below on purpose -- the broad
+    # except there would turn this into a quiet local fallback.
+    assert_no_credentials(runner_kwargs, where="Prefect")
     config = get_config()
 
     def _fill(engine: str, flow_run_id: str = "", dispatch_failed: str = "") -> None:
@@ -430,7 +484,10 @@ def run_prefect_step(
             except RuntimeError:
                 loop = None
 
-            if loop and loop.is_running():
+            if credential_ref:
+                result, flow_run_id = _run_step_in_process_flow(
+                    entity_type, slug, step_name, runner_kwargs, credential_ref)
+            elif loop and loop.is_running():
                 # Already inside an event loop (a FastAPI request thread): asyncio.run
                 # cannot nest, so hand the coroutine to a worker thread with its own
                 # loop. This used to construct `ThreadPoolExecutor()` with NO
@@ -486,9 +543,11 @@ def run_prefect_step(
     # to call it from inside `re_survey_definition_flow` — see
     # prefect/flows.py) — this runs the step as a plain Python call, no
     # Prefect engine involved at all.
+    local_kwargs = {"credential_ref": credential_ref} if credential_ref else {}
     return run_surveyor_step_task.fn(
         entity_type=entity_type,
         slug=slug,
         step_name=step_name,
         runner_kwargs=runner_kwargs,
+        **local_kwargs,
     )

@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
+from resource_explorer import credential_handoff
+from resource_explorer.credential_handoff import split_credentials
 from resource_explorer.surveyors import result_status, step_cost_observer
 from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
@@ -500,12 +502,14 @@ class SurveyDefinitionExecutor:
         #: opt-in, a separate, deliberately-deferred cost tradeoff.
         engine_note = ""
         _attempt_prefect = (
-            not credential_scope        # an override credential never goes to Prefect
-            and _prefect_orchestration_enabled(engine_override)
+            _prefect_orchestration_enabled(engine_override)
             and _all_steps_prefect_runnable(survey_def)
             and not self._any_step_needs_prerequisites(adapter, entity, survey_def, surveyed_at)
         )
-        if _attempt_prefect and engine_override is None:
+        # An override credential can only reach a flow that runs in THIS
+        # process (credential_handoff.py), so such a run is always gated on
+        # reachability: an unreachable Prefect means the local loop, said so.
+        if _attempt_prefect and (engine_override is None or credential_scope):
             from resource_explorer.surveyors.prefect_adapter import (
                 check_prefect_reachable_sync,
             )
@@ -517,7 +521,7 @@ class SurveyDefinitionExecutor:
 
         if _attempt_prefect:
             planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs,
-                                            surveyed_at)
+                                            surveyed_at, credential_scope=credential_scope)
             if planned is not None:
                 steps_report, step_outputs, errors = planned
                 for _output in step_outputs:
@@ -758,22 +762,6 @@ class SurveyDefinitionExecutor:
                 # group of exactly 1 — fall through to the identical
                 # single-step path below, unchanged from before batching.
 
-            if use_prefect and credential_scope:
-                # Prefect keeps a flow run's parameters (in its own database,
-                # visible in its UI). A credential typed for this run must not
-                # be written anywhere, so a Prefect-bound step is not run with
-                # it: said in the step's row and counted as an unfinished run.
-                msg = (f"Step '{step.qualified_name}' was not run: this run's credentials "
-                       "are not sent to Prefect")
-                errors.append(msg)
-                steps_report.append({
-                    "step": step.qualified_name, "re_analysis_step": _step_key(step),
-                    "status": "not_run",
-                    "detail": "not run · this run's credentials are not sent to Prefect (they are never stored)",
-                })
-                i += 1
-                continue
-
             if use_prefect:
                 try:
                     # Measured like any other step (§17.2's `executor` axis is
@@ -798,16 +786,28 @@ class SurveyDefinitionExecutor:
                     # `_record_cost` persists the row.
                     _pf_info = self._step_info(adapter, step.re_analysis_step)
                     _pf_dispatch: dict = {}
+                    # Never hand Prefect a password. The stored credential is
+                    # resolved by the step's own task from the registry; a
+                    # one-run override is kept in this process's memory and
+                    # only its opaque reference is passed (credential_handoff).
+                    _pf_kwargs, _pf_override = split_credentials(
+                        entity, runner_kwargs, credential_scope)
+                    _pf_ref = credential_handoff.put(*_pf_override) if _pf_override else ""
+                    _pf_extra = {"credential_ref": _pf_ref} if _pf_ref else {}
                     with step_cost_observer.observe(
                         step.re_analysis_step,
                         getattr(_pf_info, "fetch_cost", ""),
                         getattr(_pf_info, "compute_cost", ""),
                         executor="local", source="local",
                     ) as _pf_observed:
-                        output = run_prefect_step(
-                            entity_type, entity.slug, step.re_analysis_step,
-                            runner_kwargs, dispatch_info=_pf_dispatch,
-                        )
+                        try:
+                            output = run_prefect_step(
+                                entity_type, entity.slug, step.re_analysis_step,
+                                _pf_kwargs, dispatch_info=_pf_dispatch, **_pf_extra,
+                            )
+                        finally:
+                            if _pf_ref:
+                                credential_handoff.revoke(_pf_ref)
                     _pf_engine = _pf_dispatch.get("engine", "local")
                     _pf_dispatch_failed = _pf_dispatch.get("dispatch_failed", "")
                     if _pf_observed:
@@ -1455,7 +1455,7 @@ class SurveyDefinitionExecutor:
         )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs,
-                         surveyed_at: str = ""):
+                         surveyed_at: str = "", credential_scope: str = ""):
         """(steps_report, step_outputs, errors) from one Prefect flow, or None.
 
         Returns None rather than raising when the plan cannot be built or
@@ -1546,19 +1546,35 @@ class SurveyDefinitionExecutor:
 
         if not plan.steps:
             return None
+        # Flow-run parameters are persisted by Prefect: strip every credential
+        # from them. Stored -> the step tasks resolve it from the registry;
+        # override -> only an opaque reference to this process's memory (the
+        # flow is called in-process, so its tasks can read it back).
+        flow_kwargs, override = split_credentials(entity, runner_kwargs, credential_scope)
+        ref = credential_handoff.put(*override) if override else ""
         try:
             from resource_explorer.prefect.flows import re_survey_definition_flow
 
-            report = re_survey_definition_flow(
+            flow_params = dict(
                 entity_type=entity_type, slug=entity.slug,
-                plan=serialise(plan), runner_kwargs=runner_kwargs or {},
+                plan=serialise(plan), runner_kwargs=flow_kwargs,
                 surveyed_at=surveyed_at,
             )
+            if ref:
+                flow_params["credential_ref"] = ref
+            credential_handoff.assert_no_credentials(
+                flow_params, where="Prefect flow-run parameters")
+            report = re_survey_definition_flow(**flow_params)
+        except credential_handoff.CredentialLeakError:
+            raise
         except Exception as exc:
             log.warning(
                 "Prefect orchestration unavailable for %s (%s) — falling back to "
                 "in-process sequencing", survey_def.qualified_name, exc)
             return None
+        finally:
+            if ref:
+                credential_handoff.revoke(ref)
 
         return (
             [{k: v for k, v in entry.items() if k != "output"} for entry in report],

@@ -19,8 +19,22 @@ def run_surveyor_step_task(
     slug: str,
     step_name: str,
     runner_kwargs: dict[str, Any],
+    credential_ref: str = "",
 ) -> dict[str, Any]:
-    """Execute a single surveyor analysis step inside a Prefect task."""
+    """Execute a single surveyor analysis step inside a Prefect task.
+
+    Database credentials are never a parameter of this task or of any flow
+    that calls it (Prefect persists parameters). They are resolved HERE, where
+    the step runs: the stored ones from the registry row, or -- for a one-run
+    override running in this same process -- the one `credential_ref` points
+    at (resource_explorer/credential_handoff.py). They live in local variables
+    only, are kept out of log lines, and are scrubbed from the returned output
+    (which a flow may persist).
+    """
+    from resource_explorer.credential_handoff import resolve_credentials
+    from resource_explorer.secret_redaction import redacting_logs, scrub
+    from resource_explorer.surveyors.survey_definition_executor import _redactable
+
     registry = ProjectRegistry()
     adapter = get_adapter(entity_type)
     if not adapter:
@@ -30,6 +44,23 @@ def run_surveyor_step_task(
     if not entity:
         raise ValueError(f"Entity '{slug}' of type '{entity_type}' not found in registry")
 
+    user, pwd = resolve_credentials(entity, credential_ref)
+    secret = _redactable(pwd, "this run" if credential_ref else "")
+    with redacting_logs(secret):
+        try:
+            out = _run_step_with_credentials(
+                entity_type, adapter, entity, registry, step_name, runner_kwargs, user, pwd)
+        except Exception as exc:
+            if not secret:
+                raise
+            # A driver error can echo the password it was handed, and Prefect
+            # persists a failed run's message and traceback. Re-raise it
+            # scrubbed, with no chained original (`from None`).
+            raise RuntimeError(f"{type(exc).__name__}: {scrub(str(exc), secret)}") from None
+    return scrub(out, secret) if secret else out
+
+
+def _run_step_with_credentials(entity_type, adapter, entity, registry, step_name, runner_kwargs, user, pwd):
     # Dynamic routing for pre-integrated workflow quality analyzers
     if step_name == "soda_data_quality":
         if entity_type != "database":
@@ -39,8 +70,8 @@ def run_surveyor_step_task(
             host=entity.host,
             port=entity.port,
             database_name=entity.database_name,
-            db_user=entity.db_user,
-            db_password=entity.db_password,
+            db_user=user,
+            db_password=pwd,
             sodacl_yaml=runner_kwargs.get("sodacl_yaml", ""),
         )
     elif step_name == "great_expectations_validation":
@@ -51,8 +82,8 @@ def run_surveyor_step_task(
             host=entity.host,
             port=entity.port,
             database_name=entity.database_name,
-            db_user=entity.db_user,
-            db_password=entity.db_password,
+            db_user=user,
+            db_password=pwd,
             table_name=runner_kwargs.get("table_name", ""),
             expectation_suite=runner_kwargs.get("expectation_suite", {}),
         )
@@ -61,8 +92,15 @@ def run_surveyor_step_task(
     if not runner:
         raise ValueError(f"Analysis step '{step_name}' not supported for type '{entity_type}'")
 
-    # Run the surveyor step callback
-    result = runner(entity, registry, **runner_kwargs)
+    # Run the surveyor step callback. Inject the resolved credential the way
+    # the in-process executor always has: only when the entity carries one
+    # (repo / filesystem entities have none), and never over a value the
+    # caller put in `runner_kwargs` itself.
+    call_kwargs = dict(runner_kwargs)
+    if user or pwd:
+        call_kwargs.setdefault("db_user", user)
+        call_kwargs.setdefault("db_pwd", pwd)
+    result = runner(entity, registry, **call_kwargs)
     return result or {}
 
 
@@ -167,6 +205,31 @@ def re_survey_flow(
     )
 
 
+@flow(name="RE Survey Step (in process)", persist_result=False)
+def re_survey_step_in_process_flow(
+    entity_type: str,
+    slug: str,
+    step_name: str,
+    runner_kwargs: dict[str, Any],
+    credential_ref: str = "",
+) -> dict[str, Any]:
+    """One step as a flow that runs in RE's OWN process.
+
+    Used for a step that must connect with a credential typed for one run:
+    that credential lives only in this process's memory, so the flow can only
+    run here, and is handed the opaque `credential_ref`, never the password.
+    Prefect still records the run (state, logs, flow-run id). Returns the
+    step's output and this flow run's id.
+    """
+    result = run_surveyor_step_task(
+        entity_type=entity_type, slug=slug, step_name=step_name,
+        runner_kwargs=runner_kwargs, credential_ref=credential_ref,
+    )
+    from prefect.runtime import flow_run as _flow_run_ctx
+
+    return {"result": result, "flow_run_id": str(_flow_run_ctx.id or "")}
+
+
 # ── whole-survey orchestration ──────────────────────────────────────────────
 #
 # `re_survey_flow` above runs ONE step. It is a task wrapped in a flow, which
@@ -236,6 +299,7 @@ def run_planned_step_task(
     guarded_by: dict[str, str],
     satisfied_by_stored: dict[str, Any] | None = None,
     surveyed_at: str = "",
+    credential_ref: str = "",
 ) -> dict[str, Any]:
     """One planned step, plus the guard decision for its incoming edges.
 
@@ -285,6 +349,7 @@ def run_planned_step_task(
             output = run_surveyor_step_task.fn(
                 entity_type=entity_type, slug=slug, step_name=step_key,
                 runner_kwargs=runner_kwargs,
+                **({"credential_ref": credential_ref} if credential_ref else {}),
             )
     except Exception as exc:
         return {"step_key": step_key, "step": qualified_name, "status": "error",
@@ -334,6 +399,7 @@ def re_survey_definition_flow(
     plan: list[dict[str, Any]],
     runner_kwargs: dict[str, Any] | None = None,
     surveyed_at: str = "",
+    credential_ref: str = "",
 ) -> list[dict[str, Any]]:
     """Run a whole Survey Definition, ordered by Prefect.
 
@@ -360,6 +426,7 @@ def re_survey_definition_flow(
             guarded_by=entry.get("guarded_by", {}) or {},
             satisfied_by_stored=entry.get("satisfied_by_stored", {}) or {},
             surveyed_at=surveyed_at,
+            credential_ref=credential_ref,
         )
     # Resolved in plan order so the report reads in the order authored, not the
     # order Prefect happened to finish them in.

@@ -265,37 +265,41 @@ def _prefect_world(registry):
 
 
 def test_an_override_credential_is_never_handed_to_prefect(registry):
+    """Superseded G2 interim ("not run"): the step now runs, and Prefect is
+    handed only an opaque reference. Exhaustive fake-Prefect coverage lives in
+    test_prefect_no_password_params.py."""
     seen = []
 
     def fake_prefect(entity_type, slug, step_key, runner_kwargs, dispatch_info=None, **kw):
-        seen.append(json.dumps(runner_kwargs, default=str))
+        seen.append(json.dumps([runner_kwargs, kw], default=str))
         return {"ok": True}
 
     ex = _prefect_world(registry)
     with patch("resource_explorer.surveyors.prefect_adapter.run_prefect_step", fake_prefect):
         res = ex.run("g2pf", "x", db_user="one_off_user", db_pwd=FAKE_PW, credential_scope="this run",
                      engine_override="resource-explorer")
-    assert seen == [], "the Prefect step must not be dispatched with an override credential"
+    assert len(seen) == 1 and FAKE_PW not in seen[0] and "one_off_user" not in seen[0]
+    assert '"credential_ref": "cred-' in seen[0]
     soda = next(s for s in res["steps"] if s["step"] == "Step::Soda")
-    assert soda["status"] == "not_run"
-    assert soda["detail"] == "not run · this run's credentials are not sent to Prefect (they are never stored)"
-    assert any("Step::Soda" in e for e in res["errors"]), "an incomplete run says so"
+    assert soda["status"] == "ok"
     local = next(s for s in res["steps"] if s["step"] == "Step::Local")
     assert local["status"] == "ok"
     assert FAKE_PW not in json.dumps(res) and FAKE_PW not in _everything(registry)
 
 
-def test_a_stored_credential_run_still_dispatches_to_prefect_unchanged(registry):
+def test_a_stored_credential_run_still_dispatches_to_prefect_without_the_password(registry):
     seen = []
 
     def fake_prefect(entity_type, slug, step_key, runner_kwargs, dispatch_info=None, **kw):
-        seen.append(runner_kwargs)
+        seen.append((runner_kwargs, kw))
         return {"ok": True}
 
     ex = _prefect_world(registry)
     with patch("resource_explorer.surveyors.prefect_adapter.run_prefect_step", fake_prefect):
         res = ex.run("g2pf", "x", engine_override="resource-explorer")   # no whole-definition Prefect in a test
-    assert len(seen) == 1 and seen[0]["db_user"] == "stored_user"
+    assert len(seen) == 1
+    kwargs, extra = seen[0]
+    assert "db_user" not in kwargs and "db_pwd" not in kwargs and extra == {}
     assert next(s for s in res["steps"] if s["step"] == "Step::Soda")["status"] == "ok"
 
 
