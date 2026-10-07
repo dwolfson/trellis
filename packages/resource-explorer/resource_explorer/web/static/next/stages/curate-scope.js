@@ -30,6 +30,7 @@ import {
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
 import { glyphSpan } from '/static/next/glyphs.js';
+import { SCOPE_COLS, MANIFEST_COLS } from '/static/next/stages/scope-columns.js';
 import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize } from '/static/next/colresize.js';
 import { savedLine } from '/static/next/format.js';
 import {
@@ -362,21 +363,10 @@ function sizeCell(node) {
  * defaults live here (px); the person's own widths ride on CSS variables set on the tree host by
  * colresize.js, so a drag moves every row without a re-draw. "Schema / table" is the flexible
  * column: it takes what the others leave. */
-export const SCOPE_COLS = {
-  id: 'curate-scope-tree', chrome: 80,
-  columns: [
-    { key: 'sel', def: 24, min: 24, resizable: false },
-    { key: 'choice', def: 200, min: 90 },
-    { key: 'name', def: 280, min: 120, align: 'left' },
-    { key: 'rows', def: 84, min: 48 },
-    { key: 'size', def: 84, min: 48 },
-    { key: 'act', def: 150, min: 70 },
-    { key: 'cls', def: 150, min: 70 },
-    { key: 'egeria', def: 240, min: 90 },
-  ],
-};
+export { SCOPE_COLS };
 const INDENT_PX = 13.8;   // the s3 indent a table row sits under its schema; its name cell gives that much back
 const cs = (key, offset = 0) => cellStyle(SCOPE_COLS, key, offset);
+const ms = (key) => cellStyle(MANIFEST_COLS, key);
 function rowHtml(node, me, depth, kindWord, commit, open = false) {
   const isSchema = node.kind === 'schema';
   const key = isSchema ? `schema:${node.name}` : `table:${node.schema}.${node.name}`;
@@ -652,7 +642,7 @@ export function commitStepsHtml(rec) {
 
 /** The manifest as a short table, one row per mechanism: what, how many, when. The long sentences
  *  sit behind "details" on the row they qualify. */
-function manifestTableHtml(preview, view) {
+function manifestTableHtml(preview, view, notes = '') {
   const m = preview.manifest || {};
   const line = (id) => (m.lines || []).find((l) => l.id === id);
   const detail = (...ids) => ids.map((id) => { const l = line(id); return l ? `<span data-scope-manifest-line="${esc(id)}" class="block">${l.mechanism ? `${l.mechanism}. ` : ''}${esc(l.text)}</span>` : ''; }).join('');
@@ -661,19 +651,23 @@ function manifestTableHtml(preview, view) {
   const c = (view && view.counts) || {};
   const names = (xs) => (xs.length ? ` · ${xs.slice(0, 4).map(esc).join(', ')}${xs.length > 4 ? ` +${xs.length - 4}` : ''}` : '');
   const forms = (r) => (r.form === 'soft_delete' ? 'will delete' : r.form === 'archive' ? 'will archive' : r.form === 'cannot_check' ? 'not committed' : r.form === 'in_use' ? 'not committed' : 'nothing to change');
-  const row = (id, who, what, howMany, when, more = '') => `<div role="row" data-scope-manifest-row="${id}" class="flex items-baseline gap-s2 text-ink">
-    <div role="cell" class="w-[14ch] shrink-0 font-semibold">${who}</div>
-    <div role="cell" class="min-w-[18ch] flex-1">${what}${more ? ` <details data-scope-details class="inline text-provenance text-ink-muted"><summary class="inline cursor-pointer">details</summary>${more}</details>` : ''}</div>
-    <div role="cell" class="w-[24ch] shrink-0 tnum">${howMany}</div><div role="cell" class="w-[22ch] shrink-0 text-ink-muted">${when}</div></div>`;
+  const row = (id, who, what, howMany, when, more = '') => `<div role="row" data-scope-manifest-row="${id}" class="flex items-start gap-s2 text-ink">
+    <div role="cell" class="break-words font-semibold" style="${ms('who')}">${who}</div>
+    <div role="cell" class="break-words" style="${ms('what')}">${what}${more ? `<details data-scope-details class="block text-provenance text-ink-muted"><summary class="inline cursor-pointer">details</summary>${more}</details>` : ''}</div>
+    <div role="cell" class="tnum break-words" style="${ms('many')}">${howMany}</div><div role="cell" class="break-words text-ink-muted" style="${ms('when')}">${when}</div></div>`;
+  const hc = (key, label) => `<div role="columnheader" class="shrink-0" style="${ms(key)};${headCellStyle(MANIFEST_COLS, key)}" title="${esc(label || key)}">${esc(label)}${handleHtml(MANIFEST_COLS, key, label || 'row label')}</div>`;
+  // notes under the rows, inside the table: one full-width cell each
+  const noted = (html) => (notes ? `<div role="row" data-scope-manifest-notes class="mt-[3px] border-t border-rule pt-[3px]"><div role="cell" class="break-words">${notes}</div></div>` : '');
   const leaveHow = leave.length ? `${leave.length}${names(leave.map((r) => r.schema))} · ${[...new Set(leave.map(forms))].join(', ')}` : '0';
-  return `<div data-scope-manifest role="table" aria-label="What this commit does" class="text-caveat">
-    <div role="row" class="flex items-baseline gap-s2 text-provenance text-ink-muted"><div role="columnheader" class="w-[14ch] shrink-0"></div><div role="columnheader" class="min-w-[18ch] flex-1">what</div><div role="columnheader" class="w-[24ch] shrink-0">how many</div><div role="columnheader" class="w-[22ch] shrink-0">when</div></div>
+  return `<div data-scope-manifest-host class="min-w-0 max-w-full overflow-x-auto"><div data-scope-manifest role="table" aria-label="What this commit does" class="text-caveat" style="${innerStyle(MANIFEST_COLS)}">
+    <div role="row" class="flex items-start gap-s2 text-provenance text-ink-muted">${hc('who', '')}${hc('what', 'what')}${hc('many', 'how many')}${hc('when', 'when')}</div>
     ${row('publishes', 'RE publishes', 'the server and database', '2 elements', 'now', detail('re_publishes', 'survey_report_whole'))}
     ${row('catalogs', 'Egeria catalogs', 'your included schemas', `${attach.length}${names(attach)}`, 'next refresh (or now, if ticked)', detail('cataloguer_creates', 'whole_schemas'))}
     ${row('surveys', 'Egeria surveys', 'the same schemas', `${((preview.survey || {}).schemas || []).length}`, 'after attach', detail('survey_measures'))}
     ${row('left_out', 'Left out', leave.length ? 'what changes in Egeria' : 'nothing in Egeria to change', leaveHow, leave.length ? 'at this commit' : '—')}
     ${row('undecided', 'Undecided', 'Egeria stays as it is', `${c.schemas_undecided ?? 0}`, '—')}
-  </div>`;
+    ${noted()}
+  </div></div>`;
 }
 
 /** How a commit read from the registry is shown on load: `full` (its steps, and a watch while it runs) when it is not
@@ -710,14 +704,14 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
   const off = !!reason;
   const sent = ui && ui.polling ? '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>' : '';
   return `<div data-scope-commit-panel>
-    <div class="mb-s1 text-answer text-ink">What this commit does</div>
+    <div class="mb-s1 flex flex-wrap items-baseline gap-s3"><span class="text-answer text-ink">What this commit does</span><button type="button" data-rc-reset-commit disabled class="opacity-60 text-ink-muted bg-transparent p-0 text-caveat" title="Put every column back to its default width">reset widths</button></div>
     <div class="flex flex-wrap items-start justify-between gap-s3">
-      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view)}${refused}${leave}</div>
-      <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1">
+      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, refused + leave)}</div>
+      <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
         <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
         ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
         ${collisions}${blockers}
-        <label class="flex cursor-pointer items-baseline gap-[4px] text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
+        <label class="flex cursor-pointer items-start gap-[4px] text-right text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
       </div>
     </div>
     ${sent}
@@ -726,6 +720,22 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
     <div class="mt-s1 text-caveat"><button type="button" data-scope-read-back ${me ? '' : dis(signInReason)} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Read Egeria again</button></div>
     <div data-scope-commit-status class="mt-s1 text-provenance text-ink-muted"></div>
   </div>`;
+}
+
+/** Column widths of the commit table: wired on the table's own scroll host, which is new with
+ *  every panel draw; the "reset widths" button next to the title is live only once a width changed. */
+function bindManifestResize(host) {
+  const mh = host.querySelector('[data-scope-manifest-host]');
+  const btn = host.querySelector('[data-rc-reset-commit]');
+  if (!mh) return;
+  const paint = (custom) => {
+    if (!btn) return;
+    btn.disabled = !custom;
+    btn.className = `${custom ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0 text-caveat`;
+  };
+  const api = attachColumnResize(mh, MANIFEST_COLS, { onChange: paint });
+  paint(api.isCustom());
+  if (btn) btn.addEventListener('click', () => api.reset());
 }
 
 /** Why the commit button is off, in the words a person needs ('' when it is on). */
@@ -782,6 +792,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     }
   }
   host.innerHTML = commitPanelHtml(preview, me, commitUi && commitUi.slug === slug ? commitUi : null, declared, getView());
+  bindManifestResize(host);
   const say = (msg, warn = false) => {
     const e = host.querySelector('[data-scope-commit-status]');
     if (!e) return;
