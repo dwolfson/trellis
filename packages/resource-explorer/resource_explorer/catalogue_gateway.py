@@ -739,10 +739,16 @@ class PyegeriaCatalogueGateway:
 
     def remove_catalog_target(self, relationship_guid: str) -> None:
         body = {"class": "DeleteRelationshipRequestBody", "forLineage": True, "forDuplicateProcessing": True}
+        flags = "forLineage=True forDuplicateProcessing=True"
+        log.info("egeria write BEFORE: remove_catalog_target relationship=%s type=CatalogTarget flags: %s",
+                 relationship_guid, flags)
         try:
             self._client("AssetMaker").remove_catalog_target(relationship_guid, body)
         except Exception as exc:
+            log.warning("egeria write AFTER: remove_catalog_target relationship=%s outcome=failed: %s",
+                        relationship_guid, _short(exc))
             raise GatewayError(_short(exc)) from exc
+        log.info("egeria write AFTER: remove_catalog_target relationship=%s outcome=ok", relationship_guid)
 
     # -- reads under a schema ---------------------------------------------
 
@@ -774,15 +780,20 @@ class PyegeriaCatalogueGateway:
         """One element, never a cascade. An archive is the delete endpoint with
         ARCHIVE and forLineage and forDuplicateProcessing true (the archive
         endpoint answers 500 on this build)."""
-        if issue_117_blocked():
-            raise GatewayError(ISSUE_117_WORDS)          # before any client is built: nothing is sent
         method = "ARCHIVE" if form == ARCHIVE else "SOFT_DELETE"
+        flags = "deleteMethod=%s forLineage=True forDuplicateProcessing=True cascade_delete=False" % method
+        if issue_117_blocked():
+            log.warning("egeria write refused by ISSUE-117 block: %s element=%s flags: %s", method, guid, flags)
+            raise GatewayError(ISSUE_117_WORDS)          # before any client is built: nothing is sent
         body = {"class": "DeleteElementRequestBody", "deleteMethod": method,
                 "forLineage": True, "forDuplicateProcessing": True}
+        log.info("egeria write BEFORE: %s element=%s flags: %s", method, guid, flags)
         try:
             self._client("MetadataExpert").delete_metadata_element(guid, body, cascade_delete=False)
         except Exception as exc:
+            log.warning("egeria write AFTER: %s element=%s outcome=failed: %s", method, guid, _short(exc))
             raise GatewayError(_short(exc)) from exc
+        log.info("egeria write AFTER: %s element=%s outcome=ok", method, guid)
 
     # -- survey and connector ---------------------------------------------
 
