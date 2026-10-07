@@ -19,6 +19,7 @@ import {
 } from '/static/re-api.js';
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
+  renderRulesBlock,
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import {
@@ -253,6 +254,8 @@ export async function renderCurate(slug) {
     // than firing it and reporting whatever 404 comes back.
     host.innerHTML = nonRepoCurateHtml(entityType);
     if (entityType === 'database') {
+      // PI-041: the read-only rules block under the glossary section; it fails inside itself.
+      bands.push(renderRulesBlock(host.querySelector('[data-curate-rules]')));
       // Band 2's first section: what gets catalogued. A failure says so in
       // its own slot (renderCatalogueScope), never takes the pane down.
       bands.push(renderCatalogueScope(host.querySelector('[data-curate-scope]'), slug)

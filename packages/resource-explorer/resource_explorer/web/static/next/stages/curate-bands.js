@@ -27,7 +27,7 @@ import { ago, savedLine } from '/static/next/format.js';
 import {
   getCurateTagsDetail, getCurateAllTags, addCurateTag, removeCurateTag,
   getCurateFeedback, addCurateFeedback, getCurateNotes, deleteCurateNote,
-  assignGroup, listGroups,
+  assignGroup, listGroups, getDataClassRules,
 } from '/static/re-api.js';
 import {
   state, esc, tnum, refreshGroupsAndSidebar,
@@ -79,9 +79,58 @@ export function databaseScopeHtml() {
 }
 
 export function databaseWorkHtml() {
+  // The rules block sits INSIDE the glossary (term) section, not beside it: the section order the
+  // stage pins (scope, glossary, schema-match) is unchanged.
   return databaseScopeHtml() + DB_WORK_SECTIONS.map((s) => `<div data-curate-work="${s.id}" class="mb-s2">
     <div class="text-answer text-ink">${esc(s.title)}</div>
-    <div class="text-caveat text-ink-muted">${esc(s.waits)}</div></div>`).join('');
+    <div class="text-caveat text-ink-muted">${esc(s.waits)}</div>${s.id === 'glossary' ? rulesBlockShellHtml() : ''}</div>`).join('');
+}
+
+/* ── PI-041: "Rules Egeria applies", read-only ───────────────────────────
+ * Lists the data-class rules the server reads (`GET /api/egeria/rules/dataclasses`). That route
+ * answers per rule with its own `source`: "Egeria (Active)" when the keywords were read from
+ * Egeria's valid values, "Local Fallback" when the server used RE's built-in keyword list. Only the
+ * first kind is called Egeria's; the second is shown apart, labelled as not read from Egeria, so the
+ * block never claims a rule Egeria did not give. When nothing came from Egeria the block says "no
+ * reader yet". It has no control and writes nothing. */
+export function rulesBlockShellHtml() {
+  return `<div data-curate-rules class="mt-s2 min-w-0">
+    <div class="text-caveat text-ink">Rules Egeria applies</div>
+    <div data-rules-body class="text-caveat text-ink-muted">Reading the data-class rules…</div></div>`;
+}
+
+const ruleRow = (r) => `<div data-rule="${esc(r.name)}" class="mt-[2px]">
+  <span class="font-semibold text-ink">${esc(r.display_name || r.name)}</span>
+  <span class="text-ink-muted"> — ${esc(r.description || '')}</span>
+  <div class="text-provenance text-ink-muted">keywords: <span class="font-mono">${(r.keywords || []).map(esc).join(', ') || 'none'}</span></div></div>`;
+
+/** The block's body from the route's answer (`rules`) or its failure (`error`). Pure. */
+export function rulesBodyHtml(rules, error = '') {
+  if (error) {
+    return `<div data-rules-state="no_reader" class="text-caveat text-ink">no reader yet — the data-class rules could not be read: ${esc(error)}</div>`;
+  }
+  const list = Array.isArray(rules) ? rules : [];
+  const fromEgeria = list.filter((r) => /^egeria/i.test(String(r.source || '')));
+  const builtIn = list.filter((r) => !/^egeria/i.test(String(r.source || '')));
+  const local = builtIn.length
+    ? `<details data-rules-local class="mt-[2px]"><summary class="cursor-pointer text-provenance text-accent-ink underline">RE's built-in keyword list, not read from Egeria (${builtIn.length})</summary>${builtIn.map(ruleRow).join('')}</details>`
+    : '';
+  if (!fromEgeria.length) {
+    return `<div data-rules-state="no_reader" class="text-caveat text-ink">no reader yet — Egeria's own data-class rules were not read${
+      list.length ? `; the server answered only RE's built-in keyword list (${list.length} rules)` : '; the server answered no rules'}.</div>${local}`;
+  }
+  return `<div data-rules-state="read" data-rules-egeria>${fromEgeria.map(ruleRow).join('')}</div>${local}`;
+}
+
+/** Fill the block. A failure says so in the block; it never throws into the pane. */
+export async function renderRulesBlock(slot) {
+  if (!slot) return;
+  const body = slot.querySelector('[data-rules-body]');
+  try {
+    body.innerHTML = rulesBodyHtml(await getDataClassRules());
+  } catch (err) {
+    if (slot.isConnected) body.innerHTML = rulesBodyHtml(null, err.message);
+  }
 }
 
 export const FILESYSTEM_WORK_SENTENCE =

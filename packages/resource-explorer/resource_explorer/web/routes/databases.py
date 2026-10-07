@@ -928,7 +928,8 @@ async def remove_database(slug: str) -> dict:
 
 
 @router.get("/{slug}/surveys")
-async def get_database_surveys(slug: str, include_invalid: bool = False) -> list[dict]:
+async def get_database_surveys(slug: str, include_invalid: bool = False,
+                               slim: bool = False) -> list[dict]:
     """Get survey history for a database.
 
     Rows marked invalid (false-zero repair, `invalid_at` / `invalid_reason`) are
@@ -942,7 +943,52 @@ async def get_database_surveys(slug: str, include_invalid: bool = False) -> list
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
+    if slim:
+        # `slim=true`: dates, counts, source and invalid marks without the
+        # `survey_data` blob (the /next history table reads nothing from it).
+        rows = registry.get_database_surveys(
+            slug, include_invalid=include_invalid, with_survey_data=False)
+        return [{k: v for k, v in r.items() if k != "survey_data"} for r in rows]
     return registry.get_database_surveys(slug, include_invalid=include_invalid)
+
+
+@router.get("/{slug}/views")
+async def get_database_views(slug: str) -> dict:
+    """The views of the latest valid survey, read-only (PI-040).
+
+    `state` is `measured` (the survey carries a `views` list, possibly empty),
+    `not_measured` (it carries none, or the stored blob cannot be read: the
+    reason says which) or `never_surveyed`. An empty list is only ever the
+    first of these, so "no views" is never confused with "views not looked at".
+    """
+    import json as _json
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug, allow_unreadable=True):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+    row = registry.get_latest_database_survey(slug)
+    if not row:
+        return {"state": "never_surveyed", "run": None, "views": [],
+                "reason": "no survey has run for this database"}
+    run = {"surveyed_at": row.get("surveyed_at"), "source": row.get("source")}
+    try:
+        blob = _json.loads(row.get("survey_data") or "{}")
+    except (TypeError, ValueError):
+        return {"state": "not_measured", "run": run, "views": [],
+                "reason": "the stored survey could not be read"}
+    views = blob.get("views") if isinstance(blob, dict) else None
+    if not isinstance(views, list):
+        return {"state": "not_measured", "run": run, "views": [],
+                "reason": "this survey did not run the sql_analysis step, so views were not analyzed"}
+    return {"state": "measured", "run": run, "reason": "", "views": [
+        {"schema": v.get("schema") or v.get("schema_name") or "",
+         "name": v.get("name") or v.get("view_name") or "",
+         "definition": v.get("definition") or v.get("view_definition") or "",
+         "dependencies": v.get("dependencies") or v.get("depends_on") or [],
+         "complexity": v.get("complexity") if isinstance(v.get("complexity"), dict) else {},
+         "lineage": v.get("lineage") if isinstance(v.get("lineage"), dict) else {}}
+        for v in views if isinstance(v, dict)]}
 
 
 @router.get("/{slug}/egeria-surveys", response_model=list[EgeriaSurveyReportRow])

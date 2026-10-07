@@ -106,6 +106,9 @@ P_ARCHIVED = "archived"
 #: archived element has been restored in Egeria: `element_guid` is the restored element, `detail["from_guid"]` the
 #: guid of the element it replaced, `detail["note"]` any free text (all in detail_json: no DDL).
 P_RESTORED = "restored"
+#: One row per destructive call RE sends (archive, soft delete, detach), written AFTER the call returns, is
+#: refused by the ISSUE-117 block, or raises. A record of a call, never of a state: NOT in STATE_PROOFS.
+P_DELETE_CALL = "delete_call"
 P_LEAVE_OUT_BLOCKED = "leave_out_blocked"   # a leave-out that was refused (ISSUE-117): kept, not sent
 KEPT_NOT_SENT = "kept, not sent · ISSUE-117 block"
 P_SURVEY = "survey_started"
@@ -872,6 +875,65 @@ def _proof(registry, slug: str, proof: str, *, schema: str = "", node_kind: str 
         slug, proof=proof, node_kind=node_kind, schema_name=schema, table_name=table, **kw)
 
 
+_NODE_KIND_OF_TYPE = {"RelationalTable": "table", "RelationalColumn": "column"}
+DELETE_OK, DELETE_REFUSED, DELETE_FAILED = "ok", "refused-by-block", "failed"
+
+
+def _send_destructive(registry, gateway, op: str, *, slug: str, schema: str, element_guid: str, typ: str = "",
+                      form: str = "", relationship_guid: str = "", qualified_name: str = "",
+                      curation_id: str = "", outbox_id: int | None = None, by: str = "") -> None:
+    """Send ONE destructive call (ARCHIVE / SOFT_DELETE through `delete_element`, or `remove_catalog_target`)
+    and record it: an INFO line before, a line after, and one `delete_call` proof row written after the call
+    returns, is refused by the ISSUE-117 block, or raises (the row is written, then the exception propagates).
+    The cascade of 2026-10-06 was invisible in RE's own record because none of this existed."""
+    method = "remove_catalog_target" if op == "remove_catalog_target" else ("ARCHIVE" if form == ARCHIVE else "SOFT_DELETE")
+    flags = ({"forLineage": True, "forDuplicateProcessing": True} if method == "remove_catalog_target" else
+             {"deleteMethod": method, "forLineage": True, "forDuplicateProcessing": True, "cascade_delete": False})
+    who = f"curation={curation_id or '-'} outbox={outbox_id if outbox_id is not None else '-'}"
+    what = (f"{method} element={element_guid} type={typ or 'unknown'} schema={schema}"
+            + (f" relationship={relationship_guid}" if relationship_guid else "") + f" flags={flags} {who}")
+    outcome, error = DELETE_OK, ""
+    blocked = method != "remove_catalog_target" and gw.issue_117_blocked()
+    if blocked:
+        outcome, error = DELETE_REFUSED, gw.ISSUE_117_WORDS
+        log.warning("destructive call refused by ISSUE-117 block: %s", what)
+    else:
+        log.info("destructive call BEFORE: %s", what)
+    raised: BaseException | None = None
+    if not blocked:
+        try:
+            if method == "remove_catalog_target":
+                gateway.remove_catalog_target(relationship_guid)
+            else:
+                gateway.delete_element(element_guid, form)
+        except BaseException as exc:                      # the row is written first, then this propagates
+            raised = exc
+            error = " ".join(str(exc).split())[:gw.MAX_EGERIA_TEXT] or type(exc).__name__
+            outcome = DELETE_REFUSED if error == gw.ISSUE_117_WORDS else DELETE_FAILED
+        if raised is None:
+            log.info("destructive call AFTER: %s outcome=ok", what)
+        else:
+            log.warning("destructive call AFTER: %s outcome=%s: %s", what, outcome, error)
+    detail = {"operation": method, "flags": flags, "outcome": outcome, "type": typ}
+    if relationship_guid:
+        detail["relationship_guid"] = relationship_guid
+    if error:
+        detail["error"] = error
+    try:
+        _proof(registry, slug, P_DELETE_CALL, schema=schema,
+               node_kind="schema" if method == "remove_catalog_target" else _NODE_KIND_OF_TYPE.get(typ, "schema"),
+               element_guid=element_guid, qualified_name=qualified_name, curation_id=curation_id,
+               outbox_id=outbox_id, recorded_by=by, detail=detail)
+    except Exception:
+        if raised is None and outcome == DELETE_OK:
+            raise                                          # the call went out and left no record: say so loudly
+        log.exception("could not record the delete_call row for %s", what)
+    if blocked:
+        raise GatewayError(gw.ISSUE_117_WORDS)
+    if raised is not None:
+        raise raised
+
+
 def _entity(registry, slug: str):
     e = registry.get_database(slug, allow_unreadable=True)
     if e is None:
@@ -1085,7 +1147,9 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
         raise GatewayError(f"{schema}: {gw.ISSUE_117_WORDS}")
     if guid:
         for t in [t for t in gateway.list_catalog_targets() if t.element_guid == guid]:
-            gateway.remove_catalog_target(t.relationship_guid)
+            _send_destructive(registry, gateway, "remove_catalog_target", slug=slug, schema=schema, element_guid=guid,
+                              typ="CatalogTarget", relationship_guid=t.relationship_guid, qualified_name=qn,
+                              curation_id=cid, outbox_id=outbox_id, by=payload.get("by", ""))
         if any(t.element_guid == guid for t in gateway.list_catalog_targets()):
             raise GatewayError(f"the target for {schema} is still in the cataloguer's list after removal")
         _proof(registry, slug, P_DETACHED, schema=schema, element_guid=guid, qualified_name=qn,
@@ -1110,9 +1174,10 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     # schema: tables, columns and the schema type are anchored to the database, so deleting the schema never cascades
     # them. Each is read back; the schema's own read-back is the proof row.
     order = list(read["delete_order"])
-    for g, _typ, mqn in order:
-        gateway.delete_element(g, form)
-    gateway.delete_element(guid, form)
+    send = dict(slug=slug, schema=schema, form=form, curation_id=cid, outbox_id=outbox_id, by=payload.get("by", ""))
+    for g, typ, mqn in order:
+        _send_destructive(registry, gateway, "delete", element_guid=g, typ=typ, qualified_name=mqn or "", **send)
+    _send_destructive(registry, gateway, "delete", element_guid=guid, typ="DeployedDatabaseSchema", qualified_name=qn, **send)
     for g, _typ, mqn in order:
         if mqn:
             _prove_gone(gateway, mqn, form, schema)

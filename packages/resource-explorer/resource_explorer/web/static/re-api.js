@@ -957,6 +957,42 @@ export const getDbChart = (slug, kind, params = {}) => {
 export const getDatabaseDiff = (slug) =>
   get(`/api/databases/${encodeURIComponent(slug)}/diff`);
 
+/** The survey history, invalid rows included (each with `invalid_at` and
+ *  `invalid_reason`), without the survey blobs. One fetch: the "show invalid"
+ *  toggle filters this list, it does not ask again. */
+export const getDatabaseSurveys = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/surveys?include_invalid=true&slim=true`);
+
+/** The views of the latest valid survey: `{state, run, views, reason}`. */
+export const getDatabaseViews = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/views`);
+
+/** A repository's two latest local survey runs compared; `{}` with fewer than two. */
+export const getRepoDiff = (slug) =>
+  get(`/api/egeria/${encodeURIComponent(slug)}/diff`);
+
+/** The data-class rules the server reads (Egeria's valid values, or its local
+ *  fallback, each rule carrying its own `source`). Read-only. */
+export const getDataClassRules = () => get('/api/egeria/rules/dataclasses');
+
+/** Mermaid source to SVG through the shared diagram route. Resolves to the SVG
+ *  text; rejects with the server's own sentence. */
+export async function renderMermaidSvg(source) {
+  let res;
+  try {
+    res = await fetch('/api/diagrams/mermaid', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ source }),
+    });
+  } catch (err) {
+    throw new Error(`the diagram service did not answer (${err.message})`);
+  }
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail || `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+  return res.text();
+}
+
 /* ── Surveys and dashboards ──────────────────────────────────────────── */
 
 /**

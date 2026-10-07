@@ -79,6 +79,7 @@ import { addActWording, addListToInvestigation, openStartFromList, START_LABEL }
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate } from '/static/next/stages/curate.js';
 import { inventoryHeaderText, nodeSourceLine, credentialLineText } from '/static/next/stages/scope-sources.js';
+import { surveySourceWord, threeNumberLine, fkTarget } from '/static/next/stages/db-report.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
 // candidate-selection/catalogue UI, attached to sub_resource_survey's own
 // row in the Survey & analyses list below (analysisIndexRowHtml /
@@ -3204,8 +3205,13 @@ export function resourceHeaderHtml(slug) {
       class="text-accent-ink underline">Project site ↗</a>`);
   }
 
+  // PI-030: the source word comes from the summary row's `last_survey_source`, which the server
+  // takes from the same latest valid survey row the Understanding history table lists first. A row
+  // with no source says nothing rather than guessing one.
+  const sourceWord = p?.last_surveyed_at ? surveySourceWord(p.last_survey_source) : '';
   const surveyed = p?.last_surveyed_at
-    ? `surveyed <span class="tnum">${esc(ago(p.last_surveyed_at))}</span>`
+    ? `surveyed <span class="tnum">${esc(ago(p.last_surveyed_at))}</span>${sourceWord
+      ? ` · <span data-survey-source>${esc(sourceWord)}</span>` : ''}`
     : 'never surveyed';
   const ov = state.overview?.slug === slug ? state.overview : null;
   let published = p?.is_published ? 'published to Egeria' : 'not published to Egeria';
@@ -3938,6 +3944,7 @@ async function loadSchemaInventoryPane() {
         class="absolute right-[6px] top-1/2 hidden -translate-y-1/2 cursor-pointer text-ink-muted hover:text-ink"
       >×</button>
     </div>
+    <div data-schema-counts class="mb-[2px] text-answer text-ink"></div>
     <div id="schema-tree-sources" data-schema-tree-sources class="mb-s2 text-provenance text-ink-muted"></div>
     <div id="schema-tree">Reading the schema tree…</div>`;
   bindSubTabs();
@@ -3955,6 +3962,8 @@ async function loadSchemaInventoryPane() {
   $('schema-tree').innerHTML = schemaTreeHtml(tree.schemas || []);
   const srcLine = $('schema-tree-sources');
   if (srcLine) srcLine.textContent = inventoryHeaderText(tree.sources);
+  const countsLine = el.querySelector('[data-schema-counts]');
+  if (countsLine) countsLine.textContent = threeNumberLine(tree);
   bindSchemaTreeFilter();
 }
 
@@ -4053,12 +4062,19 @@ export function tableHtml(t) {
       <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count == null ? 'columns not measured' : `${t.column_count} column(s)`}</span>
       ${tableSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(tableSrc)}</span>` : ''}
     </summary>
-    <table class="ml-s3 mt-[4px] w-full max-w-[70ch] border-collapse text-caveat">
+    <table class="ml-s3 mt-[4px] w-full max-w-[110ch] border-collapse text-caveat">
+      ${(t.columns || []).length ? `<thead><tr class="border-b border-rule text-provenance text-ink-muted">
+        <th class="py-[3px] pr-s2 text-left font-normal">Column</th><th class="py-[3px] pr-s2 text-left font-normal">Type</th>
+        <th class="py-[3px] pr-s2 text-left font-normal">Null</th><th class="py-[3px] pr-s2 text-left font-normal">Key</th>
+        <th class="py-[3px] pr-s2 text-left font-normal">Default</th><th class="py-[3px] pr-s2 text-left font-normal">References</th>
+        <th class="py-[3px] text-left font-normal">Comment</th></tr></thead>` : ''}
       ${(t.columns || []).map((c) => `<tr class="border-b border-rule" data-tree-node data-tree-text="${esc(c.name.toLowerCase())}">
         <td class="py-[3px] pr-s2 font-mono text-ink">${esc(c.name)}</td>
         <td class="py-[3px] pr-s2 text-ink-muted">${esc(c.type)}</td>
         <td class="py-[3px] pr-s2 text-ink-muted">${c.nullable === null ? 'nullable unknown' : (c.nullable ? 'nullable' : 'not null')}</td>
         <td class="py-[3px] pr-s2 text-accent-ink">${esc(c.key_role || '')}</td>
+        <td data-col-default class="py-[3px] pr-s2 font-mono text-ink-muted">${c.default ? esc(c.default) : '<span class="font-sans">none recorded</span>'}</td>
+        <td data-col-fk class="py-[3px] pr-s2 font-mono text-ink-muted">${fkTarget(c.foreign_key) ? `→ ${esc(fkTarget(c.foreign_key))}` : '—'}</td>
         <td class="py-[3px] text-ink-muted">${c.comment ? esc(c.comment) : 'comments not captured'}</td>
       </tr>`).join('')}
     </table>
