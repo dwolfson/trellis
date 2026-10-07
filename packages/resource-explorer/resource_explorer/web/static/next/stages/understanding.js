@@ -344,6 +344,48 @@ export function repoSinceLastRunHtml(diff) {
   return `Since the run of ${esc(since)}: ${esc(total)} · ${names.label}.${names.block}`;
 }
 
+/* ── Collapsible sections (project owner, 2026-10-07) ─────────────────────
+ * Every section on Understanding folds away behind its own heading. A visible cue (a chevron plus
+ * the word "hide" or "show") says which way it will go; the open or closed state is remembered per
+ * viewer in this browser only (localStorage, always inside try/catch), and the default is open. */
+const COLLAPSE_PREFIX = 're.understanding.collapsed.';
+const lsOrNull = () => { try { return window.localStorage; } catch { return null; } };
+export function readCollapsed(id, storage = lsOrNull()) {
+  try { return !!storage && storage.getItem(COLLAPSE_PREFIX + id) === '1'; } catch { return false; }
+}
+export function writeCollapsed(id, collapsed, storage = lsOrNull()) {
+  try {
+    if (!storage) return;
+    if (collapsed) storage.setItem(COLLAPSE_PREFIX + id, '1'); else storage.removeItem(COLLAPSE_PREFIX + id);
+  } catch { /* the viewer simply loses the memory */ }
+}
+const cueWords = (open) => (open
+  ? '<span class="font-glyph" aria-hidden="true">▾</span> <span data-collapse-word>hide</span>'
+  : '<span class="font-glyph" aria-hidden="true">▸</span> <span data-collapse-word>show</span>');
+
+/** A section that can fold. `headingHtml` is the title (an h3 or a plain span), `extraHtml` sits beside it,
+ *  `attrs` are extra attributes for the <details> (data hooks, and a literal class="..." so Tailwind sees it), `bodyHtml` is what folds. */
+export function collapsibleSectionHtml(id, headingHtml, extraHtml, bodyHtml, { attrs = '' } = {}) {
+  const open = !readCollapsed(id);
+  return `<details data-collapsible="${esc(id)}" ${attrs} ${open ? 'open' : ''}>
+    <summary class="flex cursor-pointer items-baseline gap-s2" title="Fold this section away or open it again">${headingHtml}${extraHtml || ''}
+      <span class="ml-auto shrink-0 text-caveat text-ink-muted" data-collapse-cue>${cueWords(open)}</span></summary>
+    ${bodyHtml}</details>`;
+}
+
+/** Wire every collapsible under `root`: the cue follows the state, and the state is remembered. */
+export function bindCollapsibles(root) {
+  root.querySelectorAll('details[data-collapsible]').forEach((d) => {
+    if (d.dataset.collapseBound) return;
+    d.dataset.collapseBound = '1';
+    d.addEventListener('toggle', () => {
+      const cue = d.querySelector(':scope > summary [data-collapse-cue]');
+      if (cue) cue.innerHTML = cueWords(d.open);
+      writeCollapsed(d.dataset.collapsible, !d.open);
+    });
+  });
+}
+
 /** Understanding on a database. Draws into `#understanding-host`; a missing
  *  host throws (the caller writes the message), it never returns silently. */
 export async function renderDatabaseUnderstanding(slug) {
@@ -354,21 +396,26 @@ export async function renderDatabaseUnderstanding(slug) {
 
   const slot = (c) => `<div data-slot="${c.kind}"></div>`;
   const grid = 'style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))"';
+  const h3 = (t) => `<h3 class="m-0 font-heading text-name font-normal">${t}</h3>`;
+  // Order: Now, Over time, Views, and the survey history LAST. Each folds.
   host.innerHTML = `
     <div id="chart-index" class="mb-s3 flex flex-wrap gap-s2" data-chart-index></div>
-    <section data-section="now">
-      <div class="flex items-baseline gap-s2"><h3 class="m-0 font-heading text-name font-normal">Now</h3>
-        <span class="text-caveat text-ink-muted" data-now-header>reading the latest survey…</span></div>
-      <div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'now').map(slot).join('')}</div>
-    </section>
-    <section data-section="time" class="mt-s6">
-      <div class="flex items-baseline gap-s2"><h3 class="m-0 font-heading text-name font-normal">Over time</h3>
-        <span class="text-caveat text-ink-muted" data-time-header></span></div>
-      ${sinceLastRunBannerHtml('Comparing the last two runs…')}
-      <div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'time').map(slot).join('')}</div>
-    </section>
-    <section data-survey-history class="mt-s6"><div class="text-caveat text-ink-muted">Reading the survey history…</div></section>
-    <section data-section-views class="mt-s6"><div class="text-caveat text-ink-muted">Reading the views…</div></section>`;
+    ${collapsibleSectionHtml('db-now', h3('Now'),
+    '<span class="text-caveat text-ink-muted" data-now-header>reading the latest survey…</span>',
+    `<div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'now').map(slot).join('')}</div>`,
+    { attrs: 'data-section="now"' })}
+    ${collapsibleSectionHtml('db-time', h3('Over time'),
+    '<span class="text-caveat text-ink-muted" data-time-header></span>',
+    `${sinceLastRunBannerHtml('Comparing the last two runs…')}
+      <div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'time').map(slot).join('')}</div>`,
+    { attrs: 'data-section="time" class="mt-s6"' })}
+    ${collapsibleSectionHtml('db-views', h3('Views'), '',
+    '<div data-views-body><div class="text-caveat text-ink-muted">Reading the views…</div></div>',
+    { attrs: 'data-section-views class="mt-s6"' })}
+    ${collapsibleSectionHtml('db-survey-history', h3('Survey history'), '',
+    '<div data-survey-history-body><div class="text-caveat text-ink-muted">Reading the survey history…</div></div>',
+    { attrs: 'data-survey-history class="mt-s6"' })}`;
+  bindCollapsibles(host);
   const cards = {};
   const chips = {};
   const chipsEl = host.querySelector('[data-chart-index]');
@@ -468,8 +515,8 @@ export async function renderDatabaseUnderstanding(slug) {
     ? `The comparison with the previous run could not be read: ${esc(diff.__error)}`
     : sinceLastRunHtml(diff);
 
-  drawSurveyHistory(host.querySelector('[data-survey-history]'), surveys);
-  drawViews(host.querySelector('[data-section-views]'), views);
+  drawSurveyHistory(host.querySelector('[data-survey-history-body]'), surveys);
+  drawViews(host.querySelector('[data-views-body]'), views);
 }
 
 /** PI-037: the survey history table and its "show invalid" toggle. The list was read once; the
@@ -480,9 +527,8 @@ function drawSurveyHistory(slot, rows) {
   const paint = () => {
     const show = readShowInvalid(storage());
     slot.innerHTML = rows && rows.__error
-      ? `<h3 class="m-0 font-heading text-name font-normal">Survey history</h3>
-         <div data-survey-history-unreadable class="text-caveat text-state-warn">The survey history could not be read: ${esc(rows.__error)}</div>`
-      : surveyHistoryHtml(rows, show);
+      ? `<div data-survey-history-unreadable class="text-caveat text-state-warn">The survey history could not be read: ${esc(rows.__error)}</div>`
+      : surveyHistoryHtml(rows, show, { heading: false });
     attachGrids(slot, () => historyCols(show && Array.isArray(rows) && rows.some((r) => r.invalid_at)));
     const box = slot.querySelector('[data-show-invalid]');
     if (box) {
@@ -499,7 +545,7 @@ function drawSurveyHistory(slot, rows) {
  *  while it draws, a second open does nothing. */
 function drawViews(slot, resp) {
   if (!slot) return;
-  slot.innerHTML = viewsSectionHtml(resp);
+  slot.innerHTML = viewsSectionHtml(resp, { heading: false });
   attachGrids(slot, () => VIEWS_COLS);
   const views = (resp && resp.views) || [];
   slot.querySelectorAll('[data-view-flow]').forEach((d) => {
@@ -546,11 +592,14 @@ export async function loadChartsPane() {
     </div>
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="my-s3 h-px bg-rule"></div>${entityType === 'repo'
-    ? `<div id="repo-diff-banner">${sinceLastRunBannerHtml('Comparing the last two runs…')}</div>
-    <div id="chart-index" class="flex flex-wrap gap-s2"></div>
-    <div id="chart-body" class="mt-s4"></div>`
+    ? `${collapsibleSectionHtml('repo-since', '<h3 class="m-0 font-heading text-name font-normal">Since the last run</h3>', '',
+      `<div id="repo-diff-banner">${sinceLastRunBannerHtml('Comparing the last two runs…')}</div>`)}
+    ${collapsibleSectionHtml('repo-charts', '<h3 class="m-0 font-heading text-name font-normal">Charts</h3>', '',
+      `<div id="chart-index" class="mt-s2 flex flex-wrap gap-s2"></div>
+    <div id="chart-body" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' })}`
     : '<div id="understanding-host"></div>'}`;
   bindResourceHeader();
+  bindCollapsibles(el);
 
   // A database has its own six charts (module section above); a file system
   // has none yet and says so. Neither goes through the repo probe.

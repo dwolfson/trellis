@@ -10,6 +10,7 @@
  * itself or from other functions in this module, so it stays unexported.
  */
 import { ago } from '/static/next/format.js';
+import { stateEntry } from '/static/next/glyphs.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import {
   getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
@@ -56,6 +57,11 @@ import {
 // `pick` marks the one column whose rows are confirmed one by one; the
 // others are counts whose members are reviewed, and the contained set is
 // taken whole (the checkbox under the manifest) -- the wireframe's shape.
+/** What pressing Catalog really does (workflows/curate_commit.py `_resurvey_plan` + `execute_curation`). */
+export const CATALOG_SENTENCE =
+  'Re-runs only the surveys that have run before and are now out of date (every survey the first time, none if all are fresh), '
+  + 'then publishes the survey report and what you ticked to Egeria. It does not publish an old survey unchecked.';
+
 const CURATE_COLUMNS = [
   { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalog', pick: true },
   { key: 'what_it_holds', title: "what's in it",    sub: 'each becomes its own asset, related to this one' },
@@ -113,12 +119,46 @@ function curateSectionHtml(id, title, extraHeader, inner) {
   </details>`;
 }
 
+/** A state cue: the glyph from the one glyph table plus a short word, the full sentence on
+ *  hover. The tone class is a literal in each branch (no class interpolation). */
+export function stateCue(stateKey, word, title = '') {
+  const e = stateEntry(stateKey);
+  const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
+    : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
+  return `${open} data-cue="${esc(stateKey)}" title="${esc(title || e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
+}
+
+/** What the mark at the left of a plan row means. It is NOT "accepted" or "published": the
+ *  plan is a local read of the survey (curate_plan.py), so `candidate` only says the survey found
+ *  something here that Catalog would create. A word in a bordered chip, not a check, so it cannot
+ *  be read as a done-state; the sentence is one hover away. */
+export function rowFoundChip(r) {
+  const found = !!r.candidate;
+  const word = found ? 'found' : (r.count === 0 ? 'none found' : 'info only');
+  const title = found
+    ? 'The survey found this. Pressing Catalog would create it in Egeria; nothing here has been accepted or published yet.'
+    : (r.count === 0 ? 'The survey looked and found none of this.' : 'Shown for information; Catalog creates nothing from this line.');
+  return `<span data-row-found="${found ? 'found' : 'none'}" title="${esc(title)}"
+    class="shrink-0 whitespace-nowrap rounded-sm border border-rule-strong px-2 text-provenance ${found ? 'text-ink' : 'text-ink-muted'}">${word}</span>`;
+}
+
+/** The mark beside a row's source analysis. A check here means ONLY that the analysis ran and measured
+ *  this (the survey step), never that anything was accepted or published, so the word says "surveyed". */
+export function sourceCue(r) {
+  const key = r.state;
+  const e = stateEntry(key);
+  const word = key === 'measured' ? 'surveyed' : e.word;
+  const title = key === 'measured'
+    ? `The ${r.source} survey step ran and measured this. That is all the mark means: nothing here is accepted or published yet.`
+    : `State of the ${r.source} survey step: ${e.word}.`;
+  return stateCue(key, word, title);
+}
+
 function curateRowHtml(r, selected, pick) {
-  const g = factGlyph(r.state);
   const mark = pick && r.candidate
     ? `<input type="checkbox" data-curate-pick="${esc(r.kind)}" ${selected ? 'checked' : ''}
          class="mt-[3px] shrink-0 cursor-pointer">`
-    : `<span class="w-[13px] shrink-0 text-center ${r.candidate ? 'text-ink' : 'text-ink-muted'}">${r.candidate ? '✓' : '·'}</span>`;
+    : rowFoundChip(r);
   const members = r.members?.analysis_id
     ? ` · <button type="button" data-curate-members="${esc(r.members.analysis_id)}" data-metric="${esc(r.members.metric || '')}"
           class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${r.count != null ? `review ${tnum(String(r.count))}` : 'members'} ›</button>`
@@ -128,9 +168,26 @@ function curateRowHtml(r, selected, pick) {
     <div class="min-w-0 flex-1">
       <div class="text-answer text-ink">${tnum(esc(r.label))}</div>
       <div class="text-provenance text-ink-muted">
-        <span class="${g.tone}">${g.glyph}</span> <span class="font-mono">${esc(r.source)}</span>
+        ${sourceCue(r)} <span class="font-mono">${esc(r.source)}</span>
         ${r.evidence ? ` · ${esc(r.evidence)}` : ''}${members}</div>
     </div>
+  </div>`;
+}
+
+/** The sub-resources "what's in it" would catalog, one checkbox each, with select all / select none.
+ *  What is ticked here is exactly what the commit sends (`sub_resources`). */
+export function curateSubsHtml(locs, chosen) {
+  if (!locs.length) return '';
+  const set = new Set(chosen);
+  return `<div class="mt-s2" data-curate-subs-list>
+    <div class="flex flex-wrap items-baseline gap-s3 text-provenance">
+      <span class="text-ink-muted" data-curate-subs-count><span class="tnum">${chosen.length}</span> of <span class="tnum">${locs.length}</span> sub-resources selected</span>
+      <button type="button" data-curate-subs-all ${chosen.length === locs.length ? 'disabled' : ''} class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-default disabled:opacity-60">select all</button>
+      <button type="button" data-curate-subs-none ${chosen.length === 0 ? 'disabled' : ''} class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-default disabled:opacity-60">select none</button>
+    </div>
+    <div class="mt-s1" style="max-height:16rem;overflow:auto">${locs.map((l) => `<label class="flex items-baseline gap-s2 py-[1px] text-caveat">
+      <input type="checkbox" data-curate-sub="${esc(l)}" ${set.has(l) ? 'checked' : ''} class="shrink-0 cursor-pointer">
+      <span class="font-mono text-ink">${esc(l)}</span></label>`).join('')}</div>
   </div>`;
 }
 
@@ -297,6 +354,9 @@ export async function renderCurate(slug) {
   const subs = plan.what_it_holds.find((r) => r.kind === 'SubResource');
   const subLocators = subs?.detail?.worthy || [];
   const latest = (plan.commits || [])[0];
+  // What is ticked is what the commit sends. `undefined` is "all of them" (the default).
+  const chosenSubs = () => (state.curate.subLocs
+    ? subLocators.filter((l) => state.curate.subLocs.includes(l)) : subLocators);
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
 
   const draw = () => {
@@ -315,7 +375,8 @@ export async function renderCurate(slug) {
         (plan.what_it_is || []).map((r) => curateRowHtml(r, picks.has(r.kind), true)).join(''))}
       ${curateSectionHtml('curate-sec-what-holds', CURATE_COLUMNS[1].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>`,
-        (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
+        (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
+        + curateSubsHtml(subLocators, chosenSubs()))}
       ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
         `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
@@ -325,13 +386,14 @@ export async function renderCurate(slug) {
         (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
       ${curateSectionHtml('curate-sec-writes', 'what gets written',
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
-        `${curateWritesHtml(plan, [...picks], state.curate.subs === false ? 0 : subLocators.length)}
+        `${curateWritesHtml(plan, [...picks], chosenSubs().length)}
       <label class="mt-s2 flex cursor-pointer items-baseline gap-s2 text-caveat text-ink">
-        <input type="checkbox" data-curate-subs ${state.curate.subs === false ? '' : 'checked'}> include the <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
+        <input type="checkbox" data-curate-subs ${chosenSubs().length ? 'checked' : ''}> include the <span class="tnum">${chosenSubs().length}</span> of <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
       <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloging, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
       <div class="mt-s3 flex items-baseline gap-s3">
         <button type="button" data-curate-go ${plan.in_population && me ? '' : 'disabled'}
+          title="${esc(CATALOG_SENTENCE)}"
           class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalog →</button>
         <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalog — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
       </div>
@@ -343,19 +405,33 @@ export async function renderCurate(slug) {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
       state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
     }));
-    host.querySelector('[data-curate-subs]')?.addEventListener('change', (ev) => { state.curate.subs = ev.target.checked; draw(); renderComponentTree(slug); });
+    const setSubs = (locs) => { state.curate.subLocs = locs; draw(); renderComponentTree(slug); };
+    const subsBox = host.querySelector('[data-curate-subs]');
+    if (subsBox) subsBox.indeterminate = chosenSubs().length > 0 && chosenSubs().length < subLocators.length;
+    subsBox?.addEventListener('change', (ev) => setSubs(ev.target.checked ? [...subLocators] : []));
+    host.querySelector('[data-curate-subs-all]')?.addEventListener('click', () => setSubs([...subLocators]));
+    host.querySelector('[data-curate-subs-none]')?.addEventListener('click', () => setSubs([]));
+    host.querySelectorAll('[data-curate-sub]').forEach((c) => c.addEventListener('change', () => {
+      const cur = new Set(chosenSubs());
+      if (c.checked) cur.add(c.dataset.curateSub); else cur.delete(c.dataset.curateSub);
+      setSubs(subLocators.filter((l) => cur.has(l)));
+    }));
     host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
       openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
     }));
     host.querySelector('[data-curate-go]')?.addEventListener('click', async (ev) => {
       const b = ev.currentTarget; b.disabled = true;
-      // The first step re-surveys before it publishes -- minutes on a large
-      // repository, and "nothing obvious happening" was the owner's report
-      // from the first live press. Say what is happening, from the record.
-      b.textContent = 'Cataloging… surveying first, then publishing';
+      // The first step may re-survey before it publishes -- minutes on a large
+      // repository. What it really does (workflows/curate_commit.py, `_resurvey_plan`): it re-runs
+      // only the analyses that have run before and are now stale (all of them on the very first
+      // catalog, none when everything is fresh and the asset already exists), then publishes.
+      // It never publishes an old survey unchecked. Say that, as a cue plus a short word.
+      b.innerHTML = stateCue('running', 'Cataloging…', CATALOG_SENTENCE);
+      const hint = b.nextElementSibling;
+      if (hint) hint.innerHTML = stateCue('running', 'refreshing stale surveys only, then publishing', CATALOG_SENTENCE);
       try {
         const out = await curateCommit(slug, {
-          confirm: [...picks], sub_resources: state.curate.subs === false ? [] : subLocators, data_files: false,
+          confirm: [...picks], sub_resources: chosenSubs(), data_files: false,
         });
         plan.commits = [out.curation, ...(plan.commits || [])];
         draw();
@@ -372,6 +448,7 @@ export async function renderCurate(slug) {
         renderCatalogueDepthOffer(slug, host);
       } catch (err) {
         b.disabled = false; b.textContent = 'Catalog →';
+        if (b.nextElementSibling) b.nextElementSibling.textContent = '';
         const why = err.status === 401 ? 'sign in to catalog' : err.status === 409 ? err.message : `not cataloged: ${err.message}`;
         host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
       }
@@ -689,10 +766,10 @@ async function renderComponentTree(slug, prefix = '') {
       count: picked.reduce((n, b) => n + (b.components || 0), 0),
       low: picked.reduce((n, b) => n + (b.low_confidence || 0), 0),
       exists: picked.reduce((n, b) => n + (b.accepted || 0), 0),
-    }, () => { selected.clear(); });
+    }, () => { selected.clear(); }, host.querySelector('[data-selection-verdict="accepted"]'));
   });
   host.querySelector('[data-selection-verdict="rejected"]')?.addEventListener('click', () => {
-    recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0 }, () => { selected.clear(); });
+    recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0 }, () => { selected.clear(); }, host.querySelector('[data-selection-verdict="rejected"]'));
   });
 
   host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
@@ -712,7 +789,7 @@ async function renderComponentTree(slug, prefix = '') {
       box.innerHTML = (groups.map(leafGroupHtml).join('') + ungrouped.map(leafRowHtml).join(''))
         || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
       box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
-        recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 })));
+        recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 }, undefined, lb)));
       box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {
         const leaf = out.leaves.find((x) => x.path === pb.dataset.portsOpen);
         if (leaf) openPortsInRail(slug, leaf.path, leaf.ports || []);
@@ -723,7 +800,7 @@ async function renderComponentTree(slug, prefix = '') {
   }));
   host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
     const br = tree.branches.find((x) => x.path === b.dataset.scope);
-    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 });
+    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 }, undefined, b);
   }));
 }
 
@@ -890,22 +967,28 @@ async function renderBlueprintList(slug) {
   }));
   host.querySelectorAll('[data-blueprint-verdict]').forEach((b) => b.addEventListener('click', () => {
     const bp = inReading.find((x) => `${x.perspective}::${x.cluster_name}` === b.dataset.key);
-    if (bp) recordBlueprintVerdict(slug, bp, b.dataset.blueprintVerdict);
+    if (bp) recordBlueprintVerdict(slug, bp, b.dataset.blueprintVerdict, b);
   }));
 }
 
 /** Same shared-preview-dialog rule as `recordVerdicts` (rule 4): accepting a
  *  cluster materialises a real Egeria SolutionBlueprint, so it names that
  *  before it does it. Rejecting creates nothing, so it records at once. */
-function recordBlueprintVerdict(slug, bp, verdict) {
+function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
   const status = $('blueprint-status');
   const go = async () => {
-    if (status) status.textContent = 'recording…';
+    if (pressedEl && pressedEl.dataset.phase === 'pending') return;
+    pressPhase(pressedEl, 'pending', verdict === 'accepted' ? 'accepting…' : 'rejecting…');
+    if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
       await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict);
+      pressPhase(pressedEl, 'done', verdict === 'accepted' ? 'accepted' : 'rejected');
       renderBlueprintList(slug);
     } catch (err) {
-      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to record a verdict' : err.status === 403 ? ' — you may not curate this element' : `: ${esc(err.message)}`}</span>`;
+      const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
+      pressPhase(pressedEl, 'error', 'failed · press to retry', why);
+      if (pressedEl) pressedEl.disabled = false;
+      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded — ${esc(why)}</span>`;
     }
   };
   if (verdict !== 'accepted') { go(); return; }
@@ -984,19 +1067,41 @@ async function renderComponentDiagram(slug, host) {
  *  `onDone` (optional) fires once the verdicts are recorded -- the
  *  selection-clearing callback, so a selection is not left checked against
  *  branches that were just acted on. */
-function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }, onDone) {
+/** The pressed control shows each phase on itself: pending the instant it is pressed, then settled
+ *  or failed. `el` is the button (or null); the caller's markup is restored on failure so a retry works. */
+function pressPhase(el, phase, word, title = '') {
+  if (!el || !el.isConnected) return;
+  if (!el.dataset.idleHtml) el.dataset.idleHtml = el.innerHTML;
+  el.dataset.phase = phase;
+  el.disabled = phase === 'pending';
+  el.setAttribute('aria-busy', phase === 'pending' ? 'true' : 'false');
+  el.innerHTML = stateCue(phase === 'pending' ? 'running' : phase === 'done' ? 'measured' : 'error', word, title);
+}
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }, onDone, pressedEl = null) {
   const status = $('component-tree-status');
+  const accepting = verdict === 'accepted';
   const go = async () => {
-    if (status) status.textContent = 'recording…';
+    if (pressedEl && pressedEl.dataset.phase === 'pending') return;       // a second press is ignored
+    pressPhase(pressedEl, 'pending', accepting ? 'accepting…' : 'rejecting…');
+    if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
       const out = await postBranchVerdicts(slug, scopes, verdict);
-      if (status) status.innerHTML = verdict === 'accepted'
+      pressPhase(pressedEl, 'done', accepting ? 'accepted' : 'rejected');
+      const settled = accepting
         ? `<span class="text-state-ok">→ <span class="tnum">${out.verdicts.length}</span> verdict${out.verdicts.length === 1 ? '' : 's'} recorded · <span class="tnum">${out.queued ?? 0}</span> component${out.queued === 1 ? '' : 's'} queued for Egeria — the pane does not wait</span>`
         : `<span class="text-state-ok">→ rejected · nothing created</span>`;
+      if (status) status.innerHTML = settled;
       onDone?.();
-      renderComponentTree(slug);
+      // The tree redraws from a re-read and replaces its status line, so the settled words are written
+      // again on the new line: the result stays on screen after the redraw.
+      await renderComponentTree(slug);
+      const fresh = $('component-tree-status');
+      if (fresh) fresh.innerHTML = settled;
     } catch (err) {
-      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded${err.status === 401 ? ' — sign in to record a verdict' : err.status === 403 ? ' — you may not curate this element' : `: ${esc(err.message)}`}</span>`;
+      const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
+      pressPhase(pressedEl, 'error', 'failed · press to retry', why);
+      if (pressedEl) pressedEl.disabled = false;
+      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded — ${esc(why)}</span>`;
     }
   };
   if (verdict !== 'accepted' || count <= 1) { go(); return; }
