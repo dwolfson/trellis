@@ -9563,3 +9563,16 @@ only when their `additionalProperties` carry `error_count=0`; the database repor
 they show as "unknown outcome". Writing an `error_count` on those reports would make the Overview pick them up with no
 Portal code change.
 
+
+## Child module or component as a resource (2026-10-07, owner; backlog, not now)
+
+Compartmentalise a large repository behind clear boundaries: a selected module or component becomes its own top-tier
+resource, nested under its ancestor in the left-hand hierarchy and processed independently by surveys and curation (the
+owner's example: the Trellis monorepo viewed as Trellis itself, Egeria-Advisor and Resource-Explorer). Purpose: deeply
+nested structures become confusing and error-prone. Design seed: `docs/design-notes/DESIGN-CURATE-NESTING-SELECTION-AND-DEPENDENCY-KINDS.md` §2. It must not stand in the way of completing the work at the current level.
+
+## Zone configuration in the Admin panel (2026-10-07, architect; backlog)
+
+Deployment-set defaults for publish zones, later per kind or group, replacing the `EXPLORER_PUBLISH_ZONES` environment
+variable. Context: promotion of accepted blueprints and components is moving to the catalog commit's configured-only rule
+(no zone unless one is configured); see the same design note.
