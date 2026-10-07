@@ -16,9 +16,12 @@ def test_the_section_that_holds_the_scope_can_shrink_in_its_parent():
     assert 'data-curate-work="scope" class="mb-s3 min-w-0"' in BANDS
 
 
-def test_the_classification_header_is_the_full_word_and_wraps():
-    assert ">Classification</div>" in SCOPE
-    assert ">Classes</div>" not in SCOPE
+def test_the_classification_header_is_the_full_word_on_one_line():
+    # Headers are drawn by one helper (label, title, handle) and held on one line with an
+    # ellipsis and the full text in the title, so a header never breaks mid-word.
+    assert "hc('cls', 'Classification'" in SCOPE
+    assert "'Classes'" not in SCOPE
+    assert "white-space:nowrap" in (NEXT / "colresize.js").read_text(encoding="utf-8")
 
 
 def test_no_truncating_class_in_the_scope_table():

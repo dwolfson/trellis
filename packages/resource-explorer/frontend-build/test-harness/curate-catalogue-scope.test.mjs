@@ -615,7 +615,8 @@ test('the STATE column is fully present and the tree scrolls sideways inside its
   // The floor is a fixed one, so at about 1300px all seven columns fit and only a narrower
   // pane scrolls. (jsdom does no layout: the fit itself is reasoned from these widths, not measured.)
   assert.equal(host.querySelector('.min-w-max'), null, 'no max-content floor');
-  assert.ok(host.querySelector('.min-w-\\[52rem\\]'), 'a fixed floor instead');
+  // the floor is now the sum of the column widths (+ the name floor), carried on --rc-total
+  assert.match(host.querySelector('[data-rc-inner]').getAttribute('style'), /^min-width:var\(--rc-total,\d+px\)$/, 'a fixed floor instead');
   assert.ok(row(document, 'schema:sales').querySelector('[data-scope-state-cell]'));
   // jsdom does no layout: whether STATE is fully visible at ~1300px is NOT measured here.
 });
@@ -769,8 +770,8 @@ test('columns sit directly under their own table, indented under its NAME, with 
   assert.equal(row(document, 'table:sales.orders').nextElementSibling, wrappers[0]);
   assert.equal(row(document, 'table:sales.customers').nextElementSibling, wrappers[1]);
   // indented under the name column: it starts with spacers the width of the tick and choice cells
-  const spacers = [...wrappers[0].children].slice(0, 2).map((c) => c.className.match(/w-\[(\d+)ch\]/)[1]);
-  const rowWidths = [...row(document, 'table:sales.orders').children].slice(0, 2).map((c) => c.className.match(/w-\[(\d+)ch\]/)[1]);
+  const spacers = [...wrappers[0].children].slice(0, 2).map((c) => c.getAttribute('style'));
+  const rowWidths = [...row(document, 'table:sales.orders').children].slice(0, 2).map((c) => c.getAttribute('style'));
   assert.deepEqual(spacers, rowWidths, 'the column list starts where the table NAME starts');
   assert.ok(wrappers[0].children[2].className.includes('border-l'), 'a rule marks them as the table\'s');
   const col = block.querySelector('[data-scope-column]');
@@ -795,15 +796,13 @@ test('the per-row source line sits under the name, not in the state cell', async
   assert.match(flat(r.querySelector('[data-scope-state-cell]')), /^—/);   // no proof row, so no state word
 });
 
-test('widths: all seven columns fit a ~1300px content width, the name wraps, narrow panes still scroll', async () => {
+test('widths: the default columns fit a ~1300px content width, the name wraps, narrow panes still scroll', async () => {
   const { document } = await setUp(baseView());
+  const inner = document.querySelector('[data-rc-inner]');
+  const floor = Number(inner.getAttribute('style').match(/--rc-total,(\d+)px/)[1]);
+  assert.ok(floor <= 1300, `defaults + name floor + gaps (${floor}px) must fit about 1300px`);
   const head = document.querySelector('[data-scope-tree-head]');
-  const fixed = [...head.children].map((c) => Number((c.className.match(/(?<!min-)w-\[(\d+)ch\]/) || [0, 0])[1]));
-  const total = fixed.reduce((a, b) => a + b, 0);
   const nameHead = [...head.children].find((c) => flat(c) === 'Schema / table');
-  const nameMin = Number(nameHead.className.match(/min-w-\[(\d+)ch\]/)[1]);
-  // 1300px at a generous 9px per ch is 144ch; leave room for gaps (8 x s2) and the indent
-  assert.ok(total + nameMin <= 120, `fixed columns ${total}ch + name floor ${nameMin}ch must fit in about 120ch`);
   assert.ok(nameHead.className.includes('flex-1'), 'the name column takes what is left');
   const nameCell = row(document, 'schema:sales').querySelector('[data-scope-name-cell]');
   assert.ok(nameCell.className.includes('break-words'), 'the schema / table name may wrap');
