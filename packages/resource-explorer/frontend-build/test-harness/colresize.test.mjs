@@ -104,9 +104,9 @@ test('the drag delta is applied to the width at drag start, not accumulated per 
 });
 
 test('every column is fixed (flex 0 0 auto), only the dragged one changes, text centred except where align is left', () => {
-  assert.equal(cellStyle(SPEC, 'a'), 'width:var(--rc-a,100px);flex:0 0 auto;min-width:0;text-align:center');
-  assert.equal(cellStyle(SPEC, 'n'), 'width:var(--rc-n,100px);flex:0 0 auto;min-width:0;text-align:left');
-  assert.equal(cellStyle(SPEC, 'n', 14), 'width:calc(var(--rc-n,100px) - 14px);flex:0 0 auto;min-width:0;text-align:left');
+  assert.equal(cellStyle(SPEC, 'a'), 'width:var(--rc-a,100px);flex:0 0 auto;min-width:0;overflow-wrap:normal;word-break:normal;hyphens:none;text-align:center');
+  assert.equal(cellStyle(SPEC, 'n'), 'width:var(--rc-n,100px);flex:0 0 auto;min-width:0;overflow-wrap:normal;word-break:normal;hyphens:none;text-align:left');
+  assert.equal(cellStyle(SPEC, 'n', 14), 'width:calc(var(--rc-n,100px) - 14px);flex:0 0 auto;min-width:0;overflow-wrap:normal;word-break:normal;hyphens:none;text-align:left');
 });
 
 test('Curate scope table: handles on the resizable headers, widths move every row, reset is live only when changed', async () => {
@@ -150,4 +150,10 @@ test('Curate scope table: no cell flexes, text is centred except Schema / table,
   }
   assert.match(rows[1].querySelector('[data-scope-name-cell]').getAttribute('style'), /^width:var\(--rc-name,280px\)/);
   assert.match(rows[2].querySelector('[data-scope-name-cell]').getAttribute('style'), /^width:calc\(var\(--rc-name,280px\) - 13\.8px\)/);
+});
+
+test('an identifier column may break an over-long word; every other column breaks at spaces only', () => {
+  const spec = { id: 'w', chrome: 0, columns: [{ key: 'id', def: 100, min: 40, breakLong: true }, { key: 'o', def: 100, min: 40 }] };
+  assert.match(cellStyle(spec, 'id'), /overflow-wrap:break-word/);
+  assert.match(cellStyle(spec, 'o'), /overflow-wrap:normal;word-break:normal;hyphens:none/);
 });
