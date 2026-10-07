@@ -191,6 +191,8 @@ def _last_run_info(registry, slug: str, analysis_id: str, entity_type: str = "re
                     "last_run_at": source.get("last_run_at", ""),
                     "last_run_status": source.get("last_run_status", ""),
                     "last_run_via": source_id,
+                    "ran_as": None,            # a derived result was not run by anyone's override
+                    "not_retried": "",
                 }
     return {"last_run_at": "", "last_run_status": "", "last_run_via": "", "ran_as": None, "not_retried": ""}
 
@@ -680,8 +682,8 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo", *,
             "last_run_at": run_info["last_run_at"],
             "last_run_status": run_info["last_run_status"],
             "last_run_via": run_info["last_run_via"],
-            "last_run_ran_as": run_info["ran_as"],
-            "last_run_not_retried": run_info["not_retried"],
+            "last_run_ran_as": run_info.get("ran_as"),
+            "last_run_not_retried": run_info.get("not_retried", ""),
             "uses_credential": _credential_use(entity_type, aid),
             "cost": cost,
             "runnable": runnable,

@@ -750,6 +750,8 @@ class TestCurateRoutes:
             lambda guid, identity=None: ["resource-explorer-draft"],
         )
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "egeria-runtime")
+        monkeypatch.setattr("resource_explorer.egeria_identity.read_zones",
+                            lambda guid, identity=None: ["egeria-runtime"])
 
         r = api.post("/api/curate/component-verdicts/repo/p",
                      json={"scope_locator": "src/a", "verdict": "accepted"},
@@ -812,6 +814,8 @@ class TestCurateRoutes:
             "resource_explorer.egeria_identity.set_zone_membership",
             lambda *a, **k: True,
         )
+        monkeypatch.setattr("resource_explorer.egeria_identity.read_zones",
+                            lambda guid, identity=None: ["egeria-runtime"])
         assert curate_wf.promote_to_publish_zones("g")["status"] == "promoted"
 
     def test_reject_does_not_promote_anything(self, client, monkeypatch):

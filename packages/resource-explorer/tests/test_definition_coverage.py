@@ -110,3 +110,32 @@ def test_an_override_runs_ran_as_reaches_the_analyses_row(reg):
     assert row["last_run_ran_as"] == {"user": "one_off_user", "scope": "this run"}
     assert row["last_run_not_retried"] == "not retried · credential was for this run only"
     assert json.dumps(row).count("password") == 0
+
+
+def test_last_run_info_sets_ran_as_and_not_retried_on_every_path(reg, monkeypatch):
+    """The analyses index reads both keys from every path; a derived or never-run analysis has none."""
+    from resource_explorer.activity_logger import log_analysis_run
+    from resource_explorer.workflows import stage_page
+    # never run
+    assert stage_page._last_run_info(reg, "aw", "schema_inventory", "database") == {
+        "last_run_at": "", "last_run_status": "", "last_run_via": "", "ran_as": None, "not_retried": ""}
+    # own run
+    log_analysis_run(reg, "database", "aw", "aw", "ok", "ran", "schema_inventory", published=None)
+    own = stage_page._last_run_info(reg, "aw", "schema_inventory", "database")
+    assert own["ran_as"] is None and own["not_retried"] == "" and own["last_run_at"]
+    # derived path (repo)
+    from resource_explorer.registry import Project
+    reg.add(Project(slug="r", display_name="R", github_url="https://github.com/o/r"))
+    log_analysis_run(reg, "repo", "r", "R", "ok", "ran", "src_analysis", published=None)
+    monkeypatch.setattr("resource_explorer.surveyors.repo_survey_definition_adapter.repo_analysis_derived_sources",
+                        lambda aid: {"src_analysis": ["k"]} if aid == "derived_one" else {})
+    derived = stage_page._last_run_info(reg, "r", "derived_one", "repo")
+    assert derived["last_run_via"] == "src_analysis" and derived["ran_as"] is None and derived["not_retried"] == ""
+
+
+def test_the_index_row_survives_a_run_info_without_the_override_keys(reg, monkeypatch):
+    from resource_explorer.workflows import stage_page
+    monkeypatch.setattr(stage_page, "_last_run_info", lambda *a, **k: {
+        "last_run_at": "x", "last_run_status": "ok", "last_run_via": "v"})
+    row = _row(build_analyses_index(reg, "aw", entity_type="database"), "schema_inventory")
+    assert row["last_run_ran_as"] is None and row["last_run_not_retried"] == ""

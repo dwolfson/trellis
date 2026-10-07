@@ -157,6 +157,7 @@ def promote_to_publish_zones(guid: str) -> dict:
         clear_zone_membership,
         configured_publish_zones,
         current_zones,
+        draft_zone,
         private_zone,
         read_zones,
         set_zone_membership,
@@ -180,6 +181,11 @@ def promote_to_publish_zones(guid: str) -> dict:
         if not before:
             return {"status": "already_unzoned", "guid": guid, "zones": [], "from_zones": [],
                     "words": ZONES_LEFT_TO_EGERIA_WORDS}
+        if before != [draft_zone()]:
+            # Not RE's own stamp: the element may be one RE adopted (found by qualifiedName) that
+            # someone else placed in a zone. Clear ONLY RE's draft zone; never strip another zone.
+            return {"status": "left_as_is", "guid": guid, "zones": before, "from_zones": before,
+                    "words": f"zones left as they are · {', '.join(before)} · not RE's draft zone"}
         if not clear_zone_membership(guid):
             return {"status": "error", "guid": guid, "zones": [], "from_zones": before,
                     "error": "Egeria did not accept clearing the ZoneMembership",
@@ -212,14 +218,21 @@ def promote_to_publish_zones(guid: str) -> dict:
         return _private_skip(guid, already)
 
     ok = set_zone_membership(guid, zones)
-    return {
-        "status": "promoted" if ok else "error",
-        "guid": guid,
-        "zones": zones,
-        "from_zones": already,
-        "words": _zone_words(zones) if ok else "accepted · zones not changed · Egeria did not accept the zone change",
-        **({} if ok else {"error": "Egeria did not accept the ZoneMembership change"}),
-    }
+    if not ok:
+        return {"status": "error", "guid": guid, "zones": zones, "from_zones": already,
+                "words": "accepted · zones not changed · Egeria did not accept the zone change",
+                "error": "Egeria did not accept the ZoneMembership change"}
+    # The success words are said only after the zones are READ BACK (they are stored as proof).
+    try:
+        after = read_zones(guid)
+    except ZoneReadError as exc:
+        return {"status": "error", "guid": guid, "zones": zones, "from_zones": already, "error": str(exc),
+                "words": f"accepted · could not confirm the zone was set · {exc}"}
+    if set(after) != set(zones):
+        return {"status": "error", "guid": guid, "zones": after, "from_zones": already,
+                "error": f"the zones read back as {after}, not {zones}",
+                "words": f"accepted · zone not set · read back as {', '.join(after) or 'no zone'}"}
+    return {"status": "promoted", "guid": guid, "zones": zones, "from_zones": already, "words": _zone_words(zones)}
 
 
 #: Proof rows for a promotion (`catalogue_commit_proofs`, no new table). A row is written AFTER the

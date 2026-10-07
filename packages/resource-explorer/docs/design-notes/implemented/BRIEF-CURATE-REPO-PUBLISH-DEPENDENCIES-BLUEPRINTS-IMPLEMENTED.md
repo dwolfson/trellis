@@ -20,6 +20,7 @@ accept is not "the content-status change alone". `promote_to_publish_zones` now 
 * The queued Next-UI accept (`materialize_components` in `run_queue.py`) never promoted at all; it now does, and a
   promotion proof row (`catalogue_commit_proofs`, `node_kind` `component_promotion` / `blueprint_promotion`) carries the
   words the Curate rows show.
+* Accept clears ONLY RE's own stamp: an unconfigured accept leaves any other zone alone ("zones left as they are"), since an adopted element may belong to someone else; the configured branch reads the zones back before it says "accepted · zone X".
 * RE's draft zone still stamps what RE creates (the 2026-09-04 design); the configured-only rule governs where accept
   moves things, and an unconfigured accept removes the draft zone.
 
@@ -32,7 +33,7 @@ completed step's annotations in `app_settings` (`repo_survey_step::<slug>::<step
 empty result, a scoped run is never kept. No DDL. `report_published` records `surveyed_at`, `steps`, `annotation_count`
 and `reused` in its `detail` JSON. `POST /api/egeria/{slug}/resurvey` runs the survey and nothing else. The Curate commit
 publishes the kept survey; its box (off by default) re-surveys exactly the stale steps first.
-A survey run before this build has no kept steps: the first publish after deploy says "no survey to publish yet".
+Migration: every repository surveyed before this build has no kept survey, so its first publish returns "no survey to publish yet · run the first survey".
 
 ## Section 2: the table
 

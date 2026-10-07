@@ -196,6 +196,10 @@ class InvestigationReclassifier:
             return False, str(exc)
         if not before:
             return True, "already in no zone (zones left to Egeria)"
+        from resource_explorer.egeria_identity import draft_zone, private_zone
+        if private_zone() not in before and before != [draft_zone()]:
+            # Not a zone RE stamped (its private zones or its draft zone): never strip someone else's.
+            return False, f"zones left as they are · {', '.join(before)} · not RE's private or draft zone"
         if not clear_zone_membership(guid):
             return False, (f"Egeria did not accept clearing the zones (it is in {before}; moving out "
                            "of a zone needs PUBLISH rights on that zone, which RE's account may not hold)")

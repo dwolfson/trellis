@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -126,6 +127,16 @@ def test_a_private_element_stays_private_when_nothing_is_configured(egeria):
     assert fake.writes() == []
 
 
+def test_a_zone_that_is_not_res_draft_stamp_is_never_cleared(egeria):
+    """An element RE adopted by qualifiedName may sit in a zone someone else placed it in."""
+    fake = egeria(FakeEgeria(["egeria-runtime"]))
+    out = curate.promote_to_publish_zones("bp-1")
+    assert out["status"] == "left_as_is" and fake.writes() == [] and fake.zones == ["egeria-runtime"]
+    assert out["words"] == "zones left as they are · egeria-runtime · not RE's draft zone"
+    fake2 = egeria(FakeEgeria([DRAFT, "egeria-runtime"]))          # the draft zone plus another: not exactly RE's stamp
+    assert curate.promote_to_publish_zones("bp-1")["status"] == "left_as_is" and fake2.writes() == []
+
+
 # ── a configured zone ──────────────────────────────────────────────────────
 
 def test_a_configured_zone_is_exactly_what_is_written(egeria, monkeypatch):
@@ -206,3 +217,58 @@ def test_the_component_tree_leaf_carries_the_promotion_words(registry, monkeypat
     monkeypatch.setattr(component_tree, "_ports_by_component", lambda reg, slug: ({}, 0, 0))
     rows = component_tree.leaves(registry, "p", "src")
     assert rows[0]["promotion"]["words"] == "accepted · zone team-zone"
+
+
+def test_the_configured_zone_is_read_back_before_the_success_words(egeria, monkeypatch):
+    monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "team-zone")
+    fake = egeria(FakeEgeria([DRAFT]))
+    fake.add_zone_membership = lambda guid, body: fake.calls.append(("add_zone_membership", guid, body))   # accepted, did not take
+    out = curate.promote_to_publish_zones("bp-1")
+    assert out["status"] == "error" and "accepted · zone team-zone" != out["words"]
+    assert "read back as resource-explorer-draft" in out["words"]
+    fake3 = egeria(FakeEgeria([DRAFT], unreadable=True))
+    out = curate.promote_to_publish_zones("bp-1")                  # the lenient pre-read still sees the draft zone
+    assert out["status"] == "error" and "could not confirm" in out["words"]
+
+
+def test_the_reclassifier_clears_only_zones_re_stamped(monkeypatch):
+    from resource_explorer.surveyors.investigation_reclassifier import InvestigationReclassifier
+    for zones, cleared in (([ident.private_zone(), "alice"], True), ([DRAFT], True), (["egeria-runtime"], False)):
+        fake = FakeEgeria(zones)
+        monkeypatch.setattr(ident, "classification_client", lambda identity=None, f=fake: f)
+        monkeypatch.setattr(ident, "_metadata_client", lambda identity=None, f=fake: f)
+        ok, why = InvestigationReclassifier(MagicMock())._clear_zones("g")
+        assert ok is cleared, (zones, why)
+        assert (fake.zones == []) is cleared
+
+
+def test_the_queued_handler_runs_on_a_plain_worker_thread_with_an_event_loop(registry, egeria, monkeypatch):
+    """pyegeria's sync wrappers call asyncio.get_event_loop(); a worker thread has none."""
+    import asyncio
+    import threading
+    from resource_explorer import run_queue
+    egeria(FakeEgeria([DRAFT]))
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry", lambda *a, **k: registry)
+
+    def materialize(reg, et, slug, path, verdict):
+        asyncio.get_event_loop()                   # raises RuntimeError on a bare worker thread
+        return {"status": "materialized", "guid": "c1"}
+
+    monkeypatch.setattr(curate, "materialize_component_if_accepted", materialize)
+    box = {}
+    t = threading.Thread(target=lambda: box.update(out=run_queue._handle_materialize_components(
+        {"slug": "p", "paths": ["src/a"]}, "act")))
+    t.start(); t.join()
+    assert box["out"].state == "succeeded"
+
+
+def test_a_failed_promotion_is_not_counted_as_done_and_is_reported_separately(registry, egeria, monkeypatch):
+    from resource_explorer import run_queue
+    egeria(FakeEgeria([DRAFT], clear_ok=False))
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry", lambda *a, **k: registry)
+    monkeypatch.setattr(curate, "materialize_component_if_accepted",
+                        lambda reg, et, slug, path, verdict: {"status": "materialized", "guid": "c1"})
+    out = run_queue._handle_materialize_components({"slug": "p", "paths": ["src/a"]}, "act")
+    assert out.state == "failed"
+    assert out.error.startswith("0 materialised") and "promotion failed: src/a" in out.error
+    assert "materialization failed" not in out.error
