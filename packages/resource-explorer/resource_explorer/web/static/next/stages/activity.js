@@ -70,7 +70,39 @@ function hiGuid(escapedText) {
 /** Local, per-open state — not persisted, not shared with app.js's `state`.
  *  Filters reset every time the panel opens, same as the classic tab does
  *  not remember a filter across a reload. */
-const panel = { entries: null, error: null, statusFilter: 'all', textFilter: '' };
+const panel = { entries: null, error: null, statusFilter: 'all', textFilter: '', order: 'desc' };
+
+/** Order by time. 'desc' = latest first (what the page has always shown, and
+ *  what the server returns: `ORDER BY ts DESC LIMIT n`). The route has no
+ *  order parameter, so 'asc' reorders only what was loaded; renderControls
+ *  says so when the load was cut off. Remembered per browser; storage that is
+ *  missing or throws just means the default. */
+const ORDER_KEY = 're.activity.order';
+const ORDER_LABEL = { desc: '↓ latest first', asc: '↑ earliest first' };
+
+export function readOrder() {
+  try {
+    return globalThis.localStorage?.getItem(ORDER_KEY) === 'asc' ? 'asc' : 'desc';
+  } catch { return 'desc'; }
+}
+function writeOrder(order) {
+  try { globalThis.localStorage?.setItem(ORDER_KEY, order); } catch { /* not remembered */ }
+}
+
+/** Sort by the entry's `ts` (the field the row shows); ties by id, same
+ *  direction; an entry with no readable timestamp goes last either way. */
+export function sortByTime(entries, order) {
+  const dir = order === 'asc' ? 1 : -1;
+  const t = (e) => { const n = Date.parse(e?.ts ?? ''); return Number.isNaN(n) ? null : n; };
+  return [...entries].sort((a, b) => {
+    const ta = t(a); const tb = t(b);
+    if (ta === null && tb === null) return dir * String(a?.id ?? '').localeCompare(String(b?.id ?? ''));
+    if (ta === null) return 1;
+    if (tb === null) return -1;
+    if (ta !== tb) return dir * (ta - tb);
+    return dir * String(a?.id ?? '').localeCompare(String(b?.id ?? ''));
+  });
+}
 
 function closeActivityPanel() {
   document.getElementById(PANEL_ID)?.remove();
@@ -90,6 +122,7 @@ export async function openActivityPanel() {
   panel.error = null;
   panel.statusFilter = 'all';
   panel.textFilter = '';
+  panel.order = readOrder();
 
   const el = document.createElement('div');
   el.id = PANEL_ID;
@@ -137,7 +170,12 @@ function renderControls() {
   const host = document.getElementById('activity-panel-controls');
   if (!host) return;
   const statuses = ['all', 'ok', 'error', 'running'];
+  const truncated = panel.entries && panel.entries.length >= FETCH_LIMIT;
   host.innerHTML = `
+    <button type="button" id="activity-order-btn" data-activity-order="${panel.order}"
+      aria-label="Order by time: ${panel.order === 'asc' ? 'earliest' : 'latest'} first. Press to reverse."
+      class="cursor-pointer rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink"
+      >${ORDER_LABEL[panel.order]}</button>
     <input id="activity-filter-text" type="text" placeholder="filter by resource or summary…"
       value="${esc(panel.textFilter)}"
       class="min-w-[220px] flex-1 rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink" />
@@ -145,7 +183,18 @@ function renderControls() {
       aria-pressed="${panel.statusFilter === s ? 'true' : 'false'}"
       class="cursor-pointer rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat
         ${panel.statusFilter === s ? 'border-accent text-accent-ink' : 'text-ink-muted hover:text-ink'}"
-      >${s}</button>`).join('')}</span>`;
+      >${s}</button>`).join('')}</span>
+    ${truncated && panel.order === 'asc'
+    ? `<div id="activity-order-note" class="w-full text-provenance text-ink-muted">
+        <span class="tnum">${panel.entries.length}</span> most recent entries, oldest first</div>`
+    : ''}`;
+  host.querySelector('#activity-order-btn').addEventListener('click', () => {
+    panel.order = panel.order === 'asc' ? 'desc' : 'asc';
+    writeOrder(panel.order);
+    renderControls();
+    renderList();
+    document.getElementById('activity-order-btn')?.focus();
+  });
   host.querySelector('#activity-filter-text').addEventListener('input', (e) => {
     panel.textFilter = e.target.value;
     renderList();
@@ -256,5 +305,5 @@ function renderList() {
       ? `<div class="mb-s2 text-provenance text-ink-muted">Showing the most recent
          <span class="tnum">${FETCH_LIMIT}</span> entries.</div>`
       : '');
-  host.innerHTML = shownOfLoaded + rows.map(entryRowHtml).join('');
+  host.innerHTML = shownOfLoaded + sortByTime(rows, panel.order).map(entryRowHtml).join('');
 }
