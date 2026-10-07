@@ -177,9 +177,9 @@ test('Curate on a database draws the three bands with the real controls', async 
   assert.match(p.textContent, /What people say/);
   assert.ok(p.querySelector('[data-curate-fb-rating]') && p.querySelector('[data-curate-fb-submit]'));
   assert.ok(p.querySelector('#journal-save') && p.querySelector('#journal-body'), 'notes band is the journal');
-  // order: findable, kind, people
+  // order: findable, kind, publish (G1: the Egeria band), people
   const order = [...host(document).querySelectorAll('[data-curate-band]')].map((e) => e.dataset.curateBand);
-  assert.deepEqual(order, ['findable', 'kind', 'people']);
+  assert.deepEqual(order, ['findable', 'kind', 'publish', 'people']);
   // the false sentences are gone and no repo-only call fired
   assert.doesNotMatch(host(document).textContent, /reachable from the resource header|offers none of them|Curate isn't available/);
   assert.equal(server.calls.filter((c) => c.url.includes('/curate/plan')).length, 0);
