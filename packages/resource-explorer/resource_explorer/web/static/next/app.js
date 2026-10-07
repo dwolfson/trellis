@@ -190,6 +190,7 @@ import {
   saveQuestionAnswer,
 } from '/static/re-api.js';
 import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
+import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
 
 /* ════════════════════════════════════════════════════════════════════════
  * State
@@ -197,6 +198,9 @@ import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable 
 
 export const state = {
   resourceType: 'repo',        // repo | db | filesystem
+  // The last survey launch's note ({slug, html}). Derived data, not a DOM append:
+  // loadSurveyPane() replaces #survey-note wholesale, so the note is drawn from here.
+  launchNote: null,
   projects: [],
   // Databases/filesystems are fetched lazily -- on first switch to that
   // sidebar chip, or on boot when the URL already names that type -- not
@@ -4637,6 +4641,47 @@ function producesTypes(c) {
   return [...seen];
 }
 
+/** A run that failed because the database is not cataloged in Egeria (the
+ *  executor's own two sentences, the same ones Classic matched). */
+const NOT_CATALOGED_RE = /no stored Egeria asset guid|is not yet cataloged in Egeria|uncataloged database/i;
+
+/** Parity G2, PI-019. On a database definition whose last run failed because
+ *  the database is not cataloged: "Catalog now →" (Curate's own Catalog button
+ *  is the one place that writes to Egeria, so this only routes there) and, once
+ *  the resource's publish-state line reads cataloged, "Retry →" on the SAME
+ *  row. Retry opens the usual run plan; nothing is retried automatically. */
+function catalogRetryHtml(c) {
+  if (state.resourceType !== 'db') return '';
+  if ((c.last_run_status || '') === 'ok') return '';
+  if (!(c.last_run_errors || []).some((e) => NOT_CATALOGED_RE.test(String(e)))) return '';
+  const cataloged = !!selectedProject()?.is_published;
+  return cataloged
+    ? `<button type="button" data-retry-run="${esc(c.qualified_name || c.guid)}"
+        class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+        >Retry →</button>`
+    : `<button type="button" data-catalog-now="${esc(c.qualified_name || c.guid)}"
+        class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+        title="not cataloged in Egeria · the Catalog button on Curate writes it">Catalog now →</button>`;
+}
+
+/** The run buttons of the survey pane's rows: plan a run, retry, catalog now. */
+export function bindSurveyRowActions(el, all, slug) {
+  el.querySelectorAll('[data-run-survey], [data-plan-survey], [data-retry-run]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const ref = b.dataset.runSurvey || b.dataset.planSurvey || b.dataset.retryRun;
+      planSurveyRun(all.find((x) => (x.qualified_name || x.guid) === ref), slug);
+    }));
+  el.querySelectorAll('[data-catalog-now]').forEach((b) =>
+    b.addEventListener('click', () => {
+      // Curate holds the Catalog button; this only goes there.
+      state.stage = 'curate';
+      state.subTab = 'questions';
+      writeUrl();
+      renderIntentNav();
+      loadPane();
+    }));
+}
+
 export function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
   const produces = producesTypes(c);
@@ -4659,6 +4704,7 @@ export function surveyRowHtml(c) {
       // than a false zero until it is.
       c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}</div>
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
+    ${catalogRetryHtml(c)}
     ${selectedCredentialUnreadable()
       ? `<button data-run-survey="${esc(c.qualified_name || c.guid)}" disabled title="${CREDENTIAL_UNREADABLE_TEXT}"
       class="shrink-0 cursor-not-allowed rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
@@ -5064,7 +5110,7 @@ export async function loadSurveyPane() {
         `No Survey Definitions have been authored for ${data.technology_type || 'this technology'} yet`,
         'The analyses below still run individually; a Survey Definition only bundles them into an '
         + 'Egeria-launchable process.') : ''}
-    <div id="survey-note" class="mt-s3 text-caveat text-ink"></div>
+    <div id="survey-note" class="mt-s3 text-caveat text-ink">${launchNoteHtml(slug)}</div>
 
     <div class="mt-s5 border-t border-rule-strong pt-s3" id="analyses-index-section">
       <div class="text-caveat text-ink-muted">Reading the analyses…</div>
@@ -5093,11 +5139,7 @@ export async function loadSurveyPane() {
             .map((e) => `<li class="whitespace-pre-line text-state-warn">${esc(String(e))}</li>`).join('')}</ul>`
         : '<p class="max-w-[70ch] text-ink-muted">No step-level error detail was recorded for this run.</p>'}`;
   }));
-  el.querySelectorAll('[data-run-survey], [data-plan-survey]').forEach((b) =>
-    b.addEventListener('click', () => {
-      const ref = b.dataset.runSurvey || b.dataset.planSurvey;
-      planSurveyRun(all.find((x) => (x.qualified_name || x.guid) === ref), slug);
-    }));
+  bindSurveyRowActions(el, all, slug);
 
   renderAnalysesIndexSection(slug, stage);
 }
@@ -5347,7 +5389,7 @@ async function renderAnalysesIndexSection(slug, stage) {
  * This is the third and most expensive of them, and if they answer "what am I
  * about to spend" in three shapes people learn to read one and skim the rest.
  */
-function planSurveyRun(c, slug) {
+export function planSurveyRun(c, slug) {
   if (!c) return;
   if (selectedCredentialUnreadable()) return;   // the buttons are disabled; this guards any other caller
   const steps = (c.steps || []).length;
@@ -5371,6 +5413,7 @@ function planSurveyRun(c, slug) {
       ${c.auto_publishes ? '<li>publishes its results to Egeria when it finishes</li>' : ''}
     </ul>
     <div id="plan-movement" class="mt-s2 text-caveat text-ink-muted"></div>
+    ${state.resourceType === 'db' ? runOptionsHtml(slug) : ''}
     <p class="mt-s3 text-ink">Nothing runs until you confirm.</p>
     <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
       <button type="button" data-act="go"
@@ -5379,9 +5422,16 @@ function planSurveyRun(c, slug) {
       <button type="button" data-act="close"
         class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
     </div>`;
-  body.querySelector('[data-act="go"]').addEventListener('click', () => {
+  const options = state.resourceType === 'db' ? bindRunOptions(body, slug) : null;
+  body.querySelector('[data-act="go"]').addEventListener('click', (ev) => {
+    const go = ev.currentTarget;
+    if (go.disabled) return;                       // a pressed control ignores a second press
+    const chosen = options ? options.read() : { credential: null, forceCustom: false };
+    if (chosen.error) return;                      // the dialog said why; nothing is sent
+    go.disabled = true;
+    go.textContent = 'Starting…';
     closeCellDetail();
-    launchSurvey(slug, c.qualified_name || c.guid);
+    launchSurvey(slug, c.qualified_name || c.guid, chosen);
   });
 
   // WHAT MOVED LAST TIME, HERE, WHERE IT CHANGES A DECISION.
@@ -5391,6 +5441,88 @@ function planSurveyRun(c, slug) {
   // runs is a survey whose cadence is costing more than it returns, and this
   // is the moment that matters — before paying for it again rather than after.
   reportPlanMovement(slug, c);
+}
+
+/** Parity G2, PI-016/PI-018: what a database run can be told. Markup only; the
+ *  credential fields are built on demand and never carry a value attribute. */
+function runOptionsHtml(slug) {
+  const cataloged = !!selectedProject()?.is_published;
+  return `<div class="mt-s3 border-t border-rule pt-s2" data-run-options>
+    <label class="flex items-baseline gap-s2 text-caveat ${cataloged ? 'text-ink' : 'text-ink-muted'}">
+      <input type="checkbox" data-run-hybrid ${cataloged ? 'checked' : 'disabled'}>
+      <span>Try Egeria first (hybrid)</span>
+    </label>
+    <div data-run-hybrid-note class="ml-s5 max-w-[70ch] text-caveat text-ink-muted"></div>
+    <label class="mt-s2 flex items-baseline gap-s2 text-caveat text-ink">
+      <input type="checkbox" data-run-override>
+      <span>Use different credentials for this run</span>
+    </label>
+    <div data-run-override-fields class="ml-s5"></div>
+  </div>`;
+}
+
+/** Wires the options and returns `read()`, the choice the Run press acts on:
+ *  `{credential, forceCustom}` or `{error}` after saying why in the dialog. */
+function bindRunOptions(body, slug) {
+  const cataloged = !!selectedProject()?.is_published;
+  const hybrid = body.querySelector('[data-run-hybrid]');
+  const hybridNote = body.querySelector('[data-run-hybrid-note]');
+  const override = body.querySelector('[data-run-override]');
+  const fields = body.querySelector('[data-run-override-fields]');
+
+  const sayHybrid = () => {
+    hybridNote.textContent = !cataloged
+      ? 'not cataloged in Egeria · catalog it on Curate first'
+      : hybrid.checked
+        ? 'Egeria is tried first. The run publishes to Egeria when it finishes (a SurveyReport is written to the catalog). Untick for a local-only run.'
+        : 'Local only: nothing is asked of Egeria in the steps that would try it first.';
+  };
+  hybrid.addEventListener('change', sayHybrid);
+  sayHybrid();
+
+  const showFields = () => {
+    if (!override.checked) { fields.innerHTML = ''; return; }
+    fields.innerHTML = `
+      <div class="mt-s1 flex flex-wrap items-center gap-s2">
+        <input data-run-override-user type="text" autocomplete="off" placeholder="user"
+          class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
+        <input data-run-override-password type="password" autocomplete="off" placeholder="password"
+          class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
+      </div>
+      <label class="mt-s1 flex items-baseline gap-s2 text-caveat text-ink-muted">
+        <input type="checkbox" data-run-override-remember>
+        <span>remember for this session</span>
+      </label>
+      <div class="text-caveat text-ink-muted">Used for this run only; never written to the registry. It is forgotten when this tab reloads.</div>
+      <div data-run-override-error class="text-caveat text-state-warn"></div>`;
+    const mem = rememberedCredential(slug);
+    if (mem) {
+      // Values go in as PROPERTIES: a password is never an attribute or markup.
+      fields.querySelector('[data-run-override-user]').value = mem.user;
+      fields.querySelector('[data-run-override-password]').value = mem.password;
+      fields.querySelector('[data-run-override-remember]').checked = true;
+    }
+  };
+  override.addEventListener('change', showFields);
+  if (rememberedCredential(slug)) { override.checked = true; showFields(); }
+
+  return {
+    read() {
+      const forceCustom = !(cataloged && hybrid.checked);
+      if (!override.checked) { setRemembered(slug, null, false); return { credential: null, forceCustom }; }
+      const user = fields.querySelector('[data-run-override-user]').value.trim();
+      const password = fields.querySelector('[data-run-override-password]').value;
+      const keep = fields.querySelector('[data-run-override-remember]').checked;
+      if (!user || !password) {
+        fields.querySelector('[data-run-override-error]').textContent =
+          'A credential for this run needs both a user and a password.';
+        return { error: true };
+      }
+      const credential = { user, password };
+      setRemembered(slug, credential, keep);
+      return { credential, forceCustom };
+    },
+  };
 }
 
 async function reportPlanMovement(slug, c) {
@@ -5412,16 +5544,53 @@ async function reportPlanMovement(slug, c) {
       last time: ${esc(moved.map((d) => `${d.a} ${d.text}`).join(' · '))}.</div>` : ''}`;
 }
 
-async function launchSurvey(slug, ref) {
+/** The launch note, drawn from state so a pane re-render cannot wipe it. */
+export function launchNoteHtml(slug) {
+  return state.launchNote && state.launchNote.slug === slug ? state.launchNote.html : '';
+}
+function setLaunchNote(slug, html) {
+  state.launchNote = { slug, html };
   const note = $('survey-note');
-  if (note) note.innerHTML = `Launching <span class="font-mono">${esc(ref)}</span>…`;
+  if (note) note.innerHTML = html;
+}
+
+/** The first sentence of a run's first failure, or '' when it recorded none.
+ *  From the persisted entry (errors, then a failed step's detail, then the
+ *  row's own reason), never from which branch the caller took. */
+export function firstFailureSentence(entry) {
+  let d = entry && entry.detail;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = null; } }
+  let msg = '';
+  if (d && Array.isArray(d.errors) && d.errors.length) msg = String(d.errors[0]);
+  if (!msg && d && Array.isArray(d.steps)) {
+    const bad = d.steps.find((st) => st.status && st.status !== 'ok' && typeof st.detail === 'string');
+    if (bad) msg = bad.detail;
+  }
+  if (!msg) { const f = activityFailure(entry); msg = f ? f.reason : ''; }
+  msg = msg.replace(/\s+/g, ' ').trim();
+  const m = msg.match(/^(.*?[.!?])(\s|$)/);
+  return (m ? m[1] : msg).slice(0, 240);
+}
+
+export async function launchSurvey(slug, ref, { credential = null, forceCustom = false } = {}) {
+  setLaunchNote(slug, `Launching <span class="font-mono">${esc(ref)}</span>…`);
   try {
-    const res = await runSurveyDefinition(slug, ref, { entityType: apiEntityType(state.resourceType) });
-    if (note) note.innerHTML = `Launched <span class="font-mono">${esc(ref)}</span>.
+    // The plain call is kept in its original shape (a source pin in
+    // test_next_db_fs_gate_removal.py names it); the options call only differs
+    // by the two things this run was told.
+    const res = (credential || forceCustom)
+      ? await runSurveyDefinition(slug, ref, { entityType: apiEntityType(state.resourceType), credential, forceCustom })
+      : await runSurveyDefinition(slug, ref, { entityType: apiEntityType(state.resourceType) });
+    // "ran as" is the SERVER's statement about the run, never this browser's
+    // belief that it sent a credential.
+    const ranAs = res && res.ran_as && res.ran_as.user
+      ? ` · ran as <span class="font-mono">${esc(res.ran_as.user)}</span> (${esc(res.ran_as.scope || 'this run')}).` : '';
+    let html = `Launched <span class="font-mono">${esc(ref)}</span>${ranAs || '.'}
       ${res && (res.guid || res.engine_action_guid)
         ? `Egeria action <span class="font-mono">${esc(res.guid || res.engine_action_guid)}</span>.` : ''}
       It runs asynchronously — its results appear in Dashboard and in the question rows
       as each step lands, not when this line changes.`;
+    setLaunchNote(slug, html);
     // Found live, `adventureworks`, 2026-09-27: a Survey Definition run
     // that had genuinely completed (three survey rows written) still left
     // this pane reading "never run" — nothing here ever re-fetched. Watch
@@ -5449,7 +5618,7 @@ async function launchSurvey(slug, ref) {
       // steps_report entry carries a "ran locally: Prefect dispatch
       // failed — <reason>" detail specifically to make that distinguishable
       // here, on the same line a person is already watching.
-      if (note && finishedEntry) {
+      if (finishedEntry) {
         let steps = [];
         try {
           const d = typeof finishedEntry.detail === 'string'
@@ -5459,34 +5628,41 @@ async function launchSurvey(slug, ref) {
         // Whole-definition engine choice (which engine actually ran this
         // run — Prefect, or a local fallback and why) is NOT appended here
         // any more (engine-note persistence, 2026-09-28,
-        // ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): this
-        // div is about to be replaced wholesale by loadSurveyPane() below,
-        // which would wipe a transient append here right after writing it —
-        // that was the bug. The engine line now renders on the definition's
-        // own row (surveyRowHtml -> engineNoteHtml), sourced from the run
-        // detail persisted to the activity log, so it survives the reload
-        // this function is about to trigger and shows for historical runs
-        // too.
+        // ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md): it renders on the
+        // definition's own row (surveyRowHtml -> engineNoteHtml), sourced
+        // from the run detail persisted to the activity log, so it survives
+        // the reload this function is about to trigger.
         const fellBack = steps.filter((s) =>
           typeof s.detail === 'string' && s.detail.startsWith('ran locally: Prefect dispatch failed'));
         if (fellBack.length) {
-          note.innerHTML += `<div class="mt-s1 text-state-warn">${
+          html += `<div class="mt-s1 text-state-warn">${
             fellBack.map((s) => esc(`${String(s.step || '').split('::').pop()} — ${s.detail}`)).join('<br>')
           }</div>`;
         }
+        // PI-020: a failed run shows its first sentence AT ONCE, unasked (cue
+        // rule), on the note itself. The note is derived from state, so the
+        // reload below cannot wipe it.
+        const failed = activityFailure(finishedEntry) || (steps.some((s) => s.status === 'error' || s.status === 'failed')
+          ? { reason: '' } : null);
+        const sentence = failed ? firstFailureSentence(finishedEntry) : '';
+        if (sentence) {
+          html += `<div data-launch-failure class="mt-s1 text-state-warn"><span aria-hidden="true">${GLYPH_STATES.error.glyph}</span>
+            failed · ${esc(sentence)}${/authenticat|FATAL|password|credential/i.test(sentence)
+              ? ' <span class="text-ink-muted">Use different credentials for this run, or change the stored credential.</span>' : ''}</div>`;
+        }
+        setLaunchNote(slug, html);
       }
       if (slug === state.selectedSlug && state.subTab === 'survey') {
         await loadSurveyPane();
       }
     }
   } catch (err) {
-    if (!note) return;
     // 401 is not a failure of the survey, it is a fact about this session.
-    note.innerHTML = err.status === 401
+    setLaunchNote(slug, err.status === 401
       ? `<span class="text-accent-ink">Not launched — running a survey is a write, and
          this session is not signed in. Sign in with an Egeria user id to launch it;
          everything else on this pane is readable without one.</span>`
-      : `<span class="text-state-warn">It was not launched: ${esc(err.message)}</span>`;
+      : `<span class="text-state-warn">It was not launched: ${esc(err.message)}</span>`);
   }
 }
 
@@ -5796,7 +5972,25 @@ function declaredVsReceivedHtml(data) {
     <ul class="m-0 mt-s1 list-none p-0 text-caveat">${rows}</ul>`;
 }
 
-async function openRunsList(slug) {
+/** Which source answered a step (the run's own `answered_by`), and, when a
+ *  credential was typed for the run, who the step ran as. Both are the run's
+ *  persisted statements; a step that recorded neither says nothing. */
+const ANSWERED_BY = {
+  local: 'local',
+  custom: 'local scan',
+  'egeria-custom': 'local scan, published to Egeria',
+  egeria: 'Egeria',
+  prefect: 'Prefect',
+};
+export function stepSourceHtml(s) {
+  const word = ANSWERED_BY[s && s.answered_by];
+  if (!word) return '';
+  const ranAs = s.ran_as && s.ran_as.user
+    ? ` · ran as ${esc(s.ran_as.user)} (${esc(s.ran_as.scope || 'this run')})` : '';
+  return `<span class="text-provenance text-ink-muted" data-step-source>answered by ${esc(word)}${ranAs}</span>`;
+}
+
+export async function openRunsList(slug) {
   const el = openDialog('Runs', slug);
   const body = el.querySelector('#wl-detail-body');
   let rows;
@@ -5841,6 +6035,7 @@ async function openRunsList(slug) {
             <span class="${g.tone} font-glyph" title="${esc(g.word)}" aria-label="${esc(g.word)}">${g.glyph}</span>
             <span class="min-w-0 font-mono text-provenance">${
               esc(String(s.step || '').split('::').pop())}</span>
+            ${stepSourceHtml(s)}
             ${!ok && s.detail
               ? `<span class="text-ink-muted">— ${esc(String(s.detail).slice(0, 120))}</span>` : ''}
           </li>`;
