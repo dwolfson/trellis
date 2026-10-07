@@ -191,6 +191,52 @@ DESTRUCTIVE_OUTBOX_KINDS = frozenset({
 })
 NOT_RETRIED = "not retried: destructive write"
 
+#: Egeria's security connector refusing an operation: `OPEN-METADATA-SECURITY-403-007 User X is not
+#: authorized to issue operation Attach on SolutionBlueprint anchor element ...`. It is permanent for the
+#: row until someone changes a permission or a zone, so retrying it for eight attempts only delays the
+#: signal (2026-10-07: seven collection_membership rows retried for hours).
+SECURITY_REFUSAL_MARKER = "OPEN-METADATA-SECURITY-403"
+REFUSED_BY_SECURITY = "refused by Egeria's security"
+NEEDS_PERMISSION_CHANGE = "needs a permission or zone change, not a retry"
+
+
+def _http_code_of(exc: Exception) -> int | None:
+    """The HTTP status an exception carries, when it carries one (pyegeria sets `related_http_code`
+    and `response_code`; requests/httpx errors carry `response.status_code`)."""
+    for holder, name in ((exc, "related_http_code"), (exc, "response_code"), (exc, "status_code"),
+                         (getattr(exc, "response", None), "status_code")):
+        value = getattr(holder, name, None)
+        try:
+            if value is not None and str(value).strip():
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def is_security_refusal(exc: Exception) -> bool:
+    """True for an Egeria security-connector refusal: an OPEN-METADATA-SECURITY-403-* message, or an
+    HTTP 403 on the exception. A bare 401 is NOT one (it can be a stale token and a retry can fix it);
+    nor are 5xx, timeouts or network errors."""
+    if SECURITY_REFUSAL_MARKER in str(exc):
+        return True
+    return _http_code_of(exc) == 403
+
+
+def _refusal_sentence(exc: Exception) -> str:
+    """Egeria's own message cut to its first sentence (from the 403 error id when the text has one)."""
+    text = " ".join(str(exc).split())
+    at = text.find(SECURITY_REFUSAL_MARKER)
+    if at >= 0:
+        text = text[at:]
+    cut = len(text)
+    for i, ch in enumerate(text):
+        if ch == "." and (i + 1 == len(text) or text[i + 1] == " "):
+            cut = i
+            break
+    sentence = text[:cut].strip()[:300]
+    return sentence or "(Egeria gave no message)"
+
 
 def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str],
                   resolve_row_guids: "Callable[[list[int]], dict[int, str]] | None" = None) -> str:
@@ -730,6 +776,14 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
                 # max_attempts=1: this failure is the last attempt. 'dead' is the existing terminal state.
                 status = registry.mark_outbox_failed(row["id"], f"{NOT_RETRIED} · {exc_text}", max_attempts=1)
                 summary["not_retried"] = summary.get("not_retried", 0) + 1
+            elif is_security_refusal(exc):
+                # Permanent until a permission or zone changes: dead on the FIRST refusal, no backoff.
+                status = registry.mark_outbox_failed(
+                    row["id"],
+                    f"{REFUSED_BY_SECURITY}: {_refusal_sentence(exc)} · {NEEDS_PERMISSION_CHANGE}",
+                    max_attempts=1)
+                summary["dead" if status == "dead" else "failed"] += 1
+                summary["security_refused"] = summary.get("security_refused", 0) + 1
             else:
                 status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc_text}")
                 summary["dead" if status == "dead" else "failed"] += 1
@@ -1021,12 +1075,15 @@ def enqueue_collection_members(
     stable across retries of the same run, and never searched for in Egeria.
     Replay safety comes from the relationship being uni-link instead (see
     `_create_collection_membership`).
+
+    Idempotent per (entity, kind, qualified_name): a repeated call returns the existing row ids rather
+    than queueing a second set (see `enqueue_outbox_element_once`).
     """
     row_ids: list[int] = []
     for m in members:
         member_slug = m.get("entity_slug", "")
         qualified_name = f"CollectionMembership::{collection_guid}::{m['member_guid']}"
-        row_ids.append(registry.enqueue_outbox_element(
+        row_ids.append(registry.enqueue_outbox_element_once(
             "investigation", entity_slug, "collection_membership", qualified_name,
             {"collection_guid": collection_guid, "member_guid": m["member_guid"],
              "member_entity_type": m.get("entity_type", ""), "member_entity_slug": member_slug},
@@ -1058,11 +1115,15 @@ def enqueue_blueprint_members(
     No `depends_on_id`: unlike annotation links, the blueprint GUID and every
     member GUID passed in are already resolved synchronously before this is
     called (Decision 5) — nothing here is still in flight.
+
+    Idempotent per (entity, kind, qualified_name): a repeated verdict returns the existing row ids rather
+    than queueing a second set (2026-10-07: egeria_git got 14 rows where 7 were meant). A dead row is
+    revived, not duplicated (see `enqueue_outbox_element_once`).
     """
     row_ids: list[int] = []
     for member_guid in member_guids:
         qualified_name = f"CollectionMembership::{blueprint_guid}::{member_guid}"
-        row_ids.append(registry.enqueue_outbox_element(
+        row_ids.append(registry.enqueue_outbox_element_once(
             entity_type, entity_slug, "collection_membership", qualified_name,
             {"collection_guid": blueprint_guid, "member_guid": member_guid},
             run_id=run_id,
@@ -1156,9 +1217,12 @@ def record_drain_outcome(
     parts = []
     if not_retried:
         parts.append(f"{not_retried} destructive write(s) failed and were NOT retried (press again to retry)")
+    refused = summary.get("security_refused", 0)
+    if refused:
+        parts.append(f"{refused} element(s) refused by Egeria's security (need a permission or zone change; not retried)")
     if dead:
-        if dead - not_retried:
-            parts.append(f"{dead - not_retried} element(s) dead-lettered after exhausting retries")
+        if dead - not_retried - refused:
+            parts.append(f"{dead - not_retried - refused} element(s) dead-lettered after exhausting retries")
     if failed:
         parts.append(f"{failed} element(s) failed and will retry")
     # The entry is a SUMMARY and says so; the record itself is the outbox rows.
