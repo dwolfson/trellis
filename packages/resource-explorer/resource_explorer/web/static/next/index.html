@@ -290,11 +290,11 @@
     .seam { display: none; }
   }
   /* The header is a two-line masthead on a phone, not a six-line one. The
-     investigation name and the cross-link to the current UI are context, and
+     investigation name is context, and
      context is what a 375px screen has least room for — the content is why
      anyone opened it. */
   @media (max-width: 780px) {
-    #investigation-name, #investigation-scope, #switch-ui { display: none; }
+    #investigation-name, #investigation-scope { display: none; }
     #intent-nav { overflow-x: auto; white-space: nowrap; }
     #perspective-row { max-height: 2.4em; overflow: hidden; }
   }
@@ -410,9 +410,9 @@
       <!-- Make switching one click, and say which UI you are in. Testers
            comparing one repo in both shells in one session is what produces
            usable feedback. -->
-      <a id="switch-ui" href="/"
+      <a id="switch-ui" href="/classic"
          class="rounded-sm border border-chrome-line px-2 py-[2px] text-chrome-ink no-underline hover:border-accent hover:text-accent-on-dark">
-        /next · switch to current UI
+        Classic
       </a>
       <button id="logout-btn" class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink">
         Sign out

@@ -63,6 +63,16 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-opus-4-8
 ```
 
+### Which UI `/` serves
+
+```bash
+# Optional. `next` (default) or `classic`. Read once at startup; restart to change.
+# /next always serves Next and /classic always serves Classic, whatever this says.
+RE_DEFAULT_UI=next
+```
+
+An unrecognised value falls back to `next` with a warning in the log.
+
 ### pgvector / registry
 
 ```bash

@@ -823,12 +823,12 @@ export function renderTopBar() {
   $('activity-count').textContent =
     state.counts.activity === null ? '–' : state.counts.activity;
   const link = $('switch-ui');
-  // Same resource in the other UI. index.html has no deep link for a
-  // selected repo, so this is the app root — named, so nobody thinks the
-  // selection carried over when it did not.
-  link.textContent = state.selectedSlug
-    ? '/next · open current UI'
-    : '/next · open current UI';
+  // Same resource in the Classic UI (`/classic?resource=` is read there).
+  link.textContent = 'Classic';
+  link.href = oldUiHref();
+  link.title = state.selectedSlug
+    ? 'Open this resource in the Classic UI'
+    : 'Open the Classic UI';
   wireActivityButton();
   wireAdminButton();
 }
@@ -7502,7 +7502,7 @@ function fmtBytes(n) {
 }
 
 /** What a deferred sub-tab shows when you click it. */
-/** A link into the current UI, on the same resource.
+/** A link into the Classic UI (`/classic`), on the same resource.
  *
  *  `index.html` gained a `?resource=` reader for this — it had no deep link
  *  of any kind, so "links out preserving the resource" was not satisfiable
@@ -7510,8 +7510,8 @@ function fmtBytes(n) {
  *  the app starts exactly as before. */
 export function oldUiHref() {
   return state.selectedSlug
-    ? `/?resource=${encodeURIComponent(state.selectedSlug)}`
-    : '/';
+    ? `/classic?resource=${encodeURIComponent(state.selectedSlug)}`
+    : '/classic';
 }
 
 function deferredPaneHtml(tab) {
