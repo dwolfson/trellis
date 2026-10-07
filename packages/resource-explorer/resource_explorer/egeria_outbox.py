@@ -1075,12 +1075,15 @@ def enqueue_collection_members(
     stable across retries of the same run, and never searched for in Egeria.
     Replay safety comes from the relationship being uni-link instead (see
     `_create_collection_membership`).
+
+    Idempotent per (entity, kind, qualified_name): a repeated call returns the existing row ids rather
+    than queueing a second set (see `enqueue_outbox_element_once`).
     """
     row_ids: list[int] = []
     for m in members:
         member_slug = m.get("entity_slug", "")
         qualified_name = f"CollectionMembership::{collection_guid}::{m['member_guid']}"
-        row_ids.append(registry.enqueue_outbox_element(
+        row_ids.append(registry.enqueue_outbox_element_once(
             "investigation", entity_slug, "collection_membership", qualified_name,
             {"collection_guid": collection_guid, "member_guid": m["member_guid"],
              "member_entity_type": m.get("entity_type", ""), "member_entity_slug": member_slug},
@@ -1112,11 +1115,15 @@ def enqueue_blueprint_members(
     No `depends_on_id`: unlike annotation links, the blueprint GUID and every
     member GUID passed in are already resolved synchronously before this is
     called (Decision 5) — nothing here is still in flight.
+
+    Idempotent per (entity, kind, qualified_name): a repeated verdict returns the existing row ids rather
+    than queueing a second set (2026-10-07: egeria_git got 14 rows where 7 were meant). A dead row is
+    revived, not duplicated (see `enqueue_outbox_element_once`).
     """
     row_ids: list[int] = []
     for member_guid in member_guids:
         qualified_name = f"CollectionMembership::{blueprint_guid}::{member_guid}"
-        row_ids.append(registry.enqueue_outbox_element(
+        row_ids.append(registry.enqueue_outbox_element_once(
             entity_type, entity_slug, "collection_membership", qualified_name,
             {"collection_guid": blueprint_guid, "member_guid": member_guid},
             run_id=run_id,
@@ -1210,16 +1217,16 @@ def record_drain_outcome(
     parts = []
     if not_retried:
         parts.append(f"{not_retried} destructive write(s) failed and were NOT retried (press again to retry)")
+    refused = summary.get("security_refused", 0)
+    if refused:
+        parts.append(f"{refused} element(s) refused by Egeria's security (need a permission or zone change; not retried)")
     if dead:
-        if dead - not_retried:
-            parts.append(f"{dead - not_retried} element(s) dead-lettered after exhausting retries")
+        if dead - not_retried - refused:
+            parts.append(f"{dead - not_retried - refused} element(s) dead-lettered after exhausting retries")
     if failed:
         parts.append(f"{failed} element(s) failed and will retry")
     # The entry is a SUMMARY and says so; the record itself is the outbox rows.
     # `items` carries the pointer the Activity tab turns into a link into
-    refused = summary.get("security_refused", 0)
-    if refused:
-        parts.append(f"{refused} element(s) refused by Egeria's security (need a permission or zone change; not retried)")
     # Admin → Publish Queue, filtered to the affected run — so "3 elements
     # dead-lettered" is one click from *which* three, their qualifiedNames,
     # their attempt counts and what Egeria actually said. Putting that detail
