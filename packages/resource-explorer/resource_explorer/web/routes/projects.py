@@ -2335,7 +2335,38 @@ def components_blueprints(slug: str) -> dict:
     # the readings a curator can switch between, distinct from the diagram's
     # run_label preference and the chrome's unrelated Perspective filter.
     perspectives = sorted({b["perspective"] for b in blueprints if b.get("perspective")})
-    return {"blueprints": blueprints, "perspectives": perspectives}
+    # Brief section 4: the blueprint selector, one row per KIND RE can offer, and the name each one
+    # will be written under.
+    from resource_explorer.blueprint_kinds import (
+        blueprint_display_name, blueprint_kind_rows, kind_key, repo_label)
+    project = registry.get(slug)
+    label = repo_label(slug, getattr(project, "display_name", "") or "")
+    for b in blueprints:
+        sole = (sum(1 for x in blueprints if x["perspective"] == b["perspective"] and not x.get("parent")) == 1
+                and not b.get("parent"))
+        b["kind"] = kind_key(b["perspective"])
+        b["display_name"] = blueprint_display_name(label, b["perspective"], b["cluster_name"], sole_root=sole)
+    evidence_paths: set[str] = set()
+    for r in registry.query_findings(slug, "architecture_interfaces") or []:
+        d = r.get("detail") if isinstance(r.get("detail"), dict) else None
+        if d is None:
+            import json as _json
+            try:
+                d = _json.loads(r.get("detail_json") or "{}")
+            except ValueError:
+                d = {}
+        path = ((d or {}).get("evidence") or {}).get("path")
+        if path:
+            evidence_paths.add(path)
+    build_names = {"build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml"}
+    build_files = sorted({p.rsplit("/", 1)[-1] for p in registry.get_file_inventory(slug) or []
+                          if p.rsplit("/", 1)[-1] in build_names})
+    logical = [bp for bp in blueprints if kind_key(bp["perspective"]) == "logical"]
+    unconfirmed = (sum(1 for bp in logical for m in bp.get("member_status") or [] if not m.get("verdict"))
+                   if logical else None)
+    kinds = blueprint_kind_rows(label=label, blueprints=blueprints, artifact_count=len(evidence_paths),
+                                build_files=build_files, logical_unconfirmed=unconfirmed)
+    return {"blueprints": blueprints, "perspectives": perspectives, "kinds": kinds}
 
 
 @router.get("/{slug}/gaps")

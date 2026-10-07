@@ -87,7 +87,8 @@ class TestTheBlueprintList:
 
     def test_accept_and_reject_are_both_offered_per_row(self):
         app = _app()
-        body = app[app.index("function blueprintRowHtml("):app.index("/** The rail: one cluster")]
+        # accept lives in blueprintWriteHtml (brief section 4: offered only with an accepted node)
+        body = app[app.index("function blueprintWriteHtml("):app.index("/** The rail: one cluster")]
         assert 'data-blueprint-verdict="accepted"' in body and 'data-blueprint-verdict="rejected"' in body
 
     def test_the_screen_says_a_blueprint_verdict_is_reading_scoped(self):

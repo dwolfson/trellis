@@ -386,11 +386,26 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
         BlueprintMaterializer,
     )
     materializer = BlueprintMaterializer(registry=registry)
+    from resource_explorer.blueprint_kinds import (
+        blueprint_display_name,
+        qualified_name_slot,
+        repo_label,
+    )
+    from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
+
+    project = registry.get(slug)
+    roots = [b for b in _candidate_blueprints_results(registry, slug)
+             if b["perspective"] == perspective and not b.get("parent")]
+    sole_root = len(roots) == 1 and roots[0]["cluster_name"] == cluster_name
     try:
         result = materializer.materialize_blueprint_element(
             entity_type, slug, perspective, cluster_name,
-            display_name=cluster.get("name", cluster_name),
+            # The KIND is in the name (owner, 2026-10-07): "Egeria Deployment Blueprint".
+            display_name=blueprint_display_name(
+                repo_label(slug, getattr(project, "display_name", "") or ""), perspective,
+                cluster.get("name", cluster_name), sole_root=sole_root),
             oversized=bool(cluster.get("oversized")),
+            kind_slot=qualified_name_slot(perspective),
         )
     except BlueprintMaterializationError as exc:
         return {"status": "error", "error": str(exc)}

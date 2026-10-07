@@ -216,6 +216,7 @@ class BlueprintMaterializer:
         *,
         display_name: str,
         oversized: bool = False,
+        kind_slot: str = "",
     ) -> dict:
         """Find-or-create ONLY the SolutionBlueprint element itself (Draft,
         via NewSolutionElementRequestBody — see the module docstring's
@@ -229,7 +230,12 @@ class BlueprintMaterializer:
         alongside the verdict, which is already saved and does not get
         rolled back.
         """
-        qualified_name = self.qualified_name_for(entity_type, entity_slug, perspective, cluster_name)
+        legacy_qualified_name = self.qualified_name_for(entity_type, entity_slug, perspective, cluster_name)
+        # `kind_slot` (brief section 4, owner 2026-10-07): the KIND stands in the `<perspective>` slot
+        # of a NEW blueprint's qualifiedName ("Deployment Blueprint"). A blueprint written before that
+        # carries the bare perspective; it is ADOPTED below (never a second element), not renamed.
+        qualified_name = (self.qualified_name_for(entity_type, entity_slug, kind_slot, cluster_name)
+                          if kind_slot else legacy_qualified_name)
 
         # Local cache first — same shape as ComponentMaterializer.materialize's
         # cached-GUID check, and for the same reason: a repeat accept
@@ -246,6 +252,10 @@ class BlueprintMaterializer:
         self._connect()
 
         existing_guid = self._find_element_guid(qualified_name)
+        if not existing_guid and qualified_name != legacy_qualified_name:
+            existing_guid = self._find_element_guid(legacy_qualified_name)
+            if existing_guid:
+                qualified_name = legacy_qualified_name
         if existing_guid:
             if self._registry:
                 self._registry.record_materialized_blueprint(

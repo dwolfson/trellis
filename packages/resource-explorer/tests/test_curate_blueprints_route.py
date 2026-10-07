@@ -61,7 +61,10 @@ class TestTheRoute:
 
     def test_empty_when_nothing_proposed(self, client, registry):
         out = client.get("/api/projects/p/components/blueprints").json()
-        assert out == {"blueprints": [], "perspectives": []}
+        assert out["blueprints"] == [] and out["perspectives"] == []
+        # The selector still lists the three kinds, honestly "not yet drawn" (brief section 4).
+        assert [k["kind"] for k in out["kinds"]] == ["deployment", "build", "logical"]
+        assert all(k["state"] == "not yet drawn" and not k["drawn"] for k in out["kinds"])
 
     def test_shape_matches_the_existing_reader_and_lists_perspectives(self, client, registry):
         _seed_cluster(registry, "p", perspective="physical", name="core")
@@ -91,7 +94,7 @@ class TestAcceptRoundTripsThroughTheNewReader:
             def __init__(self, registry=None):
                 self.registry = registry
 
-            def materialize_blueprint_element(self, entity_type, slug, perspective, cluster_name, *, display_name, oversized=False):
+            def materialize_blueprint_element(self, entity_type, slug, perspective, cluster_name, *, display_name, oversized=False, kind_slot=''):
                 guid = "bp-guid-1"
                 qn = f"SolutionBlueprint::{entity_type}::{slug}::{perspective}::{cluster_name}"
                 self.registry.record_materialized_blueprint(entity_type, slug, perspective, cluster_name, qn, guid)

@@ -389,7 +389,8 @@ export async function renderCurate(slug) {
         + curateSubsHtml(subLocators, chosenSubs()))}
       ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
-        `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
+        `<div id="blueprint-selector"></div>
+         <div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
       ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
         `<div id="blueprint-list"></div>`)}
       ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
@@ -833,6 +834,28 @@ async function renderComponentTree(slug, prefix = '') {
  * ONE reading at a time, says so at its head, and switching readings
  * REPLACES the list outright rather than diffing it against the last one. */
 
+/** The blueprint selector at the top of "what it's made of" (brief section 4): one row per KIND RE can
+ *  offer, with its source and its state. The server says what is drawn; a kind that is not drawn is
+ *  listed as "not yet drawn" and offers no view, never a button that opens nothing. "Write to Egeria"
+ *  is per blueprint (the accept on each blueprint row), never per kind. */
+export function blueprintSelectorHtml(kinds, reading) {
+  if (!kinds || !kinds.length) return '';
+  const cue = (k) => (k.state === 'accepted' ? stateCue('measured', 'accepted')
+    : k.state === 'proposed' ? stateCue('proposal', 'proposed') : stateCue('unrun', 'not yet drawn'));
+  return `<div data-blueprint-selector class="mb-s2 border-b border-rule pb-s1">
+    <div class="mb-[2px] text-caps uppercase tracking-caps text-ink-muted">Blueprints this repository can be read as</div>
+    ${kinds.map((k) => `<div data-blueprint-kind="${esc(k.kind)}" class="flex flex-wrap items-baseline gap-x-s2 py-[2px] text-caveat">
+      ${k.drawn
+        ? `<button type="button" data-blueprint-view="${esc(k.perspective)}" aria-pressed="${k.perspective === reading ? 'true' : 'false'}"
+             class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">${k.perspective === reading ? '● viewing' : 'view'}</button>`
+        : `<span class="px-2 py-[1px] text-ink-muted">○</span>`}
+      <span class="text-ink">${esc(k.name)}</span>
+      <span class="text-provenance text-ink-muted">· ${esc(k.source)}</span>
+      <span class="text-provenance">· ${cue(k)}</span>
+    </div>`).join('')}
+  </div>`;
+}
+
 /** The blueprint's own verdict, rendered the same shape as a component's
  *  `verdictBadge` -- but a blueprint verdict never inherits (it has no
  *  ancestor scope the way a path does) and has no "retyped" outcome
@@ -873,6 +896,18 @@ function membershipHonestyLine(bp) {
     class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${parts.join(' and ')} stand apart${icon('chevron-right', { size: 12 })}</button></div>`;
 }
 
+/** "Write to Egeria" is per blueprint and only for one with accepted nodes (brief section 4): a
+ *  blueprint none of whose components or child blueprints has been accepted would be written empty.
+ *  Without an accepted node the control is replaced by the reason, in a short word. */
+export function blueprintWriteHtml(bp, accepted) {
+  const nodes = (bp.member_status || []).filter((m) => (m.verdict || {}).verdict === 'accepted').length
+    + (bp.child_status || []).filter((c) => (c.verdict || {}).verdict === 'accepted').length;
+  if (!nodes && !accepted) {
+    return `<span data-blueprint-write-blocked class="text-ink-muted" title="A blueprint is written to Egeria only when at least one of its components or child blueprints is accepted.">no accepted component · not written</span>`;
+  }
+  return `<button data-blueprint-verdict="accepted" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${accepted ? 'change' : 'accept'}</button>`;
+}
+
 export function blueprintRowHtml(bp) {
   const v = bp.verdict;
   const accepted = v?.verdict === 'accepted';
@@ -891,7 +926,7 @@ export function blueprintRowHtml(bp) {
     <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
       <span>${blueprintVerdictBadge(v)}</span>
       ${promotionHtml(bp.promotion)}
-      <button data-blueprint-verdict="accepted" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${accepted ? 'change' : 'accept'}</button>
+      ${blueprintWriteHtml(bp, accepted)}
       <button data-blueprint-verdict="rejected" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
     </div>
     ${accepted
@@ -943,10 +978,22 @@ async function renderBlueprintList(slug) {
   catch (err) { host.innerHTML = `<span class="text-accent-ink">The blueprints could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   const { blueprints, perspectives } = data;
-  if (!perspectives.length) { host.innerHTML = ''; return; }
+  const selectorSlot = $('blueprint-selector');
+  if (!perspectives.length) {
+    if (selectorSlot) selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, '');
+    host.innerHTML = '';
+    return;
+  }
   const rk = blueprintReadingKey(slug);
   if (!rk.reading || !perspectives.includes(rk.reading)) rk.reading = perspectives[0];
   const reading = rk.reading;
+  if (selectorSlot) {
+    selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, reading);
+    selectorSlot.querySelectorAll('[data-blueprint-view]').forEach((b) => b.addEventListener('click', () => {
+      rk.reading = b.dataset.blueprintView;       // an immediate visible change: the pressed row reads "viewing"
+      renderBlueprintList(slug);
+    }));
+  }
   const inReading = blueprints.filter((bp) => bp.perspective === reading);
   const others = perspectives.filter((p) => p !== reading)
     .map((p) => ({ p, n: blueprints.filter((bp) => bp.perspective === p).length }));
