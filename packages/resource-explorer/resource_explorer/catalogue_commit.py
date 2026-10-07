@@ -113,6 +113,8 @@ P_CONNECTOR = "connector_read"
 P_READ_FAILED = "read_failed"
 
 #: Proofs that decide a schema's state in Egeria. Anything else is context.
+READ_SUCCESS_PROOFS = (P_ZONES_READ, P_ELEMENTS, P_CONNECTOR, P_DATABASE, P_RESTORED)
+
 STATE_PROOFS = (P_ATTACH_REQUESTED, P_TARGET, P_ELEMENTS, P_REMOVED, P_ARCHIVED, P_RESTORED)
 
 #: The curation record's steps, in the manifest's order.
@@ -544,11 +546,20 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     by = _by_node(proofs)
     ob_by_schema = _outbox_by_schema(registry.list_catalogue_outbox_rows(slug))
     db_rows = by.get(("database", "", ""), [])
-    published = _latest(db_rows, (P_DATABASE,))
+    # The element the header names is the newest of the two rows that NAME a database element: a publish, or a
+    # restore (whose element_guid is the restored element; a roll-forward's earlier publish names a retired one).
+    published = _latest(db_rows, (P_DATABASE, P_RESTORED))
     connector = _latest(db_rows, (P_CONNECTOR,))
     conn_d = ({"last_refresh_time": connector["detail"].get("last_refresh_time", ""),
                "read_at": connector["read_at"]} if connector else None)
     failed_read = _latest(db_rows, (P_READ_FAILED,))
+    # A failed read is healed by any LATER proof that Egeria answered a read: zones_read, elements_read_back,
+    # connector_read (all three are written only from a successful read), or a newer database_published/restored
+    # (both name an element Egeria returned). Order is the proof list's own (oldest first), never a guess.
+    if failed_read is not None:
+        after = proofs[proofs.index(failed_read) + 1:] if failed_read in proofs else []
+        if any(p["proof"] in READ_SUCCESS_PROOFS for p in after):
+            failed_read = None
     zones_text = _zones_text(_latest(db_rows, (P_ZONES,)), _latest(db_rows, (P_ZONES_READ,)))
 
     schemas: dict[str, dict] = {}
@@ -634,7 +645,12 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     n_cat = sum(1 for s in view.get("schemas") or [] if s.get("effective") == CATALOGUE)
     parts = []
     if published:
-        parts.append(f"Database element {published['element_guid'][:8]} in Egeria · published {_stamp(published['read_at'])}")
+        if published.get("proof") == P_RESTORED:
+            was = str((published.get("detail") or {}).get("from_guid") or "")
+            parts.append(f"Database element {published['element_guid'][:8]} in Egeria · restored "
+                         f"{_stamp(published['read_at'])}" + (f" (from {was[:8]})" if was else ""))
+        else:
+            parts.append(f"Database element {published['element_guid'][:8]} in Egeria · published {_stamp(published['read_at'])}")
     else:
         parts.append("Database element not read back from Egeria")
     if published:
