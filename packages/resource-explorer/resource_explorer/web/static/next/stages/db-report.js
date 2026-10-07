@@ -45,7 +45,7 @@ const count = (n) => (typeof n === 'number' ? n.toLocaleString('en-US') : 'not r
 
 /** The history table. `rows` is the `/surveys?include_invalid=true` list, newest first; an invalid
  *  row has `invalid_at`. With `showInvalid` false they are left out and their number is said. */
-export function surveyHistoryHtml(rows, showInvalid) {
+export function surveyHistoryHtml(rows, showInvalid, { heading = true } = {}) {
   if (!Array.isArray(rows)) {
     return '<div data-survey-history-unreadable class="text-caveat text-state-warn">The survey history could not be read: the server did not send a list.</div>';
   }
@@ -58,7 +58,7 @@ export function surveyHistoryHtml(rows, showInvalid) {
     ? `<span data-invalid-hidden class="text-caveat text-ink-muted">${invalid.length} invalid survey${invalid.length === 1 ? '' : 's'} not shown</span>`
     : '';
   const head = `<div class="mb-s1 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px]">
-    <h3 class="m-0 font-heading text-name font-normal">Survey history</h3>${toggle}${note}</div>`;
+    ${heading ? '<h3 class="m-0 font-heading text-name font-normal">Survey history</h3>' : ''}${toggle}${note}</div>`;
   if (!shown.length) {
     return `${head}<div data-survey-history-empty class="text-caveat text-ink-muted">No survey has run for this database.</div>`;
   }
@@ -185,9 +185,9 @@ export function viewFlowchartSource(view) {
 }
 
 /** The Views section. `resp` is the `/views` answer. */
-export function viewsSectionHtml(resp) {
+export function viewsSectionHtml(resp, { heading = true } = {}) {
   const head = (extra) => `<div class="flex flex-wrap items-baseline gap-s2">
-    <h3 class="m-0 font-heading text-name font-normal">Views</h3>${extra}</div>`;
+    ${heading ? '<h3 class="m-0 font-heading text-name font-normal">Views</h3>' : ''}${extra}</div>`;
   if (!resp || resp.__error) {
     return `${head('')}<div data-views-state="error" class="mt-s1 text-answer text-state-warn">Views could not be read: ${esc((resp && resp.__error) || 'no answer')}</div>`;
   }
