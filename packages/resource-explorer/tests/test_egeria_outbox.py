@@ -907,7 +907,7 @@ class TestDefaultClientsIncludesCollectionManager:
         fake_publisher._connect = MagicMock()
         monkeypatch.setattr(
             "resource_explorer.surveyors.egeria_publisher.EgeriaPublisher",
-            lambda: fake_publisher,
+            lambda **_kw: fake_publisher,   # the drain now hands it its service identity
         )
 
         clients, _find_guid = mod._default_clients()
