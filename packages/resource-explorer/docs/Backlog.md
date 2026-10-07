@@ -9576,3 +9576,10 @@ nested structures become confusing and error-prone. Design seed: `docs/design-no
 Deployment-set defaults for publish zones, later per kind or group, replacing the `EXPLORER_PUBLISH_ZONES` environment
 variable. Context: promotion of accepted blueprints and components is moving to the catalog commit's configured-only rule
 (no zone unless one is configured); see the same design note.
+
+## Refine the ingestion rules; make ingesting code optional (2026-10-07, owner)
+
+On the owner's egeria_git survey, the RAG-ingestion step produced 51,729 chunks (outcome "recovered") from code. The owner's
+direction: refine the ingestion rules, or at least make ingesting code optional per resource, so a survey of a code
+repository does not ingest all of its code by default. Not designed; the rules (what is ingested, by kind and path) and
+where the choice is made (resource, investigation or Admin default) are open.
