@@ -225,14 +225,9 @@ def re_survey_step_in_process_flow(
         entity_type=entity_type, slug=slug, step_name=step_name,
         runner_kwargs=runner_kwargs, credential_ref=credential_ref,
     )
-    fr_id = ""
-    try:
-        from prefect.runtime import flow_run as _flow_run_ctx
+    from prefect.runtime import flow_run as _flow_run_ctx
 
-        fr_id = str(_flow_run_ctx.id or "")
-    except Exception:  # pragma: no cover - defensive, never fatal
-        pass
-    return {"result": result, "flow_run_id": fr_id}
+    return {"result": result, "flow_run_id": str(_flow_run_ctx.id or "")}
 
 
 # ── whole-survey orchestration ──────────────────────────────────────────────
