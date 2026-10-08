@@ -303,3 +303,157 @@ class TestThePlanPreviewsTheSkip:
 
     def test_nothing_stored_adds_no_row(self, registry):
         assert "retention" not in self._plan(registry, {"sensitivity": SENS})
+
+
+# ── scrub_text, second round (BEST-EFFORT, shape-based) ─────────────────────────────────────────────
+MORE_SECRETS = [
+    ("Authorization: Token abc12345", "abc12345"),
+    ("Authorization: token abc", "abc"),
+    ("postgresql://u:p@ss@h/db", "p@ss"),
+    ("postgresql://u:p@ss@h/db", "ss@h"),
+    ("postgresql://u:p/w@h/db", "p/w"),
+    ('password: "a\\"b c"', "b c"),
+    ('password: "a\\"b c"', 'a\\"b'),
+    ("Cookie: session=abc; theme=dark", "session=abc"),
+    ("Set-Cookie: sid=zzz999", "zzz999"),
+    ("secretKey=abc9", "abc9"),
+    ("AWS_SECRET_ACCESS_KEY=wJalrXUt", "wJalrXUt"),
+    ('{"passwords": ["p1", "p2 x"]}', "p2 x"),
+    ('{"passwords": ["p1", "p2 x"]}', "p1"),
+    ("client_secret=s3cr3t&grant=1", "s3cr3t"),
+    ("signingKey: k3y-value", "k3y-value"),
+    ("Authorization: Basic dXNlcjpwdw==", "dXNlcjpwdw"),
+    ("session token: tok99abc", "tok99abc"),
+]
+
+
+@pytest.mark.parametrize("text,secret", MORE_SECRETS)
+def test_scrub_text_second_round_samples(text, secret):
+    assert secret not in scrub_text(text), scrub_text(text)
+
+
+def test_scrub_text_keeps_the_name_and_the_rest():
+    assert scrub_text("postgresql://u:p@ss@h/db failed") == "postgresql://u:***@h/db failed"
+    assert scrub_text("connect host:8080/path@x ok") == "connect host:8080/path@x ok"
+    out = scrub_text("Cookie: session=abc\nnext line stays")
+    assert out.endswith("next line stays") and "abc" not in out
+
+
+@pytest.mark.parametrize("text", [
+    "the token expired and the key was not found",
+    "Turkey: 5 monkeys: 3 keyboard=qwerty",
+    "retentionBasis is not valid",
+    "Basic usage of the API failed with status 500",
+    "token budget exceeded (limit 4096)",
+    "Asset 3f2a-9c with key concepts not found",
+    "OMAG-400-012: the sort order is invalid",
+])
+def test_negative_controls_are_left_alone(text):
+    """Rule: only an ASSIGNMENT (name then ':' or '=') whose name carries a credential word is masked,
+    plus URL userinfo, Cookie lines and 'Bearer <x>'. Words like token/key in a sentence are untouched.
+    'keyboard=qwerty' survives; 'foreign_key=id' would not (documented false positive)."""
+    assert scrub_text(text) == text
+
+
+def test_prose_is_best_effort_not_caught():
+    assert "hunter2" in scrub_text("the password is hunter2")        # documented limit
+
+
+# ── every step's error text is scrubbed, not only classifications ───────────────────────────────────
+LEAK = "postgresql://svc:Sup3rS3cret@db/x token=TOPSECRET99"
+
+
+def _assert_clean(*texts):
+    for t in texts:
+        assert "Sup3rS3cret" not in t and "TOPSECRET99" not in t, t
+
+
+def _plain_run(registry, monkeypatch, sub_resources=None, publish_boom=None):
+    from resource_explorer import repo_publish
+    from resource_explorer.surveyors import survey_snapshot
+    registry.save_context("repo", "p", {"enrichment": {}})
+    monkeypatch.setattr(repo_publish, "resolve_project_context", lambda *a, **k: object())
+    monkeypatch.setattr(survey_snapshot, "latest", lambda *a, **k: object())
+    if publish_boom:
+        def boom(*a, **k): raise _Err("publish " + LEAK, LEAK)
+        monkeypatch.setattr(repo_publish, "publish_snapshot", boom)
+    else:
+        monkeypatch.setattr(repo_publish, "publish_snapshot", lambda *a, **k: {
+            "ok": True, "asset_guid": "a-1", "read_back": True, "surveyed_at": "2026-10-07", "reused": False,
+            "report_guid": "r", "annotation_count": 0})
+    monkeypatch.setattr("resource_explorer.egeria_identity.classification_client", lambda *a, **k: Recorder())
+    monkeypatch.setattr(registry, "get_egeria_asset_guid", lambda slug: "a-1")
+    if sub_resources:
+        def boom2(*a, **k): raise _Err("subs " + LEAK, LEAK)
+        monkeypatch.setattr("resource_explorer.resource_scope.publish_chosen", boom2)
+    rec = Curations(registry).create("repo", "p", author="dan", selection={"sub_resources": sub_resources or []},
+                                     manifest={}, steps=list(wf.STEPS))
+    out = wf.execute_curation(registry, rec["id"])
+    return rec["id"], {s["name"]: s for s in out["steps"]}
+
+
+def _http(registry, monkeypatch, cid):
+    from fastapi.testclient import TestClient
+    from resource_explorer.web.app import app
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+    r = TestClient(app).get(f"/api/projects/p/curate/commits/{cid}")
+    assert r.status_code == 200
+    return r.text
+
+
+def test_a_failed_publish_step_is_scrubbed_in_detail_more_log_and_http(registry, monkeypatch, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        cid, by = _plain_run(registry, monkeypatch, publish_boom=True)
+    st = by["publish_asset"]
+    assert st["state"] == "failed"
+    _assert_clean(st["detail"], st.get("more", ""), *[r.getMessage() for r in caplog.records], _http(registry, monkeypatch, cid))
+
+
+def test_a_failed_sub_resources_step_is_scrubbed_in_detail_more_log_and_http(registry, monkeypatch, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        cid, by = _plain_run(registry, monkeypatch, sub_resources=["docs"])
+    st = by["sub_resources"]
+    assert st["state"] == "failed"
+    _assert_clean(st["detail"], st.get("more", ""), *[r.getMessage() for r in caplog.records], _http(registry, monkeypatch, cid))
+
+
+def test_the_run_queue_catch_all_scrubs_row_outcome_and_log(registry, monkeypatch, caplog):
+    import logging
+    import resource_explorer.run_queue as rq
+    run_id = registry.enqueue_run("scouting_scan", {"slug": "p"})
+    row = registry.claim_next_run("host:1", {"pid": 1})
+
+    def boom(target, ref):
+        raise RuntimeError("crash " + LEAK)
+
+    monkeypatch.setitem(rq.HANDLERS, "scouting_scan", boom)
+    with caplog.at_level(logging.ERROR):
+        outcome = rq.execute_run(row, registry)
+    _assert_clean(outcome.error, registry.get_run(run_id)["error"], *[r.getMessage() for r in caplog.records])
+    assert "crash" in outcome.error
+
+
+# ── node parity: more inputs ────────────────────────────────────────────────────────────────────────
+def test_page_and_python_agree_on_edge_inputs(tmp_path):
+    """'6.0' and '00' are not an ordinal or a name, so they take the owner's rule for other free text:
+    Project Lifetime (2) with the text kept as the note. That is acceptable and pinned here."""
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    js = tmp_path / "rb.mjs"
+    js.write_text((Path(rb.__file__).parent / "web/static/next/retention-basis.js").read_text())
+    cases = ["  ", "Other", "TIMEBOXED_LIFETIME", "6.0", None, "00", "OTHER", "99", "  Team   Lifetime "]
+    prog = (f"import('{js.as_uri()}').then(m => console.log(JSON.stringify({json.dumps(cases)}.map(v => m.resolveRetention({{value: v}})))))")
+    out = subprocess.run([node, "-e", prog], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == [rb.resolve({"value": v}) for v in cases]
+    assert rb.resolve({"value": "6.0"}) == {"basis": "PROJECT_LIFETIME", "note": "6.0", "carried": True}
+    assert rb.resolve({"value": "00"})["basis"] == "PROJECT_LIFETIME"
+    assert rb.resolve({"value": "  "})["basis"] == "" and rb.resolve({"value": None})["basis"] == ""

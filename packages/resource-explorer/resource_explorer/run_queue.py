@@ -533,9 +533,15 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
                 acquisition.acquisition_scope() as acquired:
             outcome = handler(target, result_ref)
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
-        log.exception("run %s (%s) crashed", run_id, kind)
-        registry.finish_run(run_id, "failed", error=f"{type(exc).__name__}: {exc}")
-        outcome = RunOutcome(state="failed", error=f"{type(exc).__name__}: {exc}")
+        # Scrubbed by shape before it is logged or stored: a handler's exception can carry a connection
+        # string or token, and this catch-all writes the traceback, the run row and the outcome.
+        import traceback
+        from resource_explorer.secret_redaction import scrub_text
+
+        log.error("run %s (%s) crashed\n%s", run_id, kind, scrub_text(traceback.format_exc()))
+        crash = scrub_text(f"{type(exc).__name__}: {exc}")
+        registry.finish_run(run_id, "failed", error=crash)
+        outcome = RunOutcome(state="failed", error=crash)
         _close_activity(registry, result_ref, kind, target, outcome)
         return outcome
 

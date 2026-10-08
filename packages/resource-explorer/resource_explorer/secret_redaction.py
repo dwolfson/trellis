@@ -58,25 +58,43 @@ def _mask(text: str, forms: list[str]) -> str:
 
 
 # Pattern scrubbing for text whose secret is NOT known in advance (an upstream error body, an
-# exception message): `scrub` above needs the secret itself. Added with the Curate classifications
-# step, whose error text comes from Egeria. Run it BEFORE truncating, so a cut can't leave half a token.
-_CONN_URL = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@\"']+:)[^\s@/\"']+(@)")
-_BEARER = re.compile(r"(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]+")
-_KEYED = re.compile(
-    r"(?i)(\\?[\"']?\b(?:password|passwd|pwd|pass|secret|client[_-]?secret|token|access[_-]?token|"
-    r"api[_-]?key|apikey|access[_-]?key|authorization|auth)\\?[\"']?\s*[:=]\s*)"
-    r"(?:\\?\"[^\"]*?\\?\"|'[^']*'|(?:bearer|basic)\s+[^\s,;&}\"']+|[^\s,;&}\"']+)")
+# exception message): `scrub` below needs the secret itself. BEST-EFFORT and shape-based: it masks
+# what credentials usually look like, it cannot recognise a secret by meaning (prose such as
+# "the password is hunter2" is NOT caught). Run it BEFORE truncating, so a cut can't leave half a token.
+#
+# Rules (each masks the VALUE, keeps the name so the text stays readable):
+#  * scheme://user:PASSWORD@host -- up to the LAST '@' of the token, so '@' or '/' inside the password
+#    is covered (not when the part after ':' is digits then '/', which is host:port/path).
+#  * Cookie:/Set-Cookie: -- the rest of the line.
+#  * name = value or "name": value where the NAME contains password/passwd/pwd/passphrase/secret/token/
+#    credential/authorization/apikey/api_key/access|private|signing|encryption|client|auth _key, ends in
+#    _key or camelCase Key, or is auth/pass; plurals too. The value may be bare, 'single'/"double"
+#    quoted (escaped quotes and spaces inside are covered, so is a JSON-escaped form), a [list], or
+#    'Bearer|Basic|Token <x>' as a unit.
+#  * a bare 'Bearer <token>'; 'Basic|Token <x>' only when x looks like a credential (has a digit or '=').
+# Known false positives: any name ending _key / Key, e.g. foreign_key=id. A sentence with the word
+# 'token' or 'key' and no ':'/'=' assignment is left alone.
+_CONN_URL = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@\"']+:)(?!\d+/)[^\s\"']*@")
+_COOKIE = re.compile(r"(?i)(\b(?:set-)?cookie\s*[:=]\s*)[^\r\n]+")
+_KEYNAME = (r"(?:[\w.-]*(?:password|passwd|pwd|passphrase|secret|token|credential|authorization|apikey|api[_-]?key|"
+            r"(?:access|private|signing|encryption|client|auth)[_-]?key|_key)s?[\w-]*|[\w.-]*(?-i:[a-z]Key)s?|auth|pass)")
+_VALUE = (r"(?:\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|\[[^\]]*\]|"
+          r"(?:bearer|basic|token)\s+[^\s,;&}\"']+|[^\s,;&}\"']+)")
+_KEYED = re.compile(r"(?i)(?<![\w.-])(\\?[\"']?" + _KEYNAME + r"\\?[\"']?\s*[:=]\s*)" + _VALUE)
+_BEARER = re.compile(r"(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=-]{6,}")
+_BASIC_TOKEN = re.compile(r"(?i)\b(basic|token)(\s+)(?=[A-Za-z0-9._~+/=-]*[0-9=])[A-Za-z0-9._~+/=-]{8,}")
 
 
 def scrub_text(text: str) -> str:
-    """Mask credentials in free text by shape: user:pw@ in a connection string, 'Bearer <token>' as a
-    unit, and key=value / "key": "value" for password, pwd, secret, token, api key, authorization.
-    A quoted value is masked whole, including spaces."""
+    """Mask credentials in free text by SHAPE. BEST-EFFORT: see the rules above; it does not understand
+    prose and will miss a secret that has no recognisable shape."""
     if not text:
         return text
-    text = _CONN_URL.sub(r"\1" + MASK + r"\2", text)
+    text = _CONN_URL.sub(lambda m: m.group(1) + MASK + "@", text)
+    text = _COOKIE.sub(lambda m: m.group(1) + MASK, text)
     text = _KEYED.sub(lambda m: m.group(1) + MASK, text)
-    return _BEARER.sub(lambda m: m.group(1) + m.group(2) + MASK, text)
+    text = _BEARER.sub(lambda m: m.group(1) + m.group(2) + MASK, text)
+    return _BASIC_TOKEN.sub(lambda m: m.group(1) + m.group(2) + MASK, text)
 
 
 def scrub(obj, secret: str):

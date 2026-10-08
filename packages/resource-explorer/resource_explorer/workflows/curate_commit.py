@@ -284,7 +284,7 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                 problems = list(res.errors) + ([res.snapshot_error] if res.snapshot_error else [])
                 snap = survey_snapshot.latest(registry, slug) or snap
                 resurveyed = (f"re-surveyed {len(stale)} stale step(s) first"
-                              + (f" ({len(problems)} problem(s): {'; '.join(problems)[:300]})" if problems else "")
+                              + (f" ({len(problems)} problem(s): {scrub_text('; '.join(problems))[:300]})" if problems else "")
                               + " · ")
             else:
                 resurveyed = "nothing was stale · "
@@ -304,8 +304,9 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                      f" · asset {asset_guid or '?'} · survey report {out['report_guid']} · "
                      f"{out['annotation_count']} annotations linked")
     except Exception as exc:
-        log.warning("curation %s: publish failed for %s: %s", curation_id, slug, exc)
-        cur.set_step(curation_id, "publish_asset", "failed", f"{type(exc).__name__}: {exc}")
+        short, full, _reason = _exc_text(exc)
+        log.warning("curation %s: publish failed for %s: %s", curation_id, slug, full[:2000])
+        cur.set_step(curation_id, "publish_asset", "failed", short, more=full[:2000] if len(full) > 200 else "")
         asset_guid = registry.get_egeria_asset_guid(slug) or ""
 
     # ── 2. testimony, copied ───────────────────────────────────────────
@@ -375,7 +376,9 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                          + (f" · not published: {', '.join(missing[:8])}" if missing else "")
                          + rename_sentence(out.get("rename_counts")))
         except Exception as exc:
-            cur.set_step(curation_id, "sub_resources", "failed", f"{type(exc).__name__}: {exc}")
+            short, full, _reason = _exc_text(exc)
+            log.warning("curation %s: sub-resources failed for %s: %s", curation_id, slug, full[:2000])
+            cur.set_step(curation_id, "sub_resources", "failed", short, more=full[:2000] if len(full) > 200 else "")
 
     # ── 4. what it is made of ──────────────────────────────────────────
     cur.set_step(curation_id, "components", "skipped",
