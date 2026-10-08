@@ -120,14 +120,59 @@ function rememberSection(id, open) {
   try { globalThis.localStorage?.setItem(sectionKey(id), open ? '0' : '1'); } catch { /* not remembered */ }
 }
 
+/** Which reads each section owns. Nothing is read until its section is open (owner, 2026-10-08): the page
+ *  opens on six headings and a jump line, not on a minute of reads. "What it's made of" shows the blueprint
+ *  SELECTOR as well as the tree, so it and "blueprints" share one blueprints read. */
+const LAZY_SECTIONS = {
+  'curate-sec-made-of': ['tree', 'blueprints'],
+  'curate-sec-blueprints': ['blueprints'],
+  'curate-sec-relates': ['deps'],
+  'curate-sec-writes': ['depth'],
+};
+
+/** Open `id`, load what it owns, and bring its heading to the top under the jump line. The scroll is
+ *  anchored at the section's START (a section can be thousands of px tall, so centring lands mid-list), with
+ *  a scroll-margin on the section for the sticky jump line. When the section's late load lands, scroll once
+ *  more, unless the person has scrolled in the meantime. A click before the plan is drawn is queued. */
+export function jumpToCurateSection(id) {
+  state.curate = state.curate || {};
+  const el = document.getElementById(id);
+  if (!el) { state.curate.pendingJump = id; return false; }
+  if (el.tagName === 'DETAILS') { el.open = true; rememberSection(el.id, true); }
+  const loading = state.curate.loadSection ? state.curate.loadSection(id) : null;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  endJump();
+  const j = state.curate.jump = { id, moved: false, stop: null };
+  const win = globalThis.window;
+  const moved = () => { j.moved = true; };
+  const kinds = ['wheel', 'touchmove', 'keydown'];
+  if (win) kinds.forEach((k) => win.addEventListener(k, moved));
+  j.stop = () => { if (win) kinds.forEach((k) => win.removeEventListener(k, moved)); };
+  if (loading) {
+    loading.then(() => {
+      if (state.curate.jump !== j) return;
+      if (!j.moved) document.getElementById(id)?.scrollIntoView({ behavior: 'auto', block: 'start' });
+      endJump();
+    });
+  } else {
+    setTimeout(() => { if (state.curate.jump === j) endJump(); }, 1500);
+  }
+  return true;
+}
+function endJump() {
+  const j = state.curate && state.curate.jump;
+  if (j && j.stop) j.stop();
+  if (state.curate) state.curate.jump = null;
+}
+
 function bindCurateSectionNav(host) {
-  host.querySelectorAll('details[id^="curate-sec-"]').forEach((d) => d.addEventListener('toggle', () => rememberSection(d.id, d.open)));
+  host.querySelectorAll('details[id^="curate-sec-"]').forEach((d) => d.addEventListener('toggle', () => {
+    rememberSection(d.id, d.open);
+    if (d.open && state.curate && state.curate.loadSection) state.curate.loadSection(d.id);
+  }));
   host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
     ev.preventDefault();
-    const el = document.getElementById(a.dataset.curateNav);
-    if (!el) return;
-    if (el.tagName === 'DETAILS') { el.open = true; rememberSection(el.id, true); }
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    jumpToCurateSection(a.dataset.curateNav);
   }));
 }
 
@@ -135,7 +180,7 @@ function bindCurateSectionNav(host) {
  *  shell -- <summary> is the section's existing heading text, `id` is what
  *  the nav's anchors target, default COLLAPSED (see sectionOpen). */
 function curateSectionHtml(id, title, extraHeader, inner) {
-  return `<details id="${id}" ${sectionOpen(id) ? 'open' : ''} class="mt-s4">
+  return `<details id="${id}" ${sectionOpen(id) ? 'open' : ''} class="mt-s4" style="scroll-margin-top:4rem">
     <summary class="mb-s1 flex cursor-pointer items-baseline gap-s2 border-b border-rule pb-[3px]">
       <span class="font-heading text-name font-normal text-ink">${esc(title)}</span>
       ${extraHeader || ''}
@@ -288,6 +333,15 @@ export function curateSubsHtml(scope, ui) {
   </div>`;
 }
 
+/** The standing count of what is chosen for publishing, in the section header, with its cue: a choice is saved
+ *  as it is made, so this stays on screen (the per-row "saved" note is only transient). */
+export function savedCountHtml(view) {
+  const m = view && view.manifest;
+  if (!m) return '';
+  const n = (m.files || 0) + (m.folders || 0);
+  return ` <span data-scope-saved-count class="shrink-0 whitespace-nowrap rounded-sm border border-rule-strong px-2 text-provenance text-ink" title="Each choice is saved in Resource Explorer the moment you press Include or Leave out. Nothing reaches Egeria until you press Publish.">${n} included · saved</span>`;
+}
+
 function curateWritesHtml(plan, picks, subCount, containers = 0) {
   const w = plan.writes || {};
   const cls = w.classifications || [];
@@ -430,9 +484,22 @@ export async function renderCurate(slug) {
   // The plan request can take tens of seconds on a large repository (25 s on egeria_git). The
   // stage is already drawn and the other bands are loading on their own; this slot says so and
   // counts the seconds, and blocks nothing.
+  state.curate = state.curate || {};
+  state.curate.loaded = { slug, tree: false, blueprints: false, deps: false, depth: false };
+  state.curate.loadSection = null;
+  state.curate.pendingJump = null;
+  endJump();
   const started = curateClock.now();
   const secs = () => Math.max(0, Math.floor((curateClock.now() - started) / 1000));
-  host.innerHTML = `<div data-curate-plan-loading role="status" class="text-caveat text-ink-muted">plan loading · 0 s</div>`;
+  host.innerHTML = `${curateSectionNavHtml()}<div data-curate-queued class="mb-s1 text-provenance text-ink-muted"></div>
+    <div data-curate-plan-loading role="status" class="text-caveat text-ink-muted">plan loading · 0 s</div>`;
+  // The jump line is there while the plan loads; a click is remembered and done once the sections exist.
+  host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    state.curate.pendingJump = a.dataset.curateNav;
+    const q = host.querySelector('[data-curate-queued]');
+    if (q) q.innerHTML = stateCue('running', 'queued', 'The plan is still being read; this section will open when the plan is read.') + ' will open when the plan is read';
+  }));
   const stopTicker = curateClock.every(() => {
     const line = host.querySelector('[data-curate-plan-loading]');
     if (!line || !host.isConnected) { stopTicker(); return; }
@@ -445,12 +512,16 @@ export async function renderCurate(slug) {
   const ui = state.curate.scopeUi = state.curate.scopeUi || { text: '', showAll: false };
   const scope = createScopeController({
     slug, me: () => me,
-    onChange: () => { if (host.isConnected && slug === state.selectedSlug) { draw(); renderComponentTree(slug); } },
+    onChange: () => { if (host.isConnected && slug === state.selectedSlug) { draw(); refreshTree(); } },
     visible: () => visibleRows(scope.view, ui),
   });
   // Everything below that needs only the slug starts NOW, beside the plan, not after it.
   const scopeLoad = scope.load().catch(() => { scope.view = null; });
-  prefetchCurateReads(slug);
+  // Only a section the viewer left open is read now, beside the plan; everything else waits for its opening.
+  const startNow = [];
+  for (const [id, keys] of Object.entries(LAZY_SECTIONS)) if (sectionOpen(id)) startNow.push(...keys, ...(keys.includes('tree') ? ['diagram'] : []));
+  if (startNow.length) startPrefetch(slug, startNow);
+  const refreshTree = () => { if (state.curate.loaded && state.curate.loaded.tree) renderComponentTree(slug); };
   let plan;
   try {
     plan = await getCuratePlan(slug);
@@ -464,7 +535,8 @@ export async function renderCurate(slug) {
   if (slug !== state.selectedSlug) { dropPrefetch(); return; }
   state.curate = state.curate || {};
   state.curate.blueprintCounts = ((plan.made_of || [])[0] || {}).detail || {};
-  const picks = new Set(state.curate.picks || plan.what_it_is.filter((r) => r.candidate && r.state === 'measured' && r.kind !== 'InfrastructureAsset').map((r) => r.kind));
+  // Nothing is ticked until the owner ticks it (2026-10-08): the press sends only what was confirmed.
+  const picks = new Set(state.curate.picks || []);
   let latest = (plan.commits || [])[0];
   await scopeLoad;
   if (slug !== state.selectedSlug) { dropPrefetch(); return; }
@@ -473,7 +545,7 @@ export async function renderCurate(slug) {
     const current = isCurrentCommit(latest) ? latest : null;
     // Redraws keep the tree, blueprint and depth-offer nodes (open branches, groups, scroll) instead of re-reading them.
     const keep = {};
-    for (const id of ['blueprint-selector', 'component-tree', 'blueprint-list', 'catalogue-depth-offer']) {
+    for (const id of ['blueprint-selector', 'component-tree', 'blueprint-list', 'catalogue-depth-offer', 'curate-dependency-host']) {
       const el = host.querySelector(`#${id}`);
       if (el) keep[id] = el;
     }
@@ -492,7 +564,7 @@ export async function renderCurate(slug) {
          <span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[0].sub)}</span>`,
         whatItIsRowsHtml(plan.what_it_is || [], picks))}
       ${curateSectionHtml('curate-sec-what-holds', CURATE_COLUMNS[1].title,
-        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>`,
+        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>${savedCountHtml(scope.view)}`,
         (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
         + curateSubsHtml(scope, ui))}
       ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
@@ -503,7 +575,7 @@ export async function renderCurate(slug) {
         `<div id="blueprint-list" style="min-height:3rem"></div>`)}
       ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
         (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
-        + '<div class="mt-s2" data-dependency-table-host></div>')}
+        + '<div class="mt-s2" id="curate-dependency-host" data-dependency-table-host></div>')}
       ${curateSectionHtml('curate-sec-writes', 'what gets written',
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
         `${curateWritesHtml(plan, [...picks], (scope.view?.manifest?.files || 0) + (scope.view?.manifest?.folders || 0), scope.view?.manifest?.containers || 0)}
@@ -517,6 +589,7 @@ export async function renderCurate(slug) {
     for (const [id, old] of Object.entries(keep)) host.querySelector(`#${id}`)?.replaceWith(old);
 
     bindCurateSectionNav(host);
+    if (state.curate.loadSection) for (const id of Object.keys(LAZY_SECTIONS)) if (document.getElementById(id)?.open) state.curate.loadSection(id);
     const rowsBox = host.querySelector('[data-scope-rows]');
     if (rowsBox) rowsBox.scrollTop = keepScroll;
     scope.bind(host);
@@ -528,8 +601,6 @@ export async function renderCurate(slug) {
     };
     host.querySelector('[data-scope-filter]')?.addEventListener('input', (ev) => { ui.text = ev.target.value; drawList(); });
     host.querySelector('[data-scope-show-all]')?.addEventListener('change', (ev) => { ui.showAll = ev.target.checked; drawList(); });
-    // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
-    mountDependencyTable(host.querySelector('[data-dependency-table-host]'), slug, { confirmable: true, me });
     const counts0Label = () => publishLabel(manifestCounts({ plan, picks, scope: scope.view, fileTypePicks: curateFileTypePicks() }));
     host.querySelector('[data-commit-resurvey]')?.addEventListener('change', (ev) => { state.curate.resurvey = ev.target.checked; draw(); });
     host.querySelector('[data-commit-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
@@ -540,7 +611,7 @@ export async function renderCurate(slug) {
     });
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
-      state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
+      state.curate.picks = [...picks]; draw(); refreshTree();
     }));
     host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
       openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
@@ -576,6 +647,7 @@ export async function renderCurate(slug) {
         try { plan.survey = (await getCuratePlan(slug)).survey || plan.survey; } catch { /* the table keeps the survey it had */ }
         try { await scope.load(); } catch { /* the rows keep the state they had; the next read will say */ }
         draw();
+        state.curate.loaded.depth = true;
         renderCatalogueDepthOffer(slug, host);
       } catch (err) {
         b.disabled = false; b.textContent = counts0Label();
@@ -590,9 +662,44 @@ export async function renderCurate(slug) {
   if (state.curateOnPicks) document.removeEventListener('re:curate-picks', state.curateOnPicks);
   state.curateOnPicks = () => { if (host.isConnected && slug === state.selectedSlug) draw(); };
   document.addEventListener('re:curate-picks', state.curateOnPicks);
-  renderComponentTree(slug);
-  renderBlueprintList(slug);
-  renderCatalogueDepthOffer(slug, host);
+  setupLazySections();
+  const pending = state.curate.pendingJump;
+  if (pending) { state.curate.pendingJump = null; jumpToCurateSection(pending); }
+
+  /** Reads one section's data the first time it is open; a cue shows in its slot at once. */
+  function loadSectionData(id) {
+    const keys = LAZY_SECTIONS[id];
+    const L = state.curate.loaded;
+    if (!keys || !L || L.slug !== slug) return null;
+    const work = [];
+    const cueIn = (el, word) => { if (el) el.innerHTML = `<span class="text-caveat">${stateCue('running', word)}</span>`; };
+    for (const k of keys) {
+      if (L[k]) continue;
+      L[k] = true;
+      if (k === 'tree') {
+        startPrefetch(slug, ['tree', 'diagram']);
+        cueIn($('component-tree'), 'loading components');
+        work.push(renderComponentTree(slug));
+      } else if (k === 'blueprints') {
+        startPrefetch(slug, ['blueprints']);
+        cueIn($('blueprint-list'), 'loading blueprints');
+        work.push(renderBlueprintList(slug));
+      } else if (k === 'deps') {
+        const slot = host.querySelector('[data-dependency-table-host]');
+        cueIn(slot, 'loading dependencies');
+        // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
+        work.push(Promise.resolve(mountDependencyTable(slot, slug, { confirmable: true, me })));
+      } else if (k === 'depth') {
+        startPrefetch(slug, ['depth']);
+        work.push(renderCatalogueDepthOffer(slug, host));
+      }
+    }
+    return work.length ? Promise.all(work.map((w) => Promise.resolve(w).catch(() => {}))) : null;
+  }
+  function setupLazySections() {
+    state.curate.loadSection = loadSectionData;
+    for (const id of Object.keys(LAZY_SECTIONS)) if (document.getElementById(id)?.open) loadSectionData(id);
+  }
 }
 
 /** Reads that need only the slug, started beside the plan request and consumed once by the first paint.
@@ -602,14 +709,18 @@ const PREFETCH_TTL_MS = 60000;
 /** True while a started prefetch has not been consumed or dropped (a test reads it). */
 export function curatePrefetchPending() { return !!prefetched; }
 function dropPrefetch() { prefetched = null; }
-function prefetchCurateReads(slug) {
+/** Start the reads a section will need, the moment it is going to open (or at page open for a section the
+ *  viewer left open). `diagram` is the architecture-diagram fact, started beside the tree rather than after it. */
+function startPrefetch(slug, keys) {
   const keep = (p) => { p.catch(() => {}); return p; };
-  prefetched = {
-    slug, at: Date.now(),
-    tree: keep(getComponentTree(slug, '')),
-    blueprints: keep(getComponentBlueprints(slug)),
-    depth: keep(getCatalogueDepthOffer(slug)),
+  const make = {
+    tree: () => getComponentTree(slug, ''),
+    diagram: () => getBulkFacts([slug], ['architecture_diagram'], apiEntityType(state.resourceType)),
+    blueprints: () => getComponentBlueprints(slug),
+    depth: () => getCatalogueDepthOffer(slug),
   };
+  if (!prefetched || prefetched.slug !== slug) prefetched = { slug, at: Date.now() };
+  for (const k of keys) if (make[k] && !prefetched[k]) prefetched[k] = keep(make[k]());
 }
 function takePrefetched(slug, key) {
   if (!prefetched || prefetched.slug !== slug || !prefetched[key]) return null;
@@ -1244,18 +1355,24 @@ async function renderBlueprintList(slug) {
   // §3: replaced outright on every render, never diffed against the
   // previous reading's rows -- this function is always called with a fresh
   // innerHTML assignment, so there is no patch step to accidentally add.
+  // The section wrapper is the ONE heading (it owns the id and the collapse); here is only a muted line.
+  // A long list is capped like the component tree's branches: the first page plus anything that needs a
+  // person (an undecided cluster with a warning), and "and N more clusters ›" for the rest.
+  const PAGE = 10;
+  const needsAttention = (bp) => !bp.verdict && !!bp.oversized;
+  const shownRows = state.blueprintShowAll ? inReading : inReading.filter((bp, i) => i < PAGE || needsAttention(bp));
+  const hiddenN = inReading.length - shownRows.length;
   host.innerHTML = `
-    <div class="mb-s1 mt-s3 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
-      <span class="font-heading text-name font-normal text-ink">blueprints</span>
-      <span class="text-provenance text-ink-muted">clusters clustering.py proposed as a cohesive unit, in the ${esc(reading)} reading</span>
-    </div>
+    <p data-blueprint-reading-line class="mb-s1 text-provenance text-ink-muted">candidate clusters, in the ${esc(reading)} reading</p>
     <p class="mb-s2 max-w-[70ch] text-caveat text-ink-muted">A verdict here is recorded against <span class="font-mono">${esc(reading)}::cluster name</span>
       and applies in this reading only — switching readings shows a different set, not the same set re-judged.</p>
-    ${inReading.length ? inReading.map(blueprintRowHtml).join('') : `<div class="text-caveat text-ink-muted">No candidate blueprints proposed in the ${esc(reading)} reading.</div>`}
-    <div class="mt-s2 text-provenance text-ink-muted"><span class="tnum">${inReading.length}</span> of <span class="tnum">${inReading.length}</span> clusters shown · all in the <span class="text-ink">${esc(reading)}</span> reading${recordFooter}
+    ${inReading.length ? shownRows.map(blueprintRowHtml).join('') : `<div class="text-caveat text-ink-muted">No candidate blueprints proposed in the ${esc(reading)} reading.</div>`}
+    <div class="mt-s2 text-provenance text-ink-muted"><span class="tnum">${shownRows.length}</span> of <span class="tnum">${inReading.length}</span> clusters shown${
+      hiddenN ? ` · <button type="button" data-blueprint-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${hiddenN}</span> more cluster${hiddenN === 1 ? '' : 's'}${icon('chevron-right', { size: 12 })}</button>` : ''} · all in the <span class="text-ink">${esc(reading)}</span> reading${recordFooter}
       ${others.map((o) => ` · <button data-blueprint-reading="${esc(o.p)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">the ${esc(o.p)} reading has <span class="tnum">${o.n}</span>${icon('chevron-right', { size: 12 })}</button>`).join('')}</div>
     <div id="blueprint-status" class="mt-s1 text-provenance text-ink-muted"></div>`;
 
+  host.querySelector('[data-blueprint-more]')?.addEventListener('click', () => { state.blueprintShowAll = true; renderBlueprintList(slug); });
   host.querySelectorAll('[data-blueprint-reading]').forEach((b) => b.addEventListener('click', () => {
     rk.reading = b.dataset.blueprintReading;
     renderBlueprintList(slug);
@@ -1321,7 +1438,7 @@ async function renderComponentDiagram(slug, host) {
   if (!host) return;
   let fact;
   try {
-    const res = await getBulkFacts([slug], ['architecture_diagram'], apiEntityType(state.resourceType));
+    const res = await (takePrefetched(slug, 'diagram') || getBulkFacts([slug], ['architecture_diagram'], apiEntityType(state.resourceType)));
     fact = (((res.subjects || {})[slug]) || []).find((f) => f.analysis_id === 'architecture_diagram');
   } catch { fact = null; }
   if (slug !== state.selectedSlug) return;

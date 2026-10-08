@@ -62,9 +62,11 @@ function makeServer(over = {}) {
   return s;
 }
 
-async function setUp(over = {}, { settle = 400, storage = 'ok' } = {}) {
+async function setUp(over = {}, { settle = 400, storage = 'ok', open = true } = {}) {
   delete globalThis.localStorage;   // a previous test may have left a throwing getter
   const { document, window } = makeDomEnvironment();
+  // The tree, blueprints and dependencies are read only when their section is open: these tests need them.
+  if (open) for (const id of ['made-of', 'blueprints', 'relates', 'writes']) window.localStorage.setItem(`re.curate.collapsed.curate-sec-${id}`, '0');
   if (storage === 'throws') {
     const boom = { get() { throw new window.DOMException('denied', 'SecurityError'); }, configurable: true };
     Object.defineProperty(window, 'localStorage', boom);
@@ -93,7 +95,7 @@ const SECS = ['what-it-is', 'what-holds', 'made-of', 'blueprints', 'relates', 'w
 const norm = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
 test('every Curate section starts collapsed; opening one is remembered across a redraw', async () => {
-  const { document, app } = await setUp();
+  const { document, app } = await setUp({}, { open: false });
   for (const id of SECS) assert.equal(document.getElementById(id).open, false, `${id} collapsed`);
   document.querySelector('[data-curate-nav="curate-sec-blueprints"]').click();
   assert.equal(document.getElementById('curate-sec-blueprints').open, true);
@@ -111,7 +113,7 @@ test('every Curate section starts collapsed; opening one is remembered across a 
 });
 
 test('storage that throws: sections still start collapsed and still open', async () => {
-  const { document } = await setUp({}, { storage: 'throws' });
+  const { document } = await setUp({}, { storage: 'throws', open: false });
   for (const id of SECS) assert.equal(document.getElementById(id).open, false);
   document.querySelector('[data-curate-nav="curate-sec-writes"]').click();
   assert.equal(document.getElementById('curate-sec-writes').open, true);
