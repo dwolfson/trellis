@@ -501,3 +501,74 @@ def test_a_slug_with_colons_cannot_read_another_slugs_entries(registry, tmp_path
     node_admission.reclassify(registry, "t9", "deploy::kafka", "built_here", "ours", "dan")
     assert node_admission.read_reclassifications(registry, "t9::deploy") == {}
     assert node_admission.read_reclassifications(registry, "T9") == {}
+
+
+# ── Dockerfile twins survive qualification; empty units never apply silently; injective slugs ─────
+
+def _components_named(root, name):
+    from resource_explorer.surveyors.arch_recovery import detectors, exclusion
+    first = exclusion.scan(root).first_party
+    comps, _e, _n, _o = detectors.build_components(root, first, all_files=first)
+    return [c for c in comps if c.name == name]
+
+
+def _twin_with_dockerfile(tmp_path, name, other_unit=None):
+    root = str(tmp_path / name)
+    _write(root, "a/p/compose.yaml", "services:\n  web:\n    image: odpi/web:1\n    build: ./web\n")
+    _write(root, "a/p/web/Dockerfile", "FROM python:3\nCMD [\"python\", \"app.py\"]\n")
+    _write(root, "a/p/web/app.py", "print(1)\n")
+    if other_unit:
+        _write(root, f"{other_unit}/compose.yaml", "services:\n  web:\n    image: apache/web:1\n")
+    _git(root)
+    return root
+
+
+@pytest.mark.parametrize("other", [None, "b/p"])
+def test_a_dockerfile_and_its_compose_service_stay_one_node_even_when_the_name_is_shared(tmp_path, other):
+    root = _twin_with_dockerfile(tmp_path, f"d{other is None}", other)
+    in_a = [c for c in _components_named(root, "web") if c.identity.deployment_context in ("a/p", "a/p/web")
+            or "a/p" in "".join(c.files)]
+    assert len(in_a) == 1
+    assert in_a[0].admission == "built_here" and in_a[0].image == "odpi/web"
+    if other:
+        assert len(_components_named(root, "web")) == 2        # b/p's own service is still its own node
+
+
+def test_qualified_slugs_are_injective_for_directories_that_differ_only_by_separator(tmp_path):
+    root = str(tmp_path / "inj")
+    for d in ("a/b-c/deploy", "a-b/c/deploy"):
+        _write(root, f"{d}/compose.yaml", "services:\n  kafka:\n    image: apache/kafka:3\n")
+    _git(root)
+    slugs = [c.slug for c in _components_named(root, "kafka")]
+    assert len(slugs) == 2 and len(set(slugs)) == 2
+    assert all(s.startswith(("a-b-c-deploy::kafka", "a-b-c-deploy.")) or "::kafka" in s for s in slugs)
+
+
+def test_non_colliding_qualified_slugs_are_unchanged(tmp_path):
+    root = _twin_repo(tmp_path, ["a/deploy", "b/deploy"], "plainq")
+    assert sorted(c.slug for c in _components_named(root, "kafka")) == ["a-deploy::kafka", "b-deploy::kafka"]
+
+
+class TestEmptyUnitEntries:
+    def _put(self, registry, slug, scope, unit):
+        import json as _j
+        registry.add_setting_once(f"repo_node_reclassifications::{slug}::00000000000000000007-u",
+                                  _j.dumps({"scope": scope, "to": "built_here", "reason": "r", "by": "dan",
+                                            "at": "2026-10-09T00:00:00+00:00", **({"unit": unit} if unit is not None else {})}))
+
+    def test_a_unitless_entry_applies_to_a_plain_slug_with_no_collision(self, registry, tmp_path):
+        _survey(registry, "e1", _twin_repo(tmp_path, ["b/deploy"], "e1"))
+        self._put(registry, "e1", "deploy::kafka", None)
+        assert node_admission.referenced_rows(registry, "e1") == []        # moved to built here
+
+    def test_a_unitless_entry_does_not_apply_to_a_qualified_slug(self, registry, tmp_path):
+        _survey(registry, "e2", _twin_repo(tmp_path, ["a/deploy", "b/deploy"], "e2"))
+        self._put(registry, "e2", "a-deploy::kafka", None)
+        assert len(node_admission.referenced_rows(registry, "e2")) == 2
+        assert any("no directory recorded" in l and "not applied" in l
+                   for l in node_admission.summary(registry, "e2")["left_out"])
+
+    def test_an_entry_with_a_directory_does_not_apply_to_a_node_with_none(self):
+        entry, note = node_admission.effective({"x": [{"to": "built_here", "reason": "r", "by": "d", "at": "t",
+                                                       "unit": "a/b"}]}, "x", "")
+        assert entry is None and "not applied" in note

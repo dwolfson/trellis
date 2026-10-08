@@ -88,13 +88,34 @@ def _unit_of(component: dict) -> str:
     return ((component.get("identity") or {}).get("deployment_context") or "")
 
 
-def effective(reclass: dict, scope: str, node_unit: str) -> tuple[dict | None, str]:
+def effective(reclass: dict, scope: str, node_unit: str, node_name: str = "") -> tuple[dict | None, str]:
     """(the entry that applies to this node, a sentence when one exists but does not). A reclassification
-    belongs to the DIRECTORY (unit) its node was in when the person made it; if the node at that scope
-    now sits in another directory, the entry is not applied and the row says so, never silently."""
+    belongs to the DIRECTORY (unit) its node was in when the person made it:
+
+    * an entry WITH a directory applies only to a node in that directory (a node whose directory is not
+      known never receives one);
+    * an entry with NO directory (made before directories were stored) applies to a path-keyed node, and
+      to a slug-keyed (compose) node only when its scope is the PLAIN slug (`<dir basename>::<name>`):
+      a qualified slug exists only because several directories share the name, so which one the person
+      meant cannot be known.
+
+    Anything that does not apply is said on the row, never silently."""
     entry = latest(reclass, scope)
-    if entry and entry.get("unit") and node_unit and entry["unit"] != node_unit:
-        return None, f"reclassification belongs to {entry['unit']}; not applied"
+    if not entry:
+        return None, ""
+    eu = entry.get("unit") or ""
+    if eu:
+        if not node_unit:
+            return None, f"reclassification belongs to {eu}; this node's directory is not known; not applied"
+        if eu != node_unit:
+            return None, f"reclassification belongs to {eu}; not applied"
+        return entry, ""
+    if "::" in scope and node_unit:
+        from resource_explorer.surveyors.arch_recovery.detectors import _slug
+        import os
+        if scope != _slug(os.path.basename(node_unit), node_name):
+            return None, ("reclassification has no directory recorded and this name is shared by several "
+                          "directories; not applied")
     return entry, ""
 
 
@@ -150,7 +171,7 @@ def apply_to_components(components: list, reclass: dict) -> None:
     """Survey time: honour the trail on freshly detected Components (mutates them)."""
     for c in components:
         from resource_explorer.surveyors.arch_recovery.persist import scope_locator_for
-        entry, _note = effective(reclass, scope_locator_for(c), c.identity.deployment_context or "")
+        entry, _note = effective(reclass, scope_locator_for(c), c.identity.deployment_context or "", c.name)
         if entry:
             c.admission = entry["to"]
             c.admission_evidence = f"reclassified by {entry['by']} · {entry['reason']}"
@@ -163,7 +184,7 @@ def referenced_rows(registry, slug: str) -> list[dict]:
     reclass = read_reclassifications(registry, slug)
     rows = []
     for i in _stored(registry, slug).get("referenced", []):
-        entry, note = effective(reclass, i["scope"], i.get("unit", ""))
+        entry, note = effective(reclass, i["scope"], i.get("unit", ""), i.get("name", ""))
         if entry and entry["to"] == adm.BUILT:
             continue
         rows.append({**i, "reclassified": entry, "reclassification_note": note})
@@ -175,7 +196,7 @@ def referenced_rows(registry, slug: str) -> list[dict]:
             c = comps.get(scope)
             if c is None:
                 continue
-            entry, note = effective(reclass, scope, _unit_of(c))
+            entry, note = effective(reclass, scope, _unit_of(c), c.get("name") or "")
             if entry is None or entry["to"] != adm.REFERENCED:
                 continue
             rows.append({"scope": scope, "name": c.get("name") or scope, "slug": scope,
@@ -193,7 +214,7 @@ def apply_to_tree_components(registry, slug: str, comps: list[dict]) -> list[dic
         return comps
     out = []
     for c in comps:
-        entry, note = effective(reclass, c.get("path", ""), _unit_of(c))
+        entry, note = effective(reclass, c.get("path", ""), _unit_of(c), c.get("name") or "")
         if entry and entry["to"] == adm.REFERENCED:
             continue
         if entry:
@@ -204,7 +225,7 @@ def apply_to_tree_components(registry, slug: str, comps: list[dict]) -> list[dic
         out.append(c)
     present = {c.get("path") for c in out}
     for i in _stored(registry, slug).get("referenced", []):
-        entry, _note = effective(reclass, i["scope"], i.get("unit", ""))
+        entry, _note = effective(reclass, i["scope"], i.get("unit", ""), i.get("name", ""))
         if entry and entry["to"] == adm.BUILT and i["scope"] not in present:
             out.append({"path": i["scope"], "name": i["name"], "type": "Third Party Process", "confidence": 60,
                         "perspective": "deployment", "proposed_by": [], "proposals": [], "agreement": False,
@@ -236,13 +257,13 @@ def summary(registry, slug: str) -> dict:
                            f"listed as runtime dependencies")
     # Entries that exist but do not apply: say which, never silently.
     reclass = read_reclassifications(registry, slug)
-    units = {i["scope"]: i.get("unit", "") for i in stored.get("referenced", [])}
-    units.update({p: _unit_of(c) for p, c in _component_paths(registry, slug).items()})
+    units = {i["scope"]: (i.get("unit", ""), i.get("name", "")) for i in stored.get("referenced", [])}
+    units.update({p: (_unit_of(c), c.get("name") or "") for p, c in _component_paths(registry, slug).items()})
     for scope in sorted(reclass):
         if scope not in units:
             left_out.append(f"reclassification of {scope} no longer matches any node · not applied")
         else:
-            _entry, note = effective(reclass, scope, units[scope])
+            _entry, note = effective(reclass, scope, *units[scope])
             if note:
                 left_out.append(f"reclassification of {scope}: {note}")
     bad = unreadable_count(registry, slug)

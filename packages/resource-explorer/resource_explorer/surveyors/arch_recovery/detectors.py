@@ -491,6 +491,20 @@ def compose_slug_units(root: str, files: list[str]) -> dict[str, set[str]]:
     return out
 
 
+def qualified_compose_slug(unit: str, name: str, units: set[str]) -> str:
+    """The slug of a compose service whose plain slug several directories carry: the whole directory path,
+    then the name. Directories that differ only by separator ("a/b-c" and "a-b/c" both read a-b-c) would
+    still collide, so those, and only those, get a short hash of the exact path appended; a slug that
+    collides with nothing is unchanged."""
+    import hashlib
+    def base(u: str) -> str:
+        return _slug(u.replace(os.sep, "-"), name)
+    mine = base(unit)
+    if sum(1 for u in units if base(u) == mine) > 1:
+        return f"{mine}.{hashlib.sha1(unit.encode()).hexdigest()[:6]}"
+    return mine
+
+
 def build_components(root: str, files: list[str], all_files: list[str] | None = None,
                      ) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
     components: list[Component] = []
@@ -675,21 +689,25 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
     # Which plain slugs more than one directory carries is decided from the WHOLE repository's compose files
     # (`all_files`, the full census), not from the files this run was handed: a scoped run sees one
     # directory and would otherwise hand that service a plain slug the full run had qualified.
-    shared = {slug for slug, us in compose_slug_units(root, all_files if all_files is not None else files).items()
-              if len(us) > 1}
+    shared = {slug: us for slug, us in compose_slug_units(
+        root, all_files if all_files is not None else files).items() if len(us) > 1}
     for unit, merged in per_unit.items():
         for key, (name, decl, line) in merged.items():
             slug = _slug(os.path.basename(unit), name)
             if slug in shared:
                 # Two services of the same name in same-named directories (a/deploy, b/deploy) are two
                 # services: every one is qualified by its whole directory path, independent of order.
-                slug = _slug(unit.replace(os.sep, "-"), name)
+                slug = qualified_compose_slug(unit, name, shared[slug])
             f = per_unit_facts[unit].get(key, {"image": "", "build": ""})
-            twin = next((c for c in components if c.slug == slug), None)
+            # The same unit already found by its Dockerfile or manifest is the stronger, built-here
+            # reading. It is matched by slug, or by DIRECTORY and name, so a compose service that was
+            # qualified (and so no longer shares the Dockerfile component's plain slug) still merges.
+            twin = next((c for c in components if c.slug == slug), None) or next(
+                (c for c in components if c.perspective != "deployment" and c.identity.method == "deployment-unit"
+                 and c.identity.deployment_context == unit and c.identity.value == name), None)
             if twin is not None:
-                # The same unit was already found by its Dockerfile or manifest: that is the stronger,
-                # built-here reading. The compose service still names the image it ships, which is how a
-                # service elsewhere is linked to the repository that builds it.
+                # The compose service still names the image it ships, which is how a service elsewhere is
+                # linked to the repository that builds it.
                 twin.image = twin.image or _admission.normalise_image(f["image"])
                 continue
             named = name != key
