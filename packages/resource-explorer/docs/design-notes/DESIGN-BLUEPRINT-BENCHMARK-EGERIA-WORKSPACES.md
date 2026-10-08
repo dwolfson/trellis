@@ -110,6 +110,88 @@ change. Labels for actor wires are told, always.
    blueprint minus client tools and actors.
 4. Client tools from the egeria-python cross-repository fact.
 
+## 6a. "An OMAG Server Platform does not contain an OMAG Server Platform" (owner, 2026-10-08)
+
+The blueprint RE wrote earlier for egeria_git (`SolutionBlueprint`
+254dbbe6, displayName "OMAG-Server-Platform", deployment perspective) has
+seven members: a component also named "OMAG Server Platform" and six
+others (active-metadata-store, engine-host, integration-daemon,
+nanny-daemon, simple-metadata-store, view-server). The owner is right that
+it is wrong, in two ways.
+
+**Cause.** The recovery's clustering names a cluster after its root
+component, and the materialiser writes the cluster as a blueprint
+*containing* its root and its children. So the blueprint and its root
+component share a name, and the platform appears as a member of itself.
+The six others are not parts of the platform either: they are **OMAG
+servers hosted on** the platform, runtime instances the compose and
+server configuration files declare. The owner's own blueprints show the
+right shape: in "Runtimes" the platform is one component among peers
+(Kafka, PostgreSQL, Marquez …), and in "Servers" there is no platform
+component at all; the servers, topics and tools are the peers.
+
+**Rule.**
+
+1. A blueprint's name never equals a member's name. The name is the kind
+   and the repository, per brief 1 ("Egeria Deployment Blueprint"), never
+   the root cluster's name.
+2. A root component is a member like any other; a cluster's root carries
+   no special place in the blueprint.
+3. "Hosted on" / "runs on" is a **relation between nodes**, from the
+   dependency vocabulary (`deployed_by` / `runs`), never a membership. A
+   server hosted on the platform is a node with a wire to the platform
+   node labelled "hosted on"; it is not a child of the platform in the
+   blueprint's membership.
+
+**How the deployment blueprint shows platform and servers.** Two readings,
+both supported by the owner's examples, chosen by the blueprint's kind:
+
+- In the **Environment Deployment Blueprint** (≈ his Runtimes), the
+  platform is one node among the technology services; the servers hosted
+  on it are **not** drawn as separate nodes, because at that level the
+  platform is the deployment unit. His Runtimes blueprint has exactly
+  this: "OMAG Server Platform" beside Kafka and PostgreSQL, no servers.
+- In the **Servers blueprint** (≈ his Servers, a Logical/Deployment
+  blueprint of Egeria's own servers), the servers are the nodes, with
+  their topics and tools, and the platform is not a node at all; if a
+  person wants the hosting shown, the platform appears as an edge port
+  with "hosted on" wires, never as a container of the servers. His
+  Servers blueprint has no platform node, which is the stronger
+  precedent: at that level the platform is the environment, not a peer.
+
+So RE draws the platform **or** the servers in one blueprint, never both
+as container and contents; which one is the blueprint's kind. The
+recovery's cluster is still useful: it tells RE that these six are hosted
+on that one, which becomes six `deployed_by` rows and, in the Servers
+blueprint, the optional edge port.
+
+**What to do about 254dbbe6.** Egeria rolls forward, never undoes, and no
+rename call exists in RE today for a blueprint. Options, with the exact
+writes, for the owner's decision:
+
+| Option | Writes | Effect | Leaves behind |
+|---|---|---|---|
+| **(a) leave it** | none | the next accepted verdict on egeria_git, on the fixed build, creates "Egeria Deployment Blueprint" with the platform as one member and the six servers as `deployed_by` rows; 254dbbe6 stays as it is | a second blueprint for the same repository, the old one wrongly named and wrongly shaped, visible in Egeria Explorer beside the right one until a steward retires it there |
+| **(b) rename-forward only** | one merge update of 254dbbe6's `displayName` (and `qualifiedName`'s perspective slot) to "Egeria Deployment Blueprint", the same mechanism as the file-type rename-forward: a property update, no delete, no membership change | the name stops lying; the shape still does (seven members including the platform) | the self-membership and the six wrong memberships, which no RE call removes; a steward may detach the six `CollectionMembership` links in Egeria by hand |
+| **(c) both: rename-forward, then re-materialise under the rule** | the rename of (b), then on the next accepted verdict RE finds the blueprint by its new qualifiedName (adoption by name), keeps the platform component as a member, and writes six `deployed_by` annotations (the two-ends form) instead of memberships; the six existing memberships are **not** removed by RE | one blueprint, rightly named, with the right new facts beside the old wrong memberships, which Egeria Explorer still draws as members | the six old membership links, until a steward detaches them in Egeria; the same-named component stays as the platform node, correctly a member |
+
+**Recommendation: (c)**, with the detachment of the six old memberships
+done by the owner in Egeria Explorer (a stewardship act, six detaches, no
+RE code), because it yields one blueprint and keeps every RE write
+additive. (a) is cleaner for RE and worse for a person looking at Egeria,
+who sees two blueprints for one repository. (b) alone fixes the word and
+not the shape. Whichever he chooses, the fix to the materialiser (name
+from kind and repository; root as an ordinary member; hosting as
+`deployed_by` rows) ships regardless, since it is what prevents the next
+one.
+
+**Exact write for (b)/(c)'s rename**, for the record: `update_element`
+(merge) on 254dbbe6 with `displayName="Egeria Deployment Blueprint"` and
+`qualifiedName="SolutionBlueprint::repo::egeria_git::deployment::Egeria
+Deployment Blueprint"`, read back by GUID, recorded as an activity row
+"blueprint renamed forward · 254dbbe6 · OMAG-Server-Platform → Egeria
+Deployment Blueprint · owner-directed <UTC>"; nothing else touched.
+
 ## 7. Compare against the dump
 
 When PR/CI's read-only dump of the two blueprints lands, append two
