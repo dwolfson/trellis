@@ -69,3 +69,36 @@ def test_a_claim_is_taken_once_and_released_only_by_its_holder(pg_registry):
     pg_registry.release_claim(key, "a")
     assert pg_registry.take_claim(key, "c") is True
     pg_registry.release_claim(key, "c")
+
+
+def test_a_split_with_one_acceptance_adopts_once_and_the_other_half_is_refused_afterwards(pg_registry):
+    """The SQLite twin of this walks the same path; here the claim's ON CONFLICT rowcount is the real
+    Postgres one. Recording-fake Egeria only; the pg_registry gives the real claim and proof tables."""
+    from tests.test_blueprint_identity_kind_repo import DISPLAY, _created, _m
+    from resource_explorer.surveyors.arch_recovery.blueprint_materializer import BlueprintIdentifierNeeded
+
+    slug = "bpid_pg_split"
+    base = f"SolutionBlueprint::repo::{slug}::deployment"
+    props = {base: {"guid": G1, "props": {"re_entity_type": "repo", "re_slug": slug, "re_kind": "deployment",
+                                           "re_cluster_key": "old-root", "re_version": "1"}}}
+    live = {"alpha", "beta"}              # one group re-clustered into two; the old name is gone
+
+    def press(cluster):
+        m = _m(pg_registry, found=props)
+        return m, m.materialize_blueprint_element("repo", slug, "deployment", cluster, display_name=DISPLAY,
+                                                  live_clusters=live)
+
+    first, out = press("beta")            # beta alone pressed adopts
+    assert out["guid"] == G1 and _created(first) == []
+    later = _m(pg_registry, found=props)  # alpha pressed afterwards: beta now holds the element
+    with pytest.raises(BlueprintIdentifierNeeded, match=r"Deployment Blueprint already exists for bpid_pg_split"):   # beta holds it: the ruled sentence
+        later.materialize_blueprint_element("repo", slug, "deployment", "alpha", display_name=DISPLAY,
+                                            live_clusters=live)
+    assert _created(later) == []
+    assert set(pg_registry.get_materialized_blueprints("repo", slug)) == {"deployment::beta"}
+    proofs = [p for p in pg_registry.list_catalogue_commit_proofs(slug) if p["proof"] == "rekey"]
+    assert len(proofs) == 1 and proofs[0]["element_guid"] == G1
+    assert proofs[0]["detail"]["new_cluster_key"] == "beta"
+    claim = f"blueprint-claim::{base}"
+    assert pg_registry.take_claim(claim, "after") is True          # released by the holder in its finally
+    pg_registry.release_claim(claim, "after")
