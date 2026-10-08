@@ -1191,8 +1191,12 @@ def build_survey_results(
         fast = _read_board_summary_if_fresh(registry, entity_type, slug, board_id, stage, include_empty)
         if fast is not None:
             # The persisted summary was written before any reset; the marker is read NOW, every time.
+            _status = (registry.get_egeria_linkage(f"{entity_type}_publish", slug) or {}).get("status")
             for _board in fast.get("dashboards") or []:
                 _board.update(_reset_fields(registry, slug, _board.get("last_published_at", "")))
+                # the persisted copy's publish flags are corrected the same way: from the linkage row, now
+                _board["publish_stale"] = bool(_board.get("last_published_at")) and _status == "stale"
+                _board["publish_uncatalogued"] = _status == "uncatalogued"
             return fast
 
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses

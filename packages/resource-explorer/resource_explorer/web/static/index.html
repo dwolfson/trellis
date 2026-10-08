@@ -2339,7 +2339,7 @@ async function _ensureEgeriaProjectContext(entityType, slug) {
     if (ctx.status && ctx.status !== 'unset' && ctx.status !== 'unbound') return true;
   } catch (e) { /* fail open — an unreachable context check shouldn't block the publish attempt itself */ }
 
-  if (_sessionEgeriaProjectContext.status === 'unset') return false;
+  if (_sessionEgeriaProjectContext.status === 'unset' || _sessionEgeriaProjectContext.status === 'unbound') return false;
 
   try {
     const res = await fetch(`/api/project-context/${entityType}/${encodeURIComponent(slug)}`, {
@@ -10584,7 +10584,9 @@ function _refreshInvestigationLabel() {
        : bind === 'unbound' ? 'unbound by reset \u00b7 rebind to recreate' : `Egeria: ${bind}`)
     : 'No investigation — declare one to say why this work exists';
   // Keep the publish path's context in step with the current investigation.
-  if (inv && inv.egeria_context && inv.egeria_context.status !== 'unset') {
+  // 'unbound' (project gone after a reset) is not an answer: it must never become the session default,
+  // which is POSTed onto resources that were never bound.
+  if (inv && inv.egeria_context && inv.egeria_context.status !== 'unset' && inv.egeria_context.status !== 'unbound') {
     _sessionEgeriaProjectContext = inv.egeria_context;
   }
 }

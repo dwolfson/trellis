@@ -10665,11 +10665,13 @@ class ProjectRegistry:
         (the reset time, not the time the marker was written), or '' when there is no marker.
         One small read, so list routes can afford it per resource."""
         slug = self._normalize_slug(slug)
+        from resource_explorer.catalogue_commit import _ts
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT MAX(read_at) AS at FROM catalogue_commit_proofs "
-                "WHERE database_slug = ? AND proof = 'egeria_reset'", (slug,)).fetchone()
-        return (row["at"] if row else "") or ""
+            rows = conn.execute(
+                "SELECT read_at FROM catalogue_commit_proofs "
+                "WHERE database_slug = ? AND proof = 'egeria_reset'", (slug,)).fetchall()
+        # the newest by PARSED time (not MAX() over text, which orders 'Z', '+00:00' and spaces wrongly)
+        return max((r["read_at"] or "" for r in rows), key=_ts, default="")
 
     def list_catalogue_outbox_rows(self, slug: str) -> list[dict]:
         """The outbox rows a catalogue commit queued for one database, oldest first.

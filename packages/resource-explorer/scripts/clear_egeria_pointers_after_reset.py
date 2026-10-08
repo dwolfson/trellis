@@ -40,7 +40,10 @@ What it does (all in RE's registry; no Egeria call; no DDL; no proof row is ever
   OUTBOX: rows that are not terminal (not done, dead, superseded or cancelled) become 'superseded' with the
         reason "Egeria reset <when>". 'done' rows are kept untouched; 'dead' rows are left 'dead' (listed as
         "dead before the reset · untouched").
-  MARKERS: ONE catalogue_commit_proofs row per resource that has proofs or a "Published" badge row, proof kind 'egeria_reset', read_at = the
+  MARKERS: ONE catalogue_commit_proofs row per resource that has proofs or a "Published" badge row (a badge-only
+        marker says "published claim before the reset (no proof rows)": a project_published_* row is a CLAIM that
+        a publish happened, not proof the resource was in Egeria, so the badge may say "published earlier" for
+        one that was already gone; it re-compares at read time, and the wording says what it rests on), proof kind 'egeria_reset', read_at = the
         reset time, text "Egeria reset <when> · old collection id → new". Status derives from it (see
         catalogue_commit.derive_commit_state).
 
@@ -80,7 +83,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS  # noqa: E402
+from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS, _ts  # noqa: E402
 
 # UNBOUND_STATUS is the status VALUE `unbound` (architect's ruling 2026-10-08), written to
 # entity_egeria_project_context.status and investigations.egeria_project_status. The words
@@ -257,10 +260,6 @@ def human_when(reset_at: str) -> str:
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
-def _ts(iso) -> str:
-    return str(iso or "").replace(" ", "T")[:19]
-
-
 def _nonempty(col: str) -> str:
     return f"({col} IS NOT NULL AND {col} <> '')"
 
@@ -316,10 +315,11 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
     # reset removed. It gets a marker too, because the badge reads the marker.
     pub_earlier: dict[str, int] = {}
     for table in ("project_published_annotation_types", "project_published_analyses"):
-        for r in _rows(conn, f"SELECT project_slug, COUNT(*) AS n FROM {table} "
-                             "WHERE published_at IS NOT NULL AND published_at <> '' AND published_at < ? "
-                             "GROUP BY project_slug", (reset_at,)):
-            pub_earlier[r["project_slug"]] = pub_earlier.get(r["project_slug"], 0) + r["n"]
+        # compared as PARSED times in Python, never as SQL text ('Z', '+00:00', spaces and fractions misorder)
+        for r in _rows(conn, f"SELECT project_slug, published_at FROM {table} "
+                             "WHERE published_at IS NOT NULL AND published_at <> ''"):
+            if _ts(r["published_at"]) < _ts(reset_at):
+                pub_earlier[r["project_slug"]] = pub_earlier.get(r["project_slug"], 0) + 1
     markers, after = [], []
     for slug in sorted(set(by) | set(pub_earlier)):
         rows_for = by.get(slug, [])
@@ -332,7 +332,8 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
             continue
         markers.append({"slug": slug, "node_kind": kinds.get(slug, NODE_OTHER),
                         "earlier_proofs": n_earlier, "earlier_published_rows": pub_earlier.get(slug, 0),
-                        "text": f"Egeria reset {human_when(reset_at)} · {old_id or 'unknown'} → {new_id or 'unknown'}"})
+                        "text": f"Egeria reset {human_when(reset_at)} · {old_id or 'unknown'} → {new_id or 'unknown'}"
+                                + ("" if n_earlier else " · published claim before the reset (no proof rows)")})
     actions.append({"id": "marker:catalogue_commit_proofs", "kind": "write_markers",
                     "table": "catalogue_commit_proofs", "rows": markers, "count": len(markers)})
     plan = {"database": db_name, "schema": schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",

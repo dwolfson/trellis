@@ -180,8 +180,11 @@ def project_state(registry, slug: str) -> dict:
 def publish_state(registry, slug: str) -> dict:
     """One read of RE's own records. Nothing here contacts Egeria."""
     asset_guid = registry.get_egeria_asset_guid(slug) or ""
-    proofs = [p for p in _repo_proofs(registry, slug)
-              if p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED, P_FORGOTTEN, P_EGERIA_RESET)]
+    # The reset marker is keyed by slug, whatever node_kind the script gave it (a repo and a database can
+    # share a slug and the script writes one marker per slug), so it is read across node kinds.
+    proofs = [p for p in registry.list_catalogue_commit_proofs(slug)
+              if (p["node_kind"] == NODE_REPORT and p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED, P_FORGOTTEN))
+              or p["proof"] == P_EGERIA_RESET]
     # The newest fact by time (read_at), not by row id: the reset marker is written after the fact, but it
     # carries the reset time, so a publish made after the reset still wins over it.
     proofs.sort(key=lambda p: (_ts(p["read_at"]), p["id"]))

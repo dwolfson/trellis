@@ -198,9 +198,24 @@ def _now() -> str:
 
 
 def _ts(iso) -> str:
-    """A timestamp for comparison as a string: 'T'-separated, to the second. Every writer here uses isoformat()
-    ('T'), but a space-separated or fractional value must not sort wrongly against one (' ' < 'T')."""
-    return str(iso or "").replace(" ", "T")[:19]
+    """THE one timestamp normaliser (the cleanup script imports it; there is no other). A comparable string:
+    UTC, 'T'-separated, to the second, from a PARSED value, so 'Z', '+00:00' or another offset, a space
+    separator and 3- or 6-digit fractions all order correctly against each other. A naive value is read as
+    UTC (every writer here uses datetime.utcnow(); the browser reads naive stamps the same way). One that
+    cannot be parsed falls back to its first 19 characters, as before."""
+    text = str(iso or "").strip()
+    if not text:
+        return ""
+    t = text.replace(" ", "T", 1)
+    if t[-1] in "Zz":
+        t = t[:-1] + "+00:00"
+    try:
+        d = datetime.fromisoformat(t)
+    except ValueError:
+        return text.replace(" ", "T")[:19]
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d.isoformat(timespec="seconds")
 
 
 def _hm(iso: str) -> str:
@@ -1866,10 +1881,6 @@ PUBLISHED_EARLIER_SHORT = "published earlier"
 PUBLISHED_EARLIER_WORDS = "published earlier · Egeria was reset"
 
 
-def _iso_key(text: str) -> str:
-    return _ts((text or "").strip().rstrip("Z"))
-
-
 def egeria_reset_at(registry, slug: str) -> str:
     """The reset time for this resource from its `egeria_reset` marker, '' when there is none. Tolerates a
     registry without the reader (a test double): no marker known means no reset claimed."""
@@ -1886,7 +1897,7 @@ def published_state(published_at: str, reset_at: str) -> str:
     existence alone would say Published for a row Egeria no longer has any element for."""
     if not published_at:
         return ""
-    if reset_at and _iso_key(published_at) < _iso_key(reset_at):
+    if reset_at and _ts(published_at) < _ts(reset_at):
         return "published_earlier"
     return "published"
 
@@ -1900,4 +1911,4 @@ def publish_fields(registry, slug: str, published_at: str, reset_at: str | None 
 def reset_since_read(read_at: str, reset_at: str) -> bool:
     """True when the reset marker postdates a read: what was read is a copy of an element Egeria no longer
     holds. No marker, or a marker at or before the read, is False (a read at or after the reset is live)."""
-    return bool(read_at and reset_at and _iso_key(reset_at) > _iso_key(read_at))
+    return bool(read_at and reset_at and _ts(reset_at) > _ts(read_at))
