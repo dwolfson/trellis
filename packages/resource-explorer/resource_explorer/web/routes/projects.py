@@ -2420,9 +2420,57 @@ def components_blueprints(slug: str) -> dict:
     logical = [bp for bp in blueprints if kind_key(bp["perspective"]) == "logical"]
     unconfirmed = (sum(1 for bp in logical for m in bp.get("member_status") or [] if not m.get("verdict"))
                    if logical else None)
+    # What admitted each node, and what was found and not admitted (DESIGN-BLUEPRINT-NODE-ADMISSION.md).
+    from resource_explorer import node_admission
+    admission = node_admission.summary(registry, slug)
+    env = node_admission.environment(registry, slug) if admission["referenced"] else {"nodes": [], "linked": 0}
     kinds = blueprint_kind_rows(label=label, blueprints=blueprints, artifact_count=len(evidence_paths),
-                                build_files=build_files, logical_unconfirmed=unconfirmed)
-    return {"blueprints": blueprints, "perspectives": perspectives, "kinds": kinds}
+                                build_files=build_files, logical_unconfirmed=unconfirmed,
+                                environment_services=len(env["nodes"]), environment_linked=env["linked"])
+    return {"blueprints": blueprints, "perspectives": perspectives, "kinds": kinds, "admission": admission}
+
+
+@router.get("/{slug}/environment-blueprint")
+def environment_blueprint(slug: str) -> dict:
+    """The Environment Deployment Blueprint's nodes: the services this repository runs as other projects'
+    deployment units, each linked to the repository RE knows to build its image."""
+    from resource_explorer import node_admission
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return node_admission.environment(registry, slug)
+
+
+class NodeReclassify(BaseModel):
+    scope_locator: str
+    to: str  # "built_here" | "referenced_only"
+    reason: str
+
+
+@router.post("/{slug}/components/reclassify")
+def reclassify_node(slug: str, body: NodeReclassify, request: Request) -> dict:
+    """A person moves a node between the blueprint and the runtime dependencies, with a reason. Append-only;
+    the next survey honours it and the tree and the dependency table show it at once."""
+    from resource_explorer import node_admission
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.registry import ProjectRegistry
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to reclassify a node: it needs someone who made it.")
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    from resource_explorer.web.routes.curate import _authorize_curation
+    _authorize_curation(registry, "repo", slug, body.scope_locator.strip())
+    try:
+        entry = node_admission.reclassify(registry, slug, body.scope_locator.strip(), body.to, body.reason, author)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"reclassified": entry, "scope_locator": body.scope_locator.strip(),
+            "admission": node_admission.summary(registry, slug)}
 
 
 @router.get("/{slug}/gaps")

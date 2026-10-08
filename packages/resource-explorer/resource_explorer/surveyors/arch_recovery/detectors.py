@@ -20,6 +20,7 @@ from collections import defaultdict
 
 import yaml
 
+from . import admission as _admission
 from .ir import Component, Evidence, Identity, Location
 
 # Conventional roots stripped before slugging a module path (§8.2 rung 3).
@@ -508,6 +509,7 @@ def build_components(root: str, files: list[str],
             files=[f"{m['dir']}/**" if m["dir"] != "." else "**"],
             confidence=conf,
             confidence_level="Derived",
+            admission_evidence=f"from {m['rel']}",
         )
         components.append(comp)
 
@@ -580,6 +582,7 @@ def build_components(root: str, files: list[str],
             slug=slug, name=name, type="Long Running Daemon",
             identity=Identity("deployment-unit", name, parent or unit),
             files=[f"{unit}/**"], confidence=75, confidence_level="Derived",
+            admission_evidence=f"from {dockerfiles[0]}",
         ))
         evidence.append(Evidence(
             subject_kind="component", subject_slug=slug,
@@ -607,23 +610,59 @@ def build_components(root: str, files: list[str],
     # quickstart-web-server`. First-wins registered the base and discarded the
     # override, losing the human-facing name for 3 of 16 components. Layered
     # compose is the norm, not an oddity, so any per-file pass under-reports.
+    #
+    # Whose boundary is it (DESIGN-BLUEPRINT-NODE-ADMISSION.md)? Each merged service is classified by
+    # the evidence of its boundary: a build context here (built), an image this repository publishes
+    # (shipped), or an image it neither builds nor publishes (referenced only, which `admission.split`
+    # takes out of the components). Compose files under test/example directories are fixtures.
+    per_unit: dict[str, dict[str, tuple[str, str, int]]] = {}
+    per_unit_facts: dict[str, dict[str, dict]] = {}
+    fixture_services = 0
     for unit, decls in units.items():
         merged: dict[str, tuple[str, str, int]] = {}   # service key -> (name, decl, line)
+        facts: dict[str, dict] = {}                     # service key -> {"image", "build"} merged across files
         for decl in decls:
             if os.path.basename(decl).startswith("Dockerfile"):
                 continue
+            svc_facts = _admission.compose_service_facts(root, decl)
+            if _admission.is_fixture_path(decl):
+                fixture_services += len(svc_facts)
+                continue
+            for key, f in svc_facts.items():
+                cur = facts.setdefault(key, {"image": "", "build": "", "decl": decl})
+                cur["image"] = cur["image"] or f["image"]
+                if f["build"] and not cur["build"]:
+                    cur["build"], cur["decl"] = f["build"], decl
             for key, name, line in compose_services(root, decl):
                 prior = merged.get(key)
                 # A declared container_name always beats a bare service key,
                 # whichever file it arrived in.
                 if prior is None or (name != key and prior[0] == key):
                     merged[key] = (name, decl, line)
+        per_unit[unit], per_unit_facts[unit] = merged, facts
+    if fixture_services:
+        notes.append(f"{fixture_services} compose service(s) under test or example directories — a fixture, "
+                     f"never a component")
 
+    published = _admission.published_images(root, files, [m["name"] for m in manifests])
+    for facts in per_unit_facts.values():
+        for f in facts.values():
+            if f["build"] and f["image"]:
+                published.setdefault(_admission.normalise_image(f["image"]), f["decl"])
+
+    for unit, merged in per_unit.items():
         for key, (name, decl, line) in merged.items():
             slug = _slug(os.path.basename(unit), name)
-            if any(c.slug == slug for c in components):
+            f = per_unit_facts[unit].get(key, {"image": "", "build": ""})
+            twin = next((c for c in components if c.slug == slug), None)
+            if twin is not None:
+                # The same unit was already found by its Dockerfile or manifest: that is the stronger,
+                # built-here reading. The compose service still names the image it ships, which is how a
+                # service elsewhere is linked to the repository that builds it.
+                twin.image = twin.image or _admission.normalise_image(f["image"])
                 continue
             named = name != key
+            cls, why = _admission.classify_compose_service(f, f.get("decl") or decl, published)
             components.append(Component(
                 slug=slug, name=name, type="Third Party Process",
                 identity=Identity("deployment-unit", name, unit),
@@ -633,6 +672,7 @@ def build_components(root: str, files: list[str],
                 # for why this is tagged rather than reconciled with the
                 # Dockerfile/manifest components below, which stay `physical`.
                 perspective="deployment",
+                admission=cls, admission_evidence=why, image=_admission.normalise_image(f["image"]),
             ))
             evidence.append(Evidence(
                 subject_kind="component", subject_slug=slug,
@@ -712,6 +752,7 @@ def build_components(root: str, files: list[str],
                 confidence=65, confidence_level="Derived",
                 proposed_by=["gradle-module"],
                 perspective="logical",
+                admission_evidence=f"from {g['rel']}",
             ))
             evidence.append(Evidence(
                 subject_kind="component", subject_slug=slug,

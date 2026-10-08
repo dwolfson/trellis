@@ -111,8 +111,39 @@ def _artifact_rows(registry, slug: str) -> list[dict]:
     return out
 
 
-def _runtime_rows(registry, slug: str, confirmations: dict) -> list[dict]:
+def _referenced_rows(registry, slug: str, confirmations: dict) -> list[dict]:
+    """The services this repository's deployment artifacts RUN but whose images it neither builds nor
+    publishes (DESIGN-BLUEPRINT-NODE-ADMISSION.md): not components of the repository, runtime dependencies
+    of the deployment it describes. Reclassifications a person made are already applied."""
+    from resource_explorer import node_admission
+
     rows = []
+    for r in node_admission.referenced_rows(registry, slug):
+        image = r.get("image") or ""
+        target = image or r["name"]
+        key = f"referenced:{r['scope']}"
+        latest = _latest(confirmations.get(key))
+        evidence = r.get("evidence") or ""
+        artifact = evidence.split("from ", 1)[-1].split(" ")[0] if "from " in evidence else "a deployment artifact"
+        moved = r.get("reclassified")
+        tail = f" · reclassified by {moved['by']}: {moved['reason']}" if moved else ""
+        if latest and latest["verdict"] == VERDICT_CONFIRMED:
+            state, words = "confirmed", f"confirmed · by {latest['by']} · from {artifact}"
+        elif latest and latest["verdict"] == VERDICT_WITHDRAWN:
+            state, words = "withdrawn", f"withdrawn · by {latest['by']} · from {artifact}"
+        else:
+            state, words = "proposed", f"proposed · from {artifact} · image {image}" if image else f"proposed · from {artifact}"
+        rows.append({
+            "kind": KIND_RUNTIME, "name": r["name"], "target": target, "source": artifact,
+            "ecosystem": "", "state": state, "state_words": words + tail, "key": key,
+            "style": "referenced only", "by": (latest or {}).get("by", ""),
+            "scope": r["scope"],
+        })
+    return rows
+
+
+def _runtime_rows(registry, slug: str, confirmations: dict) -> list[dict]:
+    rows = _referenced_rows(registry, slug, confirmations)
     for d in _artifact_rows(registry, slug):
         if d.get("kind") != "wire":
             continue
@@ -160,11 +191,15 @@ def build_table(registry, slug: str) -> dict:
     rows = _build_rows(registry, slug) + _runtime_rows(registry, slug, confirmations)
     counts = {k: sum(1 for r in rows if r["kind"] == k) for k in KINDS}
     runtime_state = "" if counts[KIND_RUNTIME] else _runtime_section_state(registry, slug)
+    from resource_explorer import node_admission
+    deploys_only = node_admission.summary(registry, slug)["sentence"]
     # A repository with deployment artifacts that declare no dependency between services still says why.
     if not counts[KIND_RUNTIME] and not runtime_state:
         runtime_state = "deployment artifacts found · none declares a dependency between services"
     return {"heading": HEADING, "kinds": list(KINDS), "counts": counts, "rows": rows,
             "runtime_state": runtime_state,
+            # "this repository deploys other software and builds none of its own", when that is the case.
+            "deploys_only": deploys_only,
             "summary": " · ".join(f"{counts[k]} {k}" for k in KINDS)}
 
 

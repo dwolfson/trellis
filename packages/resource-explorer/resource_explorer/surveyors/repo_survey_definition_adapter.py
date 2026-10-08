@@ -3171,6 +3171,11 @@ def _architecture_recovery_results(
             "outcome": detail.get("outcome", ""),
             "run_scope": detail.get("run_scope", ""),
             "proposed_by": approaches or (detail.get("proposed_by") or []),
+            # Whose boundary this is (DESIGN-BLUEPRINT-NODE-ADMISSION.md). A row written before the
+            # class existed has none, and "built here" is what every such row was admitted as.
+            "admission": detail.get("admission") or "built_here",
+            "admission_evidence": detail.get("admission_evidence", ""),
+            "image": detail.get("image", ""),
             # §2a/§2b/§2c — see the block above. `proposals` carries one entry
             # per extractor CURRENTLY proposing this path; `agreement` is true
             # when two or more do; `withdrawn_by` names an extractor that used

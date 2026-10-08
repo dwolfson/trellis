@@ -1660,6 +1660,10 @@ export const getComponentTree = (slug, prefix = '') =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/tree?prefix=${encodeURIComponent(prefix)}`);
 export const getComponentLeaves = (slug, branch) =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/leaves?branch=${encodeURIComponent(branch)}`);
+/** A person moves a node between the blueprint and the runtime dependencies, with a reason
+ *  (DESIGN-BLUEPRINT-NODE-ADMISSION.md). `to` is 'built_here' or 'referenced_only'. */
+export const postNodeReclassify = (slug, scopeLocator, to, reason) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/components/reclassify`, { scope_locator: scopeLocator, to, reason });
 /** One verdict row per scope; accepted ones queue their materialisation. */
 export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });

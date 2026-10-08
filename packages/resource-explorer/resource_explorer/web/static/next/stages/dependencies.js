@@ -78,9 +78,11 @@ export function dependencyTableHtml(data, ui = {}, { confirmable = false, me = '
     </div>`).join('');
   const why = data.runtime_state
     ? `<div data-dep-runtime-state class="mt-s1 text-caveat text-ink-muted">runtime · ${esc(data.runtime_state)}</div>` : '';
+  const deploysOnly = data.deploys_only
+    ? `<div data-dep-deploys-only class="mt-s1 text-caveat text-ink">${esc(data.deploys_only)}</div>` : '';
   const none = !rows.length && !(data.rows || []).length
     ? '<div class="text-caveat text-ink-muted">no dependencies are recorded: survey the repository first</div>' : '';
-  return `<div data-dependency-table class="min-w-0 max-w-full">${header}
+  return `<div data-dependency-table class="min-w-0 max-w-full">${header}${deploysOnly}
     <div role="table" aria-label="${esc(data.heading || 'Dependencies · by kind')}" class="mt-s1 min-w-0 max-w-full overflow-x-auto">${head}${body}</div>${none}${why}
     <div data-dep-status class="mt-s1 text-provenance text-ink-muted"></div></div>`;
 }
