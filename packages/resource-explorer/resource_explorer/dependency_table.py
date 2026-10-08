@@ -90,6 +90,10 @@ DRAWN_WORDS = {
     DRAWN_NOT: "not drawn",
 }
 
+#: What the table does NOT read, said in its header so an absence is never read as "none".
+NOT_DERIVED = ("module-to-module requires not yet derived · "
+               "reads/writes, endpoints and host:port not derived")
+
 NO_ARTIFACT_SENTENCE = "no deployment artifact found"
 NOT_SURVEYED_SENTENCE = "runtime not surveyed"
 
@@ -448,6 +452,7 @@ def build_table(registry, slug: str) -> dict:
             drawn[r["drawn"]] = drawn.get(r["drawn"], 0) + 1
     return {"heading": HEADING, "kinds": list(KINDS), "counts": counts, "rows": rows,
             "runtime_state": runtime_state, "data_state": data_state, "drawn": drawn,
+            "not_derived": NOT_DERIVED,
             # "this repository deploys other software and builds none of its own", when that is the case.
             "deploys_only": deploys_only,
             "summary": " · ".join(f"{counts[k]} {k}" for k in KINDS)}
@@ -471,10 +476,14 @@ def diagram_edge_ports(registry, slug: str) -> list[str]:
 # ── publication: one annotation per confirmed row ─────────────────────────────────────────────
 
 def identity(row: dict) -> str:
-    """The row's identity from its TWO ENDS and the relation: dependent, relation, target. Never a GUID (a
-    GUID appears later, or changes) and never the survey run, so a second publish reuses the same
-    qualifiedName."""
-    return f"{row['dependent_type']}:{row['dependent']}|{row['relation']}|{row['target_type']}:{row['target_name']}"
+    """The row's identity from its TWO ENDS and the relation: dependent (name AND locator), relation, target.
+    The locator is in it so a later re-homing of the annotation onto the component's own asset is a move,
+    not a rewrite. Never a GUID (a GUID appears later, or changes) and never the survey run, so a second
+    publish reuses the same qualifiedName."""
+    dep = f"{row['dependent_type']}:{row['dependent']}"
+    if row.get("dependent_locator"):
+        dep += f"@{row['dependent_locator']}"
+    return f"{dep}|{row['relation']}|{row['target_type']}:{row['target_name']}"
 
 
 def runtime_annotations(registry, slug: str) -> list:

@@ -10,6 +10,7 @@ const row = (o) => ({
 });
 const DATA = {
   heading: 'Dependencies · by kind', kinds: ['build-time', 'runtime', 'data'], counts: { 'build-time': 2, runtime: 2, data: 0 },
+  not_derived: 'module-to-module requires not yet derived · reads/writes, endpoints and host:port not derived',
   runtime_state: '', data_state: 'no connection string to a data store found in the deployment artifacts',
   rows: [
     row({ kind: 'build-time', dependent: 'P', dependent_type: 'repository', relation: 'requires', target_type: 'package', target_name: 'fastapi', target_version: '0.110', evidence: 'pyproject.toml', state: 'measured', state_words: 'measured · from pyproject.toml', key: 'python:fastapi@pyproject.toml' }),
@@ -195,4 +196,12 @@ test('under Curate a measured row carries its word without a check mark; a confi
   box.innerHTML = m.dependencyTableHtml(confirmed, {}, { confirmable: true, me: 'dan' });
   assert.equal(text(box.querySelector('[data-dep-row="python:fastapi@pyproject.toml"] [data-dep-state]')), 'measured · from pyproject.toml');
   assert.match(text(box.querySelector('[data-dep-row="web->db@deploy/docker-compose.yml"] [data-dep-state]')), /^✓ confirmed · by dan/);
+});
+
+test('the header says what the table does not read, so an absence is never read as none', async () => {
+  const { m, document } = await mod();
+  const box = document.createElement('div');
+  box.innerHTML = m.dependencyTableHtml(DATA);
+  assert.equal(text(box.querySelector('[data-dep-not-derived]')),
+    'module-to-module requires not yet derived · reads/writes, endpoints and host:port not derived');
 });

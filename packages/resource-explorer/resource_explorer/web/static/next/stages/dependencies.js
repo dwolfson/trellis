@@ -116,11 +116,13 @@ export function dependencyTableHtml(data, ui = {}, { confirmable = false, me = '
     ? `<div data-dep-runtime-state class="mt-s1 text-caveat text-ink-muted">runtime · ${esc(data.runtime_state)}</div>` : '')
     + (data.data_state && !counts.data
       ? `<div data-dep-data-state class="mt-s1 text-caveat text-ink-muted">data · ${esc(data.data_state)}</div>` : '');
+  const notDerived = data.not_derived
+    ? `<div data-dep-not-derived class="mt-s1 text-provenance text-ink-muted">${esc(data.not_derived)}</div>` : '';
   const deploysOnly = data.deploys_only
     ? `<div data-dep-deploys-only class="mt-s1 text-caveat text-ink">${esc(data.deploys_only)}</div>` : '';
   const none = !rows.length && !(data.rows || []).length
     ? '<div class="text-caveat text-ink-muted">no dependencies are recorded: survey the repository first</div>' : '';
-  return `<div data-dependency-table class="min-w-0 max-w-full">${header}${deploysOnly}
+  return `<div data-dependency-table class="min-w-0 max-w-full">${header}${notDerived}${deploysOnly}
     <div role="table" aria-label="${esc(data.heading || 'Dependencies · by kind')}" class="mt-s1 min-w-0 max-w-full overflow-x-auto">${head}${body}</div>${none}${why}
     <div data-dep-status class="mt-s1 text-provenance text-ink-muted"></div></div>`;
 }

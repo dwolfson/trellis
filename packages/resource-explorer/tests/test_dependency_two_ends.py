@@ -318,3 +318,27 @@ def test_the_environment_route_carries_the_nodes_and_their_wires(registry, tmp_p
     out = TestClient(app).get("/api/projects/ws/environment-blueprint").json()
     assert len(out["nodes"]) == 4
     assert {(w["dependent"], w["target_name"]) for w in out["wires"]} >= {("egeria-platform", "kafka")}
+
+
+def test_the_qualified_name_carries_the_dependent_locator_and_survives_a_guid_change(registry, tmp_path):
+    from resource_explorer.surveyors.survey_report import annotation_qualified_name
+    _survey(registry, "mixed", _mixed(tmp_path))
+    r = _row(registry, "mixed", "api", "connects_to", "kafka")
+    assert r["dependent_locator"]
+    dt.record_confirmations(registry, "mixed", [r["key"]], "confirmed", "dan")
+    (a,) = dt.runtime_annotations(registry, "mixed")
+    qn = annotation_qualified_name("run1", 0, a)
+    assert r["dependent_locator"] in qn, qn
+    # accepting the component later gives it a GUID; the name must not change (a re-homing is a move)
+    registry.record_materialized_component("repo", "mixed", r["dependent_locator"], "qn", "comp-guid")
+    registry.record_component_verdict("repo", "mixed", r["dependent_locator"], "accepted", decided_by="dan")
+    assert _row(registry, "mixed", "api", "connects_to", "kafka")["dependent_guid"] == "comp-guid"
+    (b,) = dt.runtime_annotations(registry, "mixed")
+    assert annotation_qualified_name("run1", 0, b) == qn
+
+
+def test_the_header_says_what_the_table_does_not_read(registry, tmp_path):
+    _survey(registry, "mixed", _mixed(tmp_path))
+    t = dt.build_table(registry, "mixed")
+    assert t["not_derived"] == ("module-to-module requires not yet derived · "
+                                "reads/writes, endpoints and host:port not derived")
