@@ -1701,9 +1701,9 @@ export const getComponentBlueprints = (slug) =>
  *  SolutionBlueprint (blueprint_materializer.py) and queues its resolvable
  *  members/children for CollectionMembership — the caller does not wait on
  *  that queue, see SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4. */
-export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '') =>
+export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '', shape = '') =>
   post(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`,
-       { perspective, cluster_name: clusterName, verdict, note });
+       { perspective, cluster_name: clusterName, verdict, note, ...(shape ? { shape } : {}) });
 
 /* ── Automate ────────────────────────────────────────────────────────────
  * The 8th intent (`web/routes/automate.py`, `web/routes/schedules.py`).

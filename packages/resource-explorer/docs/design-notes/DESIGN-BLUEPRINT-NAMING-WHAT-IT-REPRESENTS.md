@@ -55,6 +55,41 @@ runtime. A sixth word is added only by a ruling, never by a builder.
   blueprint names the repository); the repository is in the qualifiedName
   and in the blueprint's name.
 
+## 2a. The identity: kind and repository, never the cluster root (ruled 2026-10-08)
+
+The merged container-shape materialiser (#556) still formed the
+qualifiedName as `SolutionBlueprint::<entity_type>::<slug>::<kind>::<cluster_name>`
+and keyed its cache on the cluster name, so the identity depended on the
+root cluster ("OMAG-Server-Platform"), which a member's name must never
+be. Ruling for the follow-up:
+
+- **Form:** `SolutionBlueprint::<entity_type>::<slug>::<kind>`, the kind
+  as the last segment (`deployment`, `build`, `logical`, `environment`),
+  no cluster segment: `SolutionBlueprint::repo::egeria_git::deployment`.
+  The Egeria `identifier` property is `<SLUG>-<KIND>` upper-case, as the
+  owner's own blueprints carry it (`EGERIA-GIT-DEPLOYMENT`); displayName
+  per §2.
+- **Several of one kind in one repository:** the second needs a person's
+  identifier at accept time (the owner's benchmarks are exactly this:
+  `EGERIA-WORKSPACES-RUNTIMES`, `-SERVERS`); the pane asks for it when a
+  blueprint of that kind already exists, and it becomes a fifth segment
+  `::<identifier>`, never derived from the cluster root. The first of a
+  kind has no identifier segment.
+- **The cluster name** stays RE's internal key for the cluster, a column
+  on the registry row, never in the Egeria identity or the cache key.
+- **Cache key:** `(entity_type, slug, kind, identifier or '')`; rows written
+  under the old `(…, perspective, cluster_name)` key are read as legacy by
+  a mapping and never written again.
+- **Legacy-named blueprints** (written before #556): adopted by the legacy
+  form, never duplicated, never created anew; the adoption writes an
+  activity row "adopted legacy-named blueprint <guid> · delete it in Egeria
+  to recreate under the new name". For 254dbbe6 the owner deletes first.
+- **Tests:** the egeria_git fixture yields the new qualifiedName and
+  identifier; a second deployment blueprint without an identifier is
+  refused with "a Deployment Blueprint already exists for egeria_git · give
+  this one an identifier"; a legacy-named blueprint in the fake is adopted
+  with the row; no qualifiedName contains a cluster root's name.
+
 ## 3. Adopted content-pack elements are never renamed
 
 A content-pack element's name belongs to the content pack: "OMAG Server

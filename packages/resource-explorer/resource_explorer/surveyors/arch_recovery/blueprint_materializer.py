@@ -84,6 +84,9 @@ _DEFAULT_USER = "erinoverview"
 _DEFAULT_PASSWORD = "secret"
 _DEFAULT_TIMEOUT = 30
 
+#: qualifiedName prefix of the SolutionComponents Egeria's content packs already define.
+CONTENT_PACK_QN_PREFIX = "Egeria:ValidMetadataValue:"
+
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
@@ -217,6 +220,7 @@ class BlueprintMaterializer:
         display_name: str,
         oversized: bool = False,
         kind_slot: str = "",
+        verify_cached: bool = False,
     ) -> dict:
         """Find-or-create ONLY the SolutionBlueprint element itself (Draft,
         via NewSolutionElementRequestBody — see the module docstring's
@@ -246,16 +250,35 @@ class BlueprintMaterializer:
                 entity_type, entity_slug, perspective, cluster_name
             )
             if cached and cached.get("guid"):
-                return {"status": "already_materialized", "guid": cached["guid"],
-                        "qualified_name": cached["qualified_name"]}
+                # `verify_cached` (the shape workflow): the cache names a GUID, and a blueprint a person has
+                # since deleted in Egeria must not be re-attached to. Read it by GUID; gone means create
+                # afresh. An UNREADABLE answer is not "gone" and raises, so the cache is never wiped on a
+                # connection problem.
+                if not verify_cached:
+                    return {"status": "already_materialized", "guid": cached["guid"],
+                            "qualified_name": cached["qualified_name"]}
+                self._ensure_connected()
+                if self.blueprint_exists(cached["guid"]):
+                    return {"status": "already_materialized", "guid": cached["guid"],
+                            "qualified_name": cached["qualified_name"]}
 
-        self._connect()
+        if not verify_cached:
+            self._connect()
+        else:
+            self._ensure_connected()      # connected already by the cache check above, when it ran
 
-        existing_guid = self._find_element_guid(qualified_name)
-        if not existing_guid and qualified_name != legacy_qualified_name:
-            existing_guid = self._find_element_guid(legacy_qualified_name)
-            if existing_guid:
-                qualified_name = legacy_qualified_name
+        # A search that cannot be read is not a search that found nothing: creating on it could duplicate a
+        # blueprint that is there (an outage, an index lag). Refuse instead.
+        try:
+            existing_guid = self._find_element_guid(qualified_name)
+            if not existing_guid and qualified_name != legacy_qualified_name:
+                existing_guid = self._find_element_guid(legacy_qualified_name)
+                if existing_guid:
+                    qualified_name = legacy_qualified_name
+        except Exception as exc:
+            raise BlueprintMaterializationError(
+                f"could not search Egeria for the blueprint by qualifiedName ({type(exc).__name__}): "
+                f"nothing was created") from exc
         if existing_guid:
             if self._registry:
                 self._registry.record_materialized_blueprint(
@@ -348,6 +371,243 @@ class BlueprintMaterializer:
                 entity_type, entity_slug, perspective, cluster_name, qualified_name, guid,
             )
         return {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
+
+    # ── the shape writes (DESIGN-BLUEPRINT-BENCHMARK-EGERIA-WORKSPACES.md 6a) ─────────────────────────────
+
+    def _ensure_connected(self) -> None:
+        """Connect once. A cached-GUID path returns before `_connect`, so a method that needs the clients
+        afterwards cannot assume them."""
+        if self._solution_architect is None or self._automated_curation is None:
+            self._connect()
+
+    def blueprint_exists(self, guid: str) -> bool:
+        """Whether a SolutionBlueprint is still in Egeria, read by GUID. Gone only on Egeria's own
+        no-elements answer, a not-found exception or an API exception carrying a 404 (`egeria_absence`).
+        Anything else (unauthorised, transport, 5xx, text we do not recognise) is UNREADABLE and raises:
+        the caller must never create a second blueprint on a guess."""
+        from resource_explorer.egeria_absence import ABSENT, PRESENT, is_absent
+
+        try:
+            result = self._solution_architect.get_solution_blueprint_by_guid(guid)
+        except Exception as exc:
+            if is_absent(exc) == ABSENT:
+                return False
+            raise BlueprintMaterializationError(
+                f"could not tell whether the blueprint {guid} still exists: {type(exc).__name__}") from exc
+        verdict = is_absent(result)
+        if verdict == PRESENT:
+            return True
+        if verdict == ABSENT:
+            return False
+        raise BlueprintMaterializationError(
+            f"could not tell whether the blueprint {guid} still exists: Egeria's answer was not readable")
+
+    @staticmethod
+    def _element_type_and_qn(element) -> tuple[str, str]:
+        """(typeName, qualifiedName) of an element read by GUID, in either the raw or the formatted shape;
+        "" for what the answer does not carry."""
+        if not isinstance(element, dict):
+            return "", ""
+        header = element.get("elementHeader") or {}
+        type_name = ((header.get("type") or {}).get("typeName") or element.get("typeName")
+                     or element.get("type_name") or "")
+        props = element.get("properties") or {}
+        qn = props.get("qualifiedName") or element.get("qualifiedName") or element.get("qualified_name") or ""
+        return type_name, qn
+
+    def adopt_unmaterialized_members(
+        self, registry, entity_type: str, entity_slug: str, member_slugs: list[str],
+        slug_to_scope: dict[str, str],
+    ) -> dict[str, str]:
+        """slug -> GUID for members whose SolutionComponent already EXISTS in Egeria under RE's own
+        qualifiedName though this registry never recorded it. They are ADOPTED (recorded, never created
+        again): the owner's old blueprint left its components behind, and the new blueprint must meet them,
+        not duplicate them. Creating a component stays the component verdict's job (privacy, zones), so a
+        member Egeria does not hold is simply left out.
+
+        `get_guid_for_name` searches several properties with no type restriction, so a hit is VERIFIED by
+        reading it by GUID: it must be a SolutionComponent carrying exactly that qualifiedName. A hit that
+        fails (or cannot be verified) is skipped and reported in `self.adoption_skipped` {slug: why}. Never
+        raises."""
+        from resource_explorer.surveyors.arch_recovery.materializer import ComponentMaterializer
+
+        adopted: dict[str, str] = {}
+        self.adoption_skipped: dict[str, str] = {}
+        try:
+            self._ensure_connected()
+        except BlueprintMaterializationError as exc:
+            log.warning("cannot adopt components, Egeria unreachable: %s", exc)
+            for slug in member_slugs:
+                self.adoption_skipped[slug] = "Egeria unreachable"
+            return adopted
+        for slug in member_slugs:
+            scope = slug_to_scope.get(slug)
+            if not scope:
+                continue
+            qn = ComponentMaterializer.qualified_name_for(entity_type, entity_slug, scope)
+            try:
+                guid = self._find_element_guid(qn)
+            except Exception as exc:                       # several hits, or a search failure
+                self.adoption_skipped[slug] = f"search failed: {type(exc).__name__}"
+                continue
+            if not guid:
+                continue
+            try:
+                type_name, found_qn = self._element_type_and_qn(
+                    self._solution_architect.get_solution_component_by_guid(guid))
+            except Exception as exc:
+                self.adoption_skipped[slug] = f"could not verify {guid}: {type(exc).__name__}"
+                continue
+            if type_name != "SolutionComponent" or found_qn != qn:
+                self.adoption_skipped[slug] = (
+                    f"{guid} is not a SolutionComponent named {qn} (read back as {type_name or 'unknown type'})")
+                continue
+            registry.record_materialized_component(entity_type, entity_slug, scope, qn, guid)
+            adopted[slug] = guid
+        return adopted
+
+    def find_content_pack_component(self, display_name: str) -> dict | None:
+        """The content-pack SolutionComponent Egeria already defines under EXACTLY this name, or None.
+        Content-pack elements carry a qualifiedName of the form `Egeria:ValidMetadataValue:...`. The by-name
+        search may match loosely, so a hit counts only when its displayName equals the name (case and
+        punctuation aside). More than one such element is ambiguous: nothing is adopted and the answer is
+        {"refused": "<sentence>"}. Never raises: no answer is no content-pack element."""
+        import re as _re
+
+        def norm(t: str) -> str:
+            return _re.sub(r"[^a-z0-9]", "", (t or "").lower())
+
+        try:
+            self._ensure_connected()
+            found = self._solution_architect.get_solution_components_by_name(display_name)
+        except Exception as exc:
+            log.warning("content-pack lookup for %r failed: %s", display_name, type(exc).__name__)
+            return None
+        if not isinstance(found, list):
+            return None
+        hits = []
+        for el in found:
+            if not isinstance(el, dict):
+                continue
+            props = el.get("properties") or {}
+            qn = props.get("qualifiedName") or el.get("qualifiedName") or ""
+            name = props.get("displayName") or el.get("displayName") or ""
+            guid = (el.get("elementHeader") or {}).get("guid") or el.get("guid") or ""
+            if (qn.startswith(CONTENT_PACK_QN_PREFIX) and norm(name) == norm(display_name)
+                    and _UUID_RE.match(guid or "")):
+                hits.append({"guid": guid, "qualified_name": qn, "name": name})
+        if len(hits) > 1:
+            return {"refused": f"{len(hits)} content-pack elements are named {display_name!r}: "
+                               f"none adopted"}
+        return hits[0] if hits else None
+
+    @staticmethod
+    def _child_guids(element) -> tuple[set[str], bool]:
+        """(child GUIDs, known) from a container read by GUID. `nestedSolutionComponents` is the container's
+        children side of SolutionComposition (Egeria's own end definition: the other end,
+        `usedInSolutionComponents`, is "the components that embed this component"); `subComponents` is the
+        report-spec form pyegeria also reads. `known` is True only when at least one of the keys is
+        PRESENT: an answer with neither says nothing about children, so an empty set is not "none"."""
+        if not isinstance(element, dict):
+            return set(), False
+        keys = [k for k in ("nestedSolutionComponents", "subComponents") if k in element]
+        out: set[str] = set()
+        for k in keys:
+            for entry in element.get(k) or []:
+                if not isinstance(entry, dict):
+                    continue
+                header = (entry.get("relatedElement") or entry).get("elementHeader") or {}
+                if header.get("guid"):
+                    out.add(header["guid"])
+        return out, bool(keys)
+
+    def sub_component_guids(self, container_guid: str) -> tuple[set[str], bool]:
+        """(the container's sub-component GUIDs, whether the read said anything about them). Raises when
+        Egeria gives no usable element at all: "could not read" must not look like "has none"."""
+        element = self._solution_architect.get_solution_component_by_guid(container_guid)
+        if not isinstance(element, dict) or not element:
+            raise BlueprintMaterializationError(
+                f"could not read the container {container_guid}: Egeria's answer was not an element")
+        return self._child_guids(element)
+
+    def blueprint_member_guids(self, blueprint_guid: str) -> set[str] | None:
+        """The GUIDs that are direct members of the blueprint, or None when the read does not carry its
+        members (then nothing is claimed about them). Read only; never removes anything."""
+        try:
+            element = self._solution_architect.get_solution_blueprint_by_guid(blueprint_guid)
+        except Exception as exc:
+            log.warning("could not read the blueprint's members: %s", type(exc).__name__)
+            return None
+        if not isinstance(element, dict) or "collectionMembers" not in element:
+            return None
+        out = set()
+        for entry in element.get("collectionMembers") or []:
+            if isinstance(entry, dict):
+                header = (entry.get("relatedElement") or entry).get("elementHeader") or {}
+                if header.get("guid"):
+                    out.add(header["guid"])
+        return out
+
+    def link_sub_components(self, container_guid: str, container_qn: str,
+                            children: list[tuple[str, str]]) -> list[dict]:
+        """`SolutionComposition` container -> each child, idempotent by the PAIR. `children` is
+        [(child_guid, child_qn)]. Reads the container's sub-components BEFORE (a pair already held, by the
+        content pack or an earlier run, is not rewritten: the relationship is multi-link and would
+        duplicate), writes only the missing pairs, then reads AFTER. Each row is {key, container_guid,
+        child_guid, status, read_back, note?, error?}:
+
+          already_present  the before-read showed the pair (read_back True)
+          linked           written, and the after-read shows it (read_back True)
+          unconfirmed      written but not shown after, OR the read did not say whether children exist so
+                           nothing was written (read_back False in the second case)
+          unread           the before-read failed: nothing written (read_back False)
+          error            the write raised (read_back False)
+        """
+        self._ensure_connected()
+        rows = [{"key": f"SolutionComposition::{container_qn}::{child_qn}", "container_guid": container_guid,
+                 "child_guid": child_guid, "status": "", "read_back": False}
+                for child_guid, child_qn in children]
+        try:
+            before, known = self.sub_component_guids(container_guid)
+        except Exception as exc:
+            for r in rows:
+                r.update(status="unread", error=f"{type(exc).__name__}: {exc}"[:300],
+                         note="the read before the write failed: nothing was written")
+            return rows
+        if not known:
+            for r in rows:
+                r.update(status="unconfirmed", note="the read did not say whether children exist: "
+                                                    "nothing was written")
+            return rows
+        wrote = False
+        for r in rows:
+            if r["child_guid"] in before:
+                r.update(status="already_present", read_back=True)
+                continue
+            try:
+                self._solution_architect.link_subcomponent(
+                    container_guid, r["child_guid"], {"class": "NewRelationshipRequestBody"})
+                wrote = True
+                r["status"] = "pending"
+            except Exception as exc:
+                r.update(status="error", error=f"{type(exc).__name__}: {exc}"[:300])
+        if wrote:
+            try:
+                after, after_known = self.sub_component_guids(container_guid)
+            except Exception as exc:
+                after, after_known = set(), False
+                for r in rows:
+                    if r["status"] == "pending":
+                        r["error"] = f"read after the write failed: {type(exc).__name__}"
+        else:
+            after, after_known = before, True
+        for r in rows:
+            if r["status"] == "pending":
+                if after_known and r["child_guid"] in after:
+                    r.update(status="linked", read_back=True)
+                else:
+                    r.update(status="unconfirmed", read_back=after_known)
+        return rows
 
     def resolve_member_guids(
         self,
