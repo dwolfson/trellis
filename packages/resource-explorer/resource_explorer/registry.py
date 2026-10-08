@@ -12722,34 +12722,45 @@ class ProjectRegistry:
     def append_resource_scope_event(self, resource_type: str, slug: str, *, locator: str, kind: str,
                                     choice: str = "", action: str = "set", source: str = "person",
                                     proposal_rule: str = "", reason: str = "", author: str,
-                                    changed_at: str | None = None) -> int:
-        """Append one choice (or its clearing) for one locator. Never updates or removes a row; the newest
-        row for a locator is the current choice. A clear is a row with action 'clear' and choice '', so
-        who cleared it and when is kept. Returns the new row's id."""
+                                    changed_at: str | None = None) -> None:
+        """Append one choice (or its clearing) for one locator; see `append_resource_scope_events`."""
+        self.append_resource_scope_events(resource_type, slug, author=author, events=[{
+            "locator": locator, "kind": kind, "choice": choice, "action": action, "source": source,
+            "proposal_rule": proposal_rule, "reason": reason, "changed_at": changed_at}])
+
+    def append_resource_scope_events(self, resource_type: str, slug: str, *, author: str,
+                                     events: list[dict]) -> int:
+        """Append a batch of choices in ONE transaction: all of them or none. Never updates or removes a
+        row; the newest row for a locator is the current choice. A clear is a row with action 'clear' and
+        choice '', so who cleared it and when is kept. Every event is checked before the first insert, and
+        a failure during the writes discards the connection's uncommitted work. Returns how many were
+        written."""
         if not author:
             raise ValueError("a scope choice needs an author")
-        if kind not in self.SCOPE_KINDS:
-            raise ValueError(f"unknown kind {kind!r}")
-        if action not in ("set", "clear"):
-            raise ValueError(f"unknown action {action!r}")
-        if action == "set" and choice not in ("include", "leave_out"):
-            raise ValueError(f"unknown choice {choice!r}")
-        if action == "clear":
-            choice = ""
-        if source not in ("person", "proposal"):
-            raise ValueError(f"unknown source {source!r}")
         slug = self._normalize_slug(slug)
+        rows = []
+        for e in events:
+            kind, action, source = e.get("kind", ""), e.get("action") or "set", e.get("source") or "person"
+            choice = e.get("choice") or ""
+            if kind not in self.SCOPE_KINDS:
+                raise ValueError(f"unknown kind {kind!r}")
+            if action not in ("set", "clear"):
+                raise ValueError(f"unknown action {action!r}")
+            if action == "set" and choice not in ("include", "leave_out"):
+                raise ValueError(f"unknown choice {choice!r}")
+            if source not in ("person", "proposal"):
+                raise ValueError(f"unknown source {source!r}")
+            rows.append((resource_type, slug, e.get("locator") or "", kind, "" if action == "clear" else choice,
+                         action, source, e.get("proposal_rule") or "", e.get("reason") or "", author,
+                         e.get("changed_at") or datetime.utcnow().isoformat(timespec="seconds")))
         with self._conn() as conn:
-            cur = conn.execute(
-                """INSERT INTO resource_scope_events
-                   (resource_type, resource_slug, locator, kind, choice, action, source,
-                    proposal_rule, reason, author, changed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (resource_type, slug, locator or "", kind, choice, action, source,
-                 proposal_rule or "", reason or "", author,
-                 changed_at or datetime.utcnow().isoformat(timespec="seconds")),
-            )
-            return getattr(cur, "lastrowid", None) or 0
+            for r in rows:
+                conn.execute(
+                    """INSERT INTO resource_scope_events
+                       (resource_type, resource_slug, locator, kind, choice, action, source,
+                        proposal_rule, reason, author, changed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", r)
+        return len(rows)
 
     def list_resource_scope_events(self, resource_type: str, slug: str) -> list[dict]:
         """Every scope event for one resource, oldest first."""

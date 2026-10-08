@@ -97,7 +97,8 @@ def test_the_ddl_survives_the_postgres_translator():
 
 def test_the_registry_has_no_update_or_delete_for_scope_events():
     names = [n for n in dir(ProjectRegistry) if "resource_scope" in n]
-    assert sorted(names) == ["append_resource_scope_event", "current_resource_scope", "list_resource_scope_events"]
+    assert sorted(names) == ["append_resource_scope_event", "append_resource_scope_events", "current_resource_scope",
+                             "list_resource_scope_events"]
     import inspect
     src = inspect.getsource(ProjectRegistry)
     assert not re.search(r"(UPDATE|DELETE FROM)\s+resource_scope_events", src)
@@ -372,3 +373,88 @@ def test_one_row_chosen_means_exactly_that_row_no_readme_no_siblings(client, reg
                     json={"confirm": [], "sub_resources": ["coco-workbooks", "compose-configs/README.md"], "contained": "all"})
     assert r.status_code == 200, r.text
     assert r.json()["curation"]["selection"]["sub_resources"] == ["compose-configs"]
+
+
+# ── review round: one transaction, caps, file types, the loop ────────────────
+
+def test_a_batch_is_one_transaction_a_failing_second_row_writes_none(registry):
+    good = {"locator": "docs", "kind": "folder", "choice": "include"}
+    bad = {"locator": "src", "kind": "folder", "choice": "maybe"}
+    with pytest.raises(ValueError):
+        registry.append_resource_scope_events("repo", "p", author="dan", events=[good, bad])
+    assert registry.list_resource_scope_events("repo", "p") == []
+    # and a failure INSIDE the writes (the second insert dies) rolls the first back too
+    real = registry._conn
+    calls = {"n": 0}
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def flaky():
+        with real() as conn:
+            orig = conn.execute
+
+            def execute(sql, params=()):
+                if "INSERT INTO resource_scope_events" in sql:
+                    calls["n"] += 1
+                    if calls["n"] == 2:
+                        raise RuntimeError("db went away")
+                return orig(sql, params)
+            conn.execute = execute
+            yield conn
+    registry._conn = flaky
+    with pytest.raises(RuntimeError):
+        registry.append_resource_scope_events("repo", "p", author="dan", events=[good, {**good, "locator": "src"}])
+    registry._conn = real
+    assert registry.list_resource_scope_events("repo", "p") == []
+
+
+def test_the_route_refuses_long_text_and_unknown_file_types_with_a_sentence(client, registry):
+    _survey(registry)
+    r = _post(client, [{"locator": "docs", "kind": "folder", "choice": "include", "reason": "x" * 501}])
+    assert r.status_code == 400 and "reason is too long" in r.json()["detail"]
+    r = _post(client, [{"locator": "docs", "kind": "folder", "choice": "include", "proposal_rule": "x" * 101}])
+    assert r.status_code == 400 and "proposal_rule is too long" in r.json()["detail"]
+    r = _post(client, [{"locator": "docs" * 300, "kind": "folder", "choice": "include"}])
+    assert r.status_code == 400 and "locator is too long" in r.json()["detail"]
+    with patch("resource_explorer.repo_publish.file_types_preview", return_value={"types": [{"label": "Python"}]}):
+        assert _post(client, [{"locator": "Cobol", "kind": "file_type", "choice": "include"}]).status_code == 400
+        assert _post(client, [{"locator": "Python", "kind": "file_type", "choice": "include"}]).status_code == 200
+    assert [e["locator"] for e in registry.list_resource_scope_events("repo", "p")] == ["Python"]
+
+
+def test_publish_chosen_puts_the_threads_loop_back_as_it_found_it(registry):
+    import asyncio
+    _survey(registry)
+    _event(registry, "docs", "folder")
+    pub = MagicMock()
+    pub.publish_sub_resources.return_value = {"docs": "g"}
+    pub._asset_maker.get_asset_by_guid.return_value = {"guid": "g"}
+    mine = asyncio.new_event_loop()
+    asyncio.set_event_loop(mine)
+    resource_scope.publish_chosen(registry, "p", github_url="u", asset_guid="a", curation_id="", author="dan",
+                                  locators=["docs"], publisher=pub)
+    assert asyncio.get_event_loop() is mine and not mine.is_closed()
+    mine.close()
+    asyncio.set_event_loop(None)
+
+    # a worker thread: whatever loop state it had on entry is its state on exit, and the call still worked
+    import threading
+    seen = {}
+
+    def has_loop():
+        try:
+            asyncio.get_event_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    def work():
+        seen["before"] = has_loop()
+        seen["out"] = resource_scope.publish_chosen(registry, "p", github_url="u", asset_guid="a", curation_id="",
+                                                    author="dan", locators=["docs"], publisher=pub)
+        seen["after"] = has_loop()
+    t = threading.Thread(target=work)
+    t.start()
+    t.join()
+    assert seen["after"] == seen["before"] and seen["out"]["guids"] == {"docs": "g"}

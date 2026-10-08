@@ -121,12 +121,16 @@ def chosen_locators(registry, slug: str) -> list[str]:
     return build_view(registry, slug)["manifest"]["chosen"]
 
 
-def validate_events(registry, slug: str, events: list[dict]) -> list[dict]:
+#: Longest free text a choice may carry; over it the batch is refused with a sentence.
+MAX_LOCATOR, MAX_REASON, MAX_RULE = 1024, 500, 100
+
+
+def validate_events(registry, slug: str, events: list[dict], file_types: set[str] | None = None) -> list[dict]:
     """Check a batch against the record's own candidate set; return the clean events or raise ValueError.
 
     A folder or file locator must be a row of the view (a survey candidate, or a container folder that
     holds an included file), and its kind must match; a `file_type` event is accepted as named (file types
-    are listed elsewhere)."""
+    must be one of `file_types` (the labels the repository has); with none given it is refused)."""
     if not events:
         raise ValueError("no choices given")
     view = {r["locator"]: r for r in build_view(registry, slug)["rows"]}
@@ -142,7 +146,14 @@ def validate_events(registry, slug: str, events: list[dict]) -> list[dict]:
         if action == "set" and choice not in ("include", "leave_out"):
             raise ValueError("a choice is include or leave_out (or clear it)")
         loc = e.get("locator", "")
-        if kind != "file_type":
+        for name, val, cap in (("locator", loc, MAX_LOCATOR), ("reason", e.get("reason") or "", MAX_REASON),
+                               ("proposal_rule", e.get("proposal_rule") or "", MAX_RULE)):
+            if len(val) > cap:
+                raise ValueError(f"the {name} is too long ({len(val)} characters; the most is {cap})")
+        if kind == "file_type":
+            if not file_types or loc not in file_types:
+                raise ValueError(f"{loc!r} is not a file type of this repository")
+        else:
             row = view.get(loc)
             if row is None:
                 raise ValueError(f"{loc!r} is not a candidate of the sub-resource survey")
@@ -182,13 +193,15 @@ def publish_chosen(registry, slug: str, *, github_url: str, asset_guid: str, cur
         registry.catalog_sub_resource(RESOURCE_TYPE, slug, loc, want[loc], source_finding=SURVEY_KIND,
                                       detail=(cands.get(loc) or {}).get("detail") or None)
     publisher = publisher or EgeriaPublisher(registry=registry)
-    # The publisher drives async pyegeria calls through `asyncio.get_event_loop()`. Brief 1's publish step
-    # closes its own loop and sets none behind it, so a thread arriving here can have no current loop; give
-    # the call one when it has none, and put the thread back as it was.
+    # The publisher drives async pyegeria calls through `asyncio.get_event_loop()`, which raises in a thread
+    # with no loop (brief 1's publish step leaves its thread that way). Give the call a loop only when the
+    # thread has no usable one, close only what we made, and put the thread back exactly as it was.
     import asyncio
-    made = None
+    prior, made = None, None
     try:
-        asyncio.get_event_loop()
+        prior = asyncio.get_event_loop()
+        if prior.is_closed():
+            raise RuntimeError("closed")
     except RuntimeError:
         made = asyncio.new_event_loop()
         asyncio.set_event_loop(made)
@@ -197,7 +210,7 @@ def publish_chosen(registry, slug: str, *, github_url: str, asset_guid: str, cur
     finally:
         if made is not None:
             made.close()
-            asyncio.set_event_loop(None)
+            asyncio.set_event_loop(prior)          # None when the thread had none; the old loop otherwise
     counts = repo_publish.record_sub_resource_proofs(
         registry, slug, curation_id, author, want, list(locators), guids,
         reader=lambda g: publisher._asset_maker.get_asset_by_guid(g, output_format="JSON"))

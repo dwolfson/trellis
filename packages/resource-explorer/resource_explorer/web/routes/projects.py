@@ -1497,12 +1497,19 @@ async def post_scope_events(slug: str, body: ScopeEventsRequest, request: Reques
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    events = [e.model_dump() for e in body.events]
     try:
-        clean = resource_scope.validate_events(registry, slug, [e.model_dump() for e in body.events])
+        file_types = None
+        if any(e["kind"] == "file_type" for e in events):
+            from resource_explorer import repo_publish
+            preview = await asyncio.to_thread(repo_publish.file_types_preview, registry, project, slug)
+            file_types = {t["label"] for t in (preview.get("types") or [])}
+        clean = resource_scope.validate_events(registry, slug, events, file_types=file_types)
+        # One transaction: a failure partway writes none of the batch.
+        await asyncio.to_thread(registry.append_resource_scope_events, resource_scope.RESOURCE_TYPE, slug,
+                                author=author, events=clean)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    for e in clean:
-        registry.append_resource_scope_event(resource_scope.RESOURCE_TYPE, slug, author=author, **e)
     view = await asyncio.to_thread(resource_scope.build_view, registry, slug)
     return {"slug": slug, "in_egeria": bool(project.egeria_asset_guid), "written": len(clean), **view}
 
