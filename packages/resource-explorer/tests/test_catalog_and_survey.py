@@ -990,7 +990,7 @@ class TestStartAgainAndServerClaim:
 
     def test_a_refused_create_releases_the_server_claim(self, registry):
         port = RegPort()
-        port.create_error = typed("PyegeriaAPIException")
+        port.create_error = typed("PyegeriaAPIException", related_http_code=400)
         with pytest.raises(nsr.NativeSurveyError):
             register(registry, port)
         assert cas.take_server_claim(registry, SERVER_NAME) is True
@@ -1091,20 +1091,44 @@ class TestAmbiguousCreateFailuresKeepTheClaim:
             register(registry, port)
         assert cas.take_server_claim(registry, SERVER_NAME) is False
 
-    @pytest.mark.parametrize("name", ["PyegeriaAPIException", "PyegeriaUnauthorizedException",
-                                      "PyegeriaInvalidParameterException"])
-    def test_a_typed_egeria_refusal_releases_the_claim(self, registry, name):
+    @pytest.mark.parametrize("name,attrs", [
+        ("PyegeriaAPIException", {"related_http_code": 400}),
+        ("PyegeriaAPIException", {"related_http_code": "404"}),
+        ("PyegeriaUnauthorizedException", {"related_http_code": 401}),
+        ("PyegeriaUnauthorizedException", {"related_http_code": 403}),
+        ("PyegeriaAPIException", {"response_code": 400}),
+        ("PyegeriaInvalidParameterException", {"response": None}),
+    ])
+    def test_a_genuine_4xx_or_pre_request_refusal_releases_the_claim(self, registry, name, attrs):
         port = RegPort()
-        port.create_error = typed(name)
+        port.create_error = typed(name, **attrs)
         with pytest.raises(nsr.NativeSurveyError):
             register(registry, port)
         assert cas.take_server_claim(registry, SERVER_NAME) is True
 
+    @pytest.mark.parametrize("name,attrs", [
+        ("PyegeriaAPIException", {"related_http_code": 500}),
+        ("PyegeriaAPIException", {"related_http_code": 503}),
+        ("PyegeriaAPIException", {"related_http_code": None}),
+        ("PyegeriaAPIException", {}),
+        ("PyegeriaInvalidParameterException", {"response": object()}),
+        ("PyegeriaInvalidParameterException", {"response": None, "e": __import__("json").JSONDecodeError("x", "y", 0)}),
+    ])
+    def test_a_5xx_a_missing_code_or_a_post_response_decode_error_keeps_the_claim(self, registry, name, attrs):
+        port = RegPort()
+        port.create_error = typed(name, **attrs)
+        with pytest.raises(nsr.NativeSurveyError):
+            register(registry, port)
+        assert cas.take_server_claim(registry, SERVER_NAME) is False
 
-def typed(name):
+
+def typed(name, **attrs):
     import pyegeria.core._exceptions as ex
     cls = getattr(ex, name)
-    return cls.__new__(cls)
+    e = cls.__new__(cls)
+    for k, v in attrs.items():
+        setattr(e, k, v)
+    return e
 
 
 class TestStartAgainDoesNotClearAnotherDatabasesServerClaim:
@@ -1171,4 +1195,43 @@ class TestReachNoteExcludesAuthWording:
 
     @pytest.mark.parametrize("text", ["could not connect to server", "unable to connect to host"])
     def test_could_not_or_unable_to_connect_still_get_it(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == cas.REACH_NOTE
+
+
+class TestFourthReviewLows:
+    def test_the_no_answer_note_is_not_shown_when_a_guid_was_returned_but_not_confirmed(self, registry):
+        port = RegPort()
+        port.hide_from_find = {SQN}
+        port.read_element_override = None
+        with pytest.raises(nsr.NativeSurveyError):
+            register(registry, port)
+        notes = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]["notes"]
+        assert cas.CREATED_UNCONFIRMED_WORDS in notes and cas.SERVER_NO_ANSWER_WORDS not in notes
+
+    def test_another_databases_claim_is_named_and_start_again_is_not_offered_for_it(self, registry):
+        assert cas.take_server_claim(registry, SERVER_NAME, "sibling") is True
+        row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
+        assert row["register"]["start_again"] is False
+        assert any("sibling" in n and "Start again" in n for n in row["notes"])
+        with pytest.raises(nsr.NativeSurveyBusy) as exc:
+            register(registry, RegPort())
+        assert "sibling" in str(exc.value) and "on sibling" in str(exc.value)
+        own = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "sibling", TECH)}[CATALOG_QN]
+        assert own["register"]["start_again"] is True
+
+    def test_the_stale_pending_branch_does_not_release_another_presss_live_claim(self, registry):
+        port = RegPort()
+        registry.set_setting(cas.server_unconfirmed_key(SERVER_NAME), SERVER_GUID)   # Egeria: gone
+        assert cas.take_server_claim(registry, SERVER_NAME, "sibling") is True
+        with pytest.raises(nsr.NativeSurveyBusy):
+            register(registry, port)
+        assert cas.server_claim_holder(registry, SERVER_NAME) == "sibling"
+        assert port.created_servers == []
+
+    @pytest.mark.parametrize("text", ["Egeria refused the template request", "refused by the validator"])
+    def test_a_refused_that_is_not_a_connection_gets_no_note(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == ""
+
+    @pytest.mark.parametrize("text", ["Connection refused", "Connection to host.docker.internal:5432 refused"])
+    def test_a_connection_refused_still_does(self, text):
         assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == cas.REACH_NOTE

@@ -265,6 +265,8 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       delete b.dataset.confirm;
       if (b.dataset.label) b.textContent = b.dataset.label;
       b.classList.remove('border-state-warn');
+      const slot = b.closest('[data-native-survey]')?.querySelector('[data-native-info]');
+      if (slot) { slot.textContent = ''; slot.classList.add('hidden'); }      // the line goes with the disarm
     };
     const register = async (b, targetSlug, qn, startAgain = false) => {
       if (startAgain && b.dataset.confirm !== '1') {
@@ -274,7 +276,8 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
         b.textContent = 'Confirm: start again';
         b.classList.add('border-state-warn');
         showInfo(qn, `${b.dataset.nativeConfirm || 'This submits a second registration to Egeria.'} Press again to confirm.`);
-        b._confirmTimer = setTimeout(() => resetConfirm(b), CONFIRM_MS);
+        b._disarm = () => resetConfirm(b);
+        b._confirmTimer = setTimeout(b._disarm, CONFIRM_MS);
         return;
       }
       clearTimeout(b._confirmTimer);

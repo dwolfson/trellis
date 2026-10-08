@@ -437,7 +437,7 @@ def catalog_in_flight(state: dict, run: dict | None) -> bool:
 # ── connection-ish failures get the one extra line ──────────────────────────
 
 _CONNECTION_WORDS = re.compile(
-    r"(?:could not|unable to) connect|refused|timed? ?out|unreachable|no route|connection reset|unknown ?host",
+    r"(?:could not|unable to) connect|connection[^;]{0,80}refused|refused to connect|timed? ?out|unreachable|no route|connection reset|unknown ?host",
     re.IGNORECASE)
 #: A sentence that names a credential or role problem is not a reach problem, whatever else it says.
 _AUTH_WORDS = re.compile(r"password|authenticat|\brole\b|pg_hba|not authorized|permission denied", re.IGNORECASE)
@@ -671,13 +671,17 @@ def _register_steps(registry, port, entity_type, slug, technology_type, submitte
                 else:
                     if pending:
                         registry.set_setting(unconfirmed_key, "")  # Egeria said it is gone: nothing to adopt
-                        release_server_claim(registry, server_name)
+                        if server_claim_holder(registry, server_name) == slug:    # only OUR claim
+                            release_server_claim(registry, server_name)
                     if not take_server_claim(registry, server_name, slug):
                         holder = server_claim_holder(registry, server_name)
                         raise RegistrationUnresolved(
                             f"Another press{f' (database {holder})' if holder else ''} is creating this server "
                             f"({sqn}), or an earlier one did not confirm it. Creating it again could make a "
-                            f"second server. Press {START_AGAIN_LABEL!r} only if you mean to.")
+                            f"second server. "
+                            + (f"Press {START_AGAIN_LABEL!r} on {holder}, which holds it, only if you mean to."
+                               if holder and holder != slug else
+                               f"Press {START_AGAIN_LABEL!r} only if you mean to."))
                     # We hold the claim. Another press may have registered the server between our "absent"
                     # and our claim: look again, and read the unconfirmed record again, before creating.
                     again = port.find_element(sqn)
@@ -772,11 +776,34 @@ def _register_steps(registry, port, entity_type, slug, technology_type, submitte
         return out
 
 
+def _http_code(exc: BaseException) -> int | None:
+    for attr in ("related_http_code", "response_code"):
+        v = getattr(exc, attr, None)
+        try:
+            if v not in (None, "") and not isinstance(v, bool):
+                return int(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _egeria_answered(exc: BaseException) -> bool:
-    """Did EGERIA answer (a typed API, authorization or validation refusal)? A timeout, a transport error
-    or a cancellation is NOT an answer: the request may have been carried out."""
+    """Did EGERIA refuse the create before doing anything? Only then is it safe to release the claim.
+
+    A template create is not transactional, so a 5xx (and a missing code) may come after part of the copy was
+    written: those are AMBIGUOUS. Released only for an API/authorization exception whose code is 4xx, or for an
+    invalid-parameter exception raised BEFORE a request was processed (it has no response and did not wrap a
+    decode error; pyegeria also raises it after a 200 whose body would not parse)."""
+    import json as _json
+
     from pyegeria.core._exceptions import PyegeriaAPIException, PyegeriaInvalidParameterException
-    return isinstance(exc, (PyegeriaAPIException, PyegeriaInvalidParameterException))
+    if isinstance(exc, PyegeriaAPIException):
+        code = _http_code(exc)
+        return code is not None and 400 <= code < 500
+    if isinstance(exc, PyegeriaInvalidParameterException):
+        inner = getattr(exc, "e", None) or exc.__cause__
+        return getattr(exc, "response", None) is None and not isinstance(inner, _json.JSONDecodeError)
+    return False
 
 
 def _egeria_sentence(exc: Exception, entity=None) -> str:
@@ -894,8 +921,12 @@ def catalog_notes(registry, entity_type: str, entity, latest: dict | None, deriv
         proc = _process_for(entity_type, "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
         notes.append(describe_earlier(registry, entity_type, entity.slug, proc.qualified_name if proc else ""))
     holder = server_claim_holder(registry, sname)
-    if not in_flight and holder in ("", entity.slug):
+    unconfirmed = bool((registry.get_setting(server_unconfirmed_key(sname), "") or "").strip())
+    if not in_flight and holder in ("", entity.slug) and not unconfirmed:
         notes.append(SERVER_NO_ANSWER_WORDS)
+    elif holder and holder != entity.slug:
+        notes.append(f"Database {holder} holds the claim on this server; press {START_AGAIN_LABEL} on {holder}, "
+                     "not here")
     notes += server_credential_notes(registry, entity)
     return notes
 
@@ -906,8 +937,10 @@ def register_control(registry, entity, derived: dict, in_flight: bool, wiring: s
     base = {"label": REGISTER_LABEL, "why_not": wiring, "start_again": False, "available": False, "confirm": ""}
     if wiring or in_flight:
         return base
+    holder = server_claim_holder(registry, server_name_for(entity))
+    # A server claim held by ANOTHER database can only be cleared there: not an unresolved run of this one.
     unresolved = (derived["state"] == AWAITING_REGISTRATION or bool(claim_held(registry, entity.slug))
-                  or bool(registry.get_setting(server_claim_key(server_name_for(entity)), "")))
+                  or holder in ("", entity.slug))
     unconfirmed = bool((registry.get_setting(server_unconfirmed_key(server_name_for(entity)), "") or "").strip())
     if unresolved and derived["state"] != REGISTERED:
         proc = _process_for("database", "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)

@@ -313,3 +313,21 @@ test('the confirm is disarmed after a refused press, and after its timer, so a l
   assert.equal(posts, 1, 'no send without a fresh confirm');
   assert.equal(btn.textContent, 'Confirm: start again');
 });
+
+test('the "press again to confirm" line is cleared with the disarm', async () => {
+  const { document, app } = await setUp();
+  const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
+  stubFetch(paneRoutes([surveyRow(), catalogRow({
+    run: { ...blankRun, state: 'awaiting_registration' },
+    register: { available: true, label: 'Start again →', why_not: '', start_again: true, confirm: 'Be sure.' } })]));
+  await app.loadSurveyPane();
+  const row = content.querySelector(`[data-native-survey="${CATALOG}"]`);
+  const btn = row.querySelector('[data-native-register]');
+  btn.click();
+  await new Promise((r) => setTimeout(r, 5));
+  const info = row.querySelector('[data-native-info]');
+  assert.ok(info.textContent.includes('Press again to confirm'));
+  btn._disarm();                                         // what the timer calls
+  assert.equal(btn.dataset.confirm, undefined);
+  assert.ok(info.classList.contains('hidden') && info.textContent === '', 'the line goes with the disarm');
+});
