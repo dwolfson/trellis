@@ -2439,7 +2439,10 @@ def environment_blueprint(slug: str) -> dict:
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return node_admission.environment(registry, slug)
+    # The wires are the dependency table's own rows whose two ends are both referenced-only services, so the
+    # table and this blueprint cannot disagree (DESIGN-DEPENDENCY-ROW-TWO-ENDS.md).
+    from resource_explorer import dependency_table
+    return {**node_admission.environment(registry, slug), "wires": dependency_table.environment_wires(registry, slug)}
 
 
 class NodeReclassify(BaseModel):

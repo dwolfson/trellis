@@ -278,27 +278,37 @@ def summary(registry, slug: str) -> dict:
             "surveyed": bool(stored)}
 
 
+def image_builders(registry, slug: str) -> dict[str, str]:
+    """{normalised image name: the slug of another repository whose own survey recorded it among the images
+    it builds or publishes}. The first repository to claim an image keeps it."""
+    builders: dict[str, str] = {}
+    for p in registry.list_all():
+        if p.slug == slug:
+            continue
+        for img in _stored(registry, p.slug).get("published_images", []):
+            builders.setdefault(img, p.slug)
+    return builders
+
+
+def builder_of(image: str, builders: dict[str, str]) -> str:
+    """The repository that builds `image`, or '' when RE knows none (never guessed)."""
+    for pub, owner in builders.items():
+        if image and adm.same_image(image, pub):
+            return owner
+    return ""
+
+
 def environment(registry, slug: str) -> dict:
     """The Environment Deployment Blueprint's nodes: each referenced-only service as another project's
     deployment unit, linked to the repository that builds its image when RE knows one (that repository's
     own survey recorded the image among those it builds or publishes). A link is a fact RE read from two
     surveys, carried as an annotation until Egeria has the type; no link is said as "builder not known"."""
     rows = referenced_rows(registry, slug)
-    builders: dict[str, str] = {}
-    if rows:
-        for p in registry.list_all():
-            if p.slug == slug:
-                continue
-            for img in _stored(registry, p.slug).get("published_images", []):
-                builders.setdefault(img, p.slug)
+    builders = image_builders(registry, slug) if rows else {}
     nodes = []
     for r in rows:
         img = r.get("image") or ""
-        builder = ""
-        for pub, owner in builders.items():
-            if img and adm.same_image(img, pub):
-                builder = owner
-                break
+        builder = builder_of(img, builders)
         nodes.append({"name": r["name"], "image": img, "source": r.get("evidence", ""), "scope": r["scope"],
                       "built_by": builder,
                       "words": f"built by {builder}" if builder else "builder not known"})

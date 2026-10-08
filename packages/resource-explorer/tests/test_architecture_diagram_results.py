@@ -82,6 +82,10 @@ class _Reg:
         self._verdicts = verdicts or {}
         self._blueprint_rows = list(blueprint_rows)
 
+    def list_settings_with_prefix(self, prefix):
+        # The diagram asks which services are referenced-only (ports on the edge); nothing was reclassified.
+        return []
+
     def query_finding_scopes(self, slug, kind, check_name=None, include_withdrawn=False):
         if kind == "architecture_recovery" and check_name == "component":
             # A scope counts as live only when SOME row at it is not a bare
