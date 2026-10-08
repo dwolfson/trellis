@@ -58,3 +58,14 @@ def test_re_recording_returns_the_cluster_it_displaced(pg_registry):
     assert second["displaced"] == ["web"]
     again = pg_registry.record_materialized_blueprint("repo", slug, "deployment", "db", _qn(slug), G1)
     assert again["displaced"] == []
+
+
+def test_a_claim_is_taken_once_and_released_only_by_its_holder(pg_registry):
+    key = "blueprint-claim::bpid_pg_claim"
+    assert pg_registry.take_claim(key, "a") is True
+    assert pg_registry.take_claim(key, "b") is False
+    pg_registry.release_claim(key, "b")                 # not the holder: the claim stands
+    assert pg_registry.take_claim(key, "c") is False
+    pg_registry.release_claim(key, "a")
+    assert pg_registry.take_claim(key, "c") is True
+    pg_registry.release_claim(key, "c")

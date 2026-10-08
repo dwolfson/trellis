@@ -316,22 +316,124 @@ def test_a_renamed_cluster_whose_old_name_no_longer_exists_adopts_and_rekeys(reg
     proofs = [p for p in reg.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "rekey"]
     assert len(proofs) == 1 and proofs[0]["element_guid"] == OLD
     assert proofs[0]["detail"] == {"entity_type": "repo", "old_cluster_key": ROOT,
+                                   "old_key_source": "registry row",
                                    "new_cluster_key": "OMAG-renamed", "guid": OLD}
 
 
-def test_a_split_leaves_exactly_one_adopter(reg):
+def test_a_split_with_one_acceptance_adopts_once_and_the_other_half_is_refused_afterwards(reg):
     live = {"alpha", "beta"}                      # one group re-clustered into two; the old name is gone
     props = {BASE: {"guid": OLD, "props": _prov(ROOT)}}
-    second = _m(reg, found=props)                 # the later one asks first: refused, not a claimant
-    with pytest.raises(BlueprintIdentifierNeeded, match=r"for another cluster"):
-        _make(second, cluster="beta", live_clusters=live)
     first = _m(reg, found=props)
-    assert _make(first, cluster="alpha", live_clusters=live)["guid"] == OLD
-    again = _m(reg, found=props)                  # and once alpha holds the row, beta is still refused
+    assert _make(first, cluster="beta", live_clusters=live)["guid"] == OLD    # beta alone pressed adopts
+    later = _m(reg, found=props)                  # alpha pressed afterwards: beta now holds the row
     with pytest.raises(BlueprintIdentifierNeeded):
-        _make(again, cluster="beta", live_clusters=live)
-    assert _created(second) == [] and _created(again) == []
+        _make(later, cluster="alpha", live_clusters=live)
+    assert _created(first) == [] and _created(later) == []
+    assert set(reg.get_materialized_blueprints("repo", "egeria_git")) == {"deployment::beta"}
+
+
+def test_two_accepted_halves_in_one_batch_yield_one_adopter_first_by_name(reg):
+    live = {"alpha", "beta"}
+    props = {BASE: {"guid": OLD, "props": _prov(ROOT)}}
+    batch = {"alpha", "beta"}
+    second = _m(reg, found=props)
+    with pytest.raises(BlueprintIdentifierNeeded, match=r"another cluster \(alpha\)"):
+        _make(second, cluster="beta", live_clusters=live, batch=batch)
+    first = _m(reg, found=props)
+    assert _make(first, cluster="alpha", live_clusters=live, batch=batch)["guid"] == OLD
+    assert _created(first) == [] and _created(second) == []
     assert set(reg.get_materialized_blueprints("repo", "egeria_git")) == {"deployment::alpha"}
+
+
+#: The architect's ruling (A): claimants are the clusters ACCEPTED in the run, so an earlier-sorting cluster
+#: that nobody accepted does not block the one that was pressed. Flip this constant to pin another ruling.
+UNACCEPTED_EARLIER_CLUSTER_BLOCKS = False
+
+
+def test_an_unaccepted_earlier_cluster_does_not_block_the_pressed_one(reg):
+    live = {"alpha", "beta"}                      # alpha sorts first but nobody accepted it
+    m = _m(reg, found={BASE: {"guid": OLD, "props": _prov(ROOT)}})
+    if UNACCEPTED_EARLIER_CLUSTER_BLOCKS:
+        with pytest.raises(BlueprintIdentifierNeeded):
+            _make(m, cluster="beta", live_clusters=live)
+    else:
+        assert _make(m, cluster="beta", live_clusters=live)["guid"] == OLD
+
+
+def test_a_second_rename_records_the_previous_key_from_the_registry_row(reg):
+    props = {BASE: {"guid": OLD, "props": _prov(ROOT)}}          # the element's key is never rewritten
+    _make(_m(reg, found=props), cluster="alpha", live_clusters={"alpha"})
+    _make(_m(reg, found=props), cluster="gamma", live_clusters={"gamma"})
+    details = [p["detail"] for p in reg.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "rekey"]
+    assert [(d["old_cluster_key"], d["old_key_source"], d["new_cluster_key"]) for d in details] == [
+        (ROOT, "element property", "alpha"), ("alpha", "registry row", "gamma")]
+
+
+def test_a_proof_that_cannot_be_written_is_surfaced_not_just_logged(reg):
+    props = {BASE: {"guid": OLD, "props": _prov(ROOT)}}
+    m = _m(reg, found=props)
+    m._registry.append_catalogue_commit_proof = MagicMock(side_effect=RuntimeError("proof table down"))
+    out = _make(m, cluster="alpha", live_clusters={"alpha"})
+    assert out["status"] == "adopted_unproven" and "proof table down" in out["proof_error"]
+    assert out["guid"] == OLD
+    assert any("UNPROVEN" in x and "proof table down" in x for x in _activity(reg))
+    # no registry at all: the proof cannot be written, and that is said, not swallowed
+    m2 = _m(None, found=props)
+    out2 = m2._record_rekey_proof("repo", "egeria_git", "deployment", ROOT, "alpha", BASE, OLD, "element property")
+    assert "no registry" in out2
+
+
+def test_the_state_readers_ignore_a_rekey_row(reg):
+    """`derive_commit_state` treats ANY proof row on a slug as "something was committed" (its header), which is
+    true of the existing blueprint `shape` rows too and moot for a repository slug. So the pinned property is:
+    a `rekey` row changes nothing beyond what a shape row already does, and `publish_state` is unchanged."""
+    from resource_explorer.catalogue_commit import derive_commit_state
+    from resource_explorer.registry import Project
+    from resource_explorer.repo_publish import publish_state
+    reg.add(Project(slug="egeria_git", display_name="egeria_git", github_url="https://github.com/o/e"))
+    view = {"schemas": []}
+    reg.append_catalogue_commit_proof("egeria_git", proof="shape", node_kind="blueprint_shape",
+                                      table_name="deployment::a", element_guid=OLD, detail={"shape": "container"})
+    before = (derive_commit_state(reg, "egeria_git", view), publish_state(reg, "egeria_git"))
+    reg.append_catalogue_commit_proof("egeria_git", proof="rekey", node_kind="blueprint_shape",
+                                      table_name="deployment::a", element_guid=OLD, detail={"x": 1})
+    after = (derive_commit_state(reg, "egeria_git", view), publish_state(reg, "egeria_git"))
+    assert before == after
+
+
+# ── a claim around adoption ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_a_second_caller_that_passes_the_check_while_the_first_holds_the_claim_is_refused(reg):
+    props = {BASE: {"guid": OLD, "props": _prov(ROOT)}}
+    live = {"alpha", "beta"}
+    second = _m(reg, found=props)
+    first = _m(reg, found=props)
+    seen = {}
+    real = first._automated_curation.get_guid_for_name.side_effect
+
+    def search_then_interleave(qn, **kw):
+        out = real(qn, **kw)
+        if "refused" not in seen:                 # the second press arrives mid-adoption
+            with pytest.raises(BlueprintMaterializationError, match="another press is adopting") as exc:
+                _make(second, cluster="beta", live_clusters=live)
+            seen["refused"] = str(exc.value)
+            seen["claim_still_held"] = not reg.take_claim(f"blueprint-claim::{BASE}", "intruder")
+        return out
+
+    first._automated_curation.get_guid_for_name.side_effect = search_then_interleave
+    assert _make(first, cluster="alpha", live_clusters=live)["guid"] == OLD
+    assert seen["claim_still_held"] is True                    # the refused caller did not release it
+    assert _created(second) == [] and second.searched == []
+    assert len([p for p in reg.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "rekey"]) == 1
+    assert reg.take_claim(f"blueprint-claim::{BASE}", "later")  # released by the holder in its finally
+
+
+def test_the_claim_is_released_when_the_holder_fails(reg):
+    m = _m(reg, search_error=RuntimeError("503"))
+    with pytest.raises(BlueprintMaterializationError):
+        _make(m)
+    assert reg.take_claim(f"blueprint-claim::{BASE}", "next")
 
 
 def test_the_other_cluster_being_live_or_unknown_still_refuses(reg):
@@ -428,3 +530,12 @@ def test_two_identifiers_that_give_the_same_egeria_identifier_are_refused(reg, f
     with pytest.raises(BlueprintMaterializationError, match="already used"):
         _make(m, cluster="db", identifier=second)
     assert _created(m) == []
+
+
+def test_a_claim_this_process_does_not_hold_is_never_released():
+    registry = MagicMock(get_materialized_blueprint=MagicMock(return_value=None),
+                         take_claim=MagicMock(return_value=None))     # not a real "taken"
+    m = _m(registry)
+    m._registry = registry
+    _make(m)
+    registry.release_claim.assert_not_called()

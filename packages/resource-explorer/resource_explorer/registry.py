@@ -4454,6 +4454,25 @@ class ProjectRegistry:
             conn.execute("INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
                          (key, value, datetime.utcnow().isoformat()))
 
+    def take_claim(self, key: str, holder: str, *, stale_after_seconds: int = 900) -> bool:
+        """Take a short-lived claim on `key`: True when THIS holder now holds it, False when another does.
+        One `INSERT ... ON CONFLICT DO NOTHING` in `app_settings` decides it (rowcount 1 = taken), so two
+        processes can never both win. A claim older than `stale_after_seconds` (a crashed holder) is cleared
+        first. No new table."""
+        now = datetime.utcnow()
+        cutoff = (now - timedelta(seconds=stale_after_seconds)).isoformat()
+        with self._conn() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key = ? AND updated_at < ?", (key, cutoff))
+            cur = conn.execute(
+                """INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO NOTHING""", (key, holder, now.isoformat()))
+            return bool(getattr(cur, "rowcount", 0) == 1)
+
+    def release_claim(self, key: str, holder: str) -> None:
+        """Release a claim, ONLY if this holder still holds it."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key = ? AND value = ?", (key, holder))
+
     def list_settings_with_prefix(self, prefix: str) -> list[tuple[str, str]]:
         """[(key, value)] for every setting whose key starts with `prefix`, ordered by key."""
         like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
