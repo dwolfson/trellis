@@ -279,6 +279,7 @@ class TestRoutes:
                             lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
         monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
         monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: {"user_id": "dan"})
+        monkeypatch.setattr("resource_explorer.web.routes.curate.get_current_user", lambda request: {"user_id": "dan"})
         monkeypatch.setattr("resource_explorer.web.routes.curate._authorize_curation", lambda *a, **k: None)
         from resource_explorer.web.app import app
         return TestClient(app)
@@ -306,3 +307,107 @@ class TestRoutes:
                          json={"scope_locator": scope, "to": "built_here", "reason": "ours"})
         assert ok.status_code == 200 and ok.json()["reclassified"]["by"] == "dan"
         assert node_admission.read_reclassifications(registry, "workspaces")[scope][-1]["reason"] == "ours"
+
+
+# ── review fixes: storage, corruption, caps, malformed entries, retries, keys ─────────
+
+class TestReclassifyStorage:
+    def _scope(self, registry, tmp_path):
+        _survey(registry, "workspaces", _workspaces_repo(tmp_path))
+        return [r["scope"] for r in node_admission.referenced_rows(registry, "workspaces")]
+
+    def test_two_concurrent_reclassifies_both_survive(self, registry, tmp_path):
+        import threading
+        scopes = self._scope(registry, tmp_path)[:2]
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def go(scope):
+            try:
+                barrier.wait()
+                node_admission.reclassify(registry, "workspaces", scope, "built_here", f"reason {scope}", "dan")
+            except Exception as exc:               # pragma: no cover - the failure being tested for
+                errors.append(exc)
+
+        ts = [threading.Thread(target=go, args=(s,)) for s in scopes]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert not errors
+        trail = node_admission.read_reclassifications(registry, "workspaces")
+        assert set(trail) == set(scopes) and all(len(v) == 1 for v in trail.values())
+
+    def test_two_entries_for_one_scope_keep_both_in_order(self, registry, tmp_path):
+        scope = self._scope(registry, tmp_path)[0]
+        node_admission.reclassify(registry, "workspaces", scope, "built_here", "first", "dan")
+        node_admission.reclassify(registry, "workspaces", scope, "referenced_only", "second", "dan")
+        trail = node_admission.read_reclassifications(registry, "workspaces")[scope]
+        assert [e["reason"] for e in trail] == ["first", "second"]
+
+    def test_a_corrupt_stored_entry_is_never_overwritten_and_is_said(self, registry, tmp_path):
+        scope = self._scope(registry, tmp_path)[0]
+        registry.set_setting("repo_node_reclassifications::workspaces::00000000000000000001-bad", "{not json")
+        node_admission.reclassify(registry, "workspaces", scope, "built_here", "ours", "dan")
+        assert registry.get_setting("repo_node_reclassifications::workspaces::00000000000000000001-bad") == "{not json"
+        assert node_admission.read_reclassifications(registry, "workspaces")[scope][-1]["reason"] == "ours"
+        s = node_admission.summary(registry, "workspaces")
+        assert s["unreadable_reclassifications"] == 1
+        assert any("unreadable reclassification" in l for l in s["left_out"])
+
+    def test_a_non_object_entry_is_unreadable_not_a_crash(self, registry, tmp_path):
+        self._scope(registry, tmp_path)
+        registry.set_setting("repo_node_reclassifications::workspaces::00000000000000000002-x", "[1, 2]")
+        assert node_admission.summary(registry, "workspaces")["unreadable_reclassifications"] == 1
+        assert dependency_table.build_table(registry, "workspaces")["counts"]["runtime"] >= 4
+
+    def test_a_malformed_entry_missing_keys_does_not_break_the_readers(self, registry, tmp_path):
+        from resource_explorer.component_tree import leaves
+        scope = self._scope(registry, tmp_path)[0]
+        registry.set_setting("repo_node_reclassifications::workspaces::00000000000000000003-y",
+                             '{"scope": "%s", "to": "built_here"}' % scope)
+        assert node_admission.summary(registry, "workspaces")["unreadable_reclassifications"] == 1
+        assert len(node_admission.referenced_rows(registry, "workspaces")) == 4
+        assert leaves(registry, "workspaces", scope) == []
+        ArchDetectSurveyor(Project(slug="workspaces", display_name="w", github_url="https://github.com/o/workspaces"),
+                           registry, local_path=_workspaces_repo(tmp_path / "again"), surveyed_at="2026-10-09T00:00:00").run()
+
+    def test_reason_and_scope_are_capped_with_a_sentence(self, registry, tmp_path):
+        scope = self._scope(registry, tmp_path)[0]
+        with pytest.raises(ValueError, match="500 characters"):
+            node_admission.reclassify(registry, "workspaces", scope, "built_here", "x" * 501, "dan")
+        with pytest.raises(ValueError, match="1024 characters"):
+            node_admission.reclassify(registry, "workspaces", "s" * 1025, "built_here", "r", "dan")
+
+
+def test_a_retried_step_with_the_same_surveyed_at_leaves_one_admission_row(registry, tmp_path):
+    root = _workspaces_repo(tmp_path)
+    project = _survey(registry, "workspaces", root)
+    ArchDetectSurveyor(project, registry, local_path=root, surveyed_at=SURVEYED).run()
+    rows = [r for r in registry.query_findings("workspaces", "architecture_admission") if r["check_name"] == "admission"]
+    assert len(rows) == 1
+
+
+def test_same_named_services_in_same_named_directories_are_two_nodes_with_two_keys(registry, tmp_path):
+    root = str(tmp_path / "twin")
+    for side in ("a", "b"):
+        _write(root, f"{side}/deploy/compose.yaml", "services:\n  kafka:\n    image: apache/kafka:3\n")
+    _git(root)
+    _survey(registry, "twin", root)
+    rows = node_admission.referenced_rows(registry, "twin")
+    assert len(rows) == 2 and len({r["scope"] for r in rows}) == 2
+    keys = {r["key"] for r in dependency_table.build_table(registry, "twin")["rows"] if r["style"] == "referenced only"}
+    assert len(keys) == 2
+
+
+def test_the_route_refuses_an_unsigned_caller_and_oversized_input_with_a_sentence(registry, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    _survey(registry, "workspaces", _workspaces_repo(tmp_path))
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: {"user_id": "dan"})
+    monkeypatch.setattr("resource_explorer.web.routes.curate.get_current_user", lambda request: {"user_id": "dan"})
+    monkeypatch.setattr("resource_explorer.web.routes.curate._authorize_curation", lambda *a, **k: None)
+    from resource_explorer.web.app import app
+    r = TestClient(app).post("/api/projects/workspaces/components/reclassify",
+                             json={"scope_locator": "x", "to": "built_here", "reason": "y" * 600})
+    assert r.status_code == 400 and "500 characters" in r.json()["detail"]

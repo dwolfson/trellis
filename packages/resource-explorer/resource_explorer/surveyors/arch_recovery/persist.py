@@ -210,7 +210,7 @@ def persist_admission(registry, slug: str, referenced: list, left_out: list[str]
                        "admitted": admitted_count, "run_scope": run_scope,
                        "sentence": ZERO_COMPONENT_SENTENCE if (referenced and not admitted_count) else ""},
         }],
-        surveyed_at=surveyed_at, scope_locator="",
+        surveyed_at=surveyed_at, scope_locator="", supersedes_previous=True,
     )
 
 

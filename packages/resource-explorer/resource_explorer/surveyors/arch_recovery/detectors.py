@@ -655,6 +655,12 @@ def build_components(root: str, files: list[str],
             slug = _slug(os.path.basename(unit), name)
             f = per_unit_facts[unit].get(key, {"image": "", "build": ""})
             twin = next((c for c in components if c.slug == slug), None)
+            if (twin is not None and twin.perspective == "deployment"
+                    and twin.identity.deployment_context != unit):
+                # Two compose services of the same name in two same-named directories (a/deploy, b/deploy)
+                # are two services, not one: qualify by the whole directory path rather than lose one.
+                slug = _slug(unit.replace(os.sep, "-"), name)
+                twin = next((c for c in components if c.slug == slug), None)
             if twin is not None:
                 # The same unit was already found by its Dockerfile or manifest: that is the stronger,
                 # built-here reading. The compose service still names the image it ships, which is how a

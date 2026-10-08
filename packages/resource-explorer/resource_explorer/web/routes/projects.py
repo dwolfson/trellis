@@ -2453,13 +2453,10 @@ def reclassify_node(slug: str, body: NodeReclassify, request: Request) -> dict:
     """A person moves a node between the blueprint and the runtime dependencies, with a reason. Append-only;
     the next survey honours it and the tree and the dependency table show it at once."""
     from resource_explorer import node_admission
-    from resource_explorer.auth import get_current_user
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes.curate import _require_author
 
-    user = get_current_user(request)
-    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
-    if not author:
-        raise HTTPException(status_code=401, detail="Sign in to reclassify a node: it needs someone who made it.")
+    author = _require_author(request, "reclassify a node")
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")

@@ -4,8 +4,8 @@ The detectors tag every component with an evidence class (`surveyors/arch_recove
 built here, shipped here, or referenced only. This module is the registry side:
 
 * `reclassify`: a person may say a node is built here after all, or only referenced, WITH A REASON. The
-  trail is append-only in `app_settings` (`repo_node_reclassifications::<slug>` -> `{scope: [{to, reason,
-  by, at}]}`, latest entry wins), no schema change, and it is read both at survey time (so the next survey
+  trail is append-only in `app_settings`, ONE KEY PER ENTRY (`repo_node_reclassifications::<slug>::<time>-<id>`,
+  written once, never updated; the latest entry per scope wins), no schema change, and it is read both at survey time (so the next survey
   honours it) and at read time (so the move shows at once).
 * `referenced_rows`: the referenced-only services that are runtime dependencies, with the person's
   reclassifications applied. `dependency_table` lists them as kind `runtime`.
@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import uuid
 from datetime import datetime, timezone
 
 from resource_explorer.surveyors.arch_recovery import admission as adm
@@ -31,21 +33,47 @@ ADMISSION_KIND = "architecture_admission"
 RECLASSIFY_TO = (adm.BUILT, adm.REFERENCED)
 
 
-def _key(slug: str) -> str:
-    return f"repo_node_reclassifications::{slug}"
+MAX_REASON = 500
+MAX_SCOPE = 1024
+
+
+def _prefix(slug: str) -> str:
+    return f"repo_node_reclassifications::{slug}::"
+
+
+def _valid(e) -> bool:
+    return (isinstance(e, dict) and e.get("to") in RECLASSIFY_TO
+            and all(isinstance(e.get(k), str) and e.get(k) for k in ("scope", "reason", "by", "at")))
+
+
+def _read_trails(registry, slug: str) -> tuple[dict, int]:
+    """({scope: [{to, reason, by, at}, ...]} oldest first, how many stored entries were unreadable).
+
+    Each entry is its OWN setting (`repo_node_reclassifications::<slug>::<time>-<id>`), written once and
+    never updated, so two people reclassifying at the same moment cannot lose each other's entry and a
+    damaged entry cannot take the history with it. An unreadable or malformed entry is skipped with a
+    logged warning and counted, never silently."""
+    out: dict[str, list[dict]] = {}
+    bad = 0
+    for key, raw in registry.list_settings_with_prefix(_prefix(slug)):
+        try:
+            e = json.loads(raw)
+        except (ValueError, TypeError):
+            e = None
+        if not _valid(e):
+            bad += 1
+            log.warning("unreadable node reclassification %s for %s; ignoring it", key, slug)
+            continue
+        out.setdefault(e["scope"], []).append({k: e[k] for k in ("to", "reason", "by", "at")})
+    return out, bad
 
 
 def read_reclassifications(registry, slug: str) -> dict:
-    """{scope: [{to, reason, by, at}, ...]}; unreadable storage is said in the log and reads as none."""
-    raw = registry.get_setting(_key(slug))
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        log.warning("the stored node reclassifications for %s are unreadable; treating none as made", slug)
-        return {}
-    return data if isinstance(data, dict) else {}
+    return _read_trails(registry, slug)[0]
+
+
+def unreadable_count(registry, slug: str) -> int:
+    return _read_trails(registry, slug)[1]
 
 
 def latest(reclass: dict, scope: str) -> dict | None:
@@ -81,17 +109,21 @@ def reclassify(registry, slug: str, scope: str, to: str, reason: str, by: str) -
         raise ValueError(f"a node can be reclassified to {' or '.join(RECLASSIFY_TO)}, got {to!r}")
     if not (reason or "").strip():
         raise ValueError("a reclassification needs a reason")
+    if len(reason.strip()) > MAX_REASON:
+        raise ValueError(f"the reason is limited to {MAX_REASON} characters")
+    if len(scope or "") > MAX_SCOPE:
+        raise ValueError(f"the node's scope is limited to {MAX_SCOPE} characters")
     if not by:
         raise ValueError("a reclassification needs a person who made it")
     stored = _stored(registry, slug)
     known = {i["scope"] for i in stored.get("referenced", [])} | set(_component_paths(registry, slug))
     if scope not in known:
         raise ValueError(f"not a node of this repository: {scope!r}")
-    data = read_reclassifications(registry, slug)
-    entry = {"to": to, "reason": reason.strip(), "by": by,
-             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    data.setdefault(scope, []).append(entry)
-    registry.set_setting(_key(slug), json.dumps(data))
+    now = datetime.now(timezone.utc)
+    entry = {"to": to, "reason": reason.strip(), "by": by, "at": now.isoformat(timespec="seconds")}
+    # Its own key, written once: time_ns orders entries, the random suffix keeps two writers apart.
+    key = f"{_prefix(slug)}{time.time_ns():020d}-{uuid.uuid4().hex[:8]}"
+    registry.add_setting_once(key, json.dumps({**entry, "scope": scope}))
     return entry
 
 
@@ -178,7 +210,11 @@ def summary(registry, slug: str) -> dict:
     if refs:
         left_out.insert(0, f"{len(refs)} service{'' if len(refs) == 1 else 's'} referenced only · "
                            f"listed as runtime dependencies")
+    bad = unreadable_count(registry, slug)
+    if bad:
+        left_out.append(f"{bad} unreadable reclassification{'' if bad == 1 else 's'} · ignored, not applied")
     return {"admitted": admitted, "counts": counts, "referenced": len(refs), "left_out": left_out,
+            "unreadable_reclassifications": bad,
             "sentence": adm.ZERO_COMPONENT_SENTENCE if (refs and not admitted) else "",
             "surveyed": bool(stored)}
 
