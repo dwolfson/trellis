@@ -99,7 +99,9 @@ class TestApiWrappers:
         body = body[:body.index("\n}\n")]
         assert "/api/discovery/inventory.csv" in body
         assert "res.ok" in body
-        assert "throw new ApiError" in body
+        # The failure is raised through the shared helper, which builds the ApiError.
+        assert "throw await apiErrorFrom(res" in body
+        assert "new ApiError(res.status, detail, path)" in api
         assert "content-disposition" in body.lower()
 
     def test_csv_export_wrapper_does_not_touch_the_dom(self):
