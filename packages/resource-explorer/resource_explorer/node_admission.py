@@ -143,6 +143,12 @@ def _component_paths(registry, slug: str) -> dict[str, dict]:
     return {c["path"]: c for c in (res.get("components") or []) if c.get("path")}
 
 
+def component_paths(registry, slug: str) -> dict[str, dict]:
+    """{path: component} from ONE read of the recovery results -- what a request that calls several readers
+    here (`summary`, `environment`, `referenced_rows`) reads once and passes to each as `paths`."""
+    return _component_paths(registry, slug)
+
+
 def reclassify(registry, slug: str, scope: str, to: str, reason: str, by: str) -> dict:
     """Record that a person moved the node at `scope` to `to` ("built_here" or "referenced_only"), with the
     reason. The scope must be a node RE has: an admitted component or a referenced-only service."""
@@ -302,12 +308,12 @@ def builder_of(image: str, builders: dict[str, str]) -> str:
     return ""
 
 
-def environment(registry, slug: str) -> dict:
+def environment(registry, slug: str, paths: dict | None = None) -> dict:
     """The Environment Deployment Blueprint's nodes: each referenced-only service as another project's
     deployment unit, linked to the repository that builds its image when RE knows one (that repository's
     own survey recorded the image among those it builds or publishes). A link is a fact RE read from two
     surveys, carried as an annotation until Egeria has the type; no link is said as "builder not known"."""
-    rows = referenced_rows(registry, slug)
+    rows = referenced_rows(registry, slug, paths)
     builders = image_builders(registry, slug) if rows else {}
     nodes = []
     for r in rows:

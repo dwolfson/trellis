@@ -364,7 +364,7 @@ test('the band shows the survey it would publish, with its age, before the press
   const { document } = await setUp('repo');
   await openCurate(document);
   const line = q(document, '[data-publish-survey="kept"]');
-  assert.match(line.textContent.replace(/\s+/g, ' '), /from the survey of 2026-10-07 · .*ago · 42 annotations · 12 steps ran/);
+  assert.match(line.textContent.replace(/\s+/g, ' '), /kept survey · 2026-10-07 · .*ago · 42 annotations · 12 steps ran/);
   assert.equal(q(document, '[data-publish-go]').textContent.trim(), 'Publish to Egeria →');
   assert.equal(q(document, '[data-resurvey-go]').textContent.trim(), 'Re-survey now →');
   assert.equal(q(document, '[data-publish-stale]'), null, 'nothing stale: no stale line');
