@@ -13094,7 +13094,9 @@ async function catalogSelected() {
       body: JSON.stringify({ elements }),
     });
     const data = await res.json();
-    if (data.status === 'ok') {
+    if (res.status === 410) {
+      fb.innerHTML = `<span class="text-amber-400">${_esc(data.detail || 'retired')}</span>`;
+    } else if (data.status === 'ok') {
       fb.innerHTML = `<span class="text-emerald-400">✓ Cataloged ${data.cataloged.length} element(s) in Egeria</span>`;
       checkboxes.forEach(cb => { cb.checked = false; });
     } else {

@@ -58,6 +58,12 @@ class AnnotationType(str, Enum):
     #: present, and no probe has sent one), so its payload travels as
     #: `additionalProperties` — see `annotation_props.py`.
     FINGERPRINT = "FingerprintAnnotation"
+    #: Added 2026-10-07 (file types as annotations ruling). Egeria's real
+    #: `ResourceProfileAnnotationProperties` / `ResourceProfileLogAnnotationProperties`,
+    #: the types its own folder survey writes ("Profile File Extensions",
+    #: "Profile File Types", "Profile Asset Types", "Profile File Names").
+    RESOURCE_PROFILE = "ResourceProfileAnnotation"
+    RESOURCE_PROFILE_LOG = "ResourceProfileLogAnnotation"
 
 
 @dataclass
@@ -171,6 +177,25 @@ class ResourceMeasureAnnotation(Annotation):
     """File/size/language counts for a project or sub-scope."""
     annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_MEASURE, init=False)
     resource_properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResourceProfileAnnotation(Annotation):
+    """A profile of a resource: a count per value (per extension, per file type,
+    per asset type). Egeria's `ResourceProfileAnnotationProperties`; the counts
+    travel in its `valueCount` map. The annotation NAME (Egeria's own, verbatim:
+    "Profile File Extensions" ...) is carried by `annotation_type_name`."""
+    annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_PROFILE, init=False)
+    value_count: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class ResourceProfileLogAnnotation(Annotation):
+    """A profile too large to hold in the report, logged to a file the annotation
+    points at ("Profile File Names": per-name counts, a CSV). Published only when
+    a person asks for it."""
+    annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_PROFILE_LOG, init=False)
+    log_file: str = ""
 
 
 @dataclass
@@ -368,6 +393,22 @@ ANNOTATION_TYPES_REGISTRY = [
         "properties": ["resource_properties (dict)"],
         "egeria_type": "ResourceMeasureAnnotationProperties",
         "python_class": "ResourceMeasureAnnotation",
+    },
+    {
+        "type": "ResourceProfileAnnotation",
+        "display_name": "Resource Profile",
+        "description": "Represents a count per value over a resource (e.g. files per extension, per file type, assets per asset type), as Egeria's own folder survey writes it.",
+        "properties": ["value_count (dict[str, int])"],
+        "egeria_type": "ResourceProfileAnnotationProperties",
+        "python_class": "ResourceProfileAnnotation",
+    },
+    {
+        "type": "ResourceProfileLogAnnotation",
+        "display_name": "Resource Profile Log",
+        "description": "Represents a profile too large to hold in the report (e.g. a count per file name), logged to a CSV the annotation points at. Published only on request.",
+        "properties": ["log_file (str)"],
+        "egeria_type": "ResourceProfileLogAnnotationProperties",
+        "python_class": "ResourceProfileLogAnnotation",
     },
     {
         "type": "ClassificationAnnotation",

@@ -914,40 +914,30 @@ def forget_links(slug: str, request: Request) -> dict:
     return repo_publish.forget_links(registry, slug, author)
 
 
-class FileTypesCommitRequest(BaseModel):
-    elements: list[CatalogElement]
+def _file_types_retired() -> HTTPException:
+    from resource_explorer import repo_publish
+    return HTTPException(status_code=410, detail=repo_publish.FILE_TYPES_RETIRED_SENTENCE)
 
 
 @router.get("/{slug}/file-types")
 def get_file_types(slug: str) -> dict:
-    """What cataloging file types WOULD create (PI-004). Preview only: nothing is sent."""
-    from resource_explorer import repo_publish
-    project, registry = _get_project_or_404(slug)
-    return repo_publish.file_types_preview(registry, project, slug)
+    """RETIRED (ruling 2026-10-07): the DataSet-per-file-type preview. Answers 410 for any old caller."""
+    raise _file_types_retired()
 
 
 @router.post("/{slug}/file-types/commit")
-async def commit_file_types(slug: str, request: Request, req: FileTypesCommitRequest) -> dict:
-    """Catalog the chosen file types as DataSets, read each back by GUID, write the proof rows (PI-004)."""
+async def commit_file_types(slug: str, request: Request) -> dict:
+    """RETIRED (ruling 2026-10-07): the DataSet-per-file-type press. Answers 410; nothing is created."""
+    raise _file_types_retired()
+
+
+@router.get("/{slug}/file-type-measurements")
+def get_file_type_measurements(slug: str) -> dict:
+    """Read only: the file-type annotations the survey report carries, and the DataSets earlier presses
+    made (shown as "retired mechanism · kept in Egeria"). Sends nothing to Egeria."""
     from resource_explorer import repo_publish
     project, registry = _get_project_or_404(slug)
-    author = _publish_author(request, "catalog file types")
-    if not registry.get_egeria_asset_guid(slug):
-        raise HTTPException(status_code=409, detail="The repository is not in Egeria yet: publish the report first.")
-    gateway = repo_publish.FileTypeGateway(registry=registry)
-    elements = [e.model_dump() for e in req.elements]
-
-    def _run() -> dict:
-        import asyncio as _aio
-        loop = _aio.new_event_loop()
-        _aio.set_event_loop(loop)           # pyegeria's sync wrappers want a loop in this thread
-        try:
-            return repo_publish.file_types_commit(registry, project, slug, elements, author, gateway)
-        finally:
-            loop.close()
-            _aio.set_event_loop(None)
-
-    return await asyncio.to_thread(_run)
+    return repo_publish.file_type_measurements(registry, project, slug)
 
 
 @router.post("/{slug}/materialize-annotations")
@@ -1148,133 +1138,11 @@ async def get_survey_report(slug: str) -> SurveyReportData:
     )
 
 
-@router.post("/{slug}/catalog-elements", response_model=CatalogResult)
+@router.post("/{slug}/catalog-elements")
 async def catalog_elements(slug: str, request: CatalogRequest) -> CatalogResult:
-    """Create Egeria DataSet assets for selected file type categories.
-
-    Each selected category becomes a DataSet asset linked to the project's
-    own Asset via a CapabilityAssetUse relationship.  The project must have
-    been published to Egeria first (egeria_asset_guid must be cached).
-
-    **Known gap, not fixed here (2026-09-14 SourceControlLibrary
-    correction, egeria_publisher.py's module docstring):** CapabilityAssetUse
-    requires its `software_capability_guid` end to be a genuine
-    SoftwareCapability, which the project's own asset (`egeria_asset_guid`)
-    no longer is — it is a plain Asset. The DataSet element below still
-    creates fine; only the link call is expected to fail, per-item, until
-    the right relationship (or a real SoftwareCapability to hang it from) is
-    picked against a live Egeria server rather than guessed at here. The
-    per-item try/except below already surfaces that failure as a real error
-    on the affected `CatalogItemResult` rather than swallowing it.
-
-    Runs in a thread to avoid event loop conflict with pyegeria sync wrappers.
-    """
-    project, registry = _get_project_or_404(slug)
-
-    if not request.elements:
-        return CatalogResult(status="ok", cataloged=[])
-
-    def _do_catalog() -> list[CatalogItemResult]:
-        import asyncio as _aio
-        from pyegeria import AssetMaker
-        # pyegeria sync wrappers call asyncio.get_event_loop() — set one for this thread
-        loop = _aio.new_event_loop()
-        _aio.set_event_loop(loop)
-
-        view_server  = os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
-        user_id      = os.getenv("EGERIA_USER", "erinoverview")
-        user_pwd     = os.getenv("EGERIA_USER_PASSWORD", "secret")
-
-        asset_guid = registry.get_egeria_asset_guid(slug)
-        if not asset_guid:
-            raise ValueError(
-                "Project not yet registered in Egeria — publish a survey first."
-            )
-
-        am = AssetMaker(view_server, _platform_url(), user_id, user_pwd)
-        am.create_egeria_bearer_token(user_id, user_pwd)
-
-        results: list[CatalogItemResult] = []
-        for elem in request.elements:
-            try:
-                dataset_body = {
-                    "class": "NewElementRequestBody",
-                    "properties": {
-                        "class": "DataSetProperties",
-                        "typeName": "DataSet",
-                        "qualifiedName": f"DataSet::{slug}::{elem.label}",
-                        "displayName": f"{elem.label} — {project.display_name}",
-                        "description": (
-                            f"{elem.file_count} {elem.label} file(s) in "
-                            f"{project.github_url}. "
-                            + (f"Extensions: {', '.join(elem.extensions)}." if elem.extensions else "")
-                        ),
-                        "additionalProperties": {
-                            "project_slug":     slug,
-                            "file_type_label":  elem.label,
-                            "file_count":       str(elem.file_count),
-                            "extensions":       ", ".join(elem.extensions),
-                            "github_url":       project.github_url,
-                        },
-                    },
-                }
-                dataset_guid = am.create_asset(body=dataset_body)
-
-                link_body = {
-                    "class": "NewRelationshipRequestBody",
-                    "properties": {
-                        "class": "CapabilityAssetUseProperties",
-                        "useType": "GOVERNS",
-                        "description": f"{elem.label} files managed by this repository",
-                    },
-                }
-                am.add_capability_asset_use(
-                    software_capability_guid=asset_guid,
-                    asset_guid=dataset_guid,
-                    body=link_body,
-                )
-                results.append(CatalogItemResult(label=elem.label, guid=dataset_guid, status="created"))
-            except Exception as exc:
-                results.append(CatalogItemResult(label=elem.label, status="error", error=str(exc)[:140]))
-
-        am.close_session()
-        loop.close()
-        _aio.set_event_loop(None)
-        return results
-
-    try:
-        cataloged = await asyncio.to_thread(_do_catalog)
-    except Exception as exc:
-        return CatalogResult(
-            status="error",
-            cataloged=[CatalogItemResult(label="(all)", status="error", error=str(exc)[:200])],
-        )
-
-    errors = [c for c in cataloged if c.status == "error"]
-    overall = "ok" if not errors else ("partial" if len(errors) < len(cataloged) else "error")
-
-    try:
-        from resource_explorer.activity_logger import log_catalog
-        ok_items = [c for c in cataloged if c.status == "created"]
-        log_catalog(
-            ProjectRegistry(),
-            entity_type="repo",
-            entity_slug=slug,
-            entity_name=project.display_name,
-            entity_location=project.github_url,
-            status=overall,
-            summary=f"Cataloged {len(ok_items)}/{len(cataloged)} element(s) in Egeria",
-            items=[
-                {"kind": "DataSet", "display_name": c.label,
-                 "qualified_name": f"DataSet::{slug}::{c.label}",
-                 "guid": c.guid or "", "location": ""}
-                for c in ok_items
-            ],
-        )
-    except Exception:
-        pass
-
-    return CatalogResult(status=overall, cataloged=cataloged)
+    """RETIRED (ruling 2026-10-07, DESIGN-FILE-TYPES-AS-ANNOTATIONS.md): this created one DataSet per
+    file type. It answers 410 and creates nothing; DataSets it made earlier stay in Egeria as history."""
+    raise _file_types_retired()
 
 
 @router.get("/{slug}/diff")

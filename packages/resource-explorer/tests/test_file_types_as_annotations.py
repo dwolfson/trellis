@@ -1,0 +1,255 @@
+"""File types are a measurement, published as Egeria's own folder-survey annotations (ruling
+2026-10-07, DESIGN-FILE-TYPES-AS-ANNOTATIONS.md). Recording fakes only: no Egeria, no network."""
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from resource_explorer import repo_publish as rp
+from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.surveyors.annotation_props import build_annotation_props
+from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher, sub_resource_display_name
+from resource_explorer.surveyors.file_type_profile import (
+    CAPTURE_FILE_COUNTS, DEFAULT_NAMES, PROFILE_ASSET_TYPES, PROFILE_FILE_EXTENSIONS, PROFILE_FILE_NAMES,
+    PROFILE_FILE_TYPES, build_file_type_annotations, file_names_log_annotation,
+)
+from resource_explorer.surveyors.sub_surveyors.file_inventory import FileInventorySurveyor
+from resource_explorer.surveyors.survey_snapshot import annotation_from_dict, annotation_to_dict
+
+SENTENCE = ("file types are published as profile annotations in the survey report; "
+            "files are cataloged by selection on Curate")
+FILES = [("LICENSE", 10), ("README.md", 20), ("src/a.py", 5), ("src/b.py", 5), ("src/c.java", 7),
+         ("docs/guide.md", 3), ("Dockerfile", 2)]
+
+
+@pytest.fixture
+def registry(tmp_path):
+    r = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    r.add(Project(slug="egeria_git", display_name="egeria_git", github_url="https://github.com/o/egeria_git"))
+    r.upsert_file_inventory("egeria_git", FILES)
+    return r
+
+
+@pytest.fixture
+def client(registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr("resource_explorer.web.routes.egeria.get_current_user", lambda request: {"user_id": "dan"})
+    from resource_explorer.web.app import app
+    return TestClient(app)
+
+
+def _by_name(anns):
+    return {a.annotation_type_name: a for a in anns}
+
+
+# ── (1) the publish emits exactly Egeria's annotation types and names ────────────────────────
+
+class TestEgeriaNamesVerbatim:
+    def test_names_and_types_for_a_fixture_repository(self, registry):
+        anns = build_file_type_annotations(registry, "egeria_git", surveyed_at="2026-10-07T00:00:00")
+        got = {(a.annotation_type_name, a.annotation_type.value) for a in anns}
+        assert got >= {(CAPTURE_FILE_COUNTS, "ResourceMeasureAnnotation"),
+                       (PROFILE_FILE_EXTENSIONS, "ResourceProfileAnnotation"),
+                       (PROFILE_FILE_TYPES, "ResourceProfileAnnotation")}
+        assert {a.annotation_type_name for a in anns} <= set(DEFAULT_NAMES)
+        assert (CAPTURE_FILE_COUNTS, PROFILE_FILE_EXTENSIONS, PROFILE_FILE_TYPES, PROFILE_ASSET_TYPES) == DEFAULT_NAMES
+        assert (CAPTURE_FILE_COUNTS, PROFILE_FILE_EXTENSIONS, PROFILE_FILE_TYPES, PROFILE_ASSET_TYPES) == (
+            "Capture File Counts", "Profile File Extensions", "Profile File Types", "Profile Asset Types")
+
+    def test_counts_equal_the_inventory(self, registry):
+        by = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))
+        ext = by[PROFILE_FILE_EXTENSIONS].value_count
+        assert ext == {"py": 2, "java": 1, "md": 2, "(none)": 2}
+        assert sum(ext.values()) == len(FILES) == by[CAPTURE_FILE_COUNTS].resource_properties["fileCount"]
+        types = by[PROFILE_FILE_TYPES].value_count
+        assert sum(types.values()) == len(FILES)
+        assert by[CAPTURE_FILE_COUNTS].resource_properties["directoryCount"] == 2          # src, docs
+        assert by[CAPTURE_FILE_COUNTS].resource_properties["numberOfFileExtensions"] == len(ext)
+        assert by[CAPTURE_FILE_COUNTS].resource_properties["numberOfFileTypes"] == len(types)
+
+    def test_wire_body_is_egerias_class_with_value_count_and_the_envelope(self, registry):
+        by = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="2026-10-07T00:00:00"))
+        body = build_annotation_props(by[PROFILE_FILE_TYPES], "Annotation::egeria_git::x::3")
+        assert body["class"] == "ResourceProfileAnnotationProperties"
+        assert body["annotationType"] == "Profile File Types"
+        assert body["valueCount"] == by[PROFILE_FILE_TYPES].value_count
+        assert all(isinstance(v, int) for v in body["valueCount"].values())
+        assert body["additionalProperties"] == {
+            "resultState": "MEASURED", "measuredAt": "2026-10-07T00:00:00",
+            "producingRun": "egeria_git::2026-10-07T00:00:00", "scope": "WHOLE"}
+        capture = build_annotation_props(by[CAPTURE_FILE_COUNTS], "q")
+        assert capture["class"] == "ResourceMeasureAnnotationProperties" and capture["annotationType"] == "Capture File Counts"
+        assert capture["additionalProperties"]["resultState"] == "MEASURED"
+
+    def test_partial_scope_names_its_reason(self, registry):
+        anns = build_file_type_annotations(registry, "egeria_git", surveyed_at="x", partial_reason="depth limited to 3")
+        env = anns[1].additional_properties
+        assert env["scope"] == "PARTIAL" and env["scopeReason"] == "depth limited to 3"
+
+    def test_file_names_is_not_in_the_default_publish(self, registry):
+        names = {a.annotation_type_name for a in build_file_type_annotations(registry, "egeria_git", surveyed_at="x")}
+        assert PROFILE_FILE_NAMES not in names and PROFILE_FILE_NAMES not in DEFAULT_NAMES
+
+    def test_file_names_on_request_is_a_log_annotation_pointing_at_a_csv(self, registry, tmp_path):
+        csv_path = str(tmp_path / "names.csv")
+        ann = file_names_log_annotation(registry, "egeria_git", surveyed_at="x", csv_path=csv_path)
+        body = build_annotation_props(ann, "q")
+        assert body["class"] == "ResourceProfileLogAnnotationProperties" and body["annotationType"] == "Profile File Names"
+        assert body["additionalProperties"]["logFile"] == csv_path
+        lines = open(csv_path).read().splitlines()
+        assert lines[0] == "fileName,count" and "LICENSE,1" in lines
+
+    def test_asset_types_profile_equals_the_selection_and_is_absent_without_one(self, registry):
+        names = {a.annotation_type_name for a in build_file_type_annotations(registry, "egeria_git", surveyed_at="x")}
+        assert PROFILE_ASSET_TYPES not in names, "nothing chosen is not a measured zero"
+        for loc, kind in (("", "folder"), ("src", "folder"), ("LICENSE", "file"), ("src/a.py", "file")):
+            with registry._conn() as conn:
+                conn.execute("INSERT INTO sub_resources (resource_type, resource_slug, locator, kind, cataloged_at,"
+                             " source_finding, detail_json, egeria_guid) VALUES ('repo','egeria_git',?,?,'t','','{}','')",
+                             (loc, kind))
+        by = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))
+        assert by[PROFILE_ASSET_TYPES].value_count == {"FileFolder": 2, "DataFile": 2}
+        assert by[PROFILE_ASSET_TYPES].additional_properties["basis"] == "the selection on Curate"
+
+    def test_the_inventory_step_emits_them_and_they_survive_the_snapshot(self, registry, tmp_path):
+        from unittest.mock import patch
+        proj = registry.get("egeria_git")
+        with patch("resource_explorer.ingestion.pipeline.IngestionPipeline._store_file_inventory", return_value=len(FILES)), \
+             patch("resource_explorer.ingestion.pipeline.IngestionPipeline._record_line_census"):
+            anns = FileInventorySurveyor(proj, registry, local_path=str(tmp_path), surveyed_at="2026-10-07T00:00:00").run()
+        names = {a.annotation_type_name for a in anns}
+        assert set(DEFAULT_NAMES) - {PROFILE_ASSET_TYPES} <= names
+        kept = [annotation_from_dict(annotation_to_dict(a)) for a in anns]
+        assert [type(a) for a in kept] == [type(a) for a in anns]
+        assert kept[2].value_count == anns[2].value_count and kept[2].annotation_type_name == anns[2].annotation_type_name
+
+    def test_a_failure_to_profile_is_reported_not_swallowed(self, registry, tmp_path, monkeypatch):
+        from unittest.mock import patch
+        monkeypatch.setattr("resource_explorer.surveyors.file_type_profile.build_file_type_annotations",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        with patch("resource_explorer.ingestion.pipeline.IngestionPipeline._store_file_inventory", return_value=3), \
+             patch("resource_explorer.ingestion.pipeline.IngestionPipeline._record_line_census"):
+            anns = FileInventorySurveyor(registry.get("egeria_git"), registry, local_path=str(tmp_path)).run()
+        bad = [a for a in anns if a.check_name == "file_type_profile"]
+        assert bad and bad[0].confidence == 0 and "boom" in bad[0].explanation
+
+
+# ── (2) the press is retired ─────────────────────────────────────────────────────────────────
+
+class TestPressRetired:
+    @pytest.mark.parametrize("method,path,body", [
+        ("post", "/api/egeria/egeria_git/catalog-elements", {"elements": [{"label": "Python", "file_count": 1}]}),
+        ("post", "/api/egeria/egeria_git/file-types/commit", {"elements": [{"label": "Python", "file_count": 1}]}),
+        ("get", "/api/egeria/egeria_git/file-types", None),
+    ])
+    def test_old_routes_answer_410_with_the_sentence(self, client, method, path, body):
+        r = getattr(client, method)(path, **({"json": body} if body is not None else {}))
+        assert r.status_code == 410 and r.json()["detail"] == SENTENCE
+
+    def test_no_dataset_creation_call_is_possible_from_any_route(self, client, registry, monkeypatch):
+        """Every AssetMaker the process could build is a recording fake that fails the test on a create."""
+        calls = []
+        fake = MagicMock()
+        fake.create_asset.side_effect = lambda *a, **k: calls.append(("create_asset", a, k))
+        fake.add_capability_asset_use.side_effect = lambda *a, **k: calls.append(("link", a, k))
+        monkeypatch.setattr("pyegeria.AssetMaker", lambda *a, **k: fake)
+        registry.set_egeria_asset_guid("egeria_git", "asset-1")
+        client.post("/api/egeria/egeria_git/catalog-elements", json={"elements": [{"label": "Python", "file_count": 1}]})
+        client.post("/api/egeria/egeria_git/file-types/commit", json={"elements": [{"label": "Python", "file_count": 1}]})
+        assert calls == []
+        assert not hasattr(rp, "FileTypeGateway") and not hasattr(rp, "file_types_commit") and not hasattr(rp, "file_types_preview")
+        import inspect
+        from resource_explorer.web.routes import egeria as routes
+        assert "create_asset" not in inspect.getsource(routes.catalog_elements)
+        assert "DataSetProperties" not in inspect.getsource(routes)
+
+    def test_measurements_read_back_old_datasets_as_history_with_no_write(self, client, registry):
+        registry.append_catalogue_commit_proof(
+            "egeria_git", proof=rp.P_FILE_TYPE, node_kind=rp.NODE_FILE_TYPE, table_name="Python",
+            element_guid="ds-old", qualified_name="DataSet::egeria_git::Python", recorded_by="dan", detail={})
+        b = client.get("/api/egeria/egeria_git/file-type-measurements").json()
+        assert b["inventoried"] is True
+        assert [r["label"] for r in b["retired"]] == ["Python"]
+        assert b["retired"][0]["word"] == "retired mechanism · kept in Egeria" and b["retired"][0]["dataset_guid"] == "ds-old"
+        assert {p["name"] for p in b["profiles"]} >= {"Profile File Types", "Profile File Extensions", "Capture File Counts"}
+        assert len(registry.list_catalogue_commit_proofs("egeria_git")) == 1, "reading wrote nothing"
+
+
+# ── (3) the naming rule ──────────────────────────────────────────────────────────────────────
+
+GITHUB_URL = "https://github.com/o/egeria_git"
+
+
+def _row(locator, kind):
+    return {"locator": locator, "kind": kind, "cataloged_at": "t", "source_finding": "", "detail_json": "{}", "egeria_guid": ""}
+
+
+def _publisher(registry_rows, existing=None):
+    registry = MagicMock()
+    registry.list_sub_resources.return_value = registry_rows
+    registry.get.return_value = Project(slug="egeria_git", display_name="egeria_git", github_url=GITHUB_URL)
+    pub = EgeriaPublisher(platform_url="https://fake", registry=registry)
+    pub._automated_curation = MagicMock()
+    pub._asset_maker = MagicMock()
+    pub._discovery = MagicMock()
+    pub._connect = MagicMock()
+    existing = existing or {}
+    pub._automated_curation.get_guid_for_name.side_effect = lambda qn: existing.get(qn, [])
+
+    async def _tmpl(name):
+        return f"template-{name}"
+
+    pub._automated_curation._async_get_template_guid_for_technology_type = _tmpl
+    n = {"n": 0}
+
+    def _create(body):
+        n["n"] += 1
+        return f"guid-{n['n']}"
+
+    pub._automated_curation.create_elem_from_template.side_effect = _create
+    return pub
+
+
+class TestDisplayName:
+    def test_rule(self):
+        assert sub_resource_display_name("LICENSE", "file", "egeria_git") == "LICENSE · egeria_git"
+        assert sub_resource_display_name("docs/README.md", "file", "egeria-workspaces") == "docs/README.md · egeria-workspaces"
+        assert sub_resource_display_name("docs", "folder", "r") == "docs/ · r"
+        assert sub_resource_display_name("", "folder", "r") == "/ · r"
+
+    def test_a_new_license_carries_path_and_repository_and_its_filename_is_the_basename(self):
+        pub = _publisher([_row("", "folder"), _row("docs", "folder"), _row("docs/LICENSE", "file"), _row("LICENSE", "file")])
+        pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["", "docs", "docs/LICENSE", "LICENSE"])
+        bodies = [c.args[0] for c in pub._automated_curation.create_elem_from_template.call_args_list]
+        by_name = {b["placeholderPropertyValues"].get("fileName") or b["placeholderPropertyValues"]["directoryName"]: b
+                   for b in bodies}
+        lic = [b for b in bodies if b["placeholderPropertyValues"].get("fileName") == "LICENSE"]
+        names = sorted(b["replacementProperties"]["displayName"] for b in lic)
+        assert names == ["LICENSE · egeria_git", "docs/LICENSE · egeria_git"]
+        assert all(b["placeholderPropertyValues"]["fileName"] == "LICENSE" for b in lic)
+        assert by_name["docs"]["replacementProperties"]["displayName"] == "docs/ · egeria_git"
+        assert all(b["replacementProperties"]["qualifiedName"].startswith(f"GitHubRepository::{GITHUB_URL}::") for b in bodies)
+
+    def test_an_existing_element_is_renamed_forward_by_a_merge_update_only(self):
+        qn = f"GitHubRepository::{GITHUB_URL}::LICENSE"
+        guid = "11111111-2222-3333-4444-555555555555"
+        pub = _publisher([_row("LICENSE", "file")], existing={qn: guid})
+        out = pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"])
+        assert out == {"LICENSE": guid}
+        pub._automated_curation.create_elem_from_template.assert_not_called()
+        (g,), kw = pub._asset_maker.update_asset.call_args
+        assert g == guid and kw["body"]["mergeUpdate"] is True
+        assert kw["body"]["properties"] == {"class": "AssetProperties", "displayName": "LICENSE · egeria_git"}
+        for name in ("delete_asset", "archive_asset", "delete_element"):
+            assert not getattr(pub._asset_maker, name).called
+
+    def test_a_failed_rename_does_not_stop_the_publish(self):
+        qn = f"GitHubRepository::{GITHUB_URL}::LICENSE"
+        guid = "11111111-2222-3333-4444-555555555555"
+        pub = _publisher([_row("LICENSE", "file")], existing={qn: guid})
+        pub._asset_maker.update_asset.side_effect = RuntimeError("refused")
+        assert pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"]) == {"LICENSE": guid}

@@ -68,6 +68,18 @@ class EgeriaConnectionError(RuntimeError):
     """Raised when Egeria credentials are absent or the platform is unreachable."""
 
 
+def sub_resource_display_name(path: str, kind: str, repository: str) -> str:
+    """The display name of a cataloged file or folder: `<relative path> · <repository>`
+    ("LICENSE · egeria_git", "docs/README.md · egeria-workspaces"); a folder's path ends in "/".
+    The file name stays the basename; only this name carries the path, so a LICENSE in every
+    repository is no longer a thousand indistinguishable rows (ruling 2026-10-07)."""
+    if kind == "folder":
+        shown = (path.rstrip("/") + "/") if path else "/"
+    else:
+        shown = path
+    return f"{shown} \u00b7 {repository}"
+
+
 class EgeriaPublisherError(RuntimeError):
     """Raised when an Egeria-native operation triggered through EgeriaPublisher
     (e.g. trigger_survey_by_guid) fails — mirrors
@@ -1536,7 +1548,12 @@ class EgeriaPublisher:
         template_guid_cache: dict[str, str] = {}
         results: dict[str, str] = {}
 
+        project = self._registry.get(resource_slug)
+        repository = getattr(project, "display_name", "")
+        if not isinstance(repository, str) or not repository:
+            repository = resource_slug
         for entry in entries:
+            entry["display_name"] = sub_resource_display_name(entry["path"], entry["kind"], repository)
             path = entry["path"]
             qualified_name = f"GitHubRepository::{github_url}::{path}"
             try:
@@ -1548,6 +1565,7 @@ class EgeriaPublisher:
                 guids_by_path[path] = existing_guid
                 results[path] = existing_guid
                 self._registry.set_sub_resource_egeria_guid("repo", resource_slug, path, existing_guid)
+                self._rename_forward(existing_guid, entry["display_name"])
                 continue
 
             parent_path = path.rsplit("/", 1)[0] if "/" in path else ""
@@ -1652,7 +1670,12 @@ class EgeriaPublisher:
             # duplicate). "class": "AssetProperties" is required here or
             # Egeria 400s (InvalidTypeIdException: missing "class" on
             # EntityProperties), also confirmed live.
-            "replacementProperties": {"class": "AssetProperties", "qualifiedName": qualified_name},
+            "replacementProperties": {
+                "class": "AssetProperties", "qualifiedName": qualified_name,
+                # The path and the repository; fileName (a placeholder above) stays the basename.
+                "displayName": entry.get("display_name")
+                or sub_resource_display_name(path, entry["kind"], qualified_name.split("::")[1]),
+            },
         }
         guid = self._automated_curation.create_elem_from_template(body)
         if guid and additional_props:
@@ -1669,6 +1692,17 @@ class EgeriaPublisher:
             except Exception as exc:
                 log.debug("Could not attach additionalProperties to %s: %s", guid, exc)
         return guid
+
+    def _rename_forward(self, guid: str, display_name: str) -> None:
+        """An element published before the naming rule is renamed when the SAME locator is published
+        again: a merge update of displayName only, never a sweep and never a delete. A failure is
+        logged with the element and left for the next publish; it does not stop the publish."""
+        try:
+            self._asset_maker.update_asset(
+                guid, body={"class": "UpdateElementRequestBody", "mergeUpdate": True,
+                            "properties": {"class": "AssetProperties", "displayName": display_name}})
+        except Exception as exc:
+            log.warning("Could not rename %s to %r (left as it was): %s", guid, display_name, exc)
 
     def _resolve_template_guid(self, technology_type: str) -> str:
         import asyncio
