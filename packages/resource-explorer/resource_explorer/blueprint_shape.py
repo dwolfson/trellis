@@ -36,6 +36,86 @@ WHY_PATH_ONLY = "the root exists only as a path"
 WHY_CONTENT_PACK = "the root is a content-pack element"
 
 
+# ── names say what an element represents (the 2026-10-08 naming ruling, 'what it represents') ───────────────
+#: The closed list. A sixth word is added only by a ruling. The word lives in displayName and NEVER in a
+#: qualifiedName (adoption by name and the SolutionComposition pair keys depend on that).
+CODE_MODULE = "code module"
+CONTAINER_DEFINITION = "container definition"
+IMAGE = "image"
+RUNTIME = "runtime"
+KINDS = (CODE_MODULE, CONTAINER_DEFINITION, IMAGE, RUNTIME)
+#: A blueprint of one kind takes the plural; "runtime" reads the same.
+_PLURAL = {CODE_MODULE: "code modules", CONTAINER_DEFINITION: "container definitions",
+           IMAGE: "images", RUNTIME: "runtime"}
+#: Neutral in a blueprint's kind list: an element the content pack defines carries no word.
+CONTENT_PACK = "content_pack"
+
+_MANIFESTS = {"pom.xml", "package.json", "pyproject.toml", "setup.py", "setup.cfg", "cargo.toml", "go.mod",
+              "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "build.sbt",
+              "composer.json", "gemfile"}
+_COMPOSE = re.compile(r"compose.*\.ya?ml$", re.I)
+
+#: Reference data a person extends: an image a content-pack element stands for. Only what the benchmark
+#: note proves is here; an unlisted image is simply not matched and gets a component of RE's own.
+CONTENT_PACK_IMAGES = {"odpi/egeria-platform": "OMAG Server Platform"}
+
+
+def content_pack_name_for_image(image: str) -> str:
+    return CONTENT_PACK_IMAGES.get(adm.normalise_image(image or ""), "")
+
+
+def represents_kind(detail: dict | None, *, registered: bool = False, artefact: bool = False,
+                    content_pack: bool = False) -> str | None:
+    """The word for what an element represents, DERIVED from the evidence class RE already holds, never
+    typed. None when the evidence does not say (no suffix beats a wrong one).
+
+    * content_pack: an element Egeria's content pack defines. No word; its name is the pack's.
+    * registered: a registered resource or a live read. runtime.
+    * artefact: the row is about a built artefact by name (an image the repository publishes or references).
+    * otherwise the file evidence: a Dockerfile or compose service (built, shipped or referenced) is a
+      container definition; a package manifest is a code module."""
+    d = detail or {}
+    if content_pack:
+        return None
+    if registered:
+        return RUNTIME
+    if artefact:
+        return IMAGE if d.get("image") else None
+    ev = (d.get("admission_evidence") or "").strip()
+    if ev.startswith("image "):
+        return CONTAINER_DEFINITION
+    if ev.startswith("from "):
+        rel = ev[5:].split(" · ", 1)[0].strip()
+        base = rel.replace("\\", "/").rsplit("/", 1)[-1]
+        low = base.lower()
+        if low.startswith("dockerfile") or low.endswith(".dockerfile") or _COMPOSE.search(low):
+            return CONTAINER_DEFINITION
+        if low in _MANIFESTS:
+            return CODE_MODULE
+    return None
+
+
+def display_name(name: str, kind: str | None) -> str:
+    """`<name> (<kind>)` for a component RE writes. No kind, a name that already carries it, or a
+    sub-resource name (`<path> · <repository>`, which takes no suffix) is returned unchanged."""
+    if not kind:
+        return name
+    if kind not in KINDS:
+        raise ValueError(f"{kind!r} is not one of the closed list {KINDS}")
+    if " · " in name or name.endswith(f" ({kind})"):
+        return name
+    return f"{name} ({kind})"
+
+
+def blueprint_suffix_name(base: str, member_kinds: list) -> str:
+    """`<Repository> <Kind> Blueprint (<represents>)` when every member is of one kind; a mixed blueprint,
+    or one with a member whose kind is not known, takes no suffix. Content-pack members are neutral."""
+    kinds = {k for k in member_kinds if k != CONTENT_PACK}
+    if not kinds or None in kinds or "" in kinds or len(kinds) != 1:
+        return base
+    return f"{base} ({_PLURAL[kinds.pop()]})"
+
+
 @dataclass(frozen=True)
 class Node:
     """One member of a cluster, as the shape decision sees it."""
@@ -47,6 +127,8 @@ class Node:
     content_pack: bool = False        # Egeria's content pack already defines this component
     guid: str = ""                    # the SolutionComponent GUID, once materialised or adopted
     scope: str = ""
+    kind: str | None = None           # what it represents (the five words), derived from its evidence
+    image: str = ""
 
 
 @dataclass
@@ -190,5 +272,6 @@ def component_nodes(registry, slug: str) -> dict[str, Node]:
         out[detail["slug"]] = Node(
             slug=detail["slug"], name=detail.get("name") or detail["slug"],
             admission=detail.get("admission") or adm.BUILT,
-            structural=bool(detail.get("structural")), scope=scope)
+            structural=bool(detail.get("structural")), scope=scope,
+            kind=represents_kind(detail), image=detail.get("image") or "")
     return out

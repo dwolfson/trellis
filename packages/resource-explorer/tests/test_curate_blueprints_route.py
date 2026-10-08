@@ -100,6 +100,9 @@ class TestAcceptRoundTripsThroughTheNewReader:
                 self.registry.record_materialized_blueprint(entity_type, slug, perspective, cluster_name, qn, guid)
                 return {"status": "materialized", "guid": guid, "qualified_name": qn}
 
+            def blueprint_member_guids(self, guid):
+                return None
+
             def resolve_member_guids(self, registry, entity_type, slug, member_slugs, slug_to_scope):
                 return {}, list(member_slugs)   # neither member has its own materialized component
 

@@ -125,6 +125,9 @@ def test_accepting_writes_the_kind_into_the_display_name_and_the_qualified_name_
             seen.update(display_name=display_name, kind_slot=kind_slot)
             return {"status": "materialized", "guid": GUID, "qualified_name": "x"}
 
+        def blueprint_member_guids(self, guid):
+            return None
+
         def resolve_member_guids(self, *a, **k):
             return {}, []
 

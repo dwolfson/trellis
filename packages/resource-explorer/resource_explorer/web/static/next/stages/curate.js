@@ -1083,9 +1083,13 @@ function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
     pressPhase(pressedEl, 'pending', verdict === 'accepted' ? 'accepting…' : 'rejecting…');
     if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
-      await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict, '', chosenShape);
+      const res = await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict, '', chosenShape);
       pressPhase(pressedEl, 'done', verdict === 'accepted' ? 'accepted' : 'rejected');
-      renderBlueprintList(slug);
+      await renderBlueprintList(slug);
+      // Direct memberships left by an earlier run are reported, never removed.
+      const extra = res?.materialization?.extra_members_words;
+      const st = $('blueprint-status');
+      if (extra && st) st.textContent = extra;
     } catch (err) {
       const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
       pressPhase(pressedEl, 'error', 'failed · press to retry', why);
@@ -1109,19 +1113,27 @@ function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
       <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
     </div>`;
   body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
-  // The shape is flipped here, before the write: the pressed option reads "chosen", the other stays plain.
-  body.querySelectorAll('[data-shape-option]').forEach((b) => b.addEventListener('click', () => {
-    // A refused flip (no root to be the container) keeps the default and says why, never "chosen".
-    const now = bp.shape_plan.alternatives?.[b.dataset.shapeOption]?.shape || b.dataset.shapeOption;
-    chosenShape = now === bp.shape_plan.default_shape ? '' : now;
-    body.querySelectorAll('[data-shape-option]').forEach((o) => {
+  // The shape is flipped here, before the write (see wireShapeFlip).
+  if (bp.shape_plan) wireShapeFlip(body, bp.shape_plan, (shape) => { chosenShape = shape; });
+}
+
+/** Wires the Container/Contents options in the dialog. A click is an EXPLICIT choice and is reported even
+ *  when it equals the shape the preview displayed: the preview cannot know the content pack, so the server's
+ *  default can differ, and a person who deliberately picked a shape must not be overridden. A refused flip
+ *  (no root to be the container) keeps the default and says why instead of reading "chosen". */
+export function wireShapeFlip(root, plan, onChoose) {
+  root.querySelectorAll('[data-shape-option]').forEach((b) => b.addEventListener('click', () => {
+    const asked = b.dataset.shapeOption;
+    const alt = plan.alternatives?.[asked];
+    const now = alt?.shape || asked;
+    onChoose(now);
+    root.querySelectorAll('[data-shape-option]').forEach((o) => {
       const on = o.dataset.shapeOption === now;
       o.setAttribute('aria-pressed', on ? 'true' : 'false');
       o.querySelector('[data-shape-word]').textContent = on ? 'chosen' : '';
     });
-    const alt = bp.shape_plan.alternatives?.[b.dataset.shapeOption];
-    const line = body.querySelector('[data-shape-line]');
-    const why = body.querySelector('[data-shape-why]');
+    const line = root.querySelector('[data-shape-line]');
+    const why = root.querySelector('[data-shape-why]');
     if (alt && line) line.textContent = alt.words;
     if (alt && why) why.textContent = alt.flip_refused ? `${alt.why} · ${alt.flip_refused}` : alt.why;
   }));

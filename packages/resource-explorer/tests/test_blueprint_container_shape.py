@@ -143,6 +143,10 @@ class FakeEgeria:
         self.content_pack: dict[str, dict] = {}
         self.fail_link_for: set[str] = set()
         self.silent_link_for: set[str] = set()
+        self.read_raises: Exception | None = None       # the container read raises
+        self.read_shape_unknown = False                  # the container read lacks the children keys
+        self.link_raises: Exception | None = None        # the link call raises something unexpected
+        self.bp_members: list[str] | None = []           # None = the blueprint read has no member key
 
     # AutomatedCuration
     def get_guid_for_name(self, qn):
@@ -160,14 +164,29 @@ class FakeEgeria:
 
     def get_solution_blueprint_by_guid(self, guid, **kw):
         self.calls.append(("get_solution_blueprint_by_guid", guid))
-        return {"elementHeader": {"guid": guid}} if guid in self.blueprints else "No elements found"
+        if guid not in self.blueprints:
+            return "No elements found"
+        out = {"elementHeader": {"guid": guid}}
+        if self.bp_members is not None:
+            out["collectionMembers"] = [{"relatedElement": {"elementHeader": {"guid": g}}} for g in self.bp_members]
+        return out
 
-    def get_component_related_elements(self, guid, **kw):
-        self.calls.append(("get_component_related_elements", guid))
-        return {"sub_component_guids": list(self.subs.get(guid, []))}
+    def get_solution_component_by_guid(self, guid, **kw):
+        self.calls.append(("get_solution_component_by_guid", guid))
+        if self.read_raises:
+            raise self.read_raises
+        qn = next((q for q, g in self.qn_to_guid.items() if g == guid), "")
+        out = {"elementHeader": {"guid": guid, "type": {"typeName": "SolutionComponent"}},
+               "properties": {"qualifiedName": qn}}
+        if not self.read_shape_unknown:
+            out["nestedSolutionComponents"] = [
+                {"relatedElement": {"elementHeader": {"guid": g}}} for g in self.subs.get(guid, [])]
+        return out
 
     def link_subcomponent(self, container, child, body):
         self.calls.append(("link_subcomponent", container, child, body))
+        if self.link_raises:
+            raise self.link_raises
         if child in self.fail_link_for:
             raise RuntimeError("Egeria refused")
         if child not in self.silent_link_for:
@@ -308,10 +327,11 @@ class TestContainerShapeIsWritten:
         assert len(proofs) == 6
         assert {p["element_guid"] for p in proofs} == {PLATFORM}
         assert {p["target_guid"] for p in proofs} == set(SERVERS.values())
-        assert all(p["detail"]["read_back"] is True for p in proofs)
+        assert all(p["detail"]["read_back"] is True for p in proofs)   # each really followed a read
         # every write was followed by a read of the container's sub-components by GUID
-        order = [c[0] for c in fake.calls if c[0] in ("link_subcomponent", "get_component_related_elements")]
-        assert order[0] == "get_component_related_elements" and order[-1] == "get_component_related_elements"
+        order = [c[0] for c in fake.calls if c[0] in ("link_subcomponent", "get_solution_component_by_guid")
+                 and (c[0] != "get_solution_component_by_guid" or c[1] == PLATFORM)]
+        assert order[0] == "get_solution_component_by_guid" and order[-1] == "get_solution_component_by_guid"
         shape_rows = [p for p in registry.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "shape"]
         assert shape_rows and shape_rows[-1]["detail"]["shape"] == CONTAINER
 
@@ -475,3 +495,196 @@ class TestAdoptionAndIdempotency:
         assert out["shape"]["shape"] == CONTAINER and "content-pack" in out["shape"]["why"]
         assert enqueued == [[cp_guid]]
         assert all(c[1] == cp_guid for c in fake.of("link_subcomponent"))
+
+
+# ── PR/CI review of 02f0b8c6: duplicates, unknown shapes, uncaught errors, ambiguity, extras, truthful proofs ──
+
+
+class TestAnUnknownReadWritesNothing:
+    """A dict missing the children keys is "the read did not say", NOT "no children": SolutionComposition is
+    multi-link, so writing every pair on a guess duplicates relationships."""
+
+    def test_a_container_read_without_the_children_keys_writes_no_composition(self, registry, run):
+        accept, enqueued = run
+        _seed(registry)
+        fake = FakeEgeria()
+        fake.read_shape_unknown = True
+        out = accept(fake)
+        assert fake.of("link_subcomponent") == []
+        assert {c["status"] for c in out["compositions"]} == {"unconfirmed"}
+        assert all("did not say whether children exist" in c["note"] for c in out["compositions"])
+        assert out["status"] == "partial"
+
+    def test_an_empty_answer_with_the_key_present_is_trusted(self, registry, run):
+        accept, _ = run
+        _seed(registry)
+        fake = FakeEgeria()                 # key present, empty list: really no children yet
+        accept(fake)
+        assert len(fake.of("link_subcomponent")) == 6
+
+    def test_a_failed_read_before_writes_nothing_and_leaves_truthful_rows(self, registry, run):
+        accept, enqueued = run
+        _seed(registry)
+        fake = FakeEgeria()
+        fake.read_raises = ConnectionError("platform unreachable")
+        out = accept(fake)
+        assert fake.of("link_subcomponent") == []
+        proofs = [p for p in registry.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "composition"]
+        assert len(proofs) == 6
+        assert all(p["detail"]["read_back"] is False and p["detail"]["status"] == "unread" for p in proofs)
+        assert out["status"] == "partial" and enqueued == [[PLATFORM]]     # the membership still goes on
+
+
+class TestUnexpectedErrorsDoNotLeaveAHalfWrittenBlueprint:
+    @pytest.mark.parametrize("exc", [KeyError("nestedSolutionComponents"), TypeError("bad shape"),
+                                     RuntimeError("PyegeriaException: boom")])
+    def test_an_unexpected_exception_still_enqueues_memberships_and_writes_proofs(self, registry, run, exc):
+        accept, enqueued = run
+        _seed(registry)
+        fake = FakeEgeria()
+        fake.link_raises = exc
+        out = accept(fake)                                 # does not raise
+        assert enqueued == [[PLATFORM]]
+        assert out["status"] == "partial"
+        assert {c["status"] for c in out["compositions"]} == {"error"}
+        assert [p for p in registry.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "shape"]
+        assert [p for p in registry.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "composition"]
+
+    def test_an_exception_out_of_the_whole_link_step_is_caught_too(self, registry, run, monkeypatch):
+        from resource_explorer.surveyors.arch_recovery import blueprint_materializer as bm
+        accept, enqueued = run
+        _seed(registry)
+        monkeypatch.setattr(bm.BlueprintMaterializer, "link_sub_components",
+                            lambda *a, **k: (_ for _ in ()).throw(KeyError("boom")), raising=False)
+        out = accept(FakeEgeria())
+        assert enqueued == [[PLATFORM]] and out["status"] == "partial"
+        assert "KeyError" in out["composition_error"]
+        proofs = [p for p in registry.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "composition"]
+        assert len(proofs) == 6 and all(p["detail"]["read_back"] is False for p in proofs)
+
+
+class TestNeverRecreateOnAnUnreadableAnswer:
+    def test_a_search_that_raises_creates_nothing(self, registry, run):
+        accept, _ = run
+        _seed(registry)
+        fake = FakeEgeria()
+
+        def boom(qn):
+            raise TimeoutError("timed out")
+        fake.get_guid_for_name = boom
+        out = accept(fake)
+        assert out["status"] == "error" and fake.of("create_solution_blueprint") == []
+
+    def test_a_guid_containing_404_in_a_timeout_message_is_not_gone(self, registry, run):
+        accept, _ = run
+        _seed(registry)
+        guid = "11404404-0000-0000-0000-000000000000"
+        registry.record_materialized_blueprint("repo", "egeria_git", "deployment", CLUSTER, "x", guid)
+        fake = FakeEgeria()
+
+        def boom(g, **kw):
+            raise TimeoutError(f"timeout reading {g} (504)")
+        fake.get_solution_blueprint_by_guid = boom
+        out = accept(fake)
+        assert out["status"] == "error" and fake.of("create_solution_blueprint") == []
+        assert registry.get_materialized_blueprint("repo", "egeria_git", "deployment", CLUSTER)["guid"] == guid
+
+    def test_a_user_not_found_error_is_not_a_missing_blueprint(self, registry, run):
+        accept, _ = run
+        _seed(registry)
+        registry.record_materialized_blueprint("repo", "egeria_git", "deployment", CLUSTER, "x", G(99))
+        fake = FakeEgeria()
+
+        def boom(g, **kw):
+            raise RuntimeError("user erinoverview not found on server qs-view-server")
+        fake.get_solution_blueprint_by_guid = boom
+        out = accept(fake)
+        assert out["status"] == "error" and fake.of("create_solution_blueprint") == []
+
+
+class TestContentPackAmbiguity:
+    def _el(self, guid, name, qn="Egeria:ValidMetadataValue:Software Service:x::" ):
+        return {"elementHeader": {"guid": guid}, "properties": {"qualifiedName": qn + name, "displayName": name}}
+
+    def test_a_contains_match_on_another_name_is_not_adopted(self, registry, run):
+        accept, enqueued = run
+        _seed(registry, root_admission=adm.REFERENCED, materialize_root=False)
+        fake = FakeEgeria()
+        fake.content_pack[ROOT_NAME] = [self._el(G(70), "OMAG Server Platform Extras")]
+        out = accept(fake)
+        # not adopted, so the referenced-only root is no real component: the contents shape, root left out
+        assert out["shape"]["shape"] == CONTENTS and len(enqueued[0]) == 6 and G(70) not in enqueued[0]
+        assert "adopted_from_content_pack" not in out
+
+    def test_more_than_one_exact_match_refuses_and_says_so(self, registry, run):
+        accept, enqueued = run
+        _seed(registry, root_admission=adm.REFERENCED, materialize_root=False)
+        fake = FakeEgeria()
+        fake.content_pack[ROOT_NAME] = [self._el(G(71), ROOT_NAME), self._el(G(72), ROOT_NAME)]
+        out = accept(fake)
+        assert out["shape"]["shape"] == CONTENTS and G(71) not in enqueued[0] and G(72) not in enqueued[0]
+        assert "2 content-pack elements" in out["content_pack_refused"][0]
+
+    def test_adoption_by_qualified_name_verifies_the_type_and_reports_the_skipped(self, registry, run):
+        accept, enqueued = run
+        _seed(registry, materialize_children=False, materialize_root=False)
+        qns = {f"SolutionComponent::repo::egeria_git::src/{n.slug}":
+               (PLATFORM if n.slug == "omag-server-platform" else SERVERS[n.slug]) for n in _nodes()}
+        fake = FakeEgeria(existing_qns=qns)
+        orig = fake.get_solution_component_by_guid
+
+        def wrong_type(guid, **kw):                     # the nanny-daemon name resolves to a different type
+            out = orig(guid, **kw)
+            if guid == SERVERS["nanny-daemon"]:
+                out["elementHeader"]["type"]["typeName"] = "SolutionBlueprint"
+            return out
+        fake.get_solution_component_by_guid = wrong_type
+        out = accept(fake)
+        assert SERVERS["nanny-daemon"] not in [c[2] for c in fake.of("link_subcomponent")]
+        assert "nanny-daemon" in out["adoption_skipped"]
+        assert registry.get_materialized_component("repo", "egeria_git", "src/nanny-daemon") is None
+
+
+class TestOldMembershipsAreReportedNeverRemoved:
+    def test_children_that_are_also_direct_members_are_reported(self, registry, run):
+        accept, enqueued = run
+        _seed(registry)
+        fake = FakeEgeria()
+        # an earlier run on the old blueprint: root and three servers are direct members
+        registry.record_materialized_blueprint("repo", "egeria_git", "deployment", CLUSTER, "x", BP_GUID)
+        fake.blueprints[BP_GUID] = {}
+        fake.bp_members = [PLATFORM, SERVERS["view-server"], SERVERS["engine-host"], SERVERS["nanny-daemon"]]
+        out = accept(fake)
+        assert sorted(out["extra_members"]) == sorted(SERVERS[s] for s in ("view-server", "engine-host", "nanny-daemon"))
+        assert not [c for c in fake.calls if "detach" in c[0] or "delete" in c[0]]
+        shape = [p for p in registry.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "shape"][-1]
+        assert sorted(shape["detail"]["extra_members"]) == sorted(out["extra_members"])
+
+    def test_a_blueprint_read_without_members_reports_none_rather_than_guessing(self, registry, run):
+        accept, _ = run
+        _seed(registry)
+        fake = FakeEgeria()
+        fake.bp_members = None
+        out = accept(fake)
+        assert out["extra_members"] == [] and out["extra_members_read"] is False
+
+
+class TestTruthfulProofs:
+    def test_the_shape_proof_does_not_say_container_when_nothing_was_written(self, registry, run):
+        accept, _ = run
+        _seed(registry, materialize_root=False)
+        accept(FakeEgeria())
+        shape = [p for p in registry.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "shape"][-1]
+        assert shape["detail"]["shape"] == "container (not written: root has no GUID)"
+        assert shape["detail"]["written"] is False
+
+    def test_an_error_row_says_no_read_back(self, registry, run):
+        accept, _ = run
+        _seed(registry)
+        fake = FakeEgeria()
+        fake.fail_link_for = {SERVERS["engine-host"]}
+        accept(fake)
+        rows = {p["target_guid"]: p for p in registry.list_catalogue_commit_proofs("egeria_git")
+                if p["proof"] == "composition"}
+        assert rows[SERVERS["engine-host"]]["detail"]["read_back"] is False
+        assert rows[SERVERS["view-server"]]["detail"]["read_back"] is True

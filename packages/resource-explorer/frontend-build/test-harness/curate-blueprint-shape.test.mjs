@@ -47,3 +47,40 @@ test('a cluster with no members has no manifest', async () => {
   const { mod } = await curate();
   assert.equal(mod.shapeManifestHtml(null), '');
 });
+
+test('a click is an explicit choice, reported even when it equals the displayed default', async () => {
+  const { mod, document } = await curate();
+  const box = document.createElement('div');
+  box.innerHTML = mod.shapeManifestHtml(PLAN);
+  const chosen = [];
+  mod.wireShapeFlip(box, PLAN, (s) => chosen.push(s));
+  const [container, contents] = [...box.querySelectorAll('[data-shape-option]')];
+  contents.click();
+  assert.deepEqual(chosen, ['contents']);
+  assert.equal(contents.getAttribute('aria-pressed'), 'true');
+  assert.equal(container.getAttribute('aria-pressed'), 'false');
+  assert.match(box.querySelector('[data-shape-line]').textContent, /left out · 6 members · flipped/);
+  container.click();                       // back to the displayed default: still an explicit choice
+  assert.deepEqual(chosen, ['contents', 'container']);
+  assert.equal(container.getAttribute('aria-pressed'), 'true');
+});
+
+test('a refused flip keeps the default, says why, and never reads "chosen" on the refused option', async () => {
+  const { mod, document } = await curate();
+  const refused = { ...PLAN, shape: 'contents', default_shape: 'contents',
+    alternatives: {
+      contents: { shape: 'contents', words: 'root is a grouping · 6 members', why: 'grouping', flip_refused: '' },
+      container: { shape: 'contents', words: 'root is a grouping · 6 members', why: 'grouping',
+                   flip_refused: 'no member is the root, so there is nothing to be the container' },
+    } };
+  const box = document.createElement('div');
+  box.innerHTML = mod.shapeManifestHtml(refused);
+  const chosen = [];
+  mod.wireShapeFlip(box, refused, (s) => chosen.push(s));
+  const [container, contents] = [...box.querySelectorAll('[data-shape-option]')];
+  container.click();
+  assert.deepEqual(chosen, ['contents']);
+  assert.equal(container.getAttribute('aria-pressed'), 'false');
+  assert.equal(contents.getAttribute('aria-pressed'), 'true');
+  assert.match(box.querySelector('[data-shape-why]').textContent, /nothing to be the container/);
+});
