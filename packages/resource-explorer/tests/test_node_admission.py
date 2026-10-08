@@ -572,3 +572,64 @@ class TestEmptyUnitEntries:
         entry, note = node_admission.effective({"x": [{"to": "built_here", "reason": "r", "by": "d", "at": "t",
                                                        "unit": "a/b"}]}, "x", "")
         assert entry is None and "not applied" in note
+
+
+# ── twin guard: a compose service merges into a Dockerfile/manifest node only if it BUILDS it ────────
+
+def _dockerfile_repo(tmp_path, name, service_yaml):
+    root = str(tmp_path / name)
+    _write(root, "X/compose.yaml", "services:\n" + service_yaml)
+    _write(root, "X/web/Dockerfile", "FROM python:3\nCMD [\"python\", \"app.py\"]\n")
+    _write(root, "X/web/app.py", "print(1)\n")
+    _git(root)
+    return root
+
+
+class TestTwinGuard:
+    def test_a_foreign_image_service_next_to_a_dockerfile_stays_its_own_referenced_node(self, tmp_path):
+        root = _dockerfile_repo(tmp_path, "g1", "  web:\n    image: nginx:1\n")
+        web = _components_named(root, "web")
+        assert sorted(c.admission for c in web) == ["built_here", "referenced_only"]
+        assert len({c.slug for c in web}) == 2                      # never two nodes under one slug
+        dockerfile = next(c for c in web if c.admission == "built_here")
+        assert dockerfile.image == ""                               # nginx is NOT the Dockerfile's image
+
+    def test_a_service_that_builds_the_directory_merges_and_is_built_here(self, tmp_path):
+        root = _dockerfile_repo(tmp_path, "g2", "  web:\n    image: odpi/web:1\n    build: ./web\n")
+        web = _components_named(root, "web")
+        assert len(web) == 1 and web[0].admission == "built_here" and web[0].image == "odpi/web"
+
+    def test_a_service_building_some_other_directory_does_not_merge(self, tmp_path):
+        root = _dockerfile_repo(tmp_path, "g3", "  web:\n    build: ./elsewhere\n")
+        assert len(_components_named(root, "web")) == 2
+
+    def test_a_manifest_directory_and_a_same_named_image_service_do_not_merge(self, tmp_path):
+        root = str(tmp_path / "g4")
+        _write(root, "kafka/pyproject.toml",
+               '[project]\nname = "kafka"\nversion = "1"\n[project.scripts]\nkafka = "kafka:main"\n')
+        _write(root, "kafka/compose.yaml", "services:\n  kafka:\n    image: confluentinc/kafka:7\n")
+        _git(root)
+        kafka = _components_named(root, "kafka")
+        # two nodes. (The service is "shipped here" only because the manifest's package name equals the
+        # image's last segment: that is the published-image rule, not the twin merge.)
+        assert len(kafka) == 2 and len({c.slug for c in kafka}) == 2
+        assert next(c for c in kafka if c.image == "").admission == "built_here"
+        assert next(c for c in kafka if c.image).image == "confluentinc/kafka"
+
+
+def test_qualified_slugs_that_collide_across_plain_slug_groups_all_get_the_hash(tmp_path):
+    root = str(tmp_path / "xg")
+    # Two plain-slug groups ("b-c-x::svc" and "x::svc"), each shared by two directories. Their qualified
+    # texts collide ACROSS the groups: a/b-c-x and a-b/c/x both read "a-b-c-x::svc".
+    for d in ("a/b-c-x", "q/b-c-x", "a-b/c/x", "q/x"):
+        _write(root, f"{d}/compose.yaml", "services:\n  svc:\n    image: i/svc:1\n")
+    _git(root)
+    slugs = [c.slug for c in _components_named(root, "svc")]
+    assert len(slugs) == 4 and len(set(slugs)) == 4
+    assert "q-b-c-x::svc" in slugs and "q-x::svc" in slugs          # non-colliding ones are unchanged
+
+
+def test_a_unitless_slug_entry_on_a_node_with_no_directory_does_not_apply():
+    entry, note = node_admission.effective({"a-b::x": [{"to": "built_here", "reason": "r", "by": "d", "at": "t"}]},
+                                           "a-b::x", "", "x")
+    assert entry is None and "not applied" in note

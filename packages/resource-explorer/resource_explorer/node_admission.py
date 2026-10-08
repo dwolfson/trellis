@@ -110,9 +110,12 @@ def effective(reclass: dict, scope: str, node_unit: str, node_name: str = "") ->
         if eu != node_unit:
             return None, f"reclassification belongs to {eu}; not applied"
         return entry, ""
-    if "::" in scope and node_unit:
+    if "::" in scope:
         from resource_explorer.surveyors.arch_recovery.detectors import _slug
         import os
+        if not node_unit:
+            return None, ("reclassification has no directory recorded and this node's directory is not "
+                          "known; not applied")
         if scope != _slug(os.path.basename(node_unit), node_name):
             return None, ("reclassification has no directory recorded and this name is shared by several "
                           "directories; not applied")

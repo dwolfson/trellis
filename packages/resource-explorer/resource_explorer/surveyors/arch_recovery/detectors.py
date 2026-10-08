@@ -469,15 +469,22 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
     return sorted(found.values(), key=lambda e: e["dir"])
 
 
-def compose_slug_units(root: str, files: list[str]) -> dict[str, set[str]]:
-    """{plain compose slug: the deployment units that would carry it}, over `files`.
+def compose_slugs(root: str, files: list[str]) -> dict[tuple[str, str], str]:
+    """{(deployment unit, plain slug): final slug} for every compose service in `files`.
 
     A compose service has no files, so its slug IS its scope locator, and reclassifications, verdicts
-    and referenced-only rows key on it. A slug shared by services in two directories (a/deploy and
-    b/deploy both run `kafka`) must therefore not depend on which one is seen first, or on which files a
-    scoped run was handed: every service whose plain slug more than one unit carries is qualified by its
-    whole directory path (see `build_components`)."""
-    out: dict[str, set[str]] = defaultdict(set)
+    and referenced-only rows key on it. The plain slug is `<dir basename>::<name>`. When more than one
+    directory carries the same plain slug (a/deploy and b/deploy both run `kafka`), EVERY one of them is
+    qualified by its whole directory path (`a-deploy::kafka`), independent of which is seen first and of
+    which files a scoped run was handed (callers pass the full census). A name no other directory shares
+    keeps its plain slug, so existing slugs and verdicts are unchanged.
+
+    Path text is not injective ("a/b-c" and "a-b/c" both read "a-b-c"), so the final slug TEXT of every
+    service in the repository, plain or qualified, is compared in one pass; each QUALIFIED slug whose text
+    is also carried by another service gets a short hash of its exact path appended. A plain slug never
+    changes, and a qualified slug nobody else carries is left as it is."""
+    import hashlib
+    entries: list[tuple[str, str, str]] = []                      # (unit, name, plain slug)
     for unit, decls in deployment_units(root, files).items():
         names: dict[str, str] = {}
         for decl in decls:
@@ -487,22 +494,39 @@ def compose_slug_units(root: str, files: list[str]) -> dict[str, set[str]]:
                 if key not in names or (name != key and names[key] == key):
                     names[key] = name
         for name in names.values():
-            out[_slug(os.path.basename(unit), name)].add(unit)
-    return out
+            entries.append((unit, name, _slug(os.path.basename(unit), name)))
+    units_by_plain: dict[str, set[str]] = defaultdict(set)
+    for unit, _name, plain in entries:
+        units_by_plain[plain].add(unit)
+    candidate: dict[tuple[str, str], tuple[str, bool]] = {}      # (unit, plain) -> (text, qualified?)
+    for unit, name, plain in entries:
+        if len(units_by_plain[plain]) > 1:
+            candidate[(unit, plain)] = (_slug(unit.replace(os.sep, "-"), name), True)
+        else:
+            candidate[(unit, plain)] = (plain, False)
+    seen: dict[str, int] = defaultdict(int)
+    for text, _q in candidate.values():
+        seen[text] += 1
+    return {k: (f"{text}.{hashlib.sha1(k[0].encode()).hexdigest()[:6]}" if q and seen[text] > 1 else text)
+            for k, (text, q) in candidate.items()}
 
 
-def qualified_compose_slug(unit: str, name: str, units: set[str]) -> str:
-    """The slug of a compose service whose plain slug several directories carry: the whole directory path,
-    then the name. Directories that differ only by separator ("a/b-c" and "a-b/c" both read a-b-c) would
-    still collide, so those, and only those, get a short hash of the exact path appended; a slug that
-    collides with nothing is unchanged."""
-    import hashlib
-    def base(u: str) -> str:
-        return _slug(u.replace(os.sep, "-"), name)
-    mine = base(unit)
-    if sum(1 for u in units if base(u) == mine) > 1:
-        return f"{mine}.{hashlib.sha1(unit.encode()).hexdigest()[:6]}"
-    return mine
+def _component_dir(c: Component) -> str:
+    g = (c.files or [""])[0]
+    for suffix in ("/**", "/*"):
+        if g.endswith(suffix):
+            return g[: -len(suffix)] or "."
+    return "." if g == "**" or not g else g
+
+
+def _builds_twin(twin: Component, facts: dict, unit: str) -> bool:
+    """May this compose service be merged into `twin`, a Dockerfile or manifest component? Only if it
+    BUILDS the twin's directory (its build context resolves to it), or declares no build and names no image
+    at all. A service that runs a foreign image (`image: nginx`, no build) is not that component, however
+    the names line up."""
+    if facts.get("build"):
+        return os.path.normpath(os.path.join(unit, facts["build"])) == os.path.normpath(_component_dir(twin))
+    return not facts.get("image")
 
 
 def build_components(root: str, files: list[str], all_files: list[str] | None = None,
@@ -587,6 +611,7 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
     # PyegeriaWebHandler, the most substantial component in egeria-workspaces,
     # went entirely unreported because it ships no pyproject.toml. Anything
     # containerised is deployed, and deployment is what §8.2 now leads on.
+    dockerfile_slugs: set[str] = set()
     claimed_dirs = {m["dir"] for m in manifests}
     for unit, decls in units.items():
         dockerfiles = [d for d in decls if os.path.basename(d).startswith("Dockerfile")
@@ -620,6 +645,7 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
             files=[f"{unit}/**"], confidence=75, confidence_level="Derived",
             admission_evidence=f"from {dockerfiles[0]}",
         ))
+        dockerfile_slugs.add(slug)
         evidence.append(Evidence(
             subject_kind="component", subject_slug=slug,
             assertion=f"component identity = deployment-unit:{name}",
@@ -689,22 +715,25 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
     # Which plain slugs more than one directory carries is decided from the WHOLE repository's compose files
     # (`all_files`, the full census), not from the files this run was handed: a scoped run sees one
     # directory and would otherwise hand that service a plain slug the full run had qualified.
-    shared = {slug: us for slug, us in compose_slug_units(
-        root, all_files if all_files is not None else files).items() if len(us) > 1}
+    slugs = compose_slugs(root, all_files if all_files is not None else files)
     for unit, merged in per_unit.items():
         for key, (name, decl, line) in merged.items():
-            slug = _slug(os.path.basename(unit), name)
-            if slug in shared:
-                # Two services of the same name in same-named directories (a/deploy, b/deploy) are two
-                # services: every one is qualified by its whole directory path, independent of order.
-                slug = qualified_compose_slug(unit, name, shared[slug])
+            plain = _slug(os.path.basename(unit), name)
+            slug = slugs.get((unit, plain), plain)
             f = per_unit_facts[unit].get(key, {"image": "", "build": ""})
-            # The same unit already found by its Dockerfile or manifest is the stronger, built-here
-            # reading. It is matched by slug, or by DIRECTORY and name, so a compose service that was
-            # qualified (and so no longer shares the Dockerfile component's plain slug) still merges.
-            twin = next((c for c in components if c.slug == slug), None) or next(
-                (c for c in components if c.perspective != "deployment" and c.identity.method == "deployment-unit"
-                 and c.identity.deployment_context == unit and c.identity.value == name), None)
+            # The same unit already found by its Dockerfile or manifest is the stronger, built-here reading,
+            # and the compose service merges into it, but only if it BUILDS that directory (_builds_twin).
+            # A twin is found by slug, or, for a Dockerfile component only, by directory and name so that
+            # a qualified slug still merges. A compose twin (layered files) merges unconditionally.
+            twin = next((c for c in components if c.slug == slug), None)
+            if twin is None:
+                twin = next((c for c in components if c.slug in dockerfile_slugs and c.perspective != "deployment"
+                             and c.identity.deployment_context == unit and c.identity.value == name), None)
+            if twin is not None and twin.perspective != "deployment" and not _builds_twin(twin, f, unit):
+                # A different thing that happens to share the name: its own node, under a slug of its own.
+                twin = None
+                if any(c.slug == slug for c in components):
+                    slug = f"{slug}.svc"
             if twin is not None:
                 # The compose service still names the image it ships, which is how a service elsewhere is
                 # linked to the repository that builds it.
