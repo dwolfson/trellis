@@ -1,7 +1,9 @@
 """scripts/clear_egeria_pointers_after_reset.py: clear Egeria POINTERS, keep DECISIONS and HISTORY.
 
-Only temp SQLite. The script is never pointed at the shared registry by a test (REGISTRY_DATABASE_URL is a
-tmp file in every test).
+Only temp SQLite (the seeds are PRAGMA-based, and Postgres behaviour is exercised here only through fakes of the
+connection and the URL). The script is never pointed at the shared registry by a test (REGISTRY_DATABASE_URL is a
+tmp file in every test). The complementary check is PR/CI's exercise on a scratch Postgres schema: dry run, guards,
+apply, idempotent second run and the skip flag, with the real schema left identical.
 """
 from __future__ import annotations
 
@@ -527,6 +529,8 @@ def test_missing_work_lists_refuses_with_the_sentence_and_the_flag_skips_and_rec
 
 def test_the_skip_flag_does_not_accept_other_tables_or_skip_an_existing_one(env):
     rc, cap, _, f = dry(env, "--skip-missing-table", "databases")
+    assert rc == 2 and "accepts only work_lists" in cap.text
+    rc, cap, _, f = dry(env, "--skip-missing-table", "work_lists")           # exists here, so nothing is skipped
     assert rc == 0 and json.loads(Path(f).read_text())["plan"]["skipped_tables"] == []
     with env["reg"]._conn() as c:
         c.execute("DROP TABLE survey_definition_cache")
@@ -658,3 +662,144 @@ def test_a_plan_file_made_for_another_schema_is_refused(env):
     Path(f).write_text(json.dumps(data))
     rc, cap = apply(env, data["plan"]["hash"], f)
     assert rc == 2 and "schema" in cap.text
+
+
+# ── live-schema guard, URL parsing, hint, error handling (fakes; SQLite cannot show current_schema) ─────────────
+
+def pg(options):
+    return f"postgresql://u:secret@localhost:5442/egeria_advisor?options={options}"
+
+
+class FakeConn:
+    def __init__(self, live):
+        self.live = live
+
+    def execute(self, sql, params=None):
+        assert "current_schema" in sql
+        return self
+
+    def close(self):
+        pass
+
+    def fetchone(self):
+        return {"s": self.live}
+
+
+def test_current_schema_mismatch_is_refused_and_agreement_passes():
+    url = pg("-csearch_path%3Dresource_explorer")
+    with pytest.raises(S.Refused, match="current_schema"):
+        S.check_live_schema(FakeConn("public"), url, "resource_explorer")
+    assert S.check_live_schema(FakeConn("resource_explorer"), url, "resource_explorer") == "resource_explorer"
+    # the REAL schema name is not refused as such: only a mismatch is
+    assert S.target_schema(url) == "resource_explorer"
+
+
+@pytest.mark.parametrize("options", ["-csearch_path%3Da,b", "-csearch_path%3Da%20-csearch_path%3Db",
+                                     "-csearch_path%3Da%20-c%20search_path%3Db", "-csearch_path%3D"])
+def test_comma_duplicate_and_empty_search_paths_are_refused(options):
+    with pytest.raises(S.Refused):
+        S.target_schema(pg(options))
+
+
+def test_a_comma_list_is_refused_by_its_own_guard_not_only_the_parser_cross_check():
+    with pytest.raises(S.Refused, match="exactly one schema"):
+        S.target_schema(pg("-csearch_path%3Da,b"))
+
+
+def test_spellings_the_registry_parser_does_not_know_are_refused_not_guessed():
+    for options in ("-c%20search_path%3Dx", "--search_path%3Dx"):
+        with pytest.raises(S.Refused, match="parser reads"):
+            S.target_schema(pg(options))
+
+
+def test_schema_is_required_on_apply_for_any_postgres_url_even_main(monkeypatch):
+    monkeypatch.setenv("REGISTRY_DATABASE_URL", pg("-csearch_path%3Dmain"))
+    cap = Cap()
+    rc = S.run(["--reset-at", RESET, "--apply", "--database", "egeria_advisor", "--cleared-by", TOKEN,
+                "--plan-file", "x", "--plan-hash", "y"], out=cap, now=NOW)
+    assert rc == 2 and "--schema" in cap.text and "secret" not in cap.text
+
+
+def test_run_refuses_when_the_live_schema_differs(monkeypatch, env):
+    monkeypatch.setenv("REGISTRY_DATABASE_URL", pg("-csearch_path%3Dresource_explorer"))
+    monkeypatch.setattr(S, "connect", lambda url: FakeConn("public"))
+    cap = Cap()
+    assert S.run(["--reset-at", RESET], out=cap, now=NOW) == 2
+    assert "current_schema() is 'public'" in cap.text and "secret" not in cap.text
+
+
+def test_plan_records_and_hashes_the_live_schema_and_apply_refuses_a_different_one(env):
+    reg = env["reg"]
+    with reg._conn() as c:
+        a = S.build_plan(c, "d", RESET_ISO, "", "", "main", [], "main")
+        b = S.build_plan(c, "d", RESET_ISO, "", "", "main", [], "other")
+    assert a["current_schema"] == "main" and a["hash"] != b["hash"]
+    _, cap, h, f = dry(env)
+    assert "current_schema: main" in cap.text
+    data = json.loads(Path(f).read_text())
+    data["plan"]["current_schema"] = "other"
+    data["plan"]["hash"] = S.plan_hash(data["plan"])
+    Path(f).write_text(json.dumps(data))
+    rc, cap = apply(env, data["plan"]["hash"], f)
+    assert rc == 2 and "current_schema" in cap.text
+    _, _, h, f = dry(env)
+    apply(env, h, f)
+    snap = next(Path(f).parent.glob("egeria-reset-snapshot-*.json"))
+    assert json.loads(snap.read_text())["plan"]["current_schema"] == "main"
+
+
+def test_the_apply_hint_is_a_complete_copy_paste(env):
+    with env["reg"]._conn() as c:
+        c.execute("DROP TABLE work_list_runs")
+        c.execute("DROP TABLE work_list_members")
+        c.execute("DROP TABLE work_lists")
+    _, cap, h, f = dry(env, "--skip-missing-table", "work_lists", "--old-collection-id", "O", "--new-collection-id", "N")
+    hint = next(l for l in cap.text.splitlines() if l.startswith("to apply:"))
+    for part in ("--schema main", "--skip-missing-table work_lists", "--old-collection-id O",
+                 "--new-collection-id N", f"--reset-at {RESET}", f"--plan-hash {h}", f"--plan-file {f}"):
+        assert part in hint
+
+
+def test_missing_table_means_undefined_table_only():
+    class Boom:
+        class raw_conn:
+            @staticmethod
+            def rollback():
+                pass
+
+        def __init__(self, exc):
+            self.exc = exc
+
+        def execute(self, sql):
+            raise self.exc
+
+    class PgErr(Exception):
+        pgcode = "42P01"
+
+    assert S._missing_table(Boom(PgErr("relation does not exist")), "t") is True
+    import sqlite3
+    assert S._missing_table(Boom(sqlite3.OperationalError("no such table: t")), "t") is True
+    with pytest.raises(S.Refused, match="could not check"):
+        S._missing_table(Boom(RuntimeError("permission denied")), "t")
+
+
+def test_a_failed_final_activity_update_is_not_reported_as_a_failure_before_any_change(env):
+    _, _, h, f = dry(env)
+    with env["reg"]._conn() as c:
+        c.execute("CREATE TRIGGER nofinal BEFORE UPDATE ON activity_log WHEN NEW.status = 'ok' "
+                  "BEGIN SELECT RAISE(ABORT, 'x'); END")
+    rc, cap = apply(env, h, f)
+    assert rc == 3 and "All groups committed" in cap.text and "before any change" not in cap.text
+    d = dump(env["reg"])
+    assert all(p["database_slug"] for p in d["catalogue_commit_proofs"]) and \
+        any(p["proof"] == "egeria_reset" for p in d["catalogue_commit_proofs"])
+
+
+def test_a_preexisting_world_readable_tmp_snapshot_ends_0600(env):
+    _, _, h, f = dry(env)
+    tmp = Path(f).parent / f"egeria-reset-snapshot-{env['name']}-{h[:12]}.tmp"
+    tmp.write_text("old")
+    os.chmod(tmp, 0o644)
+    apply(env, h, f)
+    snap = Path(f).parent / f"egeria-reset-snapshot-{env['name']}-{h[:12]}.json"
+    assert oct(snap.stat().st_mode & 0o777) == "0o600"
