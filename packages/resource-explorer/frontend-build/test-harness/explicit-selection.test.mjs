@@ -367,3 +367,13 @@ test('Analysis panel: Publish sends no item list, shows the proof counts as cues
   assert.match(norm(b.panel.querySelector('[data-subres-blocker]')), /the repository is not in Egeria yet · publish the repository first →/);
   assert.ok(b.panel.querySelector('[data-subres-goto-curate]'));
 });
+
+test('what a tick does is said above the rows and on Include; one chosen folder is "Publish 1 item →" and no sibling or README moves', async () => {
+  const { document, store } = await setUp();
+  assert.match(norm(holds(document).querySelector('[data-scope-tick-words]')), /Include publishes this row only/);
+  assert.match(seg(document, 'docs', 'include').title, /README are separate rows/);
+  seg(document, 'src', 'include').click();
+  await wait(150);
+  assert.equal(norm(document.querySelector('[data-curate-go]')), 'Publish 1 item →');
+  assert.deepEqual(store.view().manifest.chosen, ['src']);
+});

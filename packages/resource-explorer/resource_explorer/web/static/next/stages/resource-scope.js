@@ -26,6 +26,8 @@ import { selectorHtml } from '/static/next/stages/curate-scope.js';
 
 export const SCOPE_HEAD = 'Publish to Egeria?';
 export const CONTAINER_WORDS = 'needed as a container · not an asset of its own';
+/** What a tick does, said once above the rows and on each Include button. */
+export const TICK_WORDS = 'Include publishes this row only. A folder\u2019s contents and a file\u2019s README are separate rows, published only if you include them; folders needed to hold an included file are published as containers.';
 export const SIGN_IN_WORDS = 'sign in to choose — the record needs an author';
 const SEGS = [['include', 'Include'], ['leave_out', 'Leave out']];
 
@@ -160,7 +162,7 @@ export function choiceCellHtml(r, ctl) {
   const kind = esc(r.kind);
   const sel = selectorHtml({
     own: r.choice, explicit: !!r.choice, off, dis, segs: SEGS, ariaLabel: SCOPE_HEAD,
-    segAttrs: (choice) => `data-scope-act="set" data-scope-choice="${choice}" data-scope-loc="${loc}" data-scope-kind="${kind}"`,
+    segAttrs: (choice) => `data-scope-act="set" data-scope-choice="${choice}" data-scope-loc="${loc}" data-scope-kind="${kind}"${choice === 'include' && me ? ` title="${esc(TICK_WORDS)}"` : ''}`,
     clearAttrs: `data-scope-act="clear" data-scope-loc="${loc}" data-scope-kind="${kind}"`,
   });
   const who = (by) => (by && by === me ? 'you' : by);
@@ -227,7 +229,8 @@ export function toolbarHtml(ctl, shown) {
   const include = shown.filter((r) => r.choice !== 'include').length;
   const clear = shown.filter((r) => r.choice).length;
   const busy = shown.some((r) => ctl.pending.has(r.locator));
-  return `<div data-scope-toolbar class="flex flex-wrap items-baseline gap-s3 text-provenance">
+  return `<div data-scope-tick-words class="mb-s1 max-w-[80ch] text-provenance text-ink-muted">${esc(TICK_WORDS)}</div>
+  <div data-scope-toolbar class="flex flex-wrap items-baseline gap-s3 text-provenance">
     ${proposals ? `<button type="button" data-scope-act="accept" ${dis} class="${me ? 'cursor-pointer text-accent-ink' : 'opacity-60 text-ink-muted'} bg-transparent p-0 underline">accept the ${proposals} proposal${proposals === 1 ? '' : 's'}</button>` : ''}
     <button type="button" data-scope-act="include-visible" ${dis} ${include ? '' : 'disabled'} class="${me ? 'cursor-pointer text-accent-ink' : 'opacity-60 text-ink-muted'} bg-transparent p-0 underline disabled:cursor-default disabled:opacity-60">include all visible (${include})</button>
     <button type="button" data-scope-act="clear-visible" ${dis} ${clear ? '' : 'disabled'} class="${me ? 'cursor-pointer text-accent-ink' : 'opacity-60 text-ink-muted'} bg-transparent p-0 underline disabled:cursor-default disabled:opacity-60">clear all visible (${clear})</button>

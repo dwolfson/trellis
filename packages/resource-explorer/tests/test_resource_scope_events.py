@@ -357,3 +357,18 @@ def test_the_proof_summary_splits_the_state_by_the_rows_of_the_table(registry):
     ps = repo_publish.commit_proof_summary(registry, "p", Curations(registry).get(cid))["sub_resources"]["by_row"]
     assert (ps["files"]["read_back"], ps["files"]["failed"]) == (1, 1)        # a.md read back; b.py got no GUID
     assert (ps["folders"]["sent"], ps["containers"]["read_back"]) == (1, 1)    # src sent, docs read back as a container
+
+
+def test_one_row_chosen_means_exactly_that_row_no_readme_no_siblings(client, registry):
+    """Owner evidence (egeria_workspaces_git): 1 of 31 ticked read as 31 folders. One chosen row is one item,
+    the commit's list is exactly it, and no request field can widen it."""
+    _go(registry, client)
+    _survey(registry, extra=(("compose-configs", "folder", "worthy", "x"), ("compose-configs/README.md", "file", "worthy", "x"),
+                             ("coco-workbooks", "folder", "worthy", "x"), ("coco-workbooks/README.md", "file", "worthy", "x")))
+    _event(registry, "compose-configs", "folder")
+    m = resource_scope.build_view(registry, "p")["manifest"]
+    assert (m["files"], m["folders"], m["containers"], m["items"]) == (0, 1, 0, 1)
+    r = client.post("/api/projects/p/curate/commit",
+                    json={"confirm": [], "sub_resources": ["coco-workbooks", "compose-configs/README.md"], "contained": "all"})
+    assert r.status_code == 200, r.text
+    assert r.json()["curation"]["selection"]["sub_resources"] == ["compose-configs"]
