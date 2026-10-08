@@ -172,11 +172,11 @@ test('group, signed out: a 401 says to sign in, never "saved"', async () => {
 
 /* ── Sent to Egeria: Catalog, on a repository's Curate too ───────────────────────────────────── */
 
-test('a repository\'s Curate control reads "Catalog →" and no page shows both spellings', async () => {
+test('a repository\'s Curate commit control reads "Publish N items →" (brief 2a) and no page shows both spellings', async () => {
   const { document } = await setUp('repo');
-  const btn = [...host(document).querySelectorAll('button')].find((b) => /^Catalog/.test(label(b)));
+  const btn = host(document).querySelector('[data-curate-go]');
   assert.ok(btn, 'the repository commit control is present');
-  assert.equal(label(btn), 'Catalog →');
+  assert.match(label(btn), /^Publish( \d+ items?)? →$/);
   assert.doesNotMatch(host(document).textContent, /[Cc]atalogu/);
 });
 

@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { makeScopeStore } from './repo-scope-kit.mjs';
 
 const wait = (ms = 250) => new Promise((r) => setTimeout(r, ms));
 const SUBS = ['docs/a', 'docs/b', 'docs/c'];
@@ -24,7 +25,7 @@ const PLAN = {
 const BRANCH = { path: 'packages/x', name: 'x', components: 1, accepted: 0, rejected: 0, undecided: 1, low_confidence: 0, types: {}, type: 'Service', ports: 0, own_ports: [], verdict: null };
 
 function makeServer(over = {}) {
-  const s = { calls: [], hold: {}, verdictStatus: 200, ...over };
+  const s = { calls: [], hold: {}, verdictStatus: 200, scope: makeScopeStore(), ...over };
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
     const method = opts.method || 'GET';
@@ -32,6 +33,8 @@ function makeServer(over = {}) {
     s.calls.push({ method, url: u, body });
     const ok = (b, status = 200) => ({ ok: true, status, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
+    const scoped = await s.scope.handle(u, method, body, ok, err);
+    if (scoped) return scoped;
     if (u.endsWith('/curate/commit')) {
       if (s.hold.commit) await s.hold.commit;
       if (s.commitStatus) return err(s.commitStatus, 'boom');
@@ -94,36 +97,44 @@ const norm = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const deferred = () => { let resolve; const p = new Promise((r) => { resolve = r; }); return { p, resolve }; };
 const commitBody = (server) => server.calls.find((c) => c.url.endsWith('/curate/commit'))?.body;
 
-/* ── item 1: select all / none ─────────────────────────────────────────── */
+/* ── item 1 (replaced by brief 2a): nothing is ticked; the press sends the RECORD, not a list ──────── */
 
-test('what is in it: select none / select all drive what Catalog sends, and the count shows it at once', async () => {
-  const { document, server } = await setUp();
+const cellOf = (d, loc) => d.querySelector(`[data-scope-row="${loc}"]`);
+const segOf = (d, loc, choice) => cellOf(d, loc).querySelector(`[data-scope-act="set"][data-scope-choice="${choice}"]`);
+
+test('what is in it: no checkbox, nothing ticked, worthy rows read proposed, the table says 0 items', async () => {
+  const { document } = await setUp();
   const sec = holds(document);
-  assert.match(norm(sec.querySelector('[data-curate-subs-count]')), /3 of 3 sub-resources selected/);
-  assert.ok(sec.querySelector('[data-curate-subs-all]').disabled, 'already all selected: nothing to press');
-  sec.querySelector('[data-curate-subs-none]').click();
-  await wait();
-  assert.match(norm(holds(document).querySelector('[data-curate-subs-count]')), /0 of 3 sub-resources selected/);
-  assert.equal(holds(document).querySelectorAll('[data-curate-sub]:checked').length, 0);
-  holds(document).querySelector('[data-curate-subs-all]').click();
-  await wait();
-  assert.equal(holds(document).querySelectorAll('[data-curate-sub]:checked').length, 3);
-  // one by one, then Catalog sends exactly the ticked ones
-  holds(document).querySelector('[data-curate-sub="docs/b"]').click();
-  await wait();
-  assert.match(norm(holds(document).querySelector('[data-curate-subs-count]')), /2 of 3/);
-  document.querySelector('[data-curate-go]').click();
-  await wait();
-  assert.deepEqual(commitBody(server).sub_resources, ['docs/a', 'docs/c']);
+  assert.equal(sec.querySelectorAll('input[type=checkbox][data-curate-sub]').length, 0, 'the checkbox is gone');
+  assert.equal(sec.querySelector('[data-curate-subs]'), null, 'so is "include the contained set whole"');
+  assert.equal(norm(sec.querySelector('[data-scope-choice-head]')), 'Publish to Egeria?');
+  assert.equal(sec.querySelectorAll('[data-scope-selector] [aria-pressed="true"]').length, 0, 'no segment is filled');
+  assert.match(norm(cellOf(document, 'docs')), /proposed · worthy · top_level_structural_folder/);
+  assert.match(norm(document.querySelector('[data-manifest-row="files"]')), /0 DataFiles/);
+  assert.equal(norm(document.querySelector('[data-curate-go]')), 'Publish →', 'only the confirmed line goes: no items');
 });
 
-test('select none then Catalog sends no sub-resources', async () => {
+test('including one file under a folder nobody included: the folder is a container and the table counts 1 file, 0 folders, 1 container', async () => {
   const { document, server } = await setUp();
-  holds(document).querySelector('[data-curate-subs-none]').click();
-  await wait();
+  segOf(document, 'docs/a.md', 'include').click();
+  await wait(150);
+  assert.ok(segOf(document, 'docs/a.md', 'include').getAttribute('aria-pressed') === 'true', 'filled from the record\'s answer');
+  assert.match(norm(cellOf(document, 'docs')), /needed as a container · not an asset of its own/);
+  const row = (id) => norm(document.querySelector(`[data-manifest-row="${id}"]`));
+  assert.match(row('files'), /1 DataFile/);
+  assert.match(row('folders'), /0 FileFolders/);
+  assert.match(row('containers'), /1 FileFolder/);
+  assert.equal(norm(document.querySelector('[data-curate-go]')), 'Publish 2 items →');
+  assert.deepEqual(server.scope.posts.map((p) => p.events.map((e) => e.locator)), [['docs/a.md']]);
+});
+
+test('the press sends no sub-resource list: the server reads the record', async () => {
+  const { document, server } = await setUp();
+  segOf(document, 'docs/a.md', 'include').click();
+  await wait(150);
   document.querySelector('[data-curate-go]').click();
-  await wait();
-  assert.deepEqual(commitBody(server).sub_resources, []);
+  await wait(150);
+  assert.equal('sub_resources' in commitBody(server), false);
 });
 
 /* ── item 3: the mark is not a check ───────────────────────────────────── */
@@ -197,7 +208,7 @@ test('Catalog: pressing shows a pending cue that says it publishes the survey al
   assert.match(go.title, /Publishes the survey already kept/);
   assert.match(go.title, /does not run a survey/);
   go.click();
-  assert.match(norm(go), /Cataloging…/);
+  assert.match(norm(go), /Publishing…/);
   assert.ok(go.disabled);
   const hint = go.nextElementSibling;
   assert.match(norm(hint), /publishing the survey already kept/);
@@ -212,7 +223,7 @@ test('Catalog: a failed commit restores the button and says why', async () => {
   go.click();
   await wait(150);
   assert.equal(go.disabled, false);
-  assert.equal(norm(go), 'Catalog 4 items →');
+  assert.equal(norm(go), 'Publish →');
   assert.match(norm(document.getElementById('curate-host')), /not cataloged: boom/);
 });
 
@@ -270,7 +281,7 @@ test('Catalog: the table with its button is in "what gets written", and the old 
   const { document } = await setUp();
   const panel = document.querySelector('[data-repo-commit-panel]');
   assert.ok(panel && panel.querySelector('[data-repo-manifest]') && panel.querySelector('[data-curate-go]'));
-  assert.equal(panel.querySelector('[data-curate-go]').textContent.trim(), 'Catalog 4 items →');
+  assert.equal(panel.querySelector('[data-curate-go]').textContent.trim(), 'Publish →');
   assert.doesNotMatch(document.getElementById('curate-host').textContent, /refreshing stale surveys only/);
   assert.match(panel.textContent.replace(/\s+/g, ' '), /1 report · 42 annotations/);
 });
