@@ -68,3 +68,56 @@ test('Sign in opens the login overlay; signing in removes the banner and reloads
   assert.equal(reloads, 1);
   delete globalThis.Auth;
 });
+
+test('re:authenticated with no banner showing does nothing (no reload)', async () => {
+  const { document, window } = makeDomEnvironment();
+  const { installSessionBanner } = await import(`/static/next/session-banner.js?t=${Math.random()}`);
+  let reloads = 0;
+  installSessionBanner(document, { reload: () => { reloads += 1; } });
+  document.dispatchEvent(new window.CustomEvent('re:authenticated'));
+  assert.equal(reloads, 0);
+});
+
+test('the Sign in button is never dead: pressed cue, then re-enabled on the next session-dead and when the overlay closes', async () => {
+  const { document, window } = makeDomEnvironment();
+  const { installSessionBanner } = await import(`/static/next/session-banner.js?t=${Math.random()}`);
+  globalThis.Auth = { showLogin: () => {} };
+  installSessionBanner(document, { reload: () => {} });
+  document.dispatchEvent(new window.CustomEvent('re:session-dead'));
+  const btn = () => document.querySelector('[data-session-signin]');
+  btn().click();
+  assert.match(btn().textContent, /opening/i, 'immediate pressed cue');
+  document.dispatchEvent(new window.CustomEvent('re:session-dead'));
+  assert.equal(btn().disabled, false);
+  assert.match(btn().textContent, /^Sign in$/);
+  btn().click();
+  document.dispatchEvent(new window.CustomEvent('re:login-closed'));
+  assert.equal(btn().disabled, false);
+  assert.match(btn().textContent, /^Sign in$/);
+  delete globalThis.Auth;
+});
+
+test('session-dead bursts within a second raise the event once', async () => {
+  const { document } = makeDomEnvironment();
+  globalThis.fetch = async () => dead();
+  const api = await import(`/static/re-api.js?t=${Math.random()}`);
+  let events = 0;
+  document.addEventListener('re:session-dead', () => { events += 1; });
+  await Promise.allSettled([api.getMe(), api.getMe(), api.getMe()]);
+  assert.equal(events, 1);
+});
+
+test('the CSV, inventory and stream helpers also answer a dead session with the same marker', async () => {
+  const { document } = makeDomEnvironment();
+  globalThis.fetch = async () => dead();
+  const api = await import(`/static/re-api.js?t=${Math.random()}`);
+  let events = 0;
+  document.addEventListener('re:session-dead', () => { events += 1; });
+  for (const call of [() => api.fetchCsvFile('/x.csv'), () => api.fetchInventoryCsv(),
+    async () => { for await (const _ of api.askStream('q', { entityType: 'repo' })) { /* none */ } }]) {
+    let err; try { await call(); } catch (e) { err = e; }
+    assert.equal(err.loginRequired, true);
+    assert.equal(err.message, 'sign-in needed');
+  }
+  assert.equal(events, 1, 'one event for the burst');
+});

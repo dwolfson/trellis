@@ -64,3 +64,12 @@ test('the order control is still there and still flips', async () => {
   btn.click();
   assert.match(doc.querySelector('#activity-order-btn').textContent, /earliest first/);
 });
+
+test('rows are capped, with the rest pointed at raw; an empty error key adds nothing to the summary', async () => {
+  const big = {}; for (let i = 0; i < 100; i += 1) big[`k${i}`] = i;
+  const doc = await open([entry(JSON.stringify({ ...big, error: '' }))]);
+  const body = doc.querySelector('[id^="activity-d-"]');
+  assert.equal(body.querySelectorAll('[data-activity-detail-row]').length, 40);
+  assert.match(body.textContent, /61 more in raw/);
+  assert.doesNotMatch(body.querySelector('[data-activity-detail-summary]').textContent, /error/);
+});

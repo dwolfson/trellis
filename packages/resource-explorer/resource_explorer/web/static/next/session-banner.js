@@ -14,7 +14,8 @@ export const SESSION_BANNER_ID = 'session-dead-banner';
 export function installSessionBanner(doc = document, { onDead, reload = () => globalThis.location?.reload() } = {}) {
   const show = () => {
     try { onDead?.(); } catch { /* the banner matters more than the header refresh */ }
-    if (doc.getElementById(SESSION_BANNER_ID)) return;
+    const existing = doc.getElementById(SESSION_BANNER_ID);
+    if (existing) { rearm(existing); return; }
     const bar = doc.createElement('div');
     bar.id = SESSION_BANNER_ID;
     bar.setAttribute('role', 'alert');
@@ -25,22 +26,31 @@ export function installSessionBanner(doc = document, { onDead, reload = () => gl
       <span class="text-provenance text-ink-muted" title="Your session ended on the server. Signing in again reloads this page.">session ended</span>`;
     doc.body.insertBefore(bar, doc.body.firstChild);
     bar.querySelector('[data-session-signin]').addEventListener('click', () => {
-      const btn = bar.querySelector('[data-session-signin]');
-      btn.textContent = 'Signing in…';
-      btn.disabled = true;
+      // An immediate pressed cue; never a permanent dead control (re-armed below).
+      bar.querySelector('[data-session-signin]').textContent = 'Opening…';
       const auth = globalThis.Auth;
       if (auth && typeof auth.showLogin === 'function') auth.showLogin('Your session ended. Sign in to continue.');
       else reload();
     });
   };
+  const rearm = (bar) => {
+    const btn = bar.querySelector('[data-session-signin]');
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign in'; }
+  };
+  // Only a banner that is showing owns a reload; any other sign-in in a live session leaves the page alone.
   const authed = () => {
-    doc.getElementById(SESSION_BANNER_ID)?.remove();
+    const bar = doc.getElementById(SESSION_BANNER_ID);
+    if (!bar) return;
+    bar.remove();
     reload();
   };
+  const closed = () => { const bar = doc.getElementById(SESSION_BANNER_ID); if (bar) rearm(bar); };
+  doc.addEventListener('re:login-closed', closed);
   doc.addEventListener('re:session-dead', show);
   doc.addEventListener('re:authenticated', authed);
   return () => {
     doc.removeEventListener('re:session-dead', show);
     doc.removeEventListener('re:authenticated', authed);
+    doc.removeEventListener('re:login-closed', closed);
   };
 }
