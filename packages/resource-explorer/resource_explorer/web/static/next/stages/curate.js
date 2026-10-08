@@ -217,16 +217,17 @@ export function curateSubsHtml(scope, ui) {
   </div>`;
 }
 
-function curateWritesHtml(plan, picks, subCount, containers = 0) {
+export function curateWritesHtml(plan, picks, subCount, containers = 0) {
   const w = plan.writes || {};
   const cls = w.classifications || [];
+  const written = cls.filter((c) => !c.skipped).length;
   const lines = [];
   lines.push(`<span class="tnum">${picks.length}</span> entit${picks.length === 1 ? 'y' : 'ies'}${picks.length ? ` · ${picks.map(esc).join(', ')}` : ''}`);
   lines.push(`<span class="tnum">${subCount}</span> contained asset${subCount === 1 ? '' : 's'} you chose (files and folders)${
     containers ? ` · <span class="tnum">${containers}</span> container folder${containers === 1 ? '' : 's'} to hold them` : ''}`);
   lines.push(cls.length
-    ? `<span class="tnum">${cls.length}</span> authored classification${cls.length === 1 ? '' : 's'} · ${cls.map((c) =>
-        `${esc(c.classification)} · ${esc(c.value)} · ${esc(c.author)}${c.interim ? ' · interim' : ''}${c.review ? ' · <span class="text-state-warn">flagged for review</span>' : ''}`).join(' · ')}`
+    ? `<span class="tnum">${written}</span> authored classification${written === 1 ? '' : 's'} · ${cls.map((c) =>
+        `${esc(c.classification)} · ${esc(c.value)} · ${esc(c.author)}${c.interim ? ' · interim' : ''}${c.skipped ? ' · <span data-plan-skipped class="text-ink-muted">will be skipped</span>' : ''}${c.review ? ' · <span class="text-state-warn">flagged for review</span>' : ''}`).join(' · ')}`
     : `no authored classifications — nothing set on the Enrichment pane yet`);
   lines.push(w.owner?.value
     ? `Owner · ${esc(w.owner.value)}${w.owner.interim ? ' · interim' : ''}`

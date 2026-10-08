@@ -291,8 +291,16 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     classifications = []
     for key, name in (("sensitivity", "Confidentiality"), ("criticality", "Criticality"), ("retention", "Retention")):
         f = enrichment.get(key) or {}
-        if f.get("value"):
-            classifications.append({"key": key, "classification": name, "value": f["value"],
+        shown, skipped = f.get("value"), False
+        if key == "retention":
+            from resource_explorer import retention_basis
+            rb = retention_basis.resolve(f)
+            shown = retention_basis.LABELS.get(rb["basis"], "") + (" (from existing text)" if rb["carried"] else "")
+            if not rb["basis"] and (f.get("value") or f.get("note")):
+                # the plan previews what the commit will do: the same words as the step's skip
+                shown, skipped = "skipped · no retention basis picked", True
+        if shown:
+            classifications.append({"key": key, "classification": name, "value": shown, "skipped": skipped,
                                     "author": f.get("author", ""), "set_at": f.get("set_at", ""),
                                     "interim": bool(f.get("interim")), "review": bool(f.get("review"))})
     owner = enrichment.get("owner") or {}

@@ -73,11 +73,15 @@ than trying to prove up front that it is unnecessary.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from datetime import datetime, timezone
 
 from resource_explorer.curate_plan import CONFIDENTIALITY_LEVELS, CRITICALITY_LEVELS, Curations
+from resource_explorer import retention_basis
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.secret_redaction import scrub_text
 
 log = logging.getLogger(__name__)
 
@@ -92,11 +96,11 @@ def _classification_bodies(enrichment: dict) -> list[tuple[str, str, dict]]:
     out = []
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-    def common(f):
+    def common(f, notes=None):
         return {"steward": f.get("author", "") or "", "stewardTypeName": "UserIdentity",
                 "stewardPropertyName": "userId", "source": "resource-explorer enrichment",
                 "confidence": 100,
-                "notes": f"{f.get('value','')} — set by {f.get('author','?')} on {(f.get('set_at') or '')[:10]}"
+                "notes": notes if notes is not None else f"{f.get('value','')} — set by {f.get('author','?')} on {(f.get('set_at') or '')[:10]}"
                          f"{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}"}
 
     f = enrichment.get("sensitivity") or {}
@@ -114,12 +118,49 @@ def _classification_bodies(enrichment: dict) -> list[tuple[str, str, dict]]:
                            "criticalityLevel": CRITICALITY_LEVELS.get(str(f["value"]).lower(), 0),
                            "statusIdentifier": 0, **common(f)}}))
     f = enrichment.get("retention") or {}
-    if f.get("value"):
-        out.append(("set_retention_classification", f"Retention · {f['value']}", {
+    rb = retention_basis.resolve(f)
+    if rb["basis"]:
+        # `status` is not sent: pyegeria ISSUE-22 -- the server ignores `status` on these classifications
+        # (the real key is `statusIdentifier`), and Dr.Egeria's live-confirmed Retention path sends neither.
+        label = retention_basis.LABELS[rb["basis"]]
+        notes = (f"{label}{' — ' + rb['note'] if rb['note'] else ''} — set by {f.get('author','?')} on "
+                 f"{(f.get('set_at') or '')[:10]}{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}")
+        # common() first, then the two fields this classification owns, so nothing spread can override them
+        body = {
             "class": "NewClassificationRequestBody",
-            "properties": {"class": "RetentionClassificationProperties",
-                           "retentionBasis": str(f["value"]), "status": "ACTIVE", **common(f)}}))
+            "properties": {**common(f, notes), "class": "RetentionClassificationProperties",
+                           "retentionBasis": retention_basis.ordinal(rb["basis"])}}
+        out.append(("set_retention_classification", f"Retention · {label}", body))
     return out
+
+
+NO_RETENTION_BASIS = "skipped · no retention basis picked"
+
+
+def _retention_skipped(enrichment: dict) -> bool:
+    """A retention field exists (a note, say) but no basis resolves from it. Nothing stored at all is not
+    this: that is 'not set', and the step says nothing about it."""
+    f = enrichment.get("retention") or {}
+    return bool(f) and not retention_basis.resolve(f)["basis"] and bool(f.get("note") or f.get("value"))
+
+
+def _exc_text(exc: Exception) -> tuple[str, str, str]:
+    """(short readable text, full text for the log, Egeria's reason). The reason is the response body
+    pyegeria keeps in additional_info['reason']; its message field is preferred when it parses."""
+    full = f"{type(exc).__name__}: {exc}"
+    reason = ""
+    info = getattr(exc, "additional_info", None)
+    if isinstance(info, dict) and info.get("reason"):
+        reason = str(info["reason"])
+        try:
+            parsed = json.loads(reason)
+            if isinstance(parsed, dict):
+                reason = str(parsed.get("exceptionErrorMessage") or parsed.get("userMessage") or reason)
+        except ValueError:
+            pass
+    full, reason = scrub_text(full), scrub_text(reason)
+    short = f"{reason[:200]}" if reason else full[:200]
+    return short, full, reason
 
 
 def _resurvey_plan(registry: ProjectRegistry, slug: str) -> tuple[list[str] | None, str]:
@@ -270,14 +311,18 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
     # ── 2. testimony, copied ───────────────────────────────────────────
     ctx = registry.get_context("repo", slug) or {}
     bodies = _classification_bodies(ctx.get("enrichment") or {})
-    if not bodies:
+    if not bodies and _retention_skipped(ctx.get("enrichment") or {}):
+        cur.set_step(curation_id, "classifications", "skipped", f"skipped: Retention · {NO_RETENTION_BASIS}")
+    elif not bodies:
         cur.set_step(curation_id, "classifications", "skipped", "no sensitivity, criticality or retention set on the Enrichment pane")
     elif not asset_guid:
         cur.set_step(curation_id, "classifications", "failed", "no asset to classify — the publish step did not produce one")
     else:
         cur.set_step(curation_id, "classifications", "running")
         from resource_explorer.egeria_identity import classification_client
-        done, failed = [], []
+        done, failed, skipped, more = [], [], [], []
+        if _retention_skipped(ctx.get("enrichment") or {}):
+            skipped.append(f"Retention · {NO_RETENTION_BASIS}")
         try:
             client = classification_client()
             for method, name, body in bodies:
@@ -285,11 +330,20 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                     getattr(client, method)(asset_guid, body)
                     done.append(name)
                 except Exception as exc:
-                    failed.append(f"{name}: {type(exc).__name__}: {exc}"[:200])
+                    short, full, reason = _exc_text(exc)
+                    log.warning("curation %s: %s failed for %s: %s | egeria reason: %s",
+                                curation_id, name, slug, full[:2000], reason[:2000] or "(none)")
+                    failed.append(f"{name}: {short}" + (" (full text in the log)" if reason or len(full) > 200 else ""))
+                    more.append(f"{name}\n{full[:1000]}" + (f"\nEgeria: {reason[:1000]}" if reason else ""))
         except Exception as exc:
-            failed.append(f"no classification client: {exc}"[:200])
-        cur.set_step(curation_id, "classifications", "failed" if failed else "done",
-                     " · ".join(done + failed))
+            short, full, _r = _exc_text(exc)
+            log.warning("curation %s: no classification client for %s: %s", curation_id, slug, full[:2000])
+            failed.append(f"no classification client: {short}")
+        parts = ([f"done: {', '.join(done)}"] if done else []) + \
+                ([f"skipped: {', '.join(skipped)}"] if skipped else []) + \
+                ([f"failed: {' | '.join(failed)}"] if failed else [])
+        state = "failed" if failed else ("done" if done else "skipped")
+        cur.set_step(curation_id, "classifications", state, " · ".join(parts), more="\n\n".join(more))
 
     # ── 3. what it holds ───────────────────────────────────────────────
     locators = list(sel.get("sub_resources") or [])

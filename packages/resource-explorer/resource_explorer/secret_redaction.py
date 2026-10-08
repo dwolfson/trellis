@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import urllib.parse
 from contextlib import contextmanager
@@ -54,6 +55,28 @@ def _mask(text: str, forms: list[str]) -> str:
         if f in text:
             text = text.replace(f, MASK)
     return text
+
+
+# Pattern scrubbing for text whose secret is NOT known in advance (an upstream error body, an
+# exception message): `scrub` above needs the secret itself. Added with the Curate classifications
+# step, whose error text comes from Egeria. Run it BEFORE truncating, so a cut can't leave half a token.
+_CONN_URL = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@\"']+:)[^\s@/\"']+(@)")
+_BEARER = re.compile(r"(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]+")
+_KEYED = re.compile(
+    r"(?i)(\\?[\"']?\b(?:password|passwd|pwd|pass|secret|client[_-]?secret|token|access[_-]?token|"
+    r"api[_-]?key|apikey|access[_-]?key|authorization|auth)\\?[\"']?\s*[:=]\s*)"
+    r"(?:\\?\"[^\"]*?\\?\"|'[^']*'|(?:bearer|basic)\s+[^\s,;&}\"']+|[^\s,;&}\"']+)")
+
+
+def scrub_text(text: str) -> str:
+    """Mask credentials in free text by shape: user:pw@ in a connection string, 'Bearer <token>' as a
+    unit, and key=value / "key": "value" for password, pwd, secret, token, api key, authorization.
+    A quoted value is masked whole, including spaces."""
+    if not text:
+        return text
+    text = _CONN_URL.sub(r"\1" + MASK + r"\2", text)
+    text = _KEYED.sub(lambda m: m.group(1) + MASK, text)
+    return _BEARER.sub(lambda m: m.group(1) + m.group(2) + MASK, text)
 
 
 def scrub(obj, secret: str):
