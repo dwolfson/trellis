@@ -279,7 +279,8 @@ def test_loosening_moves_everything_into_the_publish_zones(tmp_path, monkeypatch
     assert zones["report-1"] == ["shared-zone"]
 
 
-def test_a_lateral_change_moves_nothing(tmp_path):
+def test_a_lateral_change_moves_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")   # the configured case
     """Task -> Campaign is a real change with no visibility consequence. Re-zoning
     would be pointless work, and the connector rejects a no-op zone change
     anyway, so it would surface as a permissions error."""
@@ -408,6 +409,7 @@ def test_never_asked_triggers_a_zone_check_rather_than_refusing(tmp_path, monkey
         return ident._private_zone_state
 
     before = (ident.current_zones, ident.set_zone_membership, ident._private_zone_state)
+    monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")   # the configured case
     zones = {"proj-1": [ident.draft_zone()]}
     ident._private_zone_state = None                     # never asked
     ident.current_zones = lambda guid, *a, **k: list(zones.get(guid, []))

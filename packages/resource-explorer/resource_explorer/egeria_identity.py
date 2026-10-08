@@ -57,6 +57,7 @@ __all__ = [
     "current_identity",
     "current_zones",
     "draft_zone",
+    "draft_zones",
     "ensure_draft_zone_exists",
     "ensure_private_zone_exists",
     "private_zone",
@@ -77,11 +78,10 @@ __all__ = [
 ]
 
 
-#: RE's single draft zone. One zone per app, decided 2026-09-04 (project
-#: owner): per-user zones multiply fast and per-project zones are a later
-#: refinement if visibility must follow *what* is surveyed rather than *who*
-#: surveyed it. Overridable so a second RE deployment against one Egeria does
-#: not share a draft zone with the first.
+#: The name RE used to stamp by default (2026-09-04). RETIRED as a default on 2026-10-08 (project
+#: owner: DRAFT is a content status, not a zone): kept only so a deployment that wants the old
+#: behaviour can set `EXPLORER_DRAFT_ZONE=resource-explorer-draft`, and so tests can name it.
+#: `draft_zone()` never returns it unless configured.
 DRAFT_ZONE = "resource-explorer-draft"
 
 #: RE's private zone — the one that actually DENIES.
@@ -109,9 +109,22 @@ _OWNER_TYPE_NAME = "UserIdentity"
 _OWNER_PROPERTY_NAME = "userId"
 
 
-def draft_zone() -> str:
-    """RE's draft zone name (`EXPLORER_DRAFT_ZONE` overrides)."""
-    return (os.environ.get("EXPLORER_DRAFT_ZONE") or "").strip() or DRAFT_ZONE
+def draft_zone() -> Optional[str]:
+    """The draft zone this deployment CONFIGURED (`EXPLORER_DRAFT_ZONE`), or `None`.
+
+    **No default (project owner's ruling, 2026-10-08): DRAFT is a content status, not a zone.**
+    RE-authored elements carry no zone unless someone configured one on purpose. The old default,
+    `resource-explorer-draft`, named a zone nothing in the security directory defined, so every
+    element RE created sat in a zone no rule named. Writers use `draft_zones()` (a list, `[]`
+    when unconfigured) and send NO `ZoneMembership` at all when it is empty.
+    """
+    return (os.environ.get("EXPLORER_DRAFT_ZONE") or "").strip() or None
+
+
+def draft_zones() -> list[str]:
+    """`[draft_zone()]` when one is configured, else `[]` (the default: stamp nothing)."""
+    zone = draft_zone()
+    return [zone] if zone else []
 
 
 def private_zone() -> str:
@@ -540,7 +553,7 @@ def stamp_published(
     One client is built and reused across both calls: two classifications on
     one element should cost one authentication, not two.
     """
-    zones = list(zones) if zones is not None else [draft_zone()]
+    zones = list(zones) if zones is not None else draft_zones()
     client = client or classification_client(identity)
     return {
         "ownership": set_ownership(element_guid, owner, client=client),
@@ -929,6 +942,9 @@ def ensure_draft_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dict:
     not require the zone element to exist, it just cannot be navigated to.
     """
     zone = draft_zone()
+    if not zone:
+        # Default: no draft zone is configured, so there is nothing to create (2026-10-08 ruling).
+        return {"status": "none", "zone": None}
     qualified_name = _zone_qualified_name(zone)
     try:
         from pyegeria.omvs.metadata_expert import MetadataExpert

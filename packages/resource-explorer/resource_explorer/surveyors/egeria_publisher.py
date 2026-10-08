@@ -212,9 +212,9 @@ class EgeriaPublisher:
         if zone_names is not None:
             self.zone_names = zone_names
         else:
-            from resource_explorer.egeria_identity import draft_zone
+            from resource_explorer.egeria_identity import draft_zones
 
-            self.zone_names = [draft_zone()]
+            self.zone_names = draft_zones()
         #: Set per-publish by `publish()`. Empty means "not a private resource".
         self._private_owner = ""
 
@@ -1050,10 +1050,10 @@ class EgeriaPublisher:
             # investigation's to hide or to own, however private the
             # investigation is, so it gets the ordinary treatment: the
             # deployment's draft zone and the publishing identity.
-            from resource_explorer.egeria_identity import draft_zone
+            from resource_explorer.egeria_identity import draft_zones
 
             owner = identity.user_id
-            zones = [draft_zone()]
+            zones = draft_zones()
         results: dict[str, dict] = {}
         client = None
         for guid in element_guids:

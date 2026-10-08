@@ -159,11 +159,12 @@ per restart). Browsers re-log-in; the CLI caches a session (`resource-explorer l
 
 ### Governance zones
 
-Everything RE publishes lands in a **draft zone** and is promoted on curate-accept:
+RE stamps **no zone by default** (owner ruling 2026-10-08: draft is a content status, not a zone). A draft zone exists only if you configure one, and then it is promoted out of on curate-accept:
 
 ```bash
-# The zone unreviewed publishes land in. The worker creates it at startup if absent.
-EXPLORER_DRAFT_ZONE=resource-explorer-draft
+# OPTIONAL, no default. When set, unreviewed publishes land in this zone and the worker creates
+# it at startup if absent. When unset, RE sends no ZoneMembership at all.
+# EXPLORER_DRAFT_ZONE=resource-explorer-draft
 
 # Where curate-accept promotes an element. NO default (configured-only, 2026-10-07): when unset,
 # accept clears RE's draft zone and writes no zone ("zones left to Egeria"). Set it only on purpose.

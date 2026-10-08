@@ -56,3 +56,20 @@ blueprint) and their rows say so.
 8. The credential word is true only where it is: a zero-fetch analysis reads "needs no credential". The optional
    override slice is built: in-process on RE's engine, never the queue or Prefect, scrubbed, not retried.
 9. Definition coverage is derived from `re_analysis_step` through `analysis_source_steps`.
+
+## Update 2026-10-08: no default draft zone
+
+The project owner ruled that DRAFT is a content status, not a zone. The section above describes the earlier behaviour
+(materialization stamping `resource-explorer-draft`); it no longer holds by default. `egeria_identity.draft_zone()` now
+returns `None` unless `EXPLORER_DRAFT_ZONE` is set, and `draft_zones()` returns `[]` or that one zone. Every writer
+(materialiser, publisher, referenced-asset stamp, `stamp_published`) sends NO `ZoneMembership` call when the list is empty;
+ownership is still stamped. The private zone is unchanged and still wins for a private investigation. The worker runs
+`ensure_draft_zone_exists()` only when a draft zone is configured, and logs `draft zone: none (default)` or the
+configured name at start. The configured-only rule for `EXPLORER_PUBLISH_ZONES` stands. Accept with nothing configured
+finds no zone on an unzoned element and reports "already unzoned" without a clear call.
+
+Reason: nothing in the security directory defined `resource-explorer-draft`, so every RE-created element sat in a zone no
+rule named. UNVERIFIED LIVE: what zones the platform gives an unzoned create (a blueprint created without RE zones came
+out in `egeria-runtime`, which only the runtimeManager group may edit). That is to be answered by a throwaway create after
+the Egeria reset; RE does not decide it by stamping an undefined zone.
+

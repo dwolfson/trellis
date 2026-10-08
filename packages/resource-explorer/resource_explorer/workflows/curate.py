@@ -157,7 +157,7 @@ def promote_to_publish_zones(guid: str) -> dict:
         clear_zone_membership,
         configured_publish_zones,
         current_zones,
-        draft_zone,
+        draft_zones,
         private_zone,
         read_zones,
         set_zone_membership,
@@ -181,7 +181,7 @@ def promote_to_publish_zones(guid: str) -> dict:
         if not before:
             return {"status": "already_unzoned", "guid": guid, "zones": [], "from_zones": [],
                     "words": ZONES_LEFT_TO_EGERIA_WORDS}
-        if before != [draft_zone()]:
+        if before != draft_zones():
             # Not RE's own stamp: the element may be one RE adopted (found by qualifiedName) that
             # someone else placed in a zone. Clear ONLY RE's draft zone; never strip another zone.
             return {"status": "left_as_is", "guid": guid, "zones": before, "from_zones": before,
@@ -222,7 +222,7 @@ def promote_to_publish_zones(guid: str) -> dict:
     # The write is the configured zones UNIONED with the foreign ones (RE's draft zone goes; nothing
     # else does). Chosen over "leave it and say so" because accept still has to make the element
     # visible in the configured zone, and the union costs the foreign zone nothing.
-    foreign = [z for z in (already or []) if z not in {draft_zone(), private_zone()}]
+    foreign = [z for z in (already or []) if z not in {*draft_zones(), private_zone()}]
     zones = list(dict.fromkeys([*foreign, *zones]))
     ok = set_zone_membership(guid, zones)
     if not ok:

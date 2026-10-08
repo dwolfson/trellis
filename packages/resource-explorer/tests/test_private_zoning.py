@@ -544,7 +544,7 @@ def test_the_shared_repo_asset_is_never_zoned_private():
     An investigation zones what it PRODUCED (the report, and its annotations by
     anchor), never what it REFERENCES.
     """
-    from resource_explorer.egeria_identity import draft_zone, private_zone
+    from resource_explorer.egeria_identity import draft_zones, private_zone
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
     pub = EgeriaPublisher(platform_url="https://fake", registry=_Reg(owner="alice"))
@@ -565,7 +565,7 @@ def test_the_shared_repo_asset_is_never_zoned_private():
 
     assert seen["report-guid"]["zones"] == [private_zone(), "alice"]
     assert seen["report-guid"]["owner"] == "alice"
-    assert seen["asset-guid"]["zones"] == [draft_zone()], (
+    assert seen["asset-guid"]["zones"] == draft_zones() == [], (
         f"the shared repo asset was zoned {seen['asset-guid']['zones']} — that hides "
         "a public repo from everyone else")
     assert seen["asset-guid"]["owner"] != "alice", (
