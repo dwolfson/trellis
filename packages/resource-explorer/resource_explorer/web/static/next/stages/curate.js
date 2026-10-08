@@ -1418,24 +1418,28 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirm
       if (st) st.innerHTML = `<span class="text-accent-ink">${words}</span>`;
     }
   };
-  if (!confirmAlways && (verdict !== 'accepted' || count <= 1)) { go(); return; }
   if (confirmAlways && count < 1) return;
+  if (!confirmAlways) {
+    if (verdict !== 'accepted' || count <= 1) { go(); return; }   // rejecting creates nothing; one leaf needs no preview
+  }
   const scopeLabel = scopes.length > 1
     ? `${scopes.length} branches selected — ${count} scope${count === 1 ? '' : 's'} total`
     : `${scopes.join(', ')} · ${count} component${count === 1 ? '' : 's'}`;
-  const el = openDialog(accepting ? 'Accept at the branch' : 'Reject at the branch', scopeLabel);
-  const body = el.querySelector('#wl-detail-body');
   if (!accepting) {
-    body.innerHTML = `
+    const rel = openDialog('Reject at the branch', scopeLabel);
+    const rbody = rel.querySelector('#wl-detail-body');
+    rbody.innerHTML = `
     <p class="text-caveat text-ink"><span class="tnum">${count}</span> undecided component${count === 1 ? '' : 's'} will be recorded as rejected. Nothing is created in Egeria.</p>
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
       <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Reject ${count}</button>
       <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
     </div>`;
-    body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
+    rbody.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
     return;
   }
+  const el = openDialog('Accept at the branch', scopeLabel);
+  const body = el.querySelector('#wl-detail-body');
   body.innerHTML = `
     <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
       <span class="tnum">${Math.max(0, count - exists)}</span> will be created as software components in Egeria — the exact Egeria type is not yet pinned${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
