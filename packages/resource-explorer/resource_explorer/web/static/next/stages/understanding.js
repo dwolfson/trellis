@@ -386,6 +386,24 @@ export function bindCollapsibles(root) {
   });
 }
 
+const DB_SECTIONS = [['db-now', 'Now'], ['db-time', 'Over time'], ['db-views', 'Views'], ['db-survey-history', 'Survey history']];
+
+/** An index control was pressed: open the folded section that holds the target (and remember it),
+ *  scroll the target into view, and mark the control as the one in use (accent underline, from aria-pressed). */
+function gotoTarget(host, control, target) {
+  host.querySelectorAll('[data-section-index] button, [data-chart-index] button').forEach((b) =>
+    b.setAttribute('aria-pressed', b === control ? 'true' : 'false'));
+  if (!target) return;
+  const sec = target.closest('details[data-collapsible]');
+  if (sec && !sec.open) {
+    sec.open = true;
+    const cue = sec.querySelector(':scope > summary [data-collapse-cue]');
+    if (cue) cue.innerHTML = cueWords(true);
+    writeCollapsed(sec.dataset.collapsible, false);
+  }
+  if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 /** Understanding on a database. Draws into `#understanding-host`; a missing
  *  host throws (the caller writes the message), it never returns silently. */
 export async function renderDatabaseUnderstanding(slug) {
@@ -399,7 +417,12 @@ export async function renderDatabaseUnderstanding(slug) {
   const h3 = (t) => `<h3 class="m-0 font-heading text-name font-normal">${t}</h3>`;
   // Order: Now, Over time, Views, and the survey history LAST. Each folds.
   host.innerHTML = `
-    <div id="chart-index" class="mb-s3 flex flex-wrap gap-s2" data-chart-index></div>
+    <div class="mb-s3" data-index-bar>
+      <div class="flex flex-wrap items-baseline gap-s2" data-section-index aria-label="Sections on this page">${
+  DB_SECTIONS.map(([id, label]) => `<button type="button" data-goto="${id}" aria-pressed="false"
+        class="wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink">${esc(label)}</button>`).join('')}</div>
+      <div id="chart-index" class="mt-s2 flex flex-wrap items-baseline gap-s2" data-chart-index aria-label="Charts on this page"></div>
+    </div>
     ${collapsibleSectionHtml('db-now', h3('Now'),
     '<span class="text-caveat text-ink-muted" data-now-header>reading the latest survey…</span>',
     `<div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'now').map(slot).join('')}</div>`,
@@ -418,6 +441,10 @@ export async function renderDatabaseUnderstanding(slug) {
   bindCollapsibles(host);
   const cards = {};
   const chips = {};
+  host.querySelectorAll('[data-section-index] button[data-goto]').forEach((b) => {
+    b.addEventListener('click', () => gotoTarget(host, b,
+      host.querySelector(`details[data-collapsible="${b.dataset.goto}"]`)));
+  });
   const chipsEl = host.querySelector('[data-chart-index]');
   for (const spec of DB_CHARTS) {
     const card = cardShell(spec);
@@ -425,9 +452,20 @@ export async function renderDatabaseUnderstanding(slug) {
     cards[spec.kind] = card;
     // The per-kind list: every chart this database has, each with the state
     // word the server gave it. A kind with no route says so in its entry.
-    const chip = document.createElement('span');
+    // A wired chart is a real control (same look as the repo page's index); one with no route
+    // is muted text with no border, so it cannot be mistaken for something that responds.
+    const wired = !!spec.route;
+    const chip = document.createElement(wired ? 'button' : 'span');
     chip.dataset.chartChip = spec.kind;
-    chip.className = 'rounded-sm border border-rule-strong px-2 py-[3px] text-caveat text-ink-muted';
+    if (wired) {
+      chip.type = 'button';
+      chip.setAttribute('aria-pressed', 'false');
+      chip.className = 'wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink';
+      chip.addEventListener('click', () => gotoTarget(host, chip, card));
+    } else {
+      chip.className = 'px-2 py-[3px] text-caveat text-ink-muted';
+      chip.title = 'Activity per table has no series serving it to this screen yet. It is not a statement about this database.';
+    }
     chip.textContent = `${spec.title} · ${spec.route ? '…' : 'not wired up yet'}`;
     chipsEl.appendChild(chip);
     chips[spec.kind] = chip;
