@@ -94,7 +94,7 @@ class TestAcceptRoundTripsThroughTheNewReader:
             def __init__(self, registry=None):
                 self.registry = registry
 
-            def materialize_blueprint_element(self, entity_type, slug, perspective, cluster_name, *, display_name, oversized=False, kind_slot='', verify_cached=False):
+            def materialize_blueprint_element(self, entity_type, slug, perspective, cluster_name, *, display_name, oversized=False, verify_cached=False, **_):
                 guid = "bp-guid-1"
                 qn = f"SolutionBlueprint::{entity_type}::{slug}::{perspective}::{cluster_name}"
                 self.registry.record_materialized_blueprint(entity_type, slug, perspective, cluster_name, qn, guid)

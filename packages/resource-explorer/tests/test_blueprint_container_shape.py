@@ -149,7 +149,7 @@ class FakeEgeria:
         self.bp_members: list[str] | None = []           # None = the blueprint read has no member key
 
     # AutomatedCuration
-    def get_guid_for_name(self, qn):
+    def get_guid_for_name(self, qn, **kw):
         self.calls.append(("get_guid_for_name", qn))
         g = self.qn_to_guid.get(qn)
         return [g] if g else []
@@ -166,7 +166,9 @@ class FakeEgeria:
         self.calls.append(("get_solution_blueprint_by_guid", guid))
         if guid not in self.blueprints:
             return "No elements found"
-        out = {"elementHeader": {"guid": guid}}
+        qn = next((q for q, g in self.qn_to_guid.items() if g == guid), "")
+        out = {"elementHeader": {"guid": guid, "type": {"typeName": "SolutionBlueprint"}},
+               "properties": {"qualifiedName": qn, "displayName": self.blueprints[guid].get("displayName", "")}}
         if self.bp_members is not None:
             out["collectionMembers"] = [{"relatedElement": {"elementHeader": {"guid": g}}} for g in self.bp_members]
         return out
@@ -569,7 +571,7 @@ class TestNeverRecreateOnAnUnreadableAnswer:
         _seed(registry)
         fake = FakeEgeria()
 
-        def boom(qn):
+        def boom(qn, **kw):
             raise TimeoutError("timed out")
         fake.get_guid_for_name = boom
         out = accept(fake)
