@@ -41,7 +41,11 @@ _NOT_A_PATH = {"", ".", "*"}
 def _components(registry: ProjectRegistry, slug: str) -> list[dict]:
     from resource_explorer.surveyors.repo_survey_definition_adapter import _architecture_recovery_results
     res = _architecture_recovery_results(registry, slug, max_depth=None) or {}
-    return [c for c in (res.get("components") or []) if (c.get("path") or "") not in _NOT_A_PATH]
+    comps = [c for c in (res.get("components") or []) if (c.get("path") or "") not in _NOT_A_PATH]
+    # A person's reclassification moves a node between the components and the runtime dependencies at once
+    # (DESIGN-BLUEPRINT-NODE-ADMISSION.md), without waiting for the next survey.
+    from resource_explorer import node_admission
+    return node_admission.apply_to_tree_components(registry, slug, comps)
 
 
 def _assign_ports(comps: list[dict], ports_by_service: dict[str, list[dict]]) -> dict[str, list[dict]]:
@@ -248,6 +252,12 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
                     "proposals": c.get("proposals") or [],
                     "agreement": bool(c.get("agreement")),
                     "withdrawn_by": c.get("withdrawn_by") or [],
+                    # Whose boundary this is: the class, the short "from <file>" / "image <name>" sentence,
+                    # and the person's reclassification with its reason when there is one.
+                    "admission": c.get("admission") or "built_here",
+                    "admission_evidence": c.get("admission_evidence") or "",
+                    "reclassified": c.get("reclassified"),
+                    "reclassification_note": c.get("reclassification_note") or "",
                     # What accepting did to the element's zones, from the promotion's proof row.
                     "promotion": promos.get(p)})
     return out

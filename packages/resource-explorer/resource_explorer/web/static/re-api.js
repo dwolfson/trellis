@@ -1229,12 +1229,21 @@ export const getAnalysisResults = (slug, analysisId) =>
 export const listSubResources = (slug) =>
   get(`/api/projects/${encodeURIComponent(slug)}/sub-resources`);
 
-/** Track the selected sub-resources locally, and (by default) publish them
- *  to Egeria as real FileFolder/DataFile assets in the same action.
- *  `publishToEgeria: false` is the sandbox-mode escape hatch. */
-export const catalogSubResources = (slug, items, publishToEgeria = true) =>
-  post(`/api/projects/${encodeURIComponent(slug)}/sub-resources/catalog`,
-       { items, publish_to_egeria: publishToEgeria });
+/** The selection record for what this repository publishes (brief 2a): one row per candidate (and per
+ *  container folder) with its current choice, who and when, what is published, and the manifest (counts
+ *  from the record). Both panes draw from this one answer. */
+export const getScopeEvents = (slug) => get(`/api/projects/${encodeURIComponent(slug)}/scope-events`);
+
+/** Append choices to the record, one event per row ({locator, kind, choice, action, source, proposal_rule}),
+ *  and get back the re-read view. A choice is not a publish: nothing here reaches Egeria. */
+export const postScopeEvents = (slug, events) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/scope-events`, { events });
+
+/** Publish exactly the items the record says are chosen (plus the container folders a file needs), once each.
+ *  The request names nothing: the server reads the record. (The old publish_to_egeria=false sandbox flag is
+ *  retired; a choice without a publish is the record itself.) */
+export const catalogSubResources = (slug) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/sub-resources/catalog`, {});
 
 /** Reversible -- removes only RE's local tracking record, never anything
  *  already published to Egeria. `locator` is a query param so the repo's
@@ -1673,6 +1682,10 @@ export const getComponentTree = (slug, prefix = '') =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/tree?prefix=${encodeURIComponent(prefix)}`);
 export const getComponentLeaves = (slug, branch) =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/leaves?branch=${encodeURIComponent(branch)}`);
+/** A person moves a node between the blueprint and the runtime dependencies, with a reason
+ *  (DESIGN-BLUEPRINT-NODE-ADMISSION.md). `to` is 'built_here' or 'referenced_only'. */
+export const postNodeReclassify = (slug, scopeLocator, to, reason) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/components/reclassify`, { scope_locator: scopeLocator, to, reason });
 /** One verdict row per scope; accepted ones queue their materialisation. */
 export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });

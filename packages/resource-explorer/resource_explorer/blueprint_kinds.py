@@ -16,7 +16,10 @@ import re
 
 #: kind key -> the word in the name. A key is an architecture perspective of the recovery
 #: (`clustering.Cluster.perspective`) read as a kind of blueprint.
-KIND_WORDS = {"deployment": "Deployment", "build": "Build", "logical": "Logical"}
+KIND_WORDS = {"deployment": "Deployment", "build": "Build", "logical": "Logical",
+              # Not a recovery perspective: the services a repository RUNS but does not build, as other
+              # projects' deployment units (DESIGN-BLUEPRINT-NODE-ADMISSION.md).
+              "environment": "Environment Deployment"}
 #: Perspective -> kind key. The recovery's "dev" (dev/devops) reading is the BUILD reading.
 PERSPECTIVE_KIND = {"deployment": "deployment", "dev": "build", "logical": "logical"}
 #: The kinds that are drawn today. Build and Logical are listed, honestly, as not yet drawn.
@@ -67,7 +70,8 @@ def qualified_name_slot(perspective: str) -> str:
 
 
 def blueprint_kind_rows(*, label: str, blueprints: list[dict], artifact_count: int,
-                        build_files: list[str], logical_unconfirmed: int | None) -> list[dict]:
+                        build_files: list[str], logical_unconfirmed: int | None,
+                        environment_services: int = 0, environment_linked: int = 0) -> list[dict]:
     """The selector's rows, one per kind. Each says what it is read from and where it stands:
 
     * Deployment: drawn when the recovery proposed any deployment-reading blueprint
@@ -75,6 +79,10 @@ def blueprint_kind_rows(*, label: str, blueprints: list[dict], artifact_count: i
     * Build: "from <files> · M modules · not yet drawn". Listed, not drawn (a later slice).
     * Logical: "needs your confirmation of K components · not yet drawn" (K is the count of logical
       components with no verdict; `None` when RE cannot say).
+
+    * Environment Deployment: offered ONLY when referenced-only services exist (the repository runs
+      other projects' images): "N services run other projects' images · M linked to the repository that
+      builds them". Its services are listed under Dependencies · runtime; it is not drawn as a diagram.
 
     A count RE does not have is not given as zero: the sentence omits it."""
     by_kind: dict[str, list[dict]] = {}
@@ -112,4 +120,13 @@ def blueprint_kind_rows(*, label: str, blueprints: list[dict], artifact_count: i
         "source": (f"needs your confirmation of {logical_unconfirmed} component"
                    f"{'' if logical_unconfirmed == 1 else 's'}") if logical_unconfirmed is not None
                   else "needs your confirmation of its components"})
+    if environment_services > 0:
+        n = environment_services
+        rows.append({
+            "kind": "environment", "name": blueprint_kind_name(label, "environment"), "drawn": False,
+            "state": "proposed", "perspective": "environment", "units": n, "artifacts": 0,
+            "blueprints": 0, "accepted": 0,
+            "source": (f"{n} service{'' if n == 1 else 's'} run{'s' if n == 1 else ''} other projects' images · "
+                       f"{environment_linked} linked to the repository that builds "
+                       f"{'it' if n == 1 else 'them'} · listed under Dependencies · runtime")})
     return rows

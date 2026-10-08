@@ -3114,6 +3114,16 @@ function setRailOpen(open, { persist = true } = {}) {
 
 let _restoringUrl = false;
 
+/** Go to the Curate stage (where the Publish band and the commit table live). Used by a blocker that says
+ *  "publish the repository first →" from another pane. */
+export function openCurateStage() {
+  state.stage = 'curate';
+  state.subTab = 'questions';
+  writeUrl();
+  renderIntentNav();
+  loadPane();
+}
+
 /** Switch to the Investigation stage on the current investigation's detail, for the publish gate's
  *  "Bind this investigation to a project" (G1). The header's own "Open Investigation →" handler keeps its
  *  inline body (a source-scanning test pins it). With no current investigation the stage still opens:
