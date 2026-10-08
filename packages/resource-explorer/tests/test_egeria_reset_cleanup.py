@@ -117,6 +117,58 @@ def seed(reg):
         measured_at="", measured_json="{}", author="me", changed_at="2026-10-01")
     with reg._conn() as c:
         assert c.execute("SELECT COUNT(*) AS n FROM catalogue_scope_events").fetchone()["n"] == 1
+    seed_every_table(reg)
+
+
+def seed_generic(reg, table, **over):
+    """ONE realistic row built from the table's real columns (PRAGMA table_info of the registry's own CREATE
+    TABLE): every column gets a non-empty value by its declared type, so blanking ANY column is visible."""
+    with reg._conn() as c:
+        info = c.execute(f"PRAGMA table_info({table})").fetchall()
+        for fk in c.execute(f"PRAGMA foreign_key_list({table})").fetchall():     # a foreign key points at a real parent
+            parent = c.execute(f"SELECT {fk['to']} AS k FROM {fk['table']} ORDER BY 1 LIMIT 1").fetchone()
+            assert parent is not None, f"no {fk['table']} row for {table}.{fk['from']} to reference"
+            over.setdefault(fk["from"], parent["k"])
+    assert info, f"{table} does not exist"
+    cols = {}
+    for col in info:
+        name, typ = col["name"], (col["type"] or "").upper()
+        if name in over:
+            cols[name] = over[name]
+        elif col["pk"] and "INT" in typ and sum(1 for x in info if x["pk"]) == 1:
+            continue                                      # the autoincrement id
+        elif "INT" in typ:
+            cols[name] = 1
+        elif "REAL" in typ or "FLOAT" in typ:
+            cols[name] = 1.5
+        else:
+            cols[name] = f"v-{name}"
+    ins(reg, table, **cols)
+    with reg._conn() as c:
+        assert c.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] >= 1, f"seed for {table} did not land"
+
+
+#: Tables the byte-identical guarantee covers beyond KEEP_TABLES: enrichment, tags, feedback, dispositions.
+# database_surveys is checked by the only-cleared-columns test (its report guid is cleared; the rest is kept).
+EXTRA_KEEP = ["resource_context", "resource_tags", "resource_feedback", "repo_dispositions"]
+#: A KEEP table that cannot be seeded cheaply would be listed HERE by name, with the reason; asserted empty below
+#: so nothing is waved through. (None today: every table is seedable from its own column list.)
+UNSEEDABLE: dict[str, str] = {}
+
+
+def seed_every_table(reg):
+    """One realistic row in every KEEP table and in every table the script clears (columns not yet seeded by
+    hand above). Each seed asserts it landed."""
+    kept = [t for t in KEEP_TABLES + EXTRA_KEEP if t not in UNSEEDABLE]
+    cleared = [spec[0] for spec in S.CLEAR_SPECS] + [spec[0] for spec in S.DELETE_SPECS]
+    slugs = {"database_surveys": {"database_slug": "db1"}, "project_analysis_findings": {"project_slug": "repo1"},
+             "project_analysis_metrics": {"project_slug": "repo1"}}
+    seed_generic(reg, "file_systems", slug="fs1", egeria_asset_guid="GUID-fs")
+    seed_generic(reg, "filesystem_surveys", filesystem_slug="fs1", egeria_report_guid="GUID-fsr")
+    for t in dict.fromkeys(kept + cleared):
+        if t in ("file_systems", "filesystem_surveys"):
+            continue
+        seed_generic(reg, t, **slugs.get(t, {}))        # an extra row even where one exists: realistic, all columns set
 
 
 def _has_table(reg, t):
@@ -177,7 +229,7 @@ def test_dry_run_writes_nothing_and_prints_a_plan_and_a_hash(env):
     plan = json.loads(Path(f).read_text())["plan"]
     assert "password" not in json.dumps(plan).lower() and "sqlite:///" not in Path(f).read_text()
     by = {a["id"]: a for a in plan["actions"]}
-    assert by["clear:projects"]["count"] == 1 and by["clear:databases"]["count"] == 1
+    assert by["clear:projects"]["count"] == 2 and by["clear:databases"]["count"] == 2   # the hand seed + the generic row
     assert by["supersede:egeria_outbox"]["count"] == 2          # pending + failed only
     assert plan["dead_outbox_untouched"] and "dead before the reset · untouched" in cap.text
     assert by["marker:catalogue_commit_proofs"]["count"] == 2   # db1 and repo1
@@ -288,19 +340,35 @@ def test_no_registry_url_is_a_refusal(monkeypatch):
 # ── apply ────────────────────────────────────────────────────────────────────
 
 KEEP_TABLES = ["architecture_component_verdicts", "catalogue_scope_events", "catalogue_scope_baselines",
-               "resource_scope_events", "native_survey_annotations", "step_runs", "database_surveys",
+               "resource_scope_events", "native_survey_annotations", "step_runs",
                "project_analysis_findings", "project_analysis_metrics", "resource_journal", "project_groups",
                "work_list_members", "resource_curator_notes"]
 
 
 def test_every_kept_table_exists_so_the_byte_identical_check_cannot_be_vacuous(env):
-    missing = [t for t in KEEP_TABLES if not _has_table(env["reg"], t)]
+    missing = [t for t in KEEP_TABLES + EXTRA_KEEP if not _has_table(env["reg"], t)]
     assert missing == [], missing
+    assert UNSEEDABLE == {}, UNSEEDABLE
+    for t in KEEP_TABLES + EXTRA_KEEP:
+        with env["reg"]._conn() as c:
+            assert c.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"] >= 1, f"{t} holds no seeded row"
+
+
+def test_only_the_cleared_columns_of_the_cleared_tables_changed(env):
+    applied(env)
+    before, after = env["before_all"], dump(env["reg"])
+    for table, keys, setcols, trig in S.CLEAR_SPECS:
+        assert before[table], f"{table} has no seeded row"
+        assert len(after[table]) == len(before[table]), table
+        for b, a in zip(before[table], after[table]):
+            assert {k: v for k, v in a.items() if k not in setcols} == {k: v for k, v in b.items() if k not in setcols}, table
+        assert any(b != a for b, a in zip(before[table], after[table])), f"{table}: nothing was cleared"
 
 
 def applied(env):
     _, _, h, f = dry(env, "--old-collection-id", "OLD", "--new-collection-id", "NEW")
-    kept_before = dump(env["reg"], KEEP_TABLES)
+    kept_before = dump(env["reg"], KEEP_TABLES + EXTRA_KEEP)
+    env["before_all"] = dump(env["reg"])
     proofs_before = dump(env["reg"], ["catalogue_commit_proofs"])["catalogue_commit_proofs"]
     outbox_before = {r["qualified_name"]: r for r in dump(env["reg"], ["egeria_outbox"])["egeria_outbox"]}
     argv = ["--reset-at", RESET, "--out-dir", str(env["dir"]), "--old-collection-id", "OLD",
@@ -317,7 +385,7 @@ def test_apply_clears_pointers_and_keeps_decisions_history_and_proofs(env):
     reg = env["reg"]
     d = dump(reg)
     # pointers cleared, rows kept
-    assert d["projects"][0]["egeria_asset_guid"] in (None, "") and len(d["projects"]) == 2
+    assert all(r["egeria_asset_guid"] in (None, "") for r in d["projects"]) and len(d["projects"]) == 3
     assert d["databases"][0]["egeria_asset_guid"] == ""
     assert d["sub_resources"][0]["egeria_guid"] == "" and d["sub_resources"][0]["cataloged_at"] == "2026-10-01T00:00:00"
     ctx = {r["entity_slug"]: r for r in d["entity_egeria_project_context"]}
@@ -335,7 +403,7 @@ def test_apply_clears_pointers_and_keeps_decisions_history_and_proofs(env):
     keys = {r["key"] for r in d["app_settings"]}
     assert keys == {"repo_survey_step::repo1::x"}
     # decisions and history byte-identical
-    assert dump(reg, KEEP_TABLES) == kept_before
+    assert dump(reg, KEEP_TABLES + EXTRA_KEEP) == kept_before
     # proofs: every old row identical, plus one marker per resource
     proofs = d["catalogue_commit_proofs"]
     assert proofs[:len(proofs_before)] == proofs_before
@@ -425,15 +493,16 @@ def test_more_claim_prefixes_and_notification_guid_are_cleared(env):
     for k in ("egeria_server_guid::h", "egeria_server_cred_slug::h", "egeria_asset_guid::x"):
         reg.set_setting(k, "v")
     before = dump(reg, ["notification_subscriptions"])["notification_subscriptions"]
-    assert len(before) == 1 and before[0]["egeria_notification_type_guid"] != ""
+    assert len(before) == 2 and all(r["egeria_notification_type_guid"] != "" for r in before)
     applied(env)
     d = dump(reg)
     assert {r["key"] for r in d["app_settings"]} == {"repo_survey_step::repo1::x"}
     after = d["notification_subscriptions"]
-    assert len(after) == 1 and after[0]["egeria_notification_type_guid"] == ""
-    # every other column of the row is untouched (including the qualified-name mirror)
-    assert {k: v for k, v in after[0].items() if k != "egeria_notification_type_guid"} == \
-        {k: v for k, v in before[0].items() if k != "egeria_notification_type_guid"}
+    assert len(after) == 2 and all(r["egeria_notification_type_guid"] == "" for r in after)
+    # every other column of every row is untouched (including the qualified-name mirror)
+    for a, b in zip(after, before):
+        assert {k: v for k, v in a.items() if k != "egeria_notification_type_guid"} == \
+            {k: v for k, v in b.items() if k != "egeria_notification_type_guid"}
 
 
 def test_missing_work_lists_refuses_with_the_sentence_and_the_flag_skips_and_records(env):
