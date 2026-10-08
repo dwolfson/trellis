@@ -78,23 +78,66 @@ _CONN_URL = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@\"']+:)(?!\d+/)[^\s\"']*@"
 _COOKIE = re.compile(r"(?i)(\b(?:set-)?cookie\s*[:=]\s*)[^\r\n]+")
 _KEYNAME = (r"(?:[\w.-]*(?:password|passwd|pwd|passphrase|secret|token|credential|authorization|apikey|api[_-]?key|"
             r"(?:access|private|signing|encryption|client|auth)[_-]?key|_key)s?[\w-]*|[\w.-]*(?-i:[a-z]Key)s?|auth|pass)")
-_VALUE = (r"(?:\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|\[[^\]]*\]|"
+_VALUE = (r"(?:\\\"(?:(?!\\\").)*(?:\\\"|$)|\"(?:[^\"\\\n]|\\.)*(?:\"|$)|'(?:[^'\\\n]|\\.)*(?:'|$)|\[[^\]\n]*\]|"
           r"(?:bearer|basic|token)\s+[^\s,;&}\"']+|[^\s,;&}\"']+)")
-_KEYED = re.compile(r"(?i)(?<![\w.-])(\\?[\"']?" + _KEYNAME + r"\\?[\"']?\s*[:=]\s*)" + _VALUE)
+_NAMED = r"(?i)(?<![\w.-])(\\?[\"']?" + _KEYNAME + r"\\?[\"']?\s*[:=]\s*)"
+_KEYED = re.compile(_NAMED + _VALUE, re.M)
+_KEYED_OBJ = re.compile(_NAMED + r"(?=\{)")
+# Postgres DETAIL: Key (api_key)=(sk-123) already exists.
+_PG_KEY = re.compile(r"(?i)(\bKey\s*\([^)\n]*?(?:password|passwd|pwd|secret|token|credential|api[_-]?key|_key)[^)\n]*\)\s*=\s*)\([^)\n]*\)")
 _BEARER = re.compile(r"(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=-]{6,}")
 _BASIC_TOKEN = re.compile(r"(?i)\b(basic|token)(\s+)(?=[A-Za-z0-9._~+/=-]*[0-9=])[A-Za-z0-9._~+/=-]{8,}")
+# Well-known bare credential shapes: AWS access key id, sk-... API keys, GitHub tokens.
+_BARE = re.compile(r"\b(?:AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,})\b")
+_OBJ_SCAN_LIMIT = 4000
+
+
+def _mask_objects(text: str) -> str:
+    """name: {...} -- the whole object is the value. Balanced braces, a bounded scan; unbalanced masks
+    to the end of the line (a truncated body)."""
+    out, pos = [], 0
+    for m in _KEYED_OBJ.finditer(text):
+        if m.start() < pos:
+            continue
+        i, depth = m.end(), 0
+        end = min(len(text), i + _OBJ_SCAN_LIMIT)
+        j = i
+        while j < end:
+            c = text[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+        else:
+            nl = text.find("\n", i)
+            j = len(text) if nl == -1 else nl
+        out.append(text[pos:m.end()] + MASK)
+        pos = j
+    return "".join(out) + text[pos:] if out else text
 
 
 def scrub_text(text: str) -> str:
     """Mask credentials in free text by SHAPE. BEST-EFFORT: see the rules above; it does not understand
-    prose and will miss a secret that has no recognisable shape."""
+    prose and will miss a secret that has no recognisable shape.
+
+    Choices worth knowing: an UNQUOTED value ends at whitespace (password=a b leaves ' b'; quote it and the
+    whole value goes); a quoted value that never closes (a truncated body) is masked to the end of the line;
+    'Bearer' masks 6+ characters only, because a shorter word after it is usually prose ('Bearer auth failed');
+    a base64 'Basic <x>' with no digit or '=' is not recognised."""
     if not text:
         return text
     text = _CONN_URL.sub(lambda m: m.group(1) + MASK + "@", text)
     text = _COOKIE.sub(lambda m: m.group(1) + MASK, text)
+    text = _PG_KEY.sub(lambda m: m.group(1) + "(" + MASK + ")", text)
+    text = _mask_objects(text)
     text = _KEYED.sub(lambda m: m.group(1) + MASK, text)
     text = _BEARER.sub(lambda m: m.group(1) + m.group(2) + MASK, text)
-    return _BASIC_TOKEN.sub(lambda m: m.group(1) + m.group(2) + MASK, text)
+    text = _BASIC_TOKEN.sub(lambda m: m.group(1) + m.group(2) + MASK, text)
+    return _BARE.sub(MASK, text)
 
 
 def scrub(obj, secret: str):

@@ -457,3 +457,106 @@ def test_page_and_python_agree_on_edge_inputs(tmp_path):
     assert rb.resolve({"value": "6.0"}) == {"basis": "PROJECT_LIFETIME", "note": "6.0", "carried": True}
     assert rb.resolve({"value": "00"})["basis"] == "PROJECT_LIFETIME"
     assert rb.resolve({"value": "  "})["basis"] == "" and rb.resolve({"value": None})["basis"] == ""
+
+
+# ── scrub_text, third round ─────────────────────────────────────────────────────────────────────────
+THIRD = [
+    ('password: "unterminated body that was cut', "unterminated"),
+    ('{"password": "cut off here', "cut off"),
+    ("DETAIL:  Key (api_key)=(sk-123abc) already exists.", "sk-123abc"),
+    ("Key (client_secret, id)=(s3cr3t, 7) already exists", "s3cr3t"),
+    ('"credential": {"user":"u","value":"p4ss"} tail', "p4ss"),
+    ('"credential": {"a": {"b": "deep9"}, "c": 1} tail', "deep9"),
+    ("auth: {unbalanced p4ss", "p4ss"),
+    ("key AKIAABCDEFGHIJKLMNOP leaked", "AKIAABCDEFGHIJKLMNOP"),
+    ("used sk-proj_abcdef123456 here", "sk-proj_abcdef123456"),
+    ("ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2", "a1B2c3D4e5F6g7H8i9J0k1L2"),
+]
+
+
+@pytest.mark.parametrize("text,secret", THIRD)
+def test_scrub_text_third_round(text, secret):
+    assert secret not in scrub_text(text), scrub_text(text)
+
+
+def test_object_value_is_masked_as_a_unit_and_the_tail_survives():
+    assert scrub_text('"credential": {"user":"u","value":"p4ss"} tail') == '"credential": *** tail'
+    assert scrub_text("Key (id)=(5) already exists") == "Key (id)=(5) already exists"      # not a credential name
+
+
+def test_documented_limits():
+    # an UNQUOTED value ends at whitespace; a quoted one is masked whole
+    assert scrub_text("password=a b") == "password=*** b"
+    assert scrub_text('password="a b"') == "password=***"
+    # Bearer masks 6+ characters only ('Bearer auth failed' is prose); a base64 Basic with no digit or '=' is not seen
+    assert scrub_text("Bearer auth failed") == "Bearer auth failed"
+    assert "QWxhZGRpbg" in scrub_text("Basic QWxhZGRpbg")
+
+
+def test_a_quoted_value_does_not_run_across_lines():
+    out = scrub_text('password: "cut\nnext line stays and so does password-free text')
+    assert "next line stays" in out and "cut" not in out
+
+
+@pytest.mark.parametrize("text", [
+    "a task-force risk-based review", "skip-level sk- only", "AKIA short", "ghp_ short",
+    "Key (id)=(5) already exists", "the card was declined: reason=insufficient funds",
+])
+def test_negative_controls_round_three(text):
+    assert scrub_text(text) == text
+
+
+# ── the run boundary covers every handler ───────────────────────────────────────────────────────────
+def test_run_outcome_scrubs_its_error_whatever_handler_built_it():
+    from resource_explorer.run_queue import RunOutcome
+    out = RunOutcome(state="failed", error="x: " + LEAK)
+    _assert_clean(out.error)
+    assert out.error.startswith("x: ")
+
+
+def test_finish_run_scrubs_what_it_stores(registry):
+    run_id = registry.enqueue_run("scouting_scan", {"slug": "p"})
+    registry.finish_run(run_id, "failed", error="boom " + LEAK)
+    _assert_clean(registry.get_run(run_id)["error"])
+
+
+def test_the_materialise_handler_scrubs_all_three_error_sources(registry, monkeypatch):
+    import resource_explorer.run_queue as rq
+    from resource_explorer.workflows import curate as wcur
+    registry.add(Project(slug="q", display_name="Q", github_url="https://github.com/x/q", description="")) \
+        if registry.get("q") is None else None
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+
+    def mat(reg, kind, slug, path, verdict):
+        if path == "a":
+            return {"status": "error", "error": "res " + LEAK}
+        if path == "b":
+            raise RuntimeError("raised " + LEAK)
+        return {"guid": "g"}
+
+    monkeypatch.setattr(wcur, "materialize_component_if_accepted", mat)
+    monkeypatch.setattr(wcur, "promote_to_publish_zones", lambda g: {"status": "error", "error": "promo " + LEAK})
+    monkeypatch.setattr(wcur, "record_promotion", lambda *a, **k: None)
+    out = rq._materialize_components({"slug": "p", "paths": ["a", "b", "c"]})
+    assert out.state == "failed"
+    _assert_clean(out.error)
+    assert "res " in out.error and "raised" in out.error and "promo " in out.error
+
+
+def test_the_tick_loop_logs_a_scrubbed_traceback(monkeypatch, caplog):
+    import logging
+    import resource_explorer.run_queue as rq
+    import resource_explorer.concurrency as conc
+    runner = rq.QueueRunner(poll_interval=0.01)
+
+    def boom(fn):
+        runner._stop.set()
+        raise RuntimeError("tick " + LEAK)
+
+    monkeypatch.setattr(conc, "run_sync", boom)
+    with caplog.at_level(logging.ERROR):
+        runner._loop()
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("tick failed" in m for m in msgs)
+    _assert_clean(*msgs, *[r.exc_text or "" for r in caplog.records])
