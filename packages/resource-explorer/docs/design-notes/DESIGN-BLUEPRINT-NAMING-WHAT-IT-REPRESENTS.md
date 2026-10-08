@@ -84,8 +84,28 @@ be. Ruling for the follow-up:
   form, never duplicated, never created anew; the adoption writes an
   activity row "adopted legacy-named blueprint <guid> · delete it in Egeria
   to recreate under the new name". For 254dbbe6 the owner deletes first.
-- **Tests:** the egeria_git fixture yields the new qualifiedName and
-  identifier; a second deployment blueprint without an identifier is
+- **Adoption is by provenance RE wrote on the element, then by a guarded
+  fallback** (ruled 2026-10-08 after PR/CI's review found that a lost or
+  cleared registry row lets the wrong cluster adopt a plain-kind element,
+  which the reset's cache clearing makes likely). RE writes on every
+  blueprint it creates `additionalProperties`: `re_entity_type`,
+  `re_slug`, `re_kind`, `re_cluster_key` (RE's internal cluster key),
+  `re_identifier` (when a person gave one), `re_version`. On finding an
+  element by qualifiedName: (a) `re_cluster_key` equals this cluster's →
+  adopt, and rewrite the registry row if it was lost (the element is the
+  record, the registry a cache); (b) present and different → refuse: "an
+  element named <qn> already exists in Egeria for another cluster (<its
+  key>) · give this one an identifier"; (c) no RE provenance (not RE-made,
+  or made before this slice) → adopt only when the registry has no row for
+  this cluster, the displayName equals what this cluster would produce,
+  and no other cluster's row records that qualifiedName; else refuse with
+  the same sentence. The qualifiedName search is typed and verified; more
+  than one hit is ambiguous and refuses. A property RE wrote survives both
+  a cleared registry row and a later displayName change, which neither a
+  row nor a name does.
+- **Tests:** the three adoption cases, plus a cleared registry row with
+  provenance present adopts and rewrites the row; the egeria_git fixture
+  yields the new qualifiedName and identifier; a second deployment blueprint without an identifier is
   refused with "a Deployment Blueprint already exists for egeria_git · give
   this one an identifier"; a legacy-named blueprint in the fake is adopted
   with the row; no qualifiedName contains a cluster root's name.
