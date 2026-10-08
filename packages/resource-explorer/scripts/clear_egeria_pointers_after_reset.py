@@ -16,6 +16,9 @@ APPLY needs ALL of these, and refuses (exit 2, saying which) when any is missing
     --apply  --plan-file <the dry run's file>  --plan-hash <hash it printed>
     --database <name>              the registry database name, passed again; must equal the one in
                                    REGISTRY_DATABASE_URL
+    --schema <name>                the schema from that URL's ?options=-csearch_path=..., passed again (a
+                                   Postgres URL with none is refused, dry run and apply; on SQLite the schema is
+                                   'main' and the flag is optional, or must equal 'main')
     --cleared-by <who>/<UTC>       e.g. dwolfson/2026-10-08T19:05Z; recorded in an activity_log row
     and: the plan file is recent (--max-plan-age-minutes, default 15) and was made for this database; the plan
     recomputed from the live data now has the SAME hash (anything that changed since the dry run refuses); no
@@ -128,6 +131,20 @@ def database_name(url: str) -> str:
     return (urlsplit(url).path or "/").lstrip("/") or "?"
 
 
+def target_schema(url: str) -> str:
+    """The schema unqualified table names resolve in: the search_path named by the URL's options (the
+    registry's own parser). SQLite is always 'main'. A Postgres URL with none is refused: the tables would
+    resolve in `public`, which is not where RE keeps them."""
+    if url.startswith("sqlite"):
+        return "main"
+    from resource_explorer.registry_label import _search_path
+    schema = _search_path(urlsplit(url).query)
+    if not schema:
+        raise Refused("REGISTRY_DATABASE_URL names no schema (no ?options=-csearch_path=<schema>); the script "
+                      "will not run against whatever schema the server defaults to")
+    return schema
+
+
 def connect(url: str):
     from sqlalchemy import create_engine
     from resource_explorer.registry import ConnectionWrapper
@@ -190,7 +207,7 @@ def _rows(conn, sql: str, params=()) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> dict:
+def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, schema: str = "main") -> dict:
     actions = []
     for table, keys, setcols, trig in CLEAR_SPECS:
         trig = trig or list(setcols)
@@ -238,7 +255,7 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> d
                         "text": f"Egeria reset {human_when(reset_at)} · {old_id or 'unknown'} → {new_id or 'unknown'}"})
     actions.append({"id": "marker:catalogue_commit_proofs", "kind": "write_markers",
                     "table": "catalogue_commit_proofs", "rows": markers, "count": len(markers)})
-    plan = {"database": db_name, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
+    plan = {"database": db_name, "schema": schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
             "new_collection_id": new_id or "unknown", "actions": actions,
             "dead_outbox_untouched": [r["id"] for r in dead],
             "slugs_with_proofs_after_reset": after}
@@ -252,7 +269,7 @@ def plan_hash(plan: dict) -> str:
 
 
 def render(plan: dict, title: str) -> str:
-    out = [f"{title} · database: {plan['database']} · reset at {human_when(plan['reset_at'])}", ""]
+    out = [f"{title} · database: {plan['database']} · schema: {plan['schema']} · reset at {human_when(plan['reset_at'])}", ""]
     out.append(f"{'action':<10}{'table':<44}{'rows':>6}  detail")
     for a in plan["actions"]:
         verb = {"clear_columns": "clear", "delete_rows": "remove", "supersede_outbox": "supersede",
@@ -415,6 +432,8 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
     ap.add_argument("--plan-file", default="")
     ap.add_argument("--plan-hash", default="")
     ap.add_argument("--database", default="")
+    ap.add_argument("--schema", default="", help="the schema parsed from REGISTRY_DATABASE_URL's search_path, "
+                    "passed again on apply (SQLite: schema is 'main'; the flag is optional there, or must be 'main')")
     ap.add_argument("--cleared-by", default="")
     ap.add_argument("--max-plan-age-minutes", type=int, default=15)
     args = ap.parse_args(argv)
@@ -423,17 +442,21 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
         url = registry_url()
         name = database_name(url)
         reset_at = parse_utc(args.reset_at, "--reset-at")
+        schema = target_schema(url)
         if args.apply:
             who, _ = parse_cleared_by(args.cleared_by, now)
             if args.database != name:
                 raise Refused(f"--database {args.database!r} is not the registry database in REGISTRY_DATABASE_URL "
                               f"({name!r}); pass the name again to confirm the target")
+            if not (args.schema == schema or (schema == "main" and not args.schema)):
+                raise Refused(f"--schema {args.schema!r} is not the schema in REGISTRY_DATABASE_URL ({schema!r}); "
+                              "pass the schema name again to confirm the target")
             if not args.plan_file or not args.plan_hash:
                 raise Refused("--apply needs --plan-file and --plan-hash from a dry run of this database")
         conn = connect(url)
         try:
             check_schema(conn)
-            plan = build_plan(conn, name, reset_at, args.old_collection_id, args.new_collection_id)
+            plan = build_plan(conn, name, reset_at, args.old_collection_id, args.new_collection_id, schema)
             if not args.apply:
                 out_dir = Path(args.out_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -447,6 +470,8 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
                 return 0
             saved = json.loads(Path(args.plan_file).read_text())
             sp = saved.get("plan") or {}
+            if sp.get("schema") != schema:
+                raise Refused(f"the plan file was made for schema {sp.get('schema')!r}, not {schema!r}")
             if sp.get("database") != name:
                 raise Refused(f"the plan file was made for database {sp.get('database')!r}, not {name!r}")
             if plan_hash(sp) != sp.get("hash") or sp.get("hash") != args.plan_hash:

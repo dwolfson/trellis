@@ -425,3 +425,63 @@ def test_repo_publish_state_reads_the_marker_and_the_unbound_status(env):
     assert st["row"]["word"] == "reset" and st["in_egeria"] is False
     assert st["row"]["first"] == "published earlier · Egeria was reset · not in Egeria now"
     assert st["project"]["word"] == "unbound by reset · rebind to recreate"
+
+
+# ── schema guard ─────────────────────────────────────────────────────────────
+
+PG = "postgresql://u:secret@localhost:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer"
+
+
+def test_target_schema_parses_the_registry_url_and_refuses_a_missing_one():
+    assert S.target_schema(PG) == "resource_explorer"
+    assert S.target_schema("sqlite:///x.db") == "main"
+    with pytest.raises(S.Refused, match="names no schema"):
+        S.target_schema("postgresql://u:p@localhost:5442/egeria_advisor")
+
+
+def test_a_postgres_url_without_a_search_path_is_refused_in_dry_run_and_apply(monkeypatch):
+    monkeypatch.setenv("REGISTRY_DATABASE_URL", "postgresql://u:secret@localhost:1/egeria_advisor")
+    for extra in ([], ["--apply", "--database", "egeria_advisor", "--schema", "public", "--cleared-by", TOKEN,
+                       "--plan-file", "x", "--plan-hash", "y"]):
+        cap = Cap()
+        assert S.run(["--reset-at", RESET, *extra], out=cap, now=NOW) == 2
+        assert "names no schema" in cap.text and "secret" not in cap.text
+
+
+def test_dry_run_header_prints_the_schema_only(env):
+    _, cap, _, f = dry(env)
+    assert "schema: main" in cap.text
+    assert json.loads(Path(f).read_text())["plan"]["schema"] == "main"
+
+
+def test_the_plan_hash_covers_the_schema(env):
+    reg = env["reg"]
+    with reg._conn() as c:
+        a = S.build_plan(c, "d", RESET_ISO, "", "", "resource_explorer")
+        b = S.build_plan(c, "d", RESET_ISO, "", "", "public")
+    assert a["hash"] != b["hash"]
+
+
+def test_sqlite_apply_accepts_no_schema_flag_or_main_but_not_another(env):
+    _, _, h, f = dry(env)
+    before = dump(env["reg"])
+    rc, cap = apply(env, h, f, **{"--schema": "resource_explorer"})
+    assert rc == 2 and "--schema" in cap.text and dump(env["reg"]) == before
+    rc, cap = apply(env, h, f, **{"--schema": "main"})
+    assert rc == 0, cap.text
+
+
+def test_sqlite_apply_without_the_schema_flag_is_accepted(env):
+    _, _, h, f = dry(env)
+    rc, cap = apply(env, h, f)
+    assert rc == 0, cap.text
+
+
+def test_a_plan_file_made_for_another_schema_is_refused(env):
+    _, _, h, f = dry(env)
+    data = json.loads(Path(f).read_text())
+    data["plan"]["schema"] = "public"
+    data["plan"]["hash"] = S.plan_hash(data["plan"])
+    Path(f).write_text(json.dumps(data))
+    rc, cap = apply(env, data["plan"]["hash"], f)
+    assert rc == 2 and "schema" in cap.text
