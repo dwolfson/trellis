@@ -230,3 +230,18 @@ survey this database itself".
   action is COMPLETED while later steps still run, "Start again" would read it as not active. No safe fix is obvious (the
   process's later steps are linked by follow-on actions that RE has not read live); the safest mitigation today is the
   database-found-by-name adoption, which turns a created database into an adopted one rather than a second process.
+
+## Fourth review round (2026-10-08)
+
+* The server claim is released only for a genuine pre-write refusal: an API or authorization exception whose
+  `related_http_code` / `response_code` is 4xx, or a `PyegeriaInvalidParameterException` with no response and no wrapped
+  `JSONDecodeError` (pyegeria also raises it after a 200 whose body would not parse). A 5xx, a missing code, a timeout, a
+  transport error and a cancellation keep it: a template create is not transactional.
+* The "no answer" note is withheld when a GUID was returned but not confirmed ("created, not yet confirmed" says it instead).
+  A claim held by another database is named and "Start again" is directed to that database; the stale-pending branch releases
+  only the claim this database holds. The "press again to confirm" line clears with the disarm. The reach note's "refused"
+  now needs a connection ("Egeria refused the request" gets none).
+* **Environment note:** during this round the system `python3` on this machine silently ran nothing; edits were made with the
+  repo's venv interpreter. Nothing in the product depends on it.
+* Still unverified live: which `related_http_code` Egeria returns for a template create that half-succeeds; whether a
+  create the server completed after a client timeout shows up by qualifiedName promptly enough for the re-check.
