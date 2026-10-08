@@ -39,6 +39,10 @@ class _Reg:
         self._recovery_rows_by_scope = recovery_rows_by_scope or {}
         self._diagram_rows = list(diagram_rows)
 
+    def list_settings_with_prefix(self, prefix):
+        # The diagram asks which services are referenced-only (ports on the edge); nothing was reclassified.
+        return []
+
     def query_finding_scopes(self, slug, kind, check_name=None):
         if kind == "architecture_recovery" and check_name == "component":
             return self._component_scopes
