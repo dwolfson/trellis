@@ -215,7 +215,12 @@ export function egeriaCellHtml(r) {
     return `<div data-scope-egeria>${cue('measured', `published · ${ago(r.published.when) || 'earlier'}`,
       `published to Egeria (GUID ${r.published.guid}); kept there whatever the choice becomes`)}</div>`;
   }
-  if (r.choice === 'include' || r.role === 'container') {
+  if (r.choice !== 'include' && r.role === 'container') {
+    // A folder chosen for nothing of its own: created only to hold the included file, never as an asset.
+    return `<div data-scope-egeria>${cue('unrun', 'holder only · created with the file',
+      'created in Egeria only as the folder that holds an included file; not an asset of its own')}</div>`;
+  }
+  if (r.choice === 'include') {
     return `<div data-scope-egeria>${cue('unrun', 'not published yet')}</div>`;
   }
   return '<div data-scope-egeria></div>';
