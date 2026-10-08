@@ -193,7 +193,7 @@ class InvestigationReclassifier:
         set to the foreign ones alone (a replace) and read back. Foreign zones only: nothing is touched.
         Every outcome is confirmed by a strict read; an unreadable element is reported, never counted."""
         from resource_explorer.egeria_identity import (
-            ZoneReadError, clear_zone_membership, draft_zone, private_zone, read_zones, set_zone_membership,
+            ZoneReadError, clear_zone_membership, draft_zones, private_zone, read_zones, set_zone_membership,
         )
 
         try:
@@ -202,7 +202,7 @@ class InvestigationReclassifier:
             return False, str(exc)
         if not before:
             return True, "already in no zone (zones left to Egeria)"
-        own = {private_zone(), draft_zone()} | ({owner} if owner else set())
+        own = {private_zone(), *draft_zones()} | ({owner} if owner else set())
         foreign = [z for z in before if z not in own]
         if foreign and len(foreign) == len(before):
             return True, f"zones left as they are · {', '.join(before)} · none is RE's"

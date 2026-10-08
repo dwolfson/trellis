@@ -342,7 +342,7 @@ class ComponentMaterializer:
         # for: **everything RE creates is born in the draft zone, and
         # acceptance is what moves it.** That makes the transition real and
         # observable rather than something one code path skips.
-        from resource_explorer.egeria_identity import draft_zone, stamp_published
+        from resource_explorer.egeria_identity import draft_zones, stamp_published
 
         identity = self.resolve_identity()
         # Decided at the top of this method, before anything was created.
@@ -351,7 +351,7 @@ class ComponentMaterializer:
         # zone with the publishing identity as owner it would be visible to
         # every curator, and owned by whoever happened to run the analysis.
         owner = private_owner or identity.user_id
-        zones = private_zones_for_owner or [draft_zone()]
+        zones = private_zones_for_owner or draft_zones()
 
         governance = stamp_published(guid, owner, identity=identity, zones=zones)
 

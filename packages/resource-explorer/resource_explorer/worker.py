@@ -229,7 +229,8 @@ def _warm_survey_definition_cache() -> None:
 
 
 def _ensure_draft_zone() -> None:
-    """Create RE's draft `GovernanceZone` once, if Egeria does not have one.
+    """Create RE's draft `GovernanceZone` once, if one is CONFIGURED and Egeria lacks it.
+    (By default none is configured and nothing is created; the private-zone bootstrap still runs.)
 
     Leader-elected and one-shot, not a loop: the zone either exists or it does
     not, and asking Egeria about it every 60 seconds would be a round trip
@@ -250,6 +251,11 @@ def _ensure_draft_zone() -> None:
     zone element exists.
     """
 
+    from resource_explorer.egeria_identity import draft_zone as _dz
+
+    # Every process says which mode it is in (a zone NAME is not a secret).
+    log.info("draft zone: %s", _dz() or "none (default)")
+
     def _run() -> None:
         lock = LeaderLock(LOCK_DRAFT_ZONE)
         if not lock.acquire():
@@ -260,8 +266,13 @@ def _ensure_draft_zone() -> None:
                 ensure_draft_zone_exists, ensure_private_zone_exists,
             )
 
-            outcome = ensure_draft_zone_exists()
-            log.info("draft-zone bootstrap: %s", outcome)
+            # Only when a draft zone was CONFIGURED (EXPLORER_DRAFT_ZONE). By default RE stamps
+            # no draft zone and creates no GovernanceZone for it (owner ruling 2026-10-08).
+            from resource_explorer.egeria_identity import draft_zone
+
+            if draft_zone():
+                outcome = ensure_draft_zone_exists()
+                log.info("draft-zone bootstrap: %s", outcome)
 
             # The private zone, under the same lock and in the same one-shot.
             # Different mechanism from the draft zone though — that one creates

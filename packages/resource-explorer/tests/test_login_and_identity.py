@@ -550,9 +550,10 @@ class TestOwnershipAndZones:
             "zoneMembership": ["resource-explorer-draft"],
         }
 
-    def test_stamp_published_sets_both_on_one_client(self):
+    def test_stamp_published_sets_both_on_one_client(self, monkeypatch):
         from resource_explorer.egeria_identity import stamp_published
 
+        monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")   # the configured case
         spy = _ClassificationSpy()
         out = stamp_published("guid-1", "dan", client=spy)
         assert out["ownership"] is True and out["zone_membership"] is True
@@ -588,15 +589,31 @@ class TestOwnershipAndZones:
 
         assert [g for g, _ in spy.ownership] == ["asset-guid", "report-guid"]
         assert all(b["properties"]["owner"] == "dan" for _, b in spy.ownership)
-        assert all(
-            b["properties"]["zoneMembership"] == ["resource-explorer-draft"]
-            for _, b in spy.zones
+        # Default (2026-10-08): no draft zone, so NO ZoneMembership call at all.
+        assert spy.zones == []
+
+    def test_publish_stamps_a_configured_draft_zone(self, monkeypatch):
+        from resource_explorer.egeria_identity import EgeriaIdentity
+        from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+        monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")
+        spy = _ClassificationSpy()
+        publisher = EgeriaPublisher(
+            platform_url="https://localhost:9443",
+            identity=EgeriaIdentity(user_id="dan", token="dan-token"),
         )
+        monkeypatch.setattr(
+            "resource_explorer.egeria_identity.classification_client", lambda i=None: spy,
+        )
+        publisher._stamp_governance("asset-guid", "report-guid")
+        assert [b["properties"]["zoneMembership"] for _, b in spy.zones] == [
+            ["resource-explorer-draft"]] * 2
 
     def test_the_draft_zone_and_publish_zones_are_configurable(self, monkeypatch):
         from resource_explorer.egeria_identity import configured_publish_zones, draft_zone
 
-        assert draft_zone() == "resource-explorer-draft"
+        monkeypatch.delenv("EXPLORER_DRAFT_ZONE", raising=False)
+        assert draft_zone() is None                    # no default draft zone (2026-10-08)
         # Configured-only (owner, 2026-10-07): with nothing configured there is NO publish zone.
         monkeypatch.delenv("EXPLORER_PUBLISH_ZONES", raising=False)
         monkeypatch.setattr(
@@ -738,6 +755,7 @@ class TestCurateRoutes:
         self, client, monkeypatch,
     ):
         api, reg = client
+        monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")   # the configured case
         import resource_explorer.web.routes.curate as curate_routes
         monkeypatch.setattr(curate_routes, "_materialize_if_accepted",
                             lambda *a, **k: {"status": "materialized", "guid": "comp-guid"})
@@ -1026,6 +1044,7 @@ class TestDraftZoneBootstrap:
         names it in its ZoneMembership."""
         from resource_explorer import egeria_identity
 
+        monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")   # configured: it tries
         monkeypatch.setattr(
             egeria_identity, "service_credentials",
             lambda: (_ for _ in ()).throw(RuntimeError("no platform")),

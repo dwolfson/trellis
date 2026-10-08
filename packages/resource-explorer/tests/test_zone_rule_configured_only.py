@@ -62,6 +62,9 @@ class FakeEgeria:
 
 @pytest.fixture
 def egeria(monkeypatch):
+    # These tests exercise promotion OUT of a draft zone, so they run the CONFIGURED case:
+    # RE has no default draft zone since 2026-10-08 (owner: DRAFT is a status, not a zone).
+    monkeypatch.setenv("EXPLORER_DRAFT_ZONE", DRAFT)
     monkeypatch.delenv("EXPLORER_PUBLISH_ZONES", raising=False)
     monkeypatch.setattr("resource_explorer.config.get_config",
                         lambda: type("c", (), {"egeria": type("e", (), {"default_catalog_zones": []})()})())
@@ -232,6 +235,7 @@ def test_the_configured_zone_is_read_back_before_the_success_words(egeria, monke
 
 
 def test_the_reclassifier_clears_only_zones_re_stamped(monkeypatch):
+    monkeypatch.setenv("EXPLORER_DRAFT_ZONE", DRAFT)       # the configured case
     from resource_explorer.surveyors.investigation_reclassifier import InvestigationReclassifier
     for zones, cleared in (([ident.private_zone(), "alice"], True), ([DRAFT], True), (["egeria-runtime"], False)):
         fake = FakeEgeria(zones)
