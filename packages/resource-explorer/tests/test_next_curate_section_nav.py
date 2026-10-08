@@ -63,16 +63,17 @@ class TestSixSectionsExistWithStableIds:
         assert "component-tree" in made_of_call
 
 
-class TestSectionsAreCollapsibleDetailsDefaultOpen:
+class TestSectionsAreCollapsibleDetailsDefaultCollapsed:
     """Matching /next's existing disclosure idiom (app.js's other <details>
     usage): <details>/<summary>, summary is the section's own heading text,
-    default open -- the reported problem was missing navigation/structure,
-    not too much visible at once, so collapse must not default-hide."""
+    default COLLAPSED (owner, 2026-10-08; this used to pin default open)."""
 
     def test_the_section_wrapper_is_a_details_element(self):
         src = _curate_src()
         body = src[src.index("function curateSectionHtml("):src.index("async function renderCurate(")]
-        assert "<details id=\"${id}\" open" in body
+        # Owner, 2026-10-08: every section starts collapsed; a person's opening is remembered per viewer.
+        assert "<details id=\"${id}\" ${sectionOpen(id) ? 'open' : ''}" in body
+        assert "<details id=\"${id}\" open" not in body
         assert "<summary" in body
 
     def test_every_call_site_uses_the_shared_wrapper_for_all_six_sections(self):
