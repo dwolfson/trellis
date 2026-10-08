@@ -119,6 +119,14 @@ P_READ_FAILED = "read_failed"
 #: page's state words still come from the target / elements rows; this row only changes the
 #: first sentence, "adopted after a create error · <Egeria's sentence>". No DDL: the proof column is free text.
 P_ADOPTED = "create_error_adopted"
+#: One marker per resource, appended by scripts/clear_egeria_pointers_after_reset.py after the owner reset
+#: Egeria's metadata database. Its `read_at` is the reset time. Every proof row read BEFORE it is history of
+#: what was once in Egeria and proves nothing about now; the screen says so, from this row, and counts 0 in
+#: Egeria until a later proof says otherwise. `detail` carries `text` ("Egeria reset <when> · old → new").
+P_EGERIA_RESET = "egeria_reset"
+RESET_WORDS = "published earlier · Egeria was reset · not in Egeria now"
+#: The schema states that mean "Egeria holds it right now" (read back or attached), for the header's count.
+IN_EGERIA_STATES = ("catalogued", "attached_waiting", "restored")
 
 #: Proofs that decide a schema's state in Egeria. Anything else is context.
 READ_SUCCESS_PROOFS = (P_ZONES_READ, P_ELEMENTS, P_CONNECTOR, P_DATABASE, P_RESTORED)
@@ -556,7 +564,15 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     `{"schemas": {name: state}, "tables": {"s.t": state}, "header": {...},
     "database": {...}, "collisions": [...]}`. Reads only the registry; Egeria is
     never contacted here, so opening Curate stays free."""
-    proofs = registry.list_catalogue_commit_proofs(slug)
+    proofs_all = registry.list_catalogue_commit_proofs(slug)
+    # A reset marker splits the history: rows read before it are what Egeria once held, not what it holds.
+    # Ordered by read_at (the reset time), never by id, so a proof recorded after the reset but before the
+    # marker was written still counts.
+    reset = _latest(proofs_all, (P_EGERIA_RESET,))
+    cutoff = (reset["read_at"] or "") if reset else ""
+    proofs = [p for p in proofs_all if p["proof"] != P_EGERIA_RESET and (reset is None or (p["read_at"] or "") >= cutoff)]
+    earlier = [p for p in proofs_all if reset is not None and p["proof"] != P_EGERIA_RESET and (p["read_at"] or "") < cutoff]
+    earlier_by = _by_node(earlier)
     by = _by_node(proofs)
     ob_by_schema = _outbox_by_schema(registry.list_catalogue_outbox_rows(slug))
     db_rows = by.get(("database", "", ""), [])
@@ -581,6 +597,11 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     for s in view.get("schemas") or []:
         name = s["name"]
         st = _schema_state(by.get(("schema", name, ""), []), ob_by_schema.get(name), s.get("effective"), conn_d)
+        if reset is not None and st["state"] in ("none", "uncommitted") and \
+                _latest(earlier_by.get(("schema", name, ""), []), STATE_PROOFS) is not None:
+            st = {"state": "reset", "words": RESET_WORDS,
+                  "second": str((reset["detail"] or {}).get("text") or "Egeria was reset"),
+                  "proof": {"kind": P_EGERIA_RESET, "at": reset["read_at"], "element_guid": "", "outbox_id": None}}
         schemas[name] = st
         found = None
         el = _latest(by.get(("schema", name, ""), []), (P_ELEMENTS,))
@@ -597,8 +618,8 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
                           "second": f"schema read back {_stamp(el['read_at'])}; this table was not under it"}
                 if t.get("effective") == LEAVE_OUT:
                     ts["second"] = WHOLE_SCHEMAS_LINE
-            elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "deleted", "archived", "restored"):
-                ts = {"state": "follows_schema", "words": f"as its schema: {'deleted in Egeria' if st['state'] == 'deleted' else st['state'].replace('_', ' ')}",
+            elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "deleted", "archived", "restored", "reset"):
+                ts = {"state": "follows_schema", "words": f"as its schema: {'deleted in Egeria' if st['state'] == 'deleted' else RESET_WORDS if st['state'] == 'reset' else st['state'].replace('_', ' ')}",
                       "second": WHOLE_SCHEMAS_LINE if t.get("effective") == LEAVE_OUT else ""}
             else:
                 ts = {"state": "none", "words": "", "second": ""}
@@ -626,7 +647,8 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
             k = schemas[s["name"]]["state"]
             counts[k] = counts.get(k, 0) + 1
     n_gone = sum(1 for st in schemas.values() if st.get("state") in ("archived", "deleted"))
-    header = _header(published, counts, conn_d, failed_read, view, bool(proofs or ob_by_schema), zones_text, blocked_names, n_gone)
+    header = _header(published, counts, conn_d, failed_read, view, bool(proofs_all or ob_by_schema), zones_text, blocked_names, n_gone,
+                     reset=reset, published_earlier=_latest(earlier, (P_DATABASE, P_RESTORED)))
     zr = _latest(db_rows, (P_ZONES_READ,))
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
@@ -652,7 +674,8 @@ def _zones_text(written: dict | None, read: dict | None) -> str:
 
 
 def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_text: str = "",
-            blocked: list | None = None, n_gone: int = 0) -> dict:
+            blocked: list | None = None, n_gone: int = 0, reset: dict | None = None,
+            published_earlier: dict | None = None) -> dict:
     """The state-derived marker line: never a constant (the owner's gate, item 6)."""
     if not anything:
         return {"state": "not_committed", "text": NOT_COMMITTED_HEADER}
@@ -665,6 +688,9 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
                          f"{_stamp(published['read_at'])}" + (f" (from {was[:8]})" if was else ""))
         else:
             parts.append(f"Database element {published['element_guid'][:8]} in Egeria · published {_stamp(published['read_at'])}")
+    elif reset is not None and published_earlier is not None:
+        parts.append(f"Database element {published_earlier['element_guid'][:8]} published earlier · Egeria was reset "
+                     f"{_stamp(reset['read_at'])} · not in Egeria now")
     else:
         parts.append("Database element not read back from Egeria")
     if published:
@@ -672,9 +698,13 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if n_cat:
         order = (("catalogued", "cataloged"), ("attached_waiting", "attached, waiting"),
                  ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
-                 ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"))
+                 ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"),
+                 ("reset", "published earlier, Egeria was reset"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
+        if reset is not None:
+            # Derived from the rows, never assumed: the chosen schemas whose newest proof says Egeria holds them.
+            parts.append(f"{sum(counts.get(k, 0) for k in IN_EGERIA_STATES)} in Egeria")
     if blocked:
         parts.append(f"{len(blocked)} left out, {KEPT_NOT_SENT} · {n_gone} archived or deleted in Egeria")
     if conn_d and conn_d.get("last_refresh_time"):
