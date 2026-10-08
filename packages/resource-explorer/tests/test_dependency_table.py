@@ -52,17 +52,20 @@ def test_both_sources_yield_the_two_kinds_with_the_right_counts(registry):
     _wires(registry, WIRES)
     t = dt.build_table(registry, "p")
     assert t["heading"] == "Dependencies · by kind"
-    assert t["counts"] == {"build-time": 3, "runtime": 2}
-    assert t["summary"] == "3 build-time · 2 runtime"
+    # `web -> cache (redis)` is a connection string to a data store: the third kind, read from the same wires.
+    assert t["counts"] == {"build-time": 3, "runtime": 1, "data": 1}
+    assert t["summary"] == "3 build-time · 1 runtime · 1 data"
     assert t["runtime_state"] == ""
-    assert {r["kind"] for r in t["rows"]} == {"build-time", "runtime"}
-    assert t["kinds"] == ["build-time", "runtime"]            # a third kind is a new value, not a new section
+    assert {r["kind"] for r in t["rows"]} == {"build-time", "runtime", "data"}
+    assert t["kinds"] == ["build-time", "runtime", "data"]    # a new kind is a new value, not a new section
 
 
 def test_build_time_rows_are_measured_from_their_manifest(registry):
     _deps(registry, [("fastapi", "0.110", "python", "svc/pyproject.toml")])
     row = dt.build_table(registry, "p")["rows"][0]
-    assert (row["name"], row["target"], row["source"], row["state"]) == ("fastapi", "0.110", "svc/pyproject.toml", "measured")
+    # two ends: the repository requires the package (a manifest in `svc/` owned by no admitted component)
+    assert (row["dependent"], row["relation"], row["target_name"], row["target_version"]) == ("P", "requires", "fastapi", "0.110")
+    assert (row["source"], row["evidence"], row["state"]) == ("svc/pyproject.toml", "svc/pyproject.toml", "measured")
     assert row["state_words"] == "measured · from pyproject.toml"
 
 
@@ -70,14 +73,15 @@ def test_runtime_rows_are_proposed_from_their_artifact_until_confirmed(registry)
     _wires(registry, WIRES)
     rows = {r["target"]: r for r in dt.build_table(registry, "p")["rows"]}
     assert rows["db"]["state_words"] == "proposed · from docker-compose.yml"
-    assert rows["cache (redis)"]["state"] == "proposed" and rows["cache (redis)"]["source"] == "deploy/docker-compose.yml:20"
+    assert rows["cache"]["state"] == "proposed" and rows["cache"]["source"] == "deploy/docker-compose.yml:20"
+    assert rows["cache"]["protocol"] == "redis" and rows["cache"]["kind"] == "data"
     assert rows["db"]["name"] == "web"
 
 
 def test_manifests_and_no_artifacts_say_why_never_an_empty_section(registry):
     _deps(registry, [("fastapi", "0.110", "python", "pyproject.toml")])
     t = dt.build_table(registry, "p")
-    assert t["counts"] == {"build-time": 1, "runtime": 0}
+    assert t["counts"] == {"build-time": 1, "runtime": 0, "data": 0}
     assert t["runtime_state"] == "runtime not surveyed"             # the architecture step never ran here
     registry.upsert_finding("p", "architecture_recovery", [{"check_name": "component", "label": "x", "detail": {}}],
                             surveyed_at="2026-10-01T00:00:00")
@@ -121,8 +125,8 @@ def test_only_a_confirmed_row_publishes_and_only_as_an_annotation(registry):
     anns = dt.runtime_annotations(registry, "p")
     assert len(anns) == 1
     a = anns[0]
-    assert type(a).__name__ == "RelationshipAnnotation" and a.check_name == "runtime_dependency"
-    assert a.related_entity_name == "db" and a.relationship_type_name == "runtime dependency"
+    assert type(a).__name__ == "ResourceMeasureAnnotation" and a.check_name == "runtime_dependency"
+    assert a.resource_properties["target_name"] == "db" and a.resource_properties["relation"] == "connects_to"
     assert a.json_properties["confirmed_by"] == "dan"
     dt.record_confirmations(registry, "p", [key], "withdrawn", "dan")
     assert dt.runtime_annotations(registry, "p") == []
@@ -178,7 +182,7 @@ def test_the_routes_read_the_table_and_record_a_confirmation_as_the_signed_in_pe
     client = TestClient(app)
     _wires(registry, WIRES)
     t = client.get("/api/projects/p/dependencies").json()
-    assert t["counts"]["runtime"] == 2 and t["heading"] == "Dependencies · by kind"
+    assert t["counts"]["runtime"] + t["counts"]["data"] == 2 and t["heading"] == "Dependencies · by kind"
     key = next(r["key"] for r in t["rows"] if r["target"] == "db")
     out = client.post("/api/projects/p/dependencies/confirm", json={"keys": [key], "verdict": "confirmed"})
     assert out.status_code == 200
