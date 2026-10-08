@@ -197,7 +197,7 @@ survey this database itself".
 
 * **HIGH, the absent string.** pyegeria answers a by-name or by-GUID miss with `NO_ELEMENTS_FOUND` ("No elements found",
   plural); the singular `NO_ELEMENT_FOUND` is not returned on those paths. The first round matched only the singular, so a
-  genuinely absent server raised instead of being created. `native_survey_run.ABSENT_ANSWERS` is now built from pyegeria's
+  genuinely absent server raised instead of being created. `native_survey_run.absent_answers()` (lazy) is now built from pyegeria's
   own constants (both, exact, case-insensitive, trailing period stripped), and every test imports the constants rather than
   typing a literal; one test fails if the accepted set stops containing either constant. The local rule mirrors
   `egeria_absence.is_absent` (#556) for string answers and should switch to that shared helper after #556 merges.
