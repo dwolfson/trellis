@@ -1722,8 +1722,11 @@ def get_dependency_table(slug: str) -> dict:
 
 
 class ConfirmDependencies(BaseModel):
+    # The limits (at most 200 keys of 512 characters, a reason of 500) are enforced in
+    # `dependency_table.record_confirmations` and answered as a 400 with a sentence, not a 422.
     keys: list[str]
     verdict: str = "confirmed"        # confirmed | withdrawn
+    reason: str = ""
 
 
 @router.post("/{slug}/dependencies/confirm")
@@ -1741,11 +1744,17 @@ def confirm_dependencies(slug: str, body: ConfirmDependencies, request: Request)
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    # 401, 404, 403, 400 in that order, like reclassify_node.
+    from resource_explorer.web.routes.curate import _authorize_curation
+    _authorize_curation(registry, "repo", slug, "")
+    # One request, one set of reads: the recovery rebuild and the wires are read once for the check, the
+    # record and the returned table.
+    ctx = dependency_table.Context(registry, slug)
     try:
-        dependency_table.record_confirmations(registry, slug, body.keys, body.verdict, author)
+        dependency_table.record_confirmations(registry, slug, body.keys, body.verdict, author, body.reason, ctx=ctx)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return dependency_table.build_table(registry, slug)
+    return dependency_table.build_table(registry, slug, ctx=ctx)
 
 
 @router.get("/{slug}/analyses-index")
@@ -2481,7 +2490,10 @@ def environment_blueprint(slug: str) -> dict:
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return node_admission.environment(registry, slug)
+    # The wires are the dependency table's own rows whose two ends are both referenced-only services, so the
+    # table and this blueprint cannot disagree (DESIGN-DEPENDENCY-ROW-TWO-ENDS.md).
+    from resource_explorer import dependency_table
+    return {**node_admission.environment(registry, slug), "wires": dependency_table.environment_wires(registry, slug)}
 
 
 class NodeReclassify(BaseModel):
