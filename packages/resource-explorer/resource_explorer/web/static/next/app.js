@@ -6656,7 +6656,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     </div>
     ${data.note ? `<div class="mb-s2 text-caps text-chrome-muted">${esc(data.note)}</div>` : ''}
     ${readOnly ? `<div data-members-not-saved class="mb-s2 text-caps text-chrome-ink"><span class="font-glyph" aria-hidden="true">○</span> not saved here · choose what is published with Include in what's in it
-      · <button data-members-goto-scope class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">go to what's in it ›</button></div>` : facetsHtml(groups, data)}
+      ${state.stage === 'curate' ? `· <button data-members-goto-scope class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">go to what's in it ›</button>` : ''}</div>` : facetsHtml(groups, data)}
     ${groups.length ? '' : `<div class="text-caps text-chrome-muted">Nothing listed — <span class="font-mono">${esc(data.source)}</span> holds no rows for this analysis on this resource.</div>`}
     <div class="flex flex-col gap-s1">
       ${groups.map((g, gi) => `<details class="border-b border-chrome-line-soft pb-s1" ${gi < 3 ? 'open' : ''}>

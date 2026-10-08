@@ -35,9 +35,20 @@ function makeServer(over = {}) {
     if (u.endsWith('/curate/commit')) return ok({ curation: { id: 'c1', state: 'queued', steps: [], author: 'dan', requested_at: new Date().toISOString() }, activity_id: 'a1' });
     if (u.includes('/curate/commits/')) return ok({ id: 'c1', state: 'done', steps: [], author: 'dan', requested_at: new Date().toISOString() });
     if (u.includes('/api/activity')) return ok({ id: 'a1', status: 'success' });
-    if (u.includes('/curate/plan')) { if (s.holdPlan) await s.holdPlan; return ok(s.plan); }
+    if (u.endsWith('/components/verdicts')) { if (s.holdVerdict) await s.holdVerdict; return ok({ verdicts: body.scope_locators.map((x) => ({ scope: x })), queued: 1 }); }
+    if (u.includes('/components/leaves')) {
+      const mk = (p) => ({ path: p, type: 'Service', confidence: 90, verdict: null, proposals: [], ports: [] });
+      const g = ['packages/x/compose/a', 'packages/x/compose/b'].map(mk);
+      return ok({ leaves: g, groups: [{ name: 'compose', accepted: 0, rejected: 0, undecided: 2, members: g }], ungrouped: [] });
+    }
+    if (u.includes('/curate/plan')) {
+      const d = (s.planDelays || []).shift();
+      if (s.holdPlan) await s.holdPlan;
+      if (d) await wait(d);
+      return ok(s.plan);
+    }
     if (u.includes('/components/tree')) { if (s.treeDelay) await wait(s.treeDelay); return ok({ branches: [BRANCH], total_components: 3, accepted: 0, reviewed: 0, topology: '' }); }
-    if (u.includes('/components/blueprints')) { if (s.bpDelay) await wait(s.bpDelay); return ok(s.blueprints); }
+    if (u.includes('/components/blueprints')) { if (s.bpDelay) await wait(s.bpDelay); if (s.bpFailOnce) { s.bpFailOnce = false; await wait(80); return err(500, 'boom'); } return ok(s.blueprints); }
     if (u.includes('/api/analyses/facts')) return ok({ subjects: {} });
     if (u.endsWith('/dependencies')) return ok({ heading: 'Dependencies · by kind', kinds: [], counts: {}, runtime_state: '', rows: [] });
     if (u.includes('/catalogue-depth-offer')) return ok({ layer1_done: false });
@@ -264,4 +275,101 @@ test('7: a click before the plan returns is queued, not lost', async () => {
   await wait(500);
   assert.equal(document.getElementById('curate-sec-blueprints').open, true);
   assert.ok(scrolls.some((s) => s.id === 'curate-sec-blueprints' && s.opts.block === 'start'));
+});
+
+
+/* ── review of 8c523e2f ─────────────────────────────────────────────────────────────────────── */
+test('R1: a failed lazy read is retried when the section is reopened, and has a retry control', async () => {
+  const { document, server } = await setUp({ bpFailOnce: true, blueprints: { blueprints: [bp(1)], perspectives: ['logical'], kinds: [] } });
+  jump(document, 'curate-sec-blueprints');
+  await wait(300);
+  const slot = () => document.getElementById('blueprint-list');
+  assert.match(norm(slot()), /could not be read/);
+  assert.ok(slot().querySelector('[data-curate-retry]'), 'a retry control with a short word');
+  const sec = document.getElementById('curate-sec-blueprints');
+  sec.open = false; sec.dispatchEvent(new document.defaultView.Event('toggle'));
+  sec.open = true; sec.dispatchEvent(new document.defaultView.Event('toggle'));
+  await wait(300);
+  assert.equal(calls(server, '/components/blueprints').length, 2, 'reopening read again');
+  assert.ok(slot().querySelector('[data-blueprint]'), 'and it succeeded');
+});
+test('R1: the retry control itself retries', async () => {
+  const { document, server } = await setUp({ bpFailOnce: true, blueprints: { blueprints: [bp(1)], perspectives: ['logical'], kinds: [] } });
+  jump(document, 'curate-sec-blueprints');
+  await wait(300);
+  document.querySelector('#blueprint-list [data-curate-retry]').click();
+  await wait(300);
+  assert.equal(calls(server, '/components/blueprints').length, 2);
+  assert.ok(document.querySelector('#blueprint-list [data-blueprint]'));
+});
+test('R2: two same-slug renders where the older finishes last do not take over the shared state', async () => {
+  const { document, server, app } = await setUp();
+  const mod = await import('/static/next/stages/curate.js');
+  server.planDelays = [500, 0];
+  const older = mod.renderCurate('egeria_git');
+  await wait(20);
+  const newer = mod.renderCurate('egeria_git');
+  await Promise.all([older, newer]);
+  await wait(100);
+  jump(document, 'curate-sec-relates');
+  await wait(300);
+  const live = document.getElementById('curate-dependency-host');
+  assert.ok(live && live.isConnected);
+  assert.match(norm(live), /Dependencies/, 'the live section loaded into the live host, not a detached one');
+  assert.ok(app);
+});
+test('R3: the "behind" cue carries its sentence on hover', async () => {
+  const { document } = await setUp({ publishState: pubState('2026-10-07T01:00:00') });
+  const title = document.querySelector('[data-publish-behind] [data-cue]').title;
+  assert.match(title, /kept survey is newer/);
+});
+test('R4: outside Curate the Members rail does not offer a link that does nothing', async () => {
+  const { document, app } = await setUp({}, { settle: 300 });
+  app.state.stage = 'scouting';
+  await app.openMembers({ slug: 'egeria_git', analysisId: 'sub_resource_survey', title: 'x' });
+  const rail = document.getElementById('rail-evidence');
+  assert.ok(rail.querySelector('[data-members-not-saved]'), 'the note stays');
+  assert.equal(rail.querySelector('[data-members-goto-scope]'), null);
+});
+test('R5: a second press of group accept-all while a batch is in flight posts nothing more', async () => {
+  let release; const holdVerdict = new Promise((r) => { release = r; });
+  const { document, server } = await setUp({ holdVerdict });
+  jump(document, 'curate-sec-made-of'); await wait(300);
+  document.querySelector('[data-branch-open="packages/x"]').click();
+  await wait(200);
+  const press = () => document.querySelector('[data-leaf-group="compose"] [data-group-verdict="accepted"]');
+  press().click(); await wait(100);
+  document.querySelector('[data-act="confirm"]').click(); await wait(100);
+  document.querySelector('[data-select-all-shown]').dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));   // a redraw mid-batch
+  await wait(200);
+  press().click(); await wait(100);
+  document.querySelector('[data-act="confirm"]')?.click(); await wait(100);
+  release(); await wait(300);
+  assert.equal(calls(server, '/components/verdicts').length, 1);
+});
+test('R6: a mouse-down (scrollbar drag, middle-click autoscroll) counts as the person scrolling', async () => {
+  const { document, scrolls, window } = await setUp({ bpDelay: 200, blueprints: { blueprints: [bp(1)], perspectives: ['logical'], kinds: [] } });
+  jump(document, 'curate-sec-blueprints');
+  window.dispatchEvent(new window.Event('mousedown'));
+  await wait(500);
+  assert.equal(scrolls.length, 1);
+});
+test('R6: a jump into a section whose load is already in flight re-scrolls when it lands', async () => {
+  const { document, scrolls } = await setUp({ bpDelay: 300, blueprints: { blueprints: [bp(1)], perspectives: ['logical'], kinds: [] } });
+  const sec = document.getElementById('curate-sec-blueprints');
+  sec.open = true; sec.dispatchEvent(new document.defaultView.Event('toggle'));   // load starts, in flight
+  await wait(50);
+  jump(document, 'curate-sec-blueprints');
+  assert.equal(scrolls.length, 1);
+  await wait(600);
+  assert.equal(scrolls.length, 2, 'one re-scroll after the in-flight load landed');
+});
+test('R7: the show-all flags do not carry over to another repository', async () => {
+  const { app } = await setUp();
+  app.state.blueprintShowAll = true; app.state.componentShowAll = true;
+  const mod = await import('/static/next/stages/curate.js');
+  app.state.selectedSlug = 'another_repo';
+  await mod.renderCurate('another_repo');
+  assert.equal(app.state.blueprintShowAll, false);
+  assert.equal(app.state.componentShowAll, false);
 });

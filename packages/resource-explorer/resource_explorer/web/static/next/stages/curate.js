@@ -145,7 +145,7 @@ export function jumpToCurateSection(id) {
   const j = state.curate.jump = { id, moved: false, stop: null };
   const win = globalThis.window;
   const moved = () => { j.moved = true; };
-  const kinds = ['wheel', 'touchmove', 'keydown'];
+  const kinds = ['wheel', 'touchmove', 'keydown', 'mousedown', 'pointerdown'];   // a scrollbar drag or a middle-click autoscroll is the person scrolling
   if (win) kinds.forEach((k) => win.addEventListener(k, moved));
   j.stop = () => { if (win) kinds.forEach((k) => win.removeEventListener(k, moved)); };
   if (loading) {
@@ -191,8 +191,11 @@ function curateSectionHtml(id, title, extraHeader, inner) {
 
 /** A pane's read failed. A dead session is not this pane's failure: the page banner carries the one sign-in
  *  prompt, so the pane keeps only a short word. */
-function paneError(lead, err) {
-  return err && err.loginRequired ? '<span data-curate-signin-needed class="text-ink-muted">sign-in needed</span>' : `${esc(lead)}${esc(err && err.message)}`;
+function paneError(lead, err, retryKey = '') {
+  if (err && err.loginRequired) return '<span data-curate-signin-needed class="text-ink-muted">sign-in needed</span>';
+  const retry = retryKey
+    ? ` <button type="button" data-curate-retry="${esc(retryKey)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">retry</button>` : '';
+  return `${esc(lead)}${esc(err && err.message)}${retry}`;
 }
 
 /** Is this commit record the CURRENT state of the pane? Only while it is running or queued, or when it
@@ -485,7 +488,16 @@ export async function renderCurate(slug) {
   // stage is already drawn and the other bands are loading on their own; this slot says so and
   // counts the seconds, and blocks nothing.
   state.curate = state.curate || {};
-  state.curate.loaded = { slug, tree: false, blueprints: false, deps: false, depth: false };
+  // A render token: two renders for the SAME slug (a perspective toggle, re-entering the stage) can
+  // interleave, and slug equality cannot tell them apart. Only the newest may write shared state.
+  const myRender = state.curate.renderToken = (state.curate.renderToken || 0) + 1;
+  const superseded = () => state.curate.renderToken !== myRender;
+  if (state.curate.lastSlug !== slug) {                // the "show all" flags are per repository
+    state.blueprintShowAll = false;
+    state.componentShowAll = false;
+    state.curate.lastSlug = slug;
+  }
+  state.curate.loaded = { slug, tree: false, blueprints: false, deps: false, depth: false, p: {} };
   state.curate.loadSection = null;
   state.curate.pendingJump = null;
   endJump();
@@ -527,11 +539,13 @@ export async function renderCurate(slug) {
     plan = await getCuratePlan(slug);
   } catch (err) {
     stopTicker();
+    if (superseded()) return;                       // a newer render owns the pane and the prefetch
     dropPrefetch();                                 // nothing will paint it: do not leave it to be read as fresh later
     if (host.isConnected) host.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">${paneError(`The plan could not be read after ${secs()} s: `, err)}</div>`;
     return;
   }
   stopTicker();
+  if (superseded()) return;
   if (slug !== state.selectedSlug) { dropPrefetch(); return; }
   state.curate = state.curate || {};
   state.curate.blueprintCounts = ((plan.made_of || [])[0] || {}).detail || {};
@@ -539,9 +553,11 @@ export async function renderCurate(slug) {
   const picks = new Set(state.curate.picks || []);
   let latest = (plan.commits || [])[0];
   await scopeLoad;
+  if (superseded()) return;
   if (slug !== state.selectedSlug) { dropPrefetch(); return; }
 
   const draw = () => {
+    if (superseded() || !host.isConnected) return;
     const current = isCurrentCommit(latest) ? latest : null;
     // Redraws keep the tree, blueprint and depth-offer nodes (open branches, groups, scroll) instead of re-reading them.
     const keep = {};
@@ -662,41 +678,65 @@ export async function renderCurate(slug) {
   if (state.curateOnPicks) document.removeEventListener('re:curate-picks', state.curateOnPicks);
   state.curateOnPicks = () => { if (host.isConnected && slug === state.selectedSlug) draw(); };
   document.addEventListener('re:curate-picks', state.curateOnPicks);
+  if (superseded()) return;
   setupLazySections();
   const pending = state.curate.pendingJump;
   if (pending) { state.curate.pendingJump = null; jumpToCurateSection(pending); }
 
-  /** Reads one section's data the first time it is open; a cue shows in its slot at once. */
+  /** Reads one section's data the first time it is open; a cue shows in its slot at once. A read that fails
+   *  is NOT remembered as loaded: reopening the section, or the retry control, reads again. A read already in
+   *  flight is joined, so a jump into it still waits for it. */
   function loadSectionData(id) {
     const keys = LAZY_SECTIONS[id];
     const L = state.curate.loaded;
-    if (!keys || !L || L.slug !== slug) return null;
+    if (!keys || !L || L.slug !== slug || superseded()) return null;
     const work = [];
     const cueIn = (el, word) => { if (el) el.innerHTML = `<span class="text-caveat">${stateCue('running', word)}</span>`; };
+    const track = (k, promise) => {
+      L.p[k] = promise.then((ok) => { if (ok === false) L[k] = false; return ok; }, () => { L[k] = false; return false; })
+        .finally(() => { if (L.p[k] === tracked) delete L.p[k]; });
+      const tracked = L.p[k];
+      work.push(tracked);
+    };
     for (const k of keys) {
-      if (L[k]) continue;
+      if (L[k]) { if (L.p[k]) work.push(L.p[k]); continue; }
       L[k] = true;
       if (k === 'tree') {
         startPrefetch(slug, ['tree', 'diagram']);
         cueIn($('component-tree'), 'loading components');
-        work.push(renderComponentTree(slug));
+        track(k, Promise.resolve(renderComponentTree(slug)));
       } else if (k === 'blueprints') {
         startPrefetch(slug, ['blueprints']);
         cueIn($('blueprint-list'), 'loading blueprints');
-        work.push(renderBlueprintList(slug));
+        track(k, Promise.resolve(renderBlueprintList(slug)));
       } else if (k === 'deps') {
         const slot = host.querySelector('[data-dependency-table-host]');
         cueIn(slot, 'loading dependencies');
         // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
-        work.push(Promise.resolve(mountDependencyTable(slot, slug, { confirmable: true, me })));
+        track(k, Promise.resolve(mountDependencyTable(slot, slug, { confirmable: true, me })).then((r) => {
+          if (r === null && slot && slot.isConnected) {
+            slot.insertAdjacentHTML('beforeend', ' <button type="button" data-curate-retry="deps" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">retry</button>');
+            return false;
+          }
+          return true;
+        }));
       } else if (k === 'depth') {
         startPrefetch(slug, ['depth']);
-        work.push(renderCatalogueDepthOffer(slug, host));
+        track(k, Promise.resolve(renderCatalogueDepthOffer(slug, host)).then(() => true));
       }
     }
-    return work.length ? Promise.all(work.map((w) => Promise.resolve(w).catch(() => {}))) : null;
+    return work.length ? Promise.all(work).then(() => undefined) : null;
   }
+  const SECTION_OF = { tree: 'curate-sec-made-of', blueprints: 'curate-sec-blueprints', deps: 'curate-sec-relates' };
+  host.addEventListener('click', (ev) => {
+    const b = ev.target.closest && ev.target.closest('[data-curate-retry]');
+    if (!b) return;
+    const k = b.dataset.curateRetry;
+    if (state.curate.loaded) state.curate.loaded[k] = false;
+    loadSectionData(SECTION_OF[k] || '');
+  });
   function setupLazySections() {
+    if (superseded()) return;
     state.curate.loadSection = loadSectionData;
     for (const id of Object.keys(LAZY_SECTIONS)) if (document.getElementById(id)?.open) loadSectionData(id);
   }
@@ -897,7 +937,7 @@ export function leafRowHtml(l) {
     ? `<div class="pl-s2 text-provenance text-accent-ink">two extractors agree this is a component</div>` : '';
   const withdrawnLine = (l.withdrawn_by || []).length
     ? `<div class="pl-s2 text-provenance text-state-warn">⚠ review — no longer proposed by ${esc(l.withdrawn_by.join(', '))}</div>` : '';
-  return `<div class="flex flex-col gap-[1px] border-b border-rule py-[3px]">
+  return `<div data-leaf-path="${esc(l.path)}" data-leaf-undecided="${isUndecidedLeaf(l) ? '1' : '0'}" class="flex flex-col gap-[1px] border-b border-rule py-[3px]">
     <div class="flex flex-wrap items-baseline gap-x-s2 text-provenance">
       <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
       ${!multi ? `<span class="text-ink-muted">· ${l.type ? esc(l.type) : 'type not assigned · boundary only'}</span>` : ''}
@@ -985,8 +1025,8 @@ async function renderComponentTree(slug, prefix = '') {
   const stale = () => host._renderToken !== token || !host.isConnected;
   let tree;
   try { tree = await ((!prefix && takePrefetched(slug, 'tree')) || getComponentTree(slug, prefix)); }
-  catch (err) { if (!stale()) host.innerHTML = `<span class="text-accent-ink">${paneError('The components could not be read: ', err)}</span>`; return; }
-  if (slug !== state.selectedSlug || stale()) return;
+  catch (err) { if (!stale()) host.innerHTML = `<span class="text-accent-ink">${paneError('The components could not be read: ', err, 'tree')}</span>`; return false; }
+  if (slug !== state.selectedSlug || stale()) return true;
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   if (!tree.branches.length) {
     host.innerHTML = `<div class="text-caveat text-ink-muted">No components recovered on this resource yet.</div>
@@ -1103,20 +1143,29 @@ async function renderComponentTree(slug, prefix = '') {
       // Accept all / reject all for a whole group (a scope-hierarchy cluster such as compose-configs/optional-...).
       // Only the members with no verdict of their own are posted; the confirm says exactly that number.
       box.querySelectorAll('[data-group-verdict]').forEach((gb) => gb.addEventListener('click', () => {
-        const g = groups.find((x) => x.name === gb.dataset.group);
-        if (!g) return;
-        const todo = g.members.filter(isUndecidedLeaf);
+        // The undecided set is read from the rows on screen at PRESS time (never from a closure over an earlier
+        // read), and a batch in flight for this box is not started twice.
+        if (box._groupBusy) return;
+        const group = gb.closest('details[data-leaf-group]');
+        const rowsNow = group ? [...group.querySelectorAll('[data-leaf-path]')] : [];
+        const todo = rowsNow.filter((r) => r.dataset.leafUndecided === '1').map((r) => r.dataset.leafPath);
         if (!todo.length) return;
         const verdict = gb.dataset.groupVerdict;
-        recordVerdicts(slug, todo.map((m) => m.path), verdict, {
-          count: todo.length, low: todo.filter((m) => m.low_confidence).length, exists: 0, confirmAlways: true,
+        const known = new Map(((groups.find((x) => x.name === gb.dataset.group) || {}).members || []).map((m) => [m.path, m]));
+        recordVerdicts(slug, todo, verdict, {
+          count: todo.length, low: todo.filter((pth) => (known.get(pth) || {}).low_confidence).length, exists: 0, confirmAlways: true,
+          onStart: () => { box._groupBusy = true; },
+          onSettled: () => { box._groupBusy = false; },
           // after a failed batch: how many of the batch now carry the verdict (read fresh from the server)
           countRecorded: async () => {
             const again = await getComponentLeaves(slug, path);
             const now = new Map((again.leaves || []).map((l) => [l.path, l]));
-            return todo.filter((m) => { const v = (now.get(m.path) || {}).verdict; return v && v.verdict === verdict && !v.inherited_from; }).length;
+            return todo.filter((pth) => { const v = (now.get(pth) || {}).verdict; return v && v.verdict === verdict && !v.inherited_from; }).length;
           },
-        }, undefined, gb);
+        }, () => {
+          // the posted rows are decided now, before the refresh lands: a quick second press finds nothing left
+          todo.forEach((pth) => { const r = group && group.querySelector(`[data-leaf-path="${CSS.escape(pth)}"]`); if (r) r.dataset.leafUndecided = '0'; });
+        }, gb);
       }));
       box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {
         const leaf = out.leaves.find((x) => x.path === pb.dataset.portsOpen);
@@ -1316,8 +1365,8 @@ async function renderBlueprintList(slug) {
   if (!host) return;
   let data;
   try { data = await (takePrefetched(slug, 'blueprints') || getComponentBlueprints(slug)); }
-  catch (err) { host.innerHTML = `<span class="text-accent-ink">${paneError('The blueprints could not be read: ', err)}</span>`; return; }
-  if (slug !== state.selectedSlug) return;
+  catch (err) { host.innerHTML = `<span class="text-accent-ink">${paneError('The blueprints could not be read: ', err, 'blueprints')}</span>`; return false; }
+  if (slug !== state.selectedSlug) return true;
   const { blueprints, perspectives } = data;
   const selectorSlot = $('blueprint-selector');
   // What the commit table counts: blueprint VERDICTS on record (curate_plan.py, `blueprints_accepted`), which
@@ -1542,11 +1591,13 @@ function pressPhase(el, phase, word, title = '') {
   el.setAttribute('aria-busy', phase === 'pending' ? 'true' : 'false');
   el.innerHTML = stateCue(phase === 'pending' ? 'running' : phase === 'done' ? 'measured' : 'error', word, title);
 }
-function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirmAlways = false, countRecorded = null }, onDone, pressedEl = null) {
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirmAlways = false, countRecorded = null, onStart = null, onSettled = null }, onDone, pressedEl = null) {
   const status = $('component-tree-status');
   const accepting = verdict === 'accepted';
   const go = async () => {
     if (pressedEl && pressedEl.dataset.phase === 'pending') return;       // a second press is ignored
+    if (onStart) onStart();
+    try {
     pressPhase(pressedEl, 'pending', accepting ? 'accepting…' : 'rejecting…');
     if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
@@ -1578,6 +1629,7 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirm
       const st = $('component-tree-status') || status;
       if (st) st.innerHTML = `<span class="text-accent-ink">${words}</span>`;
     }
+    } finally { if (onSettled) onSettled(); }
   };
   if (confirmAlways && count < 1) return;
   if (!confirmAlways) {

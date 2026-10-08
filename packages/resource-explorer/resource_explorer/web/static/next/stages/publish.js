@@ -65,12 +65,12 @@ const num = (n) => `<span class="tnum">${esc(n ?? 0)}</span>`;
 const whoAmI = () => (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
 const stale = (el, slug) => !el.isConnected || slug !== state.selectedSlug;
 
-const cue = (stateKey, word) => {
+const cue = (stateKey, word, title = '') => {
   const e = stateEntry(stateKey);
   // The tone class is a literal in each branch (no class interpolation): ok, warn, or muted.
   const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
     : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
-  return `${open} data-cue="${esc(stateKey)}" title="${esc(e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
+  return `${open} data-cue="${esc(stateKey)}" title="${esc(title || e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
 };
 
 const guidHtml = (guid) => guid
