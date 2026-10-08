@@ -65,6 +65,7 @@ class RegPort(FakePort):
         self.process_error: Exception | None = None
         self.read_element_override = "unset"
         self.find_error: Exception | None = None
+        self.hide_from_find: set[str] = set()      # names find_element cannot see (read-by-GUID still can)
 
     def have(self, guid, qn):
         self.elements[guid] = qn
@@ -74,6 +75,8 @@ class RegPort(FakePort):
         self.calls.append(("find_element", qn))
         if self.find_error:
             raise self.find_error
+        if qn in self.hide_from_find:
+            return None
         for g, name in self.elements.items():
             if name == qn:
                 return cas.ElementBack(g, name)
@@ -558,3 +561,315 @@ class TestSweep:
         # the server survey is still in flight; the registration is finished and is not re-read
         nsr.sweep_in_flight(registry, port)
         assert not [c for c in port.calls if c[0] == "read_process"]
+
+
+# ═══ review round: duplicates, credentials, wording ═══════════════════════════
+
+from resource_explorer.registry import ProjectRegistry  # noqa: E402
+
+
+class FakeExpert:
+    def __init__(self, result=None, error=None):
+        self.result, self.error, self.calls = result, error, []
+
+    def get_metadata_element_by_unique_name(self, **kw):
+        self.calls.append(kw)
+        if self.error:
+            raise self.error
+        return self.result
+
+    def get_metadata_element_by_guid(self, guid):
+        self.calls.append(guid)
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def real_port(expert):
+    p = cas.PyegeriaRegistrationPort()
+    p._enter = lambda: None
+    p._get_expert = lambda: expert
+    return p
+
+
+def typed_not_found():
+    from pyegeria.core._exceptions import PyegeriaNotFoundException
+    return PyegeriaNotFoundException.__new__(PyegeriaNotFoundException)
+
+
+class TestAbsentIsOnlyTypedOrExact:
+    def test_a_typed_not_found_is_absent(self):
+        assert real_port(FakeExpert(error=typed_not_found())).find_element(SQN) is None
+
+    def test_the_exact_no_element_found_answer_is_absent(self):
+        assert real_port(FakeExpert(result="No element found")).find_element(SQN) is None
+
+    @pytest.mark.parametrize("sentence", ["user erinoverview not found", "type PostgreSQL Server not found",
+                                          "search index not found", "404 gateway"])
+    def test_any_other_error_refuses_with_egerias_sentence(self, sentence):
+        with pytest.raises(Exception) as exc:
+            real_port(FakeExpert(error=RuntimeError(sentence))).find_element(SQN)
+        assert sentence in str(exc.value)
+
+    def test_a_404_api_exception_by_code_is_absent_but_404_in_a_timeout_message_is_not(self):
+        from pyegeria.core._exceptions import PyegeriaAPIException
+        gone = PyegeriaAPIException.__new__(PyegeriaAPIException)
+        gone.related_http_code = 404
+        assert real_port(FakeExpert(error=gone)).read_element(DB_GUID) is None
+        timeout = PyegeriaAPIException.__new__(PyegeriaAPIException)
+        timeout.related_http_code = 504
+        with pytest.raises(Exception):
+            real_port(FakeExpert(error=timeout)).read_element(DB_GUID)
+        guid_404 = "0a404b3c-1111-2222-3333-444444444404"
+        with pytest.raises(Exception, match="timed out"):
+            real_port(FakeExpert(error=TimeoutError(f"read of {guid_404} timed out"))).read_element(guid_404)
+        unauthorized = PyegeriaAPIException.__new__(PyegeriaAPIException)
+        unauthorized.related_http_code = 401
+        with pytest.raises(Exception):
+            real_port(FakeExpert(error=unauthorized)).find_element(SQN)
+
+    def test_any_other_string_answer_refuses(self):
+        with pytest.raises(nsr.NativeSurveyError, match="entity type not found"):
+            real_port(FakeExpert(result="entity type not found")).find_element(SQN)
+
+    def test_read_element_by_guid_follows_the_same_rule(self):
+        assert real_port(FakeExpert(error=typed_not_found())).read_element(DB_GUID) is None
+        assert real_port(FakeExpert(result="No element found")).read_element(DB_GUID) is None
+        with pytest.raises(Exception, match="user x not found"):
+            real_port(FakeExpert(error=RuntimeError("user x not found"))).read_element(DB_GUID)
+
+    def test_asset_exists_reads_a_non_raising_no_element_found_as_absent(self):
+        assert real_port(FakeExpert(result="No element found")).asset_exists(DB_GUID) is False
+        assert real_port(FakeExpert(result={"elementGUID": DB_GUID})).asset_exists(DB_GUID) is True
+        with pytest.raises(nsr.NativeSurveyError):
+            real_port(FakeExpert(result="something odd")).asset_exists(DB_GUID)
+
+    def test_an_unrelated_not_found_error_creates_no_server(self, registry):
+        port = RegPort()
+        port.find_error = RuntimeError("user erinoverview not found")
+        with pytest.raises(nsr.NativeSurveyError, match="user erinoverview not found"):
+            register(registry, port)
+        assert port.created_servers == [] and port.processes == []
+
+
+class TestCreatedButNotConfirmed:
+    def _press_with_failed_readback(self, registry, port):
+        port.hide_from_find = {SQN}
+        port.read_element_override = None
+        with pytest.raises(nsr.NativeSurveyError):
+            register(registry, port)
+
+    def test_the_created_guid_is_recorded_and_no_server_pointer_is_stored(self, registry):
+        port = RegPort()
+        self._press_with_failed_readback(registry, port)
+        assert len(port.created_servers) == 1
+        assert registry.get_setting(cas.server_unconfirmed_key(SERVER_NAME)) == SERVER_GUID
+        assert registry.get_setting(cas.server_pointer_key(SERVER_NAME)) is None
+
+    def test_the_row_says_created_not_yet_confirmed_and_offers_the_press(self, registry):
+        port = RegPort()
+        self._press_with_failed_readback(registry, port)
+        rows = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}
+        assert "created, not yet confirmed: press to confirm" in rows[CATALOG_QN]["notes"]
+        assert rows[CATALOG_QN]["register"]["available"] is True
+
+    def test_the_second_press_adopts_that_guid_and_creates_nothing(self, registry):
+        port = RegPort()
+        self._press_with_failed_readback(registry, port)
+        port.read_element_override = "unset"            # Egeria now reads it back
+        out = register(registry, port)
+        assert len(port.created_servers) == 1
+        assert out["server"]["how"] == "adopted" and out["server"]["guid"] == SERVER_GUID
+        assert registry.get_setting(cas.server_pointer_key(SERVER_NAME)) == SERVER_GUID
+        assert not registry.get_setting(cas.server_unconfirmed_key(SERVER_NAME))
+
+    def test_an_unconfirmed_guid_under_another_name_is_refused_and_never_recreated(self, registry):
+        port = RegPort()
+        self._press_with_failed_readback(registry, port)
+        port.read_element_override = "unset"
+        port.elements[SERVER_GUID] = "PostgreSQL Server::derived-differently"
+        with pytest.raises(nsr.NativeSurveyError, match="derived-differently"):
+            register(registry, port)
+        assert len(port.created_servers) == 1
+        assert registry.get_setting(cas.server_pointer_key(SERVER_NAME)) is None
+
+    def test_an_unconfirmed_guid_that_truly_is_gone_may_be_created_again(self, registry):
+        port = RegPort()
+        self._press_with_failed_readback(registry, port)
+        port.read_element_override = "unset"
+        port.elements.pop(SERVER_GUID)                   # Egeria: typed not-found on the GUID
+        port.hide_from_find = set()
+        register(registry, port)
+        assert len(port.created_servers) == 2
+
+
+def age_run(registry, minutes=20):
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).replace(tzinfo=None).isoformat()
+    with registry._conn() as conn:
+        conn.execute("UPDATE step_runs SET surveyed_at = ? WHERE step_key LIKE ?", (old, "%CreateAndSurvey%"))
+
+
+class TestNoSecondDatabaseProcess:
+    def _complete_but_unreadable(self, registry, port):
+        register(registry, port)
+        run = registry.list_native_survey_runs("database", "adventureworks", CATALOG_QN)[0]
+        port.actions[run["engine_action_guid"]] = ("COMPLETED", "")
+        cas.refresh_registration_run(registry, port, run, entity_type="database", slug="adventureworks")
+        return run
+
+    def test_after_the_window_a_press_does_not_start_a_second_process(self, registry):
+        port = RegPort()
+        self._complete_but_unreadable(registry, port)
+        age_run(registry)
+        with pytest.raises(nsr.NativeSurveyBusy) as exc:
+            register(registry, port)
+        assert "Start again" in str(exc.value) and "99999999-0000-0000-0000-000000000001" in str(exc.value)
+        assert len(port.processes) == 1
+
+    def test_an_explicit_start_again_is_allowed_and_says_nothing_else(self, registry):
+        port = RegPort()
+        self._complete_but_unreadable(registry, port)
+        age_run(registry)
+        cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                 submitted_by="dan", start_again=True)
+        assert len(port.processes) == 2
+
+    def test_the_claim_is_taken_before_the_submit_so_a_crash_between_leaves_it(self, registry):
+        port = RegPort()
+        registry.set_setting(cas.claim_key("adventureworks"), "2026-10-08T00:00:00")   # a press that died
+        with pytest.raises(nsr.NativeSurveyBusy, match="Start again"):
+            register(registry, port)
+        assert port.processes == []
+
+    def test_a_claim_is_atomic_insert_if_absent(self, registry):
+        assert cas.take_claim(registry, "adventureworks") is True
+        assert cas.take_claim(registry, "adventureworks") is False
+
+    def test_a_refused_submission_releases_the_claim(self, registry):
+        port = RegPort()
+        port.process_error = RuntimeError("OMAG refused")
+        with pytest.raises(nsr.NativeSurveyError):
+            register(registry, port)
+        port.process_error = None
+        register(registry, port)
+        assert len(port.processes) == 1
+
+    def test_a_failed_process_releases_the_claim_and_may_be_pressed_again(self, registry):
+        port = RegPort()
+        register(registry, port)
+        run = registry.list_native_survey_runs("database", "adventureworks", CATALOG_QN)[0]
+        port.actions[run["engine_action_guid"]] = ("FAILED", "boom")
+        cas.refresh_registration_run(registry, port, run, entity_type="database", slug="adventureworks")
+        register(registry, port)
+        assert len(port.processes) == 2
+
+    def test_the_stalled_row_says_what_the_earlier_run_is_and_offers_start_again(self, registry):
+        port = RegPort()
+        run = self._complete_but_unreadable(registry, port)
+        age_run(registry)
+        row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
+        assert row["register"]["available"] and row["register"]["label"] == cas.START_AGAIN_LABEL
+        assert run["engine_action_guid"] in " ".join(row["notes"])
+
+    def test_a_database_found_by_name_needs_no_claim_and_resolves_one(self, registry):
+        port = RegPort()
+        registry.set_setting(cas.claim_key("adventureworks"), "x")
+        port.have(SERVER_GUID, SQN)
+        port.have(DB_GUID, DQN)
+        register(registry, port)
+        assert cas.take_claim(registry, "adventureworks") is True
+
+
+class TestServerConnectionCredentials:
+    def test_the_creator_is_recorded_and_a_second_database_row_says_whose_credentials(self, registry):
+        port = RegPort()
+        register(registry, port, "adventureworks")
+        assert registry.get_setting(cas.server_cred_key(SERVER_NAME)) == "adventureworks"
+        register(registry, port, "sibling")
+        rows = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "sibling", TECH)}
+        assert any("uses adventureworks's credentials" in n for n in rows[SERVER_SURVEY_QN]["notes"])
+        assert any("uses adventureworks's credentials" in n for n in rows[CATALOG_QN]["notes"])
+        first = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}
+        assert not any("uses" in n for n in first[CATALOG_QN]["notes"])
+
+    def test_a_different_user_name_is_said_plainly_and_a_secret_is_never_read(self, registry):
+        port = RegPort()
+        register(registry, port, "adventureworks")
+        sib = registry.get_database("sibling")
+        sib.db_user = "someone_else"
+        with registry._conn() as conn:
+            conn.execute("UPDATE databases SET db_user = ? WHERE slug = 'sibling'", ("someone_else",))
+        rows = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "sibling", TECH)}
+        text = " ".join(rows[SERVER_SURVEY_QN]["notes"])
+        assert "dwolfson" in text and "someone_else" in text and "differ" in text
+        assert PASSWORD not in json.dumps(rows, default=str)
+
+    def test_an_adopted_server_RE_did_not_create_says_it_does_not_know(self, registry):
+        port = RegPort()
+        port.have(SERVER_GUID, SQN)
+        register(registry, port)
+        rows = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}
+        assert any("not recorded" in n and "credentials" in n for n in rows[SERVER_SURVEY_QN]["notes"])
+
+
+class TestControlsAndProjection:
+    @pytest.mark.parametrize("state_fixture", ["failed", "submit_failed"])
+    def test_the_control_shows_after_a_failure(self, registry, state_fixture):
+        port = RegPort()
+        if state_fixture == "submit_failed":
+            port.process_error = RuntimeError("refused by egeria")
+            with pytest.raises(nsr.NativeSurveyError):
+                register(registry, port)
+        else:
+            register(registry, port)
+            run = registry.list_native_survey_runs("database", "adventureworks", CATALOG_QN)[0]
+            port.actions[run["engine_action_guid"]] = ("FAILED", "boom")
+            cas.refresh_registration_run(registry, port, run, entity_type="database", slug="adventureworks")
+        row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
+        assert row["register"]["available"] is True
+
+    def test_a_projection_write_is_reported_in_the_response(self, registry, tmp_path, monkeypatch):
+        monkeypatch.setattr("resource_explorer.omsecrets_store.local_path", lambda: str(tmp_path / "s.omsecrets"))
+        out = register(registry, RegPort())
+        assert out["projected"]["written"] is True and "adventureworks::PostgreSQL Secret" in out["projected"]["collection"]
+
+    def test_a_projection_that_fails_shows_its_reason_and_creates_nothing(self, registry, tmp_path, monkeypatch):
+        from resource_explorer import omsecrets_reproject as rp
+        monkeypatch.setattr("resource_explorer.omsecrets_store.local_path", lambda: str(tmp_path / "s.omsecrets"))
+        monkeypatch.setattr(rp, "reproject", lambda *a, **k: [rp.Outcome(
+            slug="adventureworks", collection="c", status=rp.ERROR, message="OSError: Permission denied")])
+        port = RegPort()
+        with pytest.raises(cas.RegistrationRefused, match="Permission denied"):
+            register(registry, port)
+        assert port.calls == []
+
+    def test_no_secrets_path_is_said_on_the_row_and_in_the_response(self, registry, monkeypatch):
+        monkeypatch.setattr("resource_explorer.omsecrets_store.local_path", lambda: "")
+        rows = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}
+        assert "secrets path not configured: RE cannot check Egeria's credentials" in rows[CATALOG_QN]["notes"]
+        assert register(registry, RegPort())["projected"]["checked"] is False
+
+
+class TestReachNoteWording:
+    @pytest.mark.parametrize("text", ['FATAL: role "surveyor" does not exist', "password authentication failed",
+                                      "FATAL: something"])
+    def test_a_role_or_password_failure_is_not_a_reach_problem(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == ""
+
+    @pytest.mark.parametrize("text", ["Connection refused", "connect timed out", "Network is unreachable",
+                                      "No route to host", "Connection reset by peer", "UnknownHostException x"])
+    def test_connection_class_failures_are(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == cas.REACH_NOTE
+
+
+class TestYamlErrorLogging:
+    def test_a_broken_file_logs_class_and_line_never_the_text(self, tmp_path, caplog):
+        from resource_explorer import omsecrets_store
+        p = tmp_path / "bad.omsecrets"
+        p.write_text("secretsCollections:\n  x:\n    secrets:\n      clearPassword: FAKEPW-123: [unclosed\n")
+        caplog.set_level(logging.DEBUG)
+        omsecrets_store._load(str(p))
+        assert "FAKEPW-123" not in caplog.text and "clearPassword" not in caplog.text
+        assert "YAMLError" in caplog.text or "ScannerError" in caplog.text or "ParserError" in caplog.text
+        assert "line" in caplog.text

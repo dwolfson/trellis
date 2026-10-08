@@ -226,3 +226,57 @@ test('an unwired kind says "this kind is not wired yet" on its row and offers no
   assert.equal(host.querySelector('[data-native-register]'), null);
   assert.ok(!host.textContent.includes('optional'), 'not the optional wording: this one cannot be registered at all');
 });
+
+// ── review round ────────────────────────────────────────────────────────────
+
+test('notes from persisted facts are drawn under the status, one line each', async () => {
+  const { document, ns } = await setUp();
+  const host = document.createElement('div');
+  host.innerHTML = ns.nativeSurveyRowHtml(catalogRow({ notes: [
+    'created, not yet confirmed: press to confirm',
+    "the server's connection uses adventureworks's credentials (collection adventureworks::PostgreSQL Secret), not this database's",
+    "secrets path not configured: RE cannot check Egeria's credentials"] }));
+  const notes = [...host.querySelectorAll('[data-native-note]')].map((n) => n.textContent);
+  assert.equal(notes.length, 3);
+  assert.ok(notes[1].includes("uses adventureworks's credentials"));
+});
+
+test('an unresolved earlier run offers "Start again →", and the press sends the explicit flag', async () => {
+  const { document, app } = await setUp();
+  const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
+  let sent = null;
+  stubFetch(paneRoutes([surveyRow(), catalogRow({
+    run: { ...blankRun, state: 'awaiting_registration', egeria_status: 'COMPLETED' },
+    notes: ['An earlier registration (process 99999999-0000-0000-0000-000000000001, Egeria says COMPLETED) has not produced a database RE can read in Egeria.'],
+    register: { available: true, label: 'Start again →', why_not: '', start_again: true } })], {
+    'POST /api/native-surveys/database/adventureworks/register': (url, opts) => {
+      sent = JSON.parse(opts.body);
+      return { registered: { projected: { written: true, checked: true } }, surveys: [catalogRow({ run: { ...blankRun, state: 'registered' } })] };
+    },
+  }));
+  await app.loadSurveyPane();
+  const btn = content.querySelector(`[data-native-survey="${CATALOG}"] [data-native-register]`);
+  assert.equal(btn.textContent.trim(), 'Start again →');
+  assert.ok(btn.dataset.nativeStartAgain);
+  assert.ok(content.textContent.includes('99999999-0000-0000-0000-000000000001'));
+  btn.click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, { start_again: true });
+  assert.match(content.textContent, /re-projected the secrets file \(a local write\)/);
+});
+
+test('the ordinary press does not send start_again', async () => {
+  const { document, app } = await setUp();
+  const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
+  let sent = null;
+  stubFetch(paneRoutes([surveyRow(), catalogRow()], {
+    'POST /api/native-surveys/database/adventureworks/register': (url, opts) => {
+      sent = JSON.parse(opts.body);
+      return { registered: { projected: {} }, surveys: [catalogRow({ run: { ...blankRun, state: 'registered' } })] };
+    },
+  }));
+  await app.loadSurveyPane();
+  content.querySelector(`[data-native-survey="${CATALOG}"] [data-native-register]`).click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, { start_again: false });
+});

@@ -131,6 +131,12 @@ class EgeriaSurveyPort(Protocol):
     def read_report(self, report_guid: str) -> ReportRead: ...
 
 
+def is_exact_absent(res: Any) -> bool:
+    """Egeria's exact non-raising "nothing there" answer. A string that only CONTAINS "not found"
+    (a user, a type, an index) is a different sentence and is never absence."""
+    return isinstance(res, str) and res.strip().rstrip(".").lower() == "no element found"
+
+
 def _iso(value: Any) -> str:
     """Egeria's timestamp (ISO string or epoch millis) as an ISO string; '' when
     it is neither. Not guessing: an unparseable value stays absent."""
@@ -211,19 +217,31 @@ class PyegeriaSurveyPort:
 
     @staticmethod
     def _is_not_found(exc: Exception) -> bool:
-        from pyegeria.core._exceptions import PyegeriaNotFoundException
+        """Gone = a typed PyegeriaNotFoundException, or a PyegeriaAPIException whose related_http_code is
+        exactly 404 (the code field, never the message text: a GUID containing "404" inside a timeout
+        sentence is NOT gone). Everything else -- unauthorized, transport, timeouts -- is unreadable."""
+        from pyegeria.core._exceptions import PyegeriaAPIException, PyegeriaNotFoundException
 
-        return isinstance(exc, PyegeriaNotFoundException)
+        if isinstance(exc, PyegeriaNotFoundException):
+            return True
+        return isinstance(exc, PyegeriaAPIException) and str(getattr(exc, "related_http_code", "")) == "404"
 
     def asset_exists(self, guid: str) -> bool:
+        from resource_explorer.catalogue_gateway import _guid_of
+
         self._enter()
         try:
-            self._get_expert().get_metadata_element_by_guid(guid)
+            res = self._get_expert().get_metadata_element_by_guid(guid)
         except Exception as exc:  # noqa: BLE001 -- classified below
             if self._is_not_found(exc):
                 return False
             raise
-        return True
+        if is_exact_absent(res):
+            return False
+        if isinstance(res, dict) and _guid_of(res):
+            return True
+        raise NativeSurveyError("Egeria answered a read of " + guid + " with something other than an element: "
+                                + " ".join(str(res).split())[:300])
 
     def initiate(self, process_qualified_name: str, action_target_name: str,
                  target_guid: str) -> str:
@@ -559,6 +577,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
             "run": derived,
             "reach_note": cas.reach_note_for(derived),
+            "notes": (cas.server_credential_notes(registry, entity)
+                      if process.target == "server" and hasattr(entity, "db_type") else []),
         }
         if hasattr(entity, "db_type"):
             wiring = cas.wiring_reason(entity_type, technology_type, entity)
@@ -583,6 +603,8 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
     # A pointer Egeria answered "no such element" to is not a registration.
     has_ptr = has_ptr and not stale
     derived = cas.derive_catalog_state(latest, has_pointer=has_ptr)
+    in_flight = cas.catalog_in_flight(derived, latest)
+    live = entity is not None and hasattr(entity, "db_type") and not wiring
     return {
         "qualified_name": process.qualified_name,
         "display_name": process.display_name,
@@ -595,12 +617,13 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "stale": stale,
         "credentials": PRESENT,
         "credentials_note": "",
-        "in_flight": cas.catalog_in_flight(derived, latest),
+        "in_flight": in_flight,
         "run": derived,
         "reach_note": cas.reach_note_for(derived),
+        "notes": cas.catalog_notes(registry, entity_type, entity, latest, derived, in_flight) if live else [],
         "asset_guid": (getattr(entity, "egeria_asset_guid", "") or "") if entity is not None else "",
-        "register": {"available": not wiring and derived["state"] in (cas.NOT_REGISTERED,),
-                     "label": cas.REGISTER_LABEL, "why_not": wiring},
+        "register": cas.register_control(registry, entity, derived, in_flight, wiring) if live
+        else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False},
     }
 
 

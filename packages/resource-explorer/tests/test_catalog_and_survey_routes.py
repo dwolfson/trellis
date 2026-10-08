@@ -118,3 +118,25 @@ def test_running_a_survey_on_a_gone_asset_is_422_with_the_new_words(client, port
                     json={"process_qualified_name": "PostgreSQLSurvey::survey-postgres-database"})
     assert r.status_code == 422 and "no longer exists" in r.json()["detail"]
     assert "Publish the resource" not in r.json()["detail"]
+
+
+def test_a_second_press_after_an_unresolved_run_is_409_and_start_again_is_explicit(client, port, registry):
+    from tests.test_catalog_and_survey import age_run
+    assert client.post(f"{BASE}/adventureworks/register").status_code == 200
+    run = registry.list_native_survey_runs("database", "adventureworks", CATALOG_QN)[0]
+    port.actions[run["engine_action_guid"]] = ("COMPLETED", "")
+    client.post(f"{BASE}/adventureworks/refresh")
+    age_run(registry)
+    r = client.post(f"{BASE}/adventureworks/register")
+    assert r.status_code == 409 and "Start again" in r.json()["detail"]
+    assert len(port.processes) == 1
+    row = by_qn(client.get(f"{BASE}/adventureworks"))[CATALOG_QN]
+    assert row["register"]["start_again"] is True
+    r = client.post(f"{BASE}/adventureworks/register", json={"start_again": True})
+    assert r.status_code == 200 and len(port.processes) == 2
+
+
+def test_the_response_says_whether_the_secrets_file_was_reprojected(client, port, tmp_path, monkeypatch):
+    monkeypatch.setattr("resource_explorer.omsecrets_store.local_path", lambda: str(tmp_path / "s.omsecrets"))
+    r = client.post(f"{BASE}/adventureworks/register")
+    assert r.json()["registered"]["projected"]["written"] is True

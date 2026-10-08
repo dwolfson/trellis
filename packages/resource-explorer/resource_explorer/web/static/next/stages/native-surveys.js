@@ -157,15 +157,17 @@ export function nativeSurveyRowHtml(row) {
       <div class="mt-[2px] text-provenance text-ink-muted" data-native-status>${nativeSurveyStatusHtml(row)}</div>
       ${row.credentials_note ? `<div class="mt-[2px] text-provenance text-ink-muted"><span class="text-ink-muted" title="not confirmed either way">?</span> ${esc(row.credentials_note)}</div>` : ''}
       ${reachNoteHtml(row)}
+      ${(row.notes || []).map((n) => `<div class="mt-[2px] text-provenance text-ink-muted" data-native-note>${esc(n)}</div>`).join('')}
       ${row.description ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
       ${discoveredDatabasesHtml(row)}
     </div>
-    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
+    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? 'data-native-start-again="1"' : ''} ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${esc(row.register.label)}</button>` : ''}
     ${row.runnable ? `<button type="button" data-native-run="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border ${busy ? 'border-rule-strong text-ink-muted' : 'border-accent text-accent-ink'} bg-transparent px-2 py-[2px] text-caveat"
       >${busy ? 'in flight' : (ran ? 'Run again in Egeria →' : 'Run in Egeria →')}</button>` : ''}
+    <span data-native-info="${esc(row.qualified_name)}" class="hidden w-full text-provenance text-ink-muted"></span>
     <span data-native-error="${esc(row.qualified_name)}" class="hidden w-full text-provenance text-state-warn"></span>
   </div>`;
 }
@@ -248,13 +250,25 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
     }));
     // Registering is a choice made with a press. The press shows at once that it was pressed
     // (disabled, "registering…"), and the result repaints from the server's rows -- never from the click.
-    const register = async (b, targetSlug, qn) => {
+    const showInfo = (qn, msg) => {
+      const slot = [...host.querySelectorAll('[data-native-info]')].find((e) => e.dataset.nativeInfo === qn);
+      if (!slot || !msg) return;
+      slot.textContent = msg;
+      slot.classList.remove('hidden');
+    };
+    const register = async (b, targetSlug, qn, startAgain = false) => {
       const label = b.textContent;
       b.disabled = true;
       b.textContent = 'registering…';
       try {
-        const res = await registerWithEgeria(targetSlug, { entityType: apiEntityType(state.resourceType) });
-        if (targetSlug === slug) paint(res.surveys);
+        const res = await registerWithEgeria(targetSlug, { entityType: apiEntityType(state.resourceType), startAgain });
+        if (targetSlug === slug) {
+          paint(res.surveys);
+          const proj = (res.registered && res.registered.projected) || {};
+          // Said, never silent: the press may have written the local secrets file.
+          showInfo(qn, proj.written ? 'RE re-projected the secrets file (a local write) so Egeria can read this database\'s credentials' : '');
+          showInfo(qn, proj.checked === false ? proj.reason : '');
+        }
         else {
           b.textContent = 'registered · see that database';
         }
@@ -269,7 +283,7 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       }
     };
     host.querySelectorAll('[data-native-register]').forEach((b) => b.addEventListener('click',
-      () => register(b, slug, b.dataset.nativeRegister)));
+      () => register(b, slug, b.dataset.nativeRegister, !!b.dataset.nativeStartAgain)));
     host.querySelectorAll('[data-native-register-slug]').forEach((b) => b.addEventListener('click',
       () => register(b, b.dataset.nativeRegisterSlug, '')));
     host.querySelectorAll('[data-native-report]').forEach((b) => b.addEventListener('click',

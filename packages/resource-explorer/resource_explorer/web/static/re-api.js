@@ -1037,8 +1037,8 @@ export const refreshNativeSurveys = (slug, { entityType } = {}) =>
   post(`${nativePath(slug, requireKind('refreshNativeSurveys', entityType))}/refresh`);
 /** Register this database's SERVER with Egeria (optional; a press, never automatic) and read the stored
  *  pointers back from Egeria (`check` -- read-only; a pointer is 'gone' only when Egeria says no such element). */
-export const registerWithEgeria = (slug, { entityType } = {}) =>
-  post(`${nativePath(slug, requireKind('registerWithEgeria', entityType))}/register`);
+export const registerWithEgeria = (slug, { entityType, startAgain = false } = {}) =>
+  post(`${nativePath(slug, requireKind('registerWithEgeria', entityType))}/register`, { start_again: !!startAgain });
 export const checkNativeSurveyPointers = (slug, { entityType } = {}) =>
   post(`${nativePath(slug, requireKind('checkNativeSurveyPointers', entityType))}/check`);
 export const getNativeSurveyReport = (slug, reportGuid, { entityType } = {}) =>

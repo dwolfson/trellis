@@ -126,8 +126,14 @@ async def check_native_survey_pointers(entity_type: str, slug: str) -> dict:
     return await asyncio.to_thread(_do)
 
 
+class RegisterRequest(BaseModel):
+    #: The person's explicit "start again": submit a second database process even though an earlier one
+    #: has not resolved. Never implied.
+    start_again: bool = False
+
+
 @router.post("/{entity_type}/{slug}/register")
-async def register_with_egeria(entity_type: str, slug: str) -> dict:
+async def register_with_egeria(entity_type: str, slug: str, body: RegisterRequest = RegisterRequest()) -> dict:
     """The one press that WRITES to Egeria here: register this database's SERVER (adopting it if it is
     already there), submit Egeria's server survey, and have Egeria's own process create the database.
     Optional -- nothing else in RE needs it. See `catalog_and_survey.py` for each write and read-back."""
@@ -143,7 +149,8 @@ async def register_with_egeria(entity_type: str, slug: str) -> dict:
     def _do() -> dict:
         with nsr.port_session(_port()) as port:
             return cas.register_with_egeria(registry, port, entity_type, slug,
-                                            technology_type=tech, submitted_by=submitted_by)
+                                            technology_type=tech, submitted_by=submitted_by,
+                                            start_again=body.start_again)
 
     try:
         result = await asyncio.to_thread(_do)
@@ -161,7 +168,8 @@ async def register_with_egeria(entity_type: str, slug: str) -> dict:
         summary=(f"Registered {slug}'s server with Egeria ({result['server'].get('how')}, "
                  f"server {result['server'].get('guid')}); database: {result['database'].get('how')}"),
         detail={"server": result["server"], "database": result["database"],
-                "submitted_by": submitted_by})
+                "secrets_file_reprojected": bool(result["projected"]["written"]),
+                "start_again": body.start_again, "submitted_by": submitted_by})
     return {"registered": result, "surveys": await asyncio.to_thread(
         nsr.native_survey_rows, registry, entity_type, slug, tech)}
 

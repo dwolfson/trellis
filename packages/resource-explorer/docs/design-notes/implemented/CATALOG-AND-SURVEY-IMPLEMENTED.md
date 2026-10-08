@@ -119,6 +119,35 @@ is untouched and ON), nothing in Curate's catalogue commit, and no DDL.
 * Front end: `native-surveys.js`, `re-api.js`, two neutral cues in `glyphs.js` (`optional`, `gone`).
 * No registry DDL; `registry.py` untouched. The server pointer uses the existing `app_settings` key/value table.
 
+## Review round (2026-10-08): no duplicate elements
+
+* **Absence is typed or exact, never inferred.** `find_element` / `read_element` / `asset_exists` treat only a
+  `PyegeriaNotFoundException` or the exact answer "No element found" as absent. Any other error, or a string that merely
+  contains "not found" (a user, a type, an index), refuses with Egeria's sentence and creates nothing.
+  The rule matches the shared one being written on re/blueprint-container-shape (`egeria_absence.is_absent`): gone is the
+  exact "No element found" answer, a `PyegeriaNotFoundException`, or a `PyegeriaAPIException` whose `related_http_code` is
+  404 (the code, never message text, so a GUID containing "404" in a timeout sentence is not gone); unauthorized, transport
+  and everything else is unreadable. **Follow-up:** once both branches are merged, the shared helper should replace the
+  local check (`PyegeriaSurveyPort._is_not_found`, `is_exact_absent`).
+* **Created but not confirmed.** The server GUID the template create returned is recorded (`egeria_server_unconfirmed::…`)
+  BEFORE the read-back. If the read-back fails or mismatches, no pointer is stored, the row says "created, not yet
+  confirmed: press to confirm", and the next press reads that GUID first and adopts it; a GUID under a different name is
+  refused (never re-created); only Egeria's typed not-found on that GUID lets a new create happen.
+* **No second database process.** An atomic insert-if-absent claim (`egeria_register_claim::<slug>`, existing `app_settings`
+  table, no DDL) is taken before the process is submitted. Any press while a claim is held and unresolved is refused (409),
+  saying what the earlier run is (process GUID, Egeria's status, time); the row offers "Start again →", which sends an explicit
+  `start_again`. The claim is released when the database is read back and pointed at, when Egeria's own terminal failure word is
+  read, when Egeria refuses the submit, or when the database is adopted by name.
+* **The shared server's credentials.** The slug whose collection the server element was created with is recorded; every other
+  database on that host:port shows "the server's connection uses <first>'s credentials", and, comparing registry `db_user` names
+  only (no secret read), says when the user names differ. A server RE did not create says its credentials were not recorded.
+* The register control also shows after a failed or refused run and after a stalled awaiting state. The response and the UI say
+  when the press re-projected the secrets file (a local write) and show the projection's own reason when it fails; with no
+  secrets path configured the row says "secrets path not configured: RE cannot check Egeria's credentials".
+* The "connects from its own platform" line is connection-class wording only (refused, timed out, unreachable, no route,
+  connection reset, unknown host); a role or password failure gets none.
+* `omsecrets_store._load` logs a YAML error's class and line number only, never its text (it can echo the offending line).
+
 ## Optional by design
 
 Registering is a press; nothing requires it and nothing nags. A never-registered database shows a **neutral** state
@@ -150,6 +179,14 @@ survey this database itself".
    failed", never guessed); and whether `create_elem_from_template` with the server template derives the qualifiedName
    `PostgreSQL Server::<host:port>` on this build (rehearsal 1 evidence says yes; a mismatch makes the read-back refuse and
    store nothing).
+
+6. **Unverified live (added in review):** the zones a template-created server gets. Egeria's template definition passes no
+   zone, so RE expects none, but whether the server-side template instantiation adds a ZoneMembership classification is not
+   established; RE sends none and writes none, and this must be checked against the configured-only zone rule on the first
+   gated press (read the created element's classifications).
+7. **Unverified live:** the template-derived qualifiedNames (server `PostgreSQL Server::<host:port>`, database
+   `PostgreSQL Relational Database::<host:port>::<db>`); a mismatch now fails safe (recorded GUID, refusal, never a second create).
+8. **Unverified live:** whether the process instance carries an `activityStatus` (fallback: its first engine action).
 
 ## Verified
 
