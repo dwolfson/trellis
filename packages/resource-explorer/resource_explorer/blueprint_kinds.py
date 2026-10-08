@@ -55,18 +55,74 @@ def blueprint_kind_name(label: str, perspective: str) -> str:
     return f"{label} {kind_word(perspective)} Blueprint"
 
 
-def blueprint_display_name(label: str, perspective: str, cluster_name: str, *, sole_root: bool) -> str:
+def blueprint_display_name(label: str, perspective: str, cluster_name: str, *, sole_root: bool,
+                           identifier: str = "") -> str:
     """The displayName RE writes for one candidate blueprint. The top blueprint of a reading, when it
     is the only one, IS the repository's blueprint of that kind and takes the plain name; any other
     cluster keeps its own name beneath the kind, so two clusters never share a display name."""
     base = blueprint_kind_name(label, perspective)
+    if identifier:                  # a person's identifier names the second one, not the cluster's root
+        return f"{base} \u00b7 {identifier}"
     return base if sole_root else f"{base} · {cluster_name}"
 
 
 def qualified_name_slot(perspective: str) -> str:
-    """What stands in the `<perspective>` slot of `SolutionBlueprint::<type>::<slug>::<slot>::<name>`
-    for a NEW blueprint: the kind, spelled as in the display name ("Deployment Blueprint")."""
+    """The `<slot>` of the LEGACY (#556) form `SolutionBlueprint::<type>::<slug>::<slot>::<cluster>`:
+    the kind, spelled as in the display name ("Deployment Blueprint"). Kept ONLY to recognise and adopt
+    a blueprint written in that form; nothing is created under it any more."""
     return f"{kind_word(perspective)} Blueprint"
+
+
+# ── the Egeria identity of a blueprint: KIND + REPOSITORY (architect's ruling, 2026-10-08) ──────────────────
+#
+# `SolutionBlueprint::<entity_type>::<slug>::<kind>` (kind lower-case, last segment), plus an optional
+# `::<identifier>` a PERSON gives a second blueprint of the same kind. The root cluster's name is never in it.
+
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._\-]{0,63}")
+
+
+def validate_identifier(raw: str | None) -> str:
+    """The identifier as it will be stored: trimmed. None or "" means none given. A given identifier must
+    start with a letter or digit and hold only letters, digits, space, '.', '_' and '-' (never a '::'
+    separator). Raises ValueError, with the reason, otherwise."""
+    if not raw:
+        return ""
+    text = raw.strip()
+    if not text:
+        raise ValueError("the identifier is empty")
+    if "::" in text:
+        raise ValueError("the identifier must not contain '::'")
+    if not _IDENTIFIER.fullmatch(text):
+        raise ValueError("the identifier may hold letters, digits, space, '.', '_' and '-' only "
+                         "(up to 64, starting with a letter or digit)")
+    return text
+
+
+def identity_qualified_name(entity_type: str, slug: str, perspective: str, identifier: str = "") -> str:
+    """`SolutionBlueprint::<type>::<slug>::<kind>[::<identifier>]`: no cluster name anywhere in it."""
+    base = f"SolutionBlueprint::{entity_type}::{slug}::{kind_key(perspective)}"
+    return f"{base}::{identifier}" if identifier else base
+
+
+def legacy_qualified_names(entity_type: str, slug: str, perspective: str, cluster_name: str) -> list[str]:
+    """The two OLDER forms, newest first, that carry the cluster's name: the #556 form (kind slot) and the
+    pre-#556 form (perspective slot). Adopt-only: a blueprint found under one is used, never duplicated and
+    never created again."""
+    return [f"SolutionBlueprint::{entity_type}::{slug}::{qualified_name_slot(perspective)}::{cluster_name}",
+            f"SolutionBlueprint::{entity_type}::{slug}::{perspective}::{cluster_name}"]
+
+
+def identity_property(slug: str, perspective: str, identifier: str = "") -> str:
+    """The Egeria `identifier` the way the owner's own blueprints carry it: `<SLUG>-<KIND>`, upper-case with
+    hyphens ("EGERIA-GIT-DEPLOYMENT"); a person's identifier, when there is one, follows the kind."""
+    def up(text: str) -> str:
+        return re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").upper()
+    return "-".join(p for p in (up(slug), up(kind_key(perspective)), up(identifier)) if p)
+
+
+def identifier_needed_sentence(perspective: str, slug: str) -> str:
+    """Said when a second blueprint of a kind is accepted for a repository without an identifier."""
+    return f"a {kind_word(perspective)} Blueprint already exists for {slug} \u00b7 give this one an identifier"
 
 
 def blueprint_kind_rows(*, label: str, blueprints: list[dict], artifact_count: int,

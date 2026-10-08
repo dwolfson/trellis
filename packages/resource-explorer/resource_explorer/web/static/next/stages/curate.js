@@ -1078,12 +1078,13 @@ async function renderBlueprintList(slug) {
 function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
   const status = $('blueprint-status');
   let chosenShape = '';   // a person's flip of the shape; '' takes the default the plan names
+  let chosenIdentifier = '';   // a person's identifier, asked for only for a second blueprint of the kind
   const go = async () => {
     if (pressedEl && pressedEl.dataset.phase === 'pending') return;
     pressPhase(pressedEl, 'pending', verdict === 'accepted' ? 'accepting…' : 'rejecting…');
     if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
-      const res = await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict, '', chosenShape);
+      const res = await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict, '', chosenShape, chosenIdentifier);
       pressPhase(pressedEl, 'done', verdict === 'accepted' ? 'accepted' : 'rejected');
       await renderBlueprintList(slug);
       // Direct memberships left by an earlier run are reported, never removed.
@@ -1107,14 +1108,70 @@ function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
     <p class="text-caveat text-ink-muted">${memberCount ? `<span class="tnum">${memberCount}</span> proposed member${memberCount === 1 ? '' : 's'}, but this does not accept or materialize them —
       only members already accepted and cataloged on their own get queued to link, and that queue is not confirmed done by the time this pane reads it back.` : 'This cluster has no proposed members.'}</p>
     ${shapeManifestHtml(bp.shape_plan)}
+    ${identifierBoxHtml(bp.identity)}
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
       <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Accept</button>
       <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
     </div>`;
-  body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
+  const identifierBox = wireIdentifier(body, bp.identity);
+  body.querySelector('[data-act="confirm"]').addEventListener('click', () => {
+    // A second blueprint of a kind needs a person's identifier: not given or not valid, nothing is sent.
+    if (identifierBox && !identifierBox.check()) return;
+    chosenIdentifier = identifierBox ? identifierBox.value() : '';
+    closeCellDetail(); go();
+  });
   // The shape is flipped here, before the write (see wireShapeFlip).
   if (bp.shape_plan) wireShapeFlip(body, bp.shape_plan, (shape) => { chosenShape = shape; });
+}
+
+/** Why a typed identifier cannot be used, or '' when it can. Mirrors blueprint_kinds.validate_identifier,
+ *  which the server runs again. */
+export function identifierProblem(raw) {
+  const text = (raw || '').trim();
+  if (!text) return 'needed';
+  if (text.includes('::')) return 'no "::"';
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(text)) return 'not valid';
+  return '';
+}
+
+/** The identifier input, shown ONLY when a blueprint of this kind already exists for the repository (the
+ *  identity is kind + repository; a second one is named by a person, never by its root cluster). State is a
+ *  short word beside the field; the sentence is on demand (the field's title). */
+export function identifierBoxHtml(identity) {
+  if (!identity || !identity.needs_identifier) return '';
+  return `<div data-identifier-box class="mt-s2 border-t border-rule pt-s2" title="${esc(identity.sentence || '')}">
+    <label class="text-caveat text-ink"><span class="text-chrome-muted">identifier</span> ·
+      <input data-identifier-input type="text" maxlength="64" autocomplete="off" aria-invalid="false"
+        class="rounded-sm border border-rule bg-transparent px-2 py-[2px] font-mono text-caveat text-ink"></label>
+    <span data-identifier-word class="text-provenance text-ink-muted">needed</span>
+  </div>`;
+}
+
+/** Wires the identifier input. Returns null when none is shown; otherwise {value(), check()}: `check()`
+ *  says the problem as a word beside the field and returns whether the identifier can be sent. */
+export function wireIdentifier(root, identity) {
+  const input = root.querySelector('[data-identifier-input]');
+  if (!identity?.needs_identifier || !input) return null;
+  const word = root.querySelector('[data-identifier-word]');
+  const show = (problem, loud) => {
+    input.setAttribute('aria-invalid', problem && loud ? 'true' : 'false');
+    input.classList.toggle('border-accent', Boolean(problem && loud));
+    if (word) {
+      word.textContent = problem || 'ready';
+      word.classList.toggle('text-accent-ink', Boolean(problem && loud));
+    }
+  };
+  input.addEventListener('input', () => show(identifierProblem(input.value), false));
+  return {
+    value: () => input.value.trim(),
+    check: () => {
+      const problem = identifierProblem(input.value);
+      show(problem, true);
+      if (problem && input.focus) input.focus();
+      return !problem;
+    },
+  };
 }
 
 /** Wires the Container/Contents options in the dialog. A click is an EXPLICIT choice and is reported even

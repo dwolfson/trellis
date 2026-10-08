@@ -100,6 +100,11 @@ class BlueprintMaterializationError(RuntimeError):
     shape as materializer.py's MaterializationError."""
 
 
+class BlueprintIdentifierNeeded(BlueprintMaterializationError):
+    """A second blueprint of a kind was accepted for a repository with no identifier. Raised BEFORE any
+    search or create: nothing was written. The message is the sentence the pane shows."""
+
+
 class BlueprintMaterializer:
     """Owns its own lightweight Egeria connection rather than reusing
     EgeriaPublisher or ComponentMaterializer — mirrors ComponentMaterializer's
@@ -200,15 +205,25 @@ class BlueprintMaterializer:
 
     @staticmethod
     def qualified_name_for(entity_type: str, entity_slug: str, perspective: str, cluster_name: str) -> str:
-        """`SolutionBlueprint::{entity_type}::{entity_slug}::{perspective}::{cluster_name}`
-        — same naming shape as ComponentMaterializer.qualified_name_for and
-        every other qualifiedName in this codebase: kind, then the path that
-        makes it unique. A blueprint has no scope_locator (clustering.py's
-        candidate_blueprint findings all share scope_locator=""), so its
-        identity is (perspective, cluster_name) instead — the two are
-        confirmed unique together (no two clusters share a name within one
-        perspective, per clustering.propose's own grouping key)."""
+        """The PRE-#556 form `SolutionBlueprint::{entity_type}::{entity_slug}::{perspective}::{cluster_name}`.
+        LEGACY: it carries the root cluster's name, which the architect's ruling (2026-10-08) took out of a
+        blueprint's identity. Kept only so a blueprint written under it is recognised and adopted; nothing is
+        created under it. The identity RE writes is `blueprint_kinds.identity_qualified_name` (kind + repository)."""
         return f"SolutionBlueprint::{entity_type}::{entity_slug}::{perspective}::{cluster_name}"
+
+    def _log_legacy_adoption(self, entity_type: str, entity_slug: str, guid: str) -> None:
+        """Say, in the activity log, why a blueprint still carries a root name. Never raises: it is the
+        visibility mechanism, not the work."""
+        if not self._registry:
+            return
+        try:
+            from resource_explorer.activity_logger import log_catalog
+            log_catalog(
+                self._registry, entity_type, entity_slug, "", "", status="ok",
+                summary=f"adopted legacy-named blueprint {guid} \u00b7 delete it in Egeria to recreate under the new name",
+            )
+        except Exception:
+            log.warning("could not write the legacy-adoption activity row for %s", guid, exc_info=True)
 
     def materialize_blueprint_element(
         self,
@@ -219,13 +234,27 @@ class BlueprintMaterializer:
         *,
         display_name: str,
         oversized: bool = False,
-        kind_slot: str = "",
         verify_cached: bool = False,
+        identifier: str = "",
+        live_clusters: set[str] | None = None,
     ) -> dict:
         """Find-or-create ONLY the SolutionBlueprint element itself (Draft,
         via NewSolutionElementRequestBody — see the module docstring's
         divergence note). Synchronous, same shape as
         ComponentMaterializer.materialize().
+
+        **Identity: kind + repository** (architect's ruling, 2026-10-08):
+        `SolutionBlueprint::<type>::<slug>::<kind>[::<identifier>]` (`blueprint_kinds.identity_qualified_name`).
+        The root cluster's name is NOT in it and not in the cache key: the cluster name is RE's internal key,
+        kept on the registry row. A second blueprint of a kind needs a PERSON's `identifier` (never derived
+        from a cluster name); without one it is refused before anything is created.
+
+        Blueprints written before that carry the cluster's name (two older forms,
+        `blueprint_kinds.legacy_qualified_names`): they are ADOPTED, never duplicated and never created
+        again, and the adoption is written to the activity log.
+
+        `live_clusters` (optional): the names of the clusters that exist now; a registry row under the same
+        identity for a cluster not among them is stale (re-clustered) and is taken over.
 
         Returns {"status": "already_materialized" | "materialized",
         "guid": ..., "qualified_name": ...}. Raises
@@ -234,17 +263,27 @@ class BlueprintMaterializer:
         alongside the verdict, which is already saved and does not get
         rolled back.
         """
-        legacy_qualified_name = self.qualified_name_for(entity_type, entity_slug, perspective, cluster_name)
-        # `kind_slot` (brief section 4, owner 2026-10-07): the KIND stands in the `<perspective>` slot
-        # of a NEW blueprint's qualifiedName ("Deployment Blueprint"). A blueprint written before that
-        # carries the bare perspective; it is ADOPTED below (never a second element), not renamed.
-        qualified_name = (self.qualified_name_for(entity_type, entity_slug, kind_slot, cluster_name)
-                          if kind_slot else legacy_qualified_name)
+        from resource_explorer.blueprint_kinds import (
+            identifier_needed_sentence,
+            identity_property,
+            identity_qualified_name,
+            kind_word,
+            legacy_qualified_names,
+            validate_identifier,
+        )
+        try:
+            identifier = validate_identifier(identifier)
+        except ValueError as exc:
+            raise BlueprintMaterializationError(f"{exc}: nothing was created") from exc
+        qualified_name = identity_qualified_name(entity_type, entity_slug, perspective, identifier)
+        legacy_names = legacy_qualified_names(entity_type, entity_slug, perspective, cluster_name)
 
         # Local cache first — same shape as ComponentMaterializer.materialize's
         # cached-GUID check, and for the same reason: a repeat accept
         # (re-running the survey, or a retried request) should not cost a
-        # search call, let alone a create.
+        # search call, let alone a create. The cluster's own row is read whatever name it was written
+        # under (the registry's (..., perspective, cluster_name) key is the legacy key, read through the
+        # mapping: a row whose qualifiedName is one of the old forms is an ADOPTED legacy blueprint).
         if self._registry:
             cached = self._registry.get_materialized_blueprint(
                 entity_type, entity_slug, perspective, cluster_name
@@ -254,13 +293,28 @@ class BlueprintMaterializer:
                 # since deleted in Egeria must not be re-attached to. Read it by GUID; gone means create
                 # afresh. An UNREADABLE answer is not "gone" and raises, so the cache is never wiped on a
                 # connection problem.
+                hit = {"status": "already_materialized", "guid": cached["guid"],
+                       "qualified_name": cached["qualified_name"]}
                 if not verify_cached:
-                    return {"status": "already_materialized", "guid": cached["guid"],
-                            "qualified_name": cached["qualified_name"]}
+                    if cached["qualified_name"] in legacy_names:
+                        self._log_legacy_adoption(entity_type, entity_slug, cached["guid"])
+                    return hit
                 self._ensure_connected()
                 if self.blueprint_exists(cached["guid"]):
-                    return {"status": "already_materialized", "guid": cached["guid"],
-                            "qualified_name": cached["qualified_name"]}
+                    if cached["qualified_name"] in legacy_names:
+                        self._log_legacy_adoption(entity_type, entity_slug, cached["guid"])
+                    return hit
+
+            # A second blueprint of the kind: another LIVE cluster already holds this identity.
+            other = self._registry.get_materialized_blueprint_by_identity(
+                entity_type, entity_slug, qualified_name)
+            if (isinstance(other, dict) and other.get("cluster_name") != cluster_name
+                    and (live_clusters is None or other.get("cluster_name") in live_clusters)):
+                if not identifier:
+                    raise BlueprintIdentifierNeeded(identifier_needed_sentence(perspective, entity_slug))
+                raise BlueprintMaterializationError(
+                    f"the identifier {identifier!r} is already used by another {kind_word(perspective)} "
+                    f"Blueprint for {entity_slug} \u00b7 give this one a different identifier: nothing was created")
 
         if not verify_cached:
             self._connect()
@@ -269,12 +323,15 @@ class BlueprintMaterializer:
 
         # A search that cannot be read is not a search that found nothing: creating on it could duplicate a
         # blueprint that is there (an outage, an index lag). Refuse instead.
+        adopted_legacy = False
         try:
             existing_guid = self._find_element_guid(qualified_name)
-            if not existing_guid and qualified_name != legacy_qualified_name:
-                existing_guid = self._find_element_guid(legacy_qualified_name)
-                if existing_guid:
-                    qualified_name = legacy_qualified_name
+            if not existing_guid:
+                for legacy in legacy_names:
+                    existing_guid = self._find_element_guid(legacy)
+                    if existing_guid:
+                        qualified_name, adopted_legacy = legacy, True
+                        break
         except Exception as exc:
             raise BlueprintMaterializationError(
                 f"could not search Egeria for the blueprint by qualifiedName ({type(exc).__name__}): "
@@ -284,6 +341,8 @@ class BlueprintMaterializer:
                 self._registry.record_materialized_blueprint(
                     entity_type, entity_slug, perspective, cluster_name, qualified_name, existing_guid,
                 )
+            if adopted_legacy:
+                self._log_legacy_adoption(entity_type, entity_slug, existing_guid)
             return {"status": "already_materialized", "guid": existing_guid,
                     "qualified_name": qualified_name}
 
@@ -310,6 +369,10 @@ class BlueprintMaterializer:
             # wording ("ContentStatus = Draft") names exactly the field this
             # sends, not the instance status.
             "contentStatus": "DRAFT",
+            # `<SLUG>-<KIND>` as the owner's own blueprints carry it. UNVERIFIED LIVE: pyegeria's
+            # SolutionBlueprintProperties declares no `identifier` (only `version_identifier`; the Java
+            # type may), so the wire name is the one the owner's blueprints show, sent as given.
+            "identifier": identity_property(entity_slug, perspective, identifier),
         }
         # Same provenance reasoning as ComponentMaterializer.materialize:
         # this is evidence ABOUT the proposal, not a typed property of the

@@ -5209,6 +5209,23 @@ class ProjectRegistry:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_materialized_blueprint_by_identity(
+        self, entity_type: str, entity_slug: str, qualified_name: str,
+    ) -> dict | None:
+        """The blueprint recorded under an Egeria IDENTITY (the qualifiedName, `SolutionBlueprint::<type>::
+        <slug>::<kind>[::<identifier>]`), whichever cluster it was recorded for. The cache key
+        (entity_type, slug, kind, identifier) is that string, held in the existing `qualified_name` column
+        (no DDL); `perspective`/`cluster_name` stay on the row as RE's own key for the cluster and as the
+        legacy key of rows written before the identity was kind + repository."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND qualified_name=?
+                   ORDER BY materialized_at DESC""",
+                (entity_type, entity_slug, qualified_name),
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_materialized_blueprints(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
         """{f"{perspective}::{cluster_name}": row} for every blueprint this
         resource has ever materialized — mirrors get_materialized_components'
@@ -5247,6 +5264,13 @@ class ProjectRegistry:
                 """DELETE FROM architecture_materialized_blueprints
                    WHERE entity_type=? AND entity_slug=? AND perspective=? AND cluster_name=?""",
                 (entity_type, entity_slug, perspective, cluster_name),
+            )
+            # One Egeria identity has one row: a row another cluster name left under this same
+            # qualifiedName (the cluster was renamed by a re-clustering) is the same blueprint, re-keyed.
+            conn.execute(
+                """DELETE FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND qualified_name=?""",
+                (entity_type, entity_slug, qualified_name),
             )
             conn.execute(
                 """INSERT INTO architecture_materialized_blueprints
