@@ -28,7 +28,8 @@ import threading
 from datetime import datetime
 from typing import Any, Callable
 
-from resource_explorer.catalogue_commit import P_READ_FAILED, P_REPORT, egeria_first_sentence
+from resource_explorer.catalogue_commit import (
+    P_EGERIA_RESET, P_READ_FAILED, P_REPORT, RESET_WORDS, _ts, egeria_first_sentence)
 from resource_explorer.surveyors import survey_snapshot
 from resource_explorer.surveyors.survey_snapshot import NO_SURVEY_SENTENCE
 
@@ -37,6 +38,8 @@ NODE_FILE_TYPE = "file_type"
 NODE_SUB_RESOURCE = "sub_resource"
 P_SENT = "report_sent"
 P_FORGOTTEN = "links_forgotten"
+#: The status scripts/clear_egeria_pointers_after_reset.py gives a project context whose Egeria project is gone.
+UNBOUND_BY_RESET = "unbound by reset · rebind to recreate"
 P_FILE_TYPE = "file_type_read_back"
 P_SUB_RESOURCE = "sub_resource_read_back"
 
@@ -95,6 +98,8 @@ def project_words(context: dict | None) -> dict:
     if status == "linked":
         return {"status": status, "word": "project", "name": qn.split("::")[0] or qn or "linked",
                 "detail": free}
+    if status == UNBOUND_BY_RESET:
+        return {"status": status, "word": UNBOUND_BY_RESET, "name": qn.split("::")[0] or qn}
     if status == "deferred":
         return {"status": status, "word": "project (named, not linked)", "name": free}
     if status == "personal":
@@ -120,6 +125,9 @@ def _report_row(last: dict | None) -> dict:
         first, rest = egeria_first_sentence(full)
         return {"word": "not published", "read_at": last["read_at"], "report_guid": last["element_guid"],
                 "sentence": full, "first": first, "rest": rest}
+    if kind == P_EGERIA_RESET:
+        return {"word": "reset", "read_at": last["read_at"], "report_guid": "", "sentence": RESET_WORDS,
+                "first": RESET_WORDS, "reset": d.get("text", "")}
     if kind == P_FORGOTTEN:
         return {"word": "forgotten", "read_at": last["read_at"], "report_guid": "", "sentence": FORGET_SENTENCE,
                 "first": "links forgotten", "forgot": d}
@@ -169,8 +177,13 @@ def project_state(registry, slug: str) -> dict:
 def publish_state(registry, slug: str) -> dict:
     """One read of RE's own records. Nothing here contacts Egeria."""
     asset_guid = registry.get_egeria_asset_guid(slug) or ""
-    proofs = [p for p in _repo_proofs(registry, slug) if p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED, P_FORGOTTEN)]
+    proofs = [p for p in _repo_proofs(registry, slug)
+              if p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED, P_FORGOTTEN, P_EGERIA_RESET)]
+    # The newest fact by time (read_at), not by row id: the reset marker is written after the fact, but it
+    # carries the reset time, so a publish made after the reset still wins over it.
+    proofs.sort(key=lambda p: (_ts(p["read_at"]), p["id"]))
     last = proofs[-1] if proofs else None
+    proofs = [p for p in proofs if p["proof"] != P_EGERIA_RESET]
     project = project_state(registry, slug)
     return {"slug": slug, "in_egeria": bool(asset_guid), "asset_guid": asset_guid,
             "row": _report_row(last), "project": project,
