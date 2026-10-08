@@ -304,15 +304,70 @@ def test_no_provenance_with_another_clusters_row_recording_the_name_is_refused_e
     assert _created(m) == []
 
 
-def test_a_renamed_cluster_is_not_silently_given_the_old_clusters_element(reg):
+def test_a_renamed_cluster_whose_old_name_no_longer_exists_adopts_and_rekeys(reg):
     reg.record_materialized_blueprint("repo", "egeria_git", "deployment", ROOT, BASE, OLD)
-    with_prov = _m(reg, found={BASE: {"guid": OLD, "props": _prov(ROOT)}})
-    with pytest.raises(BlueprintIdentifierNeeded, match=r"for another cluster \(OMAG-Server-Platform\)"):
-        _make(with_prov, cluster="OMAG-renamed", live_clusters={"OMAG-renamed"})
-    without = _m(reg, found={BASE: {"guid": OLD, "display": DISPLAY}})
-    with pytest.raises(BlueprintIdentifierNeeded, match="cannot tell which cluster"):
-        _make(without, cluster="OMAG-renamed", live_clusters={"OMAG-renamed"})
-    assert _created(with_prov) == [] and _created(without) == []
+    m = _m(reg, found={BASE: {"guid": OLD, "props": _prov(ROOT)}})
+    out = _make(m, cluster="OMAG-renamed", live_clusters={"OMAG-renamed"})
+    assert out == {"status": "already_materialized", "guid": OLD, "qualified_name": BASE}
+    assert _created(m) == []
+    m._solution_architect.update_solution_blueprint.assert_not_called()      # nothing written to Egeria
+    assert set(reg.get_materialized_blueprints("repo", "egeria_git")) == {"deployment::OMAG-renamed"}
+    assert any(f"re-keyed from '{ROOT}'" in x and OLD in x for x in _activity(reg))
+    proofs = [p for p in reg.list_catalogue_commit_proofs("egeria_git") if p["proof"] == "rekey"]
+    assert len(proofs) == 1 and proofs[0]["element_guid"] == OLD
+    assert proofs[0]["detail"] == {"entity_type": "repo", "old_cluster_key": ROOT,
+                                   "new_cluster_key": "OMAG-renamed", "guid": OLD}
+
+
+def test_a_split_leaves_exactly_one_adopter(reg):
+    live = {"alpha", "beta"}                      # one group re-clustered into two; the old name is gone
+    props = {BASE: {"guid": OLD, "props": _prov(ROOT)}}
+    second = _m(reg, found=props)                 # the later one asks first: refused, not a claimant
+    with pytest.raises(BlueprintIdentifierNeeded, match=r"for another cluster"):
+        _make(second, cluster="beta", live_clusters=live)
+    first = _m(reg, found=props)
+    assert _make(first, cluster="alpha", live_clusters=live)["guid"] == OLD
+    again = _m(reg, found=props)                  # and once alpha holds the row, beta is still refused
+    with pytest.raises(BlueprintIdentifierNeeded):
+        _make(again, cluster="beta", live_clusters=live)
+    assert _created(second) == [] and _created(again) == []
+    assert set(reg.get_materialized_blueprints("repo", "egeria_git")) == {"deployment::alpha"}
+
+
+def test_the_other_cluster_being_live_or_unknown_still_refuses(reg):
+    for live in ({"web", ROOT}, None):
+        m = _m(reg, found={BASE: {"guid": OLD, "props": _prov(ROOT)}})
+        with pytest.raises(BlueprintIdentifierNeeded, match=r"for another cluster \(OMAG-Server-Platform\)"):
+            _make(m, cluster="web", live_clusters=live)
+        assert _created(m) == []
+    # a live other cluster with NO provenance on its element is refused by the displayName rule too
+    reg.record_materialized_blueprint("repo", "egeria_git", "deployment", ROOT, BASE, OLD)
+    other = _m(reg, found={BASE: {"guid": OLD, "display": DISPLAY}})
+    with pytest.raises(BlueprintIdentifierNeeded):                 # the live holder's row blocks it
+        _make(other, cluster="web", live_clusters={"web", ROOT})
+
+
+def test_without_provenance_a_stale_other_row_does_not_block_a_matching_displayName(reg):
+    reg.record_materialized_blueprint("repo", "egeria_git", "deployment", ROOT, BASE, OLD)
+    m = _m(reg, found={BASE: {"guid": OLD, "display": DISPLAY}})
+    assert _make(m, cluster="OMAG-renamed", live_clusters={"OMAG-renamed"})["guid"] == OLD
+    assert _created(m) == []
+
+
+def test_a_refusal_is_logged_once_per_element_and_an_adoption_only_after_the_row_is_recorded(reg):
+    for _ in range(3):
+        m = _m(reg, found={BASE: {"guid": OLD, "props": _prov("web")}})
+        with pytest.raises(BlueprintIdentifierNeeded):
+            _make(m, cluster=ROOT, live_clusters={ROOT, "web"})
+    assert sum("refused to adopt" in x for x in _activity(reg)) == 1
+    ok = _m(reg, found={BASE: {"guid": OLD, "props": _prov(ROOT)}})
+    ok._registry = MagicMock(get_materialized_blueprint=MagicMock(return_value=None),
+                             get_materialized_blueprints=MagicMock(return_value={}),
+                             record_materialized_blueprint=MagicMock(side_effect=RuntimeError("db down")),
+                             list_activity=reg.list_activity, write_activity=reg.write_activity)
+    with pytest.raises(RuntimeError):
+        _make(ok)
+    assert not any("adopted blueprint" in x for x in _activity(reg))
 
 
 # ── the search is typed and verified ─────────────────────────────────────────────────────────────────────
