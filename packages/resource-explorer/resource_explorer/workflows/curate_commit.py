@@ -300,36 +300,16 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
     else:
         cur.set_step(curation_id, "sub_resources", "running")
         try:
-            from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
-            # Local cataloguing first: publish_sub_resources publishes only
-            # rows already in the local sub_resources table, and NestedFile
-            # needs every ancestor folder catalogued too -- the same two
-            # rules the catalog route (routes/projects.py) enforces.
-            from resource_explorer.surveyors.sub_surveyors import ancestor_folder_paths
-            import json as _json
-            kinds: dict[str, str] = {}
-            for f in registry.query_findings(slug, "repo_sub_resource_survey"):
-                try:
-                    kinds[f["check_name"]] = (_json.loads(f.get("detail_json") or "{}").get("kind") or "folder")
-                except ValueError:
-                    kinds[f["check_name"]] = "folder"
-            want: dict[str, str] = {loc: kinds.get(loc, "folder") for loc in locators}
-            for loc, kind in list(want.items()):
-                if kind == "file":
-                    for anc in ancestor_folder_paths(loc):
-                        want.setdefault(anc, "folder")
-            for loc in sorted(want):
-                registry.catalog_sub_resource("repo", slug, loc, want[loc], source_finding="repo_sub_resource_survey")
-            publisher = EgeriaPublisher(registry=registry)
-            guids = publisher.publish_sub_resources(slug, project.github_url, asset_guid, sorted(want))
-            # A proof row per element sent, by GUID, after a read of that GUID (brief section 2): the
-            # table's state column is made of these rows, never of the request.
-            from resource_explorer import repo_publish
-            proof_counts = repo_publish.record_sub_resource_proofs(
-                registry, slug, curation_id, rec.get("author") or "", want, locators, guids,
-                reader=lambda g: publisher._asset_maker.get_asset_by_guid(g, output_format="JSON"))
-            missing = [l for l in locators if l not in guids]
-            ancestors = len(want) - len(locators)
+            # The list is the selection RECORD as it stood at the press (the route froze it into the
+            # selection); this step never reads a request's list. Local cataloguing, the ancestor folders a
+            # NestedFile needs, the publish and a proof row per element by GUID are one shared function.
+            from resource_explorer import resource_scope
+            out = resource_scope.publish_chosen(
+                registry, slug, github_url=project.github_url, asset_guid=asset_guid, curation_id=curation_id,
+                author=rec.get("author") or "", locators=locators)
+            guids, proof_counts = out["guids"], out["counts"]
+            missing = out["missing"]
+            ancestors = out["ancestors"]
             # Count against what was SELECTED; the ancestor folders NestedFile
             # needs are named separately ("32 of 31" on the first live press).
             cur.set_step(curation_id, "sub_resources", "failed" if missing or proof_counts["failed"] else "done",
