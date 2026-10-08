@@ -52,7 +52,7 @@ function makeServer(over = {}) {
     if (u.includes('/components/tree')) return ok({ branches: [BRANCH], total_components: 1, accepted: 0, reviewed: 0, topology: '' });
     if (u.includes('/components/blueprints')) return ok({ blueprints: [], perspectives: [] });
     if (u.endsWith('/publish-state')) return ok({ slug: 's', in_egeria: false, asset_guid: '', row: { word: 'none' }, project: { status: 'unset', word: 'no project' }, can_publish_again: false, survey: { exists: true, surveyed_at: '2026-10-07T01:00:00', age_seconds: 7200, annotations: 42, steps: 12, stale_steps: 0, stale: [] } });
-    if (u.endsWith('/file-types')) return ok({ types: [{ label: 'Python', file_count: 12, extensions: ['.py'], cataloged: false, linked: false, dataset_guid: '' }], blocker: '' });
+    if (u.endsWith('/file-type-measurements')) return ok({ inventoried: true, profiles: [], retired: [] });
     if (u.endsWith('/publish-report')) { if (s.hold.publish) await s.hold.publish; return ok({ ok: true }); }
     if (u.includes('/questions')) return ok({ questions: [] });
     if (u.includes('/api/context/')) return ok({ enrichment: {}, question_answers: {} });
@@ -218,18 +218,19 @@ test('Catalog: a failed commit restores the button and says why', async () => {
 
 /* ── items 9 + 10: Publish band ────────────────────────────────────────── */
 
-test('Publish band: file types come before the Publish controls and their button names its own act', async () => {
+test('Publish band: the file types section comes before the Publish controls and has no press of its own', async () => {
   const { document } = await setUp();
   const band = document.querySelector('[data-curate-band="publish"]');
-  const ft = band.querySelector('[data-file-types-section]');
+  const ft = band.querySelector('[data-file-measurements-section]');
   const pub = band.querySelector('[data-publish-go]');
   assert.ok(ft && pub);
+  assert.equal(band.querySelector('[data-file-types-section]'), null);
   assert.ok(ft.compareDocumentPosition(pub) & 4 /* FOLLOWING */, 'file types precede Publish');
   ft.open = true;
   ft.dispatchEvent(new document.defaultView.Event('toggle'));
   await wait();
-  assert.equal(norm(ft.querySelector('[data-file-types-go]')), 'Catalog file types →');
-  assert.match(norm(ft), /separate from Publish/);
+  assert.equal(ft.querySelector('[data-file-types-go]'), null);
+  assert.match(norm(ft), /Files are cataloged by selection on Curate/);
 });
 
 test('Publish: idle and running words say it publishes the kept survey (it never surveys)', async () => {

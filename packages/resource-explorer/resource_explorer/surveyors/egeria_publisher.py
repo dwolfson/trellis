@@ -68,6 +68,28 @@ class EgeriaConnectionError(RuntimeError):
     """Raised when Egeria credentials are absent or the platform is unreachable."""
 
 
+def sub_resource_display_name(path: str, kind: str, repository: str) -> str:
+    """The display name of a cataloged file or folder: `<relative path> · <repository>`
+    ("LICENSE · egeria_git", "docs/README.md · egeria-workspaces"); a folder's path ends in "/".
+    The file name stays the basename; only this name carries the path, so a LICENSE in every
+    repository is no longer a thousand indistinguishable rows (ruling 2026-10-07)."""
+    if kind == "folder":
+        shown = (path.rstrip("/") + "/") if path else "/"
+    else:
+        shown = path
+    return f"{shown} \u00b7 {repository}"
+
+
+def rename_sentence(counts: dict) -> str:
+    """The tail of a publish sentence about names: "" when nothing was renamed or failed."""
+    if not isinstance(counts, dict) or not (counts.get("updated") or counts.get("failed")):
+        return ""
+    tail = f" \u00b7 {counts.get('updated', 0)} name{'' if counts.get('updated') == 1 else 's'} updated"
+    if counts.get("failed"):
+        tail += f" \u00b7 {counts['failed']} could not be updated"
+    return tail
+
+
 class EgeriaPublisherError(RuntimeError):
     """Raised when an Egeria-native operation triggered through EgeriaPublisher
     (e.g. trigger_survey_by_guid) fails — mirrors
@@ -1536,7 +1558,13 @@ class EgeriaPublisher:
         template_guid_cache: dict[str, str] = {}
         results: dict[str, str] = {}
 
+        self.rename_counts = {"updated": 0, "unchanged": 0, "failed": 0}
+        project = self._registry.get(resource_slug)
+        repository = getattr(project, "display_name", "")
+        if not isinstance(repository, str) or not repository:
+            repository = resource_slug
         for entry in entries:
+            entry["display_name"] = sub_resource_display_name(entry["path"], entry["kind"], repository)
             path = entry["path"]
             qualified_name = f"GitHubRepository::{github_url}::{path}"
             try:
@@ -1548,6 +1576,7 @@ class EgeriaPublisher:
                 guids_by_path[path] = existing_guid
                 results[path] = existing_guid
                 self._registry.set_sub_resource_egeria_guid("repo", resource_slug, path, existing_guid)
+                self._rename_forward(existing_guid, entry["display_name"])
                 continue
 
             parent_path = path.rsplit("/", 1)[0] if "/" in path else ""
@@ -1600,7 +1629,9 @@ class EgeriaPublisher:
         template_guid_cache: dict[str, str],
     ) -> str:
         path = entry["path"]
-        name = path.rsplit("/", 1)[-1] if path else qualified_name.split("::")[1].rstrip("/")
+        # The root folder has no basename: it is "/" (its displayName carries the repository). The
+        # old fallback was the GitHub URL, so the `or "/"` below could never fire.
+        name = path.rsplit("/", 1)[-1] if path else "/"
 
         if entry["kind"] == "folder":
             tech_type = self._FOLDER_TECH_TYPE
@@ -1652,7 +1683,11 @@ class EgeriaPublisher:
             # duplicate). "class": "AssetProperties" is required here or
             # Egeria 400s (InvalidTypeIdException: missing "class" on
             # EntityProperties), also confirmed live.
-            "replacementProperties": {"class": "AssetProperties", "qualifiedName": qualified_name},
+            "replacementProperties": {
+                "class": "AssetProperties", "qualifiedName": qualified_name,
+                # The path and the repository; fileName (a placeholder above) stays the basename.
+                "displayName": entry["display_name"],
+            },
         }
         guid = self._automated_curation.create_elem_from_template(body)
         if guid and additional_props:
@@ -1669,6 +1704,39 @@ class EgeriaPublisher:
             except Exception as exc:
                 log.debug("Could not attach additionalProperties to %s: %s", guid, exc)
         return guid
+
+    @staticmethod
+    def _current_display_name(element) -> str | None:
+        """displayName from a get_asset_by_guid answer, whichever shape it has; None if not found."""
+        if not isinstance(element, dict):
+            return None
+        props = element.get("properties")
+        for src in (props if isinstance(props, dict) else {}, element.get("elementProperties") or {}, element):
+            if isinstance(src, dict) and isinstance(src.get("displayName"), str):
+                return src["displayName"]
+        return None
+
+    def _rename_forward(self, guid: str, display_name: str) -> None:
+        """An element published before the naming rule is renamed when the SAME locator is published
+        again: ONE read of the element (the lookup returns only a GUID), and a merge update of
+        displayName only when it differs, so an unchanged republish writes nothing. Never a sweep,
+        never a delete. A failure is counted in `rename_counts` and logged; it does not stop the publish."""
+        try:
+            current = self._asset_maker.get_asset_by_guid(guid, graph_query_depth=0, output_format="JSON")
+        except Exception as exc:
+            log.debug("Could not read %s before renaming (will update): %s", guid, exc)
+            current = None
+        if self._current_display_name(current) == display_name:
+            self.rename_counts["unchanged"] += 1
+            return
+        try:
+            self._asset_maker.update_asset(
+                guid, body={"class": "UpdateElementRequestBody", "mergeUpdate": True,
+                            "properties": {"class": "AssetProperties", "displayName": display_name}})
+            self.rename_counts["updated"] += 1
+        except Exception as exc:
+            self.rename_counts["failed"] += 1
+            log.warning("Could not rename %s to %r (left as it was): %s", guid, display_name, exc)
 
     def _resolve_template_guid(self, technology_type: str) -> str:
         import asyncio

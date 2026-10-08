@@ -61,7 +61,6 @@ export function manifestCounts({ plan, picks, chosenSubs, fileTypePicks }) {
   const made = ((plan.made_of || [])[0] || {}).detail || {};
   return {
     entities, files, folders, containers, subs: chosenSubs.length,
-    fileTypes: fileTypePicks ? fileTypePicks.size : 0,
     blueprints: made.blueprints_accepted || 0, blueprintKinds: made.blueprint_kinds || [],
     notConfirmed: candidates.length - entities, notSelected: Math.max(0, worthy.length - chosenSubs.length),
     items: entities + chosenSubs.length,
@@ -99,10 +98,6 @@ function stateCell(id, ps) {
     if (subs.failed) bits.push(cue('error', `${subs.failed} not created${subs.first_failure ? ` · ${subs.first_failure}` : ''}`));
     return bits.length ? bits.join(' · ') : cue('unrun', 'nothing sent');
   }
-  if (id === 'file_types') {
-    const n = (ps.file_types || {}).read_back || 0;
-    return n ? cue('measured', `${n} read back (cataloged from the Publish band)`) : cue('unrun', 'cataloged from the Publish band');
-  }
   if (id === 'entities') return cue('unrun', 'recorded on the commit', 'These lines are kept on the commit record; Egeria receives the survey report and the elements listed beside it.');
   if (id === 'blueprints') return cue('unrun', 'written when you accept each', 'A blueprint is written to Egeria when it is accepted in what it’s made of.');
   return '';
@@ -133,8 +128,6 @@ export function repoManifestHtml({ plan, picks, chosenSubs, fileTypePicks, ps = 
     row('contained', 'Egeria gets', 'the folders and files you chose',
       `${num(c.files)} file${c.files === 1 ? '' : 's'} · ${num(c.folders)} folder${c.folders === 1 ? '' : 's'} · ${num(c.containers)} container${c.containers === 1 ? '' : 's'}`,
       'your selection', stateCell('contained', ps)),
-    row('file_types', 'Egeria gets', 'the file types you chose', `${num(c.fileTypes)} DataSet element${c.fileTypes === 1 ? '' : 's'}`,
-      'your selection', stateCell('file_types', ps)),
     row('blueprints', 'Blueprints', 'the blueprints you chose to write', `${num(c.blueprints)}${kindNames}`,
       'your verdicts', stateCell('blueprints', ps)),
     row('left_out', 'Left out', 'nothing in Egeria changes',
