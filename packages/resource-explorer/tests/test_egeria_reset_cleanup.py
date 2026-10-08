@@ -37,6 +37,8 @@ def env(tmp_path, monkeypatch):
     with reg._conn() as c:
         from resource_explorer import work_lists
         work_lists._ensure_schema(c)
+        from resource_explorer import journal
+        journal._ensure_schema(c)
     seed(reg)
     return {"reg": reg, "dir": tmp_path / "plans", "name": "reset_test.db"}
 
@@ -78,11 +80,23 @@ def seed(reg):
     ins(reg, "work_lists", slug="wl", display_name="WL", created_at="2026-09-01", egeria_guid=G,
         published_at="2026-09-10")
     ins(reg, "native_survey_annotations", entity_type="database", slug="db1", engine_action_guid=G,
-        report_guid=G, annotation_guid=G, annotation_type="X", read_at="2026-09-01") \
-        if _has_native(reg) else None
+        report_guid=G, annotation_guid=G, annotation_type="X", read_at="2026-09-01")
     # keepers
     ins(reg, "architecture_component_verdicts", id="v1", entity_type="repo", entity_slug="repo1",
-        scope_locator="s", verdict="accepted", decided_by="me", created_at="2026-09-02") if _has_verdicts(reg) else None
+        scope_locator="s", verdict="accepted", decided_by="me", created_at="2026-09-02")
+    # columns are exactly those of registry.py's CREATE TABLE notification_subscriptions
+    ins(reg, "notification_subscriptions", entity_type="repo", entity_slug="repo1", analysis_id="a1",
+        label="watch", active=1, created_at="2026-09-01", last_checked_at="2026-09-02", last_notified_at="",
+        notification_count=3, egeria_notification_type_guid=G, egeria_notification_type_qualified_name="NT::x")
+    ins(reg, "resource_journal", id="j1", entity_type="repo", entity_slug="repo1", author="me",
+        written_at="2026-09-03", body="a note")
+    for t in ("native_survey_annotations", "architecture_component_verdicts", "notification_subscriptions",
+              "resource_journal"):
+        with reg._conn() as c:
+            assert c.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"] == 1, f"seed for {t} did not land"
+    with reg._conn() as c:
+        assert c.execute("SELECT COUNT(*) AS n FROM notification_subscriptions "
+                         "WHERE egeria_notification_type_guid <> ''").fetchone()["n"] == 1
     for k, v in (("egeria_register_claim::db1", "x"), ("egeria_server_claim::h", "x"),
                  ("egeria_server_unconfirmed::h", "x"), ("egeria.github_source_control_library_guid", G),
                  ("repo_survey_step::repo1::x", "keep-me")):
@@ -101,14 +115,8 @@ def seed(reg):
     ins(reg, "catalogue_scope_events", database_slug="db1", node_kind="schema", schema_name="s1", table_name="",
         choice="catalogue", action="set", source="person", proposal_rule="", proposal_choice="", reason="",
         measured_at="", measured_json="{}", author="me", changed_at="2026-10-01")
-
-
-def _has_native(reg):
-    return _has_table(reg, "native_survey_annotations")
-
-
-def _has_verdicts(reg):
-    return _has_table(reg, "architecture_component_verdicts")
+    with reg._conn() as c:
+        assert c.execute("SELECT COUNT(*) AS n FROM catalogue_scope_events").fetchone()["n"] == 1
 
 
 def _has_table(reg, t):
@@ -285,9 +293,14 @@ KEEP_TABLES = ["architecture_component_verdicts", "catalogue_scope_events", "cat
                "work_list_members", "resource_curator_notes"]
 
 
+def test_every_kept_table_exists_so_the_byte_identical_check_cannot_be_vacuous(env):
+    missing = [t for t in KEEP_TABLES if not _has_table(env["reg"], t)]
+    assert missing == [], missing
+
+
 def applied(env):
     _, _, h, f = dry(env, "--old-collection-id", "OLD", "--new-collection-id", "NEW")
-    kept_before = dump(env["reg"], [t for t in KEEP_TABLES if _has_table(env["reg"], t)])
+    kept_before = dump(env["reg"], KEEP_TABLES)
     proofs_before = dump(env["reg"], ["catalogue_commit_proofs"])["catalogue_commit_proofs"]
     outbox_before = {r["qualified_name"]: r for r in dump(env["reg"], ["egeria_outbox"])["egeria_outbox"]}
     argv = ["--reset-at", RESET, "--out-dir", str(env["dir"]), "--old-collection-id", "OLD",
@@ -322,7 +335,7 @@ def test_apply_clears_pointers_and_keeps_decisions_history_and_proofs(env):
     keys = {r["key"] for r in d["app_settings"]}
     assert keys == {"repo_survey_step::repo1::x"}
     # decisions and history byte-identical
-    assert dump(reg, [t for t in KEEP_TABLES if _has_table(reg, t)]) == kept_before
+    assert dump(reg, KEEP_TABLES) == kept_before
     # proofs: every old row identical, plus one marker per resource
     proofs = d["catalogue_commit_proofs"]
     assert proofs[:len(proofs_before)] == proofs_before
@@ -411,18 +424,16 @@ def test_more_claim_prefixes_and_notification_guid_are_cleared(env):
     reg = env["reg"]
     for k in ("egeria_server_guid::h", "egeria_server_cred_slug::h", "egeria_asset_guid::x"):
         reg.set_setting(k, "v")
-    ins(reg, "notification_subscriptions", entity_type="repo", entity_slug="repo1", analysis_id="a",
-        egeria_notification_type_guid="G", created_at="2026-09-01") if _cols_ok(reg) else None
+    before = dump(reg, ["notification_subscriptions"])["notification_subscriptions"]
+    assert len(before) == 1 and before[0]["egeria_notification_type_guid"] != ""
     applied(env)
     d = dump(reg)
     assert {r["key"] for r in d["app_settings"]} == {"repo_survey_step::repo1::x"}
-    assert all(r["egeria_notification_type_guid"] in ("", None) for r in d["notification_subscriptions"])
-
-
-def _cols_ok(reg):
-    with reg._conn() as c:
-        cols = {r["name"] for r in c.execute("PRAGMA table_info(notification_subscriptions)").fetchall()}
-    return {"analysis_id", "created_at"} <= cols
+    after = d["notification_subscriptions"]
+    assert len(after) == 1 and after[0]["egeria_notification_type_guid"] == ""
+    # every other column of the row is untouched (including the qualified-name mirror)
+    assert {k: v for k, v in after[0].items() if k != "egeria_notification_type_guid"} == \
+        {k: v for k, v in before[0].items() if k != "egeria_notification_type_guid"}
 
 
 def test_missing_work_lists_refuses_with_the_sentence_and_the_flag_skips_and_records(env):
