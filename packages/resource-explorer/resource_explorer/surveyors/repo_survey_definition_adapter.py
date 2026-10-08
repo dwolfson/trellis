@@ -3513,6 +3513,10 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
     materialized_components = registry.get_materialized_components("repo", slug)
     materialized_blueprints = registry.get_materialized_blueprints("repo", slug)
     slug_to_scope = _blueprint_slug_to_scope_map(registry, slug)
+    # The shape each cluster WOULD be written in (container or contents, and why), so the accept dialog
+    # can name it before the write. Content-pack elements are only knowable from Egeria at the write.
+    from resource_explorer.blueprint_shape import component_nodes, plan_with_alternatives
+    shape_nodes = component_nodes(registry, slug)
     from resource_explorer.workflows.curate import NODE_PROMOTION_BLUEPRINT, promotion_by_scope
     promotions = promotion_by_scope(registry, slug, NODE_PROMOTION_BLUEPRINT)
 
@@ -3558,6 +3562,10 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
             "verdict": _verdict_view(verdicts.get(vkey)),
             "materialized": _materialized_view(materialized_blueprints.get(vkey)),
             "promotion": promotions.get(vkey),
+            "shape_plan": plan_with_alternatives(
+                name, [shape_nodes[m] for m in (detail.get("members") or []) if m in shape_nodes],
+                composed_into=detail.get("composed_into") or "")
+            if (detail.get("members") or []) else None,
         })
     return blueprints
 
