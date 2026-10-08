@@ -26,6 +26,7 @@ import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand } from '/static/next/stages/publish.js';
 import { repoCommitPanelHtml, commitHeaderHtml } from '/static/next/stages/repo-manifest.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
+import { admissionHtml, admissionNoteHtml } from '/static/next/stages/curate-admission.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
@@ -668,6 +669,7 @@ export function leafRowHtml(l) {
       ${!multi ? `<span class="text-ink-muted">· ${l.type ? esc(l.type) : 'type not assigned · boundary only'}</span>` : ''}
       ${!multi && (l.low_confidence ? `<span class="text-state-warn">· ⚠ confidence <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· confidence <span class="tnum">${l.confidence}</span>%</span>` : '')}
       ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
+      ${admissionHtml(l)}
       <span>· ${verdictBadge(l.verdict)}</span>
       ${promotionHtml(l.promotion)}
       <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
@@ -1011,7 +1013,7 @@ async function renderBlueprintList(slug) {
   const { blueprints, perspectives } = data;
   const selectorSlot = $('blueprint-selector');
   if (!perspectives.length) {
-    if (selectorSlot) selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, '');
+    if (selectorSlot) selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, '') + admissionNoteHtml(data.admission);
     host.innerHTML = '';
     return;
   }
@@ -1019,7 +1021,7 @@ async function renderBlueprintList(slug) {
   if (!rk.reading || !perspectives.includes(rk.reading)) rk.reading = perspectives[0];
   const reading = rk.reading;
   if (selectorSlot) {
-    selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, reading);
+    selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, reading) + admissionNoteHtml(data.admission);
     selectorSlot.querySelectorAll('[data-blueprint-view]').forEach((b) => b.addEventListener('click', () => {
       rk.reading = b.dataset.blueprintView;       // an immediate visible change: the pressed row reads "viewing"
       renderBlueprintList(slug);

@@ -45,9 +45,10 @@ jobs:
 
     # GitHub's default is 360 minutes. The first run sat 20+ minutes on a step
     # that takes 5 seconds locally (see the embedding-model cache below), and
-    # would have burned six hours before failing. A suite that takes ~3 minutes
-    # locally has no business running for 30.
-    timeout-minutes: 30
+    # would have burned six hours before failing. The full suite takes ~20-25
+    # minutes on CI when runs do not overlap; 45 leaves room for parallel runs
+    # while still failing fast on a hung test.
+    timeout-minutes: 45
 
     services:
       postgres:

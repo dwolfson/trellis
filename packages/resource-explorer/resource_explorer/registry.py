@@ -4418,6 +4418,23 @@ class ProjectRegistry:
                 (key, value, datetime.utcnow().isoformat()),
             )
 
+    def add_setting_once(self, key: str, value: str) -> None:
+        """Insert a setting that must never be updated: raises if the key exists. Used where each entry is
+        its own key (an append-only trail), so two writers can never lose each other's entry."""
+        with self._conn() as conn:
+            conn.execute("INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                         (key, value, datetime.utcnow().isoformat()))
+
+    def list_settings_with_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        """[(key, value)] for every setting whose key starts with `prefix`, ordered by key."""
+        like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM app_settings WHERE key LIKE ? ESCAPE '\\' ORDER BY key", (like,)
+            ).fetchall()
+        # SQLite's LIKE ignores case; a key is case-sensitive, so the prefix is matched again exactly.
+        return [(r["key"], r["value"]) for r in rows if r["key"].startswith(prefix)]
+
     # ── per-call Egeria timing ────────────────────────────────────────────
 
     def record_egeria_call_timing(
