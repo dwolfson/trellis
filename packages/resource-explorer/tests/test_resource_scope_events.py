@@ -513,3 +513,89 @@ def test_the_rename_sentence_from_the_publisher_still_ends_the_sub_resources_ste
         rec = execute_curation(registry, cid)
     step = next(s for s in rec["steps"] if s["name"] == "sub_resources")
     assert step["detail"].endswith(" · 2 names updated · 1 could not be updated"), step
+
+
+# ── a container-only folder is a holder, never a proposal ────────────────────
+
+_HOLDER = ("open-metadata-implementation", "folder", "worthy", "container_for_worthy_file")
+_HOLDER_FILE = ("open-metadata-implementation/README.md", "file", "worthy", "well_known_file")
+
+
+def test_a_container_only_folder_is_not_a_proposal_and_not_in_accept_all(client, registry):
+    _survey(registry, extra=(_HOLDER, _HOLDER_FILE))
+    v = resource_scope.build_view(registry, "p")
+    h = _row(v, "open-metadata-implementation")
+    assert h["proposed"] is False and h["holder_only"] is True and h["label"] == "worthy"
+    assert "open-metadata-implementation" not in v["proposals"]
+    assert "open-metadata-implementation/README.md" in v["proposals"]            # the file itself still is
+    assert v["manifest"]["proposals_not_accepted"] == 5                          # docs, 2 docs files, src, the README
+    props = client.get("/api/projects/p/scope-events").json()["proposals"]
+    r = _post(client, [{"locator": l, "kind": _row(v, l)["kind"], "choice": "include", "source": "proposal",
+                        "proposal_rule": "worthy"} for l in props])
+    assert r.status_code == 200
+    chosen = {e["locator"] for e in registry.list_resource_scope_events("repo", "p")}
+    assert "open-metadata-implementation" not in chosen                          # swept up by accept-all: no
+    after = resource_scope.build_view(registry, "p")
+    assert after["manifest"]["container_locators"] == ["open-metadata-implementation"]   # still the file's container
+    assert _row(after, "open-metadata-implementation")["role"] == "container"
+    assert after["manifest"]["folders"] == 2        # docs and src only
+
+
+def test_including_one_file_does_not_choose_its_holder_folder(registry):
+    _survey(registry, extra=(_HOLDER, _HOLDER_FILE))
+    _event(registry, "open-metadata-implementation/README.md", "file")
+    v = resource_scope.build_view(registry, "p")
+    h = _row(v, "open-metadata-implementation")
+    assert (h["choice"], h["role"], h["proposed"]) == ("", "container", False)
+    assert [e["locator"] for e in registry.list_resource_scope_events("repo", "p")] == [
+        "open-metadata-implementation/README.md"]
+
+
+def test_a_folder_worthy_on_its_own_is_still_proposed_even_when_a_worthy_file_is_inside(registry):
+    _survey(registry, extra=(_HOLDER_FILE,))
+    v = resource_scope.build_view(registry, "p")
+    assert _row(v, "docs")["proposed"] is True and _row(v, "docs")["holder_only"] is False
+    assert _row(v, "src")["proposed"] is True
+
+
+def test_an_already_stored_survey_gets_the_same_rule_without_a_resurvey(registry):
+    """The stored shape is unchanged (label 'worthy', reason in the summary); the rule is read at view time."""
+    _survey(registry, extra=(_HOLDER, _HOLDER_FILE))
+    stored = [f for f in registry.query_findings("p", "repo_sub_resource_survey")
+              if f["check_name"] == "open-metadata-implementation"][0]
+    assert stored["label"] == "worthy" and stored["summary"] == "container_for_worthy_file"
+    assert resource_scope.build_view(registry, "p")["rows"]                       # no re-survey happened
+    assert _row(resource_scope.build_view(registry, "p"), "open-metadata-implementation")["proposed"] is False
+
+
+def test_the_egeria_lane_says_holder_only_in_the_script():
+    import pathlib
+    js = (pathlib.Path(resource_scope.__file__).parent / "web/static/next/stages/resource-scope.js").read_text()
+    assert "holder only · created with the file" in js
+
+
+def test_the_publish_of_a_file_and_its_holder_is_unchanged(registry):
+    """The Egeria writes are those of the chosen file plus its container. This test also passes on origin/main
+    before this change (run there: same two qualifiedNames, same proofs)."""
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.workflows.curate_commit import STEPS, execute_curation
+    _survey(registry, extra=(_HOLDER, _HOLDER_FILE))
+    _keep_a_survey(registry)
+    registry.set_egeria_asset_guid("p", "asset-guid")
+    _event(registry, "open-metadata-implementation/README.md", "file")
+    sel = {"confirm": [], "sub_resources": resource_scope.chosen_locators(registry, "p")}
+    assert sel["sub_resources"] == ["open-metadata-implementation/README.md"]
+    pub = _publisher_with_egeria(registry)
+    with patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", MagicMock(return_value=pub)), \
+         patch("resource_explorer.repo_publish.publish_snapshot", return_value={
+             "ok": True, "asset_guid": "asset-guid", "report_guid": "r", "read_back": True, "surveyed_at": "2026-10-07T01:00:00",
+             "reused": False, "annotation_count": 1}), \
+         patch("resource_explorer.repo_publish.resolve_project_context", return_value={"guid": "x"}):
+        cid = Curations(registry).create("repo", "p", author="peterprofile", selection=sel, manifest={}, steps=list(STEPS))["id"]
+        execute_curation(registry, cid)
+    names = [b["replacementProperties"]["qualifiedName"] for b in pub.created]
+    assert len(names) == 2 and any(n.endswith("open-metadata-implementation") for n in names) \
+        and any(n.endswith("open-metadata-implementation/README.md") for n in names), names
+    proofs = [x for x in registry.list_catalogue_commit_proofs("p") if x["node_kind"] == "sub_resource"]
+    assert sorted((x["table_name"], x["detail"]["role"]) for x in proofs) == [
+        ("open-metadata-implementation", "container"), ("open-metadata-implementation/README.md", "chosen")]
