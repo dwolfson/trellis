@@ -12778,6 +12778,8 @@ class ProjectRegistry:
         who cleared it); a locator never touched is absent."""
         out: dict[str, dict] = {}
         for ev in self.list_resource_scope_events(resource_type, slug):
+            if ev["kind"] not in self.SCOPE_KINDS:
+                continue     # legacy rows (e.g. file_type) are ignored: nothing writes them, none can be counted or published
             out[ev["locator"]] = ev
         return out
 

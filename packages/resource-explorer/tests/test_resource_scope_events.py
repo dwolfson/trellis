@@ -462,3 +462,27 @@ def test_publish_chosen_puts_the_threads_loop_back_as_it_found_it(registry):
     t.start()
     t.join()
     assert seen["after"] == seen["before"] and seen["out"]["guids"] == {"docs": "g"}
+
+
+def test_a_legacy_file_type_row_is_ignored_everywhere(registry):
+    """Nothing writes kind=file_type any more, but a row inserted by hand must not be counted, shown or published."""
+    _survey(registry)
+    with registry._conn() as conn:
+        conn.execute("INSERT INTO resource_scope_events (resource_type, resource_slug, locator, kind, choice, action, source, "
+                     "proposal_rule, reason, author, changed_at) VALUES ('repo', 'p', 'Python', 'file_type', 'include', 'set', "
+                     "'person', '', '', 'dan', '2026-10-07T00:00:00')")
+        conn.execute("INSERT INTO resource_scope_events (resource_type, resource_slug, locator, kind, choice, action, source, "
+                     "proposal_rule, reason, author, changed_at) VALUES ('repo', 'p', 'docs', 'file_type', 'leave_out', 'set', "
+                     "'person', '', '', 'dan', '2026-10-07T00:00:01')")      # collides with a real candidate's locator
+    assert registry.current_resource_scope("repo", "p") == {}
+    v = resource_scope.build_view(registry, "p")
+    assert "Python" not in [r["locator"] for r in v["rows"]]
+    assert v["manifest"]["chosen"] == [] and v["manifest"]["items"] == 0 and v["manifest"]["left_out"] == 0
+    assert _row(v, "docs")["choice"] == "" and _row(v, "docs")["proposed"] is True
+    assert resource_scope.chosen_locators(registry, "p") == []
+    pub = MagicMock()
+    pub.publish_sub_resources.return_value = {}
+    _event(registry, "docs", "folder")
+    resource_scope.publish_chosen(registry, "p", github_url="u", asset_guid="a", curation_id="", author="dan",
+                                  locators=resource_scope.chosen_locators(registry, "p"), publisher=pub)
+    assert pub.publish_sub_resources.call_args[0][3] == ["docs"], "only the real folder reaches the publisher"
