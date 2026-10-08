@@ -150,14 +150,26 @@ function setterButtons(node, me) {
   const dis = me ? (busy ? 'disabled aria-busy="true"' : '') : `disabled title="${esc(signInReason)}"`;
   const sch = esc(node.kind === 'schema' ? node.name : node.schema);
   const tbl = node.kind === 'table' ? esc(node.name) : '';
-  const own = node.explicit ? node.explicit.choice : '';
-  const seg = (choice, label) => `<button type="button" data-scope-act="set" data-scope-choice="${choice}"
-    data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis} aria-pressed="${own === choice ? 'true' : 'false'}"
+  return selectorHtml({
+    own: node.explicit ? node.explicit.choice : '', explicit: !!node.explicit, off, dis,
+    segs: [['catalogue', 'Include'], ['leave_out', 'Leave out']], ariaLabel: 'Include in catalog?',
+    segAttrs: (choice) => `data-scope-act="set" data-scope-choice="${choice}" data-scope-schema="${sch}" data-scope-table="${tbl}"`,
+    clearAttrs: `data-scope-act="clear" data-scope-schema="${sch}" data-scope-table="${tbl}"`,
+    clearTitle: node.state === 'disagrees' ? 'reconsider: back to undecided' : 'back to undecided',
+  });
+}
+
+/** The two-part selector as ONE component (brief 2a reuses it for repositories, not a copy): the chosen
+ *  segment filled in ink, the other outlined, "×" back to undecided. `segs` is [[choice, label], ...];
+ *  `segAttrs(choice)` and `clearAttrs` are the data-attributes the caller's handler reads; `off`/`dis` dim
+ *  and disable it while a write is out or nobody is signed in. */
+export function selectorHtml({ own, explicit, off, dis, segs, ariaLabel, segAttrs, clearAttrs, clearTitle = 'back to undecided' }) {
+  const seg = ([choice, label]) => `<button type="button" ${segAttrs(choice)} ${dis} aria-pressed="${own === choice ? 'true' : 'false'}"
     class="${own === choice ? 'bg-ink text-paper border border-ink' : 'bg-transparent text-ink border border-rule-strong'} ${off ? 'opacity-60' : 'cursor-pointer'} px-[6px] py-[1px] text-provenance">${label}</button>`;
-  const clear = node.explicit ? `<button type="button" data-scope-act="clear" data-scope-schema="${sch}" data-scope-table="${tbl}" ${dis}
-    aria-label="clear the choice (undecided)" title="${node.state === 'disagrees' ? 'reconsider: back to undecided' : 'back to undecided'}"
+  const clear = explicit ? `<button type="button" ${clearAttrs} ${dis}
+    aria-label="clear the choice (undecided)" title="${esc(clearTitle)}"
     class="${off ? 'opacity-60' : 'cursor-pointer'} bg-transparent px-[4px] text-provenance text-ink-muted">×</button>` : '';
-  return `<div data-scope-selector role="group" aria-label="Include in catalog?" class="inline-flex items-baseline gap-[2px]">${seg('catalogue', 'Include')}${seg('leave_out', 'Leave out')}${clear}</div>`;
+  return `<div data-scope-selector role="group" aria-label="${esc(ariaLabel)}" class="inline-flex items-baseline gap-[2px]">${segs.map(seg).join('')}${clear}</div>`;
 }
 
 function proposalControls(node, me) {

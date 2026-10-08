@@ -10,9 +10,9 @@
  *            elements back by GUID): sent / published · read back <when> / not published · <sentence>.
  *            The counts there are the proof rows' counts, never the request's.
  *
- * The button reads "Catalog N items" (N = what this press sends: the confirmed lines and the chosen
- * folders and files). What blocks it is written directly under it; the re-survey box (off by default)
- * sits under the blockers. This file draws; every state word comes from the plan or the proof summary
+ * The button reads "Publish N items" (N = the files and the folders you chose plus the folders needed as
+ * containers, all COUNTED FROM THE SELECTION RECORD: `scope.manifest`, never from the page). What blocks it is
+ * written directly under it; the re-survey box (off by default) sits under the blockers. This file draws; every state word comes from the plan or the proof summary
  * the server derived, never from the click.
  */
 import { ago } from '/static/next/format.js';
@@ -20,11 +20,12 @@ import { stateEntry } from '/static/next/glyphs.js';
 import { esc } from '/static/next/app.js';
 
 export const NOTHING_SELECTED_SENTENCE = 'nothing selected · confirm a line under what it is, or choose folders and files';
+export const SCOPE_UNREAD_SENTENCE = 'the selection could not be read · reload to try again';
 export const NO_SURVEY_SENTENCE = 'no survey to publish yet · run the first survey';
 export const NO_PROJECT_SENTENCE = 'no Egeria project context · bind this investigation to a project, or decline one';
 export const RESURVEY_BOX_WORDS = 're-survey stale steps first (adds minutes)';
 
-const cue = (key, word, title = '') => {
+export const cue = (key, word, title = '') => {
   const e = stateEntry(key);
   const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
     : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
@@ -33,46 +34,36 @@ const cue = (key, word, title = '') => {
 const num = (n) => `<span class="tnum">${esc(n ?? 0)}</span>`;
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-/** The folders a chosen file needs above it (Egeria's NestedFile needs a FileFolder), not already chosen. */
-export function ancestorFolders(chosen, kinds) {
-  const have = new Set(chosen.filter((l) => (kinds[l] || 'folder') === 'folder'));
-  const need = new Set();
-  for (const loc of chosen) {
-    if ((kinds[loc] || 'folder') !== 'file') continue;
-    const parts = loc.split('/');
-    for (let i = 1; i < parts.length; i += 1) {
-      const anc = parts.slice(0, i).join('/');
-      if (!have.has(anc)) need.add(anc);
-    }
-  }
-  return [...need].sort();
-}
-
-/** The counts the table shows before a press, from the selection. Pure. */
-export function manifestCounts({ plan, picks, chosenSubs, fileTypePicks }) {
-  const holds = (plan.what_it_holds || []).find((r) => r.kind === 'SubResource');
-  const kinds = (holds && holds.detail && holds.detail.kinds) || {};
-  const worthy = (holds && holds.detail && holds.detail.worthy) || [];
-  const files = chosenSubs.filter((l) => kinds[l] === 'file').length;
-  const folders = chosenSubs.length - files;
-  const containers = ancestorFolders(chosenSubs, kinds).length;
+/** The counts the table shows before a press. Pure. The file, folder and container counts are the selection
+ *  record's own (`scope.manifest`, built by the server from the newest event per locator); this function only
+ *  adds the lines confirmed under "what it is". With no record read, every count is 0 and `unread` is true. */
+export function manifestCounts({ plan, picks, scope, fileTypePicks }) {
+  const m = (scope && scope.manifest) || {};
   const candidates = (plan.what_it_is || []).filter((r) => r.candidate);
   const entities = [...picks].filter((k) => candidates.some((r) => r.kind === k)).length;
   const made = ((plan.made_of || [])[0] || {}).detail || {};
+  const files = m.files || 0; const folders = m.folders || 0; const containers = m.containers || 0;
   return {
-    entities, files, folders, containers, subs: chosenSubs.length,
+    entities, files, folders, containers, subs: files + folders,
     blueprints: made.blueprints_accepted || 0, blueprintKinds: made.blueprint_kinds || [],
-    notConfirmed: candidates.length - entities, notSelected: Math.max(0, worthy.length - chosenSubs.length),
-    items: entities + chosenSubs.length,
+    notConfirmed: candidates.length - entities,
+    notSelected: m.not_selected || 0, proposalsNotAccepted: m.proposals_not_accepted || 0, leftOut: m.left_out || 0,
+    publishedEarlier: m.published_earlier || 0,
+    // N: what "Publish N items" says. A press with only confirmed lines is still allowed (it publishes the
+    // repository and its report); `items` counts both so "nothing selected" means neither.
+    n: files + folders + containers,
+    items: entities + files + folders + containers,
+    unread: !scope || !scope.manifest,
   };
 }
 
 /** What stands under the button: each reason this press is refused, one line each (with its remedy). */
 export function commitBlockers({ plan, counts, me }) {
   const out = [];
-  if (!me) out.push({ key: 'signin', text: 'sign in to catalog — the record needs an author' });
+  if (!me) out.push({ key: 'signin', text: 'sign in to publish — the record needs an author' });
   if (plan.survey && plan.survey.exists === false) out.push({ key: 'no_survey', text: plan.survey.sentence || NO_SURVEY_SENTENCE });
-  if (counts.items === 0) out.push({ key: 'nothing', text: NOTHING_SELECTED_SENTENCE });
+  if (counts.unread) out.push({ key: 'scope_unread', text: SCOPE_UNREAD_SENTENCE });
+  else if (counts.items === 0) out.push({ key: 'nothing', text: NOTHING_SELECTED_SENTENCE });
   if (plan.project && plan.project.status === 'unset') out.push({ key: 'no_project', text: NO_PROJECT_SENTENCE });
   if (!plan.in_population) out.push({ key: 'population', text: 'not in Curate’s population' });
   return out;
@@ -91,11 +82,12 @@ function stateCell(id, ps) {
       + (r.rest ? ` <details class="inline"><summary class="inline cursor-pointer text-ink-muted underline">details</summary><span class="block whitespace-pre-wrap text-provenance text-ink-muted">${esc(`${r.first} ${r.rest}`)}</span></details>` : '');
     return cue('unrun', 'not sent');
   }
-  if (id === 'contained') {
+  if (id === 'files' || id === 'folders' || id === 'containers') {
+    const r = (subs.by_row || {})[id] || {};
     const bits = [];
-    if (subs.read_back) bits.push(cue('measured', `${plural(subs.read_back, 'element', 'elements')} read back`));
-    if (subs.sent) bits.push(cue('running', `${subs.sent} sent, not yet read back`));
-    if (subs.failed) bits.push(cue('error', `${subs.failed} not created${subs.first_failure ? ` · ${subs.first_failure}` : ''}`));
+    if (r.read_back) bits.push(cue('measured', `${r.read_back} read back`));
+    if (r.sent) bits.push(cue('running', `${r.sent} sent, not yet read back`));
+    if (r.failed) bits.push(cue('error', `${r.failed} not created${r.first_failure ? ` · ${r.first_failure}` : ''}`));
     return bits.length ? bits.join(' · ') : cue('unrun', 'nothing sent');
   }
   if (id === 'entities') return cue('unrun', 'recorded on the commit', 'These lines are kept on the commit record; Egeria receives the survey report and the elements listed beside it.');
@@ -104,8 +96,8 @@ function stateCell(id, ps) {
 }
 
 /** The table. `ps` is the proof summary of the latest commit (after a press), else null. */
-export function repoManifestHtml({ plan, picks, chosenSubs, fileTypePicks, ps = null }) {
-  const c = manifestCounts({ plan, picks, chosenSubs, fileTypePicks });
+export function repoManifestHtml({ plan, picks, scope, fileTypePicks, ps = null }) {
+  const c = manifestCounts({ plan, picks, scope, fileTypePicks });
   const sv = plan.survey && plan.survey.exists ? plan.survey : null;
   const after = !!ps;
   const row = (id, who, what, many, from, state) => `<div role="row" data-manifest-row="${id}" class="flex items-start gap-s2 py-[2px] text-ink">
@@ -123,15 +115,20 @@ export function repoManifestHtml({ plan, picks, chosenSubs, fileTypePicks, ps = 
     row('report', 'RE publishes', 'the repository asset and its survey report',
       sv ? `1 report · ${num(sv.annotations)} annotations` : 'no survey yet',
       sv ? `survey of ${esc(String(sv.surveyed_at).slice(0, 10))} (${esc(ago(sv.surveyed_at))})` : '—', stateCell('report', ps)),
-    row('entities', 'Egeria gets', 'the lines you confirmed under “what it is”', `${num(c.entities)} entit${c.entities === 1 ? 'y' : 'ies'}`,
+    row('entities', 'Egeria gets', 'the lines you confirmed under “what it is”',
+      `${num(c.entities)} entit${c.entities === 1 ? 'y' : 'ies'}${c.notConfirmed ? ` · ${num(c.notConfirmed)} not confirmed` : ''}`,
       'your confirmations', stateCell('entities', ps)),
-    row('contained', 'Egeria gets', 'the folders and files you chose',
-      `${num(c.files)} file${c.files === 1 ? '' : 's'} · ${num(c.folders)} folder${c.folders === 1 ? '' : 's'} · ${num(c.containers)} container${c.containers === 1 ? '' : 's'}`,
-      'your selection', stateCell('contained', ps)),
+    row('files', 'Egeria gets', 'the files you chose', `${num(c.files)} DataFile${c.files === 1 ? '' : 's'}`,
+      'your selection', stateCell('files', ps)),
+    row('folders', 'Egeria gets', 'the folders you chose', `${num(c.folders)} FileFolder${c.folders === 1 ? '' : 's'}`,
+      'your selection', stateCell('folders', ps)),
+    row('containers', 'Egeria gets', 'folders needed as containers', `${num(c.containers)} FileFolder${c.containers === 1 ? '' : 's'}`,
+      'the files above', stateCell('containers', ps)),
     row('blueprints', 'Blueprints', 'the blueprints you chose to write', `${num(c.blueprints)}${kindNames}`,
       'your verdicts', stateCell('blueprints', ps)),
     row('left_out', 'Left out', 'nothing in Egeria changes',
-      `${num(c.notConfirmed)} proposal${c.notConfirmed === 1 ? '' : 's'} not confirmed · ${num(c.notSelected)} not selected`, '—', ''),
+      `${num(c.notSelected)} not selected · ${num(c.proposalsNotAccepted)} proposal${c.proposalsNotAccepted === 1 ? '' : 's'} not accepted · ${num(c.leftOut)} left out`, '—', ''),
+    row('published_earlier', 'Published earlier', 'kept in Egeria', `${num(c.publishedEarlier)}`, 'previous publishes', ''),
   ].join('');
   return `<div data-repo-manifest role="table" aria-label="What this press does" class="min-w-0 max-w-full overflow-x-auto text-caveat">${head}${rows}</div>`;
 }
@@ -148,9 +145,12 @@ export function commitHeaderHtml(rec, labelOf = (n) => n) {
     running ? ` · running: ${esc(labelOf(running.name))}` : ''} · ${failed} failed</div>`;
 }
 
+/** The button's words: "Publish N items →" with N from the record; "Publish →" when only confirmed lines go. */
+export const publishLabel = (counts) => (counts.n ? `Publish ${counts.n} item${counts.n === 1 ? '' : 's'} →` : 'Publish →');
+
 /** The panel: the table, the button at its top right, the blockers directly under the button, the box. */
-export function repoCommitPanelHtml({ plan, picks, chosenSubs, fileTypePicks, me, resurvey, sentence = '', rec = null, ps = null }) {
-  const counts = manifestCounts({ plan, picks, chosenSubs, fileTypePicks });
+export function repoCommitPanelHtml({ plan, picks, scope, fileTypePicks, me, resurvey, sentence = '', rec = null, ps = null }) {
+  const counts = manifestCounts({ plan, picks, scope, fileTypePicks });
   const blockers = commitBlockers({ plan, counts, me });
   const off = blockers.length > 0;
   const sv = plan.survey && plan.survey.exists ? plan.survey : null;
@@ -159,10 +159,10 @@ export function repoCommitPanelHtml({ plan, picks, chosenSubs, fileTypePicks, me
   return `<div data-repo-commit-panel class="min-w-0 max-w-full">
     <div class="text-answer text-ink">What this press does</div>
     <div class="flex flex-wrap items-start justify-between gap-s3">
-      <div class="min-w-0 flex-1">${repoManifestHtml({ plan, picks, chosenSubs, fileTypePicks, ps })}</div>
+      <div class="min-w-0 flex-1">${repoManifestHtml({ plan, picks, scope, fileTypePicks, ps })}</div>
       <div data-curate-go-col class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
         <button type="button" data-curate-go ${off ? 'disabled' : ''} title="${esc(sentence)}"
-          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${off ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}">${counts.items ? `Catalog ${counts.items} item${counts.items === 1 ? '' : 's'} →` : 'Catalog →'}</button>
+          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${off ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}">${publishLabel(counts)}</button>
         <span data-curate-go-hint class="text-right text-provenance text-ink-muted">${off ? '' : 'a queued run; each step reports as it lands'}</span>
         ${blockers.map((b) => `<div data-commit-blocker="${esc(b.key)}" class="text-right text-caveat text-ink">⚠ ${esc(b.text)}${
           b.key === 'no_project' ? ` <button type="button" data-commit-bind class="cursor-pointer bg-transparent p-0 text-accent-ink underline">bind this investigation</button> · <button type="button" data-commit-decline class="cursor-pointer bg-transparent p-0 text-accent-ink underline">decline a project</button>` : ''}</div>`).join('')}

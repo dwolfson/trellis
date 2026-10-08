@@ -354,7 +354,10 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
     requested = curation.get("requested_at") or ""
     proofs = registry.list_catalogue_commit_proofs(slug)
     out: dict = {"report": {"state": "none"}, "sub_resources": {"read_back": 0, "sent": 0, "failed": 0,
-                 "chosen_read_back": 0, "container_read_back": 0, "first_failure": ""},
+                 "chosen_read_back": 0, "container_read_back": 0, "first_failure": "",
+                 # the same counts per row of the table: the files you chose, the folders you chose, the containers
+                 "by_row": {k: {"read_back": 0, "sent": 0, "failed": 0, "first_failure": ""}
+                            for k in ("files", "folders", "containers")}},
                  "file_types": {"read_back": 0}}
     reports = [p for p in proofs if p["node_kind"] == NODE_REPORT and p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED)
                and (p["read_at"] or "") >= requested[:19]]
@@ -373,6 +376,11 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
     for p in proofs:
         if p["node_kind"] == NODE_SUB_RESOURCE and p.get("curation_id") == curation.get("id"):
             d = p.get("detail") or {}
+            row = out["sub_resources"]["by_row"]["containers" if d.get("role") == "container"
+                                                  else "files" if d.get("kind") == "file" else "folders"]
+            row[{P_SUB_RESOURCE: "read_back", P_SENT: "sent", P_READ_FAILED: "failed"}.get(p["proof"], "sent")] += 1
+            if p["proof"] == P_READ_FAILED and not row["first_failure"]:
+                row["first_failure"] = egeria_first_sentence(d.get("error", ""))[0]
             if p["proof"] == P_SUB_RESOURCE:
                 out["sub_resources"]["read_back"] += 1
                 out["sub_resources"]["chosen_read_back" if d.get("role") == "chosen" else "container_read_back"] += 1

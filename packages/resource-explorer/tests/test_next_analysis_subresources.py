@@ -202,20 +202,24 @@ class TestSubResourcePanelPortsClassicsRealBehaviour:
         assert "listAnalyses('repo')" in src
 
     def test_selection_filter_and_sort_affordances_are_present(self):
+        """Brief 2a: the checkbox and "select all worthy" are gone; each row has the two-part selector under
+        "Publish to Egeria?" and the toolbar acts on the filtered rows."""
         src = _analysis_src()
-        assert "data-subres-pick" in src
         assert "data-subres-filter" in src
         assert "data-subres-sort" in src
-        assert "data-subres-select-all" in src
+        assert "data-subres-pick" not in src and "data-subres-select-all" not in src
+        assert "SCOPE_HEAD" in src and "toolbarHtml(s.scope, rows)" in src
 
-    def test_cataloging_posts_with_the_publish_toggle(self):
+    def test_publishing_posts_nothing_the_server_reads_the_record(self):
         src = _analysis_src()
-        assert "catalogSubResources(slug, items, publishToEgeria)" in src
-        assert "data-subres-publish" in src
+        assert "await catalogSubResources(slug)" in src
+        assert "data-subres-publish" not in src, "the sandbox flag is retired"
+        assert "publishToEgeria" not in src
 
-    def test_already_cataloged_items_are_shown_disabled_not_re_selectable(self):
+    def test_published_items_are_shown_in_the_egeria_lane_and_stay_choosable(self):
         src = _analysis_src()
-        assert 'disabled checked title="Already cataloged"' in src
+        assert "egeriaCellHtml(r)" in src
+        assert "Already cataloged" not in src
 
     def test_scoped_analysis_dispatch_uses_the_shape_gate(self):
         src = _analysis_src()
@@ -227,7 +231,7 @@ class TestSubResourcePanelPortsClassicsRealBehaviour:
         # Cataloging changes what "already catalogued" means, so the panel
         # must re-fetch rather than keep showing pre-write selection state.
         src = _analysis_src()
-        assert "await reload(panel);" in src
+        assert "await s.scope.load()" in src
 
 
 class TestNoSilentTabFallbackWasPorted:

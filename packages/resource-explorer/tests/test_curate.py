@@ -149,14 +149,16 @@ class TestTheCommitRoute:
         _seed(registry)
         _keep_a_survey(registry)
         registry.set_disposition("https://github.com/x/p", "using", resource_slug="p")
+        # the press publishes what the selection RECORD says (brief 2a); a list in the request is not read
+        registry.append_resource_scope_event("repo", "p", locator="docs", kind="folder", choice="include", author="peterprofile")
         r = client.post("/api/projects/p/curate/commit",
-                        json={"confirm": ["SoftwareCapability::pyegeria", "Endpoint"], "sub_resources": ["docs"], "note": "go"})
+                        json={"confirm": ["SoftwareCapability::pyegeria", "Endpoint"], "sub_resources": [".idea"], "note": "go"})
         assert r.status_code == 200, r.text
         body = r.json()
         rec = body["curation"]
         assert rec["author"] == "peterprofile" and rec["state"] == "queued"
         assert rec["manifest"]["entities"] == ["SoftwareCapability::pyegeria", "Endpoint"]
-        assert rec["manifest"]["contained"] == {"data_files": 0, "sub_resources": 1}
+        assert rec["manifest"]["contained"] == {"data_files": 0, "sub_resources": 1, "containers": 0, "files": 0, "folders": 1}
         assert [s["name"] for s in rec["steps"]] == ["publish_asset", "classifications", "sub_resources", "components"]
         run = registry.get_run(body["run_id"]) if hasattr(registry, "get_run") else None
         if run is not None:

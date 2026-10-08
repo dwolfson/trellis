@@ -24,7 +24,8 @@ import {
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand } from '/static/next/stages/publish.js';
-import { repoCommitPanelHtml, commitHeaderHtml } from '/static/next/stages/repo-manifest.js';
+import { repoCommitPanelHtml, commitHeaderHtml, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
+import { createScopeController, scopeListHtml, visibleRows } from '/static/next/stages/resource-scope.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { admissionHtml, admissionNoteHtml } from '/static/next/stages/curate-admission.js';
 import {
@@ -58,13 +59,13 @@ import {
  * ═══════════════════════════════════════════════════════════════════════ */
 
 // `pick` marks the one column whose rows are confirmed one by one; the
-// others are counts whose members are reviewed, and the contained set is
-// taken whole (the checkbox under the manifest) -- the wireframe's shape.
-/** What pressing Catalog really does (workflows/curate_commit.py `execute_curation`, brief section 1):
- *  it publishes the survey ALREADY KEPT, plus what you ticked. It never surveys unless you tick the
- *  box under the button, and then only the stale steps. */
+// others are counts whose members are reviewed. The contained set is NEVER taken whole: each folder and
+// file is chosen by name in "what's in it" (brief 2a) and the press publishes that record.
+/** What pressing Publish really does (workflows/curate_commit.py `execute_curation`, brief section 1):
+ *  it publishes the survey ALREADY KEPT, plus the files and folders you chose. It never surveys unless you
+ *  tick the box under the button, and then only the stale steps. */
 export const CATALOG_SENTENCE =
-  'Publishes the survey already kept on this repository, and what you ticked, to Egeria. It does not run a survey: '
+  'Publishes the survey already kept on this repository, and the files and folders you chose, to Egeria. It does not run a survey: '
   + 'tick the box under the button to re-survey the stale steps first.';
 
 const CURATE_COLUMNS = [
@@ -194,29 +195,35 @@ function curateRowHtml(r, selected, pick) {
   </div>`;
 }
 
-/** The sub-resources "what's in it" would catalog, one checkbox each, with select all / select none.
- *  What is ticked here is exactly what the commit sends (`sub_resources`). */
-export function curateSubsHtml(locs, chosen) {
-  if (!locs.length) return '';
-  const set = new Set(chosen);
+/** The candidate folders and files "what's in it" lists (brief 2a). Nothing is ticked: each row has the two-part
+ *  selector under "Publish to Egeria?", a worthy row reads "proposed" until a person includes it, and what a
+ *  press sends is the selection RECORD (`scope.view`), never this list. The filter and the "show the rest"
+ *  box only change which rows are shown; "include all visible" / "clear all visible" act on those. */
+export function curateSubsHtml(scope, ui) {
+  if (!scope || !scope.view) {
+    return `<div data-curate-subs-list class="mt-s2 text-caveat text-state-warn">The selection could not be read. Reload to try again.</div>`;
+  }
+  const all = scope.view.rows.filter((r) => r.candidate || r.role === 'container' || r.choice);
+  if (!all.length) return '';
+  const shown = visibleRows(scope.view, ui);
   return `<div class="mt-s2" data-curate-subs-list>
     <div class="flex flex-wrap items-baseline gap-s3 text-provenance">
-      <span class="text-ink-muted" data-curate-subs-count><span class="tnum">${chosen.length}</span> of <span class="tnum">${locs.length}</span> sub-resources selected</span>
-      <button type="button" data-curate-subs-all ${chosen.length === locs.length ? 'disabled' : ''} class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-default disabled:opacity-60">select all</button>
-      <button type="button" data-curate-subs-none ${chosen.length === 0 ? 'disabled' : ''} class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-default disabled:opacity-60">select none</button>
+      <input type="text" placeholder="Filter by path…" value="${esc(ui.text)}" data-scope-filter
+        class="border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink">
+      <label class="flex cursor-pointer items-baseline gap-[4px] text-ink-muted"><input type="checkbox" data-scope-show-all ${ui.showAll ? 'checked' : ''}> show the rest (not worthy)</label>
+      <span class="text-ink-muted" data-curate-subs-count><span class="tnum">${shown.length}</span> shown</span>
     </div>
-    <div class="mt-s1" style="max-height:16rem;overflow:auto">${locs.map((l) => `<label class="flex items-baseline gap-s2 py-[1px] text-caveat">
-      <input type="checkbox" data-curate-sub="${esc(l)}" ${set.has(l) ? 'checked' : ''} class="shrink-0 cursor-pointer">
-      <span class="font-mono text-ink">${esc(l)}</span></label>`).join('')}</div>
+    <div data-scope-slot>${scopeListHtml(scope, shown)}</div>
   </div>`;
 }
 
-function curateWritesHtml(plan, picks, subCount) {
+function curateWritesHtml(plan, picks, subCount, containers = 0) {
   const w = plan.writes || {};
   const cls = w.classifications || [];
   const lines = [];
   lines.push(`<span class="tnum">${picks.length}</span> entit${picks.length === 1 ? 'y' : 'ies'}${picks.length ? ` · ${picks.map(esc).join(', ')}` : ''}`);
-  lines.push(`<span class="tnum">${subCount}</span> contained asset${subCount === 1 ? '' : 's'} (sub-resources)`);
+  lines.push(`<span class="tnum">${subCount}</span> contained asset${subCount === 1 ? '' : 's'} you chose (files and folders)${
+    containers ? ` · <span class="tnum">${containers}</span> container folder${containers === 1 ? '' : 's'} to hold them` : ''}`);
   lines.push(cls.length
     ? `<span class="tnum">${cls.length}</span> authored classification${cls.length === 1 ? '' : 's'} · ${cls.map((c) =>
         `${esc(c.classification)} · ${esc(c.value)} · ${esc(c.author)}${c.interim ? ' · interim' : ''}${c.review ? ' · <span class="text-state-warn">flagged for review</span>' : ''}`).join(' · ')}`
@@ -371,15 +378,21 @@ export async function renderCurate(slug) {
   if (slug !== state.selectedSlug) return;
   state.curate = state.curate || {};
   const picks = new Set(state.curate.picks || plan.what_it_is.filter((r) => r.candidate && r.state === 'measured' && r.kind !== 'InfrastructureAsset').map((r) => r.kind));
-  const subs = plan.what_it_holds.find((r) => r.kind === 'SubResource');
-  const subLocators = subs?.detail?.worthy || [];
   const latest = (plan.commits || [])[0];
-  // What is ticked is what the commit sends. `undefined` is "all of them" (the default).
-  const chosenSubs = () => (state.curate.subLocs
-    ? subLocators.filter((l) => state.curate.subLocs.includes(l)) : subLocators);
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  // What the press publishes is the selection RECORD (brief 2a), read from the server and re-read after each
+  // choice; this pane keeps no selection of its own. Only the view of it (filter, "show the rest") is local.
+  const ui = state.curate.scopeUi = state.curate.scopeUi || { text: '', showAll: false };
+  const scope = createScopeController({
+    slug, me: () => me,
+    onChange: () => { if (host.isConnected && slug === state.selectedSlug) { draw(); renderComponentTree(slug); } },
+    visible: () => visibleRows(scope.view, ui),
+  });
+  try { await scope.load(); } catch { scope.view = null; }
+  if (slug !== state.selectedSlug) return;
 
   const draw = () => {
+    const keepScroll = host.querySelector('[data-scope-rows]')?.scrollTop || 0;
     host.innerHTML = `
       <div class="mb-s2 text-caveat text-ink-muted">
         <span class="text-ink">${esc(plan.technology_type)}</span> · disposition <span class="text-ink">${esc(plan.disposition)}</span>${
@@ -396,7 +409,7 @@ export async function renderCurate(slug) {
       ${curateSectionHtml('curate-sec-what-holds', CURATE_COLUMNS[1].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>`,
         (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
-        + curateSubsHtml(subLocators, chosenSubs()))}
+        + curateSubsHtml(scope, ui))}
       ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
         `<div id="blueprint-selector"></div>
@@ -408,24 +421,30 @@ export async function renderCurate(slug) {
         + '<div class="mt-s2" data-dependency-table-host></div>')}
       ${curateSectionHtml('curate-sec-writes', 'what gets written',
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
-        `${curateWritesHtml(plan, [...picks], chosenSubs().length)}
-      <label class="mt-s2 flex cursor-pointer items-baseline gap-s2 text-caveat text-ink">
-        <input type="checkbox" data-curate-subs ${chosenSubs().length ? 'checked' : ''}> include the <span class="tnum">${chosenSubs().length}</span> of <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
+        `${curateWritesHtml(plan, [...picks], (scope.view?.manifest?.files || 0) + (scope.view?.manifest?.folders || 0), scope.view?.manifest?.containers || 0)}
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
       <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloging, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
       <div class="mt-s3">${repoCommitPanelHtml({
-        plan, picks, chosenSubs: chosenSubs(), fileTypePicks: curateFileTypePicks(), me,
+        plan, picks, scope: scope.view, fileTypePicks: curateFileTypePicks(), me,
         resurvey: !!state.curate.resurvey, sentence: CATALOG_SENTENCE, rec: latest, ps: latest ? (latest.proof_summary || null) : null })}</div>
       ${curateRecordHtml(latest)}
       <div id="catalogue-depth-offer"></div>`)}`;
 
     bindCurateSectionNav(host);
+    const rowsBox = host.querySelector('[data-scope-rows]');
+    if (rowsBox) rowsBox.scrollTop = keepScroll;
+    scope.bind(host);
+    const drawList = () => {
+      const slot = host.querySelector('[data-scope-slot]');
+      if (slot && scope.view) slot.innerHTML = scopeListHtml(scope, visibleRows(scope.view, ui));
+      const n = host.querySelector('[data-curate-subs-count] .tnum');
+      if (n && scope.view) n.textContent = String(visibleRows(scope.view, ui).length);
+    };
+    host.querySelector('[data-scope-filter]')?.addEventListener('input', (ev) => { ui.text = ev.target.value; drawList(); });
+    host.querySelector('[data-scope-show-all]')?.addEventListener('change', (ev) => { ui.showAll = ev.target.checked; drawList(); });
     // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
     mountDependencyTable(host.querySelector('[data-dependency-table-host]'), slug, { confirmable: true, me });
-    const counts0Label = () => {
-      const n = [...picks].length + chosenSubs().length;
-      return n ? `Catalog ${n} item${n === 1 ? '' : 's'} →` : 'Catalog →';
-    };
+    const counts0Label = () => publishLabel(manifestCounts({ plan, picks, scope: scope.view, fileTypePicks: curateFileTypePicks() }));
     host.querySelector('[data-commit-resurvey]')?.addEventListener('change', (ev) => { state.curate.resurvey = ev.target.checked; draw(); });
     host.querySelector('[data-commit-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
     host.querySelector('[data-commit-decline]')?.addEventListener('click', async (ev) => {
@@ -437,17 +456,6 @@ export async function renderCurate(slug) {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
       state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
     }));
-    const setSubs = (locs) => { state.curate.subLocs = locs; draw(); renderComponentTree(slug); };
-    const subsBox = host.querySelector('[data-curate-subs]');
-    if (subsBox) subsBox.indeterminate = chosenSubs().length > 0 && chosenSubs().length < subLocators.length;
-    subsBox?.addEventListener('change', (ev) => setSubs(ev.target.checked ? [...subLocators] : []));
-    host.querySelector('[data-curate-subs-all]')?.addEventListener('click', () => setSubs([...subLocators]));
-    host.querySelector('[data-curate-subs-none]')?.addEventListener('click', () => setSubs([]));
-    host.querySelectorAll('[data-curate-sub]').forEach((c) => c.addEventListener('change', () => {
-      const cur = new Set(chosenSubs());
-      if (c.checked) cur.add(c.dataset.curateSub); else cur.delete(c.dataset.curateSub);
-      setSubs(subLocators.filter((l) => cur.has(l)));
-    }));
     host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
       openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
     }));
@@ -457,12 +465,12 @@ export async function renderCurate(slug) {
       // already kept. It re-surveys only if the box under the button is ticked, and then only the
       // stale steps. Say which, as a cue plus a short word.
       const resurvey = !!state.curate.resurvey;
-      b.innerHTML = stateCue('running', 'Cataloging…', CATALOG_SENTENCE);
+      b.innerHTML = stateCue('running', 'Publishing…', CATALOG_SENTENCE);
       const hint = b.nextElementSibling;
       if (hint) hint.innerHTML = stateCue('running', resurvey ? 're-surveying the stale steps, then publishing' : 'publishing the survey already kept', CATALOG_SENTENCE);
       try {
         const out = await curateCommit(slug, {
-          confirm: [...picks], sub_resources: chosenSubs(), data_files: false, resurvey_stale: resurvey,
+          confirm: [...picks], data_files: false, resurvey_stale: resurvey,   // the files and folders come from the record
         });
         plan.commits = [out.curation, ...(plan.commits || [])];
         draw();
@@ -476,6 +484,7 @@ export async function renderCurate(slug) {
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
         try { plan.survey = (await getCuratePlan(slug)).survey || plan.survey; } catch { /* the table keeps the survey it had */ }
+        try { await scope.load(); } catch { /* the rows keep the state they had; the next read will say */ }
         draw();
         renderCatalogueDepthOffer(slug, host);
       } catch (err) {

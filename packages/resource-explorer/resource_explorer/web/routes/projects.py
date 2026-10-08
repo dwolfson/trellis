@@ -1432,84 +1432,119 @@ class SubResourceCatalogItem(BaseModel):
 
 
 class SubResourceCatalogRequest(BaseModel):
-    items: list[SubResourceCatalogItem]
-    publish_to_egeria: bool = True  # default both (local + Egeria); False = sandbox-mode escape hatch
+    #: Ignored. A press publishes what the selection RECORD says (brief 2a); a list in the request is not
+    #: read, so a stale screen cannot publish something nobody chose. Kept so an older client still parses.
+    items: list[SubResourceCatalogItem] = Field(default_factory=list)
 
 
 class SubResourceCatalogResult(BaseModel):
-    cataloged: list[str]              # locators tracked locally (incl. auto-included ancestors)
-    published: dict[str, str] = {}    # locator -> Egeria guid; empty unless publish_to_egeria
+    cataloged: list[str]              # locators tracked locally (incl. the container folders the files need)
+    published: dict[str, str] = {}    # locator -> Egeria guid
+    containers: int = 0               # how many of `cataloged` are folders added only to hold a chosen file
+    read_back: int = 0                # proof rows: elements read back by GUID
+    sent: int = 0                     # proof rows: sent, not yet shown by Egeria
+    failed: int = 0                   # proof rows: not created
+    manifest: dict = {}               # the record's manifest after the press
 
 
-@router.post("/{slug}/sub-resources/catalog", response_model=SubResourceCatalogResult)
-async def catalog_sub_resources(slug: str, body: SubResourceCatalogRequest) -> SubResourceCatalogResult:
-    """Track the selected sub-resources locally (always), and optionally
-    publish them to Egeria as real FileFolder/DataFile assets in the same
-    action (D3 — default both; unchecking publish_to_egeria is the
-    sandbox-mode escape hatch). Repeatable (D4): re-cataloging an
-    already-tracked locator is a no-op that never disturbs its
-    egeria_guid. Every selected file's ancestor folders are auto-included
-    even if not explicitly selected, mirroring SubResourceSurveyor's own
-    ancestor-folder guarantee — NestedFile strictly requires a FileFolder
-    parent, so an inconsistent selection would otherwise silently fail to
-    publish."""
+def _scope_author(request: Request, action: str) -> str:
+    from resource_explorer.auth import get_current_user
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail=f"Sign in to {action}: a selection needs an author.")
+    return author
+
+
+class ScopeEvent(BaseModel):
+    locator: str = ""
+    kind: str                     # folder | file
+    choice: str = ""              # include | leave_out ('' with action clear)
+    action: str = "set"           # set | clear
+    source: str = "person"        # person | proposal
+    proposal_rule: str = ""
+    reason: str = ""
+
+
+class ScopeEventsRequest(BaseModel):
+    events: list[ScopeEvent]
+
+
+@router.get("/{slug}/scope-events")
+async def get_scope_events(slug: str) -> dict:
+    """The selection record for what this repository publishes, as the view both panes draw: one row per
+    candidate (and per container folder), the current choice with who and when, what is published, and the
+    manifest (counts from the record). Reads only."""
+    from resource_explorer import resource_scope
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.egeria_publisher import EgeriaConnectionError, EgeriaPublisher
-    from resource_explorer.surveyors.sub_surveyors import ancestor_folder_paths
-
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
-    if not body.items:
-        raise HTTPException(status_code=400, detail="No items given to catalog")
+    return {"slug": slug, "in_egeria": bool(project.egeria_asset_guid),
+            **await asyncio.to_thread(resource_scope.build_view, registry, slug)}
 
-    # Snapshot each item's owners/dates from the current findings into the
-    # local row (denormalized — publish_sub_resources() shouldn't need to
-    # re-join back to findings that a later survey run might supersede).
-    findings_by_path: dict[str, dict] = {}
-    for f in registry.query_findings(slug, "repo_sub_resource_survey"):
-        detail = {}
-        if f.get("detail_json"):
-            try:
-                detail = json.loads(f["detail_json"])
-            except (TypeError, ValueError):
-                detail = {}
-        findings_by_path[detail.get("path", "")] = detail
 
-    selected_kind_by_locator: dict[str, str] = {item.locator: item.kind for item in body.items}
-    for item in body.items:
-        if item.kind != "file":
-            continue
-        for ancestor in ancestor_folder_paths(item.locator):
-            selected_kind_by_locator.setdefault(ancestor, "folder")
+@router.post("/{slug}/scope-events")
+async def post_scope_events(slug: str, body: ScopeEventsRequest, request: Request) -> dict:
+    """Append choices to the record (one event per row, as written), then return the re-read view. The
+    author is the signed-in person, never the body. Nothing here reaches Egeria and nothing writes
+    `sub_resources`: a choice is not a publish."""
+    from resource_explorer import resource_scope
+    from resource_explorer.registry import ProjectRegistry
+    author = _scope_author(request, "save a choice")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    events = [e.model_dump() for e in body.events]
+    try:
+        clean = resource_scope.validate_events(registry, slug, events)
+        # One transaction: a failure partway writes none of the batch.
+        await asyncio.to_thread(registry.append_resource_scope_events, resource_scope.RESOURCE_TYPE, slug,
+                                author=author, events=clean)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    view = await asyncio.to_thread(resource_scope.build_view, registry, slug)
+    return {"slug": slug, "in_egeria": bool(project.egeria_asset_guid), "written": len(clean), **view}
 
-    cataloged: list[str] = []
-    for locator in sorted(selected_kind_by_locator):
-        registry.catalog_sub_resource(
-            "repo", slug, locator, selected_kind_by_locator[locator],
-            source_finding="repo_sub_resource_survey",
-            detail=findings_by_path.get(locator),
+
+@router.post("/{slug}/sub-resources/catalog", response_model=SubResourceCatalogResult)
+async def catalog_sub_resources(slug: str, body: SubResourceCatalogRequest, request: Request) -> SubResourceCatalogResult:
+    """Publish exactly the items the selection record says are chosen (files and folders), plus the container
+    folders a file needs (Egeria's NestedFile needs a FileFolder), as FileFolder/DataFile assets under the
+    repository's asset, one proof row per element by GUID after a read-back. Repeatable: a second press finds
+    each element by qualifiedName and creates nothing. The old `publish_to_egeria=false` sandbox flag is
+    retired: a choice without a publish is the record itself (POST /scope-events)."""
+    from resource_explorer import resource_scope
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_publisher import EgeriaConnectionError, EgeriaPublisher
+
+    author = _scope_author(request, "publish")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    chosen = await asyncio.to_thread(resource_scope.chosen_locators, registry, slug)
+    if not chosen:
+        raise HTTPException(status_code=400, detail="nothing selected · choose folders and files first")
+    if not project.egeria_asset_guid:
+        raise HTTPException(
+            status_code=409,
+            detail="Repo has no Egeria asset yet — publish the repo itself first before publishing sub-resources.",
         )
-        cataloged.append(locator)
-
-    published: dict[str, str] = {}
-    if body.publish_to_egeria:
-        if not project.egeria_asset_guid:
-            raise HTTPException(
-                status_code=409,
-                detail="Repo has no Egeria asset yet — publish the repo itself first before publishing sub-resources.",
-            )
-        publisher = EgeriaPublisher(registry=registry)
-        try:
-            published = await asyncio.to_thread(
-                publisher.publish_sub_resources,
-                slug, project.github_url, project.egeria_asset_guid, cataloged,
-            )
-        except EgeriaConnectionError as exc:
-            raise HTTPException(status_code=503, detail=str(exc))
-
-    return SubResourceCatalogResult(cataloged=cataloged, published=published)
+    try:
+        out = await asyncio.to_thread(
+            resource_scope.publish_chosen, registry, slug, github_url=project.github_url,
+            asset_guid=project.egeria_asset_guid, curation_id="", author=author, locators=chosen,
+            publisher=EgeriaPublisher(registry=registry))
+    except EgeriaConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    view = await asyncio.to_thread(resource_scope.build_view, registry, slug)
+    return SubResourceCatalogResult(
+        cataloged=sorted(out["want"]), published=out["guids"], containers=out["ancestors"],
+        read_back=out["counts"]["read_back"], sent=out["counts"]["sent"], failed=out["counts"]["failed"],
+        manifest=view["manifest"])
 
 
 @router.delete("/{slug}/sub-resources")
@@ -1894,7 +1929,8 @@ def promote_members(slug: str, analysis_id: str, body: PromoteSelection, request
 
 class CurateSelection(BaseModel):
     confirm: list[str] = Field(default_factory=list)          # kinds from what_it_is: SoftwareCapability::<name>, Endpoint, ...
-    sub_resources: list[str] = Field(default_factory=list)    # locators from the sub-resource survey
+    #: (no `sub_resources` here: the commit publishes what the selection RECORD says, brief 2a; a list in the
+    #: request is ignored.)
     data_files: bool = False                                   # contained datasets -- recorded in the manifest; publish path not built
     note: str = ""
     #: Re-survey the STALE steps before publishing (brief section 1). Off by default: unchecked, the
@@ -1941,7 +1977,12 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     unknown = [k for k in body.confirm if k not in known]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Not candidates on this resource: {unknown}")
-    if not body.confirm and not body.sub_resources:
+    # What the press publishes comes from the selection RECORD (brief 2a), not from the request: the files and
+    # folders a person chose, and the container folders a file needs. A list in the request is ignored.
+    from resource_explorer import resource_scope
+    scope_manifest = resource_scope.build_view(registry, slug)["manifest"]
+    chosen = list(scope_manifest["chosen"])
+    if not body.confirm and not chosen:
         # A press that would send nothing the person chose is blocked, and writes nothing (brief section 2).
         from resource_explorer.curate_plan import NOTHING_SELECTED_SENTENCE
         raise HTTPException(status_code=409, detail=NOTHING_SELECTED_SENTENCE)
@@ -1952,16 +1993,17 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
         raise HTTPException(status_code=409, detail=survey_snapshot.NO_SURVEY_SENTENCE)
     manifest = {**plan["writes"], "entities": list(body.confirm),
                 "contained": {"data_files": plan["writes"]["contained"]["data_files"] if body.data_files else 0,
-                              "sub_resources": len(body.sub_resources)}}
+                              "sub_resources": len(chosen), "containers": scope_manifest["containers"],
+                              "files": scope_manifest["files"], "folders": scope_manifest["folders"]}}
     activity_id = log_survey(
         registry, entity_type="repo", entity_slug=slug,
         entity_name=project.display_name, entity_location=project.github_url,
         intent="curate", status="running",
-        summary=f"Cataloging {project.display_name}: {len(body.confirm)} entities, {len(body.sub_resources)} sub-resources…",
+        summary=f"Cataloging {project.display_name}: {len(body.confirm)} entities, {len(chosen)} sub-resources…",
     )
     try:
         rec = Curations(registry).create(
-            "repo", slug, author=author, selection=body.model_dump(), manifest=manifest,
+            "repo", slug, author=author, selection={**body.model_dump(), "sub_resources": chosen}, manifest=manifest,
             steps=list(STEPS), activity_id=activity_id)
         run_id = registry.enqueue_run("curate_commit", {"slug": slug, "curation_id": rec["id"]},
                                       result_ref=activity_id, requested_by=_requested_by())

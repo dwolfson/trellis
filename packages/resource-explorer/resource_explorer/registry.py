@@ -333,6 +333,32 @@ class SQLiteCursorWrapper:
         return self.raw_cursor.rowcount
 
 
+#: DDL for the repository (and later file-system) selection record, brief 2a. ONE additive, idempotent block:
+#: CREATE ... IF NOT EXISTS only, no ALTER of an existing table, no data migration, no foreign keys. The text
+#: carries no question mark and no colon-name token because the Postgres translator rewrites both (and
+#: AUTOINCREMENT to SERIAL). Append-only: nothing in RE updates or deletes a row of it.
+RESOURCE_SCOPE_EVENTS_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS resource_scope_events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource_type   TEXT NOT NULL,
+        resource_slug   TEXT NOT NULL,
+        locator         TEXT NOT NULL DEFAULT '',
+        kind            TEXT NOT NULL DEFAULT 'file',
+        choice          TEXT NOT NULL DEFAULT '',
+        action          TEXT NOT NULL DEFAULT 'set',
+        source          TEXT NOT NULL DEFAULT 'person',
+        proposal_rule   TEXT NOT NULL DEFAULT '',
+        reason          TEXT NOT NULL DEFAULT '',
+        author          TEXT NOT NULL,
+        changed_at      TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_resource_scope_events_locator "
+    "ON resource_scope_events(resource_type, resource_slug, locator, id)",
+)
+
+
 class PostgresCursorWrapper:
     def __init__(self, raw_cursor):
         self.raw_cursor = raw_cursor
@@ -2978,6 +3004,9 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_group_changes_entity "
                 "ON group_changes(entity_type, entity_slug, id)"
             )
+            # resource_scope_events: ONE additive, idempotent block (see RESOURCE_SCOPE_EVENTS_DDL below).
+            for _ddl in RESOURCE_SCOPE_EVENTS_DDL:
+                conn.execute(_ddl)
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
             # `BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`, slice 1 ("Declare
@@ -12701,6 +12730,75 @@ class ProjectRegistry:
                 "WHERE entity_type = ? AND entity_slug = ? ORDER BY id",
                 (entity_type, self._normalize_slug(entity_slug))).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Resource scope events (append-only; the selection record, brief 2a) ──
+
+    SCOPE_KINDS = ("folder", "file")        # file types are a measurement, not a choice
+    SCOPE_CHOICES = ("include", "leave_out", "")
+
+    def append_resource_scope_event(self, resource_type: str, slug: str, *, locator: str, kind: str,
+                                    choice: str = "", action: str = "set", source: str = "person",
+                                    proposal_rule: str = "", reason: str = "", author: str,
+                                    changed_at: str | None = None) -> None:
+        """Append one choice (or its clearing) for one locator; see `append_resource_scope_events`."""
+        self.append_resource_scope_events(resource_type, slug, author=author, events=[{
+            "locator": locator, "kind": kind, "choice": choice, "action": action, "source": source,
+            "proposal_rule": proposal_rule, "reason": reason, "changed_at": changed_at}])
+
+    def append_resource_scope_events(self, resource_type: str, slug: str, *, author: str,
+                                     events: list[dict]) -> int:
+        """Append a batch of choices in ONE transaction: all of them or none. Never updates or removes a
+        row; the newest row for a locator is the current choice. A clear is a row with action 'clear' and
+        choice '', so who cleared it and when is kept. Every event is checked before the first insert, and
+        a failure during the writes discards the connection's uncommitted work. Returns how many were
+        written."""
+        if not author:
+            raise ValueError("a scope choice needs an author")
+        slug = self._normalize_slug(slug)
+        rows = []
+        for e in events:
+            kind, action, source = e.get("kind", ""), e.get("action") or "set", e.get("source") or "person"
+            choice = e.get("choice") or ""
+            if kind not in self.SCOPE_KINDS:
+                raise ValueError(f"unknown kind {kind!r}")
+            if action not in ("set", "clear"):
+                raise ValueError(f"unknown action {action!r}")
+            if action == "set" and choice not in ("include", "leave_out"):
+                raise ValueError(f"unknown choice {choice!r}")
+            if source not in ("person", "proposal"):
+                raise ValueError(f"unknown source {source!r}")
+            rows.append((resource_type, slug, e.get("locator") or "", kind, "" if action == "clear" else choice,
+                         action, source, e.get("proposal_rule") or "", e.get("reason") or "", author,
+                         e.get("changed_at") or datetime.utcnow().isoformat(timespec="seconds")))
+        with self._conn() as conn:
+            for r in rows:
+                conn.execute(
+                    """INSERT INTO resource_scope_events
+                       (resource_type, resource_slug, locator, kind, choice, action, source,
+                        proposal_rule, reason, author, changed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", r)
+        return len(rows)
+
+    def list_resource_scope_events(self, resource_type: str, slug: str) -> list[dict]:
+        """Every scope event for one resource, oldest first."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, resource_type, resource_slug, locator, kind, choice, action, source,
+                          proposal_rule, reason, author, changed_at
+                   FROM resource_scope_events WHERE resource_type = ? AND resource_slug = ? ORDER BY id""",
+                (resource_type, slug)).fetchall()
+        return [dict(r) for r in rows]
+
+    def current_resource_scope(self, resource_type: str, slug: str) -> dict[str, dict]:
+        """locator -> its newest event. A cleared locator is present with choice '' (so the screen can say
+        who cleared it); a locator never touched is absent."""
+        out: dict[str, dict] = {}
+        for ev in self.list_resource_scope_events(resource_type, slug):
+            if ev["kind"] not in self.SCOPE_KINDS:
+                continue     # legacy rows (e.g. file_type) are ignored: nothing writes them, none can be counted or published
+            out[ev["locator"]] = ev
+        return out
 
     def set_project_group(self, resource_slug: str, group_slug: str) -> None:
         """Assign a repository to a group."""
