@@ -3539,7 +3539,7 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
                      and other.get("cluster_name") != name
                      and other.get("cluster_name") in live_by_perspective.get(perspective, set()))
         return {"needs_identifier": needs, "kind_word": kind_word(perspective),
-                "sentence": identifier_needed_sentence(perspective, slug) if needs else ""}
+                "sentence": identifier_needed_sentence(perspective, slug, other["cluster_name"]) if needs else ""}
 
     blueprints = []
     for (perspective, name), entry in sorted(by_key.items()):

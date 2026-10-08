@@ -194,3 +194,40 @@ the registry row is the authority.
 * **State readers.** `derive_commit_state` counts any proof row on a slug as "something was committed", as it
   already does for the blueprint `shape` rows; a repository slug is not shown that header, so a `rekey` row
   changes nothing a reader displays. `publish_state` ignores it.
+
+### Named holder, release safety, claim age (review round)
+
+* The one-per-kind refusal reads "a Deployment Blueprint already exists for <slug> (held by <cluster>) · give
+  this one an identifier". The holder is the cluster of the CACHE ROW that owns the element, read at refusal
+  time, never the key in the pressed cluster's own provenance. With no such row the sentence is exactly the
+  ruled one. The sentence may name a live holder; a re-key may only ever take from a gone one (checked in
+  `_decide_adoption` as well as, earlier, by `_identity_clash`).
+* If `release_claim` raises in the `finally`, the original result or exception is not masked: it is logged and an
+  activity row says so; the claim then expires on its own.
+* A refused press states the claim's age as a fact. Under two minutes: "another press is adopting this blueprint
+  right now". Older: "claimed N minutes ago and the claim may be stale; it expires at HH:MM UTC" (15 minutes
+  after it was taken). No takeover behaviour changed.
+* `adopted_unproven` and `proof_error` are returned in the verdict route's `materialization` JSON
+  (`adopted_unproven: true` also survives a `partial` status), so the pane CAN show them. There is no front-end
+  change in this commit.
+* `batch` is reachable only from tests: the route passes none today, so the batch refusal ("being adopted for
+  another cluster (<first>) in this batch") has no caller until a batch accept exists.
+
+### Follow-up: claim heartbeat (architect's design; NOT built here, a separate slice after the identity PR)
+
+Today a claim is a single `app_settings` row cleared after 15 minutes, so a live holder running longer can be
+taken over and both can adopt. The design: the claim row records holder pid, host and `taken_at`. The holder
+re-stamps a heartbeat at every step that writes to Egeria or the registry. Takeover only when the heartbeat is
+older than the window AND, on the same host, the pid is not alive. For another host, or when liveness is
+unreadable, there is no takeover: the control shows "claimed by <holder> since <time>, still held", with a
+person-pressed Release that is logged with who pressed it. The honesty guard: before every proof row and every
+Egeria write the holder re-reads the claim and stops if it no longer holds it, writing one "claim lost to
+<holder>" row of its own kind and nothing else, because a row with no claim behind it never proves anything.
+Nothing of this was written in this commit (no `refresh_claim`, no takeover change).
+
+### Known follow-ups, left on purpose
+
+* `derive_commit_state` counts any proof row on a slug as "something was committed" (a slug-collision class of
+  problem, the same as the status-words fix); a repository slug is not shown that header.
+* The reset clean-up script's `SETTING_PREFIXES` does not include `blueprint-claim::`; harmless, the claim
+  expires in 15 minutes, and that script lives on another branch.
