@@ -191,11 +191,11 @@ component at all; the servers, topics and tools are the peers.
    the root cluster's name.
 2. A root component is a member like any other; a cluster's root carries
    no special place in the blueprint.
-3. "Hosted on" / "runs on" is a **relation between nodes**, from the
-   dependency vocabulary (`deployed_by` / `runs`), never a membership. A
-   server hosted on the platform is a node with a wire to the platform
-   node labelled "hosted on"; it is not a child of the platform in the
-   blueprint's membership.
+3. "Hosted on" / "runs on" is a **relation between nodes**: in the
+   blueprint, `SolutionComposition` container → child (how Egeria draws
+   nesting; see the dump check below); in the dependency table,
+   `deployed_by` / `runs`. Never a blueprint membership of both container
+   and child.
 
 **How the deployment blueprint shows platform and servers.** Two readings,
 both supported by the owner's examples, chosen by the blueprint's kind:
@@ -218,6 +218,56 @@ as container and contents; which one is the blueprint's kind. The
 recovery's cluster is still useful: it tells RE that these six are hosted
 on that one, which becomes six `deployed_by` rows and, in the Servers
 blueprint, the optional edge port.
+
+**Checked against the dump (the owner's restatement: "the blueprint
+includes the component that contains the other components").** The 25
+`SolutionComposition` relationships, read from `blueprints-raw.json`:
+
+| Blueprint | Container ⊃ children (by SolutionComposition) | Children direct members? |
+|---|---|---|
+| Runtimes | OMAG Server Platform ⊃ View Server, Engine Host, Integration Daemon | **no** |
+| Runtimes | Apache Kafka ⊃ Open Lineage / Open Metadata / Open Governance Topic | no |
+| Runtimes | Egeria Workspaces PostgreSQL Server ⊃ five databases (Egeria, Superset, Airflow, Marquez, Unity Catalog) | no |
+| Runtimes | Apache Airflow Server ⊃ Apache Airflow DAG; Pyegeria-Web ⊃ pyegeria; JupyterHub ⊃ pyegeria | no |
+| Servers | Engine Host ⊃ Governance Engine; Integration Daemon ⊃ Integration Connector; Airflow ⊃ DAG; hey_egeria ⊃ Load Archive | no |
+| Servers | hey_egeria, my_egeria, Dr.Egeria ⊃ pyegeria | **yes**: pyegeria is both a child of three tools and a direct member |
+
+And **every one of the 25 compositions originates from Egeria's
+CoreContentPack** (origin `CONTENT_PACK`, created by "Egeria Project"), not
+from the owner's hand: adopting a content-pack component brings its
+compositions with it.
+
+Answers, concrete:
+
+1. **Where the compositions sit.** Under the container components. In
+   Runtimes the platform is a direct member and contains the three servers
+   by composition; the servers are **not** direct members. In Servers the
+   three servers are direct members and the platform is **not** a member at
+   all. Kafka contains its topics the same way in Runtimes; in Servers the
+   topics are direct members and Kafka is absent.
+2. **The exact rule, both forms present in the owner's own work, never
+   mixed for one container:** (i) the container is the member and its
+   children are reached through composition (Runtimes: platform, Kafka,
+   PostgreSQL), or (ii) the children are the members and the container is
+   not in the blueprint, the blueprint itself being the boundary (Servers:
+   the servers, the topics). **Never the container and its contained
+   components as direct members together.** The one exception in the dump
+   is pyegeria in Servers, a library that three member tools contain and
+   that is also a member in its own right, which is a child that is a peer
+   (a shared library), not a container's part. RE's OMAG blueprint broke
+   the rule: the platform and its six hosted servers were all direct
+   members.
+3. **What RE writes for hosting.** For content-pack components, **nothing**:
+   adopt the platform by its content-pack qualifiedName and the
+   compositions to View Server, Engine Host and Integration Daemon already
+   exist; RE must not write a second composition or a membership for them.
+   For RE-made components (a server RE found that the content pack does
+   not define, a database under the PostgreSQL server), RE writes
+   `SolutionComposition` container → child, idempotent by the pair, and
+   makes only the container a direct member in a Runtimes-kind blueprint
+   or only the children in a Servers-kind one. `deployed_by` rows stay
+   the dependency table's record of the same fact and are not a second
+   drawing.
 
 **What to do about 254dbbe6.** Egeria rolls forward, never undoes, and no
 rename call exists in RE today for a blueprint. Options, with the exact
