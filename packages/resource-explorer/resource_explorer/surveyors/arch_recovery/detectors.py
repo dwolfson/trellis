@@ -469,7 +469,7 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
     return sorted(found.values(), key=lambda e: e["dir"])
 
 
-def compose_slugs(root: str, files: list[str]) -> dict[tuple[str, str], str]:
+def compose_slugs(root: str, files: list[str], units: dict | None = None) -> dict[tuple[str, str], str]:
     """{(deployment unit, plain slug): final slug} for every compose service in `files`.
 
     A compose service has no files, so its slug IS its scope locator, and reclassifications, verdicts
@@ -485,7 +485,7 @@ def compose_slugs(root: str, files: list[str]) -> dict[tuple[str, str], str]:
     changes, and a qualified slug nobody else carries is left as it is."""
     import hashlib
     entries: list[tuple[str, str, str]] = []                      # (unit, name, plain slug)
-    for unit, decls in deployment_units(root, files).items():
+    for unit, decls in (units if units is not None else deployment_units(root, files)).items():
         names: dict[str, str] = {}
         for decl in decls:
             if os.path.basename(decl).startswith("Dockerfile") or _admission.is_fixture_path(decl):
@@ -519,18 +519,25 @@ def _component_dir(c: Component) -> str:
     return "." if g == "**" or not g else g
 
 
-def _builds_twin(twin: Component, facts: dict, unit: str) -> bool:
+def _builds_twin(twin: Component, facts: dict, unit: str, manifest: bool = False) -> bool:
     """May this compose service be merged into `twin`, a Dockerfile or manifest component? Only if it
-    BUILDS the twin's directory, or declares no build and names no image at all. "Builds the directory"
-    means: the directory of the Dockerfile it uses, when `dockerfile:` is given (resolved against the build
-    context, which is resolved against the compose file's directory), else the build context itself. A
-    remote build URL counts as no build. A service that runs a foreign image (`image: nginx`, no build) is
-    not that component, however the names line up."""
+    BUILDS the twin's directory, or declares no build and names no image at all.
+
+    * A DOCKERFILE twin is built when the directory of the Dockerfile the service uses (its `dockerfile:`
+      resolved against the build context, itself resolved against the compose file's directory; the
+      context itself when no dockerfile is given) is the twin's directory.
+    * A MANIFEST twin is built when EITHER the build context OR that Dockerfile's directory is the
+      manifest's directory (`context: ./api` with the Dockerfile in docker/, or context `.` with
+      `dockerfile: api/Dockerfile`).
+
+    A remote build URL counts as no build. A service that runs a foreign image (`image: nginx`, no
+    build) is not that component, however the names line up."""
     if facts.get("build"):
-        ctx = os.path.join(unit, facts["build"])
+        ctx = os.path.normpath(os.path.join(unit, facts["build"]))
         df = facts.get("dockerfile") or ""
-        target = (os.path.dirname(os.path.join(ctx, df)) or ".") if df else ctx
-        return os.path.normpath(target) == os.path.normpath(_component_dir(twin))
+        dockerfile_dir = os.path.normpath((os.path.dirname(os.path.join(ctx, df)) or ".") if df else ctx)
+        target = os.path.normpath(_component_dir(twin))
+        return dockerfile_dir == target or (manifest and ctx == target)
     return not facts.get("image")
 
 
@@ -672,7 +679,7 @@ def _manifest_and_dockerfile_components(root: str, files: list[str], components:
 _HASHED = re.compile(r"\.[0-9a-f]{6}$")
 
 
-def _plan_compose(root: str, census: list[str], census_comps: list[Component], dockerfile_slugs: set[str],
+def _plan_compose(slugs: dict, census_comps: list[Component], dockerfile_slugs: set[str],
                   per_unit: dict, per_unit_facts: dict) -> dict[tuple[str, str], tuple[str, str | None]]:
     """{(unit, service key): (slug, slug of the component it merges into or None)}, over the whole census.
 
@@ -682,7 +689,6 @@ def _plan_compose(root: str, census: list[str], census_comps: list[Component], d
        build its same-named Dockerfile/manifest twin takes `<slug>.svc`, and a qualified slug that needed a
        hash takes that; these DERIVED slugs are then made unique against every slug in use by extending
        them with `.2`, `.3`, ... so a service literally named `foo.svc` cannot collide."""
-    slugs = compose_slugs(root, census)
     used = {c.slug for c in census_comps}
     plan: dict[tuple[str, str], tuple[str, str | None]] = {}
     derived: list[tuple[tuple[str, str], str]] = []
@@ -698,7 +704,7 @@ def _plan_compose(root: str, census: list[str], census_comps: list[Component], d
                 twin = next((c for c in census_comps if c.slug in dockerfile_slugs and c.perspective != "deployment"
                              and c.identity.deployment_context == unit and c.identity.value == name), None)
             if twin is not None and twin.perspective != "deployment":
-                if _builds_twin(twin, f, unit):
+                if _builds_twin(twin, f, unit, manifest=twin.slug not in dockerfile_slugs):
                     plan[(unit, key)] = (slug, twin.slug)
                     continue
                 derived.append(((unit, key), f"{slug}.svc" if slug in used else slug))
@@ -723,7 +729,7 @@ def _plan_compose(root: str, census: list[str], census_comps: list[Component], d
 
 
 def build_components(root: str, files: list[str], all_files: list[str] | None = None,
-                     ) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
+                     census_info: dict | None = None) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
     components: list[Component] = []
     evidence: list[Evidence] = []
     notes: list[str] = []
@@ -792,7 +798,10 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
             if f["build"] and f["image"]:
                 published.setdefault(_admission.normalise_image(f["image"]), f["decl"])
 
-    plan = _plan_compose(root, census, census_comps, census_dockerfile_slugs, per_unit, per_unit_facts)
+    if census_info is not None:
+        census_info["published"] = dict(published)      # one list, from the census, for the record too
+    plan = _plan_compose(compose_slugs(root, census, census_units), census_comps, census_dockerfile_slugs,
+                         per_unit, per_unit_facts)
     by_slug = {c.slug: c for c in components}
     for unit, merged in per_unit.items():
         if unit not in units:

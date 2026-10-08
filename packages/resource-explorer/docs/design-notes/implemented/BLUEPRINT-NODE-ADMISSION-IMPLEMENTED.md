@@ -37,3 +37,18 @@ Slug, merge and class of a compose service are decided from the whole census, so
 the full run. A service merges into a Dockerfile/manifest node only if it builds that node's directory: the
 directory of its `dockerfile:` (resolved against the context, itself against the compose file), else its
 build context. Derived slugs (`.svc`, hash) are made unique against every slug in use.
+
+## Consequences of the tightened rule (fail-safe, a person can reclassify)
+
+- A service whose image is built in the repository by a Dockerfile but published only through CI tags
+  written as variables (`${{ ... }}/app`, or build-push-action variable tags) is DEMOTED to referenced only:
+  the variable cannot be resolved to an image name, so there is no publish signal.
+- Cross-repository `built by` links are stricter: a bare `egeria-platform` no longer links to
+  `odpi/egeria-platform`. `docker.io/library/nginx` normalises to `library/nginx`.
+- A manifest twin of a compose service merges when the service's build context OR its Dockerfile's directory
+  is the manifest's directory; a Dockerfile twin merges when the Dockerfile's directory is its directory.
+  A compose file in the repository root unit "." is not matched to a manifest by name (its plain slug is
+  `.::<name>`), as before.
+- The published-image list is computed once from the census (build_components fills `census_info`) and is the
+  list used both to classify and to record, so full and scoped runs agree. Scoped runs never write the
+  not-admitted record.

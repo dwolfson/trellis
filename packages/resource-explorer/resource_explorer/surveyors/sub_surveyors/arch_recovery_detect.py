@@ -158,7 +158,9 @@ class ArchDetectSurveyor(BaseSurveyor):
             if self._scope_locator:
                 first_party = [f for f in first_party if path_matches_scope(f, self._scope_locator)]
 
-            components, evidence, notes, code_marker_operations = build_components(root, first_party, all_files=census.first_party)
+            census_info: dict = {}
+            components, evidence, notes, code_marker_operations = build_components(root, first_party, all_files=census.first_party,
+                                                                                       census_info=census_info)
 
             # Whose boundary is each node (DESIGN-BLUEPRINT-NODE-ADMISSION.md)? A person's earlier
             # reclassifications are honoured first; then the services running images this repository
@@ -169,11 +171,9 @@ class ArchDetectSurveyor(BaseSurveyor):
             node_admission.apply_to_components(
                 components, node_admission.read_reclassifications(self.registry, self.project.slug))
             components, referenced = _adm.split(components)
-            admission_published = sorted({
-                *_adm.published_images(root, first_party, [m["name"] for m in
-                                                            python_manifests(root, first_party) +
-                                                            node_manifests(root, first_party)]),
-                *{c.image for c in components if c.image}})
+            # The published-image list is read from the whole census (build_components), never from the
+            # files this run was handed, so it is the same list on a full run and a scoped one.
+            admission_published = sorted(census_info.get("published", {}))
             left_out = _admission_left_out(referenced, notes, census)
 
             # Unlike coupling, detect has three independent ways to find a

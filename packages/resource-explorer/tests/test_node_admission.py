@@ -655,16 +655,6 @@ class TestDockerfileKey:
         api = _components_named(root, "api")
         assert len(api) == 1 and api[0].admission == "built_here" and api[0].image == "odpi/api"
 
-    def test_a_context_in_the_twins_directory_with_a_dockerfile_elsewhere_does_not_merge(self, tmp_path):
-        root = str(tmp_path / "df2")
-        _write(root, "services/api/compose.yaml",
-               "services:\n  api:\n    build:\n      context: .\n      dockerfile: ../../other/Dockerfile\n")
-        _write(root, "services/api/pyproject.toml",
-               '[project]\nname = "api"\nversion = "1"\n[project.scripts]\napi = "api:main"\n')
-        _write(root, "other/Dockerfile", "FROM alpine\n")
-        _git(root)
-        assert len(_components_named(root, "api")) == 2
-
     def test_the_plain_shapes_still_work(self, tmp_path):
         for n, yml in (("a", "    build: ./api\n"), ("b", "    build:\n      context: ./api\n"),
                        ("c", "    build:\n      context: ./api\n      dockerfile: Dockerfile\n")):
@@ -757,3 +747,61 @@ class TestPublishedImageRule:
         _git(root)
         by = {c.name: c.admission for c in _components_named(root, "a") + _components_named(root, "b")}
         assert by == {"a": "shipped_here", "b": "referenced_only"}
+
+
+# ── last round: published once from the census, manifest twins, separators ─────────
+
+def _stored_published(registry, slug):
+    return node_admission._stored(registry, slug).get("published_images")
+
+
+def test_a_scoped_run_after_a_full_run_leaves_the_published_images_identical(registry, tmp_path):
+    root = _egeria_repo(tmp_path)
+    project = _survey(registry, "egeria_git", root)
+    before = _stored_published(registry, "egeria_git")
+    assert "odpi/egeria-platform" in before and "odpi/egeria-ui" in before
+    ArchDetectSurveyor(project, registry, scope_locator="docker", local_path=root,
+                       surveyed_at="2026-10-09T00:00:00").run()
+    assert _stored_published(registry, "egeria_git") == before
+
+
+def test_the_published_list_comes_from_the_census_not_the_scoped_files(tmp_path):
+    from resource_explorer.surveyors.arch_recovery import detectors, exclusion
+    root = _egeria_repo(tmp_path)
+    full = exclusion.scan(root).first_party
+    scoped = [f for f in full if f.startswith("docker/")]
+    a, b = {}, {}
+    detectors.build_components(root, full, all_files=full, census_info=a)
+    detectors.build_components(root, scoped, all_files=full, census_info=b)
+    assert a["published"] == b["published"] and "odpi/egeria-ui" in a["published"]
+
+
+class TestManifestTwins:
+    def _repo(self, tmp_path, name, build_yaml):
+        root = str(tmp_path / name)
+        _write(root, "services/compose.yaml", "services:\n  api:\n" + build_yaml)
+        _write(root, "services/api/pyproject.toml",
+               '[project]\nname = "api"\nversion = "1"\n[project.scripts]\napi = "api:main"\n')
+        _write(root, "services/docker/api.Dockerfile", "FROM alpine\n")
+        _write(root, "services/api/web.Dockerfile", "FROM alpine\n")
+        _git(root)
+        return root
+
+    def test_the_context_matching_the_manifest_directory_merges_even_with_a_dockerfile_elsewhere(self, tmp_path):
+        root = self._repo(tmp_path, "m1", "    build:\n      context: ./api\n      dockerfile: ../docker/api.Dockerfile\n")
+        assert len(_components_named(root, "api")) == 1
+
+    def test_the_dockerfile_in_the_manifest_directory_merges_with_another_context(self, tmp_path):
+        root = self._repo(tmp_path, "m2", "    build:\n      context: .\n      dockerfile: api/web.Dockerfile\n")
+        assert len(_components_named(root, "api")) == 1
+
+    def test_neither_the_context_nor_the_dockerfile_in_the_manifest_directory_does_not_merge(self, tmp_path):
+        root = self._repo(tmp_path, "m3", "    build:\n      context: ./docker\n      dockerfile: api.Dockerfile\n")
+        assert len(_components_named(root, "api")) == 2
+
+
+def test_windows_separators_in_context_and_dockerfile_are_normalised(tmp_path):
+    root = _mono(tmp_path, "win", "    build:\n      context: ..\n      dockerfile: 'services\\api\\Dockerfile'\n")
+    assert len(_components_named(root, "api")) == 1
+    _write(root, "c.yaml", "services:\n  w:\n    build:\n      context: '.\\api'\n")
+    assert adm.compose_service_facts(root, "c.yaml")["w"]["build"] == "./api"

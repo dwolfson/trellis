@@ -94,6 +94,8 @@ def compose_service_facts(root: str, rel: str) -> dict[str, dict]:
             ctx = str(build.get("context") or ".")
             dockerfile = str(build.get("dockerfile") or "")
         remote = bool(re.match(r"^(https?://|git@|git://|github\.com/)", ctx))
+        # Windows separators in a path read the same everywhere (a remote URL has none that matter).
+        ctx, dockerfile = ctx.replace("\\", "/"), dockerfile.replace("\\", "/")
         image = body.get("image")
         out[key] = {"image": image.strip() if isinstance(image, str) else "",
                     "build": "" if remote else (ctx or ("." if build else "")),
