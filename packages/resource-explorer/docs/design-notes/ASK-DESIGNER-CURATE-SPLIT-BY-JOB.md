@@ -34,8 +34,8 @@ glossary and data-class block; the By-analysis tab; the commit steps list.
 On a database: the scope tree (schemas and tables with the selector), the
 manifest and Catalog button, the steps list, the term and logical-schema
 proposals, the data-class rules block, the generic controls, By analysis.
-The design session has not counted the controls; a count per kind is the
-first thing the reply could ask the coordinator for.
+The control count per kind is in the section "The control count" below,
+appended after the coordinator counted the source.
 
 ## The proposal: split by job, not by expertise
 
@@ -75,9 +75,9 @@ names; the cue vocabulary applies unchanged inside each tab.
    see?
 5. **Per kind.** A file system's Curate, when it exists, would take the
    same three tabs; does anything in the split assume a repository?
-6. **What to measure first.** The control count per kind, and which
-   controls the owner pressed in two days of gate walks; would you want
-   those numbers before drawing?
+6. **What to measure first.** The control count per kind is below. The
+   other number, which controls the owner pressed in two days of gate
+   walks, has not been read; would you want it before drawing?
 
 ## The same shape for Understanding (owner, the same day)
 
@@ -107,6 +107,73 @@ same three-level shape? (8) The context-as-product note's "on a screen"
 form is Understanding's tab 1 plus Curate's tab 1 seen by a non-expert;
 is that the surface the chat-first application renders, and does it
 change what belongs on either tab 1?
+
+## The control count (appended 2026-10-08)
+
+Counted by the coordinator from the source at main 57630dc0, the build
+8813 serves, read-only, nothing run. A control is a button, selector,
+toggle or checkbox, link that acts, or editable field, counted once per
+kind; per-row controls are counted once and marked "×per row". The count
+is what the code can render with every section open, so it is a ceiling:
+one repository never shows all of it at once, and the per-row totals
+depend on the data. Shell chrome (sub-tabs, resource header, perspective
+chips) is not counted.
+
+| Band | Repository (egeria_git, amundsen) | Database (coco_pharma) |
+|---|---|---|
+| Stage level (jump line ×6, section toggles ×6, retry on a failed pane) | 3 | 0 |
+| (a) Describe: tags, rating and category, journal notes, group | 16 | 16 |
+| (b) Nesting, selection, verdicts (what it is / what's in it / what it's made of / reclassify / dialogs) | 35 | 23 |
+| (c) Dependencies (kind filter ×per kind, by target, sort ×7, confirm and withdraw ×per row) | 5 | 0 |
+| (d) Blueprints, what gets written, Publish or Catalog band | 27 | 9 |
+| On the page and its dialogs | **86** | **48** |
+| Members rail the page opens | 16 | — |
+| Total | **102** | **48** |
+
+Repository band (b) breaks down as: what it is 2 (confirm ×per candidate,
+"review N >" ×per row); what's in it 9 (path filter, show-the-rest,
+Include | Leave out ×per row, back to undecided ×per row, "include its N
+worthy children", accept N proposals, include all visible, clear all
+visible, details); what it's made of 17 (sort pair, select all shown,
+select all N, branch checkbox, accept N selected, reject N, clear, branch
+open, ports, branch accept all, branch reject all, more branches, leaf
+accept or change, leaf reject, cluster toggle, group accept all, group
+reject all); reclassify 4; dialogs 3. Band (d) is blueprints 8 (view,
+accept or change, reject, three "N … >" drill links, "the X reading has
+N >", Container | Contents shape selector), what gets written 7, Publish
+band 12 (Publish or Publish again, Re-survey now, Forget Egeria links
+with confirm and cancel, bind or decline a project after a 428, re-survey
+stale checkbox, File types, Refresh, Show annotations ×per report, Ask
+about this ×per report, copy GUID).
+
+Database band (b) is the scope tree: section collapse, Start a new
+baseline, depth radio, filter, reset widths, select all shown, clear
+selection, three bulk choices, include all N schemas, schema and table
+select ×per row, schema expand, Include | Leave out ×per schema and
+table, back to undecided, proposal confirm, "<other> instead", details,
+a column resize handle (uncertain whether a control), save again, sign
+in, the rules' built-in keyword list disclosure. Band (d) is Catalog,
+"refresh Egeria's cataloger now", Read Egeria again, check again (only
+while a survey runs), show steps, copy GUID, and the Egeria reports'
+Refresh, Show annotations and Ask about this. A database has no
+dependencies band, no blueprints band, no Publish, Re-survey or Forget;
+"Change credentials…" lives in the header and is not counted; registering
+the server and the native survey press are not on Curate.
+
+Caveats from the counter: the three dialog confirm labels are one kind
+(three would add 2 to the repository total); not read were the
+measurement detail and scope-act views the rail opens, the disposition
+popover, and where the perspective chips mount; no Find-by-coupling
+controls, no enrichment editing, no identifier input in the publish band,
+and no separate commit retry exist on Curate today.
+
+What the numbers say for the proposal: band (a), the describe-and-publish
+job of tab 1, is 16 controls on both kinds, the same component; bands (b)
+and (c), the catalog-contents and relations jobs, carry 40 of the
+repository's 86 and 23 of the database's 48; and the Publish band mixes
+the two jobs (publish the report, forget links, bind a project) with
+reading (Refresh, Show annotations). A tab 1 of band (a) plus the Publish
+or Catalog press alone would be under 20 controls on either kind.
 
 ## Constraints
 
