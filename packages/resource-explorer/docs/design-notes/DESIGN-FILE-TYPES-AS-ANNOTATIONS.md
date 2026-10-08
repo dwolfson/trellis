@@ -52,17 +52,17 @@ field value**, found by the builder reading Egeria's source
 (`SurveyFolderAnnotationType.getAnalysisStep()`): Egeria stamps the four
 profile annotations with `analysisStep = "Profiling Associated Resources"`
 (all four, including File Names, whose constant says `PRODUCE_INVENTORY`
-but whose getter returns the profiling step). RE stamps `analysisStep =
+but whose getter returns the profiling step). RE used to stamp `analysisStep =
 "FileInventory"`, because RE's attribution of annotations to its own
-analysis (`egeria_annotation_materializer`, the "By analysis" readers)
-reads `analysisStep` to decide which step a row belongs to. Reason for the
-departure: RE's attribution needs it today. Rule to end the departure:
-**attribution moves to its own key, `producingStep` in
-`additionalProperties` (RE's distinct property, per the extend-never-change
-rule), and `analysisStep` then follows Egeria's value verbatim.** That is a
-small change to the materialiser's attribution (read `producingStep` first,
-`analysisStep` as the fallback for rows written before) and goes in the
-file-types slice itself, so the departure exists for one release at most.
+analysis (`egeria_annotation_materializer`, the "By analysis" readers) read
+`analysisStep` to decide which step a row belongs to. **Decision and its
+implementation: ended by commit b628d7c0 on the file-types branch.**
+File-type annotations now carry Egeria's `analysisStep` "Profiling
+Associated Resources" verbatim; RE attributes by its own key,
+`producingStep` in `additionalProperties` (RE's distinct property, per the
+extend-never-change rule): `step_of()` reads `producingStep` first and
+falls back to `analysisStep` for annotations written before. So the
+departure was named and closed in the same slice.
 Two more notes from the same read: Egeria's log annotation
 (`ResourceProfileLogAnnotation`) holds `resourceProfileLogGUIDs`, references
 to log elements in Egeria, not a file name; RE's `logFile` in
