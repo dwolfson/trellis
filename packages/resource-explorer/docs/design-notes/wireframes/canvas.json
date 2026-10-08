@@ -75,6 +75,10 @@
   {
    "id": "page-19",
    "name": "State as a visual cue"
+  },
+  {
+   "id": "page-20",
+   "name": "Curate and Understanding split by job (proposal)"
   }
  ],
  "artboards": [
@@ -334,6 +338,14 @@
    "w": 1560,
    "h": 1150,
    "page": "page-19"
+  },
+  {
+   "file": "SplitByJob.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 930,
+   "page": "page-20"
   }
  ],
  "annotations": [
@@ -504,10 +516,18 @@
    "w": 300,
    "page": "page-19",
    "text": "Replies to ASK-DESIGNER-STATE-AS-VISUAL-CUE and ASK-DESIGNER-VERBS-UNMAPPED-CONTROLS Q7, against main at f1f679eb.\n\nThe cue sits where the decision was made; the sentence is one gesture away; a pressed control looks pending and ignores a second press; a control that changes nothing visible is not a control.\n\nTwo lanes: your choice (fill = chosen value in ink, lowered row = not included, tag = source, edge rule = needs you) and in Egeria (glyph + word). Strike-through means superseded text only.\n\nScope row choice is a selector, Include | Leave out, under 'Include in catalog?'; Catalog appears only on the commit button. Steps become a numbered stepper with 'step n of 9 \u00b7 running \u00b7 failed'. The manifest becomes a table per mechanism with the Catalog button on top and blockers under it."
+  },
+  {
+   "id": "split-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-20",
+   "text": "Reply to ASK-DESIGNER-CURATE-SPLIT-BY-JOB (a proposal), against main at 62bcd4ad.\n\nThree jobs as Curate's stage-specific leading tabs on the existing sub-tab rail (the Context precedent), not a third level of tabs: Describe and publish \u00b7 Contents \u00b7 Structure. 'What it is' moves to Structure. No mode; a saved landing tab; counts on tab names.\n\nA running commit shows as one line on every tab, the stepper only where pressed. Tab 1 is the non-expert seed; Forget links, project bind and copy GUID move to Contents. A database has one press (Catalog) on Contents; tab 1 shows its state.\n\nUnderstanding: same positions (whole / parts / detail), names At a glance \u00b7 Contents \u00b7 Over time; both stages say 'Contents' at position 2."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-19"
+  "page": "page-20"
  }
 }
