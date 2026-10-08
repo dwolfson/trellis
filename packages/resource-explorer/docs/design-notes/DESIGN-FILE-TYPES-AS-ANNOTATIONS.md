@@ -47,7 +47,29 @@ registry) and never changes the meaning of one of Egeria's.
 Departures, today: none in meaning. Two in scope: "Profile File Names" is
 not published by default (size; Egeria writes it as a CSV log and so would
 RE, on request); and RE adds the envelope in `additionalProperties`, which
-Egeria's types do not carry, as the leads already agreed. One addition that
+Egeria's types do not carry, as the leads already agreed. A **third, in a
+field value**, found by the builder reading Egeria's source
+(`SurveyFolderAnnotationType.getAnalysisStep()`): Egeria stamps the four
+profile annotations with `analysisStep = "Profiling Associated Resources"`
+(all four, including File Names, whose constant says `PRODUCE_INVENTORY`
+but whose getter returns the profiling step). RE stamps `analysisStep =
+"FileInventory"`, because RE's attribution of annotations to its own
+analysis (`egeria_annotation_materializer`, the "By analysis" readers)
+reads `analysisStep` to decide which step a row belongs to. Reason for the
+departure: RE's attribution needs it today. Rule to end the departure:
+**attribution moves to its own key, `producingStep` in
+`additionalProperties` (RE's distinct property, per the extend-never-change
+rule), and `analysisStep` then follows Egeria's value verbatim.** That is a
+small change to the materialiser's attribution (read `producingStep` first,
+`analysisStep` as the fallback for rows written before) and goes in the
+file-types slice itself, so the departure exists for one release at most.
+Two more notes from the same read: Egeria's log annotation
+(`ResourceProfileLogAnnotation`) holds `resourceProfileLogGUIDs`, references
+to log elements in Egeria, not a file name; RE's `logFile` in
+`additionalProperties` is therefore RE's own extension, a distinct
+property, never a reinterpretation of Egeria's field, and when RE can
+write the CSV as an Egeria log element it fills `resourceProfileLogGUIDs`
+and keeps `logFile` beside it. One addition that
 is RE's own and therefore its own type when it exists: the *selection*
 profile ("what cataloguing the chosen items would create" against "what the
 whole tree holds"), which Egeria's survey has no reason to produce.
