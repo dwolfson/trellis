@@ -66,6 +66,7 @@ qualifiedName search (`_find_element_guid`) before ever creating.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 
 import logging
 import os
@@ -114,6 +115,8 @@ class BlueprintAmbiguous(BlueprintMaterializationError):
 #: The provenance RE writes on every SolutionBlueprint it creates (additionalProperties). The element is the
 #: record; the registry is only its cache, so a cleared row is rebuilt from these.
 PROVENANCE_VERSION = "1"
+#: A claim older than this is treated as a crashed holder's (`registry.take_claim`, 900 seconds).
+CLAIM_WINDOW_MINUTES = 15
 
 
 class BlueprintMaterializer:
@@ -404,15 +407,22 @@ class BlueprintMaterializer:
             claimants = sorted(c for c in ((batch or set()) | {cluster_name})
                                if c in live_clusters and f"{perspective}::{c}" not in rows)
             first = claimants[0] if claimants else cluster_name
-            if first == cluster_name:
-                holder = next((r for r in rows.values() if r.get("qualified_name") == qualified_name
-                               and r.get("cluster_name") != cluster_name), None)
+            holders = [r for r in rows.values() if r.get("qualified_name") == qualified_name
+                       and r.get("cluster_name") != cluster_name]
+            live_holder = next((h for h in holders if not gone(h.get("cluster_name"))), None)
+            if live_holder is not None:
+                # A LIVE cluster's cache row owns the element: never re-key from it.
+                from resource_explorer.blueprint_kinds import identifier_needed_sentence
+                why = identifier_needed_sentence(perspective, entity_slug, str(live_holder.get("cluster_name")))
+            elif first == cluster_name:
+                holder = holders[0] if holders else None
                 previous, source = ((holder["cluster_name"], "registry row") if holder else (key, "element property"))
                 return (f"adopted blueprint {guid} named {qualified_name} for cluster {cluster_name!r} \u00b7 re-keyed "
                         f"from {previous!r}, which no longer exists; the element still carries re_cluster_key "
                         f"{key!r} as a hint"), previous, source
-            why = (f"an element named {qualified_name} is being adopted for another cluster ({first}) in this "
-                   "batch \u00b7 give this one an identifier")
+            else:
+                why = (f"an element named {qualified_name} is being adopted for another cluster ({first}) in this "
+                       "batch \u00b7 give this one an identifier")
         elif key:
             why = (f"an element named {qualified_name} already exists in Egeria for another cluster ({key}) "
                    "\u00b7 give this one an identifier")
@@ -468,8 +478,7 @@ class BlueprintMaterializer:
                 claim_key = f"blueprint-claim::{qn}"
                 taken = self._registry.take_claim(claim_key, holder)
                 if taken is False:           # only a real False refuses (a bare fake registry has no claims)
-                    raise BlueprintMaterializationError(
-                        "another press is adopting this blueprint right now: nothing was written")
+                    raise BlueprintMaterializationError(self._claim_refusal(claim_key))
                 held = taken is True
         try:
             return self._materialize_locked(
@@ -478,7 +487,30 @@ class BlueprintMaterializer:
                 live_clusters=live_clusters, batch=batch)
         finally:
             if held:
-                self._registry.release_claim(claim_key, holder)
+                try:
+                    self._registry.release_claim(claim_key, holder)
+                except Exception as exc:       # never mask the real outcome; the claim expires on its own
+                    log.warning("could not release the claim %s: %s", claim_key, exc)
+                    self._activity(entity_type, entity_slug,
+                                   f"could not release the blueprint claim {claim_key} ({type(exc).__name__}: "
+                                   f"{exc}); it expires {CLAIM_WINDOW_MINUTES} minutes after it was taken",
+                                   status="failed")
+
+    def _claim_refusal(self, claim_key: str) -> str:
+        """Why a press was refused, with the claim's age as a fact (not a verdict that its holder is dead)."""
+        said = "another press is adopting this blueprint right now"
+        try:
+            got = self._registry.get_claim(claim_key)
+            if got:
+                taken = datetime.fromisoformat(got[1])
+                age = int((datetime.utcnow() - taken).total_seconds())
+                if age > 120:
+                    expires = taken + timedelta(minutes=CLAIM_WINDOW_MINUTES)
+                    said = (f"this blueprint was claimed {age // 60} minutes ago and the claim may be stale; "
+                            f"it expires at {expires:%H:%M} UTC")
+        except (ValueError, TypeError, KeyError) as exc:
+            said += f" (the claim's age could not be read: {type(exc).__name__})"
+        return f"{said}: nothing was written"
 
     def _materialize_locked(
         self,
@@ -570,7 +602,8 @@ class BlueprintMaterializer:
                                          live_clusters)
             if clash:
                 if not identifier:
-                    raise BlueprintIdentifierNeeded(identifier_needed_sentence(perspective, entity_slug))
+                    raise BlueprintIdentifierNeeded(identifier_needed_sentence(
+                        perspective, entity_slug, str(clash.get("cluster_name") or "")))
                 raise BlueprintMaterializationError(
                     f"the identifier {identifier!r} is already used by another {kind_word(perspective)} "
                     f"Blueprint for {entity_slug} \u00b7 give this one a different identifier: nothing was created")

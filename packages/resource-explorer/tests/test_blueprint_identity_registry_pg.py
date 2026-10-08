@@ -6,6 +6,8 @@ project slug (the pg schema is shared within a session).
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytestmark = pytest.mark.requires_pgvector
@@ -91,7 +93,8 @@ def test_a_split_with_one_acceptance_adopts_once_and_the_other_half_is_refused_a
     first, out = press("beta")            # beta alone pressed adopts
     assert out["guid"] == G1 and _created(first) == []
     later = _m(pg_registry, found=props)  # alpha pressed afterwards: beta now holds the element
-    with pytest.raises(BlueprintIdentifierNeeded, match=r"Deployment Blueprint already exists for bpid_pg_split"):   # beta holds it: the ruled sentence
+    with pytest.raises(BlueprintIdentifierNeeded, match=re.escape("a Deployment Blueprint already exists for bpid_pg_split (held by beta) "
+                                          "\u00b7 give this one an identifier")):
         later.materialize_blueprint_element("repo", slug, "deployment", "alpha", display_name=DISPLAY,
                                             live_clusters=live)
     assert _created(later) == []

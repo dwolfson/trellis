@@ -4468,6 +4468,12 @@ class ProjectRegistry:
                    ON CONFLICT(key) DO NOTHING""", (key, holder, now.isoformat()))
             return bool(getattr(cur, "rowcount", 0) == 1)
 
+    def get_claim(self, key: str) -> tuple[str, str] | None:
+        """(holder, taken_at ISO) of a live claim, or None. Read-only."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT value, updated_at FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return (row["value"], row["updated_at"]) if row else None
+
     def release_claim(self, key: str, holder: str) -> None:
         """Release a claim, ONLY if this holder still holds it."""
         with self._conn() as conn:

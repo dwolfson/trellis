@@ -619,8 +619,11 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     if unmaterialized_children:
         result["unmaterialized_children"] = unmaterialized_children
     unfinished = [c for c in composition_results if c["status"] in ("unconfirmed", "error", "unread")]
+    unproven = result.get("status") == "adopted_unproven"
     if unmaterialized_members or unmaterialized_children or composition_error or unfinished:
         result["status"] = "partial"
+    if unproven:                       # the re-key proof row could not be written: the pane CAN show it
+        result["adopted_unproven"] = True
     return result
 
 

@@ -27,6 +27,7 @@ ROOT = "OMAG-Server-Platform"
 LEGACY_556 = f"SolutionBlueprint::repo::egeria_git::Deployment Blueprint::{ROOT}"
 LEGACY_PRE = f"SolutionBlueprint::repo::egeria_git::deployment::{ROOT}"
 SENTENCE = "a Deployment Blueprint already exists for egeria_git · give this one an identifier"
+HELD = "a Deployment Blueprint already exists for egeria_git (held by {}) · give this one an identifier"
 
 
 @pytest.fixture
@@ -98,7 +99,7 @@ def test_a_second_blueprint_of_a_kind_without_an_identifier_is_refused_and_creat
     m = _m(reg)
     with pytest.raises(BlueprintIdentifierNeeded) as exc:
         _make(m, cluster="web")
-    assert str(exc.value) == SENTENCE
+    assert str(exc.value) == HELD.format(ROOT)       # the cache row's cluster, read at refusal time
     assert _created(m) == [] and m.searched == []
     m._connect.assert_not_called()
 
@@ -224,7 +225,7 @@ def test_the_accept_pane_is_told_to_ask_only_when_another_live_cluster_holds_the
     _make(_m(reg), cluster=ROOT)
     got = ids()
     assert not got[ROOT]["needs_identifier"]            # its own blueprint: nothing to ask
-    assert got["web"]["needs_identifier"] and got["web"]["sentence"] == SENTENCE
+    assert got["web"]["needs_identifier"] and got["web"]["sentence"] == HELD.format(ROOT)
 
 
 # ── provenance: the primary adoption rule; the displayName is the fallback ───────────────────────────────
@@ -539,3 +540,106 @@ def test_a_claim_this_process_does_not_hold_is_never_released():
     m._registry = registry
     _make(m)
     registry.release_claim.assert_not_called()
+
+
+def test_with_no_holder_the_sentence_stays_exactly_the_ruled_one():
+    assert bk.identifier_needed_sentence("deployment", "egeria_git") == SENTENCE
+    assert bk.identifier_needed_sentence("deployment", "egeria_git", "") == SENTENCE
+
+
+def test_the_holder_comes_from_the_cache_row_not_from_the_pressed_clusters_provenance(reg):
+    reg.record_materialized_blueprint("repo", "egeria_git", "deployment", "web", BASE, G_WEB)
+    # the pressed cluster's element claims yet another key; the sentence still names the row's cluster
+    m = _m(reg, found={BASE: {"guid": G_WEB, "props": _prov("somebody-else")}})
+    with pytest.raises(BlueprintIdentifierNeeded) as exc:
+        _make(m, cluster=ROOT, live_clusters={ROOT, "web"})
+    assert str(exc.value) == HELD.format("web")
+
+
+# ── review round: live holder, release failure, claim age, the route's JSON ──────────────────────────────
+
+
+def test_a_live_holder_row_is_never_rekeyed_from_even_when_asked_directly(reg):
+    """`_identity_clash` refuses this earlier on the materialize path; `_decide_adoption` must still never
+    re-key from a LIVE holder (the sentence may name it, the re-key may not take from it)."""
+    reg.record_materialized_blueprint("repo", "egeria_git", "deployment", "web", BASE, G_WEB)
+    m = _m(reg)
+    found = {"guid": OLD, "display_name": DISPLAY, "additional": _prov(ROOT)}     # ROOT is gone, web is live
+    with pytest.raises(BlueprintIdentifierNeeded) as exc:
+        m._decide_adoption("repo", "egeria_git", "deployment", "alpha", BASE, "", DISPLAY, found,
+                           live_clusters={"alpha", "web"})
+    assert str(exc.value) == HELD.format("web")
+    assert not any(p["proof"] == "rekey" for p in reg.list_catalogue_commit_proofs("egeria_git"))
+
+
+def test_a_release_that_raises_never_masks_the_outcome_and_is_written_down(reg):
+    m = _m(reg)
+    real = reg.release_claim
+    reg.release_claim = MagicMock(side_effect=RuntimeError("db gone"))
+    try:
+        out = _make(m)
+    finally:
+        reg.release_claim = real
+    assert out["status"] == "materialized"
+    assert any("could not release the blueprint claim" in x and "db gone" in x for x in _activity(reg))
+    with reg._conn() as conn:                                   # the failed release left the claim to expire
+        conn.execute("DELETE FROM app_settings WHERE key LIKE 'blueprint-claim::%'")
+        conn.execute("DELETE FROM architecture_materialized_blueprints")
+    m2 = _m(reg, search_error=RuntimeError("503"))              # and an exception is not replaced by it
+    reg.release_claim = MagicMock(side_effect=RuntimeError("db gone"))
+    try:
+        with pytest.raises(BlueprintMaterializationError, match="nothing was created"):
+            _make(m2)
+    finally:
+        reg.release_claim = real
+
+
+def test_a_refused_press_states_the_claims_age_and_expiry_as_fact(reg):
+    from datetime import datetime, timedelta
+    key = f"blueprint-claim::{BASE}"
+    assert reg.take_claim(key, "someone")
+    m = _m(reg)
+    with pytest.raises(BlueprintMaterializationError, match="another press is adopting this blueprint right now"):
+        _make(m)
+    old = (datetime.utcnow() - timedelta(minutes=10)).isoformat()
+    with reg._conn() as conn:
+        conn.execute("UPDATE app_settings SET updated_at = ? WHERE key = ?", (old, key))
+    with pytest.raises(BlueprintMaterializationError) as exc:
+        _make(_m(reg))
+    text = str(exc.value)
+    assert "claimed 10 minutes ago" in text and "may be stale" in text and "expires at" in text
+    assert "right now" not in text and _created(m) == []
+
+
+def test_an_unproven_adoption_is_returned_by_the_workflow_for_the_route(tmp_path, monkeypatch):
+    from resource_explorer.registry import Project, ProjectRegistry
+    from resource_explorer.workflows import curate
+    reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    reg.add(Project(slug="egeria_git", display_name="egeria_git", github_url="https://github.com/o/e"))
+    reg.upsert_finding("egeria_git", "architecture_blueprints", [{
+        "check_name": "candidate_blueprint", "label": "core",
+        "detail": {"name": "core", "perspective": "deployment", "members": [], "children": [], "parent": "",
+                   "oversized": False}}], surveyed_at="2026-10-01T00:00:00")
+
+    class Fake:
+        def __init__(self, registry=None):
+            pass
+
+        def materialize_blueprint_element(self, *a, **k):
+            return {"status": "adopted_unproven", "proof_error": "RuntimeError: proof table down",
+                    "guid": OLD, "qualified_name": BASE}
+
+        def blueprint_member_guids(self, guid):
+            return None
+
+        def resolve_member_guids(self, *a, **k):
+            return {}, []
+
+        def resolve_child_blueprint_guids(self, *a, **k):
+            return {}, []
+
+    monkeypatch.setattr("resource_explorer.surveyors.arch_recovery.blueprint_materializer.BlueprintMaterializer", Fake)
+    monkeypatch.setattr("resource_explorer.egeria_outbox.enqueue_blueprint_members", lambda *a, **k: [])
+    out = curate.materialize_blueprint_if_accepted(reg, "repo", "egeria_git", "deployment", "core", "accepted")
+    assert out["status"] == "adopted_unproven" and out["adopted_unproven"] is True
+    assert out["proof_error"] == "RuntimeError: proof table down"

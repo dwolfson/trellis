@@ -120,9 +120,12 @@ def identity_property(slug: str, perspective: str, identifier: str = "") -> str:
     return "-".join(p for p in (up(slug), up(kind_key(perspective)), up(identifier)) if p)
 
 
-def identifier_needed_sentence(perspective: str, slug: str) -> str:
-    """Said when a second blueprint of a kind is accepted for a repository without an identifier."""
-    return f"a {kind_word(perspective)} Blueprint already exists for {slug} \u00b7 give this one an identifier"
+def identifier_needed_sentence(perspective: str, slug: str, holder: str = "") -> str:
+    """Said when a second blueprint of a kind is accepted for a repository without an identifier. `holder` is
+    the cluster whose CACHE ROW owns the element, read at refusal time; with none the sentence is exactly the
+    ruled one (no guess)."""
+    held = f" (held by {holder})" if holder else ""
+    return f"a {kind_word(perspective)} Blueprint already exists for {slug}{held} \u00b7 give this one an identifier"
 
 
 def blueprint_kind_rows(*, label: str, blueprints: list[dict], artifact_count: int,
