@@ -83,6 +83,10 @@ run the explicit command above so it's there from the start.
 
 ## CLI reference
 
+The post-reset clean-up script is run from this directory as
+`uv run python scripts/clear_egeria_pointers_after_reset.py …` (dry run first; it prints the exact `to apply:` line).
+A bare `python scripts/…` call fails with ModuleNotFoundError on the `catalogue_commit` import.
+
 ```bash
 uv run resource-explorer --help
 

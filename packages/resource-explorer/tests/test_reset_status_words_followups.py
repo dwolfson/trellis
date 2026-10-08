@@ -116,3 +116,103 @@ def test_the_legacy_page_never_copies_an_unbound_context_onto_other_resources():
     assert ("inv.egeria_context.status !== 'unset' && inv.egeria_context.status !== 'unbound'") in html
     # ... and a session default that is `unbound` must not be POSTed to a resource
     assert "_sessionEgeriaProjectContext.status === 'unset' || _sessionEgeriaProjectContext.status === 'unbound'" in html
+
+
+# ── the owner's invocation, the version refusal, unknown times, one tie rule ─────────────────────────────
+
+import json  # noqa: E402
+
+from tests.test_egeria_reset_cleanup import RESET, TOKEN, apply, dry  # noqa: E402
+import clear_egeria_pointers_after_reset as S  # noqa: E402
+
+
+def test_the_to_apply_line_starts_with_the_command_that_works(env):
+    rc, cap, h, f = dry(env)
+    line = next(l for l in cap.text.splitlines() if l.startswith("to apply: "))
+    assert line.startswith("to apply: uv run python scripts/clear_egeria_pointers_after_reset.py --apply ")
+    doc = S.__doc__
+    assert "uv run python scripts/clear_egeria_pointers_after_reset.py" in doc and "ModuleNotFoundError" in doc
+    assert "unknown → unknown" in doc
+
+
+def test_a_plan_from_another_script_version_is_refused_with_its_own_sentence(env):
+    rc, cap, h, f = dry(env)
+    saved = json.loads(Path(f).read_text())
+    saved["plan"]["script_version"] = "old-1"
+    Path(f).write_text(json.dumps(saved))
+    rc, cap = apply(env, h, f)
+    assert rc == 2
+    assert f"different version of the script (old-1, this is {S.SCRIPT_VERSION}); run the dry run again" in cap.text
+    assert "registry changed" not in cap.text
+    # a plan with no version recorded at all (an older script) says so
+    del saved["plan"]["script_version"]
+    Path(f).write_text(json.dumps(saved))
+    assert "none recorded" in apply(env, h, f)[1].text
+
+
+def test_the_registry_changed_refusal_has_its_own_sentence(env):
+    rc, cap, h, f = dry(env)
+    ins(env["reg"], "project_published_analyses", project_slug="repo1", analysis_id="zz",
+        published_at="2026-09-01T00:00:00", egeria_report_guid="g")
+    rc, cap = apply(env, h, f)
+    assert rc == 2 and "the registry changed since the dry run; run the dry run again" in cap.text
+    assert "different version" not in cap.text
+
+
+def test_an_unparseable_time_is_unknown_and_never_makes_a_claim(env):
+    assert cc._ts("yesterday") == "" and not cc._known("yesterday")
+    assert cc.published_state("yesterday", RESET_ISO) == "published"       # no "earlier" claim from garbage
+    assert cc.published_state("2026-09-01T00:00:00", "tomorrow") == "published"
+    assert cc.reset_since_read("yesterday", RESET_ISO) is False
+    assert cc.reset_since_read("2026-09-01T00:00:00", "tomorrow") is False
+    reg = env["reg"]
+    with reg._conn() as c:
+        c.execute("INSERT INTO projects (slug, display_name, github_url, created_at) VALUES ('junk','j','https://x/j','2026-09-01')")
+    ins(reg, "project_published_analyses", project_slug="junk", analysis_id="a", egeria_report_guid="g", published_at="yesterday")
+    reg.append_catalogue_commit_proof("junk", proof="report_published", node_kind="repo_report", element_guid="g",
+                                      read_at="not a time")
+    applied(env)
+    assert reg.get_egeria_reset_at("junk") == ""                              # the script made no marker claim
+
+
+def test_one_tie_rule_a_proof_read_at_the_reset_time_is_live_on_both_screens(env):
+    reg = env["reg"]
+    # both written BEFORE the marker, read exactly at the reset time
+    reg.append_catalogue_commit_proof("repo1", proof="report_published", node_kind="repo_report",
+                                      element_guid="g2", read_at=RESET_ISO)
+    reg.append_catalogue_commit_proof("db1", proof="elements_read_back", node_kind="schema", schema_name="s1",
+                                      element_guid="g2", target_guid="g2", detail={"tables": ["t"]}, read_at=RESET_ISO)
+    applied(env)
+    assert repo_publish.publish_state(reg, "repo1")["row"]["word"] == "published"
+    st = cc.derive_commit_state(reg, "db1", {"schemas": [{"name": "s1", "effective": "catalogue", "tables": []}]})
+    assert st["schemas"]["s1"]["state"] == "catalogued"
+
+
+def test_project_state_for_unbound_with_and_without_an_inheriting_investigation(env, monkeypatch):
+    reg = env["reg"]
+    applied(env)
+    assert repo_publish.project_state(reg, "repo1")["status"] == "unbound"
+    assert repo_publish.project_state(reg, "repo1")["word"] == "unbound by reset · rebind to recreate"
+    monkeypatch.setattr(reg, "inherited_egeria_project_context", lambda *a, **k: {
+        "egeria_project_qualified_name": "Project::Investigation::inv::x", "_inherited_from_name": "Inv"})
+    st = repo_publish.project_state(reg, "repo1")
+    assert st["status"] == "inherited" and st["detail"] == "from investigation 'Inv'"
+
+
+def test_next_steps_names_the_unbound_investigation(env, monkeypatch):
+    import asyncio
+    from resource_explorer.web.routes import investigations as R
+    reg = env["reg"]
+    ins(reg, "investigations", slug="inv-u", display_name="U", created_at="2026-09-01T00:00:00",
+        egeria_project_status="unbound", egeria_project_guid="")
+    monkeypatch.setattr(R, "_registry", lambda: reg)
+    steps = asyncio.run(R.next_steps("inv-u"))["steps"]
+    bind = [s for s in steps if s["id"] == "bind_egeria"][0]
+    assert bind["title"] == "unbound by reset · rebind to recreate" and "recreate it under the same name" in bind["detail"]
+
+
+def test_the_investigation_list_shows_unbound_not_local():
+    js = (STATIC / "next" / "stages" / "investigation.js").read_text(encoding="utf-8")
+    body = js[js.index("function bindingGlyph("):js.index("async function renderList(")]
+    assert "inv.egeria_context.status === 'unbound'" in body and "unbound by reset" in body
+    assert body.index("unbound") < body.index("🏠 local")

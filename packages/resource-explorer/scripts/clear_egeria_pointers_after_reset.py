@@ -8,8 +8,18 @@ DDL-free. NOT the per-repository "Forget Egeria links" button (29 presses, and i
 DEFAULT IS A DRY RUN: it prints, per table, what it would clear or mark, writes NOTHING to the registry, writes
 a plan file (JSON, no credentials) and prints the plan's hash.
 
+    cd packages/resource-explorer
     REGISTRY_DATABASE_URL=... uv run python scripts/clear_egeria_pointers_after_reset.py \\
         --reset-at 2026-10-08T18:30Z [--old-collection-id X --new-collection-id Y]
+
+Run it THROUGH `uv run`, from packages/resource-explorer. A bare `python scripts/...` fails with
+ModuleNotFoundError on the resource_explorer import (catalogue_commit): run it through uv run so the
+resource_explorer package is importable.
+
+The owner's run sequence: (1) the dry run; (2) read the header's schema and current_schema line; (3) apply, with
+the exact "to apply:" line it printed; (4) read the snapshot's recorded current_schema; (5) a second dry run,
+which must be empty. The markers' collection ids read "unknown → unknown" until the metadataCollectionId slice
+lands: that is expected and honest, not a fault.
 
 APPLY needs ALL of these, and refuses (exit 2, saying which) when any is missing or false:
 
@@ -83,7 +93,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS, _ts  # noqa: E402
+from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS, _known, _ts  # noqa: E402
+
+#: Written into every plan file and into its hash. A plan made by another version of this script is refused with
+#: its own sentence (not the registry-changed one). Bump it when the plan's shape or meaning changes.
+SCRIPT_VERSION = "2026-10-09.1"
+#: The exact prefix of the printed "to apply:" line: what actually works (see the docstring).
+RUN_PREFIX = "uv run python scripts/clear_egeria_pointers_after_reset.py"
 
 # UNBOUND_STATUS is the status VALUE `unbound` (architect's ruling 2026-10-08), written to
 # entity_egeria_project_context.status and investigations.egeria_project_status. The words
@@ -352,16 +368,17 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
         # compared as PARSED times in Python, never as SQL text ('Z', '+00:00', spaces and fractions misorder)
         for r in _rows(conn, f"SELECT project_slug, published_at FROM {table} "
                              "WHERE published_at IS NOT NULL AND published_at <> ''"):
-            if _ts(r["published_at"]) < _ts(reset_at):
+            if _known(r["published_at"]) and _ts(r["published_at"]) < _ts(reset_at):
                 pub_earlier[r["project_slug"]] = pub_earlier.get(r["project_slug"], 0) + 1
     markers, after = [], []
     for slug in sorted(set(by) | set(pub_earlier)):
         rows_for = by.get(slug, [])
         real = [p for p in rows_for if p["proof"] != PROOF_KIND]
-        have = [p for p in rows_for if p["proof"] == PROOF_KIND and _ts(p["read_at"]) == _ts(reset_at)]
-        if any(_ts(p["read_at"]) > _ts(reset_at) for p in real):
+        have = [p for p in rows_for if p["proof"] == PROOF_KIND and _known(p["read_at"])
+                and _ts(p["read_at"]) == _ts(reset_at)]
+        if any(_known(p["read_at"]) and _ts(p["read_at"]) > _ts(reset_at) for p in real):
             after.append(slug)
-        n_earlier = sum(1 for p in real if _ts(p["read_at"]) < _ts(reset_at))
+        n_earlier = sum(1 for p in real if _known(p["read_at"]) and _ts(p["read_at"]) < _ts(reset_at))
         if have or not (n_earlier or pub_earlier.get(slug)):
             continue
         markers.append({"slug": slug, "node_kind": kinds.get(slug, NODE_OTHER),
@@ -370,7 +387,7 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
                                 + ("" if n_earlier else " · published claim before the reset (no proof rows)")})
     actions.append({"id": "marker:catalogue_commit_proofs", "kind": "write_markers",
                     "table": "catalogue_commit_proofs", "rows": markers, "count": len(markers)})
-    plan = {"database": db_name, "schema": schema, "current_schema": live_schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
+    plan = {"script_version": SCRIPT_VERSION, "database": db_name, "schema": schema, "current_schema": live_schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
             "new_collection_id": new_id or "unknown", "actions": actions,
             "dead_outbox_untouched": [r["id"] for r in dead], "skipped_tables": skipped,
             "slugs_with_proofs_after_reset": after}
@@ -616,11 +633,15 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
                 extra = "".join(f" --skip-missing-table {t}" for t in plan["skipped_tables"])
                 extra += f" --old-collection-id {args.old_collection_id}" if args.old_collection_id else ""
                 extra += f" --new-collection-id {args.new_collection_id}" if args.new_collection_id else ""
-                out(f"to apply: --apply --reset-at {args.reset_at} --plan-file {path} --plan-hash {plan['hash']} "
+                out(f"to apply: {RUN_PREFIX} --apply --reset-at {args.reset_at} --plan-file {path} --plan-hash {plan['hash']} "
                     f"--database {name} --schema {schema}{extra} --cleared-by <who>/<UTC>")
                 return 0
             saved = json.loads(Path(args.plan_file).read_text())
             sp = saved.get("plan") or {}
+            if sp.get("script_version") != SCRIPT_VERSION:
+                raise Refused(f"this plan was made by a different version of the script "
+                              f"({sp.get('script_version') or 'none recorded'}, this is {SCRIPT_VERSION}); "
+                              "run the dry run again")
             if sp.get("schema") != schema:
                 raise Refused(f"the plan file was made for schema {sp.get('schema')!r}, not {schema!r}")
             if sp.get("current_schema") != live:
@@ -634,9 +655,9 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
             if now - made > timedelta(minutes=args.max_plan_age_minutes) or made > now + timedelta(minutes=1):
                 raise Refused(f"the dry run is older than {args.max_plan_age_minutes} minutes; run it again")
             if plan["hash"] != args.plan_hash:
-                raise Refused("the registry changed since the dry run (the plan recomputed now has a different "
-                              f"hash {plan['hash'][:12]} vs {args.plan_hash[:12]}) or --reset-at / collection ids "
-                              "differ; run the dry run again")
+                raise Refused("the registry changed since the dry run; run the dry run again "
+                              f"(the plan recomputed now has hash {plan['hash'][:12]}, the dry run's was "
+                              f"{args.plan_hash[:12]}; --reset-at and the collection ids must also be the same)")
             reasons = activity_guard(conn)
             if reasons:
                 raise Refused("a Resource Explorer process looks active: " + "; ".join(reasons))

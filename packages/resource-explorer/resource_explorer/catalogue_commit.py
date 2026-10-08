@@ -202,7 +202,8 @@ def _ts(iso) -> str:
     UTC, 'T'-separated, to the second, from a PARSED value, so 'Z', '+00:00' or another offset, a space
     separator and 3- or 6-digit fractions all order correctly against each other. A naive value is read as
     UTC (every writer here uses datetime.utcnow(); the browser reads naive stamps the same way). One that
-    cannot be parsed falls back to its first 19 characters, as before."""
+    cannot be parsed is UNKNOWN: '' (it sorts before every real time, and `_known()` says so), never a
+    string that could sort after one and win."""
     text = str(iso or "").strip()
     if not text:
         return ""
@@ -212,10 +213,15 @@ def _ts(iso) -> str:
     try:
         d = datetime.fromisoformat(t)
     except ValueError:
-        return text.replace(" ", "T")[:19]
+        return ""
     if d.tzinfo is not None:
         d = d.astimezone(timezone.utc).replace(tzinfo=None)
     return d.isoformat(timespec="seconds")
+
+
+def _known(iso) -> bool:
+    """True when the value parses to a time. An unknown time never makes an earlier-than or since claim."""
+    return bool(_ts(iso))
 
 
 def _hm(iso: str) -> str:
@@ -598,8 +604,11 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     # marker was written still counts.
     reset = _latest(proofs_all, (P_EGERIA_RESET,))
     cutoff = _ts(reset["read_at"]) if reset else ""
+    # ONE tie rule, shared with repo_publish.publish_state: a proof read AT or after the reset time is live.
+    # A proof whose time cannot be read is neither live nor earlier (no claim either way).
     proofs = [p for p in proofs_all if p["proof"] != P_EGERIA_RESET and (reset is None or _ts(p["read_at"]) >= cutoff)]
-    earlier = [p for p in proofs_all if reset is not None and p["proof"] != P_EGERIA_RESET and _ts(p["read_at"]) < cutoff]
+    earlier = [p for p in proofs_all if reset is not None and p["proof"] != P_EGERIA_RESET
+               and _known(p["read_at"]) and _ts(p["read_at"]) < cutoff]
     earlier_by = _by_node(earlier)
     by = _by_node(proofs)
     ob_by_schema = _outbox_by_schema(registry.list_catalogue_outbox_rows(slug))
@@ -1897,7 +1906,7 @@ def published_state(published_at: str, reset_at: str) -> str:
     existence alone would say Published for a row Egeria no longer has any element for."""
     if not published_at:
         return ""
-    if reset_at and _ts(published_at) < _ts(reset_at):
+    if _known(reset_at) and _known(published_at) and _ts(published_at) < _ts(reset_at):
         return "published_earlier"
     return "published"
 
@@ -1911,4 +1920,4 @@ def publish_fields(registry, slug: str, published_at: str, reset_at: str | None 
 def reset_since_read(read_at: str, reset_at: str) -> bool:
     """True when the reset marker postdates a read: what was read is a copy of an element Egeria no longer
     holds. No marker, or a marker at or before the read, is False (a read at or after the reset is live)."""
-    return bool(read_at and reset_at and _ts(reset_at) > _ts(read_at))
+    return _known(read_at) and _known(reset_at) and _ts(reset_at) > _ts(read_at)

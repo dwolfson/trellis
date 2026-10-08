@@ -137,8 +137,8 @@ async def native_survey_report(entity_type: str, slug: str, report_guid: str) ->
         # annotations' own `read_at` (the run's report read time when they carry none). If the
         # `egeria_reset` marker is LATER than that read, Egeria has been reset since: the screen says so,
         # once. Nothing is asked of Egeria, and the annotations and their order are exactly what was stored.
-        from resource_explorer.catalogue_commit import egeria_reset_at, reset_since_read
-        copy_read_at = max((a.get("read_at") or "" for a in annotations), default="") \
+        from resource_explorer.catalogue_commit import _ts, egeria_reset_at, reset_since_read
+        copy_read_at = max((a.get("read_at") or "" for a in annotations), key=_ts, default="") \
             or (run.get("report_read_at") or "")
         reset_at = egeria_reset_at(registry, slug)
         return {

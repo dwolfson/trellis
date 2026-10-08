@@ -67,6 +67,9 @@ INTENT_COLUMNS = (
 )
 
 # Columns RE writes and never reads back. The prefix is the contract.
+# NOTE: `status_last_published_at` is a bare claim (the newest publish row's time). After an Egeria reset it can
+# name a publish whose elements no longer exist, and the CSV does not say so: the layout is unchanged on purpose
+# (importers depend on it). The screens read the `egeria_reset` marker; this export does not.
 STATUS_COLUMNS = (
     "status_registered",      # is it in RE's registry at all
     "status_slug",            # what RE called it, once registered

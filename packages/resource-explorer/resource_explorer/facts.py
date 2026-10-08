@@ -498,8 +498,8 @@ def _r_catalogued(reg, p) -> tuple:
     # The GUID alone says "published at some point"; the publish claims say
     # when. Both, or the answer is half of one.
     published = reg.get_last_published_annotation_types(p.slug) or {}
-    when = max(published.values(), default="")
-    from resource_explorer.catalogue_commit import publish_fields
+    from resource_explorer.catalogue_commit import _ts, publish_fields
+    when = max(published.values(), key=_ts, default="")
     return ({"catalogued": bool(guid), "egeria_asset_guid": guid,
              "last_published_at": when, **publish_fields(reg, p.slug, when)},
             MEASURED if guid else NOTHING_FOUND)

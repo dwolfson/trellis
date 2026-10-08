@@ -187,7 +187,9 @@ def publish_state(registry, slug: str) -> dict:
               or p["proof"] == P_EGERIA_RESET]
     # The newest fact by time (read_at), not by row id: the reset marker is written after the fact, but it
     # carries the reset time, so a publish made after the reset still wins over it.
-    proofs.sort(key=lambda p: (_ts(p["read_at"]), p["id"]))
+    # Same tie rule as catalogue_commit.derive_commit_state: a proof read AT the reset time is live, so at an
+    # equal time the marker sorts BEFORE the proof (a marker is never newer than a publish in its own second).
+    proofs.sort(key=lambda p: (_ts(p["read_at"]), p["proof"] != P_EGERIA_RESET, p["id"]))
     last = proofs[-1] if proofs else None
     proofs = [p for p in proofs if p["proof"] != P_EGERIA_RESET]
     project = project_state(registry, slug)

@@ -1028,7 +1028,7 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
     publish_stale = publish_linkage.get("status") == "stale"
     publish_uncatalogued = publish_linkage.get("status") == "uncatalogued"
 
-    from resource_explorer.catalogue_commit import egeria_reset_at, publish_fields
+    from resource_explorer.catalogue_commit import _ts, egeria_reset_at, publish_fields
     reset_at = egeria_reset_at(registry, slug)
 
     result: dict[str, dict] = {}
@@ -1040,7 +1040,7 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
         if recorded:
             pub_at, pub_scope = recorded, "analysis"
         elif shared:
-            pub_at, pub_scope = max(published_by_type[t] for t in shared), entity_type
+            pub_at, pub_scope = max((published_by_type[t] for t in shared), key=_ts), entity_type
         else:
             pub_at, pub_scope = "", ""
         result[a["id"]] = {
@@ -1199,6 +1199,7 @@ def build_survey_results(
                 _board["publish_uncatalogued"] = _status == "uncatalogued"
             return fast
 
+    from resource_explorer.catalogue_commit import _ts
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 
     results_map, headline_map = _results_map_for(entity_type)
@@ -1237,7 +1238,7 @@ def build_survey_results(
             dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
             last_published_at = max(
                 (published_by_type[t] for t in dashboard_types if t in published_by_type),
-                default="",
+                key=_ts, default="",
             )
             dashboards.append({
                 "id": dashboard.id,
@@ -1289,7 +1290,7 @@ def build_survey_results(
         annotation_types = (entry or {}).get("annotation_types") or []
         last_published_at = max(
             (published_by_type[t] for t in annotation_types if t in published_by_type),
-            default="",
+            key=_ts, default="",
         )
         dashboards.append({
             "id": analysis_id,
