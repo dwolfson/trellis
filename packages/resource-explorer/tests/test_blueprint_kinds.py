@@ -43,31 +43,25 @@ def test_the_sole_top_blueprint_takes_the_plain_name_and_others_keep_their_clust
     assert bk.blueprint_display_name("Egeria", "deployment", "core", sole_root=False) == "Egeria Deployment Blueprint · core"
 
 
-def test_a_new_blueprint_carries_the_kind_in_both_names():
+def test_a_new_blueprint_is_named_by_kind_and_repository_never_by_its_root_cluster():
     m = _m()
     out = m.materialize_blueprint_element(
-        "repo", "egeria_git", "deployment", "core", display_name="Egeria Deployment Blueprint",
-        kind_slot=bk.qualified_name_slot("deployment"))
-    qn = "SolutionBlueprint::repo::egeria_git::Deployment Blueprint::core"
+        "repo", "egeria_git", "deployment", "OMAG-Server-Platform", display_name="Egeria Deployment Blueprint")
+    qn = "SolutionBlueprint::repo::egeria_git::deployment"
     assert out["qualified_name"] == qn
     props = m._solution_architect.create_solution_blueprint.call_args[0][0]["properties"]
     assert props["qualifiedName"] == qn and props["displayName"] == "Egeria Deployment Blueprint"
+    assert props["identifier"] == "EGERIA-GIT-DEPLOYMENT"
+    assert "OMAG" not in props["qualifiedName"]
 
 
 def test_a_blueprint_written_before_the_rename_is_adopted_never_duplicated():
     legacy = "SolutionBlueprint::repo::egeria_git::deployment::core"
     m = _m(find=lambda qn: [LEGACY_GUID] if qn == legacy else [])
     out = m.materialize_blueprint_element(
-        "repo", "egeria_git", "deployment", "core", display_name="Egeria Deployment Blueprint",
-        kind_slot="Deployment Blueprint")
+        "repo", "egeria_git", "deployment", "core", display_name="Egeria Deployment Blueprint")
     assert out == {"status": "already_materialized", "guid": LEGACY_GUID, "qualified_name": legacy}
     m._solution_architect.create_solution_blueprint.assert_not_called()
-
-
-def test_no_kind_slot_keeps_the_old_shape_exactly():
-    m = _m()
-    out = m.materialize_blueprint_element("repo", "p", "deployment", "c", display_name="c")
-    assert out["qualified_name"] == "SolutionBlueprint::repo::p::deployment::c"
 
 
 # ── the selector ───────────────────────────────────────────────────────────
@@ -104,7 +98,7 @@ def test_an_accepted_deployment_blueprint_reads_accepted():
     assert rows[0]["state"] == "accepted" and rows[0]["accepted"] == 1
 
 
-def test_accepting_writes_the_kind_into_the_display_name_and_the_qualified_name_slot(tmp_path, monkeypatch):
+def test_accepting_writes_the_kind_into_the_display_name_and_passes_no_identifier_for_the_first(tmp_path, monkeypatch):
     from resource_explorer.registry import Project, ProjectRegistry
     from resource_explorer.workflows import curate
 
@@ -121,8 +115,8 @@ def test_accepting_writes_the_kind_into_the_display_name_and_the_qualified_name_
             pass
 
         def materialize_blueprint_element(self, et, slug, perspective, cluster, *, display_name,
-                                          oversized=False, kind_slot="", verify_cached=False):
-            seen.update(display_name=display_name, kind_slot=kind_slot)
+                                          oversized=False, verify_cached=False, identifier="", live_clusters=None):
+            seen.update(display_name=display_name, identifier=identifier)
             return {"status": "materialized", "guid": GUID, "qualified_name": "x"}
 
         def blueprint_member_guids(self, guid):
@@ -138,4 +132,4 @@ def test_accepting_writes_the_kind_into_the_display_name_and_the_qualified_name_
     monkeypatch.setattr("resource_explorer.egeria_outbox.enqueue_blueprint_members", lambda *a, **k: [])
     out = curate.materialize_blueprint_if_accepted(reg, "repo", "egeria_git", "deployment", "core", "accepted")
     assert out["status"] == "materialized"
-    assert seen == {"display_name": "Egeria Deployment Blueprint", "kind_slot": "Deployment Blueprint"}
+    assert seen == {"display_name": "Egeria Deployment Blueprint", "identifier": ""}
