@@ -1629,7 +1629,9 @@ class EgeriaPublisher:
         template_guid_cache: dict[str, str],
     ) -> str:
         path = entry["path"]
-        name = path.rsplit("/", 1)[-1] if path else qualified_name.split("::")[1].rstrip("/")
+        # The root folder has no basename: it is "/" (its displayName carries the repository). The
+        # old fallback was the GitHub URL, so the `or "/"` below could never fire.
+        name = path.rsplit("/", 1)[-1] if path else "/"
 
         if entry["kind"] == "folder":
             tech_type = self._FOLDER_TECH_TYPE
@@ -1720,7 +1722,7 @@ class EgeriaPublisher:
         displayName only when it differs, so an unchanged republish writes nothing. Never a sweep,
         never a delete. A failure is counted in `rename_counts` and logged; it does not stop the publish."""
         try:
-            current = self._asset_maker.get_asset_by_guid(guid, output_format="JSON")
+            current = self._asset_maker.get_asset_by_guid(guid, graph_query_depth=0, output_format="JSON")
         except Exception as exc:
             log.debug("Could not read %s before renaming (will update): %s", guid, exc)
             current = None

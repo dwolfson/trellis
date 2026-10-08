@@ -154,16 +154,6 @@ class SurveyReportData(BaseModel):
     local_surveyed_at: str = ""   # timestamp of the most recent local survey run
 
 
-class CatalogElement(BaseModel):
-    label: str
-    file_count: int
-    extensions: list[str] = []
-
-
-class CatalogRequest(BaseModel):
-    elements: list[CatalogElement]
-
-
 class CatalogItemResult(BaseModel):
     label: str
     guid: str | None = None

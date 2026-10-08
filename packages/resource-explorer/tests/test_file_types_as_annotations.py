@@ -334,11 +334,31 @@ class TestRenameOnlyWhenDifferent:
         assert rename_sentence({"updated": 0, "unchanged": 3, "failed": 0}) == ""
 
 
-class TestNoUrlAsRepositoryName:
-    def test_every_entry_carries_its_display_name_so_no_url_fallback_exists(self):
-        import inspect
-        from resource_explorer.surveyors import egeria_publisher as ep
-        assert 'qualified_name.split("::")[1])' not in inspect.getsource(ep.EgeriaPublisher._create_sub_resource)
+class TestRootFolderDirectoryName:
+    def test_root_folder_directory_name_is_slash_never_the_repository_url(self):
+        pub = _publisher([_row("", "folder"), _row("docs", "folder")])
+        pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["", "docs"])
+        bodies = [c.args[0] for c in pub._automated_curation.create_elem_from_template.call_args_list]
+        names = [b["placeholderPropertyValues"]["directoryName"] for b in bodies]
+        assert names == ["/", "docs"]
+        assert GITHUB_URL not in names
+
+
+class TestRenameReadIsTheCheapestRead:
+    def test_the_pre_rename_read_does_not_fetch_relationships(self):
+        qn = f"GitHubRepository::{GITHUB_URL}::LICENSE"
+        guid = "11111111-2222-3333-4444-555555555555"
+        pub = _publisher([_row("LICENSE", "file")], existing={qn: guid})
+        pub._asset_maker.get_asset_by_guid.return_value = {"displayName": "LICENSE \u00b7 egeria_git"}
+        pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"])
+        (g,), kw = pub._asset_maker.get_asset_by_guid.call_args
+        assert g == guid and kw["graph_query_depth"] == 0 and kw["output_format"] == "JSON"
+
+
+class TestRetiredRequestModelGone:
+    def test_catalog_request_model_is_removed(self):
+        from resource_explorer.web.routes import egeria as routes
+        assert not hasattr(routes, "CatalogRequest") and not hasattr(routes, "CatalogElement")
 
 
 class TestRetiredRouteAnswers410BeforeValidating:
