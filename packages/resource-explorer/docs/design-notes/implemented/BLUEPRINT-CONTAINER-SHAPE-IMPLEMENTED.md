@@ -147,3 +147,29 @@ until the pane reloads.
 * That the typed search (`property_name=["qualifiedName"]`, `type_name="SolutionBlueprint"`) matches an exact
   qualifiedName, and that the read-back carries `typeName` (an absent type is accepted when the qualifiedName
   matches).
+
+### Re-surveys rename clusters (follow-up)
+
+`re_cluster_key` is the cluster's name, and a re-survey can rename a cluster (the name is derived from its
+members and wires), so the key is not stable. Rule (b) therefore refuses only when the other cluster is LIVE
+(or when the live set is unknown): if the element's key names a cluster that no longer exists, the accepting
+cluster is the same real cluster under a new name, and RE adopts the element, re-keys the registry row, and
+writes the activity row "re-keyed from <old>". RE does not rewrite the element's `re_cluster_key`: the update
+call's merge semantics are unverified live, so it stays stale and is read as stale each time. In rule (c) a
+registry row of a cluster that no longer exists does not count as another cluster's row. A refusal is logged
+once per element; an adoption row is written after the cache row is recorded.
+
+**Known gap, left on purpose:** `resolve_child_blueprint_guids` still takes a child blueprint's GUID from the
+registry row with no existence read (pre-existing). Adding one needs a connection in a method documented as
+never raising, and an unreadable answer has no place to go in its return shape; it belongs with the shape
+workflow's own cache verification, not in this change.
+
+**One adopter, and a proof of the re-key.** If a re-cluster splits one group in two, both new clusters would
+see the old key as gone. Among the live clusters with no cache row only the first by name adopts; the rest are
+refused with the ordinary "another cluster" sentence, so an element never has two claimants. A re-key writes a
+proof row of its own kind, `rekey`, into `catalogue_commit_proofs` (node_kind `blueprint_shape`, table_name
+`<perspective>::<new key>`, element_guid the blueprint; detail holds the old key, the new key and the GUID), after
+the element was read back and the cache row rewritten. No DDL and no new table. Proof rows are never edited or
+deleted. RE writes nothing to the element: the publish does not touch `additionalProperties` after create, and
+there is no new Egeria write kind, so the old `re_cluster_key` stays on the element as a hint, never a conflict;
+the registry row is the authority.
