@@ -269,9 +269,77 @@ Answers, concrete:
    the dependency table's record of the same fact and are not a second
    drawing.
 
-**What to do about 254dbbe6.** Egeria rolls forward, never undoes, and no
-rename call exists in RE today for a blueprint. Options, with the exact
-writes, for the owner's decision:
+**THE rule, in the owner's words (2026-10-08):** *"either you use the
+sub-component relationship and make the other servers sub-components of
+the platform and only add the platform to the blueprint (which will show
+the encapsulation), or you leave out the OMAG platform from the
+blueprint."*
+
+| Shape | What is written | Member of the blueprint | Where his examples do it |
+|---|---|---|---|
+| **1. Container** | the platform as a `SolutionComponent`; each hosted server as its sub-component by `SolutionComposition` (platform → server) | **only the platform**; Egeria draws the encapsulation | Runtimes: platform ⊃ View Server, Engine Host, Integration Daemon; Kafka ⊃ three topics; PostgreSQL ⊃ five databases |
+| **2. Contents** | the hosted servers as `SolutionComponent`s; the container not in the blueprint | **only the contents**; the blueprint plays the container | Servers: Engine Host, Integration Daemon, View Server and the four topics are members; no platform, no Kafka |
+
+Never both a container and its contents as direct members.
+
+**Which shape the materialiser picks by default.** Shape 1 when the
+evidence says the children are hosted or contained by a component (a
+compose service whose image hosts the servers the configuration documents
+declare; a Kafka service whose topics the configs name; a PostgreSQL
+service whose databases the configs name); shape 2 when the cluster root
+is only a grouping with no hosting evidence (a directory, a Gradle
+umbrella), or when the blueprint's kind is "the servers" (a Servers-kind
+blueprint). The pane says which shape it chose and why in the manifest
+("platform as container · 3 servers as sub-components · from the server
+configuration documents"), and a person may flip it before the write.
+
+**Exact writes, shape 1** (per container, idempotent, read-before-write
+each):
+
+1. the container `SolutionComponent` by qualifiedName (adopt the
+   content-pack element if one exists; create otherwise with
+   `solutionComponentType` and `plannedDeployedImplementationType`);
+2. each sub-component `SolutionComponent` by qualifiedName (adopt or
+   create);
+3. `SolutionComposition` container → child, qualifiedName
+   `SolutionComposition::<container QN>::<child QN>`, **not written when
+   it already exists** (a content-pack composition is found by the pair);
+4. `CollectionMembership` blueprint → container only;
+5. proof rows by GUID for every element and relationship, after a read.
+
+**Exact writes, shape 2:** steps 2 and 5, and `CollectionMembership`
+blueprint → each content; no container element, no composition.
+
+**The existing blueprint 254dbbe6 under this rule** (RE never detaches or
+removes: it rolls forward). Option (c) becomes:
+
+1. **Rename forward** 254dbbe6: one merge update, `displayName` "Egeria
+   Deployment Blueprint", qualifiedName's perspective slot likewise, read
+   back by GUID, activity row.
+2. **Re-materialise under shape 1 on the next accepted verdict**: RE finds
+   the blueprint by its new qualifiedName (adoption), finds the platform
+   component (already a member, kept), writes `SolutionComposition`
+   platform → each of the six servers (adopting the content-pack
+   compositions for View Server, Engine Host and Integration Daemon, which
+   already exist, and creating them only for nanny-daemon,
+   active-metadata-store and simple-metadata-store if the content pack
+   lacks them), and writes **no new membership**.
+3. **A steward detaches the six old memberships** in Egeria Explorer (six
+   `CollectionMembership` detaches by hand), after which the blueprint has
+   one member, the platform, and Egeria draws the encapsulation.
+
+That is simpler than creating a second blueprint beside it, and every RE
+write stays additive. Until step 3 the blueprint shows the six servers
+twice, as members and as sub-components, which is honest about the state
+and resolves with the detaches. **Recommendation: this variant.** The
+alternative, a new correctly shaped blueprint beside the old one with the
+old renamed and marked superseded, leaves two blueprints for one
+repository and is only better if the owner prefers not to touch Egeria
+Explorer by hand.
+
+**Earlier options for 254dbbe6 (kept for the record; superseded by the
+variant above).** Egeria rolls forward, never undoes, and no rename call
+exists in RE today for a blueprint:
 
 | Option | Writes | Effect | Leaves behind |
 |---|---|---|---|
