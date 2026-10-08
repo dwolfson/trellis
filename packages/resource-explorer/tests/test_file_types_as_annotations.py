@@ -72,7 +72,7 @@ class TestEgeriaNamesVerbatim:
         assert rp["Number of unique file extensions"] == len(ext)
         assert rp["Number of file types"] == len(types)
         assert rp["Number of unique filenames"] == len({f.rsplit("/", 1)[-1] for f, _ in FILES})
-        assert rp["Total file size"] == float(sum(n for _, n in FILES))
+        assert rp["Total file size"] == "%s" % float(sum(n for _, n in FILES))
 
     def test_capture_keys_are_egerias_display_names_and_unmeasured_ones_are_omitted(self, registry):
         rp = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))[CAPTURE_FILE_COUNTS].resource_properties
@@ -275,3 +275,84 @@ class TestDisplayName:
         pub = _publisher([_row("LICENSE", "file")], existing={qn: guid})
         pub._asset_maker.update_asset.side_effect = RuntimeError("refused")
         assert pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"]) == {"LICENSE": guid}
+
+
+# ── review fixes ─────────────────────────────────────────────────────────────────────────────
+
+class TestEmptyInventoryIsNotMeasuredZero:
+    def test_builder_returns_nothing_for_an_empty_inventory(self, tmp_path):
+        r = ProjectRegistry(db_path=str(tmp_path / "e.db"))
+        r.add(Project(slug="empty", display_name="empty", github_url="https://github.com/o/empty"))
+        assert build_file_type_annotations(r, "empty", surveyed_at="x") == []
+
+    def test_the_step_publishes_no_file_type_annotation_when_zero_files_were_inventoried(self, tmp_path):
+        from unittest.mock import patch
+        r = ProjectRegistry(db_path=str(tmp_path / "e.db"))
+        r.add(Project(slug="empty", display_name="empty", github_url="https://github.com/o/empty"))
+        with patch("resource_explorer.ingestion.pipeline.IngestionPipeline._store_file_inventory", return_value=0), \
+             patch("resource_explorer.ingestion.pipeline.IngestionPipeline._record_line_census"):
+            anns = FileInventorySurveyor(r.get("empty"), r, local_path=str(tmp_path)).run()
+        assert not ({a.annotation_type_name for a in anns} & set(DEFAULT_NAMES))
+        assert [a.check_name for a in anns] == ["file_inventory"]
+
+
+class TestRenameOnlyWhenDifferent:
+    GUID = "11111111-2222-3333-4444-555555555555"
+    QN = f"GitHubRepository::{GITHUB_URL}::LICENSE"
+
+    def _pub(self, current):
+        pub = _publisher([_row("LICENSE", "file")], existing={self.QN: self.GUID})
+        pub._asset_maker.get_asset_by_guid.return_value = current
+        return pub
+
+    def test_unchanged_republish_does_no_write(self):
+        pub = self._pub({"properties": {"displayName": "LICENSE · egeria_git"}})
+        pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"])
+        pub._asset_maker.update_asset.assert_not_called()
+        assert pub.rename_counts == {"updated": 0, "unchanged": 1, "failed": 0}
+
+    def test_flat_displayName_shape_is_also_read(self):
+        pub = self._pub({"displayName": "LICENSE · egeria_git"})
+        pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"])
+        pub._asset_maker.update_asset.assert_not_called()
+
+    @pytest.mark.parametrize("current", [{"properties": {"displayName": "LICENSE"}}, None, {"x": 1}])
+    def test_different_or_unreadable_name_is_updated_once(self, current):
+        pub = self._pub(current)
+        pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"])
+        assert pub._asset_maker.update_asset.call_count == 1
+        assert pub.rename_counts == {"updated": 1, "unchanged": 0, "failed": 0}
+
+    def test_a_failed_rename_is_counted_and_said(self):
+        pub = self._pub({"displayName": "old"})
+        pub._asset_maker.update_asset.side_effect = RuntimeError("refused")
+        pub.publish_sub_resources("egeria_git", GITHUB_URL, "asset", ["LICENSE"])
+        assert pub.rename_counts == {"updated": 0, "unchanged": 0, "failed": 1}
+        from resource_explorer.surveyors.egeria_publisher import rename_sentence
+        assert rename_sentence(pub.rename_counts) == " · 0 names updated · 1 could not be updated"
+        assert rename_sentence({"updated": 2, "unchanged": 3, "failed": 0}) == " · 2 names updated"
+        assert rename_sentence({"updated": 0, "unchanged": 3, "failed": 0}) == ""
+
+
+class TestNoUrlAsRepositoryName:
+    def test_every_entry_carries_its_display_name_so_no_url_fallback_exists(self):
+        import inspect
+        from resource_explorer.surveyors import egeria_publisher as ep
+        assert 'qualified_name.split("::")[1])' not in inspect.getsource(ep.EgeriaPublisher._create_sub_resource)
+
+
+class TestRetiredRouteAnswers410BeforeValidating:
+    def test_malformed_body_still_gets_410(self, client):
+        for path in ("/api/egeria/egeria_git/catalog-elements", "/api/egeria/egeria_git/file-types/commit"):
+            r = client.post(path, json={"elements": "not a list"})
+            assert r.status_code == 410 and r.json()["detail"] == SENTENCE
+            r = client.post(path, content=b"{not json", headers={"content-type": "application/json"})
+            assert r.status_code == 410
+
+
+class TestTotalFileSizeIsJavaDoubleToString:
+    @pytest.mark.parametrize("n,text", [(0, "0.0"), (49, "49.0"), (9999999, "9999999.0"), (10000000, "1.0E7"),
+                                        (12345678, "1.2345678E7"), (5_000_000_000, "5.0E9")])
+    def test_matches_double_tostring(self, n, text):
+        from resource_explorer.surveyors.file_type_profile import java_double_string
+        assert java_double_string(float(n)) == text

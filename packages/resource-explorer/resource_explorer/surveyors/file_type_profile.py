@@ -61,6 +61,17 @@ DEFAULT_NAMES = (CAPTURE_FILE_COUNTS, PROFILE_FILE_EXTENSIONS, PROFILE_FILE_TYPE
 STEP = "FileInventory"
 
 
+def java_double_string(x: float) -> str:
+    """Java's Double.toString for a non-negative whole-number size: plain below 1e7 ("49.0"),
+    scientific from 1e7 ("1.2345678E7"), which is what Egeria stores for "Total file size"."""
+    if x < 1e7:
+        return repr(float(x))
+    digits = repr(float(x)).split(".")[0] if x < 1e16 else f"{x:.0f}"
+    exp = len(digits) - 1
+    mant = digits[0] + "." + (digits[1:].rstrip("0") or "0")
+    return f"{mant}E{exp}"
+
+
 def _extension(path: str) -> str:
     name = PurePosixPath(path).name
     return name.rsplit(".", 1)[-1].lower() if "." in name.lstrip(".") else ""
@@ -104,6 +115,10 @@ def build_file_type_annotations(registry, slug: str, *, surveyed_at: str,
 
     rows = registry.get_file_inventory_with_sizes(slug, include_vendored=True)
     paths = [r["file_path"] for r in rows]
+    if not paths:
+        # An empty inventory is "nothing was measured" (the step records it as unverified), never
+        # a MEASURED zero: publish no file-type annotation at all rather than a profile of nothing.
+        return []
     ext_counts = Counter(_extension(p) or "(none)" for p in paths)
     type_counts = Counter(resolve_technology_type(p) for p in paths)
     env = envelope(measured_at=surveyed_at, producing_run=f"{slug}::{surveyed_at}", partial_reason=partial_reason)
@@ -112,7 +127,7 @@ def build_file_type_annotations(registry, slug: str, *, surveyed_at: str,
     n_dirs = len(_directories(paths))
     names = {PurePosixPath(p).name for p in paths}
     chosen = selected_asset_types(registry, slug)
-    measures = {M_FILES: len(paths), M_SIZE: float(sum(r["file_size_bytes"] for r in rows)),
+    measures = {M_FILES: len(paths), M_SIZE: java_double_string(float(sum(r["file_size_bytes"] for r in rows))),
                 M_DIRS: n_dirs, M_NAMES: len(names), M_EXTS: len(ext_counts), M_TYPES: len(type_counts)}
     if chosen:
         measures[M_ASSET_TYPES] = len(chosen)        # only when something is selected: not a measured zero

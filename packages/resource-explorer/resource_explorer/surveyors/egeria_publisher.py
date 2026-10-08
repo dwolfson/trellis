@@ -80,6 +80,16 @@ def sub_resource_display_name(path: str, kind: str, repository: str) -> str:
     return f"{shown} \u00b7 {repository}"
 
 
+def rename_sentence(counts: dict) -> str:
+    """The tail of a publish sentence about names: "" when nothing was renamed or failed."""
+    if not isinstance(counts, dict) or not (counts.get("updated") or counts.get("failed")):
+        return ""
+    tail = f" \u00b7 {counts.get('updated', 0)} name{'' if counts.get('updated') == 1 else 's'} updated"
+    if counts.get("failed"):
+        tail += f" \u00b7 {counts['failed']} could not be updated"
+    return tail
+
+
 class EgeriaPublisherError(RuntimeError):
     """Raised when an Egeria-native operation triggered through EgeriaPublisher
     (e.g. trigger_survey_by_guid) fails — mirrors
@@ -1548,6 +1558,7 @@ class EgeriaPublisher:
         template_guid_cache: dict[str, str] = {}
         results: dict[str, str] = {}
 
+        self.rename_counts = {"updated": 0, "unchanged": 0, "failed": 0}
         project = self._registry.get(resource_slug)
         repository = getattr(project, "display_name", "")
         if not isinstance(repository, str) or not repository:
@@ -1673,8 +1684,7 @@ class EgeriaPublisher:
             "replacementProperties": {
                 "class": "AssetProperties", "qualifiedName": qualified_name,
                 # The path and the repository; fileName (a placeholder above) stays the basename.
-                "displayName": entry.get("display_name")
-                or sub_resource_display_name(path, entry["kind"], qualified_name.split("::")[1]),
+                "displayName": entry["display_name"],
             },
         }
         guid = self._automated_curation.create_elem_from_template(body)
@@ -1693,15 +1703,37 @@ class EgeriaPublisher:
                 log.debug("Could not attach additionalProperties to %s: %s", guid, exc)
         return guid
 
+    @staticmethod
+    def _current_display_name(element) -> str | None:
+        """displayName from a get_asset_by_guid answer, whichever shape it has; None if not found."""
+        if not isinstance(element, dict):
+            return None
+        props = element.get("properties")
+        for src in (props if isinstance(props, dict) else {}, element.get("elementProperties") or {}, element):
+            if isinstance(src, dict) and isinstance(src.get("displayName"), str):
+                return src["displayName"]
+        return None
+
     def _rename_forward(self, guid: str, display_name: str) -> None:
         """An element published before the naming rule is renamed when the SAME locator is published
-        again: a merge update of displayName only, never a sweep and never a delete. A failure is
-        logged with the element and left for the next publish; it does not stop the publish."""
+        again: ONE read of the element (the lookup returns only a GUID), and a merge update of
+        displayName only when it differs, so an unchanged republish writes nothing. Never a sweep,
+        never a delete. A failure is counted in `rename_counts` and logged; it does not stop the publish."""
+        try:
+            current = self._asset_maker.get_asset_by_guid(guid, output_format="JSON")
+        except Exception as exc:
+            log.debug("Could not read %s before renaming (will update): %s", guid, exc)
+            current = None
+        if self._current_display_name(current) == display_name:
+            self.rename_counts["unchanged"] += 1
+            return
         try:
             self._asset_maker.update_asset(
                 guid, body={"class": "UpdateElementRequestBody", "mergeUpdate": True,
                             "properties": {"class": "AssetProperties", "displayName": display_name}})
+            self.rename_counts["updated"] += 1
         except Exception as exc:
+            self.rename_counts["failed"] += 1
             log.warning("Could not rename %s to %r (left as it was): %s", guid, display_name, exc)
 
     def _resolve_template_guid(self, technology_type: str) -> str:

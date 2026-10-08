@@ -166,7 +166,8 @@ class FileInventorySurveyor(BaseSurveyor):
                     ).as_row(),
                 )
             )
-            results.extend(self._file_type_annotations())
+            if file_count:       # zero files is recorded above as unverified, not as a measured zero
+                results.extend(self._file_type_annotations())
         except Exception as exc:
             # Never take the whole survey down: the dependent steps degrade to
             # the previous inventory (which is exactly today's behaviour), and

@@ -1139,7 +1139,7 @@ async def get_survey_report(slug: str) -> SurveyReportData:
 
 
 @router.post("/{slug}/catalog-elements")
-async def catalog_elements(slug: str, request: CatalogRequest) -> CatalogResult:
+async def catalog_elements(slug: str) -> CatalogResult:
     """RETIRED (ruling 2026-10-07, DESIGN-FILE-TYPES-AS-ANNOTATIONS.md): this created one DataSet per
     file type. It answers 410 and creates nothing; DataSets it made earlier stay in Egeria as history."""
     raise _file_types_retired()
