@@ -357,7 +357,10 @@ def test_every_kept_table_exists_so_the_byte_identical_check_cannot_be_vacuous(e
 def test_only_the_cleared_columns_of_the_cleared_tables_changed(env):
     applied(env)
     before, after = env["before_all"], dump(env["reg"])
-    for table, keys, setcols, trig in S.CLEAR_SPECS:
+    cleared_cols: dict = {}
+    for table, _keys, setcols, *_ in S.CLEAR_SPECS:     # investigations has two specs (linked / other)
+        cleared_cols.setdefault(table, set()).update(setcols)
+    for table, setcols in cleared_cols.items():
         assert before[table], f"{table} has no seeded row"
         assert len(after[table]) == len(before[table]), table
         for b, a in zip(before[table], after[table]):
