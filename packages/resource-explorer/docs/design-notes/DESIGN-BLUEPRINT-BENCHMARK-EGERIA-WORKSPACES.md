@@ -14,6 +14,60 @@ coordinator relayed them and is to be checked row by row against the dump
 when it lands (one table per blueprint, appended then). The bar the owner
 set: *tailored, not irrelevant*. Ranked by what RE can derive by itself.
 
+## 0. The bar is metadata, not drawing (owner, 2026-10-08)
+
+*"Egeria constructs the blueprint diagram from its metadata as part of its
+query response. All the rules for creating the mermaid diagram are
+embedded in Egeria. There is nothing special we need to do: we just create
+components, wires, ports, etc. and Egeria creates the blueprint; that is
+true for all mermaid diagrams in Egeria."*
+
+So the bar this note measures against is **metadata completeness**, and
+nothing in RE draws a blueprint for Egeria. What Egeria needs written, as
+the dump shows the owner's own blueprints carry it:
+
+- `SolutionBlueprint` with `description`, `versionIdentifier`, member of a
+  `CollectionFolder` by `CollectionMembership`;
+- `SolutionComponent` members with `solutionComponentType` (Egeria's own
+  value set) and `plannedDeployedImplementationType`, `description`,
+  `versionIdentifier`, `url`; content-pack components adopted by their
+  qualifiedName, never duplicated;
+- `SolutionLinkingWire` between components with `label`, `description`,
+  `oneWay`, and `iscQualifiedNames` where an information supply chain
+  applies, written with an idempotency key;
+- `SolutionActorRole` members and `SolutionComponentActor` links with
+  `role` and `description`;
+- `SolutionComposition` where one component is composed of others (25 in
+  the dump), which is how Egeria draws nesting: a **relationship**, not
+  membership, and the right form for "this platform hosts these servers"
+  if the owner ever wants it drawn inside the blueprint rather than as
+  `deployed_by` rows.
+
+**Ports.** The dump holds **no `SolutionPort` element at all**: every one
+of the 208 `SolutionLinkingWire`s attaches component to component. So RE's
+compose-declared ports (the `ports:` mapping the recovery reads as "ports
+and wires") are not blueprint elements; they are **evidence** for a wire's
+existence and for a component's `url`, and nothing more. The recovery's
+own "port" vocabulary stays internal to the IR and never reaches Egeria as
+an element. If a later blueprint needs Egeria's `SolutionPort`s, that is a
+distinct design; nothing here.
+
+**Consequences for RE's own drawing.** RE's mermaid diagram in Curate
+(`surveyors/arch_recovery/mermaid.py` through Kroki,
+`renderComponentDiagram`) is a **review preview** of the metadata RE would
+write, nothing else. The "Environment Deployment Blueprint has no diagram"
+remark in the node-admission note is not a gap to build: once the wires
+exist in Egeria, Egeria Explorer and the Portal draw it. The preview a
+person needs before writing is the smallest that lets them confirm the
+wires: **the two-ends dependency table itself**, with a "will become a
+wire" mark on rows whose both ends are members and the label the map
+proposes, is enough; a drawn preview stays as it is today and is not
+extended (the dependency slice's edge-port drawing is preview-only and
+must not grow). The screenshot of RE's "OMAG-Server-Platform" blueprint,
+seven stacked boxes with no wires and no actor, is therefore purely missing
+metadata: no wires, no actor roles, no composition written, and the
+self-membership of §6a.
+
 ## 1. What RE derives by itself after node admission
 
 From compose files, Dockerfiles, CI and environment variables in
@@ -72,14 +126,14 @@ a label a person changes on one wire becomes a proposal to the map
 ("use this label for all `connects_to` → kafka?"), never a silent global
 change. Labels for actor wires are told, always.
 
-## 4. What the Environment Deployment Blueprint needs to be written like the owner's
+## 4. What the Environment Deployment Blueprint needs written, so Egeria draws it like the owner's
 
 | The owner's blueprint has | RE writes today | Needed |
 |---|---|---|
 | `SolutionBlueprint` with description and version | `SolutionBlueprint`, Draft, no description or version | description proposed from the README, version from image tags or the repository's tag, both editable before the write |
 | member of a CollectionFolder | nothing | a folder picker from Egeria's `CollectionFolder`s; `CollectionMembership` to it (one additive write) |
 | components with a type (store, service, actor) drawn differently | `SolutionComponent` with `solutionComponentType` from recovery | the class map of §1 fills `solutionComponentType` (`Data Store`, `Software Service`, `Proxy`, `Topic`); actors are `SolutionActorRole`s a person links |
-| wires with labels | **no wires** (deferred: multi-link, not idempotent) | `SolutionLinkingWire` with `label` from §3 and an idempotency key `Wire::<blueprint>::<from>::<to>::<relation>` as its qualifiedName, read-before-write by that key; this is the wires follow-up already named in the two-ends rulings, and it is what makes the diagram the owner's |
+| wires with labels | **no wires** (deferred: multi-link, not idempotent) | `SolutionLinkingWire` with `label` from §3, `description`, `oneWay=false`, `iscQualifiedNames` when told, and an idempotency key `Wire::<blueprint>::<from>::<to>::<relation>` as its qualifiedName, read-before-write by that key; this is the wires follow-up already named in the two-ends rulings, and it is what makes Egeria's diagram the owner's |
 | actor roles | nothing | add-from-Egeria on the pane; `SolutionComponentActor` link with a role label |
 | a confirmed dependency's annotation on the component | on the repository's report (departure 1 of the two-ends rulings) | re-homed onto the component's asset once P1 exists (the annotation follow-up) |
 
