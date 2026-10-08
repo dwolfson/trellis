@@ -78,7 +78,7 @@ def test_a_record_that_cannot_be_registered_is_422_and_says_what_is_missing(clie
 
 def test_egeria_refusing_is_502_with_egerias_sentence_and_the_activity_row_has_no_password(
         client, port, registry):
-    port.process_error = RuntimeError(f"Connection refused for password {PASSWORD} at host")
+    port.process_error = RuntimeError(f"Connection refused at host (url carried {PASSWORD})")
     r = client.post(f"{BASE}/adventureworks/register")
     assert r.status_code == 502 and "Connection refused" in r.json()["detail"]
     assert PASSWORD not in r.text

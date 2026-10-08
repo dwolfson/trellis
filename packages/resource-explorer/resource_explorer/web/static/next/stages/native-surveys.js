@@ -33,6 +33,7 @@ import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
 
 const POLL_MS = 8000;
+const CONFIRM_MS = 6000;      // how long "Confirm: start again" stays armed
 
 /** The state -> glyph-family mapping. Words come from the row, not from here:
  *  a glyph's own `word` is only its title. */
@@ -161,7 +162,7 @@ export function nativeSurveyRowHtml(row) {
       ${row.description ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
       ${discoveredDatabasesHtml(row)}
     </div>
-    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? 'data-native-start-again="1"' : ''} ${busy ? 'disabled' : ''}
+    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${esc(row.register.label)}</button>` : ''}
     ${row.runnable ? `<button type="button" data-native-run="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
@@ -256,6 +257,15 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       slot.textContent = msg;
       slot.classList.remove('hidden');
     };
+    // The confirm is a state of the button: it must not outlive its moment. Reset after a refused or
+    // failed press, and on a timer, so a later click can never send without asking again.
+    const resetConfirm = (b) => {
+      if (b.dataset.confirm !== '1') return;
+      clearTimeout(b._confirmTimer);
+      delete b.dataset.confirm;
+      if (b.dataset.label) b.textContent = b.dataset.label;
+      b.classList.remove('border-state-warn');
+    };
     const register = async (b, targetSlug, qn, startAgain = false) => {
       if (startAgain && b.dataset.confirm !== '1') {
         // A second registration can create a second database: ask once, visibly, before sending it.
@@ -263,9 +273,11 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
         b.dataset.label = b.textContent;
         b.textContent = 'Confirm: start again';
         b.classList.add('border-state-warn');
-        showInfo(qn, 'This submits a second registration to Egeria. Press again to confirm.');
+        showInfo(qn, `${b.dataset.nativeConfirm || 'This submits a second registration to Egeria.'} Press again to confirm.`);
+        b._confirmTimer = setTimeout(() => resetConfirm(b), CONFIRM_MS);
         return;
       }
+      clearTimeout(b._confirmTimer);
       const label = b.dataset.label || b.textContent;
       b.disabled = true;
       b.textContent = 'registering…';
@@ -284,6 +296,9 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       } catch (err) {
         b.disabled = false;
         b.textContent = label;
+        resetConfirm(b);
+        b.classList.remove('border-state-warn');
+        delete b.dataset.confirm;
         showError(qn || '', err.message);
         if (err.status === 502 && targetSlug === slug) {
           try { paint((await getNativeSurveys(slug, { entityType: apiEntityType(state.resourceType) })).surveys); }

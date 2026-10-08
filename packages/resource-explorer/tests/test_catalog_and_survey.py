@@ -66,6 +66,7 @@ class RegPort(FakePort):
         self.read_element_override = "unset"
         self.find_error: Exception | None = None
         self.hide_from_find: set[str] = set()      # names find_element cannot see (read-by-GUID still can)
+        self.on_first_absent = None                # called once, when the server lookup is about to answer ABSENT
 
     def have(self, guid, qn):
         self.elements[guid] = qn
@@ -75,12 +76,15 @@ class RegPort(FakePort):
         self.calls.append(("find_element", qn))
         if self.find_error:
             raise self.find_error
-        if qn in self.hide_from_find:
-            return None
-        for g, name in self.elements.items():
-            if name == qn:
-                return cas.ElementBack(g, name)
-        return None
+        hit = None
+        if qn not in self.hide_from_find:
+            for g, name in self.elements.items():
+                if name == qn:
+                    hit = cas.ElementBack(g, name)
+        if hit is None and qn == SQN and self.on_first_absent:
+            cb, self.on_first_absent = self.on_first_absent, None
+            cb()                                    # someone else registers it BEFORE this caller sees "absent"
+        return hit
 
     def read_element(self, guid):
         self.calls.append(("read_element", guid))
@@ -375,7 +379,7 @@ class TestReachNote:
         register(registry, port)
         sruns = registry.list_native_survey_runs("database", "adventureworks", SERVER_SURVEY_QN)
         guid = sruns[0]["engine_action_guid"]
-        sentence = "FATAL: password authentication failed; Connection refused (UnknownHost)"
+        sentence = "Connection refused (UnknownHostException host.docker.internal)"
         port.actions[guid] = ("FAILED", sentence)
         nsr.refresh_resource(registry, port, "database", "adventureworks")
         rows = {r["qualified_name"]: r
@@ -986,7 +990,7 @@ class TestStartAgainAndServerClaim:
 
     def test_a_refused_create_releases_the_server_claim(self, registry):
         port = RegPort()
-        port.create_error = RuntimeError("template boom")
+        port.create_error = typed("PyegeriaAPIException")
         with pytest.raises(nsr.NativeSurveyError):
             register(registry, port)
         assert cas.take_server_claim(registry, SERVER_NAME) is True
@@ -1017,4 +1021,154 @@ class TestLowItems:
 
     @pytest.mark.parametrize("text", ["could not connect to server", "Unable to connect to host"])
     def test_could_not_connect_gets_the_note(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == cas.REACH_NOTE
+
+
+# ═══ third review round ═══════════════════════════════════════════════════════
+
+class TestServerRaceIsClosed:
+    def test_a_completing_between_bs_absence_check_and_bs_claim_creates_exactly_one_server(self, registry):
+        """The real interleaving: B has seen the server ABSENT; A then registers it completely (creates,
+        verifies, releases the claim); B then takes the freed claim. B must re-check and adopt."""
+        port = RegPort()
+        fired = []
+
+        def a_completes():
+            fired.append(1)
+            register(registry, port, "sibling")                       # A: the whole press
+
+        port.on_first_absent = a_completes
+        out = register(registry, port, "adventureworks")               # B
+        assert fired == [1]
+        assert len(port.created_servers) == 1
+        assert out["server"]["how"] == "adopted"
+
+    def test_the_recheck_also_reads_the_unconfirmed_record(self, registry, monkeypatch):
+        """Between B's unconfirmed-record read (empty) and B's claim, A creates the server and records its
+        GUID but its read-back is not visible by name yet. B must read the record again, not create."""
+        port = RegPort()
+        real_take = cas.take_server_claim
+
+        def take_after_a_recorded_it(reg, name, holder=""):
+            port.have(SERVER_GUID, SQN)
+            port.hide_from_find = {SQN}                       # not visible by name yet
+            reg.set_setting(cas.server_unconfirmed_key(SERVER_NAME), SERVER_GUID)
+            return real_take(reg, name, holder)
+
+        monkeypatch.setattr(cas, "take_server_claim", take_after_a_recorded_it)
+        out = register(registry, port)
+        assert port.created_servers == [] and out["server"]["how"] == "adopted"
+
+
+class TestAmbiguousCreateFailuresKeepTheClaim:
+    @pytest.mark.parametrize("make", [
+        lambda: TimeoutError("read timed out"),
+        lambda: ConnectionError("connection dropped"),
+        lambda: OSError("network is unreachable"),
+        lambda: __import__("httpx").ReadTimeout("slow"),
+        lambda: typed("PyegeriaTimeoutException"),
+        lambda: typed("PyegeriaConnectionException"),
+    ])
+    def test_a_timeout_or_transport_error_keeps_the_claim_and_offers_start_again(self, registry, make):
+        port = RegPort()
+        port.create_error = make()
+        with pytest.raises(nsr.NativeSurveyError, match="may or may not|may not"):
+            register(registry, port)
+        assert cas.take_server_claim(registry, SERVER_NAME) is False
+        rows = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}
+        cat = rows[CATALOG_QN]
+        assert cat["register"]["label"] == cas.START_AGAIN_LABEL and cat["register"]["start_again"]
+        assert any("no answer" in n.lower() or "may or may not" in n for n in cat["notes"])
+        with pytest.raises(nsr.NativeSurveyBusy):
+            register(registry, port)                                   # the next press does not duplicate
+        assert port.created_servers == []
+
+    def test_a_cancellation_keeps_the_claim_and_propagates(self, registry):
+        import asyncio
+        port = RegPort()
+        port.create_error = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            register(registry, port)
+        assert cas.take_server_claim(registry, SERVER_NAME) is False
+
+    @pytest.mark.parametrize("name", ["PyegeriaAPIException", "PyegeriaUnauthorizedException",
+                                      "PyegeriaInvalidParameterException"])
+    def test_a_typed_egeria_refusal_releases_the_claim(self, registry, name):
+        port = RegPort()
+        port.create_error = typed(name)
+        with pytest.raises(nsr.NativeSurveyError):
+            register(registry, port)
+        assert cas.take_server_claim(registry, SERVER_NAME) is True
+
+
+def typed(name):
+    import pyegeria.core._exceptions as ex
+    cls = getattr(ex, name)
+    return cls.__new__(cls)
+
+
+class TestStartAgainDoesNotClearAnotherDatabasesServerClaim:
+    def test_a_live_claim_held_by_another_database_survives_start_again(self, registry):
+        port = RegPort()
+        assert cas.take_server_claim(registry, SERVER_NAME, "sibling") is True        # sibling is mid-create
+        with pytest.raises(nsr.NativeSurveyBusy):
+            cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                     start_again=True)
+        assert cas.take_server_claim(registry, SERVER_NAME) is False
+        assert port.created_servers == []
+
+    def test_a_claim_held_by_this_database_is_cleared_by_its_own_start_again(self, registry):
+        port = RegPort()
+        assert cas.take_server_claim(registry, SERVER_NAME, "adventureworks") is True
+        cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                 start_again=True)
+        assert len(port.created_servers) == 1
+
+    def test_a_claim_with_no_recorded_holder_is_cleared_only_when_no_other_database_is_in_flight(self, registry):
+        port = RegPort()
+        cas.take_server_claim(registry, SERVER_NAME)
+        cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                 start_again=True)
+        assert len(port.created_servers) == 1
+
+
+class TestEarlierRunSelection:
+    def test_the_newest_row_with_a_guid_is_checked_not_just_the_newest_row(self, registry):
+        port = RegPort()
+        register(registry, port)                                       # process A, in flight
+        registry.record_native_survey_submission("database", "adventureworks", CATALOG_QN,
+                                                 "2999-01-01T00:00:00", submit_error="a later refusal")
+        with pytest.raises(nsr.NativeSurveyBusy, match="still running"):
+            cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                     start_again=True)
+        assert cas.claim_held(registry, "adventureworks") and len(port.processes) == 1
+
+    def test_a_claim_with_no_process_guid_says_re_cannot_check(self, registry):
+        registry.set_setting(cas.claim_key("adventureworks"), "2026-10-08T00:00:00")
+        row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
+        assert row["register"]["start_again"] is True
+        assert cas.NO_RECORD_WORDS == (
+            "RE has no record of the earlier process, so it cannot check whether it is still running.")
+        assert cas.NO_RECORD_WORDS in row["register"]["confirm"]
+
+    def test_a_claim_with_a_guid_names_the_process_in_the_confirm(self, registry):
+        port = RegPort()
+        run = stalled_run(registry, port)
+        row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
+        assert run["engine_action_guid"] in row["register"]["confirm"]
+
+
+class TestReachNoteExcludesAuthWording:
+    @pytest.mark.parametrize("text", ["failed to connect: password authentication failed",
+                                      "could not connect to server: FATAL: role \"x\" does not exist",
+                                      "unable to connect: authentication failed for user x"])
+    def test_a_connect_phrase_with_auth_wording_gets_none(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == ""
+
+    @pytest.mark.parametrize("text", ["failed to connect", "cannot connect", "can't connect"])
+    def test_failed_cannot_cant_connect_alone_are_not_enough(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == ""
+
+    @pytest.mark.parametrize("text", ["could not connect to server", "unable to connect to host"])
+    def test_could_not_or_unable_to_connect_still_get_it(self, text):
         assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == cas.REACH_NOTE

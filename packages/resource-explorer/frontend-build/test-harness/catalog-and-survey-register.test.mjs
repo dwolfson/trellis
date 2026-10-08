@@ -285,3 +285,31 @@ test('the ordinary press does not send start_again', async () => {
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(sent, { start_again: false });
 });
+
+test('the confirm is disarmed after a refused press, and after its timer, so a later click asks again', async () => {
+  const { document, app } = await setUp();
+  const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
+  let posts = 0;
+  const sentence = 'RE has no record of the earlier process, so it cannot check whether it is still running.';
+  stubFetch(paneRoutes([surveyRow(), catalogRow({
+    run: { ...blankRun, state: 'awaiting_registration' },
+    register: { available: true, label: 'Start again →', why_not: '', start_again: true, confirm: sentence } })], {
+    'POST /api/native-surveys/database/adventureworks/register': () => { posts += 1;
+      return { __status: 409, body: { detail: 'The earlier registration is still running.' } }; },
+  }));
+  await app.loadSurveyPane();
+  const btn = content.querySelector(`[data-native-survey="${CATALOG}"] [data-native-register]`);
+  btn.click();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(content.textContent.includes(sentence), 'the confirm says what RE can and cannot check');
+  btn.click();                                           // confirmed -> sent -> refused (409)
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(posts, 1);
+  assert.equal(btn.dataset.confirm, undefined, 'a refusal disarms the confirm');
+  assert.equal(btn.textContent.trim(), 'Start again →');
+  assert.ok(!btn.classList.contains('border-state-warn'));
+  btn.click();                                           // next click only asks again
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(posts, 1, 'no send without a fresh confirm');
+  assert.equal(btn.textContent, 'Confirm: start again');
+});

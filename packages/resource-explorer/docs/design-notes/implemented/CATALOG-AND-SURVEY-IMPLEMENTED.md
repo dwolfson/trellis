@@ -211,3 +211,22 @@ survey this database itself".
   failure names a "Connection").
 * **Follow-up for the shared-helper slice:** `catalogue_gateway.read_element` (~652-664) still matches "404", "No element
   found" and "not found" loosely; it is not used by this slice any more and is out of scope here.
+
+## Third review round (2026-10-08)
+
+* **The server race.** After the server claim is taken, `find_element` and the unconfirmed record are read again and the
+  server is adopted if either shows it (a real interleaving test: A completes between B's "absent" and B's claim; exactly one
+  create). A create that gets **no answer** (timeout, transport error, cancellation) KEEPS the claim and refuses with
+  "the server may or may not exist"; the claim is released only on a typed Egeria answer (`PyegeriaAPIException`,
+  `PyegeriaInvalidParameterException`). The claim value records its holder; "Start again" on database X leaves a claim held by
+  database Y alone, and clears a holder-less claim only when no other database on that server has a registration in flight.
+* "Start again" checks the newest run that HAS a process GUID (not just the newest row). With none, the confirm says "RE has no
+  record of the earlier process, so it cannot check whether it is still running." The confirm button disarms after a refused or
+  failed press and after six seconds.
+* The reach note needs "could not / unable to connect" (or refused, timed out, unreachable, ...) and is withheld whenever the
+  sentence names a password, authentication, role or permission problem.
+* **Unverified live / known risk:** `read_process` reads the process instance's own `activityStatus` and falls back to the
+  FIRST engine action only when the instance has none. If a multi-step process instance carries no status and its first
+  action is COMPLETED while later steps still run, "Start again" would read it as not active. No safe fix is obvious (the
+  process's later steps are linked by follow-on actions that RE has not read live); the safest mitigation today is the
+  database-found-by-name adoption, which turns a created database into an adopted one rather than a second process.

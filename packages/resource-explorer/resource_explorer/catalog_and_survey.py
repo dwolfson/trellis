@@ -85,6 +85,9 @@ STALE_WORDS = "the Egeria asset RE had stored no longer exists"
 REACH_NOTE = "Egeria connects from its own platform; RE can still survey this database itself"
 REGISTER_LABEL = "Register the server with Egeria →"
 START_AGAIN_LABEL = "Start again →"
+NO_RECORD_WORDS = "RE has no record of the earlier process, so it cannot check whether it is still running."
+SERVER_NO_ANSWER_WORDS = ("Egeria gave no answer to a server create, so the server may or may not exist; "
+                          "RE will not create it again until you start again")
 CREATED_UNCONFIRMED_WORDS = "created, not yet confirmed: press to confirm"
 SECRETS_PATH_WORDS = "secrets path not configured: RE cannot check Egeria's credentials"
 SINGLE_STEP_NOT_BUILT = ("the server and the database are one thing for this kind, and registering them "
@@ -200,13 +203,13 @@ def server_claim_key(server_name: str) -> str:
     return "egeria_server_claim::" + server_qualified_name(server_name)
 
 
-def _take(registry, key: str) -> bool:
+def _take(registry, key: str, value: str | None = None) -> bool:
     """Atomic insert-if-absent (the existing `app_settings` key/value table, no DDL). True only for the
     one caller whose insert took effect."""
     with registry._conn() as conn:
         cur = conn.execute(
             "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(key) DO NOTHING", (key, _now(), _now()))
+            "ON CONFLICT(key) DO NOTHING", (key, value if value is not None else _now(), _now()))
         return cur.rowcount == 1
 
 
@@ -224,10 +227,19 @@ def release_claim(registry, slug: str) -> None:
     _release(registry, claim_key(slug))
 
 
-def take_server_claim(registry, server_name: str) -> bool:
+def take_server_claim(registry, server_name: str, holder_slug: str = "") -> bool:
     """The per-server claim, taken around the template create: two presses (one database twice, or two
-    databases on one server) cannot both see the server absent and both create it."""
-    return _take(registry, server_claim_key(server_name))
+    databases on one server) cannot both see the server absent and both create it. The value records
+    WHO holds it (the database slug), so a "Start again" on another database cannot clear a live claim."""
+    return _take(registry, server_claim_key(server_name), f"{holder_slug}@{_now()}")
+
+
+def server_claim_holder(registry, server_name: str) -> str | None:
+    """None = no claim; '' = a claim with no recorded holder; else the holder's database slug."""
+    raw = registry.get_setting(server_claim_key(server_name), None)
+    if raw is None or raw == "":
+        return None if raw is None else ""
+    return raw.split("@", 1)[0] if "@" in raw else ""
 
 
 def release_server_claim(registry, server_name: str) -> None:
@@ -425,8 +437,10 @@ def catalog_in_flight(state: dict, run: dict | None) -> bool:
 # ── connection-ish failures get the one extra line ──────────────────────────
 
 _CONNECTION_WORDS = re.compile(
-    r"(?:could not|unable to|cannot|can't|failed to) connect|refused|timed? ?out|unreachable|no route|"
-    r"connection reset|unknown ?host", re.IGNORECASE)
+    r"(?:could not|unable to) connect|refused|timed? ?out|unreachable|no route|connection reset|unknown ?host",
+    re.IGNORECASE)
+#: A sentence that names a credential or role problem is not a reach problem, whatever else it says.
+_AUTH_WORDS = re.compile(r"password|authenticat|\brole\b|pg_hba|not authorized|permission denied", re.IGNORECASE)
 
 
 def reach_note_for(run_state: dict) -> str:
@@ -437,6 +451,8 @@ def reach_note_for(run_state: dict) -> str:
     if run_state.get("state") not in (nsr.FAILED, nsr.SUBMIT_FAILED):
         return ""
     text = " ".join(str(run_state.get(k) or "") for k in ("message", "error"))
+    if _AUTH_WORDS.search(text):
+        return ""
     return REACH_NOTE if _CONNECTION_WORDS.search(text) else ""
 
 
@@ -503,12 +519,13 @@ class RegistrationUnresolved(nsr.NativeSurveyBusy):
 def describe_earlier(registry, entity_type: str, slug: str, process_qn: str) -> str:
     runs = registry.list_native_survey_runs(entity_type, slug, process_qn)
     claim = claim_held(registry, slug)
-    if runs and runs[0].get("engine_action_guid"):
-        r = runs[0]
+    r = next((x for x in runs if x.get("engine_action_guid")), None)
+    if r:
         return (f"An earlier registration (process {r['engine_action_guid']}, Egeria says "
                 f"{r.get('engine_action_status') or 'nothing yet'}, submitted {r.get('surveyed_at') or 'at an unrecorded time'}) "
                 "has not produced a database RE can read in Egeria.")
-    return (f"A registration press at {claim or 'an unrecorded time'} did not record a result.")
+    return (f"A registration press at {claim or 'an unrecorded time'} did not record a result. "
+            + NO_RECORD_WORDS)
 
 
 def _in_flight(registry, entity_type: str, slug: str, process_qn: str, *, catalog: bool) -> dict | None:
@@ -575,8 +592,8 @@ def register_with_egeria(registry, port: RegistrationPort, entity_type: str, slu
     if start_again:
         _refuse_if_earlier_still_running(registry, port, entity, entity_type, slug, process.qualified_name)
         release_claim(registry, slug)
-        release_server_claim(registry, server_name_for(entity))
-        _log_write(f"start again requested for {slug}: the earlier registration claims were released")
+        _release_server_claim_for_start_again(registry, entity, slug)
+        _log_write(f"start again requested for {slug}: this database's registration claim was released")
 
     with secret_redaction.redacting_logs(getattr(entity, "db_password", "") or ""):
         projected = _ensure_credentials(registry, entity)
@@ -590,11 +607,38 @@ def register_with_egeria(registry, port: RegistrationPort, entity_type: str, slu
             raise
 
 
-def _refuse_if_earlier_still_running(registry, port, entity, entity_type, slug, process_qn) -> None:
-    runs = registry.list_native_survey_runs(entity_type, slug, process_qn)
-    guid = (runs[0].get("engine_action_guid") if runs else "") or ""
-    if not guid:
+def _release_server_claim_for_start_again(registry, entity, slug: str) -> None:
+    """Clear the server claim only when it is this database's own, or has no recorded holder and no OTHER
+    database on that server is in flight. A live claim held by another database is left alone (the press
+    then refuses, naming it)."""
+    sname = server_name_for(entity)
+    holder = server_claim_holder(registry, sname)
+    if holder is None:
         return
+    if holder == slug:
+        release_server_claim(registry, sname)
+        return
+    if holder == "":
+        host = getattr(entity, "egeria_host", "") or entity.host
+        for other in registry.list_databases():
+            if other.slug == slug or (other.egeria_host or other.host) != host or other.port != entity.port:
+                continue
+            proc = _process_for("database", "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
+            if proc and _in_flight(registry, "database", other.slug, proc.qualified_name, catalog=True):
+                return
+        release_server_claim(registry, sname)
+
+
+def _newest_run_with_guid(registry, entity_type: str, slug: str, process_qn: str) -> dict | None:
+    return next((r for r in registry.list_native_survey_runs(entity_type, slug, process_qn)
+                 if r.get("engine_action_guid")), None)
+
+
+def _refuse_if_earlier_still_running(registry, port, entity, entity_type, slug, process_qn) -> None:
+    run = _newest_run_with_guid(registry, entity_type, slug, process_qn)    # not just the newest row
+    guid = (run or {}).get("engine_action_guid") or ""
+    if not guid:
+        return                  # no process to ask about; the confirm said RE could not check
     try:
         action = port.read_process(guid)
     except Exception as exc:  # noqa: BLE001
@@ -628,18 +672,38 @@ def _register_steps(registry, port, entity_type, slug, technology_type, submitte
                     if pending:
                         registry.set_setting(unconfirmed_key, "")  # Egeria said it is gone: nothing to adopt
                         release_server_claim(registry, server_name)
-                    if not take_server_claim(registry, server_name):
+                    if not take_server_claim(registry, server_name, slug):
+                        holder = server_claim_holder(registry, server_name)
                         raise RegistrationUnresolved(
-                            f"Another press is creating this server ({sqn}), or an earlier one did not confirm "
-                            f"it. Creating it again could make a second server. Press {START_AGAIN_LABEL!r} "
-                            "only if you mean to.")
-                    try:
-                        server_guid, how = port.create_server(server_placeholders(entity)), "created"
-                    except BaseException:
-                        release_server_claim(registry, server_name)     # Egeria refused: nothing was created
-                        raise
-                    registry.set_setting(unconfirmed_key, server_guid)   # BEFORE the read-back
-                    registry.set_setting(server_cred_key(server_name), slug)
+                            f"Another press{f' (database {holder})' if holder else ''} is creating this server "
+                            f"({sqn}), or an earlier one did not confirm it. Creating it again could make a "
+                            f"second server. Press {START_AGAIN_LABEL!r} only if you mean to.")
+                    # We hold the claim. Another press may have registered the server between our "absent"
+                    # and our claim: look again, and read the unconfirmed record again, before creating.
+                    again = port.find_element(sqn)
+                    pending2 = (registry.get_setting(unconfirmed_key, "") or "").strip()
+                    if again is not None:
+                        server_guid, how = again.guid, "adopted"
+                    elif pending2 and port.read_element(pending2) is not None:
+                        server_guid, how = pending2, "adopted"
+                    else:
+                        try:
+                            server_guid, how = port.create_server(server_placeholders(entity)), "created"
+                        except BaseException as exc:
+                            if _egeria_answered(exc):
+                                release_server_claim(registry, server_name)   # Egeria refused: nothing created
+                                raise
+                            # No answer (timeout, transport, cancellation): Egeria may have created it. KEEP
+                            # the claim; the row is unresolved and offers "Start again".
+                            if not isinstance(exc, Exception):
+                                raise
+                            raise RegistrationUnresolved(
+                                f"Egeria gave no answer to the server create ({_egeria_sentence(exc, entity)}), so "
+                                "the server may or may not exist. RE will not create it again until you press "
+                                f"{START_AGAIN_LABEL!r}.") from exc
+                    if how == "created":
+                        registry.set_setting(unconfirmed_key, server_guid)   # BEFORE the read-back
+                        registry.set_setting(server_cred_key(server_name), slug)
             back = _verify(port, server_guid, sqn, "server")
         except nsr.NativeSurveyError:
             raise
@@ -708,11 +772,22 @@ def _register_steps(registry, port, entity_type, slug, technology_type, submitte
         return out
 
 
+def _egeria_answered(exc: BaseException) -> bool:
+    """Did EGERIA answer (a typed API, authorization or validation refusal)? A timeout, a transport error
+    or a cancellation is NOT an answer: the request may have been carried out."""
+    from pyegeria.core._exceptions import PyegeriaAPIException, PyegeriaInvalidParameterException
+    return isinstance(exc, (PyegeriaAPIException, PyegeriaInvalidParameterException))
+
+
 def _egeria_sentence(exc: Exception, entity=None) -> str:
     """Egeria's own sentence, whole (not cut at 300 characters), with the resource's password masked
     should a driver error have echoed it."""
     from resource_explorer.catalogue_gateway import _short
-    return nsr.scrub_secret(_short(exc), entity)
+    try:
+        text = _short(exc)
+    except Exception:  # noqa: BLE001 -- an exception whose own str() fails
+        text = type(exc).__name__
+    return nsr.scrub_secret(text, entity)
 
 
 def _log_write(message: str) -> None:
@@ -818,6 +893,9 @@ def catalog_notes(registry, entity_type: str, entity, latest: dict | None, deriv
     if not in_flight and (claim_held(registry, entity.slug)):
         proc = _process_for(entity_type, "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
         notes.append(describe_earlier(registry, entity_type, entity.slug, proc.qualified_name if proc else ""))
+    holder = server_claim_holder(registry, sname)
+    if not in_flight and holder in ("", entity.slug):
+        notes.append(SERVER_NO_ANSWER_WORDS)
     notes += server_credential_notes(registry, entity)
     return notes
 
@@ -825,14 +903,19 @@ def catalog_notes(registry, entity_type: str, entity, latest: dict | None, deriv
 def register_control(registry, entity, derived: dict, in_flight: bool, wiring: str) -> dict:
     """The one control: shown for not registered, a failed or refused run, an unconfirmed server, and an
     unresolved earlier run (as "Start again", which says what the earlier run is in the row's notes)."""
-    base = {"label": REGISTER_LABEL, "why_not": wiring, "start_again": False, "available": False}
+    base = {"label": REGISTER_LABEL, "why_not": wiring, "start_again": False, "available": False, "confirm": ""}
     if wiring or in_flight:
         return base
     unresolved = (derived["state"] == AWAITING_REGISTRATION or bool(claim_held(registry, entity.slug))
                   or bool(registry.get_setting(server_claim_key(server_name_for(entity)), "")))
     unconfirmed = bool((registry.get_setting(server_unconfirmed_key(server_name_for(entity)), "") or "").strip())
     if unresolved and derived["state"] != REGISTERED:
-        return {**base, "available": True, "label": START_AGAIN_LABEL, "start_again": True}
+        proc = _process_for("database", "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
+        run = _newest_run_with_guid(registry, "database", entity.slug, proc.qualified_name) if proc else None
+        confirm = ("This submits a second registration to Egeria. "
+                   + (f"The earlier process {run['engine_action_guid']} was last read as "
+                      f"{run.get('engine_action_status') or 'not yet read'}." if run else NO_RECORD_WORDS))
+        return {**base, "available": True, "label": START_AGAIN_LABEL, "start_again": True, "confirm": confirm}
     if derived["state"] in (NOT_REGISTERED, nsr.FAILED, nsr.SUBMIT_FAILED) or unconfirmed:
         return {**base, "available": True}
     return base
