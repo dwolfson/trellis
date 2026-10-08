@@ -53,9 +53,10 @@ Egeria call, and is wanted in three places (Curate's tab, a Portal tile for
   proves the third host. They are better first routines than the survey
   trend of the skeleton brief because their value is obvious to the owner
   on the page he is looking at; the skeleton keeps the trend as its
-  example only because its data exists on every database. Recommendation:
-  the skeleton's routine becomes `curation_coverage` and the trend joins
-  later; the owner decides.
+  example only because its data exists on every database. Decided (owner,
+  2026-10-07: "good idea for the routine"): `curation_coverage` is the
+  extensibility skeleton's first routine; the survey trend joins later
+  (`docs/extensibility-walking-skeleton-brief.md` §2b as amended).
 - **3 is a plain RE read** for now (it joins E3 rows, scope events and
   verdicts, all RE-shaped), lifted into a routine once the proposal record
   has one shape across kinds (the Enrichment-publishing slice gives it
