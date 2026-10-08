@@ -79,7 +79,11 @@ def _load(path: str) -> dict:
         with p.open("r") as f:
             data = yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError) as exc:
-        log.warning("omsecrets_store: could not read %s: %s", path, exc)
+        # Class and line only: a YAML error's text can carry a snippet of the offending line, which in
+        # this file may be a password.
+        mark = getattr(exc, "problem_mark", None)
+        where = f"line {mark.line + 1}" if mark is not None else "an unknown line"
+        log.warning("omsecrets_store: could not read %s: %s at %s", path, type(exc).__name__, where)
         return {"secretsCollections": {}}
     if "secretsCollections" not in data or data["secretsCollections"] is None:
         data["secretsCollections"] = {}

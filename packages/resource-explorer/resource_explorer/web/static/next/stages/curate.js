@@ -102,27 +102,146 @@ function curateSectionNavHtml() {
   </nav>`;
 }
 
+/** Sections start COLLAPSED (owner, 2026-10-08) and a person's choice is remembered per viewer, like the
+ *  Understanding sections (`re.understanding.collapsed.<id>`): '0' = opened by them, '1' = closed. Storage
+ *  that is missing or throws just means the in-memory copy for this page load. */
+const sectionKey = (id) => `re.curate.collapsed.${id}`;
+function sectionOpen(id) {
+  try {
+    const v = globalThis.localStorage?.getItem(sectionKey(id));
+    if (v === '0') return true;
+    if (v === '1') return false;
+  } catch { /* fall through to the in-memory copy */ }
+  return !!(state.curate && state.curate.openSections && state.curate.openSections[id]);
+}
+function rememberSection(id, open) {
+  state.curate = state.curate || {};
+  (state.curate.openSections = state.curate.openSections || {})[id] = open;
+  try { globalThis.localStorage?.setItem(sectionKey(id), open ? '0' : '1'); } catch { /* not remembered */ }
+}
+
+/** Which reads each section owns. Nothing is read until its section is open (owner, 2026-10-08): the page
+ *  opens on six headings and a jump line, not on a minute of reads. "What it's made of" shows the blueprint
+ *  SELECTOR as well as the tree, so it and "blueprints" share one blueprints read. */
+const LAZY_SECTIONS = {
+  'curate-sec-made-of': ['tree', 'blueprints'],
+  'curate-sec-blueprints': ['blueprints'],
+  'curate-sec-relates': ['deps'],
+  'curate-sec-writes': ['depth'],
+};
+
+/** Open `id`, load what it owns, and bring its heading to the top under the jump line. The scroll is
+ *  anchored at the section's START (a section can be thousands of px tall, so centring lands mid-list), with
+ *  a scroll-margin on the section for the sticky jump line. When the section's late load lands, scroll once
+ *  more, unless the person has scrolled in the meantime. A click before the plan is drawn is queued. */
+export function jumpToCurateSection(id) {
+  state.curate = state.curate || {};
+  const el = document.getElementById(id);
+  if (!el) { state.curate.pendingJump = id; return false; }
+  if (el.tagName === 'DETAILS') { el.open = true; rememberSection(el.id, true); }
+  const loading = state.curate.loadSection ? state.curate.loadSection(id) : null;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  endJump();
+  const j = state.curate.jump = { id, moved: false, stop: null };
+  const win = globalThis.window;
+  const moved = () => { j.moved = true; };
+  const kinds = ['wheel', 'touchmove', 'keydown', 'mousedown', 'pointerdown'];   // a scrollbar drag or a middle-click autoscroll is the person scrolling
+  if (win) kinds.forEach((k) => win.addEventListener(k, moved));
+  j.stop = () => { if (win) kinds.forEach((k) => win.removeEventListener(k, moved)); };
+  if (loading) {
+    loading.then(() => {
+      if (state.curate.jump !== j) return;
+      if (!j.moved) document.getElementById(id)?.scrollIntoView({ behavior: 'auto', block: 'start' });
+      endJump();
+    });
+  } else {
+    setTimeout(() => { if (state.curate.jump === j) endJump(); }, 1500);
+  }
+  return true;
+}
+function endJump() {
+  const j = state.curate && state.curate.jump;
+  if (j && j.stop) j.stop();
+  if (state.curate) state.curate.jump = null;
+}
+
 function bindCurateSectionNav(host) {
+  host.querySelectorAll('details[id^="curate-sec-"]').forEach((d) => d.addEventListener('toggle', () => {
+    rememberSection(d.id, d.open);
+    if (d.open && state.curate && state.curate.loadSection) state.curate.loadSection(d.id);
+  }));
   host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
     ev.preventDefault();
-    const el = document.getElementById(a.dataset.curateNav);
-    if (!el) return;
-    if (el.tagName === 'DETAILS') el.open = true;
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    jumpToCurateSection(a.dataset.curateNav);
   }));
 }
 
 /** Wraps a section's already-built inner HTML in the shared collapsible
  *  shell -- <summary> is the section's existing heading text, `id` is what
- *  the nav's anchors target, default open. */
+ *  the nav's anchors target, default COLLAPSED (see sectionOpen). */
 function curateSectionHtml(id, title, extraHeader, inner) {
-  return `<details id="${id}" open class="mt-s4">
+  return `<details id="${id}" ${sectionOpen(id) ? 'open' : ''} class="mt-s4" style="scroll-margin-top:4rem">
     <summary class="mb-s1 flex cursor-pointer items-baseline gap-s2 border-b border-rule pb-[3px]">
       <span class="font-heading text-name font-normal text-ink">${esc(title)}</span>
       ${extraHeader || ''}
     </summary>
     ${inner}
   </details>`;
+}
+
+/** A pane's read failed. A dead session is not this pane's failure: the page banner carries the one sign-in
+ *  prompt, so the pane keeps only a short word. */
+function paneError(lead, err, retryKey = '') {
+  if (err && err.loginRequired) return '<span data-curate-signin-needed class="text-ink-muted">sign-in needed</span>';
+  const retry = retryKey
+    ? ` <button type="button" data-curate-retry="${esc(retryKey)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">retry</button>` : '';
+  return `${esc(lead)}${esc(err && err.message)}${retry}`;
+}
+
+/** Is this commit record the CURRENT state of the pane? Only while it is running or queued, or when it
+ *  was pressed in this session. Anything older is history: a failure from 17 days ago is not how the
+ *  repository stands now. */
+export function isCurrentCommit(rec) {
+  if (!rec) return false;
+  if (rec.state === 'running' || rec.state === 'queued') return true;
+  return !!(state.curate && state.curate.pressedId && state.curate.pressedId === rec.id);
+}
+
+/** The previous commit, labelled and collapsed under the table: "last commit · 17d ago · failed at <step>". */
+export function commitHistoryHtml(rec, recordHtml) {
+  const failed = (rec.steps || []).find((st) => st.state === 'failed');
+  const word = failed ? `failed at ${failed.name}` : (rec.state || 'recorded');
+  return `<details data-commit-history class="mt-s2">
+    <summary class="cursor-pointer text-provenance text-ink-muted">last commit · <span class="tnum">${esc(ago(rec.requested_at))}</span> · ${esc(word)}</summary>
+    ${recordHtml}
+  </details>`;
+}
+
+const SW_PREFIX = /^Software Capability\s*[·?]?\s*/;
+/** "what it is" rows. The Software Capability rows come from two sources (the deployment evidence and the
+ *  person's Enrichment note) and each used to read as its own "Software Capability · …" line; they sit under
+ *  ONE heading, each item saying where it came from. Every row keeps its own pick (the kind is the identity). */
+export function whatItIsRowsHtml(rows, picks) {
+  const isSw = (r) => String(r.kind).startsWith('SoftwareCapability');
+  const sw = rows.filter(isSw);
+  const out = [];
+  let placed = false;
+  for (const r of rows) {
+    if (sw.length < 2 || !isSw(r)) { out.push(curateRowHtml(r, picks.has(r.kind), true)); continue; }
+    if (!placed) {
+      placed = true;
+      out.push(`<div data-sw-capability class="border-b border-rule">
+        <div data-sw-capability-heading class="pt-s2 text-answer text-ink">Software Capability</div>
+        ${sw.map((x) => {
+          const from = x.source === 'enrichment' ? 'your note' : 'deployment evidence';
+          const rest = String(x.label).replace(SW_PREFIX, '').trim();
+          return `<div data-sw-capability-item class="pl-s3"><span class="text-provenance text-ink-muted">${from} ·</span>${
+            curateRowHtml({ ...x, label: rest || 'a capability candidate' }, picks.has(x.kind), true)}</div>`;
+        }).join('')}
+      </div>`);
+    }
+  }
+  return out.join('');
 }
 
 /** A state cue: the glyph from the one glyph table plus a short word, the full sentence on
@@ -217,16 +336,26 @@ export function curateSubsHtml(scope, ui) {
   </div>`;
 }
 
-function curateWritesHtml(plan, picks, subCount, containers = 0) {
+/** The standing count of what is chosen for publishing, in the section header, with its cue: a choice is saved
+ *  as it is made, so this stays on screen (the per-row "saved" note is only transient). */
+export function savedCountHtml(view) {
+  const m = view && view.manifest;
+  if (!m) return '';
+  const n = (m.files || 0) + (m.folders || 0);
+  return ` <span data-scope-saved-count class="shrink-0 whitespace-nowrap rounded-sm border border-rule-strong px-2 text-provenance text-ink" title="Each choice is saved in Resource Explorer the moment you press Include or Leave out. Nothing reaches Egeria until you press Publish.">${n} included · saved</span>`;
+}
+
+export function curateWritesHtml(plan, picks, subCount, containers = 0) {
   const w = plan.writes || {};
   const cls = w.classifications || [];
+  const written = cls.filter((c) => !c.skipped).length;
   const lines = [];
   lines.push(`<span class="tnum">${picks.length}</span> entit${picks.length === 1 ? 'y' : 'ies'}${picks.length ? ` · ${picks.map(esc).join(', ')}` : ''}`);
   lines.push(`<span class="tnum">${subCount}</span> contained asset${subCount === 1 ? '' : 's'} you chose (files and folders)${
     containers ? ` · <span class="tnum">${containers}</span> container folder${containers === 1 ? '' : 's'} to hold them` : ''}`);
   lines.push(cls.length
-    ? `<span class="tnum">${cls.length}</span> authored classification${cls.length === 1 ? '' : 's'} · ${cls.map((c) =>
-        `${esc(c.classification)} · ${esc(c.value)} · ${esc(c.author)}${c.interim ? ' · interim' : ''}${c.review ? ' · <span class="text-state-warn">flagged for review</span>' : ''}`).join(' · ')}`
+    ? `<span class="tnum">${written}</span> authored classification${written === 1 ? '' : 's'} · ${cls.map((c) =>
+        `${esc(c.classification)} · ${esc(c.value)} · ${esc(c.author)}${c.interim ? ' · interim' : ''}${c.skipped ? ' · <span data-plan-skipped class="text-ink-muted">will be skipped</span>' : ''}${c.review ? ' · <span class="text-state-warn">flagged for review</span>' : ''}`).join(' · ')}`
     : `no authored classifications — nothing set on the Enrichment pane yet`);
   lines.push(w.owner?.value
     ? `Owner · ${esc(w.owner.value)}${w.owner.interim ? ' · interim' : ''}`
@@ -335,7 +464,8 @@ export async function renderCurate(slug) {
   ].map((p) => p.catch((err) => {
     // A band that fails says so in its own slot; it never takes the pane down.
     const slot = frame.querySelector('[data-curate-band="people"]');
-    if (slot && slot.isConnected) slot.insertAdjacentHTML('beforeend', `<div class="text-caveat text-state-warn">A Curate band could not be drawn: ${esc(err.message)}</div>`);
+    // A dead session is said ONCE, by the page banner (session-banner.js), not by every band.
+    if (slot && slot.isConnected && !err.loginRequired) slot.insertAdjacentHTML('beforeend', `<div class="text-caveat text-state-warn">A Curate band could not be drawn: ${esc(err.message)}</div>`);
   }));
   if (entityType !== 'repo') {
     // Skip every repo-only /api/projects/{slug}/... call entirely rather
@@ -358,40 +488,84 @@ export async function renderCurate(slug) {
   // The plan request can take tens of seconds on a large repository (25 s on egeria_git). The
   // stage is already drawn and the other bands are loading on their own; this slot says so and
   // counts the seconds, and blocks nothing.
+  state.curate = state.curate || {};
+  // A render token: two renders for the SAME slug (a perspective toggle, re-entering the stage) can
+  // interleave, and slug equality cannot tell them apart. Only the newest may write shared state.
+  const myRender = state.curate.renderToken = (state.curate.renderToken || 0) + 1;
+  const superseded = () => state.curate.renderToken !== myRender;
+  if (state.curate.lastSlug !== slug) {                // the "show all" flags are per repository
+    state.blueprintShowAll = false;
+    state.componentShowAll = false;
+    state.curate.lastSlug = slug;
+  }
+  state.curate.loaded = { slug, tree: false, blueprints: false, deps: false, depth: false, p: {} };
+  state.curate.loadSection = null;
+  state.curate.pendingJump = null;
+  endJump();
   const started = curateClock.now();
   const secs = () => Math.max(0, Math.floor((curateClock.now() - started) / 1000));
-  host.innerHTML = `<div data-curate-plan-loading role="status" class="text-caveat text-ink-muted">plan loading · 0 s</div>`;
+  host.innerHTML = `${curateSectionNavHtml()}<div data-curate-queued class="mb-s1 text-provenance text-ink-muted"></div>
+    <div data-curate-plan-loading role="status" class="text-caveat text-ink-muted">plan loading · 0 s</div>`;
+  // The jump line is there while the plan loads; a click is remembered and done once the sections exist.
+  host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    state.curate.pendingJump = a.dataset.curateNav;
+    const q = host.querySelector('[data-curate-queued]');
+    if (q) q.innerHTML = stateCue('running', 'queued', 'The plan is still being read; this section will open when the plan is read.') + ' will open when the plan is read';
+  }));
   const stopTicker = curateClock.every(() => {
     const line = host.querySelector('[data-curate-plan-loading]');
     if (!line || !host.isConnected) { stopTicker(); return; }
     line.textContent = `plan loading · ${secs()} s`;
   }, 1000);
-  let plan;
-  try {
-    plan = await getCuratePlan(slug);
-  } catch (err) {
-    stopTicker();
-    if (host.isConnected) host.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">The plan could not be read after ${secs()} s: ${esc(err.message)}</div>`;
-    return;
-  }
-  stopTicker();
-  if (slug !== state.selectedSlug) return;
   state.curate = state.curate || {};
-  const picks = new Set(state.curate.picks || plan.what_it_is.filter((r) => r.candidate && r.state === 'measured' && r.kind !== 'InfrastructureAsset').map((r) => r.kind));
-  const latest = (plan.commits || [])[0];
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   // What the press publishes is the selection RECORD (brief 2a), read from the server and re-read after each
   // choice; this pane keeps no selection of its own. Only the view of it (filter, "show the rest") is local.
   const ui = state.curate.scopeUi = state.curate.scopeUi || { text: '', showAll: false };
   const scope = createScopeController({
     slug, me: () => me,
-    onChange: () => { if (host.isConnected && slug === state.selectedSlug) { draw(); renderComponentTree(slug); } },
+    onChange: () => { if (host.isConnected && slug === state.selectedSlug) { draw(); refreshTree(); } },
     visible: () => visibleRows(scope.view, ui),
   });
-  try { await scope.load(); } catch { scope.view = null; }
-  if (slug !== state.selectedSlug) return;
+  // Everything below that needs only the slug starts NOW, beside the plan, not after it.
+  const scopeLoad = scope.load().catch(() => { scope.view = null; });
+  // Only a section the viewer left open is read now, beside the plan; everything else waits for its opening.
+  const startNow = [];
+  for (const [id, keys] of Object.entries(LAZY_SECTIONS)) if (sectionOpen(id)) startNow.push(...keys, ...(keys.includes('tree') ? ['diagram'] : []));
+  if (startNow.length) startPrefetch(slug, startNow);
+  const refreshTree = () => { if (state.curate.loaded && state.curate.loaded.tree) renderComponentTree(slug); };
+  let plan;
+  try {
+    plan = await getCuratePlan(slug);
+  } catch (err) {
+    stopTicker();
+    if (superseded()) return;                       // a newer render owns the pane and the prefetch
+    dropPrefetch();                                 // nothing will paint it: do not leave it to be read as fresh later
+    if (host.isConnected) host.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">${paneError(`The plan could not be read after ${secs()} s: `, err)}</div>`;
+    return;
+  }
+  stopTicker();
+  if (superseded()) return;
+  if (slug !== state.selectedSlug) { dropPrefetch(); return; }
+  state.curate = state.curate || {};
+  state.curate.blueprintCounts = ((plan.made_of || [])[0] || {}).detail || {};
+  // Nothing is ticked until the owner ticks it (2026-10-08): the press sends only what was confirmed.
+  const picks = new Set(state.curate.picks || []);
+  let latest = (plan.commits || [])[0];
+  await scopeLoad;
+  if (superseded()) return;
+  if (slug !== state.selectedSlug) { dropPrefetch(); return; }
 
   const draw = () => {
+    if (superseded() || !host.isConnected) return;
+    const current = isCurrentCommit(latest) ? latest : null;
+    // Redraws keep the tree, blueprint and depth-offer nodes (open branches, groups, scroll) instead of re-reading them.
+    const keep = {};
+    for (const id of ['blueprint-selector', 'component-tree', 'blueprint-list', 'catalogue-depth-offer', 'curate-dependency-host']) {
+      const el = host.querySelector(`#${id}`);
+      if (el) keep[id] = el;
+    }
     const keepScroll = host.querySelector('[data-scope-rows]')?.scrollTop || 0;
     host.innerHTML = `
       <div class="mb-s2 text-caveat text-ink-muted">
@@ -405,20 +579,20 @@ export async function renderCurate(slug) {
       ${curateSectionHtml('curate-sec-what-it-is', CURATE_COLUMNS[0].title,
         `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>
          <span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[0].sub)}</span>`,
-        (plan.what_it_is || []).map((r) => curateRowHtml(r, picks.has(r.kind), true)).join(''))}
+        whatItIsRowsHtml(plan.what_it_is || [], picks))}
       ${curateSectionHtml('curate-sec-what-holds', CURATE_COLUMNS[1].title,
-        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>`,
+        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>${savedCountHtml(scope.view)}`,
         (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
         + curateSubsHtml(scope, ui))}
       ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
         `<div id="blueprint-selector"></div>
-         <div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
+         <div id="component-tree" class="text-caveat text-ink-muted" style="min-height:4rem">Reading the components…</div>`)}
       ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
-        `<div id="blueprint-list"></div>`)}
+        `<div id="blueprint-list" style="min-height:3rem"></div>`)}
       ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
         (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
-        + '<div class="mt-s2" data-dependency-table-host></div>')}
+        + '<div class="mt-s2" id="curate-dependency-host" data-dependency-table-host></div>')}
       ${curateSectionHtml('curate-sec-writes', 'what gets written',
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
         `${curateWritesHtml(plan, [...picks], (scope.view?.manifest?.files || 0) + (scope.view?.manifest?.folders || 0), scope.view?.manifest?.containers || 0)}
@@ -426,11 +600,13 @@ export async function renderCurate(slug) {
       <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloging, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
       <div class="mt-s3">${repoCommitPanelHtml({
         plan, picks, scope: scope.view, fileTypePicks: curateFileTypePicks(), me,
-        resurvey: !!state.curate.resurvey, sentence: CATALOG_SENTENCE, rec: latest, ps: latest ? (latest.proof_summary || null) : null })}</div>
-      ${curateRecordHtml(latest)}
+        resurvey: !!state.curate.resurvey, sentence: CATALOG_SENTENCE, rec: current, ps: current ? (current.proof_summary || null) : null })}</div>
+      ${current ? curateRecordHtml(current) : (latest ? commitHistoryHtml(latest, curateRecordHtml(latest)) : '')}
       <div id="catalogue-depth-offer"></div>`)}`;
+    for (const [id, old] of Object.entries(keep)) host.querySelector(`#${id}`)?.replaceWith(old);
 
     bindCurateSectionNav(host);
+    if (state.curate.loadSection) for (const id of Object.keys(LAZY_SECTIONS)) if (document.getElementById(id)?.open) state.curate.loadSection(id);
     const rowsBox = host.querySelector('[data-scope-rows]');
     if (rowsBox) rowsBox.scrollTop = keepScroll;
     scope.bind(host);
@@ -442,8 +618,6 @@ export async function renderCurate(slug) {
     };
     host.querySelector('[data-scope-filter]')?.addEventListener('input', (ev) => { ui.text = ev.target.value; drawList(); });
     host.querySelector('[data-scope-show-all]')?.addEventListener('change', (ev) => { ui.showAll = ev.target.checked; drawList(); });
-    // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
-    mountDependencyTable(host.querySelector('[data-dependency-table-host]'), slug, { confirmable: true, me });
     const counts0Label = () => publishLabel(manifestCounts({ plan, picks, scope: scope.view, fileTypePicks: curateFileTypePicks() }));
     host.querySelector('[data-commit-resurvey]')?.addEventListener('change', (ev) => { state.curate.resurvey = ev.target.checked; draw(); });
     host.querySelector('[data-commit-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
@@ -454,7 +628,7 @@ export async function renderCurate(slug) {
     });
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
-      state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
+      state.curate.picks = [...picks]; draw(); refreshTree();
     }));
     host.querySelectorAll('[data-curate-members]').forEach((b) => b.addEventListener('click', () => {
       openMembers({ slug, analysisId: b.dataset.curateMembers, metric: b.dataset.metric || '', title: b.dataset.curateMembers });
@@ -473,19 +647,24 @@ export async function renderCurate(slug) {
           confirm: [...picks], data_files: false, resurvey_stale: resurvey,   // the files and folders come from the record
         });
         plan.commits = [out.curation, ...(plan.commits || [])];
+        latest = out.curation;
+        state.curate.pressedId = out.curation.id;     // pressed here: this one is the current state
         draw();
         await pollActivity(out.activity_id, { onTick: async () => {
           try {
             const rec = await getCuration(slug, out.curation.id);
             plan.commits[0] = rec;
+            latest = rec;
             const slot = host.querySelector('[data-curate-record]');
             if (slot) slot.outerHTML = curateRecordHtml(rec);
           } catch { /* the next tick will */ }
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
+        latest = plan.commits[0];
         try { plan.survey = (await getCuratePlan(slug)).survey || plan.survey; } catch { /* the table keeps the survey it had */ }
         try { await scope.load(); } catch { /* the rows keep the state they had; the next read will say */ }
         draw();
+        state.curate.loaded.depth = true;
         renderCatalogueDepthOffer(slug, host);
       } catch (err) {
         b.disabled = false; b.textContent = counts0Label();
@@ -500,9 +679,96 @@ export async function renderCurate(slug) {
   if (state.curateOnPicks) document.removeEventListener('re:curate-picks', state.curateOnPicks);
   state.curateOnPicks = () => { if (host.isConnected && slug === state.selectedSlug) draw(); };
   document.addEventListener('re:curate-picks', state.curateOnPicks);
-  renderComponentTree(slug);
-  renderBlueprintList(slug);
-  renderCatalogueDepthOffer(slug, host);
+  if (superseded()) return;
+  setupLazySections();
+  const pending = state.curate.pendingJump;
+  if (pending) { state.curate.pendingJump = null; jumpToCurateSection(pending); }
+
+  /** Reads one section's data the first time it is open; a cue shows in its slot at once. A read that fails
+   *  is NOT remembered as loaded: reopening the section, or the retry control, reads again. A read already in
+   *  flight is joined, so a jump into it still waits for it. */
+  function loadSectionData(id) {
+    const keys = LAZY_SECTIONS[id];
+    const L = state.curate.loaded;
+    if (!keys || !L || L.slug !== slug || superseded()) return null;
+    const work = [];
+    const cueIn = (el, word) => { if (el) el.innerHTML = `<span class="text-caveat">${stateCue('running', word)}</span>`; };
+    const track = (k, promise) => {
+      L.p[k] = promise.then((ok) => { if (ok === false) L[k] = false; return ok; }, () => { L[k] = false; return false; })
+        .finally(() => { if (L.p[k] === tracked) delete L.p[k]; });
+      const tracked = L.p[k];
+      work.push(tracked);
+    };
+    for (const k of keys) {
+      if (L[k]) { if (L.p[k]) work.push(L.p[k]); continue; }
+      L[k] = true;
+      if (k === 'tree') {
+        startPrefetch(slug, ['tree', 'diagram']);
+        cueIn($('component-tree'), 'loading components');
+        track(k, Promise.resolve(renderComponentTree(slug)));
+      } else if (k === 'blueprints') {
+        startPrefetch(slug, ['blueprints']);
+        cueIn($('blueprint-list'), 'loading blueprints');
+        track(k, Promise.resolve(renderBlueprintList(slug)));
+      } else if (k === 'deps') {
+        const slot = host.querySelector('[data-dependency-table-host]');
+        cueIn(slot, 'loading dependencies');
+        // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
+        track(k, Promise.resolve(mountDependencyTable(slot, slug, { confirmable: true, me })).then((r) => {
+          if (r === null && slot && slot.isConnected) {
+            slot.insertAdjacentHTML('beforeend', ' <button type="button" data-curate-retry="deps" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">retry</button>');
+            return false;
+          }
+          return true;
+        }));
+      } else if (k === 'depth') {
+        startPrefetch(slug, ['depth']);
+        track(k, Promise.resolve(renderCatalogueDepthOffer(slug, host)).then(() => true));
+      }
+    }
+    return work.length ? Promise.all(work).then(() => undefined) : null;
+  }
+  const SECTION_OF = { tree: 'curate-sec-made-of', blueprints: 'curate-sec-blueprints', deps: 'curate-sec-relates' };
+  host.addEventListener('click', (ev) => {
+    const b = ev.target.closest && ev.target.closest('[data-curate-retry]');
+    if (!b) return;
+    const k = b.dataset.curateRetry;
+    if (state.curate.loaded) state.curate.loaded[k] = false;
+    loadSectionData(SECTION_OF[k] || '');
+  });
+  function setupLazySections() {
+    if (superseded()) return;
+    state.curate.loadSection = loadSectionData;
+    for (const id of Object.keys(LAZY_SECTIONS)) if (document.getElementById(id)?.open) loadSectionData(id);
+  }
+}
+
+/** Reads that need only the slug, started beside the plan request and consumed once by the first paint.
+ *  A prefetched promise that nobody takes (the plan failed) must not become an unhandled rejection. */
+let prefetched = null;
+const PREFETCH_TTL_MS = 60000;
+/** True while a started prefetch has not been consumed or dropped (a test reads it). */
+export function curatePrefetchPending() { return !!prefetched; }
+function dropPrefetch() { prefetched = null; }
+/** Start the reads a section will need, the moment it is going to open (or at page open for a section the
+ *  viewer left open). `diagram` is the architecture-diagram fact, started beside the tree rather than after it. */
+function startPrefetch(slug, keys) {
+  const keep = (p) => { p.catch(() => {}); return p; };
+  const make = {
+    tree: () => getComponentTree(slug, ''),
+    diagram: () => getBulkFacts([slug], ['architecture_diagram'], apiEntityType(state.resourceType)),
+    blueprints: () => getComponentBlueprints(slug),
+    depth: () => getCatalogueDepthOffer(slug),
+  };
+  if (!prefetched || prefetched.slug !== slug) prefetched = { slug, at: Date.now() };
+  for (const k of keys) if (make[k] && !prefetched[k]) prefetched[k] = keep(make[k]());
+}
+function takePrefetched(slug, key) {
+  if (!prefetched || prefetched.slug !== slug || !prefetched[key]) return null;
+  if (Date.now() - prefetched.at > PREFETCH_TTL_MS) { prefetched = null; return null; }
+  const p = prefetched[key];
+  prefetched[key] = null;
+  return p;
 }
 
 /** The file types ticked in the Publish band (a Set of labels), kept on the Curate state. */
@@ -538,7 +804,7 @@ async function renderCatalogueDepthOffer(slug, host) {
   const slot = host.querySelector('#catalogue-depth-offer');
   if (!slot) return;
   let offer;
-  try { offer = await getCatalogueDepthOffer(slug); } catch { slot.innerHTML = ''; return; }
+  try { offer = await (takePrefetched(slug, 'depth') || getCatalogueDepthOffer(slug)); } catch { slot.innerHTML = ''; return; }
   if (slug !== state.selectedSlug) return;   // a faster click, or a different resource, won
   if (!offer.layer1_done || offer.already_decided || !offer.remaining_components) { slot.innerHTML = ''; return; }
 
@@ -672,7 +938,7 @@ export function leafRowHtml(l) {
     ? `<div class="pl-s2 text-provenance text-accent-ink">two extractors agree this is a component</div>` : '';
   const withdrawnLine = (l.withdrawn_by || []).length
     ? `<div class="pl-s2 text-provenance text-state-warn">⚠ review — no longer proposed by ${esc(l.withdrawn_by.join(', '))}</div>` : '';
-  return `<div class="flex flex-col gap-[1px] border-b border-rule py-[3px]">
+  return `<div data-leaf-path="${esc(l.path)}" data-leaf-undecided="${isUndecidedLeaf(l) ? '1' : '0'}" class="flex flex-col gap-[1px] border-b border-rule py-[3px]">
     <div class="flex flex-wrap items-baseline gap-x-s2 text-provenance">
       <span class="font-mono text-ink">${esc(l.path.split('/').pop())}</span>
       ${!multi ? `<span class="text-ink-muted">· ${l.type ? esc(l.type) : 'type not assigned · boundary only'}</span>` : ''}
@@ -697,15 +963,25 @@ export function leafRowHtml(l) {
  *  the group still has undecided work, default CLOSED once it is fully
  *  decided — the depth-1 accepted signal a reader used to get from the flat
  *  list is still here, just per-group instead of per-branch. */
-function leafGroupHtml(g) {
-  const open = g.undecided > 0;
-  return `<details class="border-b border-rule py-[3px]" ${open ? 'open' : ''}>
+/** A leaf with no verdict of its own (an inherited one is the branch's, not a decision about this leaf). */
+export const isUndecidedLeaf = (l) => !l.verdict || !l.verdict.verdict || !!l.verdict.inherited_from;
+
+function leafGroupHtml(g, openByName = null) {
+  const todo = g.members.filter(isUndecidedLeaf).length;
+  // A group the person was already working in keeps the state it had; only a first view uses the default.
+  const open = openByName && openByName.has(g.name) ? openByName.get(g.name) : g.undecided > 0;
+  return `<details data-leaf-group="${esc(g.name)}" class="border-b border-rule py-[3px]" ${open ? 'open' : ''}>
     <summary class="cursor-pointer text-provenance">
       <span class="font-mono text-ink">${esc(g.name)}/</span>
       <span class="text-ink-muted">· <span class="tnum">${g.accepted}</span> accepted ·
         <span class="tnum">${g.rejected}</span> rejected · <span class="tnum">${g.undecided}</span> undecided</span>
     </summary>
-    <div class="pl-s3">${g.members.map(leafRowHtml).join('')}</div>
+    <div class="pl-s3">
+      <div class="flex flex-wrap items-baseline gap-x-s3 py-[2px] text-provenance">
+        <button data-group-verdict="accepted" data-group="${esc(g.name)}" ${todo ? '' : 'disabled'} title="${todo ? 'Only the undecided ones are recorded' : 'Every one already has a verdict'}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-default disabled:opacity-60">accept all ${todo}</button>
+        <button data-group-verdict="rejected" data-group="${esc(g.name)}" ${todo ? '' : 'disabled'} title="${todo ? 'Only the undecided ones are recorded' : 'Every one already has a verdict'}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline disabled:cursor-default disabled:opacity-60">reject all ${todo}</button>
+      </div>
+      ${g.members.map(leafRowHtml).join('')}</div>
   </details>`;
 }
 
@@ -744,10 +1020,14 @@ function selectionBarHtml(selected, shown, total) {
 async function renderComponentTree(slug, prefix = '') {
   const host = $('component-tree');
   if (!host) return;
+  // Each render takes a token; every continuation after an await bails out if a newer render has begun, so
+  // two overlapping renders never both bind handlers or both write the DOM.
+  const token = host._renderToken = (host._renderToken || 0) + 1;
+  const stale = () => host._renderToken !== token || !host.isConnected;
   let tree;
-  try { tree = await getComponentTree(slug, prefix); }
-  catch (err) { host.innerHTML = `<span class="text-accent-ink">The components could not be read: ${esc(err.message)}</span>`; return; }
-  if (slug !== state.selectedSlug) return;
+  try { tree = await ((!prefix && takePrefetched(slug, 'tree')) || getComponentTree(slug, prefix)); }
+  catch (err) { if (!stale()) host.innerHTML = `<span class="text-accent-ink">${paneError('The components could not be read: ', err, 'tree')}</span>`; return false; }
+  if (slug !== state.selectedSlug || stale()) return true;
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   if (!tree.branches.length) {
     host.innerHTML = `<div class="text-caveat text-ink-muted">No components recovered on this resource yet.</div>
@@ -775,6 +1055,18 @@ async function renderComponentTree(slug, prefix = '') {
   if (sort === 'confidence') rows.sort((a, b) => (a.agreement_count || 0) - (b.agreement_count || 0)
     || (a.min_confidence ?? 101) - (b.min_confidence ?? 101) || b.low_confidence - a.low_confidence);
   const shown = state.componentShowAll ? rows : rows.slice(0, 8);
+  // The redraw keeps the person's place: open branches keep their DOM (open groups, inner scroll) and are
+  // refreshed in place below, the diagram keeps its picture until the new one arrives, and every scrolled
+  // ancestor gets its position back.
+  const keptBoxes = new Map();
+  host.querySelectorAll('[data-branch]').forEach((br) => {
+    const box = br.querySelector('[data-branch-leaves]');
+    if (box && !box.hidden) keptBoxes.set(br.dataset.branch, box);
+  });
+  const keptDiagram = host.querySelector('#component-diagram');
+  const scrolls = [];
+  for (let el = host; el; el = el.parentElement) if (el.scrollTop > 0) scrolls.push([el, el.scrollTop]);
+  const winY = typeof window !== 'undefined' ? window.scrollY : 0;
   host.innerHTML = `
     <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> component paths accepted ·
       <span class="tnum">${tree.reviewed}</span> with a verdict of their own · <span class="tnum">${tree.branches.length}</span> branches ·
@@ -795,6 +1087,7 @@ async function renderComponentTree(slug, prefix = '') {
     const br = tree.branches.find((x) => x.path === b.dataset.portsOpen);
     if (br) openPortsInRail(slug, br.path, br.own_ports || []);
   }));
+  if (keptDiagram) $('component-diagram')?.replaceWith(keptDiagram);
   renderComponentDiagram(slug, $('component-diagram'));
 
   host.querySelectorAll('[data-branch-select]').forEach((c) => c.addEventListener('change', () => {
@@ -826,36 +1119,92 @@ async function renderComponentTree(slug, prefix = '') {
     recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0 }, () => { selected.clear(); }, host.querySelector('[data-selection-verdict="rejected"]'));
   });
 
-  host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
-    const box = host.querySelector(`[data-branch="${CSS.escape(b.dataset.branchOpen)}"] [data-branch-leaves]`);
-    if (!box) return;
-    if (!box.hidden) { box.hidden = true; return; }
-    box.hidden = false; box.innerHTML = `<span class="text-provenance text-ink-muted">reading…</span>`;
+  /** Reads a branch's leaves into its box. `refresh` keeps what is on screen (and each group's open state)
+   *  until the new rows arrive, so a verdict does not collapse the place the person is working in.
+   *  A per-box sequence number discards an older response; open state is read when the rows are applied. */
+  const loadLeaves = async (path, box, { refresh = false } = {}) => {
+    const mine = box._leafSeq = (box._leafSeq || 0) + 1;
+    if (!refresh) { box.hidden = false; box.innerHTML = `<span class="text-provenance text-ink-muted">reading…</span>`; }
     try {
-      const out = await getComponentLeaves(slug, b.dataset.branchOpen);
-      // Grouped by scope-hierarchy cluster when the backend found groups
-      // worth having (`group_leaves`'s own MIN_GROUP=2 rule); ungrouped
-      // leaves — a group of one collapses nothing — render plainly, same as
-      // before this restructuring. A branch with no groups at all (small
-      // branches, same as always) falls back to the flat list.
+      const out = await getComponentLeaves(slug, path);
+      if (box._leafSeq !== mine || !box.isConnected) return;
+      const openByName = new Map();
+      box.querySelectorAll('details[data-leaf-group]').forEach((d) => openByName.set(d.dataset.leafGroup, d.open));
+      // Grouped by scope-hierarchy cluster when the backend found groups worth having
+      // (`group_leaves`'s own MIN_GROUP=2 rule); ungrouped leaves render plainly; a branch with no
+      // groups at all falls back to the flat list.
       const groups = out.groups || [];
       const ungrouped = out.ungrouped || out.leaves;
-      box.innerHTML = (groups.map(leafGroupHtml).join('') + ungrouped.map(leafRowHtml).join(''))
+      const innerScroll = box.scrollTop;
+      box.innerHTML = (groups.map((g) => leafGroupHtml(g, openByName)).join('') + ungrouped.map(leafRowHtml).join(''))
         || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
+      box.scrollTop = innerScroll;
       box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
         recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 }, undefined, lb)));
+      // Accept all / reject all for a whole group (a scope-hierarchy cluster such as compose-configs/optional-...).
+      // Only the members with no verdict of their own are posted; the confirm says exactly that number.
+      box.querySelectorAll('[data-group-verdict]').forEach((gb) => gb.addEventListener('click', () => {
+        // The undecided set is read from the rows on screen at PRESS time (never from a closure over an earlier
+        // read), and a batch in flight for this box is not started twice.
+        if (box._groupBusy) return;
+        const group = gb.closest('details[data-leaf-group]');
+        const rowsNow = group ? [...group.querySelectorAll('[data-leaf-path]')] : [];
+        const todo = rowsNow.filter((r) => r.dataset.leafUndecided === '1').map((r) => r.dataset.leafPath);
+        if (!todo.length) return;
+        const verdict = gb.dataset.groupVerdict;
+        const known = new Map(((groups.find((x) => x.name === gb.dataset.group) || {}).members || []).map((m) => [m.path, m]));
+        recordVerdicts(slug, todo, verdict, {
+          count: todo.length, low: todo.filter((pth) => (known.get(pth) || {}).low_confidence).length, exists: 0, confirmAlways: true,
+          onStart: () => { box._groupBusy = true; },
+          onSettled: () => { box._groupBusy = false; },
+          // after a failed batch: how many of the batch now carry the verdict (read fresh from the server)
+          countRecorded: async () => {
+            const again = await getComponentLeaves(slug, path);
+            const now = new Map((again.leaves || []).map((l) => [l.path, l]));
+            return todo.filter((pth) => { const v = (now.get(pth) || {}).verdict; return v && v.verdict === verdict && !v.inherited_from; }).length;
+          },
+        }, () => {
+          // the posted rows are decided now, before the refresh lands: a quick second press finds nothing left
+          todo.forEach((pth) => { const r = group && group.querySelector(`[data-leaf-path="${CSS.escape(pth)}"]`); if (r) r.dataset.leafUndecided = '0'; });
+        }, gb);
+      }));
       box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {
         const leaf = out.leaves.find((x) => x.path === pb.dataset.portsOpen);
         if (leaf) openPortsInRail(slug, leaf.path, leaf.ports || []);
       }));
     } catch (err) {
-      box.innerHTML = `<span class="text-provenance text-accent-ink">could not read: ${esc(err.message)}</span>`;
+      if (box._leafSeq !== mine) return;
+      if (!refresh) { box.innerHTML = `<span class="text-provenance text-accent-ink">could not read: ${esc(err.message)}</span>`; return; }
+      // The rows on screen may be out of date: say so on the box, faintly, with the sentence on demand.
+      box.querySelector('[data-refresh-failed]')?.remove();
+      box.insertAdjacentHTML('afterbegin', `<div data-refresh-failed class="text-provenance">${
+        stateCue('error', 'could not refresh', 'This branch could not be re-read after the change, so the rows below may be out of date. Reload to see the current state.')}</div>`);
     }
+  };
+  host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
+    const box = host.querySelector(`[data-branch="${CSS.escape(b.dataset.branchOpen)}"] [data-branch-leaves]`);
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    await loadLeaves(b.dataset.branchOpen, box);
   }));
   host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
     const br = tree.branches.find((x) => x.path === b.dataset.scope);
     recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 }, undefined, b);
   }));
+  // Put the open branches back as they were, then refresh them in place from a re-read.
+  const refreshes = [];
+  for (const [path, oldBox] of keptBoxes) {
+    const fresh = host.querySelector(`[data-branch="${CSS.escape(path)}"] [data-branch-leaves]`);
+    if (!fresh) continue;
+    fresh.replaceWith(oldBox);
+    refreshes.push(loadLeaves(path, oldBox, { refresh: true }));
+  }
+  scrolls.forEach(([el, top]) => { el.scrollTop = top; });
+  if (winY && typeof window !== 'undefined') window.scrollTo(0, winY);
+  // After the refreshes land, restore the saved position only if the person has not scrolled since.
+  const placed = scrolls.map(([el]) => el.scrollTop);
+  await Promise.all(refreshes);
+  if (!stale()) scrolls.forEach(([el, top], i) => { if (el.scrollTop === placed[i]) el.scrollTop = top; });
 }
 
 /* ── Blueprints ───────────────────────────────────────────────────────────
@@ -1016,16 +1365,30 @@ async function renderBlueprintList(slug) {
   const host = $('blueprint-list');
   if (!host) return;
   let data;
-  try { data = await getComponentBlueprints(slug); }
-  catch (err) { host.innerHTML = `<span class="text-accent-ink">The blueprints could not be read: ${esc(err.message)}</span>`; return; }
-  if (slug !== state.selectedSlug) return;
+  try { data = await (takePrefetched(slug, 'blueprints') || getComponentBlueprints(slug)); }
+  catch (err) { host.innerHTML = `<span class="text-accent-ink">${paneError('The blueprints could not be read: ', err, 'blueprints')}</span>`; return false; }
+  if (slug !== state.selectedSlug) return true;
   const { blueprints, perspectives } = data;
   const selectorSlot = $('blueprint-selector');
+  // What the commit table counts: blueprint VERDICTS on record (curate_plan.py, `blueprints_accepted`), which
+  // outlive a re-survey. The band lists CLUSTERS the latest survey proposes. The two are different things, so
+  // the band says what each is, and when it shows none it still says something.
+  const vc = (state.curate && state.curate.blueprintCounts) || {};
+  const onRecord = vc.blueprints_accepted || 0;
+  const reviewed = vc.blueprints_reviewed || 0;
+  const recordLine = onRecord || reviewed
+    ? `<span class="tnum">${onRecord}</span> accepted blueprint verdict${onRecord === 1 ? '' : 's'} on record (of <span class="tnum">${reviewed}</span> reviewed); verdicts are recorded on clusters from earlier surveys and kept, and the commit table counts them`
+    : 'no blueprint verdicts on record either';
   if (!perspectives.length) {
     if (selectorSlot) selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, '') + admissionNoteHtml(data.admission);
-    host.innerHTML = '';
+    host.innerHTML = `<div data-blueprints-empty class="text-caveat text-ink">No candidate blueprints in this survey.
+      <span class="text-ink-muted">${recordLine}${onRecord ? '; this survey proposes no cluster for them to attach to' : ''}.</span></div>`;
     return;
   }
+  const shownAccepted = blueprints.filter((bp) => bp.verdict?.verdict === 'accepted').length;
+  const recordFooter = onRecord
+    ? ` · <span data-blueprint-record-line><span class="tnum">${shownAccepted}</span> of the <span class="tnum">${onRecord}</span> accepted blueprint verdicts on record belong to a cluster shown here${
+      shownAccepted === onRecord ? '' : '; the rest were recorded on clusters this survey no longer proposes'}</span>` : '';
   const rk = blueprintReadingKey(slug);
   if (!rk.reading || !perspectives.includes(rk.reading)) rk.reading = perspectives[0];
   const reading = rk.reading;
@@ -1042,18 +1405,24 @@ async function renderBlueprintList(slug) {
   // §3: replaced outright on every render, never diffed against the
   // previous reading's rows -- this function is always called with a fresh
   // innerHTML assignment, so there is no patch step to accidentally add.
+  // The section wrapper is the ONE heading (it owns the id and the collapse); here is only a muted line.
+  // A long list is capped like the component tree's branches: the first page plus anything that needs a
+  // person (an undecided cluster with a warning), and "and N more clusters ›" for the rest.
+  const PAGE = 10;
+  const needsAttention = (bp) => !bp.verdict && !!bp.oversized;
+  const shownRows = state.blueprintShowAll ? inReading : inReading.filter((bp, i) => i < PAGE || needsAttention(bp));
+  const hiddenN = inReading.length - shownRows.length;
   host.innerHTML = `
-    <div class="mb-s1 mt-s3 flex items-baseline gap-s2 border-b border-rule pb-[3px]">
-      <span class="font-heading text-name font-normal text-ink">blueprints</span>
-      <span class="text-provenance text-ink-muted">clusters clustering.py proposed as a cohesive unit, in the ${esc(reading)} reading</span>
-    </div>
+    <p data-blueprint-reading-line class="mb-s1 text-provenance text-ink-muted">candidate clusters, in the ${esc(reading)} reading</p>
     <p class="mb-s2 max-w-[70ch] text-caveat text-ink-muted">A verdict here is recorded against <span class="font-mono">${esc(reading)}::cluster name</span>
       and applies in this reading only — switching readings shows a different set, not the same set re-judged.</p>
-    ${inReading.length ? inReading.map(blueprintRowHtml).join('') : `<div class="text-caveat text-ink-muted">No candidate blueprints proposed in the ${esc(reading)} reading.</div>`}
-    <div class="mt-s2 text-provenance text-ink-muted"><span class="tnum">${inReading.length}</span> of <span class="tnum">${inReading.length}</span> clusters shown · all in the <span class="text-ink">${esc(reading)}</span> reading
+    ${inReading.length ? shownRows.map(blueprintRowHtml).join('') : `<div class="text-caveat text-ink-muted">No candidate blueprints proposed in the ${esc(reading)} reading.</div>`}
+    <div class="mt-s2 text-provenance text-ink-muted"><span class="tnum">${shownRows.length}</span> of <span class="tnum">${inReading.length}</span> clusters shown${
+      hiddenN ? ` · <button type="button" data-blueprint-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${hiddenN}</span> more cluster${hiddenN === 1 ? '' : 's'}${icon('chevron-right', { size: 12 })}</button>` : ''} · all in the <span class="text-ink">${esc(reading)}</span> reading${recordFooter}
       ${others.map((o) => ` · <button data-blueprint-reading="${esc(o.p)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">the ${esc(o.p)} reading has <span class="tnum">${o.n}</span>${icon('chevron-right', { size: 12 })}</button>`).join('')}</div>
     <div id="blueprint-status" class="mt-s1 text-provenance text-ink-muted"></div>`;
 
+  host.querySelector('[data-blueprint-more]')?.addEventListener('click', () => { state.blueprintShowAll = true; renderBlueprintList(slug); });
   host.querySelectorAll('[data-blueprint-reading]').forEach((b) => b.addEventListener('click', () => {
     rk.reading = b.dataset.blueprintReading;
     renderBlueprintList(slug);
@@ -1220,7 +1589,7 @@ async function renderComponentDiagram(slug, host) {
   if (!host) return;
   let fact;
   try {
-    const res = await getBulkFacts([slug], ['architecture_diagram'], apiEntityType(state.resourceType));
+    const res = await (takePrefetched(slug, 'diagram') || getBulkFacts([slug], ['architecture_diagram'], apiEntityType(state.resourceType)));
     fact = (((res.subjects || {})[slug]) || []).find((f) => f.analysis_id === 'architecture_diagram');
   } catch { fact = null; }
   if (slug !== state.selectedSlug) return;
@@ -1237,10 +1606,11 @@ async function renderComponentDiagram(slug, host) {
         ? ` · ${esc(fact.value.other_perspectives_available.join(', '))} also on file`
         : '') + `</div>`
     : '';
+  const prevSvg = host.querySelector('[data-diagram-svg] svg') ? host.querySelector('[data-diagram-svg]').innerHTML : '';
   host.innerHTML = `<div class="mb-s1 text-caps uppercase tracking-caps text-ink">The diagram reads; the tree acts</div>
     <div class="text-provenance text-ink-muted">${tnum(esc(fact.value.caption || fact.headline || ''))}</div>
     ${foundBy}
-    <div data-diagram-svg class="mt-s1 w-full overflow-auto rounded-sm border border-rule-strong" style="max-height:min(60vh,560px)">rendering…</div>`;
+    <div data-diagram-svg class="mt-s1 w-full overflow-auto rounded-sm border border-rule-strong" style="max-height:min(60vh,560px)">${prevSvg || 'rendering…'}</div>`;
   try {
     const t = tokens();
     const prepped = mermaidForKroki(src);
@@ -1279,11 +1649,13 @@ function pressPhase(el, phase, word, title = '') {
   el.setAttribute('aria-busy', phase === 'pending' ? 'true' : 'false');
   el.innerHTML = stateCue(phase === 'pending' ? 'running' : phase === 'done' ? 'measured' : 'error', word, title);
 }
-function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }, onDone, pressedEl = null) {
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirmAlways = false, countRecorded = null, onStart = null, onSettled = null }, onDone, pressedEl = null) {
   const status = $('component-tree-status');
   const accepting = verdict === 'accepted';
   const go = async () => {
     if (pressedEl && pressedEl.dataset.phase === 'pending') return;       // a second press is ignored
+    if (onStart) onStart();
+    try {
     pressPhase(pressedEl, 'pending', accepting ? 'accepting…' : 'rejecting…');
     if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
@@ -1303,13 +1675,40 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }, onDon
       const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
       pressPhase(pressedEl, 'error', 'failed · press to retry', why);
       if (pressedEl) pressedEl.disabled = false;
-      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded — ${esc(why)}</span>`;
+      let words = `not recorded — ${esc(why)}`;
+      if (countRecorded && scopes.length > 1) {
+        // A batch is posted row by row, so a failure can leave part of it recorded: count what landed.
+        try {
+          const n = await countRecorded();
+          if (n > 0) words = `partly recorded · <span class="tnum">${n}</span> of <span class="tnum">${scopes.length}</span> recorded, <span class="tnum">${scopes.length - n}</span> failed — ${esc(why)}`;
+        } catch { /* the plain sentence stands */ }
+        await renderComponentTree(slug);              // the rows show what really landed; the words are written after it
+      }
+      const st = $('component-tree-status') || status;
+      if (st) st.innerHTML = `<span class="text-accent-ink">${words}</span>`;
     }
+    } finally { if (onSettled) onSettled(); }
   };
-  if (verdict !== 'accepted' || count <= 1) { go(); return; }
+  if (confirmAlways && count < 1) return;
+  if (!confirmAlways) {
+    if (verdict !== 'accepted' || count <= 1) { go(); return; }   // rejecting creates nothing; one leaf needs no preview
+  }
   const scopeLabel = scopes.length > 1
     ? `${scopes.length} branches selected — ${count} scope${count === 1 ? '' : 's'} total`
     : `${scopes.join(', ')} · ${count} component${count === 1 ? '' : 's'}`;
+  if (!accepting) {
+    const rel = openDialog('Reject at the branch', scopeLabel);
+    const rbody = rel.querySelector('#wl-detail-body');
+    rbody.innerHTML = `
+    <p class="text-caveat text-ink"><span class="tnum">${count}</span> undecided component${count === 1 ? '' : 's'} will be recorded as rejected. Nothing is created in Egeria.</p>
+    <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
+    <div class="mt-s3 flex gap-s3">
+      <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Reject ${count}</button>
+      <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+    </div>`;
+    rbody.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
+    return;
+  }
   const el = openDialog('Accept at the branch', scopeLabel);
   const body = el.querySelector('#wl-detail-body');
   body.innerHTML = `

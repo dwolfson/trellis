@@ -96,7 +96,7 @@ class TestThePlan:
     def test_the_manifest_copies_testimony_and_links_measurements(self, registry):
         _seed(registry)
         w = build_plan(registry, "p")["writes"]
-        assert w["classifications"] == [{"key": "sensitivity", "classification": "Confidentiality", "value": "internal",
+        assert w["classifications"] == [{"key": "sensitivity", "classification": "Confidentiality", "value": "internal", "skipped": False,
                                          "author": "peterprofile", "set_at": "2026-09-01T00:00:00+00:00", "interim": False, "review": False}]
         assert w["owner"] == {"value": "peterprofile", "interim": True, "author": "peterprofile"}
         assert w["catalogued"] is False and w["survey_reports_linked"] == 0

@@ -459,8 +459,8 @@ export const getEntityDispositionHistory = (entityType, entitySlug) =>
  *  being enriched, so a database/filesystem Enrichment save silently landed
  *  in the repo context bucket under that slug instead of its own bucket —
  *  a real write to the wrong place, not just a wrong read. */
-export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType) =>
-  patch(`/api/context/${encodeURIComponent(requireKind('saveEnrichmentField', entityType))}/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
+export const saveEnrichmentField = (slug, key, { value = '', note = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType) =>
+  patch(`/api/context/${encodeURIComponent(requireKind('saveEnrichmentField', entityType))}/${encodeURIComponent(slug)}/field`, { key, value, note, kind, source, evidence, interim });
 
 /* ── Documentation sources (Enrichment) ──────────────────────────────────
  * BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1, "Declare and probe".
@@ -1035,6 +1035,12 @@ export const runNativeSurvey = (slug, processQualifiedName, { entityType } = {})
   post(`${nativePath(slug, requireKind('runNativeSurvey', entityType))}/run`, { process_qualified_name: processQualifiedName });
 export const refreshNativeSurveys = (slug, { entityType } = {}) =>
   post(`${nativePath(slug, requireKind('refreshNativeSurveys', entityType))}/refresh`);
+/** Register this database's SERVER with Egeria (optional; a press, never automatic) and read the stored
+ *  pointers back from Egeria (`check` -- read-only; a pointer is 'gone' only when Egeria says no such element). */
+export const registerWithEgeria = (slug, { entityType, startAgain = false } = {}) =>
+  post(`${nativePath(slug, requireKind('registerWithEgeria', entityType))}/register`, { start_again: !!startAgain });
+export const checkNativeSurveyPointers = (slug, { entityType } = {}) =>
+  post(`${nativePath(slug, requireKind('checkNativeSurveyPointers', entityType))}/check`);
 export const getNativeSurveyReport = (slug, reportGuid, { entityType } = {}) =>
   get(`${nativePath(slug, requireKind('getNativeSurveyReport', entityType))}/reports/${encodeURIComponent(reportGuid)}`);
 

@@ -33,7 +33,9 @@ class RunRequest(BaseModel):
 
 def _port() -> nsr.EgeriaSurveyPort:
     """Indirection so tests can substitute a fake Egeria."""
-    return nsr.PyegeriaSurveyPort()
+    from resource_explorer import catalog_and_survey as cas
+
+    return cas.PyegeriaRegistrationPort()
 
 
 def _technology_type(entity_type: str) -> str:
@@ -96,6 +98,79 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest) -> di
         detail={"engine_action_guid": state["engine_action_guid"],
                 "submitted_by": submitted_by})
     return {"run": state, "surveys": await asyncio.to_thread(
+        nsr.native_survey_rows, registry, entity_type, slug, tech)}
+
+
+@router.post("/{entity_type}/{slug}/check")
+async def check_native_survey_pointers(entity_type: str, slug: str) -> dict:
+    """Read the stored Egeria pointers (the database asset, the server) back from Egeria and return the
+    rows with what that read established. One read per stored pointer; nothing is written. A pointer is
+    reported gone only when Egeria answered that no such element exists -- a failed read is 'unreadable'."""
+    from resource_explorer import catalog_and_survey as cas
+
+    registry = ProjectRegistry()
+    tech = _check(entity_type, slug, registry)
+
+    def _do() -> dict:
+        entity = nsr._resource_entity(registry, entity_type, slug)
+        stored = bool((getattr(entity, "egeria_asset_guid", "") or "").strip()) or bool(
+            entity is not None and hasattr(entity, "db_type") and cas.server_pointer(registry, entity))
+        if not stored:
+            pointers = {"database": "none", "server": "none", "error": ""}
+        else:
+            with nsr.port_session(_port()) as port:
+                pointers = cas.check_pointers(registry, port, entity_type, slug)
+        return {"technology_type": tech, "pointers": pointers,
+                "surveys": nsr.native_survey_rows(registry, entity_type, slug, tech, pointers=pointers)}
+
+    return await asyncio.to_thread(_do)
+
+
+class RegisterRequest(BaseModel):
+    #: The person's explicit "start again": submit a second database process even though an earlier one
+    #: has not resolved. Never implied.
+    start_again: bool = False
+
+
+@router.post("/{entity_type}/{slug}/register")
+async def register_with_egeria(entity_type: str, slug: str, body: RegisterRequest = RegisterRequest()) -> dict:
+    """The one press that WRITES to Egeria here: register this database's SERVER (adopting it if it is
+    already there), submit Egeria's server survey, and have Egeria's own process create the database.
+    Optional -- nothing else in RE needs it. See `catalog_and_survey.py` for each write and read-back."""
+    from resource_explorer import catalog_and_survey as cas
+    from resource_explorer.run_queue import requested_by
+
+    registry = ProjectRegistry()
+    tech = _check(entity_type, slug, registry)
+    submitted_by = requested_by()       # read HERE, in the request, then passed down
+    proc = cas._process_for(entity_type, tech, nsr.KIND_CATALOG_AND_SURVEY)
+    process_qn = proc.qualified_name if proc else ""
+
+    def _do() -> dict:
+        with nsr.port_session(_port()) as port:
+            return cas.register_with_egeria(registry, port, entity_type, slug,
+                                            technology_type=tech, submitted_by=submitted_by,
+                                            start_again=body.start_again)
+
+    try:
+        result = await asyncio.to_thread(_do)
+    except nsr.NativeSurveyBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except nsr.NativeSurveyCannotRun as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except nsr.NativeSurveyError as exc:
+        _log_activity(registry, entity_type, slug, process_qn, status="error",
+                      summary=f"Egeria did not accept the registration: {exc}")
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    _log_activity(
+        registry, entity_type, slug, process_qn, status="triggered",
+        summary=(f"Registered {slug}'s server with Egeria ({result['server'].get('how')}, "
+                 f"server {result['server'].get('guid')}); database: {result['database'].get('how')}"),
+        detail={"server": result["server"], "database": result["database"],
+                "secrets_file_reprojected": bool(result["projected"]["written"]),
+                "start_again": body.start_again, "submitted_by": submitted_by})
+    return {"registered": result, "surveys": await asyncio.to_thread(
         nsr.native_survey_rows, registry, entity_type, slug, tech)}
 
 

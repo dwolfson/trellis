@@ -22,6 +22,7 @@ import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, railTag, 
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import { glyphSpan } from '/static/next/glyphs.js';
 import { observationState, sameFact } from '/static/next/observation-state.js';
+import { RETENTION_BASES, resolveRetention } from '/static/next/retention-basis.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
  *
@@ -62,7 +63,7 @@ export const JUDGEMENTS = [
 export const OBSERVATIONS = [
   { key: 'licence',      label: 'License',      fromAnalysis: 'license_classification' },
   { key: 'environment',  label: 'Environment',  options: ['prod', 'dev', 'test', 'research', 'archive'] },
-  { key: 'retention',    label: 'Retention',    placeholder: 'how long, and under whose retention rule?' },
+  { key: 'retention',    label: 'Retention',    basis: true, placeholder: 'how long, and under whose retention rule?' },
 ];
 // The analyses whose current state is the evidence for a judgement.
 const ENRICHMENT_EVIDENCE = ['interface_surface', 'security_scan', 'chaoss_metrics', 'cve_scan',
@@ -86,11 +87,28 @@ function movedSince(field) {
   return moved;
 }
 
+/** Retention: a drop-down of Egeria's basis values plus a free-text NOTE (the old question). The state
+ *  is a cue on the element with a short word: 'pick one' (nothing stored) or 'set from existing' (an old
+ *  free-text value was read as Project lifetime, its text kept as the note). Read-time only. */
+function retentionControlHtml(def, field, size) {
+  const r = resolveRetention(field);
+  const opts = RETENTION_BASES.map((b) => `<option value="${b.name}" title="${esc(b.hint)}" ${b.name === r.basis ? 'selected' : ''}>${esc(b.label)}</option>`).join('');
+  const cue = r.carried
+    ? `<span data-retention-cue="carried" class="shrink-0 text-provenance text-ink-muted">set from existing · ${esc(RETENTION_BASES.find((b) => b.name === r.basis).label)}</span>`
+    : (!r.basis ? `<span data-retention-cue="unset" class="shrink-0 text-provenance text-state-warn">pick one</span>` : '');
+  return `<select data-field="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-provenance text-ink">
+      <option value="" ${r.basis ? '' : 'selected'}>—</option>${opts}</select>
+    ${cue}
+    <input data-note="${def.key}" type="text" value="${esc(r.note)}" placeholder="${esc(def.placeholder || '')}"
+      class="min-w-0 flex-1 rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-provenance text-ink placeholder:text-ink-muted">`;
+}
+
 function fieldControlHtml(def, field, kind = 'judgement') {
   const v = field?.value || '';
   // Judgements are the larger set on purpose; the recorded facts sit a
   // step down, at provenance size, so the split is visible, not narrated.
   const size = kind === 'judgement' ? 'text-answer' : 'text-provenance';
+  if (def.basis) return retentionControlHtml(def, field, size);
   if (def.options) {
     return `<select data-field="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink">
       <option value="">—</option>
@@ -375,10 +393,11 @@ export function wireEnrichmentFieldControls(host, slug, rerender) {
     const key = b.dataset.save; const kind = b.dataset.kind;
     const ctl = host.querySelector(`[data-field="${key}"]`);
     const value = (ctl?.value || '').trim();
+    const note = (host.querySelector(`[data-note="${key}"]`)?.value || '').trim();
     b.disabled = true; b.textContent = 'saving…';
     try {
       const out = await saveEnrichmentField(slug, key, {
-        value, kind, evidence: kind === 'judgement' ? evidenceSnapshot() : {},
+        value, note, kind, evidence: kind === 'judgement' ? evidenceSnapshot() : {},
         // Interim means "the investigator stands in", which is a person
         // naming themself -- not a blank. A blank owner is no owner.
         interim: key === 'owner' && !!value && value === me,
@@ -411,8 +430,11 @@ export function wireEnrichmentFieldControls(host, slug, rerender) {
     const key = b.dataset.keep;
     b.disabled = true; b.textContent = 'recording…';
     try {
+      const cur = state.enrichment?.[key];
+      // Retention keeps its basis (a legacy text resolved to one) and its note: a re-save must neither 422 nor clear the note.
+      const r = key === 'retention' ? resolveRetention(cur) : null;
       const out = await saveEnrichmentField(slug, key, {
-        value: (state.enrichment?.[key]?.value || ''), kind: 'observation', source: 'user',
+        value: r ? r.basis : (cur?.value || ''), note: r ? r.note : (cur?.note || ''), kind: 'observation', source: 'user',
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [key]: out.field };
       rerender();
@@ -425,7 +447,7 @@ export function wireEnrichmentFieldControls(host, slug, rerender) {
     b.disabled = true; b.textContent = 'confirming…';
     try {
       const out = await saveEnrichmentField(slug, b.dataset.confirm, {
-        value: b.dataset.value, kind: 'observation', source: b.dataset.source,
+        value: b.dataset.value, note: state.enrichment?.[b.dataset.confirm]?.note || '', kind: 'observation', source: b.dataset.source,
       }, apiEntityType(state.resourceType));
       state.enrichment = { ...(state.enrichment || {}), [b.dataset.confirm]: out.field };
       rerender();

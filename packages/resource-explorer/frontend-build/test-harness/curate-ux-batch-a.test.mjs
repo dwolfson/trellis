@@ -67,6 +67,9 @@ function makeServer(over = {}) {
 
 async function setUp(serverOver = {}) {
   const { document, window } = makeDomEnvironment();
+  // Sections start collapsed and read their data only when opened (2026-10-08): these tests exercise the
+  // tree, the dependencies and the commit panel, so those sections are left open for them.
+  for (const id of ['made-of', 'blueprints', 'relates', 'writes']) window.localStorage.setItem(`re.curate.collapsed.curate-sec-${id}`, '0');
   const server = makeServer(serverOver);
   ensureLoaderRegistered();
   globalThis.location = window.location;
@@ -203,6 +206,8 @@ test('a failed accept shows an error state on the control, which can be pressed 
 test('Catalog: pressing shows a pending cue that says it publishes the survey already kept (no survey is run)', async () => {
   const gate = deferred();
   const { document, server } = await setUp();
+  document.querySelector('[data-curate-pick]').click();   // nothing is pre-ticked any more: the owner ticks a line
+  await wait(150);
   server.hold.commit = gate.p;
   const go = document.querySelector('[data-curate-go]');
   assert.match(go.title, /Publishes the survey already kept/);
@@ -219,6 +224,8 @@ test('Catalog: pressing shows a pending cue that says it publishes the survey al
 
 test('Catalog: a failed commit restores the button and says why', async () => {
   const { document } = await setUp({ commitStatus: 500 });
+  document.querySelector('[data-curate-pick]').click();   // nothing is pre-ticked any more: the owner ticks a line
+  await wait(150);
   const go = document.querySelector('[data-curate-go]');
   go.click();
   await wait(150);
@@ -264,6 +271,8 @@ test('Publish: idle and running words say it publishes the kept survey (it never
 
 test('Catalog: the re-survey box is off by default, the press sends resurvey_stale false; ticking it sends true', async () => {
   const { document, server } = await setUp();
+  document.querySelector('[data-curate-pick]').click();   // nothing is pre-ticked any more: the owner ticks a line
+  await wait(150);
   const box = () => document.querySelector('[data-commit-resurvey]');
   assert.equal(box().checked, false);
   document.querySelector('[data-curate-go]').click();

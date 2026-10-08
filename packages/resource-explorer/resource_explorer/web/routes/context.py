@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from resource_explorer.auth import get_current_user
 
 from resource_explorer.activity_logger import log_rfa
+from resource_explorer import retention_basis
 from resource_explorer.registry import ProjectRegistry
 
 router = APIRouter()
@@ -85,6 +86,9 @@ class EnrichmentField(BaseModel):
     # never with the person's own value. Empty when nothing was measured.
     measured_value: str = ""
     measured_at: str = ""
+    # Free text beside a value. Retention: `value` is the basis enum name and the old
+    # "how long, and under whose rule?" text lives here. Absent on older rows (reads as "").
+    note: str = ""
 
 
 class FieldWrite(BaseModel):
@@ -94,6 +98,7 @@ class FieldWrite(BaseModel):
     source: str = ""
     evidence: dict[str, str] = Field(default_factory=dict)
     interim: bool = False
+    note: str = ""
 
 
 class AnswerWrite(BaseModel):
@@ -342,6 +347,9 @@ def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request)
     if not key or len(key) > 64:
         raise HTTPException(status_code=422, detail="key is required")
 
+    if key == "retention" and write.value.strip() and write.value.strip() not in retention_basis.ORDINALS:
+        raise HTTPException(status_code=422, detail="retention must be one of: " + ", ".join(retention_basis.ORDINALS))
+
     registry = ProjectRegistry()
     context = registry.get_context(entity_type, slug) or {}
     fields = dict(context.get("enrichment") or {})
@@ -356,7 +364,7 @@ def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request)
         value=write.value.strip(), kind=write.kind, author=author,
         set_at=datetime.now(timezone.utc).isoformat(), source=write.source.strip(),
         evidence=dict(write.evidence), interim=bool(write.interim),
-        measured_value=measured_value, measured_at=measured_at,
+        measured_value=measured_value, measured_at=measured_at, note=write.note.strip(),
     ).model_dump()
     context["enrichment"] = fields
     if key in _MIRROR:
