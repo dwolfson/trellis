@@ -131,6 +131,13 @@ class RunOutcome:
     state: str  # "succeeded" | "failed"
     error: str = ""
 
+    def __post_init__(self) -> None:
+        # One place for EVERY handler: an error text can carry a connection string or token from
+        # somebody else's exception, and this is what finish_run stores and the UI shows.
+        from resource_explorer.secret_redaction import scrub_text
+
+        object.__setattr__(self, "error", scrub_text(self.error))
+
 
 # ── the handlers, one per kind ───────────────────────────────────────────────
 #
@@ -281,6 +288,8 @@ def _materialize_components(target: dict) -> RunOutcome:
         record_promotion,
     )
 
+    from resource_explorer.secret_redaction import scrub_text
+
     registry = ProjectRegistry()
     slug = target["slug"]
     failed, promo_failed, done = [], [], 0
@@ -288,18 +297,18 @@ def _materialize_components(target: dict) -> RunOutcome:
         try:
             res = materialize_component_if_accepted(registry, "repo", slug, path, "accepted")
             if res and res.get("status") == "error":
-                failed.append(f"{path}: {res.get('error')}")
+                failed.append(scrub_text(f"{path}: {res.get('error')}"))
                 continue
             guid = (res or {}).get("guid", "")
             if guid:
                 promotion = promote_to_publish_zones(guid)
                 record_promotion(registry, slug, path, NODE_PROMOTION_COMPONENT, promotion)
                 if promotion.get("status") == "error":
-                    promo_failed.append(f"{path}: {promotion.get('error') or promotion.get('words')}")
+                    promo_failed.append(scrub_text(f"{path}: {promotion.get('error') or promotion.get('words')}"))
                     continue
             done += 1                      # counted only once the whole accept (element and zone) landed
         except Exception as exc:
-            failed.append(f"{path}: {type(exc).__name__}: {exc}")
+            failed.append(scrub_text(f"{path}: {type(exc).__name__}: {exc}"))
     if not failed and not promo_failed:
         return RunOutcome(state="succeeded")
     parts = [f"{done} materialised"]
@@ -533,9 +542,15 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
                 acquisition.acquisition_scope() as acquired:
             outcome = handler(target, result_ref)
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
-        log.exception("run %s (%s) crashed", run_id, kind)
-        registry.finish_run(run_id, "failed", error=f"{type(exc).__name__}: {exc}")
-        outcome = RunOutcome(state="failed", error=f"{type(exc).__name__}: {exc}")
+        # Scrubbed by shape before it is logged or stored: a handler's exception can carry a connection
+        # string or token, and this catch-all writes the traceback, the run row and the outcome.
+        import traceback
+        from resource_explorer.secret_redaction import scrub_text
+
+        log.error("run %s (%s) crashed\n%s", run_id, kind, scrub_text(traceback.format_exc()))
+        crash = scrub_text(f"{type(exc).__name__}: {exc}")
+        registry.finish_run(run_id, "failed", error=crash)
+        outcome = RunOutcome(state="failed", error=crash)
         _close_activity(registry, result_ref, kind, target, outcome)
         return outcome
 
@@ -627,7 +642,10 @@ class QueueRunner:
                 # cannot deadlock against itself.
                 claimed = run_sync(lambda: claim_and_execute_once(kinds=self.kinds))
             except Exception:
-                log.exception("run-queue tick failed; continuing")
+                import traceback
+                from resource_explorer.secret_redaction import scrub_text
+
+                log.error("run-queue tick failed; continuing\n%s", scrub_text(traceback.format_exc()))
                 claimed = None
             if claimed is None:
                 if self._stop.wait(self.poll_interval):

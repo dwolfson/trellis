@@ -4261,6 +4261,9 @@ class ProjectRegistry:
         if state not in ("succeeded", "failed", "cancelled"):
             raise ValueError(f"{state!r} is not a terminal run state")
         now = now or datetime.now(timezone.utc).isoformat()
+        from resource_explorer.secret_redaction import scrub_text
+
+        error = scrub_text(error)           # the stored run error is shown to people; scrub by shape at the boundary
         sql = "UPDATE runs SET state=?, finished_at=?, error=?"
         params: list = [state, now, error]
         if result_ref is not None:
