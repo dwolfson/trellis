@@ -497,7 +497,13 @@ def test_the_rename_sentence_from_the_publisher_still_ends_the_sub_resources_ste
     registry.set_egeria_asset_guid("p", "asset-guid")
     _event(registry, "docs", "folder")
     pub = _publisher_with_egeria(registry)
-    pub.rename_counts = {"updated": 2, "failed": 1}
+    real = pub.publish_sub_resources
+
+    def with_renames(*a, **k):            # the real method resets the counts; the publisher sets them as it renames
+        out = real(*a, **k)
+        pub.rename_counts = {"updated": 2, "failed": 1}
+        return out
+    pub.publish_sub_resources = with_renames
     with patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", MagicMock(return_value=pub)), \
          patch("resource_explorer.repo_publish.publish_snapshot", return_value={
              "ok": True, "asset_guid": "asset-guid", "report_guid": "r", "read_back": True, "surveyed_at": "2026-10-07T01:00:00",
