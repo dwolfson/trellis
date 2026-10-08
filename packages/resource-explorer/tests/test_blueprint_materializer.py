@@ -42,13 +42,13 @@ class TestFreshMaterialization:
         assert result == {
             "status": "materialized",
             "guid": "11111111-1111-1111-1111-111111111111",
-            "qualified_name": "SolutionBlueprint::repo::myproj::deployment::svc-cluster",
+            "qualified_name": "SolutionBlueprint::repo::myproj::deployment",
         }
         m._connect.assert_called_once()
         body = m._solution_architect.create_solution_blueprint.call_args[0][0]
         props = body["properties"]
         assert props["class"] == "SolutionBlueprintProperties"
-        assert props["qualifiedName"] == "SolutionBlueprint::repo::myproj::deployment::svc-cluster"
+        assert props["qualifiedName"] == "SolutionBlueprint::repo::myproj::deployment"
         assert props["displayName"] == "svc cluster"
         assert props["additionalProperties"]["recoveredBy"] == "architecture_recovery"
 
@@ -131,7 +131,7 @@ class TestFreshMaterialization:
         )
         registry.record_materialized_blueprint.assert_called_once_with(
             "repo", "myproj", "deployment", "svc-cluster",
-            "SolutionBlueprint::repo::myproj::deployment::svc-cluster",
+            "SolutionBlueprint::repo::myproj::deployment",
             "11111111-1111-1111-1111-111111111111",
         )
 
@@ -182,6 +182,10 @@ class TestIdempotency:
         m._automated_curation.get_guid_for_name.return_value = [
             "33333333-3333-3333-3333-333333333333"
         ]
+        m._solution_architect.get_solution_blueprint_by_guid.return_value = {
+            "elementHeader": {"type": {"typeName": "SolutionBlueprint"}},
+            "properties": {"qualifiedName": "SolutionBlueprint::repo::myproj::deployment",
+                           "displayName": "svc cluster"}}
         result = m.materialize_blueprint_element(
             "repo", "myproj", "deployment", "svc-cluster", display_name="svc cluster",
         )
@@ -190,7 +194,7 @@ class TestIdempotency:
         m._solution_architect.create_solution_blueprint.assert_not_called()
         registry.record_materialized_blueprint.assert_called_once_with(
             "repo", "myproj", "deployment", "svc-cluster",
-            "SolutionBlueprint::repo::myproj::deployment::svc-cluster",
+            "SolutionBlueprint::repo::myproj::deployment",
             "33333333-3333-3333-3333-333333333333",
         )
 

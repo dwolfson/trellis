@@ -459,8 +459,8 @@ export const getEntityDispositionHistory = (entityType, entitySlug) =>
  *  being enriched, so a database/filesystem Enrichment save silently landed
  *  in the repo context bucket under that slug instead of its own bucket —
  *  a real write to the wrong place, not just a wrong read. */
-export const saveEnrichmentField = (slug, key, { value = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType) =>
-  patch(`/api/context/${encodeURIComponent(requireKind('saveEnrichmentField', entityType))}/${encodeURIComponent(slug)}/field`, { key, value, kind, source, evidence, interim });
+export const saveEnrichmentField = (slug, key, { value = '', note = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType) =>
+  patch(`/api/context/${encodeURIComponent(requireKind('saveEnrichmentField', entityType))}/${encodeURIComponent(slug)}/field`, { key, value, note, kind, source, evidence, interim });
 
 /* ── Documentation sources (Enrichment) ──────────────────────────────────
  * BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1, "Declare and probe".
@@ -1701,9 +1701,10 @@ export const getComponentBlueprints = (slug) =>
  *  SolutionBlueprint (blueprint_materializer.py) and queues its resolvable
  *  members/children for CollectionMembership — the caller does not wait on
  *  that queue, see SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4. */
-export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '', shape = '') =>
+export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '', shape = '', identifier = '') =>
   post(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`,
-       { perspective, cluster_name: clusterName, verdict, note, ...(shape ? { shape } : {}) });
+       { perspective, cluster_name: clusterName, verdict, note, ...(shape ? { shape } : {}),
+         ...(identifier ? { identifier } : {}) });
 
 /* ── Automate ────────────────────────────────────────────────────────────
  * The 8th intent (`web/routes/automate.py`, `web/routes/schedules.py`).

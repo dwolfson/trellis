@@ -117,7 +117,9 @@ class TestTheBlueprintWrite:
         accept(fake)
         props = fake.of("create_solution_blueprint")[0][1]["properties"]
         assert props["displayName"] == "Egeria Deployment Blueprint (container definitions)"
-        assert props["qualifiedName"] == "SolutionBlueprint::repo::egeria_git::Deployment Blueprint::OMAG-Server-Platform"
+        assert props["qualifiedName"] == "SolutionBlueprint::repo::egeria_git::deployment"
+        assert "OMAG" not in props["qualifiedName"]
+        assert props["identifier"] == "EGERIA-GIT-DEPLOYMENT"
         assert "(" not in props["qualifiedName"]
 
     def test_the_qualified_name_is_identical_with_and_without_the_suffix(self, registry, run, tmp_path):

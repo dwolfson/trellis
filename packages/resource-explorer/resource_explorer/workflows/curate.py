@@ -405,7 +405,7 @@ def find_candidate_blueprint(registry: ProjectRegistry, slug: str,
 
 def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: str, slug: str,
                                        perspective: str, cluster_name: str, verdict: str,
-                                       shape: str = "") -> dict | None:
+                                       shape: str = "", identifier: str = "") -> dict | None:
     """Same non-fatal-but-visible shape as materialize_component_if_accepted above —
     the verdict itself is already saved and real regardless of whether this
     succeeds. Only 'accepted' triggers a write; only entity_type='repo' is
@@ -447,6 +447,7 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
         plan_shape,
     )
     from resource_explorer.surveyors.arch_recovery.blueprint_materializer import (
+        BlueprintIdentifierNeeded,
         BlueprintMaterializationError,
         BlueprintMaterializer,
     )
@@ -454,7 +455,6 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     materializer = BlueprintMaterializer(registry=registry)
     from resource_explorer.blueprint_kinds import (
         blueprint_display_name,
-        qualified_name_slot,
         repo_label,
     )
     from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
@@ -479,7 +479,8 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     display_name = distinct_name(
         blueprint_suffix_name(
             blueprint_display_name(repo_label(slug, getattr(project, "display_name", "") or ""), perspective,
-                                   cluster.get("name", cluster_name), sole_root=sole_root),
+                                   cluster.get("name", cluster_name), sole_root=sole_root,
+                                   identifier=identifier.strip()),
             [n.kind for n in known]),
         [n.name for n in known] + [suffixed_name(n.name, n.kind) for n in known])
     try:
@@ -488,10 +489,16 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
             # The KIND is in the name (owner, 2026-10-07): "Egeria Deployment Blueprint".
             display_name=display_name,
             oversized=bool(cluster.get("oversized")),
-            kind_slot=qualified_name_slot(perspective),
+            # Identity is kind + repository (architect's ruling, 2026-10-08): the root cluster's name is not in
+            # it. A person's `identifier` is needed only for a second blueprint of the kind.
+            identifier=identifier,
+            live_clusters={b["cluster_name"] for b in _candidate_blueprints_results(registry, slug)
+                           if b["perspective"] == perspective},
             # A blueprint a person deleted in Egeria must not be trusted from RE's cache.
             verify_cached=True,
         )
+    except BlueprintIdentifierNeeded as exc:
+        return {"status": "error", "error": str(exc), "needs_identifier": True}
     except BlueprintMaterializationError as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -612,8 +619,11 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     if unmaterialized_children:
         result["unmaterialized_children"] = unmaterialized_children
     unfinished = [c for c in composition_results if c["status"] in ("unconfirmed", "error", "unread")]
+    unproven = result.get("status") == "adopted_unproven"
     if unmaterialized_members or unmaterialized_children or composition_error or unfinished:
         result["status"] = "partial"
+    if unproven:                       # the re-key proof row could not be written: the pane CAN show it
+        result["adopted_unproven"] = True
     return result
 
 

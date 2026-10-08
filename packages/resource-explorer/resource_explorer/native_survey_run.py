@@ -44,6 +44,7 @@ must pass identity explicitly (reference: ContextVar identity in threads).
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -135,24 +136,27 @@ def _normalise_answer(text: str) -> str:
     return text.strip().rstrip(".").strip().lower()
 
 
-def _absent_answers() -> frozenset[str]:
+@functools.cache
+def absent_answers() -> frozenset[str]:
     """pyegeria's OWN "nothing there" strings, taken from its constants so they cannot drift: a by-name
     or by-GUID miss answers NO_ELEMENTS_FOUND ("No elements found", plural); NO_ELEMENT_FOUND (singular)
-    is its docstring's spelling. Both are accepted, exactly (case-insensitive, trailing period stripped)."""
+    is its docstring's spelling. Both are accepted, exactly (case-insensitive, trailing period stripped).
+
+    LAZY on purpose: importing pyegeria runs `pyegeria.view`'s `nest_asyncio.apply()`, which raises
+    "Can't patch loop of type uvloop.Loop" when the import happens under uvicorn's running uvloop.
+    Nothing reachable from `resource_explorer.web.app` may import pyegeria at module load."""
     from pyegeria.core._globals import NO_ELEMENT_FOUND, NO_ELEMENTS_FOUND
 
     return frozenset(_normalise_answer(c) for c in (NO_ELEMENTS_FOUND, NO_ELEMENT_FOUND))
 
 
-ABSENT_ANSWERS = _absent_answers()
-
 
 def is_exact_absent(res: Any) -> bool:
-    """Egeria's exact non-raising "nothing there" answer (see `ABSENT_ANSWERS`). A string that only
+    """Egeria's exact non-raising "nothing there" answer (see `absent_answers`). A string that only
     CONTAINS "not found" (a user, a type, an index) is a different sentence and is never absence.
     Mirrors `egeria_absence.is_absent` (re/blueprint-container-shape, #556) for string answers; switch to
     that shared helper once #556 is merged."""
-    return isinstance(res, str) and _normalise_answer(res) in ABSENT_ANSWERS
+    return isinstance(res, str) and _normalise_answer(res) in absent_answers()
 
 
 def _iso(value: Any) -> str:

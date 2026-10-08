@@ -894,7 +894,7 @@ class TestAbsentAnswersAreEgeriasOwnConstants:
         assert port.asset_exists(DB_GUID) is False
 
     def test_the_accepted_strings_contain_pyegerias_constants(self):
-        accepted = nsr.ABSENT_ANSWERS
+        accepted = nsr.absent_answers()
         for const in (NO_ELEMENTS_FOUND, NO_ELEMENT_FOUND):
             assert const.strip().rstrip(".").lower() in accepted
 

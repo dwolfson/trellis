@@ -3633,6 +3633,27 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
     from resource_explorer.workflows.curate import NODE_PROMOTION_BLUEPRINT, promotion_by_scope
     promotions = promotion_by_scope(registry, slug, NODE_PROMOTION_BLUEPRINT)
 
+    from resource_explorer.blueprint_kinds import (
+        identifier_needed_sentence,
+        identity_qualified_name,
+        kind_word,
+    )
+    live_by_perspective: dict[str, set[str]] = {}
+    for (persp, nm) in by_key:
+        live_by_perspective.setdefault(persp, set()).add(nm)
+
+    def _identity_view(perspective: str, name: str) -> dict:
+        """What the accept pane needs to know about the blueprint's Egeria identity: whether it must ask
+        for an identifier (another LIVE cluster of this kind already holds the repository's identity)."""
+        base = identity_qualified_name("repo", slug, perspective)
+        own = registry.get_materialized_blueprint("repo", slug, perspective, name)
+        other = registry.get_materialized_blueprint_by_identity("repo", slug, base)
+        needs = bool(not (own and own.get("guid")) and other
+                     and other.get("cluster_name") != name
+                     and other.get("cluster_name") in live_by_perspective.get(perspective, set()))
+        return {"needs_identifier": needs, "kind_word": kind_word(perspective),
+                "sentence": identifier_needed_sentence(perspective, slug, other["cluster_name"]) if needs else ""}
+
     blueprints = []
     for (perspective, name), entry in sorted(by_key.items()):
         r, detail = entry["row"], entry["detail"]
@@ -3674,6 +3695,7 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
             "surveyed_at": r.get("surveyed_at", ""),
             "verdict": _verdict_view(verdicts.get(vkey)),
             "materialized": _materialized_view(materialized_blueprints.get(vkey)),
+            "identity": _identity_view(perspective, name),
             "promotion": promotions.get(vkey),
             "shape_plan": plan_with_alternatives(
                 name, [shape_nodes[m] for m in (detail.get("members") or []) if m in shape_nodes],

@@ -4261,6 +4261,9 @@ class ProjectRegistry:
         if state not in ("succeeded", "failed", "cancelled"):
             raise ValueError(f"{state!r} is not a terminal run state")
         now = now or datetime.now(timezone.utc).isoformat()
+        from resource_explorer.secret_redaction import scrub_text
+
+        error = scrub_text(error)           # the stored run error is shown to people; scrub by shape at the boundary
         sql = "UPDATE runs SET state=?, finished_at=?, error=?"
         params: list = [state, now, error]
         if result_ref is not None:
@@ -4453,6 +4456,31 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.execute("INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
                          (key, value, datetime.utcnow().isoformat()))
+
+    def take_claim(self, key: str, holder: str, *, stale_after_seconds: int = 900) -> bool:
+        """Take a short-lived claim on `key`: True when THIS holder now holds it, False when another does.
+        One `INSERT ... ON CONFLICT DO NOTHING` in `app_settings` decides it (rowcount 1 = taken), so two
+        processes can never both win. A claim older than `stale_after_seconds` (a crashed holder) is cleared
+        first. No new table."""
+        now = datetime.utcnow()
+        cutoff = (now - timedelta(seconds=stale_after_seconds)).isoformat()
+        with self._conn() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key = ? AND updated_at < ?", (key, cutoff))
+            cur = conn.execute(
+                """INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO NOTHING""", (key, holder, now.isoformat()))
+            return bool(getattr(cur, "rowcount", 0) == 1)
+
+    def get_claim(self, key: str) -> tuple[str, str] | None:
+        """(holder, taken_at ISO) of a live claim, or None. Read-only."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT value, updated_at FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return (row["value"], row["updated_at"]) if row else None
+
+    def release_claim(self, key: str, holder: str) -> None:
+        """Release a claim, ONLY if this holder still holds it."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key = ? AND value = ?", (key, holder))
 
     def list_settings_with_prefix(self, prefix: str) -> list[tuple[str, str]]:
         """[(key, value)] for every setting whose key starts with `prefix`, ordered by key."""
@@ -5209,6 +5237,23 @@ class ProjectRegistry:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_materialized_blueprint_by_identity(
+        self, entity_type: str, entity_slug: str, qualified_name: str,
+    ) -> dict | None:
+        """The blueprint recorded under an Egeria IDENTITY (the qualifiedName, `SolutionBlueprint::<type>::
+        <slug>::<kind>[::<identifier>]`), whichever cluster it was recorded for. The cache key
+        (entity_type, slug, kind, identifier) is that string, held in the existing `qualified_name` column
+        (no DDL); `perspective`/`cluster_name` stay on the row as RE's own key for the cluster and as the
+        legacy key of rows written before the identity was kind + repository."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND qualified_name=?
+                   ORDER BY materialized_at DESC""",
+                (entity_type, entity_slug, qualified_name),
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_materialized_blueprints(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
         """{f"{perspective}::{cluster_name}": row} for every blueprint this
         resource has ever materialized — mirrors get_materialized_components'
@@ -5243,10 +5288,23 @@ class ProjectRegistry:
             "materialized_at": datetime.now(timezone.utc).isoformat(),
         }
         with self._conn() as conn:
+            # Another cluster's cache row under this same qualifiedName is about to be replaced: say whose.
+            displaced = [r["cluster_name"] for r in conn.execute(
+                """SELECT cluster_name, perspective FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND qualified_name=?""",
+                (entity_type, entity_slug, qualified_name)).fetchall()
+                if not (r["cluster_name"] == cluster_name and r["perspective"] == perspective)]
             conn.execute(
                 """DELETE FROM architecture_materialized_blueprints
                    WHERE entity_type=? AND entity_slug=? AND perspective=? AND cluster_name=?""",
                 (entity_type, entity_slug, perspective, cluster_name),
+            )
+            # One Egeria identity has one row: a row another cluster name left under this same
+            # qualifiedName (the cluster was renamed by a re-clustering) is the same blueprint, re-keyed.
+            conn.execute(
+                """DELETE FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND qualified_name=?""",
+                (entity_type, entity_slug, qualified_name),
             )
             conn.execute(
                 """INSERT INTO architecture_materialized_blueprints
@@ -5254,7 +5312,10 @@ class ProjectRegistry:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
-        return entry
+        if displaced:
+            log.warning("blueprint cache: %s/%s %s re-keyed to cluster %r, displacing %s",
+                        entity_type, entity_slug, qualified_name, cluster_name, displaced)
+        return {**entry, "displaced": displaced}
 
     def get_materialized_port(
         self, entity_type: str, entity_slug: str, scope_locator: str, port_name: str,
