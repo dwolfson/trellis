@@ -177,7 +177,7 @@ def publish_chosen(registry, slug: str, *, github_url: str, asset_guid: str, cur
     Nothing here can remove an element from Egeria: a row that was left out after it was published is
     simply not in `locators`. A second call finds each element by qualifiedName and creates nothing.
 
-    Returns `{want, guids, counts, missing, ancestors}`; `counts` are the proof rows' counts."""
+    Returns `{want, guids, counts, missing, ancestors, rename_counts}`; `counts` are the proof rows' counts."""
     from resource_explorer import repo_publish
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
@@ -215,4 +215,5 @@ def publish_chosen(registry, slug: str, *, github_url: str, asset_guid: str, cur
         registry, slug, curation_id, author, want, list(locators), guids,
         reader=lambda g: publisher._asset_maker.get_asset_by_guid(g, output_format="JSON"))
     return {"want": want, "guids": guids, "counts": counts,
-            "missing": [l for l in locators if l not in guids], "ancestors": len(want) - len(locators)}
+            "missing": [l for l in locators if l not in guids], "ancestors": len(want) - len(locators),
+            "rename_counts": getattr(publisher, "rename_counts", None)}

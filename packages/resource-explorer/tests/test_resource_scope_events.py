@@ -486,3 +486,24 @@ def test_a_legacy_file_type_row_is_ignored_everywhere(registry):
     resource_scope.publish_chosen(registry, "p", github_url="u", asset_guid="a", curation_id="", author="dan",
                                   locators=resource_scope.chosen_locators(registry, "p"), publisher=pub)
     assert pub.publish_sub_resources.call_args[0][3] == ["docs"], "only the real folder reaches the publisher"
+
+
+def test_the_rename_sentence_from_the_publisher_still_ends_the_sub_resources_step(registry):
+    """File-types merge: publish_chosen must hand the publisher's rename counts to the step message."""
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.workflows.curate_commit import STEPS, execute_curation
+    _survey(registry)
+    _keep_a_survey(registry)
+    registry.set_egeria_asset_guid("p", "asset-guid")
+    _event(registry, "docs", "folder")
+    pub = _publisher_with_egeria(registry)
+    pub.rename_counts = {"updated": 2, "failed": 1}
+    with patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", MagicMock(return_value=pub)), \
+         patch("resource_explorer.repo_publish.publish_snapshot", return_value={
+             "ok": True, "asset_guid": "asset-guid", "report_guid": "r", "read_back": True, "surveyed_at": "2026-10-07T01:00:00",
+             "reused": False, "annotation_count": 1}), \
+         patch("resource_explorer.repo_publish.resolve_project_context", return_value={"guid": "x"}):
+        cid = Curations(registry).create("repo", "p", author="dan", selection={"sub_resources": ["docs"]}, manifest={}, steps=list(STEPS))["id"]
+        rec = execute_curation(registry, cid)
+    step = next(s for s in rec["steps"] if s["name"] == "sub_resources")
+    assert step["detail"].endswith(" · 2 names updated · 1 could not be updated"), step

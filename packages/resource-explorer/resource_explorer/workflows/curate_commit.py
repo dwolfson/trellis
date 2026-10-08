@@ -319,7 +319,7 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                          + (f" · {proof_counts['sent']} sent, not yet read back" if proof_counts["sent"] else "")
                          + (f" · plus {ancestors} ancestor folder{'s' if ancestors != 1 else ''}" if ancestors else "")
                          + (f" · not published: {', '.join(missing[:8])}" if missing else "")
-                         + rename_sentence(getattr(publisher, "rename_counts", None)))
+                         + rename_sentence(out.get("rename_counts")))
         except Exception as exc:
             cur.set_step(curation_id, "sub_resources", "failed", f"{type(exc).__name__}: {exc}")
 
