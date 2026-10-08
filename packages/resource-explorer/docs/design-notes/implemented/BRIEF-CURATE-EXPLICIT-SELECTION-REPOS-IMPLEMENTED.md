@@ -61,7 +61,8 @@ scratch schemas was run by hand; they create it through the same `_init_schema`.
 `resource_scope_events` (above) and `ProjectRegistry.append_resource_scope_event / list_resource_scope_events /
 current_resource_scope`. The newest row per locator is the current choice; a clear is a row with `action='clear'` and
 `choice=''`, so who cleared it and when is kept. Generic across `resource_type` so file systems reuse it. `kind` is
-`folder | file | file_type`; `source` is `person | proposal`.
+`folder | file` (the table column would hold `file_type` but the registry and the route refuse it: file types are a
+measurement published as Egeria's profile annotations, not a choice, per #540); `source` is `person | proposal`.
 
 `resource_explorer/resource_scope.py` turns the record, the sub-resource survey and `sub_resources` into one view:
 `rows` (one per candidate, per container folder, and per locator with a choice that left the survey), `manifest`

@@ -12716,7 +12716,7 @@ class ProjectRegistry:
 
     # ── Resource scope events (append-only; the selection record, brief 2a) ──
 
-    SCOPE_KINDS = ("folder", "file", "file_type")
+    SCOPE_KINDS = ("folder", "file")        # file types are a measurement, not a choice
     SCOPE_CHOICES = ("include", "leave_out", "")
 
     def append_resource_scope_event(self, resource_type: str, slug: str, *, locator: str, kind: str,

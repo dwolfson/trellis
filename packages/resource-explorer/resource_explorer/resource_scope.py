@@ -73,7 +73,7 @@ def build_view(registry, slug: str) -> dict:
     def kind_of(loc: str) -> str:
         return cands[loc]["kind"] if loc in cands else (scope.get(loc) or {}).get("kind", "folder")
 
-    included = {loc for loc, ev in scope.items() if ev["choice"] == "include" and ev["kind"] != "file_type"}
+    included = {loc for loc, ev in scope.items() if ev["choice"] == "include"}
     chosen_files = sorted(loc for loc in included if kind_of(loc) == "file")
     chosen_folders = sorted(loc for loc in included if kind_of(loc) != "file")
     containers: set[str] = set()
@@ -81,7 +81,7 @@ def build_view(registry, slug: str) -> dict:
         containers.update(_ancestors(f))
     containers -= set(chosen_folders)
 
-    locators = set(cands) | containers | {l for l, ev in scope.items() if ev["kind"] != "file_type"}
+    locators = set(cands) | containers | set(scope)
     rows = []
     for loc in sorted(locators):
         c = cands.get(loc)
@@ -125,12 +125,14 @@ def chosen_locators(registry, slug: str) -> list[str]:
 MAX_LOCATOR, MAX_REASON, MAX_RULE = 1024, 500, 100
 
 
-def validate_events(registry, slug: str, events: list[dict], file_types: set[str] | None = None) -> list[dict]:
+FILE_TYPE_SENTENCE = "file types are a measurement, published as Egeria's profile annotations; they are not a choice"
+
+
+def validate_events(registry, slug: str, events: list[dict]) -> list[dict]:
     """Check a batch against the record's own candidate set; return the clean events or raise ValueError.
 
     A folder or file locator must be a row of the view (a survey candidate, or a container folder that
-    holds an included file), and its kind must match; a `file_type` event is accepted as named (file types
-    must be one of `file_types` (the labels the repository has); with none given it is refused)."""
+    holds an included file), and its kind must match. File types are not a choice and are refused."""
     if not events:
         raise ValueError("no choices given")
     view = {r["locator"]: r for r in build_view(registry, slug)["rows"]}
@@ -139,7 +141,9 @@ def validate_events(registry, slug: str, events: list[dict], file_types: set[str
         kind = e.get("kind") or ""
         action = e.get("action") or "set"
         choice = e.get("choice") or ""
-        if kind not in ("folder", "file", "file_type"):
+        if kind == "file_type":
+            raise ValueError(FILE_TYPE_SENTENCE)
+        if kind not in ("folder", "file"):
             raise ValueError(f"unknown kind {kind!r}")
         if action not in ("set", "clear"):
             raise ValueError(f"unknown action {action!r}")
@@ -150,15 +154,11 @@ def validate_events(registry, slug: str, events: list[dict], file_types: set[str
                                ("proposal_rule", e.get("proposal_rule") or "", MAX_RULE)):
             if len(val) > cap:
                 raise ValueError(f"the {name} is too long ({len(val)} characters; the most is {cap})")
-        if kind == "file_type":
-            if not file_types or loc not in file_types:
-                raise ValueError(f"{loc!r} is not a file type of this repository")
-        else:
-            row = view.get(loc)
-            if row is None:
-                raise ValueError(f"{loc!r} is not a candidate of the sub-resource survey")
-            if row["kind"] != kind:
-                raise ValueError(f"{loc!r} is a {row['kind']}, not a {kind}")
+        row = view.get(loc)
+        if row is None:
+            raise ValueError(f"{loc!r} is not a candidate of the sub-resource survey")
+        if row["kind"] != kind:
+            raise ValueError(f"{loc!r} is a {row['kind']}, not a {kind}")
         src = e.get("source") or "person"
         if src not in ("person", "proposal"):
             raise ValueError(f"unknown source {src!r}")

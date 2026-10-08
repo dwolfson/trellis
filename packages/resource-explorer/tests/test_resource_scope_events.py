@@ -409,7 +409,7 @@ def test_a_batch_is_one_transaction_a_failing_second_row_writes_none(registry):
     assert registry.list_resource_scope_events("repo", "p") == []
 
 
-def test_the_route_refuses_long_text_and_unknown_file_types_with_a_sentence(client, registry):
+def test_the_route_refuses_long_text_and_file_types_with_a_sentence(client, registry):
     _survey(registry)
     r = _post(client, [{"locator": "docs", "kind": "folder", "choice": "include", "reason": "x" * 501}])
     assert r.status_code == 400 and "reason is too long" in r.json()["detail"]
@@ -417,10 +417,14 @@ def test_the_route_refuses_long_text_and_unknown_file_types_with_a_sentence(clie
     assert r.status_code == 400 and "proposal_rule is too long" in r.json()["detail"]
     r = _post(client, [{"locator": "docs" * 300, "kind": "folder", "choice": "include"}])
     assert r.status_code == 400 and "locator is too long" in r.json()["detail"]
-    with patch("resource_explorer.repo_publish.file_types_preview", return_value={"types": [{"label": "Python"}]}):
-        assert _post(client, [{"locator": "Cobol", "kind": "file_type", "choice": "include"}]).status_code == 400
-        assert _post(client, [{"locator": "Python", "kind": "file_type", "choice": "include"}]).status_code == 200
-    assert [e["locator"] for e in registry.list_resource_scope_events("repo", "p")] == ["Python"]
+    # file types are a measurement, not a choice: refused for set AND clear, with the sentence, never a 500
+    for action, choice in (("set", "include"), ("clear", "")):
+        r = _post(client, [{"locator": "Python", "kind": "file_type", "choice": choice, "action": action}])
+        assert r.status_code == 400
+        assert r.json()["detail"] == "file types are a measurement, published as Egeria's profile annotations; they are not a choice"
+    assert registry.list_resource_scope_events("repo", "p") == []
+    with pytest.raises(ValueError):
+        registry.append_resource_scope_events("repo", "p", author="dan", events=[{"locator": "Python", "kind": "file_type", "choice": "include"}])
 
 
 def test_publish_chosen_puts_the_threads_loop_back_as_it_found_it(registry):

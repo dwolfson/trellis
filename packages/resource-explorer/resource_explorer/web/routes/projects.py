@@ -1458,7 +1458,7 @@ def _scope_author(request: Request, action: str) -> str:
 
 class ScopeEvent(BaseModel):
     locator: str = ""
-    kind: str                     # folder | file | file_type
+    kind: str                     # folder | file
     choice: str = ""              # include | leave_out ('' with action clear)
     action: str = "set"           # set | clear
     source: str = "person"        # person | proposal
@@ -1499,12 +1499,7 @@ async def post_scope_events(slug: str, body: ScopeEventsRequest, request: Reques
         raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
     events = [e.model_dump() for e in body.events]
     try:
-        file_types = None
-        if any(e["kind"] == "file_type" for e in events):
-            from resource_explorer import repo_publish
-            preview = await asyncio.to_thread(repo_publish.file_types_preview, registry, project, slug)
-            file_types = {t["label"] for t in (preview.get("types") or [])}
-        clean = resource_scope.validate_events(registry, slug, events, file_types=file_types)
+        clean = resource_scope.validate_events(registry, slug, events)
         # One transaction: a failure partway writes none of the batch.
         await asyncio.to_thread(registry.append_resource_scope_events, resource_scope.RESOURCE_TYPE, slug,
                                 author=author, events=clean)
