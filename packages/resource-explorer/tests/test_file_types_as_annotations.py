@@ -64,12 +64,33 @@ class TestEgeriaNamesVerbatim:
         by = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))
         ext = by[PROFILE_FILE_EXTENSIONS].value_count
         assert ext == {"py": 2, "java": 1, "md": 2, "(none)": 2}
-        assert sum(ext.values()) == len(FILES) == by[CAPTURE_FILE_COUNTS].resource_properties["fileCount"]
+        rp = by[CAPTURE_FILE_COUNTS].resource_properties
+        assert sum(ext.values()) == len(FILES) == rp["Number of files"]
         types = by[PROFILE_FILE_TYPES].value_count
         assert sum(types.values()) == len(FILES)
-        assert by[CAPTURE_FILE_COUNTS].resource_properties["directoryCount"] == 2          # src, docs
-        assert by[CAPTURE_FILE_COUNTS].resource_properties["numberOfFileExtensions"] == len(ext)
-        assert by[CAPTURE_FILE_COUNTS].resource_properties["numberOfFileTypes"] == len(types)
+        assert rp["Number of subdirectories (folders)"] == 2                      # src, docs
+        assert rp["Number of unique file extensions"] == len(ext)
+        assert rp["Number of file types"] == len(types)
+        assert rp["Number of unique filenames"] == len({f.rsplit("/", 1)[-1] for f, _ in FILES})
+        assert rp["Total file size"] == float(sum(n for _, n in FILES))
+
+    def test_capture_keys_are_egerias_display_names_and_unmeasured_ones_are_omitted(self, registry):
+        rp = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))[CAPTURE_FILE_COUNTS].resource_properties
+        assert set(rp) == {"Number of files", "Total file size", "Number of subdirectories (folders)",
+                           "Number of unique filenames", "Number of unique file extensions", "Number of file types"}
+        for unmeasured in ("Hidden File Count", "Readable files/directories", "Symbolic Link File Count",
+                           "Number of unclassified files", "Number of inaccessible files",
+                           "Number of deployed implementation types", "Number of asset types"):
+            assert unmeasured not in rp, "never a zero for what was not measured"
+        body = build_annotation_props(_by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))[CAPTURE_FILE_COUNTS], "q")
+        assert body["resourceProperties"]["Number of files"] == str(len(FILES))
+        assert body["resourceProperties"]["Total file size"] == "%s" % float(sum(n for _, n in FILES))
+
+    def test_summary_and_explanation_are_egerias_text(self, registry):
+        by = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))
+        assert by[PROFILE_FILE_TYPES].summary == "Iterate through files under a directory (folder) and count the occurrences of each file type."
+        assert by[PROFILE_FILE_EXTENSIONS].explanation == "The file extension often provides a hint as to the type of file."
+        assert by[CAPTURE_FILE_COUNTS].summary.startswith("Count up the number of files and directories")
 
     def test_wire_body_is_egerias_class_with_value_count_and_the_envelope(self, registry):
         by = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="2026-10-07T00:00:00"))
@@ -98,7 +119,7 @@ class TestEgeriaNamesVerbatim:
         csv_path = str(tmp_path / "names.csv")
         ann = file_names_log_annotation(registry, "egeria_git", surveyed_at="x", csv_path=csv_path)
         body = build_annotation_props(ann, "q")
-        assert body["class"] == "ResourceProfileLogAnnotationProperties" and body["annotationType"] == "Profile File Names"
+        assert body["class"] == "ResourceProfileLogAnnotationProperties" and body["annotationType"] == "Profile File Names to External Log"
         assert body["additionalProperties"]["logFile"] == csv_path
         lines = open(csv_path).read().splitlines()
         assert lines[0] == "fileName,count" and "LICENSE,1" in lines
@@ -113,6 +134,7 @@ class TestEgeriaNamesVerbatim:
                              (loc, kind))
         by = _by_name(build_file_type_annotations(registry, "egeria_git", surveyed_at="x"))
         assert by[PROFILE_ASSET_TYPES].value_count == {"FileFolder": 2, "DataFile": 2}
+        assert by[CAPTURE_FILE_COUNTS].resource_properties["Number of asset types"] == 2
         assert by[PROFILE_ASSET_TYPES].additional_properties["basis"] == "the selection on Curate"
 
     def test_the_inventory_step_emits_them_and_they_survive_the_snapshot(self, registry, tmp_path):

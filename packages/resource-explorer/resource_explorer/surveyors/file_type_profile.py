@@ -7,7 +7,7 @@ profile annotations in the survey report under Egeria's names, verbatim, never a
     Profile File Extensions  ResourceProfileAnnotation   count per extension
     Profile File Types       ResourceProfileAnnotation   count per file type (resolve_technology_type)
     Profile Asset Types      ResourceProfileAnnotation   what cataloging the SELECTED items would create
-    Profile File Names       ResourceProfileLogAnnotation  only when a person asks, a CSV (never default)
+    Profile File Names to External Log  ResourceProfileLogAnnotation  only when a person asks, a CSV (never default)
 
 Every count here comes from `project_file_inventory`, the table the inventory step refreshes, so the
 profile equals the inventory by construction. The envelope (resultState, measuredAt, producingRun,
@@ -26,7 +26,34 @@ CAPTURE_FILE_COUNTS = "Capture File Counts"
 PROFILE_FILE_EXTENSIONS = "Profile File Extensions"
 PROFILE_FILE_TYPES = "Profile File Types"
 PROFILE_ASSET_TYPES = "Profile Asset Types"
-PROFILE_FILE_NAMES = "Profile File Names"
+#: Egeria's own name for this one is "Profile File Names to External Log" (SurveyFolderAnnotationType).
+PROFILE_FILE_NAMES = "Profile File Names to External Log"
+
+#: Egeria's summary and explanation, verbatim from SurveyFolderAnnotationType except the spelling "catalogued" -> "cataloged" (this repo's wording guard).
+_TEXT = {
+    CAPTURE_FILE_COUNTS: ("Count up the number of files and directories under the surveyed directory that have specific characteristics.",
+                          "Count the number of directories and files under the starting directory."),
+    PROFILE_FILE_EXTENSIONS: ("Iterate through files under a directory (folder) and count the occurrences of each file extension.",
+                              "The file extension often provides a hint as to the type of file."),
+    PROFILE_FILE_TYPES: ("Iterate through files under a directory (folder) and count the occurrences of each file type.",
+                         "The file type is a category of file that describes its use.  The file types are defined as reference data in Egeria."),
+    PROFILE_ASSET_TYPES: ("Iterate through files under a directory (folder) and count each potential asset type if they were to be cataloged in open metadata.",
+                          "The asset type is an open metadata type.  This annotation identifies the numbers of each type of asset that will be created if the files were cataloged in the open metadata ecosystem."),
+    PROFILE_FILE_NAMES: ("Iterate through files under a directory (folder) and count the occurrences of each file name.",
+                         "Some file names indicate a file of special type/use.  This profile information is likely to be large so it is logged to a CSV File."),
+}
+
+#: FileDirectoryMetric display names (the keys of Egeria's resourceProperties), verbatim, for the
+#: metrics RE can compute from its inventory. The rest (readable/writable/executable, symbolic links,
+#: hidden, deployed implementation types, unclassified, inaccessible, last file times) are not
+#: measured by RE and are OMITTED, never written as zero.
+M_FILES = "Number of files"
+M_SIZE = "Total file size"
+M_DIRS = "Number of subdirectories (folders)"
+M_NAMES = "Number of unique filenames"
+M_EXTS = "Number of unique file extensions"
+M_TYPES = "Number of file types"
+M_ASSET_TYPES = "Number of asset types"
 
 #: The names the default publish carries. Profile File Names is deliberately absent (size).
 DEFAULT_NAMES = (CAPTURE_FILE_COUNTS, PROFILE_FILE_EXTENSIONS, PROFILE_FILE_TYPES, PROFILE_ASSET_TYPES)
@@ -82,30 +109,34 @@ def build_file_type_annotations(registry, slug: str, *, surveyed_at: str,
     env = envelope(measured_at=surveyed_at, producing_run=f"{slug}::{surveyed_at}", partial_reason=partial_reason)
     vendored = sum(1 for r in rows if r.get("vendored"))
 
+    n_dirs = len(_directories(paths))
+    names = {PurePosixPath(p).name for p in paths}
+    chosen = selected_asset_types(registry, slug)
+    measures = {M_FILES: len(paths), M_SIZE: float(sum(r["file_size_bytes"] for r in rows)),
+                M_DIRS: n_dirs, M_NAMES: len(names), M_EXTS: len(ext_counts), M_TYPES: len(type_counts)}
+    if chosen:
+        measures[M_ASSET_TYPES] = len(chosen)        # only when something is selected: not a measured zero
+
+    def _text(name):
+        return {"summary": _TEXT[name][0], "explanation": _TEXT[name][1]}
+
     out: list[Annotation] = [
         ResourceMeasureAnnotation(
             check_name="file_counts", analysis_step=STEP, annotation_type_name=CAPTURE_FILE_COUNTS,
-            summary=f"{len(paths)} file(s) in {len(_directories(paths))} director(ies)",
-            explanation="Counted from the stored file inventory, as Egeria's folder survey counts a folder.",
-            resource_properties={"fileCount": len(paths), "directoryCount": len(_directories(paths)),
-                                 "numberOfFileExtensions": len(ext_counts), "numberOfFileTypes": len(type_counts),
-                                 "vendoredFileCount": vendored},
-            additional_properties=dict(env)),
+            **_text(CAPTURE_FILE_COUNTS), resource_properties=measures,
+            additional_properties={**env, "vendoredFileCount": vendored}),
         ResourceProfileAnnotation(
             check_name="file_extensions", analysis_step=STEP, annotation_type_name=PROFILE_FILE_EXTENSIONS,
-            summary=f"{len(ext_counts)} extension(s) across {len(paths)} file(s)",
-            value_count=dict(ext_counts), additional_properties=dict(env)),
+            **_text(PROFILE_FILE_EXTENSIONS), value_count=dict(ext_counts), additional_properties=dict(env)),
         ResourceProfileAnnotation(
             check_name="file_types", analysis_step=STEP, annotation_type_name=PROFILE_FILE_TYPES,
-            summary=f"{len(type_counts)} file type(s) across {len(paths)} file(s)",
-            value_count=dict(type_counts), additional_properties=dict(env)),
+            **_text(PROFILE_FILE_TYPES), value_count=dict(type_counts), additional_properties=dict(env)),
     ]
-    chosen = selected_asset_types(registry, slug)
     if chosen:
         out.append(ResourceProfileAnnotation(
             check_name="asset_types", analysis_step=STEP, annotation_type_name=PROFILE_ASSET_TYPES,
-            summary=f"cataloging the {sum(chosen.values())} selected item(s) would create {len(chosen)} asset type(s)",
-            value_count=dict(chosen), additional_properties={**env, "basis": "the selection on Curate"}))
+            **_text(PROFILE_ASSET_TYPES), value_count=dict(chosen),
+            additional_properties={**env, "basis": "the selection on Curate"}))
     return out
 
 
@@ -122,5 +153,5 @@ def file_names_log_annotation(registry, slug: str, *, surveyed_at: str, csv_path
             w.writerow([name, n])
     return ResourceProfileLogAnnotation(
         check_name="file_names", analysis_step=STEP, annotation_type_name=PROFILE_FILE_NAMES,
-        summary=f"{len(names)} distinct file name(s), logged to a CSV", log_file=csv_path,
+        summary=_TEXT[PROFILE_FILE_NAMES][0], explanation=_TEXT[PROFILE_FILE_NAMES][1], log_file=csv_path,
         additional_properties=envelope(measured_at=surveyed_at, producing_run=f"{slug}::{surveyed_at}"))

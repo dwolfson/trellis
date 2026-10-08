@@ -61,7 +61,7 @@ class AnnotationType(str, Enum):
     #: Added 2026-10-07 (file types as annotations ruling). Egeria's real
     #: `ResourceProfileAnnotationProperties` / `ResourceProfileLogAnnotationProperties`,
     #: the types its own folder survey writes ("Profile File Extensions",
-    #: "Profile File Types", "Profile Asset Types", "Profile File Names").
+    #: "Profile File Types", "Profile Asset Types", "Profile File Names to External Log").
     RESOURCE_PROFILE = "ResourceProfileAnnotation"
     RESOURCE_PROFILE_LOG = "ResourceProfileLogAnnotation"
 
