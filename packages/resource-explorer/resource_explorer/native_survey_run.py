@@ -91,6 +91,12 @@ class NativeSurveyCannotRun(NativeSurveyError):
     what the row shows -- it is a reason, not an error."""
 
 
+class NativeSurveyStale(NativeSurveyCannotRun):
+    """The Egeria element RE had stored a pointer to no longer exists (Egeria answered that it
+    does not -- a failed read is never this). A registration that existed and is gone, said
+    plainly; the row offers to register the server again."""
+
+
 class NativeSurveyBusy(NativeSurveyError):
     """The same survey is already in flight on this resource."""
 
@@ -405,11 +411,6 @@ def derive_native_state(run: dict | None, *, stored_annotation_count: int | None
 _NEEDS_CATALOGUING = (
     "Not cataloged in Egeria yet -- the survey acts on the resource's Egeria "
     "asset, and this resource has none. Publish it to Egeria first.")
-_NEEDS_TEMPLATE = (
-    "RE cannot run this one: it creates the catalog entry from a connection "
-    "template (host, port, credentials) before surveying it, and RE does not "
-    "collect those template properties. Use a survey that acts on an "
-    "already-cataloged resource.")
 
 
 def _resource_entity(registry, entity_type: str, slug: str):
@@ -420,18 +421,36 @@ def _resource_entity(registry, entity_type: str, slug: str):
     return None
 
 
-def cannot_run_reason(process: NativeProcess, entity) -> str:
+def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technology_type: str = "") -> str:
     """Why RE cannot run this process for this resource, or '' when it can.
-    Kind-based and registry-only: no Egeria call, so it is safe on a list read."""
+    Kind-based and registry-only: no Egeria call, so it is safe on a list read.
+
+    A database that was never registered with Egeria is not an error: it gets the neutral
+    "Egeria has not been given this database" sentence (see `row_is_neutral`)."""
+    from resource_explorer import catalog_and_survey as cas
+
     if process.kind == KIND_CATALOG_AND_SURVEY:
-        return _NEEDS_TEMPLATE
+        # Not run through `submit_native_survey`: registering is its own press (register_with_egeria).
+        return cas.wiring_reason("database" if hasattr(entity, "db_type") else "filesystem",
+                                 technology_type, entity) if entity is not None else "This resource is not registered."
     if process.kind != KIND_SURVEY_EXISTING:
         return f"RE does not run processes of kind {process.kind!r}."
     if entity is None:
         return "This resource is not registered."
+    if process.target == "server":
+        if registry is None or not cas.server_pointer(registry, entity):
+            return cas.SERVER_NOT_REGISTERED_WORDS
+        return _missing_credentials_reason(entity)
     if not (getattr(entity, "egeria_asset_guid", "") or "").strip():
-        return _NEEDS_CATALOGUING
+        return cas.NOT_REGISTERED_WORDS if hasattr(entity, "db_type") else _NEEDS_CATALOGUING
     return _missing_credentials_reason(entity)
+
+
+def row_is_neutral(reason: str) -> bool:
+    """A reason that is a plain statement of 'Egeria was never given this', not a fault."""
+    from resource_explorer import catalog_and_survey as cas
+
+    return reason in (cas.NOT_REGISTERED_WORDS, cas.SERVER_NOT_REGISTERED_WORDS)
 
 
 NO_CREDENTIALS = "Egeria has no credentials for this database · re-project secrets"
@@ -478,37 +497,111 @@ def _missing_credentials_reason(entity) -> str:
     return NO_CREDENTIALS if credentials_state(entity) == ABSENT else ""
 
 
-def native_survey_rows(registry, entity_type: str, slug: str, technology_type: str) -> list[dict]:
+def _processes_for_rows(entity_type: str, technology_type: str) -> list[NativeProcess]:
+    """The resource's own processes, then (for a kind with a separate server element) the server's
+    survey. The server's is listed only when the config says the kind has one."""
+    from resource_explorer.surveyors.technology_type_processes import (
+        get_wiring, server_has_separate_element)
+
+    procs = list(get_native_processes(entity_type, technology_type))
+    if server_has_separate_element(entity_type, technology_type):
+        st = get_wiring(entity_type, technology_type).server_technology_type
+        procs += [p for p in get_native_processes(entity_type, st) if p.target == "server"]
+    return procs
+
+
+def native_survey_rows(registry, entity_type: str, slug: str, technology_type: str, *,
+                       pointers: dict | None = None) -> list[dict]:
     """One row per native survey process known for this resource's technology
     type: what it is, whether RE can run it (and if not, why), and the state
     derived from the newest persisted run. Registry-only -- no Egeria call --
-    so it is cheap enough to ride on the survey pane's candidates read."""
+    so it is cheap enough to ride on the survey pane's candidates read.
+
+    `pointers` is the result of `catalog_and_survey.check_pointers` when a caller has READ them
+    from Egeria; only then can a row say a stored pointer is gone (stale). Without it, no row
+    claims anything about whether a stored pointer still resolves."""
+    from resource_explorer import catalog_and_survey as cas
+
     entity = _resource_entity(registry, entity_type, slug)
+    pointers = pointers or {}
     rows = []
-    for process in get_native_processes(entity_type, technology_type):
+    for process in _processes_for_rows(entity_type, technology_type):
         if process.kind == KIND_DELETE:
             continue  # never offered, in any form
-        reason = cannot_run_reason(process, entity)
-        creds = credentials_state(entity) if process.kind == KIND_SURVEY_EXISTING else PRESENT
         runs = registry.list_native_survey_runs(entity_type, slug, process.qualified_name)
         latest = runs[0] if runs else None
+        if process.kind == KIND_CATALOG_AND_SURVEY:
+            rows.append(_catalog_row(registry, entity_type, slug, technology_type, entity,
+                                     process, latest, stale=(pointers.get("database") == "gone")))
+            continue
+        reason = cannot_run_reason(process, entity, registry=registry, technology_type=technology_type)
+        gone_key = "server" if process.target == "server" else "database"
+        gone = pointers.get(gone_key) == "gone"
+        if gone:
+            reason = cas.STALE_WORDS
+        creds = credentials_state(entity) if (process.kind == KIND_SURVEY_EXISTING and entity is not None) else PRESENT
         stored = None
         if latest and latest.get("survey_report_guid"):
             stored = registry.count_native_survey_annotations(latest["survey_report_guid"])
         derived = derive_native_state(latest, stored_annotation_count=stored)
-        rows.append({
+        row = {
             "qualified_name": process.qualified_name,
             "display_name": process.display_name,
             "kind": process.kind,
+            "target": process.target,
             "description": process.description,
             "runnable": not reason,
             "cannot_run_reason": reason,
+            "neutral": row_is_neutral(reason),
+            "stale": gone,
             "credentials": creds,
             "credentials_note": UNCONFIRMED_CREDENTIALS if creds == NOT_CONFIGURED else "",
             "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
             "run": derived,
-        })
+            "reach_note": cas.reach_note_for(derived),
+        }
+        if hasattr(entity, "db_type"):
+            wiring = cas.wiring_reason(entity_type, technology_type, entity)
+            # The control sits on the "Catalog and Survey" row; a survey row offers it only when its stored
+            # pointer is GONE (the same row says so and offers the way back). Never three buttons for one act.
+            row["register"] = {"available": not wiring and gone,
+                               "label": cas.REGISTER_LABEL, "why_not": wiring}
+        if process.target == "server" and entity is not None:
+            row["discovered"] = cas.discovered_databases(registry, entity, latest)
+        rows.append(row)
     return rows
+
+
+def _catalog_row(registry, entity_type, slug, technology_type, entity, process, latest, *,
+                 stale: bool = False) -> dict:
+    """The "Catalog and Survey" row: registering the SERVER with Egeria (then the database it
+    holds). Optional; a never-registered database is a neutral state, not a fault."""
+    from resource_explorer import catalog_and_survey as cas
+
+    wiring = cas.wiring_reason(entity_type, technology_type, entity)
+    has_ptr = bool((getattr(entity, "egeria_asset_guid", "") or "").strip()) if entity is not None else False
+    # A pointer Egeria answered "no such element" to is not a registration.
+    has_ptr = has_ptr and not stale
+    derived = cas.derive_catalog_state(latest, has_pointer=has_ptr)
+    return {
+        "qualified_name": process.qualified_name,
+        "display_name": process.display_name,
+        "kind": process.kind,
+        "target": "server",
+        "description": process.description,
+        "runnable": False,                      # never through the survey Run button
+        "cannot_run_reason": wiring,
+        "neutral": False,
+        "stale": stale,
+        "credentials": PRESENT,
+        "credentials_note": "",
+        "in_flight": cas.catalog_in_flight(derived, latest),
+        "run": derived,
+        "reach_note": cas.reach_note_for(derived),
+        "asset_guid": (getattr(entity, "egeria_asset_guid", "") or "") if entity is not None else "",
+        "register": {"available": not wiring and derived["state"] in (cas.NOT_REGISTERED,),
+                     "label": cas.REGISTER_LABEL, "why_not": wiring},
+    }
 
 
 # ── submit and read back ────────────────────────────────────────────────────
@@ -529,14 +622,22 @@ def refresh_run(registry, port: EgeriaSurveyPort, run: dict, *, entity_type: str
     process_qn = (run.get("executor_ref")
                   or (run.get("step_key") or "")[len(NATIVE_SURVEY_STEP_PREFIX):])
 
+    from resource_explorer.surveyors.technology_type_processes import kind_of
+    if kind_of(process_qn) == KIND_CATALOG_AND_SURVEY:
+        # A registration process has no survey report of its own: its proof is the database element.
+        from resource_explorer import catalog_and_survey as cas
+        return cas.refresh_registration_run(registry, port, run, entity_type=entity_type, slug=slug)
+
+    entity = _resource_entity(registry, entity_type, slug)
     try:
         action = port.read_action(guid)
     except Exception as exc:  # noqa: BLE001 -- recorded, not raised
         registry.record_native_survey_readback(
-            guid, read_at=_now(), error=_short_error(exc))
+            guid, read_at=_now(), error=scrub_secret(_short_error(exc), entity))
         return _refetch(registry, entity_type, slug, process_qn)
     registry.record_native_survey_readback(
-        guid, read_at=_now(), status=action.status, message=action.message)
+        guid, read_at=_now(), status=action.status,
+        message=scrub_secret(action.message, entity))
 
     if action.status in SUCCESS_STATUSES:
         _read_report_in(registry, port, run, action, entity_type=entity_type,
@@ -571,6 +672,16 @@ def _read_report_in(registry, port, run, action, *, entity_type, slug, process_q
             guid, read_at=_now(), error="report read failed: " + _short_error(exc))
 
 
+def scrub_secret(text: str, entity) -> str:
+    """`text` with the resource's stored password (and its encoded spellings) masked. Egeria's own
+    sentences are kept whole, but a driver error that echoes the password it was handed must not
+    reach a proof row, an activity row or a response."""
+    from resource_explorer import secret_redaction
+
+    secret = getattr(entity, "db_password", "") or ""
+    return secret_redaction.scrub(text, secret) if secret else text
+
+
 def _short_error(exc: Exception) -> str:
     text = " ".join(str(exc).split())
     return (text[:300] or type(exc).__name__)
@@ -599,12 +710,18 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
     entity = _resource_entity(registry, entity_type, slug)
     if entity is None:
         raise NativeSurveyCannotRun(f"{entity_type} {slug!r} is not registered")
-    process = next((p for p in get_native_processes(entity_type, technology_type)
+    process = next((p for p in _processes_for_rows(entity_type, technology_type)
                     if p.qualified_name == process_qualified_name), None)
     if process is None or process.kind == KIND_DELETE:
         raise NativeSurveyCannotRun(
             f"{process_qualified_name!r} is not a survey RE offers for this resource")
-    reason = cannot_run_reason(process, entity)
+    from resource_explorer import catalog_and_survey as cas
+
+    if process.kind == KIND_CATALOG_AND_SURVEY:
+        raise NativeSurveyCannotRun(
+            "This one registers the database's SERVER with Egeria first; press "
+            f"{cas.REGISTER_LABEL!r} (it is not a survey Run).")
+    reason = cannot_run_reason(process, entity, registry=registry, technology_type=technology_type)
     if reason:
         raise NativeSurveyCannotRun(reason)
 
@@ -619,24 +736,27 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
                 "This survey is already in flight on this resource "
                 f"(engine action {latest['engine_action_guid']}).")
 
-    asset_guid = entity.egeria_asset_guid.strip()
+    if process.target == "server":
+        asset_guid = cas.server_pointer(registry, entity)
+        what = "server"
+    else:
+        asset_guid = entity.egeria_asset_guid.strip()
+        what = "asset"
     try:
         exists = port.asset_exists(asset_guid)
     except Exception as exc:  # noqa: BLE001
         raise NativeSurveyError(
-            f"Could not check the resource's Egeria asset first: {_short_error(exc)}") from exc
+            f"Could not check the resource's Egeria {what} first: {_short_error(exc)}") from exc
     if not exists:
-        raise NativeSurveyCannotRun(
-            f"Egeria has no asset with the GUID RE has stored for this resource "
-            f"({asset_guid}); the catalog entry was removed or replaced. "
-            "Publish the resource to Egeria again.")
+        raise NativeSurveyStale(
+            f"{cas.STALE_WORDS} ({asset_guid}); register the server with Egeria again.")
 
     submitted_at = _now()
     try:
         engine_action_guid = port.initiate(
             process_qualified_name, process.action_target_name, asset_guid)
     except Exception as exc:  # noqa: BLE001
-        error = _short_error(exc)
+        error = scrub_secret(_short_error(exc), entity)
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
             submit_error=error, submitted_by=submitted_by)
@@ -666,12 +786,26 @@ def refresh_resource(registry, port: EgeriaSurveyPort, entity_type: str, slug: s
     for run in registry.list_native_survey_runs(entity_type, slug):
         if not run.get("engine_action_guid"):
             continue
-        stored = (registry.count_native_survey_annotations(run["survey_report_guid"])
-                  if run.get("survey_report_guid") else None)
-        if derive_native_state(run, stored_annotation_count=stored)["state"] in _IN_FLIGHT:
+        if _run_in_flight(registry, run, entity_type, slug):
             refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
             n += 1
     return n
+
+
+def _run_in_flight(registry, run: dict, entity_type: str, slug: str) -> bool:
+    """Does this run still have read-back work to do? A registration run is judged by its own
+    derivation (a COMPLETED process has no report to wait for); every other run by the survey one."""
+    from resource_explorer.surveyors.technology_type_processes import kind_of
+
+    process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(NATIVE_SURVEY_STEP_PREFIX):]
+    if kind_of(process_qn) == KIND_CATALOG_AND_SURVEY:
+        from resource_explorer import catalog_and_survey as cas
+        entity = _resource_entity(registry, entity_type, slug)
+        has_ptr = bool((getattr(entity, "egeria_asset_guid", "") or "").strip())
+        return cas.catalog_in_flight(cas.derive_catalog_state(run, has_pointer=has_ptr), run)
+    stored = (registry.count_native_survey_annotations(run["survey_report_guid"])
+              if run.get("survey_report_guid") else None)
+    return derive_native_state(run, stored_annotation_count=stored)["state"] in _IN_FLIGHT
 
 
 def sweep_in_flight(registry, port: EgeriaSurveyPort) -> int:
@@ -682,11 +816,9 @@ def sweep_in_flight(registry, port: EgeriaSurveyPort) -> int:
     many runs it read back."""
     n = 0
     for run in registry.list_in_flight_native_survey_runs():
-        stored = (registry.count_native_survey_annotations(run["survey_report_guid"])
-                  if run.get("survey_report_guid") else None)
-        if derive_native_state(run, stored_annotation_count=stored)["state"] not in _IN_FLIGHT:
+        entity_type = run.get("entity_type") or "database"
+        if not _run_in_flight(registry, run, entity_type, run["slug"]):
             continue
-        refresh_run(registry, port, run, entity_type=run.get("entity_type") or "database",
-                    slug=run["slug"])
+        refresh_run(registry, port, run, entity_type=entity_type, slug=run["slug"])
         n += 1
     return n

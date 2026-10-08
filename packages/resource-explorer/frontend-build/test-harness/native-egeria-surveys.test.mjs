@@ -39,7 +39,7 @@ const withRun = (run, over = {}) => row({ run: { ...row().run, ...run }, ...over
 
 const catalogRow = () => row({
   qualified_name: CATALOG, display_name: 'Catalog and Survey', kind: 'catalog_and_survey',
-  runnable: false, cannot_run_reason: 'RE cannot run this one: it needs connection template properties.',
+  runnable: false, cannot_run_reason: 'this kind is not wired yet (SQLite Embedded)',
 });
 
 /** fetch stub keyed by `METHOD path-substring`, first match wins; records calls. */
@@ -93,7 +93,7 @@ test('a survey RE cannot run says why, has no Run, and is not drawn as "not run"
   const host = document.createElement('div');
   host.innerHTML = ns.nativeSurveyRowHtml(catalogRow());
   const text = host.textContent.replace(/\s+/g, ' ');
-  assert.match(text, /can't be run from here — RE cannot run this one/);
+  assert.match(text, /can't be run from here — this kind is not wired yet/);
   assert.equal(host.querySelector('[data-native-run]'), null);
   // ("cannot run" contains the letters "not run"; match the words, not the letters)
   assert.doesNotMatch(text, /(^|\W)not run/);
@@ -208,7 +208,7 @@ test('Survey & analyses lists the native surveys with Run, and the unrunnable on
   assert.match(text, /Survey PostgreSQL Database/);
   assert.ok(content.querySelector(`[data-native-run="${SURVEY}"]`));
   assert.equal(content.querySelector(`[data-native-run="${CATALOG}"]`), null);
-  assert.match(text, /can't be run from here — RE cannot run this one/);
+  assert.match(text, /can't be run from here — this kind is not wired yet/);
 });
 
 test('Run submits, the row shows the server-proven "submitted", and the poll moves it to complete', async () => {

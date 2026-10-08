@@ -230,7 +230,7 @@ class TestSubmit:
 
     def test_a_resource_with_no_egeria_asset_says_why_and_asks_egeria_nothing(self, registry):
         port = FakePort()
-        with pytest.raises(nsr.NativeSurveyCannotRun, match="Publish it to Egeria"):
+        with pytest.raises(nsr.NativeSurveyCannotRun, match="has not been given this database"):
             submit(registry, port, slug="uncatalogued")
         assert port.calls == []
         assert latest(registry, slug="uncatalogued") is None
@@ -238,14 +238,14 @@ class TestSubmit:
     def test_a_stale_stored_guid_is_caught_before_submitting(self, registry):
         port = FakePort()
         port.assets.clear()
-        with pytest.raises(nsr.NativeSurveyCannotRun, match="no asset with the GUID"):
+        with pytest.raises(nsr.NativeSurveyCannotRun, match="no longer exists"):
             submit(registry, port)
         assert not [c for c in port.calls if c[0] == "initiate"]
         assert latest(registry) is None
 
     def test_a_process_that_needs_a_template_cannot_run_and_says_why(self, registry):
         port = FakePort()
-        with pytest.raises(nsr.NativeSurveyCannotRun, match="template"):
+        with pytest.raises(nsr.NativeSurveyCannotRun, match="Register the server with Egeria"):
             submit(registry, port, qn=CATALOG_QN)
         assert port.calls == []
 
@@ -449,15 +449,17 @@ class TestRows:
     def test_lists_runnable_and_unrunnable_with_reasons_and_never_the_delete(self, registry):
         rows = nsr.native_survey_rows(registry, "database", "adventureworks", TECH)
         by = {r["qualified_name"]: r for r in rows}
-        assert set(by) == {SURVEY_QN, CATALOG_QN}
+        assert set(by) == {SURVEY_QN, CATALOG_QN, "PostgreSQLSurvey::survey-postgres-server"}
         assert by[SURVEY_QN]["runnable"] and by[SURVEY_QN]["cannot_run_reason"] == ""
+        # the registration row never runs through the survey Run button; the fixture has no stored user
         assert not by[CATALOG_QN]["runnable"] and by[CATALOG_QN]["cannot_run_reason"]
-        assert all(r["run"]["state"] == nsr.NOT_RUN for r in rows)
+        assert all(r["run"]["state"] == nsr.NOT_RUN for r in rows if r["kind"] != "catalog_and_survey")
+        assert by[CATALOG_QN]["run"]["state"] == "registered"      # a stored database pointer
 
     def test_an_uncatalogued_resource_says_why_on_the_row(self, registry):
         rows = nsr.native_survey_rows(registry, "database", "uncatalogued", TECH)
         survey = next(r for r in rows if r["qualified_name"] == SURVEY_QN)
-        assert not survey["runnable"] and "Publish it to Egeria" in survey["cannot_run_reason"]
+        assert not survey["runnable"] and "has not been given this database" in survey["cannot_run_reason"]
 
     def test_listing_makes_no_egeria_call(self, registry):
         # native_survey_rows takes no port at all: it cannot reach Egeria.
@@ -476,7 +478,7 @@ class TestSchedulerSweep:
 
         def boom(*a, **k):
             raise AssertionError("constructed a port with nothing in flight")
-        monkeypatch.setattr(nsr, "PyegeriaSurveyPort", boom)
+        monkeypatch.setattr("resource_explorer.catalog_and_survey.PyegeriaRegistrationPort", boom)
         scheduler._sweep_native_surveys()
 
     def test_it_finishes_a_run_with_no_signed_in_caller(self, registry, monkeypatch):
@@ -487,7 +489,7 @@ class TestSchedulerSweep:
         port.finish(action, report="rep-1", annotations=[ann(1)])
         monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
                             lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
-        monkeypatch.setattr(nsr, "PyegeriaSurveyPort", lambda: port)
+        monkeypatch.setattr("resource_explorer.catalog_and_survey.PyegeriaRegistrationPort", lambda: port)
         scheduler._sweep_native_surveys()
         assert nsr.native_survey_rows(registry, "database", "adventureworks", TECH)[0]["run"]["state"] == nsr.COMPLETE
         # the proof row keeps who SUBMITTED it; the sweep does not overwrite that

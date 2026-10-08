@@ -27,6 +27,7 @@ import { ago } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getNativeSurveys, runNativeSurvey, refreshNativeSurveys, getNativeSurveyReport,
+  registerWithEgeria, checkNativeSurveyPointers,
 } from '/static/re-api.js';
 import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
@@ -35,13 +36,20 @@ const POLL_MS = 8000;
 
 /** The state -> glyph-family mapping. Words come from the row, not from here:
  *  a glyph's own `word` is only its title. */
-function glyphFor(run, runnable) {
+function glyphFor(run, runnable, row = {}) {
+  // A registration that existed and is gone, and a database never given to Egeria, are NOT errors:
+  // each has its own muted cue (registering with Egeria is optional; nothing is owed).
+  if (row.stale) return 'gone';
   switch (run.state) {
-    case 'complete': return 'measured';
+    case 'complete': case 'registered': return 'measured';
     case 'failed': case 'submit_failed': return 'error';
-    case 'submitted': case 'running': case 'awaiting_report': case 'report_incomplete': return 'running';
+    case 'submitted': case 'running': case 'awaiting_report': case 'report_incomplete':
+    case 'awaiting_registration': return 'running';
     case 'unreadable': return 'unknown';
-    default: return runnable ? 'unrun' : 'no-surveyor';
+    case 'not_registered': return row.cannot_run_reason ? 'no-surveyor' : 'optional';
+    default:
+      if (row.neutral) return 'optional';
+      return runnable ? 'unrun' : 'no-surveyor';
   }
 }
 
@@ -84,17 +92,59 @@ export function nativeSurveyStatusHtml(row) {
     case 'failed':
       return `<span class="text-state-warn"><span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · ${esc(r.message)}</span> · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
+    case 'registered':
+      return `registered with Egeria${row.asset_guid
+        ? ` · database asset <span class="font-mono" title="Egeria database asset">${esc(row.asset_guid)}</span>` : ''}`;
+    case 'awaiting_registration':
+      return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
+        + ' — the database is not readable in Egeria yet';
+    case 'not_registered':
+      // A kind RE cannot register says exactly why (not wired yet, or what the record lacks); a stale
+      // pointer says so; otherwise this is the plain optional state.
+      return row.cannot_run_reason
+        ? `<span class="text-ink-muted">can't be registered from here — ${esc(row.cannot_run_reason)}</span>`
+        : (row.stale
+          ? `<span class="text-ink-muted">${esc('the Egeria asset RE had stored no longer exists')}</span>`
+          : '<span class="text-ink-muted">not registered with Egeria · optional</span>');
     default:
+      if (row.stale) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
+      if (row.neutral) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
       return row.runnable
         ? 'not run'
         : `<span class="text-ink-muted">can't be run from here — ${esc(row.cannot_run_reason)}</span>`;
   }
 }
 
+/** The databases a server survey found, exactly as Egeria reported them. A database RE has registered and
+ *  Egeria has no asset for is "found, not yet cataloged", with the one control. */
+export function discoveredDatabasesHtml(row) {
+  const found = row.discovered || [];
+  if (!found.length) return '';
+  return `<div class="mt-s2" data-native-discovered>
+    <div class="text-caps uppercase tracking-caps text-ink-muted">Databases Egeria found on this server</div>
+    ${found.map((d) => `<div class="flex flex-wrap items-baseline gap-s2 py-[2px]">
+      <span class="font-mono text-ink">${esc(d.name)}</span>
+      <span class="text-provenance text-ink-muted">${
+        d.state === 'cataloged' ? 'cataloged in Egeria'
+          : (d.re_slug ? 'found, not yet cataloged' : 'found · not registered in RE')}</span>
+      ${d.control ? `<button type="button" data-native-register-slug="${esc(d.re_slug)}"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+        >${esc(d.control)}</button>` : ''}
+    </div>`).join('')}
+  </div>`;
+}
+
+/** Egeria's own sentence is in the status above, unchanged. When it reads as a connection problem the
+ *  server adds one line, and RE's own survey stays available. */
+function reachNoteHtml(row) {
+  return row.reach_note
+    ? `<div class="mt-[2px] text-provenance text-ink-muted" data-native-reach>${esc(row.reach_note)}</div>` : '';
+}
+
 /** One survey row: glyph, name, kind, status, and Run when RE can run it. */
 export function nativeSurveyRowHtml(row) {
   const run = row.run || { state: 'not_run' };
-  const g = stateGlyph(glyphFor(run, row.runnable));
+  const g = stateGlyph(glyphFor(run, row.runnable, row));
   const busy = !!row.in_flight;
   const ran = run.state !== 'not_run';
   return `<div class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2" data-native-survey="${esc(row.qualified_name)}">
@@ -106,8 +156,13 @@ export function nativeSurveyRowHtml(row) {
       </div>
       <div class="mt-[2px] text-provenance text-ink-muted" data-native-status>${nativeSurveyStatusHtml(row)}</div>
       ${row.credentials_note ? `<div class="mt-[2px] text-provenance text-ink-muted"><span class="text-ink-muted" title="not confirmed either way">?</span> ${esc(row.credentials_note)}</div>` : ''}
+      ${reachNoteHtml(row)}
       ${row.description ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
+      ${discoveredDatabasesHtml(row)}
     </div>
+    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
+      class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+      >${esc(row.register.label)}</button>` : ''}
     ${row.runnable ? `<button type="button" data-native-run="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border ${busy ? 'border-rule-strong text-ink-muted' : 'border-accent text-accent-ink'} bg-transparent px-2 py-[2px] text-caveat"
       >${busy ? 'in flight' : (ran ? 'Run again in Egeria →' : 'Run in Egeria →')}</button>` : ''}
@@ -184,20 +239,57 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
         // on the row rather than only here.
         b.disabled = false;
         showError(qn, err.message);
+        if (err.status === 422) await checkPointers();     // a stale pointer is found by a READ, then the row offers the control
         if (err.status === 502) {
           try { paint((await getNativeSurveys(slug, { entityType: apiEntityType(state.resourceType) })).surveys); }
           catch (_) { /* the message above already says what happened */ }
         }
       }
     }));
+    // Registering is a choice made with a press. The press shows at once that it was pressed
+    // (disabled, "registering…"), and the result repaints from the server's rows -- never from the click.
+    const register = async (b, targetSlug, qn) => {
+      const label = b.textContent;
+      b.disabled = true;
+      b.textContent = 'registering…';
+      try {
+        const res = await registerWithEgeria(targetSlug, { entityType: apiEntityType(state.resourceType) });
+        if (targetSlug === slug) paint(res.surveys);
+        else {
+          b.textContent = 'registered · see that database';
+        }
+      } catch (err) {
+        b.disabled = false;
+        b.textContent = label;
+        showError(qn || '', err.message);
+        if (err.status === 502 && targetSlug === slug) {
+          try { paint((await getNativeSurveys(slug, { entityType: apiEntityType(state.resourceType) })).surveys); }
+          catch (_) { /* the message above already says what happened */ }
+        }
+      }
+    };
+    host.querySelectorAll('[data-native-register]').forEach((b) => b.addEventListener('click',
+      () => register(b, slug, b.dataset.nativeRegister)));
+    host.querySelectorAll('[data-native-register-slug]').forEach((b) => b.addEventListener('click',
+      () => register(b, b.dataset.nativeRegisterSlug, '')));
     host.querySelectorAll('[data-native-report]').forEach((b) => b.addEventListener('click',
       () => openReport(slug, b.dataset.nativeReport)));
+  };
+
+  // Read the stored pointer back from Egeria, once, ONLY when one is stored (registered rows carry the
+  // database asset's GUID). A never-registered database makes no Egeria call at all.
+  const checkPointers = async () => {
+    try {
+      const res = await checkNativeSurveyPointers(slug, { entityType: apiEntityType(state.resourceType) });
+      if (alive()) paint(res.surveys);
+    } catch (_) { /* the rows already on screen are what RE knows; a failed check says nothing */ }
   };
 
   // The rows were rendered by the pane from the same fetch; bind them, and
   // start polling only if any of them is in flight.
   bindRows();
   schedule();
+  if (rows.some((r) => r.asset_guid)) checkPointers();
 }
 
 async function openReport(slug, reportGuid) {
