@@ -585,6 +585,11 @@ class FakeExpert:
         return self.result
 
 
+from pyegeria.core._globals import NO_ELEMENT_FOUND, NO_ELEMENTS_FOUND  # noqa: E402  -- pyegeria's REAL constants
+
+ABSENT_ANSWER = NO_ELEMENTS_FOUND      # what a by-name / by-GUID miss actually returns
+
+
 def real_port(expert):
     p = cas.PyegeriaRegistrationPort()
     p._enter = lambda: None
@@ -602,7 +607,7 @@ class TestAbsentIsOnlyTypedOrExact:
         assert real_port(FakeExpert(error=typed_not_found())).find_element(SQN) is None
 
     def test_the_exact_no_element_found_answer_is_absent(self):
-        assert real_port(FakeExpert(result="No element found")).find_element(SQN) is None
+        assert real_port(FakeExpert(result=ABSENT_ANSWER)).find_element(SQN) is None
 
     @pytest.mark.parametrize("sentence", ["user erinoverview not found", "type PostgreSQL Server not found",
                                           "search index not found", "404 gateway"])
@@ -634,12 +639,12 @@ class TestAbsentIsOnlyTypedOrExact:
 
     def test_read_element_by_guid_follows_the_same_rule(self):
         assert real_port(FakeExpert(error=typed_not_found())).read_element(DB_GUID) is None
-        assert real_port(FakeExpert(result="No element found")).read_element(DB_GUID) is None
+        assert real_port(FakeExpert(result=ABSENT_ANSWER)).read_element(DB_GUID) is None
         with pytest.raises(Exception, match="user x not found"):
             real_port(FakeExpert(error=RuntimeError("user x not found"))).read_element(DB_GUID)
 
     def test_asset_exists_reads_a_non_raising_no_element_found_as_absent(self):
-        assert real_port(FakeExpert(result="No element found")).asset_exists(DB_GUID) is False
+        assert real_port(FakeExpert(result=ABSENT_ANSWER)).asset_exists(DB_GUID) is False
         assert real_port(FakeExpert(result={"elementGUID": DB_GUID})).asset_exists(DB_GUID) is True
         with pytest.raises(nsr.NativeSurveyError):
             real_port(FakeExpert(result="something odd")).asset_exists(DB_GUID)
@@ -873,3 +878,143 @@ class TestYamlErrorLogging:
         assert "FAKEPW-123" not in caplog.text and "clearPassword" not in caplog.text
         assert "YAMLError" in caplog.text or "ScannerError" in caplog.text or "ParserError" in caplog.text
         assert "line" in caplog.text
+
+
+class TestAbsentAnswersAreEgeriasOwnConstants:
+    @pytest.mark.parametrize("const", [NO_ELEMENTS_FOUND, NO_ELEMENT_FOUND])
+    @pytest.mark.parametrize("variant", [lambda x: x, str.lower, str.upper, lambda x: x + ".", lambda x: " " + x + " "])
+    def test_both_of_pyegerias_constants_are_absent_in_any_case_with_a_trailing_period(self, const, variant):
+        assert nsr.is_exact_absent(variant(const)) is True
+        port = real_port(FakeExpert(result=variant(const)))
+        assert port.find_element(SQN) is None and port.read_element(DB_GUID) is None
+        assert port.asset_exists(DB_GUID) is False
+
+    def test_the_accepted_strings_contain_pyegerias_constants(self):
+        accepted = nsr.ABSENT_ANSWERS
+        for const in (NO_ELEMENTS_FOUND, NO_ELEMENT_FOUND):
+            assert const.strip().rstrip(".").lower() in accepted
+
+    def test_a_lookalike_is_still_not_absent(self):
+        for text in ("No elements found for user x", "element not found", "No element found in index"):
+            assert nsr.is_exact_absent(text) is False
+
+    def test_a_genuinely_absent_server_is_created_when_egeria_answers_the_real_plural(self, registry):
+        """The end-to-end shape of the bug: find_element goes through the REAL port against an expert that
+        answers pyegeria's real miss string, and the press then creates the server."""
+        class Port(RegPort):
+            def find_element(self, qn):
+                self.calls.append(("find_element", qn))
+                found = real_port(FakeExpert(result=NO_ELEMENTS_FOUND)).find_element(qn) if qn not in self.elements.values() else None
+                if found is None and qn in self.elements.values():
+                    g = next(g for g, n in self.elements.items() if n == qn)
+                    return cas.ElementBack(g, qn)
+                return found
+        port = Port()
+        out = register(registry, port)
+        assert out["server"]["how"] == "created" and len(port.processes) == 1
+
+
+def stalled_run(registry, port):
+    """A process Egeria read as COMPLETED whose database is not readable, past RE's local window."""
+    register(registry, port)
+    run = registry.list_native_survey_runs("database", "adventureworks", CATALOG_QN)[0]
+    port.actions[run["engine_action_guid"]] = ("COMPLETED", "")
+    cas.refresh_registration_run(registry, port, run, entity_type="database", slug="adventureworks")
+    age_run(registry)
+    return run
+
+
+class TestStartAgainAndServerClaim:
+    def test_a_press_during_a_live_run_keeps_the_claim(self, registry):
+        port = RegPort()
+        register(registry, port)
+        assert cas.claim_held(registry, "adventureworks")
+        with pytest.raises(nsr.NativeSurveyBusy):
+            cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                     start_again=True)
+        assert cas.claim_held(registry, "adventureworks"), "stall protection must survive a refused press"
+        assert len(port.processes) == 1
+
+    def test_start_again_asks_egeria_and_refuses_while_the_process_is_still_active(self, registry):
+        port = RegPort()
+        run = stalled_run(registry, port)
+        port.actions[run["engine_action_guid"]] = ("IN_PROGRESS", "")      # Egeria says it is running again
+        with pytest.raises(nsr.NativeSurveyBusy, match="IN_PROGRESS"):
+            cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                     start_again=True)
+        assert cas.claim_held(registry, "adventureworks") and len(port.processes) == 1
+
+    def test_start_again_releases_only_when_egeria_says_the_run_is_not_active(self, registry):
+        port = RegPort()
+        stalled_run(registry, port)
+        cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                 start_again=True)
+        assert len(port.processes) == 2
+
+    def test_start_again_with_an_unreadable_process_refuses_with_egerias_sentence(self, registry):
+        port = RegPort()
+        stalled_run(registry, port)
+        port.read_process = lambda guid: (_ for _ in ()).throw(RuntimeError("view server unreachable"))
+        with pytest.raises(nsr.NativeSurveyBusy, match="view server unreachable"):
+            cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                     start_again=True)
+        assert cas.claim_held(registry, "adventureworks")
+
+    def test_two_presses_on_the_same_server_create_it_once(self, registry):
+        """The second press arrives while the first has created nothing yet confirmed: it holds the server claim."""
+        port = RegPort()
+        assert cas.take_server_claim(registry, SERVER_NAME) is True
+        with pytest.raises(nsr.NativeSurveyBusy, match="server"):
+            register(registry, port)
+        assert port.created_servers == []
+
+    def test_the_server_claim_is_released_on_a_confirmed_read_back(self, registry):
+        port = RegPort()
+        register(registry, port)
+        assert cas.take_server_claim(registry, SERVER_NAME) is True
+
+    def test_the_server_claim_is_kept_when_the_create_is_unconfirmed(self, registry):
+        port = RegPort()
+        port.hide_from_find = {SQN}
+        port.read_element_override = None
+        with pytest.raises(nsr.NativeSurveyError):
+            register(registry, port)
+        assert cas.take_server_claim(registry, SERVER_NAME) is False
+        port.read_element_override = "unset"
+        register(registry, port)                         # adopts the recorded GUID; resolves the claim
+        assert cas.take_server_claim(registry, SERVER_NAME) is True
+
+    def test_a_refused_create_releases_the_server_claim(self, registry):
+        port = RegPort()
+        port.create_error = RuntimeError("template boom")
+        with pytest.raises(nsr.NativeSurveyError):
+            register(registry, port)
+        assert cas.take_server_claim(registry, SERVER_NAME) is True
+
+    def test_start_again_clears_a_server_claim_left_by_a_crash(self, registry):
+        port = RegPort()
+        cas.take_server_claim(registry, SERVER_NAME)
+        cas.register_with_egeria(registry, port, "database", "adventureworks", technology_type=TECH,
+                                 start_again=True)
+        assert len(port.created_servers) == 1
+
+
+class TestLowItems:
+    def test_a_later_refusal_still_says_the_secrets_file_was_reprojected(self, registry, tmp_path, monkeypatch):
+        monkeypatch.setattr("resource_explorer.omsecrets_store.local_path", lambda: str(tmp_path / "s.omsecrets"))
+        port = RegPort()
+        port.create_error = RuntimeError("template boom")
+        with pytest.raises(nsr.NativeSurveyError) as exc:
+            register(registry, port)
+        assert "template boom" in str(exc.value) and "re-projected the secrets file (a local write)" in str(exc.value)
+
+    def test_the_credential_note_uses_the_collection_name_function(self, registry, monkeypatch):
+        monkeypatch.setattr("resource_explorer.omsecrets_store.secrets_collection_name", lambda slug: f"COLL<{slug}>")
+        port = RegPort()
+        register(registry, port, "adventureworks")
+        notes = cas.server_credential_notes(registry, registry.get_database("sibling"))
+        assert "COLL<adventureworks>" in notes[0] and "::PostgreSQL Secret" not in notes[0]
+
+    @pytest.mark.parametrize("text", ["could not connect to server", "Unable to connect to host"])
+    def test_could_not_connect_gets_the_note(self, text):
+        assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == cas.REACH_NOTE

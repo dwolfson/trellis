@@ -257,7 +257,16 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       slot.classList.remove('hidden');
     };
     const register = async (b, targetSlug, qn, startAgain = false) => {
-      const label = b.textContent;
+      if (startAgain && b.dataset.confirm !== '1') {
+        // A second registration can create a second database: ask once, visibly, before sending it.
+        b.dataset.confirm = '1';
+        b.dataset.label = b.textContent;
+        b.textContent = 'Confirm: start again';
+        b.classList.add('border-state-warn');
+        showInfo(qn, 'This submits a second registration to Egeria. Press again to confirm.');
+        return;
+      }
+      const label = b.dataset.label || b.textContent;
       b.disabled = true;
       b.textContent = 'registering…';
       try {

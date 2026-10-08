@@ -196,19 +196,42 @@ def claim_key(slug: str) -> str:
     return "egeria_register_claim::" + slug
 
 
-def take_claim(registry, slug: str) -> bool:
-    """Atomic insert-if-absent of the per-database registration claim (the existing `app_settings`
-    key/value table, no DDL). True only for the one caller whose insert took effect."""
+def server_claim_key(server_name: str) -> str:
+    return "egeria_server_claim::" + server_qualified_name(server_name)
+
+
+def _take(registry, key: str) -> bool:
+    """Atomic insert-if-absent (the existing `app_settings` key/value table, no DDL). True only for the
+    one caller whose insert took effect."""
     with registry._conn() as conn:
         cur = conn.execute(
             "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(key) DO NOTHING", (claim_key(slug), _now(), _now()))
+            "ON CONFLICT(key) DO NOTHING", (key, _now(), _now()))
         return cur.rowcount == 1
 
 
-def release_claim(registry, slug: str) -> None:
+def _release(registry, key: str) -> None:
     with registry._conn() as conn:
-        conn.execute("DELETE FROM app_settings WHERE key = ?", (claim_key(slug),))
+        conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+
+
+def take_claim(registry, slug: str) -> bool:
+    """The per-database registration claim, taken before the database process is submitted."""
+    return _take(registry, claim_key(slug))
+
+
+def release_claim(registry, slug: str) -> None:
+    _release(registry, claim_key(slug))
+
+
+def take_server_claim(registry, server_name: str) -> bool:
+    """The per-server claim, taken around the template create: two presses (one database twice, or two
+    databases on one server) cannot both see the server absent and both create it."""
+    return _take(registry, server_claim_key(server_name))
+
+
+def release_server_claim(registry, server_name: str) -> None:
+    _release(registry, server_claim_key(server_name))
 
 
 def claim_held(registry, slug: str) -> str:
@@ -402,14 +425,15 @@ def catalog_in_flight(state: dict, run: dict | None) -> bool:
 # ── connection-ish failures get the one extra line ──────────────────────────
 
 _CONNECTION_WORDS = re.compile(
-    r"refused|timed? ?out|unreachable|no route|connection reset|unknown ?host", re.IGNORECASE)
+    r"(?:could not|unable to|cannot|can't|failed to) connect|refused|timed? ?out|unreachable|no route|"
+    r"connection reset|unknown ?host", re.IGNORECASE)
 
 
 def reach_note_for(run_state: dict) -> str:
     """Egeria's own sentence is always shown verbatim. When a failed or refused run reads as a
     connection problem, one line says Egeria connects from ITS platform and RE can still survey it.
-    Connection-class wording only (refused, timed out, unreachable, no route, connection reset,
-    unknown host): a role or password failure is not a reach problem and gets no such line."""
+    Connection-class wording only (could not connect, refused, timed out, unreachable, no route,
+    connection reset, unknown host; bare "connection" is not enough, since a JDBC role failure names one): a role or password failure is not a reach problem and gets no such line."""
     if run_state.get("state") not in (nsr.FAILED, nsr.SUBMIT_FAILED):
         return ""
     text = " ".join(str(run_state.get(k) or "") for k in ("message", "error"))
@@ -543,14 +567,48 @@ def register_with_egeria(registry, port: RegistrationPort, entity_type: str, slu
     process = _process_for(entity_type, technology_type, KIND_CATALOG_AND_SURVEY)
     if process is None:
         raise RegistrationRefused(not_wired_words(technology_type))
-    if start_again:
-        release_claim(registry, slug)
-        _log_write(f"start again requested for {slug}: the earlier registration claim was released")
+    # Order matters: the in-flight guard FIRST, and the claim is released only after it has passed and
+    # Egeria has been asked whether the earlier process is still running. A refused press leaves the
+    # stall protection exactly as it was.
     if _in_flight(registry, entity_type, slug, process.qualified_name, catalog=True):
         raise nsr.NativeSurveyBusy("Registering this database with Egeria is already in flight.")
+    if start_again:
+        _refuse_if_earlier_still_running(registry, port, entity, entity_type, slug, process.qualified_name)
+        release_claim(registry, slug)
+        release_server_claim(registry, server_name_for(entity))
+        _log_write(f"start again requested for {slug}: the earlier registration claims were released")
 
     with secret_redaction.redacting_logs(getattr(entity, "db_password", "") or ""):
         projected = _ensure_credentials(registry, entity)
+        try:
+            return _register_steps(registry, port, entity_type, slug, technology_type, submitted_by,
+                                   entity, process, projected)
+        except nsr.NativeSurveyError as exc:
+            if projected.get("written"):
+                # A later refusal must not hide that this press already wrote the local secrets file.
+                exc.args = (f"{exc} · RE re-projected the secrets file (a local write) before this",)
+            raise
+
+
+def _refuse_if_earlier_still_running(registry, port, entity, entity_type, slug, process_qn) -> None:
+    runs = registry.list_native_survey_runs(entity_type, slug, process_qn)
+    guid = (runs[0].get("engine_action_guid") if runs else "") or ""
+    if not guid:
+        return
+    try:
+        action = port.read_process(guid)
+    except Exception as exc:  # noqa: BLE001
+        raise nsr.NativeSurveyBusy(
+            f"RE cannot tell whether the earlier registration (process {guid}) is still running: "
+            f"{_egeria_sentence(exc, entity)}") from exc
+    if action.status in nsr.ACTIVE_STATUSES:
+        raise nsr.NativeSurveyBusy(
+            f"The earlier registration (process {guid}) is still running: Egeria says {action.status}.")
+
+
+def _register_steps(registry, port, entity_type, slug, technology_type, submitted_by, entity, process,
+                    projected) -> dict:
+    if True:
         out: dict[str, Any] = {"server": {}, "database": {}, "server_survey_error": "", "projected": projected}
 
         # 1. the server: adopt by qualifiedName; else a server created earlier and not yet confirmed;
@@ -569,7 +627,17 @@ def register_with_egeria(registry, port: RegistrationPort, entity_type: str, slu
                 else:
                     if pending:
                         registry.set_setting(unconfirmed_key, "")  # Egeria said it is gone: nothing to adopt
-                    server_guid, how = port.create_server(server_placeholders(entity)), "created"
+                        release_server_claim(registry, server_name)
+                    if not take_server_claim(registry, server_name):
+                        raise RegistrationUnresolved(
+                            f"Another press is creating this server ({sqn}), or an earlier one did not confirm "
+                            f"it. Creating it again could make a second server. Press {START_AGAIN_LABEL!r} "
+                            "only if you mean to.")
+                    try:
+                        server_guid, how = port.create_server(server_placeholders(entity)), "created"
+                    except BaseException:
+                        release_server_claim(registry, server_name)     # Egeria refused: nothing was created
+                        raise
                     registry.set_setting(unconfirmed_key, server_guid)   # BEFORE the read-back
                     registry.set_setting(server_cred_key(server_name), slug)
             back = _verify(port, server_guid, sqn, "server")
@@ -579,6 +647,7 @@ def register_with_egeria(registry, port: RegistrationPort, entity_type: str, slu
             raise nsr.NativeSurveyError(_egeria_sentence(exc, entity)) from exc
         registry.set_setting(server_pointer_key(server_name), back.guid)   # AFTER the read
         registry.set_setting(unconfirmed_key, "")
+        release_server_claim(registry, server_name)           # confirmed by the read-back
         out["server"] = {"guid": back.guid, "qualified_name": back.qualified_name, "how": how}
         _log_write(f"registered server {sqn}: {how}, GUID {back.guid} (read back)")
 
@@ -727,8 +796,9 @@ def server_credential_notes(registry, entity) -> list[str]:
                 "or before this was recorded)"]
     if first == entity.slug:
         return []
+    from resource_explorer import omsecrets_store
     note = (f"the server's connection uses {first}'s credentials "
-            f"(collection {first}::PostgreSQL Secret), not this database's")
+            f"(collection {omsecrets_store.secrets_collection_name(first)}), not this database's")
     other = registry.get_database(first, allow_unreadable=True)
     if other is None:
         return [note + f"; {first} is no longer registered in RE"]
@@ -758,7 +828,8 @@ def register_control(registry, entity, derived: dict, in_flight: bool, wiring: s
     base = {"label": REGISTER_LABEL, "why_not": wiring, "start_again": False, "available": False}
     if wiring or in_flight:
         return base
-    unresolved = derived["state"] == AWAITING_REGISTRATION or bool(claim_held(registry, entity.slug))
+    unresolved = (derived["state"] == AWAITING_REGISTRATION or bool(claim_held(registry, entity.slug))
+                  or bool(registry.get_setting(server_claim_key(server_name_for(entity)), "")))
     unconfirmed = bool((registry.get_setting(server_unconfirmed_key(server_name_for(entity)), "") or "").strip())
     if unresolved and derived["state"] != REGISTERED:
         return {**base, "available": True, "label": START_AGAIN_LABEL, "start_again": True}

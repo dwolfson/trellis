@@ -192,3 +192,22 @@ survey this database itself".
 
 `tests/test_catalog_and_survey.py`, `tests/test_catalog_and_survey_routes.py` (recording fakes only), and the harness file
 `catalog-and-survey-register.test.mjs`. The owner gates by use on adventureworks.
+
+## Second review round (2026-10-08)
+
+* **HIGH, the absent string.** pyegeria answers a by-name or by-GUID miss with `NO_ELEMENTS_FOUND` ("No elements found",
+  plural); the singular `NO_ELEMENT_FOUND` is not returned on those paths. The first round matched only the singular, so a
+  genuinely absent server raised instead of being created. `native_survey_run.ABSENT_ANSWERS` is now built from pyegeria's
+  own constants (both, exact, case-insensitive, trailing period stripped), and every test imports the constants rather than
+  typing a literal; one test fails if the accepted set stops containing either constant. The local rule mirrors
+  `egeria_absence.is_absent` (#556) for string answers and should switch to that shared helper after #556 merges.
+* The released-too-early claim: `start_again` now releases the claims only after the in-flight guard passed AND Egeria was
+  asked (`read_process`) whether the earlier process is still ACTIVE (still running, or unreadable, refuses with Egeria's
+  sentence). The UI asks once before sending it ("Confirm: start again").
+* The server create is under an atomic claim keyed on the server qualifiedName (same insert-if-absent mechanism), released
+  on a confirmed read-back, kept while unconfirmed, released if the create is refused, and cleared by "Start again".
+* A later refusal still says the secrets file was re-projected; the credential note uses `secrets_collection_name`; the
+  reach note again recognises "could not connect / unable to connect" (phrases, not bare "connect", since a JDBC role
+  failure names a "Connection").
+* **Follow-up for the shared-helper slice:** `catalogue_gateway.read_element` (~652-664) still matches "404", "No element
+  found" and "not found" loosely; it is not used by this slice any more and is out of scope here.

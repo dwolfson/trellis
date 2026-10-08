@@ -261,6 +261,11 @@ test('an unresolved earlier run offers "Start again →", and the press sends th
   assert.ok(content.textContent.includes('99999999-0000-0000-0000-000000000001'));
   btn.click();
   await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sent, null, 'one click only asks');
+  assert.equal(btn.textContent, 'Confirm: start again');
+  assert.match(content.textContent, /submits a second registration to Egeria/);
+  btn.click();
+  await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(sent, { start_again: true });
   assert.match(content.textContent, /re-projected the secrets file \(a local write\)/);
 });
