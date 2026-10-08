@@ -145,6 +145,9 @@ EXTRA_READS = {
 NODE_DATABASE, NODE_REPO, NODE_OTHER = "database", "repo_report", "resource"
 
 
+FINALISE_GROUP = "activity_log:finalise"
+
+
 class ApplyFailed(Exception):
     """A table group failed. Names it and the groups that had already committed."""
 
@@ -180,12 +183,40 @@ def target_schema(url: str) -> str:
     resolve in `public`, which is not where RE keeps them."""
     if url.startswith("sqlite"):
         return "main"
-    from resource_explorer.registry_label import _search_path
-    schema = _search_path(urlsplit(url).query)
-    if not schema:
+    from urllib.parse import parse_qs, unquote
+    tokens = " ".join(unquote(o) for o in parse_qs(urlsplit(url).query).get("options", [])).split()
+    found = []
+    for i, tok in enumerate(tokens):
+        if tok.startswith("-csearch_path=") or tok.startswith("--search_path="):
+            found.append(tok.split("=", 1)[1])
+        elif tok == "-c" and i + 1 < len(tokens) and tokens[i + 1].startswith("search_path="):
+            found.append(tokens[i + 1].split("=", 1)[1])
+    if not found:
         raise Refused("REGISTRY_DATABASE_URL names no schema (no ?options=-csearch_path=<schema>); the script "
                       "will not run against whatever schema the server defaults to")
+    if len(found) > 1:
+        raise Refused("REGISTRY_DATABASE_URL names search_path more than once; libpq would use the last one and "
+                      "this script will not guess which")
+    schema = found[0].strip().strip('"')
+    if "," in schema or not schema:
+        raise Refused("the search_path in REGISTRY_DATABASE_URL must be exactly one schema (no comma list): "
+                      "unqualified table names would resolve across the whole list")
+    from resource_explorer.registry_label import _search_path
+    if _search_path(urlsplit(url).query) != schema:
+        raise Refused("the registry's own parser reads the search_path differently from this script; refusing")
     return schema
+
+
+def check_live_schema(conn, url: str, schema: str) -> str:
+    """The URL's search_path text is not evidence of where writes go; the open connection is. Postgres: ask it
+    (`current_schema()`) and refuse unless it equals the schema the URL and --schema named. SQLite is 'main'."""
+    if url.startswith("sqlite"):
+        return "main"
+    live = conn.execute("SELECT current_schema() AS s").fetchone()["s"]
+    if live != schema:
+        raise Refused(f"the open connection's current_schema() is {live!r}, not {schema!r} (the schema named by "
+                      "the URL and --schema); unqualified table names would resolve there. Nothing was written.")
+    return live
 
 
 def connect(url: str):
@@ -205,9 +236,12 @@ def _missing_table(conn, table: str) -> bool:
     try:
         conn.execute(f"SELECT 1 FROM {table} WHERE 1 = 0").fetchall()
         return False
-    except Exception:
+    except Exception as exc:
         conn.raw_conn.rollback()
-        return True
+        if getattr(exc, "pgcode", None) == "42P01" or "no such table" in str(exc).lower():
+            return True
+        raise Refused(f"could not check whether table {table} exists ({type(exc).__name__}); only an undefined-table "
+                      "error counts as missing. Nothing was written.") from exc
 
 
 def check_schema(conn, skip: tuple = ()) -> list[str]:
@@ -269,7 +303,7 @@ def _rows(conn, sql: str, params=()) -> list[dict]:
 
 
 def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, schema: str = "main",
-               skipped: list | None = None) -> dict:
+               skipped: list | None = None, live_schema: str = "main") -> dict:
     actions = []
     skipped = sorted(skipped or [])
     for table, keys, setcols, trig, *more in CLEAR_SPECS:
@@ -336,7 +370,7 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
                                 + ("" if n_earlier else " · published claim before the reset (no proof rows)")})
     actions.append({"id": "marker:catalogue_commit_proofs", "kind": "write_markers",
                     "table": "catalogue_commit_proofs", "rows": markers, "count": len(markers)})
-    plan = {"database": db_name, "schema": schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
+    plan = {"database": db_name, "schema": schema, "current_schema": live_schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
             "new_collection_id": new_id or "unknown", "actions": actions,
             "dead_outbox_untouched": [r["id"] for r in dead], "skipped_tables": skipped,
             "slugs_with_proofs_after_reset": after}
@@ -352,7 +386,7 @@ def plan_hash(plan: dict) -> str:
 
 
 def render(plan: dict, title: str) -> str:
-    out = [f"{title} · database: {plan['database']} · schema: {plan['schema']} · reset at {human_when(plan['reset_at'])}", ""]
+    out = [f"{title} · database: {plan['database']} · schema: {plan['schema']} (connection current_schema: {plan['current_schema']}) · reset at {human_when(plan['reset_at'])}", ""]
     out.append(f"{'action':<10}{'table':<44}{'rows':>6}  detail")
     for a in plan["actions"]:
         verb = {"clear_columns": "clear", "delete_rows": "remove", "supersede_outbox": "supersede",
@@ -441,6 +475,7 @@ def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: date
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = snapshot_path.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)            # a pre-existing .tmp keeps its old mode otherwise
     with os.fdopen(fd, "w") as f:
         json.dump({"snapshot_of": "rows changed by clear_egeria_pointers_after_reset", "plan": plan}, f,
                   indent=1, default=str, sort_keys=True)
@@ -512,9 +547,12 @@ def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: date
             (f"Egeria reset cleanup FAILED in group {group} after {len(done)} committed: {type(exc).__name__}",
              act_id)))
         raise ApplyFailed(group, list(done), exc) from None
-    _group(conn, lambda: conn.execute(
-        "UPDATE activity_log SET status = 'ok', summary = ? WHERE id = ?",
-        (f"Egeria reset cleanup by {cleared_by}: " + ", ".join(f"{k} {v}" for k, v in done.items() if v), act_id)))
+    try:
+        _group(conn, lambda: conn.execute(
+            "UPDATE activity_log SET status = 'ok', summary = ? WHERE id = ?",
+            (f"Egeria reset cleanup by {cleared_by}: " + ", ".join(f"{k} {v}" for k, v in done.items() if v), act_id)))
+    except Exception as exc:
+        raise ApplyFailed(FINALISE_GROUP, list(done), exc) from None
     return done
 
 
@@ -543,25 +581,31 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
         name = database_name(url)
         reset_at = parse_utc(args.reset_at, "--reset-at")
         schema = target_schema(url)
+        unknown = [t for t in args.skip_missing_table if t not in LAZY_TABLES]
+        if unknown:
+            raise Refused(f"--skip-missing-table accepts only {', '.join(LAZY_TABLES)}, not {', '.join(unknown)}")
         if args.apply:
             who, _ = parse_cleared_by(args.cleared_by, now)
             if args.database != name:
                 raise Refused(f"--database {args.database!r} is not the registry database in REGISTRY_DATABASE_URL "
                               f"({name!r}); pass the name again to confirm the target")
-            if not (args.schema == schema or (schema == "main" and not args.schema)):
+            if not (args.schema == schema or (url.startswith("sqlite") and not args.schema)):
                 raise Refused(f"--schema {args.schema!r} is not the schema in REGISTRY_DATABASE_URL ({schema!r}); "
                               "pass the schema name again to confirm the target")
             if not args.plan_file or not args.plan_hash:
                 raise Refused("--apply needs --plan-file and --plan-hash from a dry run of this database")
         conn = connect(url)
         try:
+            live = check_live_schema(conn, url, schema)
             skipped = check_schema(conn, tuple(args.skip_missing_table))
-            plan = build_plan(conn, name, reset_at, args.old_collection_id, args.new_collection_id, schema, skipped)
+            plan = build_plan(conn, name, reset_at, args.old_collection_id, args.new_collection_id, schema, skipped,
+                              live)
             if not args.apply:
                 out_dir = Path(args.out_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
                 path = out_dir / f"egeria-reset-plan-{name}-{plan['hash'][:12]}.json"
                 fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "w") as pf:
                     pf.write(json.dumps({"generated_at": now.isoformat(), "plan": plan}, indent=1,
                                         default=str, sort_keys=True))
@@ -569,13 +613,19 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
                 _fsync_dir(out_dir)
                 out(render(plan, "DRY RUN (nothing written to the registry)"))
                 out(f"plan file: {path}")
-                out("to apply: --apply --plan-file <that file> --plan-hash <hash> "
-                    f"--database {name} --cleared-by <who>/<UTC>")
+                extra = "".join(f" --skip-missing-table {t}" for t in plan["skipped_tables"])
+                extra += f" --old-collection-id {args.old_collection_id}" if args.old_collection_id else ""
+                extra += f" --new-collection-id {args.new_collection_id}" if args.new_collection_id else ""
+                out(f"to apply: --apply --reset-at {args.reset_at} --plan-file {path} --plan-hash {plan['hash']} "
+                    f"--database {name} --schema {schema}{extra} --cleared-by <who>/<UTC>")
                 return 0
             saved = json.loads(Path(args.plan_file).read_text())
             sp = saved.get("plan") or {}
             if sp.get("schema") != schema:
                 raise Refused(f"the plan file was made for schema {sp.get('schema')!r}, not {schema!r}")
+            if sp.get("current_schema") != live:
+                raise Refused(f"the plan file was made under current_schema {sp.get('current_schema')!r}, the "
+                              f"connection now reports {live!r}")
             if sp.get("database") != name:
                 raise Refused(f"the plan file was made for database {sp.get('database')!r}, not {name!r}")
             if plan_hash(sp) != sp.get("hash") or sp.get("hash") != args.plan_hash:
@@ -603,6 +653,10 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
         out(f"REFUSED: {exc}")
         return 2
     except ApplyFailed as exc:
+        if exc.group == FINALISE_GROUP:
+            out(f"All groups committed ({', '.join(exc.committed) or 'none'}); the activity row could not be "
+                f"finalised ({exc.exc_type}). The registry changes are done; the activity row still says 'running'.")
+            return 3
         out(f"FAILED in group {exc.group} ({exc.exc_type}); groups already committed: "
             f"{', '.join(exc.committed) or 'none'}. Earlier groups stay applied, the failing group was rolled back. "
             "Run a fresh dry run, then apply again to finish (markers already written are skipped).")
