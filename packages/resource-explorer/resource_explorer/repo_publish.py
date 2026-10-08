@@ -29,7 +29,8 @@ from datetime import datetime
 from typing import Any, Callable
 
 from resource_explorer.catalogue_commit import (
-    P_EGERIA_RESET, P_READ_FAILED, P_REPORT, RESET_WORDS, egeria_first_sentence)
+    P_EGERIA_RESET, P_READ_FAILED, P_REPORT, PROJECT_UNANSWERED, PROJECT_UNBOUND, PROJECT_UNBOUND_WORDS,
+    RESET_WORDS, egeria_first_sentence)
 from resource_explorer.surveyors import survey_snapshot
 from resource_explorer.surveyors.survey_snapshot import NO_SURVEY_SENTENCE
 
@@ -38,8 +39,6 @@ NODE_FILE_TYPE = "file_type"
 NODE_SUB_RESOURCE = "sub_resource"
 P_SENT = "report_sent"
 P_FORGOTTEN = "links_forgotten"
-#: The status scripts/clear_egeria_pointers_after_reset.py gives a project context whose Egeria project is gone.
-UNBOUND_BY_RESET = "unbound by reset · rebind to recreate"
 P_FILE_TYPE = "file_type_read_back"
 P_SUB_RESOURCE = "sub_resource_read_back"
 
@@ -75,7 +74,7 @@ def resolve_project_context(registry, slug: str) -> dict | None:
     bound to an Egeria project, that binding IS the answer and is WRITTEN, with the investigation that
     supplied it (the same rule `POST /api/egeria/{slug}/publish` has always applied)."""
     context = registry.get_project_context("repo", slug)
-    if context and context.get("status") != "unset":
+    if context and context.get("status") not in PROJECT_UNANSWERED:
         return context
     inherited = registry.inherited_egeria_project_context("repo", slug)
     if not inherited:
@@ -98,8 +97,9 @@ def project_words(context: dict | None) -> dict:
     if status == "linked":
         return {"status": status, "word": "project", "name": qn.split("::")[0] or qn or "linked",
                 "detail": free}
-    if status == UNBOUND_BY_RESET:
-        return {"status": status, "word": UNBOUND_BY_RESET, "name": qn.split("::")[0] or qn}
+    if status == PROJECT_UNBOUND:
+        # The status is the value `unbound`; the words are display text. The name it had stays visible.
+        return {"status": status, "word": PROJECT_UNBOUND_WORDS, "name": qn.split("::")[0] or qn}
     if status == "deferred":
         return {"status": status, "word": "project (named, not linked)", "name": free}
     if status == "personal":
@@ -165,9 +165,12 @@ def project_state(registry, slug: str) -> dict:
     answer; a read must not). `status` "unset" means nothing answers and a press would be refused."""
     context = registry.get_project_context("repo", slug)
     inherited = None
-    if not context or context.get("status") == "unset":
+    if not context or context.get("status") in PROJECT_UNANSWERED:
         inherited = registry.inherited_egeria_project_context("repo", slug)
-    return project_words(context) if (context and context.get("status") != "unset") else (
+    # An unbound context with nothing inheriting is shown as itself (its words), not as "no project".
+    answered = context and (context.get("status") not in PROJECT_UNANSWERED or
+                            (context.get("status") == PROJECT_UNBOUND and not inherited))
+    return project_words(context) if answered else (
         {"status": "inherited", "word": "project", "name": (inherited["egeria_project_qualified_name"].split("::")[0]
                                                              or inherited["egeria_project_qualified_name"]),
          "detail": f"from investigation '{inherited['_inherited_from_name']}'"} if inherited

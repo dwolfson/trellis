@@ -132,12 +132,24 @@ async def native_survey_report(entity_type: str, slug: str, report_guid: str) ->
         if not runs:
             return {}
         run = runs[0]
+        annotations = registry.query_native_survey_annotations(report_guid)
+        # This is RE's own stored copy, read from Egeria at some time. The read time is the stored
+        # annotations' own `read_at` (the run's report read time when they carry none). If the
+        # `egeria_reset` marker is LATER than that read, Egeria has been reset since: the screen says so,
+        # once. Nothing is asked of Egeria, and the annotations and their order are exactly what was stored.
+        from resource_explorer.catalogue_commit import egeria_reset_at, reset_since_read
+        copy_read_at = max((a.get("read_at") or "" for a in annotations), default="") \
+            or (run.get("report_read_at") or "")
+        reset_at = egeria_reset_at(registry, slug)
         return {
             "report_guid": report_guid,
             "report_at": run.get("survey_report_at") or "",
             "read_at": run.get("report_read_at") or "",
+            "stored_copy_read_at": copy_read_at,
+            "egeria_reset_at": reset_at,
+            "reset_since": reset_since_read(copy_read_at, reset_at),
             "engine_action_guid": run.get("engine_action_guid") or "",
-            "annotations": registry.query_native_survey_annotations(report_guid),
+            "annotations": annotations,
         }
 
     report = await asyncio.to_thread(_do)

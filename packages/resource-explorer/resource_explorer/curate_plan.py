@@ -297,6 +297,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
                                     "interim": bool(f.get("interim")), "review": bool(f.get("review"))})
     owner = enrichment.get("owner") or {}
     licence = enrichment.get("licence") or {}
+    from resource_explorer.catalogue_commit import publish_fields
     published = registry.get_last_published_annotation_types(slug) or {}
     writes = {
         "entities": [r["kind"] for r in what_it_is if r["candidate"]],
@@ -306,6 +307,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
         "licence": licence.get("value", ""),
         "survey_reports_linked": len(published),
         "last_published_at": max(published.values(), default=""),
+        **publish_fields(registry, slug, max(published.values(), default="")),
         "catalogued": bool(getattr(project, "egeria_asset_guid", "")),
         "asset_guid": getattr(project, "egeria_asset_guid", "") or "",
     }

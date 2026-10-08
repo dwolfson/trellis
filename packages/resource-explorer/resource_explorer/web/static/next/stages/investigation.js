@@ -112,6 +112,10 @@ function bindingGlyph(inv) {
   // not a display string — {status, egeria_project_guid,
   // egeria_project_qualified_name, free_text_name}. Use the qualified name
   // straight off the row, same as the detail view does.
+  if (!inv.egeria_project_guid && inv.egeria_context && inv.egeria_context.status === 'unbound') {
+    // After an Egeria reset: the project it named is gone. Not "local" (a choice) and not "Egeria" (a project).
+    return '<span class="text-state-warn" title="unbound by reset \u00b7 rebind to recreate">unbound by reset</span>';
+  }
   return inv.egeria_project_guid
     ? `<span title="${esc(inv.egeria_project_qualified_name || 'bound to an Egeria Project')}">☁ Egeria</span>`
     : '<span class="text-ink-muted" title="no Egeria Project">🏠 local</span>';

@@ -23,7 +23,7 @@
  * (ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md) was a status written to a transient
  * DOM node that a whole-pane reload then wiped; nothing here is transient.
  */
-import { ago } from '/static/next/format.js';
+import { ago, storedCopyWords } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getNativeSurveys, runNativeSurvey, refreshNativeSurveys, getNativeSurveyReport,
@@ -211,9 +211,13 @@ async function openReport(slug, reportGuid) {
     return;
   }
   const anns = rep.annotations || [];
+  // This is RE's own stored copy; say so, with when it was read from Egeria, and ONE added line only when the
+  // reset marker postdates that read (the server decides, from the marker row).
+  const copy = storedCopyWords(rep);
   body.innerHTML = `
-    <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Report from ${
-      esc(rep.report_at || 'an unrecorded time')} · read into RE ${esc(rep.read_at || '')}</div>
+    <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(copy.head)}
+      · report from ${esc(rep.report_at || 'an unrecorded time')}</div>
+    ${copy.resetLine ? `<div class="mb-s2 text-provenance text-state-warn" data-stored-copy-reset>${esc(copy.resetLine)}</div>` : ''}
     <div class="mb-s2 text-provenance text-ink-muted">engine action <span class="font-mono">${esc(rep.engine_action_guid)}</span>
       · <span class="tnum">${anns.length}</span> annotation${anns.length === 1 ? '' : 's'}</div>
     ${anns.length ? `<ul class="max-w-[70ch] list-disc pl-s4">${anns.map((a) => `

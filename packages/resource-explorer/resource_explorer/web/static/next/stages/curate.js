@@ -9,7 +9,7 @@
  * offer, the verdict recorder — is reached only from within `renderCurate`
  * itself or from other functions in this module, so it stays unexported.
  */
-import { ago } from '/static/next/format.js';
+import { ago, PUBLISHED_EARLIER_SENTENCE, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import {
@@ -233,7 +233,8 @@ function curateWritesHtml(plan, picks, subCount, containers = 0) {
     : `Owner · the person who catalogs, as interim`);
   lines.push(w.licence ? `License · ${esc(w.licence)}` : `License · not confirmed on the Enrichment pane`);
   lines.push(`<span class="tnum">${w.survey_reports_linked || 0}</span> survey report${w.survey_reports_linked === 1 ? '' : 's'} already linked, not copied${
-    w.last_published_at ? ` · last <span class="tnum">${esc(ago(w.last_published_at))}</span>` : ''}${
+    w.last_published_at ? ` · last <span class="tnum">${esc(ago(w.last_published_at))}</span>${
+      w.published_state === 'published_earlier' ? ` · <span title="${esc(PUBLISHED_EARLIER_SENTENCE)}">${esc(PUBLISHED_EARLIER_WORD)}</span>` : ''}` : ''}${
     w.catalogued ? ` · <span class="font-mono">${esc(String(w.asset_guid).slice(0, 8))}…</span> is the asset` : ' · no asset yet'}`);
   return lines.map((l) => `<div class="text-caveat text-ink">${l}</div>`).join('');
 }

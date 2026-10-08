@@ -565,7 +565,18 @@ async def next_steps(slug: str) -> dict:
                           + "Dispositions are how this investigation says which ones matter.",
                 "action": "disposition",
             })
-    if inv.get("egeria_project_status") != "linked":
+    if inv.get("egeria_project_status") == "unbound":
+        # After an Egeria reset: the project it named is gone. A status word with a proof or none at all,
+        # so this is its own state, not "local only" (a choice) and not "linked" (a project that is there).
+        from resource_explorer.catalogue_commit import PROJECT_UNBOUND_WORDS
+        steps.append({
+            "id": "bind_egeria",
+            "title": PROJECT_UNBOUND_WORDS,
+            "detail": "Egeria was reset and the project this investigation named is gone. Promote to "
+                      "recreate it under the same name, or bind to an existing Egeria Project.",
+            "action": "egeria",
+        })
+    elif inv.get("egeria_project_status") != "linked":
         steps.append({
             "id": "bind_egeria",
             "title": "Local only — not in Egeria",

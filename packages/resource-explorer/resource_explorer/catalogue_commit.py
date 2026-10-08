@@ -124,6 +124,13 @@ P_ADOPTED = "create_error_adopted"
 #: what was once in Egeria and proves nothing about now; the screen says so, from this row, and counts 0 in
 #: Egeria until a later proof says otherwise. `detail` carries `text` ("Egeria reset <when> · old → new").
 P_EGERIA_RESET = "egeria_reset"
+#: The status value an Egeria project context (entity_egeria_project_context.status, investigations.
+#: egeria_project_status) takes after a reset, when the Egeria project it named is gone. A status VALUE, never
+#: the words: the words are display text only. It is "not answered" exactly as `unset` is, so a publish is
+#: gated and offers the same two choices (bind a project, or publish without one).
+PROJECT_UNBOUND = "unbound"
+PROJECT_UNBOUND_WORDS = "unbound by reset \u00b7 rebind to recreate"
+PROJECT_UNANSWERED = ("unset", PROJECT_UNBOUND)
 RESET_WORDS = "published earlier · Egeria was reset · not in Egeria now"
 #: The schema states that mean "Egeria holds it right now" (read back or attached), for the header's count.
 IN_EGERIA_STATES = ("catalogued", "attached_waiting", "restored")
@@ -1845,3 +1852,46 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     except Exception as exc:
         _fail_step(cur, curation_id, "read_back", exc)
     return cur.finish(curation_id)
+
+
+# ── "published" badges that read the reset marker ────────────────────────────
+
+PUBLISHED_EARLIER_SHORT = "published earlier"
+PUBLISHED_EARLIER_WORDS = "published earlier · Egeria was reset"
+
+
+def _iso_key(text: str) -> str:
+    return (text or "").strip().replace(" ", "T").rstrip("Z")
+
+
+def egeria_reset_at(registry, slug: str) -> str:
+    """The reset time for this resource from its `egeria_reset` marker, '' when there is none. Tolerates a
+    registry without the reader (a test double): no marker known means no reset claimed."""
+    fn = getattr(registry, "get_egeria_reset_at", None)
+    try:
+        return (fn(slug) if fn else "") or ""
+    except Exception:
+        return ""
+
+
+def published_state(published_at: str, reset_at: str) -> str:
+    """'' (never published), 'published' (at or after the reset, or no reset), or 'published_earlier' (the
+    row predates the marker, so it proves nothing about what Egeria holds now). A badge made from the row's
+    existence alone would say Published for a row Egeria no longer has any element for."""
+    if not published_at:
+        return ""
+    if reset_at and _iso_key(published_at) < _iso_key(reset_at):
+        return "published_earlier"
+    return "published"
+
+
+def publish_fields(registry, slug: str, published_at: str, reset_at: str | None = None) -> dict:
+    """The two fields every payload that carries `last_published_at` adds, so the screen can pick its words."""
+    reset = egeria_reset_at(registry, slug) if reset_at is None else reset_at
+    return {"published_state": published_state(published_at, reset), "egeria_reset_at": reset}
+
+
+def reset_since_read(read_at: str, reset_at: str) -> bool:
+    """True when the reset marker postdates a read: what was read is a copy of an element Egeria no longer
+    holds. No marker, or a marker at or before the read, is False (a read at or after the reset is live)."""
+    return bool(read_at and reset_at and _iso_key(reset_at) > _iso_key(read_at))

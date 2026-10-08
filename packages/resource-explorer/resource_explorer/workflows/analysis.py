@@ -1028,6 +1028,9 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
     publish_stale = publish_linkage.get("status") == "stale"
     publish_uncatalogued = publish_linkage.get("status") == "uncatalogued"
 
+    from resource_explorer.catalogue_commit import egeria_reset_at, publish_fields
+    reset_at = egeria_reset_at(registry, slug)
+
     result: dict[str, dict] = {}
     for a in get_analyses(entity_type, include_egeria_live=False):
         run = last_run.get(a["id"], {})
@@ -1051,6 +1054,7 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
             "last_run_partial": run.get("last_run_partial", False),
             "last_published_at": pub_at,
             "last_published_scope": pub_scope,
+            **publish_fields(registry, slug, pub_at, reset_at),
             "publish_stale": bool(pub_at) and publish_stale,
             "publish_uncatalogued": publish_uncatalogued,
         }
@@ -1186,6 +1190,9 @@ def build_survey_results(
     if board_id:
         fast = _read_board_summary_if_fresh(registry, entity_type, slug, board_id, stage, include_empty)
         if fast is not None:
+            # The persisted summary was written before any reset; the marker is read NOW, every time.
+            for _board in fast.get("dashboards") or []:
+                _board.update(_reset_fields(registry, slug, _board.get("last_published_at", "")))
             return fast
 
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
@@ -1239,6 +1246,7 @@ def build_survey_results(
                 "has_results": has_results,
                 "analyses": analyses,
                 "last_published_at": last_published_at,
+                **_reset_fields(registry, slug, last_published_at),
                 "publish_stale": bool(last_published_at) and publish_stale,
                 "publish_uncatalogued": publish_uncatalogued,
                 "last_surveyed_at": last_surveyed_at,
@@ -1290,6 +1298,7 @@ def build_survey_results(
             "has_results": has_results,
             "analyses": analyses,
             "last_published_at": last_published_at,
+            **_reset_fields(registry, slug, last_published_at),
             "publish_stale": bool(last_published_at) and publish_stale,
             "publish_uncatalogued": publish_uncatalogued,
             "last_surveyed_at": last_surveyed_at,
@@ -1322,6 +1331,14 @@ def _latest_run_at(registry, entity_type: str, slug: str, analysis_ids: list[str
         (last_run.get(aid, {}).get("last_run_at") or "" for aid in analysis_ids),
         default="",
     )
+
+
+def _reset_fields(registry, slug: str, published_at: str) -> dict:
+    """`published_state` / `egeria_reset_at` for a board, from the `egeria_reset` marker (see
+    catalogue_commit.publish_fields). Read at answer time, so a persisted board summary written before a
+    reset is corrected on the way out."""
+    from resource_explorer.catalogue_commit import publish_fields
+    return publish_fields(registry, slug, published_at)
 
 
 def _read_board_summary_if_fresh(

@@ -25,8 +25,9 @@ APPLY needs ALL of these, and refuses (exit 2, saying which) when any is missing
 What it does (all in RE's registry; no Egeria call; no DDL; no proof row is ever deleted or edited):
 
   CLEAR a pointer column (row kept):      projects/databases/file_systems.egeria_asset_guid, sub_resources.egeria_guid,
-        investigations.egeria_project_guid, entity_egeria_project_context.egeria_project_guid (+ status becomes
-        UNBOUND_STATUS), working_sets.egeria_collection_guid, work_lists.egeria_guid + published_at,
+        investigations.egeria_project_guid (+ egeria_project_status becomes `unbound`, only for rows that were
+        `linked`), entity_egeria_project_context.egeria_project_guid (+ status becomes the VALUE `unbound`;
+        "unbound by reset · rebind to recreate" is display text only, and a publish is gated on it as on `unset`), working_sets.egeria_collection_guid, work_lists.egeria_guid + published_at,
         doc_sources (2 guids), rfa_actions (2 guids), and the report-guid column of the publish-state tables
         (database_surveys, filesystem_surveys, project_egeria_surveys, project_published_analyses,
         project_published_annotation_types). The rows, their times and who made them stay.
@@ -36,7 +37,7 @@ What it does (all in RE's registry; no Egeria call; no DDL; no proof row is ever
   OUTBOX: rows that are not terminal (not done, dead, superseded or cancelled) become 'superseded' with the
         reason "Egeria reset <when>". 'done' rows are kept untouched; 'dead' rows are left 'dead' (listed as
         "dead before the reset · untouched").
-  MARKERS: ONE catalogue_commit_proofs row per resource that has proofs, proof kind 'egeria_reset', read_at = the
+  MARKERS: ONE catalogue_commit_proofs row per resource that has proofs or a "Published" badge row, proof kind 'egeria_reset', read_at = the
         reset time, text "Egeria reset <when> · old collection id → new". Status derives from it (see
         catalogue_commit.derive_commit_state).
 
@@ -61,21 +62,31 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-#: Status an entity_egeria_project_context row takes when its Egeria project is gone (architect's ruling).
-UNBOUND_STATUS = "unbound by reset · rebind to recreate"
+from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS  # noqa: E402
+
+# UNBOUND_STATUS is the status VALUE `unbound` (architect's ruling 2026-10-08), written to
+# entity_egeria_project_context.status and investigations.egeria_project_status. The words
+# "unbound by reset · rebind to recreate" are display text only (catalogue_commit.PROJECT_UNBOUND_WORDS);
+# the publish gate treats `unbound` exactly as `unset`.
 
 OUTBOX_TERMINAL = ("done", "dead", "superseded", "cancelled")
 SETTING_PREFIXES = ("egeria_register_claim::", "egeria_server_claim::", "egeria_server_unconfirmed::")
 SETTING_KEYS = ("egeria.github_source_control_library_guid",)
 PROOF_KIND = "egeria_reset"
 
-#: (table, key columns, {column: new value}, trigger columns (the row is touched when one is non-empty))
+#: (table, key columns, {column: new value}, trigger columns (the row is touched when one is non-empty)
+#: [, extra SQL condition that must also hold, [, id suffix]])
 CLEAR_SPECS = [
     ("projects", ["slug"], {"egeria_asset_guid": None}, None),
     ("databases", ["slug"], {"egeria_asset_guid": ""}, None),
     ("file_systems", ["slug"], {"egeria_asset_guid": ""}, None),
     ("sub_resources", ["id"], {"egeria_guid": ""}, None),
-    ("investigations", ["slug"], {"egeria_project_guid": ""}, None),
+    # Only a row that was `linked` becomes `unbound`: a status word `linked` with an empty GUID would be a word
+    # without a proof. A row with a GUID but some other status keeps its status and loses only the GUID.
+    ("investigations", ["slug"], {"egeria_project_guid": "", "egeria_project_status": UNBOUND_STATUS}, ["egeria_project_guid"],
+     "egeria_project_status = 'linked'", "linked"),
+    ("investigations", ["slug"], {"egeria_project_guid": ""}, None,
+     "coalesce(egeria_project_status, '') <> 'linked'", "other"),
     ("entity_egeria_project_context", ["entity_type", "entity_slug", "user_id"],
      {"egeria_project_guid": "", "status": UNBOUND_STATUS}, ["egeria_project_guid"]),
     ("working_sets", ["slug"], {"egeria_collection_guid": ""}, None),
@@ -144,7 +155,7 @@ def connect(url: str):
 def check_schema(conn) -> None:
     """Every table and column the script touches must exist. A missing one stops the run, naming it."""
     want: dict[str, set] = {}
-    for table, keys, setcols, trig in CLEAR_SPECS:
+    for table, keys, setcols, trig, *_ in CLEAR_SPECS:
         want.setdefault(table, set()).update(keys, setcols, trig or [])
     for table, keys in DELETE_SPECS:
         want.setdefault(table, set()).update(keys)
@@ -192,13 +203,15 @@ def _rows(conn, sql: str, params=()) -> list[dict]:
 
 def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> dict:
     actions = []
-    for table, keys, setcols, trig in CLEAR_SPECS:
+    for table, keys, setcols, trig, *more in CLEAR_SPECS:
+        extra = more[0] if more else ""
+        suffix = f":{more[1]}" if len(more) > 1 else ""
         trig = trig or list(setcols)
         cols = list(dict.fromkeys(keys + list(setcols)))
-        where = " OR ".join(_nonempty(c) for c in trig)
+        where = "(" + " OR ".join(_nonempty(c) for c in trig) + ")" + (f" AND {extra}" if extra else "")
         rows = _rows(conn, f"SELECT {', '.join(cols)} FROM {table} WHERE {where} ORDER BY {', '.join(keys)}")
-        actions.append({"id": f"clear:{table}", "kind": "clear_columns", "table": table, "keys": keys,
-                        "set": setcols, "trigger": trig, "rows": rows, "count": len(rows)})
+        actions.append({"id": f"clear:{table}{suffix}", "kind": "clear_columns", "table": table, "keys": keys,
+                        "set": setcols, "trigger": trig, "extra": extra, "rows": rows, "count": len(rows)})
     for table, keys in DELETE_SPECS:
         rows = _rows(conn, f"SELECT {', '.join(keys)} FROM {table} ORDER BY {', '.join(keys)}")
         # the whole row is the snapshot for a removed cache row (these tables hold no credentials)
@@ -225,16 +238,27 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> d
     for table, node in (("databases", NODE_DATABASE), ("projects", NODE_REPO), ("file_systems", NODE_OTHER)):
         for r in _rows(conn, f"SELECT slug FROM {table}"):
             kinds.setdefault(r["slug"], node)
+    # A resource whose only trace of a publish is a "Published" badge row (project_published_annotation_types /
+    # project_published_analyses) has no proof rows, yet its badge would still say Published for elements the
+    # reset removed. It gets a marker too, because the badge reads the marker.
+    pub_earlier: dict[str, int] = {}
+    for table in ("project_published_annotation_types", "project_published_analyses"):
+        for r in _rows(conn, f"SELECT project_slug, COUNT(*) AS n FROM {table} "
+                             "WHERE published_at IS NOT NULL AND published_at <> '' AND published_at < ? "
+                             "GROUP BY project_slug", (reset_at,)):
+            pub_earlier[r["project_slug"]] = pub_earlier.get(r["project_slug"], 0) + r["n"]
     markers, after = [], []
-    for slug in sorted(by):
-        real = [p for p in by[slug] if p["proof"] != PROOF_KIND]
-        have = [p for p in by[slug] if p["proof"] == PROOF_KIND and (p["read_at"] or "") == reset_at]
+    for slug in sorted(set(by) | set(pub_earlier)):
+        rows_for = by.get(slug, [])
+        real = [p for p in rows_for if p["proof"] != PROOF_KIND]
+        have = [p for p in rows_for if p["proof"] == PROOF_KIND and (p["read_at"] or "") == reset_at]
         if any((p["read_at"] or "") > reset_at for p in real):
             after.append(slug)
-        if have or not any((p["read_at"] or "") < reset_at for p in real):
+        n_earlier = sum(1 for p in real if (p["read_at"] or "") < reset_at)
+        if have or not (n_earlier or pub_earlier.get(slug)):
             continue
         markers.append({"slug": slug, "node_kind": kinds.get(slug, NODE_OTHER),
-                        "earlier_proofs": sum(1 for p in real if (p["read_at"] or "") < reset_at),
+                        "earlier_proofs": n_earlier, "earlier_published_rows": pub_earlier.get(slug, 0),
                         "text": f"Egeria reset {human_when(reset_at)} · {old_id or 'unknown'} → {new_id or 'unknown'}"})
     actions.append({"id": "marker:catalogue_commit_proofs", "kind": "write_markers",
                     "table": "catalogue_commit_proofs", "rows": markers, "count": len(markers)})
@@ -358,9 +382,10 @@ def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: date
                 if a["kind"] == "clear_columns":
                     sets = ", ".join(f"{c} = ?" for c in a["set"])
                     trig = " OR ".join(_nonempty(c) for c in a["trigger"])
+                    extra = f" AND {a['extra']}" if a.get("extra") else ""
                     for r in a["rows"]:
                         where = " AND ".join(f"{k} = ?" for k in a["keys"])
-                        cur = conn.execute(f"UPDATE {a['table']} SET {sets} WHERE {where} AND ({trig})",
+                        cur = conn.execute(f"UPDATE {a['table']} SET {sets} WHERE {where} AND ({trig}){extra}",
                                            [a["set"][c] for c in a["set"]] + [r[k] for k in a["keys"]])
                         n[0] += cur.rowcount or 0
                 elif a["kind"] == "delete_rows":

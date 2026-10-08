@@ -704,7 +704,7 @@ class EgeriaResync:
         none was decided). Shared by `_publish_readiness` and
         `_scan_registration_only` so the two cannot answer differently.
         """
-        if context not in ("", "none", "unset"):
+        if context not in ("", "none", "unset", "unbound"):
             return True, f"context '{context}'"
         try:
             inherited = self._registry.inherited_egeria_project_context("repo", slug)
@@ -1343,7 +1343,7 @@ class EgeriaResync:
 
         reg = self._registry
         context = reg.get_project_context("repo", slug)
-        if not context or context.get("status") == "unset":
+        if not context or context.get("status") in ("unset", "unbound"):
             inherited = reg.inherited_egeria_project_context("repo", slug)
             if not inherited:
                 # Reached only if the context changed between scan and apply:
