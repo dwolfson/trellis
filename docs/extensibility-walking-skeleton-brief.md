@@ -68,24 +68,42 @@ wheel so a notebook can `pip install` it. Contents, minimal:
 - **No executor** in the library. A routine is called directly; a step is
   run by a host (RE's orchestrator, Prefect) that imports the library.
 
-### 2b. One routine: `database_survey_trend`
+### 2b. One routine: `curation_coverage` (owner, 2026-10-07: "good idea for the routine")
 
-`db_chart_data.survey_history` lifted into the library as
-`trellis_analytics.routines.database_survey_trend(ods, slug, limit=30) ->
-TrendResult`: schemas, tables, columns per run, with an `Envelope` on the
-whole (`measured` when ≥2 runs, `nothing_found` when 0, `not_established`
-when the registry is unreadable) and per-run provenance (survey id,
-surveyed_at). RE's route calls the library function and keeps its JSON
-shape, so Understanding is unchanged on screen (one assertion: the route's
-output before and after is identical for coco_pharma's fixture).
+The first routine is **curation coverage**, analysis 1 of
+`DESIGN-CURATE-BY-ANALYSIS.md`, in place of the survey trend: its value is
+obvious on the Curate page the owner is looking at, and it is wanted in
+three places at once. The survey trend stays a later routine.
 
-**Proven from three hosts** (A11's proof): a script in the package's
-`examples/`; a notebook in the same folder run by papermill in the test
-(parameter `slug`); and a Portal tile, which is a `FormatSet` with
-`analytic_function="trellis_analytics.routines.database_survey_trend"`,
-output `SERIES`, loaded through `PYEGERIA_REPORT_SPEC_MODULES`. The Portal
-tile test runs `exec_report_spec` on the spec with a fake ODS and asserts
-a Vega-Lite series; the live Portal check is the owner's.
+`trellis_analytics.routines.curation_coverage(ods, resource_type, slug) ->
+CoverageResult`, `family="Curation"`, `source=ods`, no credential, no
+Egeria call. Inputs, all from the curation record in the ODS:
+`catalogue_commit_proofs` (published elements by GUID, read-back rows
+only), `catalogue_scope_events` and `resource_scope_events` (choices:
+include, leave out, undecided, proposal source), the survey report's
+annotation count and its publish proof, the Enrichment fields' publish
+rows (once P1 exists; `not applicable` until then), the outbox's `kept,
+not sent` and `superseded` rows. Output: the counts of analysis 1 with
+their words ("published · 54 tables · 1 term · 1 report (76 annotations) ·
+read back <when>"; "not yet published · 26 undecided · 1 left out by a
+person · N confirmed not published · M proposals awaiting"; "blocked · K
+(ISSUE-117 block, kept not sent)"), each count carrying the row ids it
+counts, and an `Envelope` on the whole: `measured` when the registry
+answered, `nothing_found` when the resource has no commit and no choice
+("nothing published yet · <n> known to RE"), `not_established` when the
+registry could not be read (reason named), `not_applicable` for a kind
+with no curation record.
+
+RE's Curate By-analysis tab calls the library function and renders its
+rows (the tab's hide-with-sentence goes when this lands). **Proven from
+three hosts** (A11's proof): a script in `examples/`; a papermill notebook
+with `slug` as its parameter; a Portal tile as a `FormatSet` with
+`analytic_function="trellis_analytics.routines.curation_coverage"`, output
+a KPI row plus a `BAR` of published versus not-yet-published, loaded
+through `PYEGERIA_REPORT_SPEC_MODULES`; the tile test runs
+`exec_report_spec` on a fake ODS and asserts the counts and the envelope's
+state rendered as the chart's subtitle. The live Portal check is the
+owner's.
 
 ### 2c′. Three levels of a step (owner, 2026-10-07), and what each owns
 
@@ -353,10 +371,11 @@ rows and the Portal tile; the question-binding of the new annotations
 - Library: envelope round-trips through `additionalProperties`; `ods` reader
   opens a scratch SQLite registry only (the registry guard applies here as
   everywhere).
-- Routine: output equals the route's for the fixture; three hosts (script,
-  papermill notebook, `exec_report_spec`) produce the same numbers; the
-  `nothing_found` and `not_established` states on empty and unreadable
-  fixtures.
+- Routine: output equals Curate's By-analysis rows for the fixture; three
+  hosts (script, papermill notebook, `exec_report_spec`) produce the same
+  numbers; the `nothing_found` and `not_established` states on a resource
+  with no commits and an unreadable registry; every count carries the row
+  ids it counts.
 - Step: four envelope states from four fixtures; annotations stored with
   the envelope; the generated catalog entry equals the manifest; the
   Analysis row's state word derives from the envelope (change the value,
@@ -367,13 +386,16 @@ rows and the Portal tile; the question-binding of the new annotations
 
 ## 6. Gate (owner, by use)
 
-1. Understanding's trend chart on coco_pharma is unchanged.
+1. Curate's By analysis on coco_pharma reads the published count equal to
+   the gate's read-back, names the 26 undecided and the one left out, and
+   counts the Sales Forecast assignment as confirmed; the same numbers as
+   the routine prints.
 2. In a notebook, `from trellis_analytics.routines import
-   database_survey_trend` runs against the ODS URL and prints the same
-   numbers with the envelope's state.
+   curation_coverage` runs against the ODS URL and prints those numbers
+   with the envelope's state.
 3. On the Portal, the "Analytic Functions" tab lists the Trellis routine
-   and the step; a Dashboard Sheet shows the trend tile with "from
-   trellis-analytics 0.1.0 · as of <time>".
+   and the step; a Dashboard Sheet shows the coverage tile with "from
+   trellis-analytics 0.1.0 · as of <time>" and the state word as subtitle.
 4. In RE, the step appears in the Analysis stage for coco_pharma, runs,
    and its rows read `measured` / `nothing found` / `not established` from
    the envelope; the Dr.Egeria document is generated and reads correctly
@@ -382,7 +404,8 @@ rows and the Portal tile; the question-binding of the new annotations
 ## 7. Order and ownership
 
 One builder, in the order 2a → 2b → 2d → 2c, because the step is the
-largest and the routine proves the library first. The egeria-python
+largest and the routine proves the library first; 2b is curation coverage,
+read from coco_pharma's curation record. The egeria-python
 changes are a separate PR the owner approves; until it merges the manifest
 subclasses carry the five fields themselves and the registry registration
 uses the existing call, so the skeleton runs on pyegeria 6.1.29 as pinned.

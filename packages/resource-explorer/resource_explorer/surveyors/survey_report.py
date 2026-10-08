@@ -555,6 +555,30 @@ def disambiguate_shared_check_names(annotations) -> int:
             if step:
                 ann.item_key = step
                 stamped += 1
+    # Second pass: the executor stamps every keyless annotation with the
+    # Survey Definition's qualified name (survey_definition_executor
+    # `_stamp_definition_provenance`), which runs BEFORE this and so made the
+    # pass above inert on that path: scan steps' `scan_summary` all arrived
+    # carrying the same definition key (found 2026-10-08, egeria_workspaces_git
+    # Full Survey). Where one (check_name, item_key) is shared by annotations
+    # from DIFFERENT steps, qualify the key with the step. Only that ambiguous
+    # case changes: a key held by a single step is left exactly as it was, and
+    # two annotations from the SAME step with the same key are left alone so
+    # assert_unique_qualified_names still refuses them.
+    steps_by_key: dict[tuple[str, str], set[str]] = {}
+    for ann in annotations:
+        check = getattr(ann, "check_name", "") or ""
+        key = getattr(ann, "item_key", "") or ""
+        if check and key:
+            steps_by_key.setdefault((check, key), set()).add(getattr(ann, "analysis_step", "") or "")
+    ambiguous = {k for k, steps in steps_by_key.items() if len(steps) > 1}
+    for ann in annotations:
+        check = getattr(ann, "check_name", "") or ""
+        key = getattr(ann, "item_key", "") or ""
+        step = getattr(ann, "analysis_step", "") or ""
+        if (check, key) in ambiguous and step and hasattr(ann, "item_key"):
+            ann.item_key = f"{key}::{step}"
+            stamped += 1
     return stamped
 
 
