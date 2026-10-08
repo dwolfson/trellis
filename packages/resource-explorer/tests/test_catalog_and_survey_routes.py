@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from resource_explorer import catalog_and_survey as cas
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 from tests.test_catalog_and_survey import (
-    CATALOG_QN, DB_GUID, PASSWORD, SERVER_GUID, SERVER_NAME, SQN, RegPort)
+    CATALOG_QN, DB_GUID, PASSWORD, SERVER_GUID, SERVER_NAME, SQN, RegPort, refusal)
 
 BASE = "/api/native-surveys/database"
 
@@ -78,7 +78,7 @@ def test_a_record_that_cannot_be_registered_is_422_and_says_what_is_missing(clie
 
 def test_egeria_refusing_is_502_with_egerias_sentence_and_the_activity_row_has_no_password(
         client, port, registry):
-    port.process_error = RuntimeError(f"Connection refused at host (url carried {PASSWORD})")
+    port.process_error = refusal(f"Connection refused at host (url carried {PASSWORD})")
     r = client.post(f"{BASE}/adventureworks/register")
     assert r.status_code == 502 and "Connection refused" in r.json()["detail"]
     assert PASSWORD not in r.text

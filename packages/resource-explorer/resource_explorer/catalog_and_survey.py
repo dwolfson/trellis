@@ -761,11 +761,20 @@ def _register_steps(registry, port, entity_type, slug, technology_type, submitte
             process_guid = port.initiate_process(process.qualified_name, database_placeholders(entity))
         except Exception as exc:  # noqa: BLE001
             error = _egeria_sentence(exc, entity)
+            if _egeria_answered(exc):
+                registry.record_native_survey_submission(
+                    entity_type, slug, process.qualified_name, submitted_at,
+                    submit_error=error, submitted_by=submitted_by)
+                release_claim(registry, slug)             # Egeria refused it before writing: nothing started
+                raise nsr.NativeSurveyError(error) from exc
+            # No answer, a 5xx, a missing code or a garbled body: Egeria may have accepted the process and
+            # be creating the database. KEEP the claim; a re-press must not start a second process.
             registry.record_native_survey_submission(
                 entity_type, slug, process.qualified_name, submitted_at,
-                submit_error=error, submitted_by=submitted_by)
-            release_claim(registry, slug)                 # Egeria refused it: nothing was started
-            raise nsr.NativeSurveyError(error) from exc
+                submit_error=f"created or not yet known: {error}", submitted_by=submitted_by)
+            raise RegistrationUnresolved(
+                f"Egeria did not clearly answer the database process ({error}), so the database may or may "
+                f"not be created. RE will not submit it again until you press {START_AGAIN_LABEL!r}.") from exc
         registry.record_native_survey_submission(
             entity_type, slug, process.qualified_name, submitted_at,
             engine_action_guid=process_guid, submitted_by=submitted_by)

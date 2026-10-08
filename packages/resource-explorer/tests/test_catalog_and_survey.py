@@ -325,7 +325,7 @@ class TestAdoptByQualifiedName:
 class TestFailureSaysEgeriasSentence:
     def test_a_refused_process_submission_is_egerias_sentence_and_writes_no_database_pointer(self, registry):
         port = RegPort()
-        port.process_error = RuntimeError("OMAG-GOVERNANCE-400-011 The process is not recognized")
+        port.process_error = refusal("OMAG-GOVERNANCE-400-011 The process is not recognized")
         with pytest.raises(nsr.NativeSurveyError) as exc:
             register(registry, port)
         assert "OMAG-GOVERNANCE-400-011 The process is not recognized" in str(exc.value)
@@ -346,7 +346,7 @@ class TestFailureSaysEgeriasSentence:
     def test_egerias_sentence_is_not_cut(self, registry):
         port = RegPort()
         long = "x" * 900 + " FATAL: role \"surveyor\" does not exist"
-        port.process_error = RuntimeError(long)
+        port.process_error = refusal(long)
         with pytest.raises(nsr.NativeSurveyError) as exc:
             register(registry, port)
         assert str(exc.value).endswith('role "surveyor" does not exist')
@@ -469,7 +469,7 @@ class TestNoPasswordAnywhere:
     def test_the_password_is_in_no_request_no_log_no_proof_row(self, registry, caplog):
         caplog.set_level(logging.DEBUG)
         port = RegPort()
-        port.process_error = RuntimeError(f"jdbc failed for password {PASSWORD}")
+        port.process_error = refusal(f"jdbc failed for password {PASSWORD}")
         with pytest.raises(nsr.NativeSurveyError):
             register(registry, port)
         recorded = json.dumps(port.calls, default=str)
@@ -757,7 +757,7 @@ class TestNoSecondDatabaseProcess:
 
     def test_a_refused_submission_releases_the_claim(self, registry):
         port = RegPort()
-        port.process_error = RuntimeError("OMAG refused")
+        port.process_error = refusal("OMAG refused")
         with pytest.raises(nsr.NativeSurveyError):
             register(registry, port)
         port.process_error = None
@@ -827,7 +827,7 @@ class TestControlsAndProjection:
     def test_the_control_shows_after_a_failure(self, registry, state_fixture):
         port = RegPort()
         if state_fixture == "submit_failed":
-            port.process_error = RuntimeError("refused by egeria")
+            port.process_error = refusal("refused by egeria")
             with pytest.raises(nsr.NativeSurveyError):
                 register(registry, port)
         else:
@@ -1122,6 +1122,21 @@ class TestAmbiguousCreateFailuresKeepTheClaim:
         assert cas.take_server_claim(registry, SERVER_NAME) is False
 
 
+def refusal(message, code=400):
+    """A typed Egeria refusal (a 4xx API exception) whose str() is `message`, as pyegeria's would be."""
+    from pyegeria.core._exceptions import PyegeriaAPIException
+
+    class _Refusal(PyegeriaAPIException):
+        def __init__(self, msg):
+            Exception.__init__(self, msg)
+            self.related_http_code = code
+
+        def __str__(self):
+            return self.args[0]
+
+    return _Refusal(message)
+
+
 def typed(name, **attrs):
     import pyegeria.core._exceptions as ex
     cls = getattr(ex, name)
@@ -1235,3 +1250,66 @@ class TestFourthReviewLows:
     @pytest.mark.parametrize("text", ["Connection refused", "Connection to host.docker.internal:5432 refused"])
     def test_a_connection_refused_still_does(self, text):
         assert cas.reach_note_for({"state": nsr.FAILED, "message": text, "error": ""}) == cas.REACH_NOTE
+
+
+class TestDatabaseProcessSubmitFailures:
+    """Egeria may accept the CreateAndSurvey process and the client still see an error: only a genuine
+    pre-write refusal may release the database claim."""
+
+    @pytest.mark.parametrize("make", [
+        lambda: TimeoutError("read timed out"),
+        lambda: __import__("httpx").ReadTimeout("slow"),
+        lambda: typed("PyegeriaTimeoutException"),
+        lambda: typed("PyegeriaConnectionException"),
+        lambda: typed("PyegeriaAPIException", related_http_code=500),
+        lambda: typed("PyegeriaAPIException", related_http_code=503),
+        lambda: typed("PyegeriaAPIException"),
+        lambda: typed("PyegeriaAPIException", related_http_code=None),
+        lambda: typed("PyegeriaInvalidParameterException", response=object()),
+        lambda: typed("PyegeriaInvalidParameterException", response=None,
+                      e=__import__("json").JSONDecodeError("x", "y", 0)),
+    ])
+    def test_an_ambiguous_failure_keeps_the_claim_and_is_unresolved(self, registry, make):
+        port = RegPort()
+        port.process_error = make()
+        with pytest.raises(cas.RegistrationUnresolved) as exc:
+            register(registry, port)
+        assert "may or may not" in str(exc.value) and cas.START_AGAIN_LABEL in str(exc.value)
+        assert cas.claim_held(registry, "adventureworks")
+        run = registry.list_native_survey_runs("database", "adventureworks", CATALOG_QN)[0]
+        assert "created or not yet known" in run["submit_error"] and run["engine_action_guid"] == ""
+
+    def test_a_re_press_inside_the_window_makes_no_second_process_call(self, registry):
+        port = RegPort()
+        port.process_error = TimeoutError("read timed out")
+        with pytest.raises(cas.RegistrationUnresolved):
+            register(registry, port)
+        port.process_error = None
+        before = len([c for c in port.calls if c[0] == "initiate_process"])
+        with pytest.raises(nsr.NativeSurveyBusy):
+            register(registry, port)
+        assert len([c for c in port.calls if c[0] == "initiate_process"]) == before == 1
+
+    def test_the_row_offers_start_again_after_an_ambiguous_failure(self, registry):
+        port = RegPort()
+        port.process_error = TimeoutError("read timed out")
+        with pytest.raises(cas.RegistrationUnresolved):
+            register(registry, port)
+        row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
+        assert row["register"]["start_again"] is True
+
+    @pytest.mark.parametrize("make", [
+        lambda: typed("PyegeriaAPIException", related_http_code=400),
+        lambda: typed("PyegeriaUnauthorizedException", related_http_code=403),
+        lambda: typed("PyegeriaInvalidParameterException", response=None),
+    ])
+    def test_a_genuine_refusal_releases_the_claim(self, registry, make):
+        port = RegPort()
+        port.process_error = make()
+        with pytest.raises(nsr.NativeSurveyError) as exc:
+            register(registry, port)
+        assert not isinstance(exc.value, cas.RegistrationUnresolved)
+        assert not cas.claim_held(registry, "adventureworks")
+        port.process_error = None
+        register(registry, port)                         # may be pressed again at once
+        assert len(port.processes) == 1

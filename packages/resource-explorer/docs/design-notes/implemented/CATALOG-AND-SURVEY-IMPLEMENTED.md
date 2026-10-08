@@ -245,3 +245,17 @@ survey this database itself".
   repo's venv interpreter. Nothing in the product depends on it.
 * Still unverified live: which `related_http_code` Egeria returns for a template create that half-succeeds; whether a
   create the server completed after a client timeout shows up by qualifiedName promptly enough for the re-check.
+
+## Fifth review round (2026-10-08): the database process submit
+
+* The database `CreateAndSurvey` process submit used to release the claim on ANY exception. Egeria may accept the process and
+  the client still see a timeout, a 5xx, no code, or a garbled body, so a re-press could start a second process and a second
+  database. Now only a genuine pre-write refusal (4xx code, or a pre-request invalid-parameter error with no response) releases
+  the claim; anything else keeps it, records the run as "created or not yet known: <Egeria's sentence>", and raises
+  `RegistrationUnresolved` with the Start again path. A re-press inside the window makes no second `initiate_gov_action_process` call.
+* **Other initiate paths (reported, not changed):** the server survey (`initiate_gov_action_type` via `submit_native_survey`, also
+  what the manual `POST /run` on a server row calls) has NO claim: only the read-then-act in-flight guard on the proof rows. Two
+  near-simultaneous presses can both pass it and start two surveys, and a survey whose submit timed out after Egeria accepted it is
+  recorded as `submit_error` with no GUID, so a re-press starts another. The consequence is a second engine action and a second
+  survey report, not a second catalogue element; the launch is documented as not idempotent at Egeria. A claim around the survey
+  submit (same insert-if-absent mechanism, same answered/ambiguous rule) is the follow-up if a duplicate report matters.
