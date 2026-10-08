@@ -39,7 +39,7 @@ test('before the press the numbers equal the selection', async () => {
   assert.match(cell(box, 'report', 3), /survey of 2026-10-07 \(.*ago\)/);
   assert.equal(cell(box, 'entities', 2), '2 entities');
   assert.equal(cell(box, 'contained', 2), '2 files · 1 folder · 1 container');       // docs/ is the container of the two files
-  assert.equal(cell(box, 'file_types', 2), '1 DataSet element');
+  assert.equal(box.querySelector('[data-manifest-row="file_types"]'), null, 'the DataSet-per-type row is retired');
   assert.equal(cell(box, 'blueprints', 2), '2 (Deployment Blueprint)');
   assert.equal(cell(box, 'left_out', 2), '1 proposal not confirmed · 2 not selected');
   assert.equal(box.querySelector('[data-manifest-state]'), null, 'no state column before a press');

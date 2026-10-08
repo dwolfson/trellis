@@ -26,7 +26,7 @@ import { ago } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getRepoPublishState, publishRepoReport, forgetEgeriaLinks, resurveyRepo,
-  getEgeriaReports, getEgeriaReportAnnotations, getRepoFileTypes, commitRepoFileTypes,
+  getEgeriaReports, getEgeriaReportAnnotations, getFileTypeMeasurements,
 } from '/static/re-api.js';
 import {
   state, esc, $, ensureRailShowing, copyAsEvidence, openCurrentInvestigationStage,
@@ -362,63 +362,34 @@ function forgetHtml() {
     </div></div>`;
 }
 
-async function renderFileTypes(host, slug, signedIn) {
+/** File types are a MEASUREMENT (ruling 2026-10-07): the survey report carries them as Egeria's own
+ *  profile annotations, so this section only shows them. It sends nothing and has no button. DataSets
+ *  an earlier press made stay in Egeria and read as history. */
+async function renderFileTypeMeasurements(host, slug) {
   host.innerHTML = '<div class="text-caveat text-ink-muted">Reading the file types from RE\'s survey…</div>';
-  let pv;
-  try { pv = await getRepoFileTypes(slug); } catch (err) {
+  let m;
+  try { m = await getFileTypeMeasurements(slug); } catch (err) {
     if (host.isConnected) host.innerHTML = `<div class="text-caveat text-state-warn">The file types could not be read: ${esc(err.message)}</div>`;
     return;
   }
   if (!host.isConnected) return;
-  if (!pv.types.length) {
-    host.innerHTML = '<div class="text-caveat text-ink-muted">No file types are recorded: survey the repository first.</div>';
+  if (!m.inventoried) {
+    host.innerHTML = '<div class="text-caveat text-ink-muted" data-file-measurements-empty>No file inventory yet: survey the repository first.</div>';
     return;
   }
-  const canCommit = signedIn && !pv.blocker;
+  const top = (counts) => Object.entries(counts).sort((x, y) => y[1] - x[1]).slice(0, 6)
+    .map(([k, n]) => `${esc(k)} ${num(n)}`).join(' · ');
+  const profiles = m.profiles.map((p) => `<div class="py-[1px] text-caveat" data-file-measurement="${esc(p.name)}">
+      ${cue('measured', 'in the report')} <span class="text-ink">${esc(p.name)}</span>
+      <span class="text-provenance text-ink-muted">· ${top(p.counts)}</span></div>`).join('');
+  const retired = m.retired.length ? `<div class="mt-s2 text-provenance text-ink-muted" data-file-types-retired>earlier publishes</div>
+    ${m.retired.map((r) => `<div class="py-[1px] text-caveat" data-retired-dataset="${esc(r.label)}">
+      <span class="text-ink">${esc(r.label)}</span>
+      <span class="text-provenance text-ink-muted">· ${esc(r.word)}</span> ${guidHtml(r.dataset_guid)}</div>`).join('')}` : '';
   host.innerHTML = `
-    <div class="text-provenance text-ink-muted">Each chosen type becomes a DataSet in Egeria, linked to the repository asset. This is separate from Publish below; it is a preview only until you press Catalog file types.</div>
-    ${pv.blocker ? `<div class="mt-s1 text-caveat text-ink-muted" data-file-types-blocker>${esc(pv.blocker)}</div>` : ''}
-    <div class="mt-s1" data-file-types-list>${pv.types.map((t) => `<label class="flex items-baseline gap-s2 py-[1px] text-caveat">
-      <input type="checkbox" data-ft-label="${esc(t.label)}" data-ft-count="${esc(t.file_count)}" data-ft-exts="${esc(JSON.stringify(t.extensions))}"
-        ${canCommit && !(t.cataloged && t.linked) ? '' : 'disabled'}>
-      <span class="text-ink">${esc(t.label)}</span>
-      <span class="text-provenance text-ink-muted">${num(t.file_count)} files</span>
-      ${t.cataloged ? cue(t.linked ? 'measured' : 'partial', t.linked ? 'cataloged · read back' : 'cataloged, not linked') : ''}
-      ${t.dataset_guid ? guidHtml(t.dataset_guid) : ''}</label>`).join('')}</div>
-    <div class="mt-s2 flex items-baseline gap-s3">
-      ${button('data-file-types-go title="Creates a DataSet in Egeria for each ticked file type, linked to the repository asset. It does not survey or publish the report."', 'Catalog file types →', { disabled: !canCommit })}
-      <span data-file-types-feedback class="text-provenance text-ink-muted">${signedIn ? '' : 'sign in to catalog — it needs an author'}</span></div>`;
+    <div class="text-provenance text-ink-muted">Sent with the survey report, as profile annotations. Files are cataloged by selection on Curate.</div>
+    <div class="mt-s1">${profiles}</div>${retired}`;
   bindCopy(host);
-  // The ticked types feed the Curate commit table's "file types" row (repo-manifest.js).
-  const announcePicks = () => {
-    state.curate = state.curate || {};
-    state.curate.fileTypePicks = new Set([...host.querySelectorAll('[data-ft-label]:checked')].map((c) => c.dataset.ftLabel));
-    document.dispatchEvent(new CustomEvent('re:curate-picks'));
-  };
-  host.querySelectorAll('[data-ft-label]').forEach((c) => c.addEventListener('change', announcePicks));
-  const go = host.querySelector('[data-file-types-go]');
-  go.addEventListener('click', async () => {
-    if (go.dataset.pending) return;
-    const elements = [...host.querySelectorAll('[data-ft-label]:checked')].map((c) => ({
-      label: c.dataset.ftLabel, file_count: Number(c.dataset.ftCount) || 0,
-      extensions: (() => { try { return JSON.parse(c.dataset.ftExts || '[]'); } catch { return []; } })(),
-    }));
-    const fb = host.querySelector('[data-file-types-feedback]');
-    if (!elements.length) { fb.textContent = 'choose at least one file type'; return; }
-    go.dataset.pending = '1';
-    go.disabled = true;
-    fb.innerHTML = cue('running', `cataloging ${elements.length} file type${elements.length === 1 ? '' : 's'}…`);
-    let result = null;
-    let failure = '';
-    try { result = await commitRepoFileTypes(slug, elements); } catch (err) { failure = err.message; }
-    // The list is re-drawn from a re-read; the words per item come from the commit's own answer.
-    await renderFileTypes(host, slug, signedIn);
-    const out = host.querySelector('[data-file-types-feedback]');
-    if (!out) return;
-    if (failure) { out.textContent = `not cataloged · ${failure}`; return; }
-    out.innerHTML = result.items.map((i) => `<div data-file-type-result="${esc(i.label)}">${esc(i.label)} · ${
-      sentenceHtml(i.words, i.details ? `${i.words}\n${i.details}` : '')}</div>`).join('');
-  });
 }
 
 /** Draw the Publish band for the resource. Never throws into the pane: a failure says so in its own slot. */
@@ -441,12 +412,11 @@ export async function renderPublishBand(el, slug, entityType) {
   if (stale(el, slug)) return;
 
   const draw = (st, feedback = '') => {
-    // File types come BEFORE the Publish controls: they are a separate, optional catalog act (their own
-    // button, "Catalog file types →") and used to sit under Publish with a second bare "Catalog →".
+    // File types are a measurement the report carries (ruling 2026-10-07): shown here, never pressed.
     el.innerHTML = `${head}${repoStatusHtml(st)}
-      <details class="mt-s2" data-file-types-section><summary class="cursor-pointer text-answer text-ink">File types
-        <span class="text-provenance text-ink-muted">· optional · each chosen type becomes a DataSet in Egeria</span></summary>
-        <div class="mt-s1" data-file-types-host></div></details>
+      <details class="mt-s2" data-file-measurements-section><summary class="cursor-pointer text-answer text-ink">File types
+        <span class="text-provenance text-ink-muted">· in the survey report</span></summary>
+        <div class="mt-s1" data-file-measurements-host></div></details>
       ${controlsHtml(st, signedIn)}
       <div class="mt-s3" data-egeria-reports-host></div>`;
     bindCopy(el);
@@ -541,11 +511,11 @@ export async function renderPublishBand(el, slug, entityType) {
       });
     });
 
-    const ft = el.querySelector('[data-file-types-section]');
+    const ft = el.querySelector('[data-file-measurements-section]');
     ft?.addEventListener('toggle', () => {
       if (ft.open && !ft.dataset.loaded) {
         ft.dataset.loaded = '1';
-        renderFileTypes(ft.querySelector('[data-file-types-host]'), slug, signedIn);
+        renderFileTypeMeasurements(ft.querySelector('[data-file-measurements-host]'), slug);
       }
     });
   };
