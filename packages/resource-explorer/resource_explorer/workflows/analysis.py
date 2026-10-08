@@ -490,7 +490,8 @@ class DatabaseAnalysisRunResult:
     annotations: list[dict] = field(default_factory=list)
 
 
-def run_database_analysis(slug: str, analysis_id: str, *, registry=None) -> DatabaseAnalysisRunResult:
+def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
+                          credentials: dict | None = None) -> DatabaseAnalysisRunResult:
     """Run one database per-card analysis's mapped step(s) — the database
     equivalent of `run_analysis` above.
 
@@ -511,6 +512,10 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None) -> Data
     `status="error"`, exactly like `run_analysis` — only for something
     genuinely unexpected, which the caller (`execute_and_record_database_
     analysis` below) catches and records.
+
+    `credentials` (`{"user", "password"}`) is a credential typed for THIS run only (brief section
+    8, owner-approved 2026-10-07): it replaces the stored one, and it is never written anywhere by
+    this function. Only the in-process override path passes it; the run queue never does.
     """
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.database.database_surveyor import (
@@ -560,7 +565,7 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None) -> Data
             error=f"Analysis '{analysis_id}' has no local survey step(s) mapped.",
         )
 
-    if not db.db_user or not db.db_password:
+    if credentials is None and (not db.db_user or not db.db_password):
         return DatabaseAnalysisRunResult(
             status="error",
             error="No stored database credentials — register the database with "
@@ -570,7 +575,8 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None) -> Data
     steps = DATABASE_SURVEYOR_STEP_MAP[analysis_id]
     try:
         result = run_database_survey(
-            slug, credentials={"user": db.db_user, "password": db.db_password},
+            slug,
+            credentials=credentials or {"user": db.db_user, "password": db.db_password},
             registry=registry, steps=steps,
         )
     except Exception as exc:
@@ -623,6 +629,62 @@ def execute_and_record_database_analysis(slug: str, analysis_id: str, activity_i
     if result.status == "ok":
         _refresh_board_summaries_after_run(registry, "database", slug, analysis_id)
     return result
+
+
+#: The word an override row shows for a credential typed for one run, and the row's own statement
+#: that the run is not retried (the credential lives in session memory and dies with the session).
+OVERRIDE_SCOPE = "this run"
+NOT_RETRIED_WORDS = "not retried · credential was for this run only"
+
+
+def execute_override_database_analysis(slug: str, analysis_id: str, activity_id: str,
+                                       user: str, password: str, *, registry=None
+                                       ) -> DatabaseAnalysisRunResult:
+    """One database analysis run with a credential typed for this run only (brief section 8).
+
+    **In-process, on RE's own engine; never the run queue and never Prefect.** The queue persists
+    its payload in the registry and Prefect keeps flow parameters, and an override password may be
+    neither. So this runs where the request was received (`start_in_process`), holds the password in
+    memory for the call, and drops it: scrubbed from every string stored (summary, detail,
+    annotations summary), kept out of log lines by `redacting_logs`, never returned. The activity
+    row names the user it ran as and says it is not retried; it never carries the password.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.secret_redaction import redacting_logs, scrub
+
+    registry = registry or ProjectRegistry()
+    ran_as = {"user": user, "scope": OVERRIDE_SCOPE}
+    with redacting_logs(password):
+        try:
+            result = run_database_analysis(
+                slug, analysis_id, registry=registry,
+                credentials={"user": user, "password": password})
+        except Exception as exc:
+            # No traceback: its frames and message are the override's to leak.
+            msg = scrub(str(exc), password)
+            log.error("Database analysis override run crashed for %s/%s: %s", slug, analysis_id, msg)
+            registry.update_activity_status(
+                activity_id, "error", summary=f"'{analysis_id}' run crashed: {msg}",
+                detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": msg,
+                                   "ran_as": ran_as, "not_retried": NOT_RETRIED_WORDS}),
+            )
+            return DatabaseAnalysisRunResult(status="error", error=msg)
+    detail = {"analysis_id": analysis_id, "published": None, "ran_as": ran_as,
+              "not_retried": NOT_RETRIED_WORDS}
+    clean = DatabaseAnalysisRunResult(
+        status=result.status, summary=scrub(result.summary, password),
+        error=scrub(result.error, password), annotations=scrub(result.annotations, password))
+    if clean.status == "error":
+        detail["error"] = clean.error or clean.summary
+    else:
+        detail["message"] = clean.summary
+    registry.update_activity_status(
+        activity_id, clean.status, summary=clean.summary or clean.error or "",
+        detail=json.dumps(detail), annotations=clean.annotations or None,
+    )
+    if clean.status == "ok":
+        _refresh_board_summaries_after_run(registry, "database", slug, analysis_id)
+    return clean
 
 
 def _humanise_age(seconds: float) -> str:

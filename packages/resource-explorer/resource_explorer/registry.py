@@ -11998,6 +11998,10 @@ class ProjectRegistry:
                         # frontend's ☁ Publish button uses this to decide
                         # whether it's a recovery action worth showing.
                         "last_publish_failed": detail.get("published") is False,
+                        # Who a credential-override run (brief section 8) ran as, and the
+                        # row's own statement that it is not retried; None for every other run.
+                        "ran_as": detail.get("ran_as") or None,
+                        "not_retried": detail.get("not_retried") or "",
                     }
                 continue
 

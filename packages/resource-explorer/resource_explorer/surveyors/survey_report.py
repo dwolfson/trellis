@@ -340,6 +340,15 @@ class SurveyResult:
     # failure into several false ones. `errors` stays the flat list every
     # existing caller reads.
     step_errors: dict[str, str] = field(default_factory=dict)
+    #: {step_key: [annotations]} for every step that RAN to completion in this run (including a step
+    #: that found nothing: an empty list, which is "ran, nothing found" and not "never ran"). The
+    #: orchestrator keeps these as the repository's latest survey (surveyors/survey_snapshot.py,
+    #: brief section 1) so a publish can send the survey a person decided on without running one.
+    step_annotations: dict[str, list] = field(default_factory=dict)
+    #: Why the survey could not be kept for later publishing, or "" (brief section 1). A survey that ran
+    #: but could not be kept is reported, not hidden: the next publish would otherwise say there is no
+    #: survey, with no word of why.
+    snapshot_error: str = ""
 
     def add(self, annotation: Annotation) -> None:
         self.annotations.append(annotation)

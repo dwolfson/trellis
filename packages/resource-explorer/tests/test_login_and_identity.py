@@ -594,22 +594,21 @@ class TestOwnershipAndZones:
         )
 
     def test_the_draft_zone_and_publish_zones_are_configurable(self, monkeypatch):
-        from resource_explorer.egeria_identity import draft_zone, publish_zones
+        from resource_explorer.egeria_identity import configured_publish_zones, draft_zone
 
         assert draft_zone() == "resource-explorer-draft"
-        # The default is what the quickstart actually configures, not a
-        # placeholder from a docstring example.
+        # Configured-only (owner, 2026-10-07): with nothing configured there is NO publish zone.
         monkeypatch.delenv("EXPLORER_PUBLISH_ZONES", raising=False)
         monkeypatch.setattr(
             "resource_explorer.config.get_config",
             lambda: type("c", (), {"egeria": type("e", (), {"default_catalog_zones": []})()})(),
         )
-        assert publish_zones() == ["egeria-runtime"]
+        assert configured_publish_zones() == []
 
         monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "re-draft-2")
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "alpha, beta")
         assert draft_zone() == "re-draft-2"
-        assert publish_zones() == ["alpha", "beta"]
+        assert configured_publish_zones() == ["alpha", "beta"]
 
 
 # ---------------------------------------------------------------------------
@@ -751,6 +750,8 @@ class TestCurateRoutes:
             lambda guid, identity=None: ["resource-explorer-draft"],
         )
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "egeria-runtime")
+        monkeypatch.setattr("resource_explorer.egeria_identity.read_zones",
+                            lambda guid, identity=None: ["egeria-runtime"])
 
         r = api.post("/api/curate/component-verdicts/repo/p",
                      json={"scope_locator": "src/a", "verdict": "accepted"},
@@ -759,6 +760,7 @@ class TestCurateRoutes:
         promotion = r.json()["promotion"]
         assert promotion["status"] == "promoted"
         assert promotion["zones"] == ["egeria-runtime"]
+        assert promotion["words"] == "accepted · zone egeria-runtime"
         # The transition, both ends of it — "promoted" alone cannot tell a real
         # move from a no-op.
         assert promotion["from_zones"] == ["resource-explorer-draft"]
@@ -812,6 +814,8 @@ class TestCurateRoutes:
             "resource_explorer.egeria_identity.set_zone_membership",
             lambda *a, **k: True,
         )
+        monkeypatch.setattr("resource_explorer.egeria_identity.read_zones",
+                            lambda guid, identity=None: ["egeria-runtime"])
         assert curate_wf.promote_to_publish_zones("g")["status"] == "promoted"
 
     def test_reject_does_not_promote_anything(self, client, monkeypatch):

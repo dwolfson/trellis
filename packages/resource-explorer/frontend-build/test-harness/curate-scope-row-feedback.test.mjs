@@ -42,7 +42,7 @@ test('the header asks the question and the cell answers with a selector: Include
 
 test('a three-mark legend above the table: filled, lowered, tagged', async () => {
   const { document } = await open(baseView());
-  assert.equal(flat(document.querySelector('[data-scope-legend]')), 'filled = your choice · lowered row = not included · bordered tag = differs or from a rule');
+  assert.equal(flat(document.querySelector('[data-scope-legend]')), 'filled = your choice · lowered row = not included · bordered tag = differs or from a scope rule');
 });
 
 test('a left-out row is lowered across its width, not struck through; an included one is not', async () => {

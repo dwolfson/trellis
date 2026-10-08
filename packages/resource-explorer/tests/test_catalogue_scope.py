@@ -215,7 +215,7 @@ def test_a_lens_term_in_table_names_is_a_suggested_rule_never_a_proposal(world):
     v = view(world, lens={"subjectTerms": ["orders"]})
     assert node(v, "sales", "orders")["proposal"] is None and node(v, "archive", "orders")["proposal"] is None
     assert v["suggested_rules"] == [{"term": "orders", "count": 2,
-        "text": "The lens names orders: 2 table names contain it · make that a rule?"}]
+        "text": "The lens names orders: 2 table names contain it · make that a scope rule?"}]
     assert view(world, lens={"subjectTerms": ["nothing_like_it"]})["suggested_rules"] == []
     assert "data_lens_match" not in cs.PROPOSAL_RULES
 

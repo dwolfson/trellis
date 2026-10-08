@@ -25,7 +25,7 @@
 import { ago } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
-  getRepoPublishState, publishRepoReport, forgetEgeriaLinks,
+  getRepoPublishState, publishRepoReport, forgetEgeriaLinks, resurveyRepo,
   getEgeriaReports, getEgeriaReportAnnotations, getRepoFileTypes, commitRepoFileTypes,
 } from '/static/re-api.js';
 import {
@@ -45,15 +45,20 @@ export const FORGET_SENTENCE =
 const button = (attrs, label, { disabled = false } = {}) =>
   `<button type="button" ${attrs} class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60"${disabled ? ' disabled' : ''}>${label}</button>`;
 
-/** What the Publish button really does (repo_publish.publish_report): it runs EVERY survey step again
- *  (`SurveyOrchestrator.run(slug, steps=None)`, no freshness check), then publishes that whole report
- *  to Egeria and reads it back. It is not "publish the surveys already on file". */
+/** What the Publish button really does (repo_publish.publish_report, brief section 1): it publishes the
+ *  survey ALREADY KEPT on this repository and reads the report back. It never runs a survey; "Re-survey
+ *  now" is its own act, beside it. */
 export const PUBLISH_SENTENCE =
-  'Runs every survey step on this repository again (no freshness check), then publishes the whole survey report '
-  + 'to Egeria and reads it back. It does not reuse an earlier survey.';
+  'Publishes the survey already kept on this repository to Egeria and reads the report back. '
+  + 'It does not run a survey: Re-survey now does that, separately.';
 /** The short words beside the button, idle and while it runs. */
-export const PUBLISH_IDLE_WORDS = 're-surveys everything, then publishes';
-export const PUBLISH_RUNNING_WORDS = 're-surveying everything, then publishing';
+export const PUBLISH_IDLE_WORDS = 'publishes the kept survey';
+export const PUBLISH_RUNNING_WORDS = 'publishing the kept survey';
+/** The sentence directly under a disabled Publish when nothing has been surveyed (brief section 1). */
+export const NO_SURVEY_SENTENCE = 'no survey to publish yet · run the first survey';
+/** What Re-survey now does, on hover. */
+export const RESURVEY_SENTENCE =
+  'Runs the survey on this repository and nothing else: nothing is sent to Egeria. The band then shows the new age.';
 const linkButton = (attrs, label) =>
   `<button type="button" ${attrs} class="cursor-pointer bg-transparent text-accent-ink underline disabled:opacity-60">${label}</button>`;
 const num = (n) => `<span class="tnum">${esc(n ?? 0)}</span>`;
@@ -65,7 +70,7 @@ const cue = (stateKey, word) => {
   // The tone class is a literal in each branch (no class interpolation): ok, warn, or muted.
   const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
     : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
-  return `${open} title="${esc(e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
+  return `${open} data-cue="${esc(stateKey)}" title="${esc(e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
 };
 
 const guidHtml = (guid) => guid
@@ -94,7 +99,7 @@ const byAttr = (root, attr, value) => [...root.querySelectorAll(`[${attr}]`)].fi
 export function reportRowHtml(row) {
   switch (row?.word) {
     case 'published':
-      return cue('measured', `published · read back ${ago(row.read_at)}`)
+      return cue('measured', `published · ${row.surveyed_at ? `from the survey of ${row.surveyed_at.slice(0, 10)} · ` : ''}read back ${ago(row.read_at)}`)
         + (row.reused ? ' <span class="text-provenance text-ink-muted">· reused the report already in Egeria</span>' : '')
         + (row.annotation_count != null ? ` <span class="text-provenance text-ink-muted">· ${num(row.annotation_count)} annotations</span>` : '');
     case 'sent':
@@ -300,21 +305,42 @@ function nonRepoStatusHtml(entityType, slug) {
     <div class="mt-s1 text-provenance text-ink-muted">${esc(how)}</div>`;
 }
 
+/** The survey a press would publish, before the press (brief section 1): its date, its age, its size,
+ *  and how much of it is stale. Stale steps are NAMED, not auto-run: a ⚠ and the word "stale", the list
+ *  one gesture away. With no survey: the sentence, and nothing else claims one exists. */
+export function surveyLineHtml(survey) {
+  if (!survey || !survey.exists) {
+    return `<div class="mt-s1 text-caveat" data-publish-survey="none">${cue('unrun', survey?.sentence || NO_SURVEY_SENTENCE)}</div>`;
+  }
+  const date = String(survey.surveyed_at || '').slice(0, 10);
+  const stale = survey.stale_steps
+    ? `<div class="mt-[2px] text-caveat" data-publish-stale>${cue('partial', 'stale')}
+        <span class="text-ink-muted">${num(survey.stale_steps)} of ${num(survey.steps)} steps are stale (older than their refresh rule) · re-survey to refresh</span>
+        <details class="inline"><summary class="inline cursor-pointer text-ink-muted underline">which</summary>
+          <span class="block font-mono text-provenance text-ink-muted">${(survey.stale || []).map(esc).join(', ')}</span></details></div>` : '';
+  return `<div class="mt-s1 text-caveat" data-publish-survey="kept">from the survey of <span class="tnum">${esc(date)}</span>
+      <span class="text-ink-muted">· ${esc(ago(survey.surveyed_at))} · ${num(survey.annotations)} annotations · ${num(survey.steps)} steps ran</span></div>${stale}`;
+}
+
 function repoStatusHtml(s) {
   return `<div class="text-caveat" data-publish-status>${s.in_egeria
     ? cue('measured', 'in Egeria') + ` <span class="text-provenance text-ink-muted">· asset</span> ${guidHtml(s.asset_guid)}`
     : cue('unrun', 'not in Egeria')}</div>
     <div class="mt-s1 text-caveat" data-publish-row>${reportRowHtml(s.row)}</div>
-    <div class="mt-s1 text-provenance text-ink-muted" data-publish-project>project · ${projectHtml(s.project)}</div>`;
+    <div class="mt-s1 text-provenance text-ink-muted" data-publish-project>project · ${projectHtml(s.project)}</div>
+    ${surveyLineHtml(s.survey)}`;
 }
 
 function controlsHtml(s, signedIn) {
   const label = s.can_publish_again ? 'Publish again' : 'Publish to Egeria →';
+  const hasSurvey = !!(s.survey && s.survey.exists);
   const why = signedIn ? '' : 'sign in to publish — it needs an author';
   return `<div class="mt-s2 flex flex-wrap items-baseline gap-s3">
-    ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !signedIn })}
+    ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !(signedIn && hasSurvey) })}
+    ${button(`data-resurvey-go title="${esc(RESURVEY_SENTENCE)}"`, hasSurvey ? 'Re-survey now →' : 'Run the first survey →', { disabled: !signedIn })}
     ${button('data-forget-open', 'Forget Egeria links…', { disabled: !(signedIn && s.in_egeria) })}
     <span data-publish-feedback class="text-provenance text-ink-muted" title="${esc(PUBLISH_SENTENCE)}">${esc(why || PUBLISH_IDLE_WORDS)}</span></div>
+    ${hasSurvey ? '' : `<div class="mt-[2px] text-provenance text-ink-muted" data-publish-blocker>${esc(s.survey?.sentence || NO_SURVEY_SENTENCE)}</div>`}
     <div data-publish-gate></div><div data-forget-confirm></div>`;
 }
 
@@ -363,6 +389,13 @@ async function renderFileTypes(host, slug, signedIn) {
       ${button('data-file-types-go title="Creates a DataSet in Egeria for each ticked file type, linked to the repository asset. It does not survey or publish the report."', 'Catalog file types →', { disabled: !canCommit })}
       <span data-file-types-feedback class="text-provenance text-ink-muted">${signedIn ? '' : 'sign in to catalog — it needs an author'}</span></div>`;
   bindCopy(host);
+  // The ticked types feed the Curate commit table's "file types" row (repo-manifest.js).
+  const announcePicks = () => {
+    state.curate = state.curate || {};
+    state.curate.fileTypePicks = new Set([...host.querySelectorAll('[data-ft-label]:checked')].map((c) => c.dataset.ftLabel));
+    document.dispatchEvent(new CustomEvent('re:curate-picks'));
+  };
+  host.querySelectorAll('[data-ft-label]').forEach((c) => c.addEventListener('change', announcePicks));
   const go = host.querySelector('[data-file-types-go]');
   go.addEventListener('click', async () => {
     if (go.dataset.pending) return;
@@ -454,12 +487,38 @@ export async function renderPublishBand(el, slug, entityType) {
         }
         try { await reread(); } catch { /* the failure below is what matters */ }
         const fb = el.querySelector('[data-publish-feedback]');
-        if (fb) fb.innerHTML = err.status === 409
-          ? cue('running', 'a publish is already running for this resource')
-          : cue('error', `not published · ${err.message}`);
+        if (fb) fb.innerHTML = err.status === 409 && err.message.startsWith('no survey')
+          ? cue('unrun', err.message)                    // nothing surveyed: nothing was sent
+          : err.status === 409
+            ? cue('running', 'a publish is already running for this resource')
+            : cue('error', `not published · ${err.message}`);
       }
     };
     go?.addEventListener('click', () => press(false));
+
+    // Re-survey now: runs the survey and NOTHING else. An immediate visible change on the press; the
+    // words after it come from the re-read state (the new age), never from the click.
+    const rs = el.querySelector('[data-resurvey-go]');
+    rs?.addEventListener('click', async () => {
+      if (rs.dataset.pending) return;
+      rs.dataset.pending = '1';
+      rs.disabled = true;
+      const idle = rs.textContent;
+      rs.textContent = 'Re-surveying …';
+      if (go) go.disabled = true;                          // a publish mid-survey would send a half-kept one
+      feedback.innerHTML = cue('running', 'surveying · nothing is sent to Egeria');
+      try {
+        const out = await resurveyRepo(slug);
+        await reread(out && out.ok === false
+          ? `survey finished with problems · ${(out.errors || []).join('; ').slice(0, 200)}` : 'survey kept · see its age above');
+      } catch (err) {
+        rs.disabled = false; rs.textContent = idle; delete rs.dataset.pending;
+        if (go) go.disabled = !(st.survey && st.survey.exists);
+        feedback.innerHTML = err.status === 409
+          ? cue('running', 'a survey is already running for this resource')
+          : cue('error', `not surveyed · ${err.message}`);
+      }
+    });
 
     el.querySelector('[data-forget-open]')?.addEventListener('click', () => {
       const slot = el.querySelector('[data-forget-confirm]');

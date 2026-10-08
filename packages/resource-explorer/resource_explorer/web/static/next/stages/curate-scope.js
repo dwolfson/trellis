@@ -549,7 +549,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
     <div data-scope-activity-rule class="mb-s1 text-provenance text-ink-muted">activity comes from the cumulative write counters since their last reset: dormant means 0 writes in at least ${esc(String(view.dormancy_days || 90))} days of evidence, and “can't tell” proposes nothing</div>
     ${activitySummaryHtml(view)}
     ${(view.suggested_rules || []).map((r) => `<div data-scope-suggested-rule class="mb-s1 text-caveat text-ink-muted">${esc(r.text)}</div>`).join('')}
-    ${(view.schemas || []).length ? `<div data-scope-legend class="mb-s1 text-provenance text-ink-muted">filled = your choice · lowered row = not included · bordered tag = differs or from a rule</div>` : ''}
+    ${(view.schemas || []).length ? `<div data-scope-legend class="mb-s1 text-provenance text-ink-muted">filled = your choice · lowered row = not included · bordered tag = differs or from a scope rule</div>` : ''}
     ${(view.schemas || []).length ? filterBarHtml(view) : ''}${bulkBarHtml(view, me)}
     <div data-scope-tree class="min-w-0 max-w-full overflow-x-auto" style="overflow-x:auto">${treeHtml(view, me)}</div>
     <div data-scope-commit class="mt-s2"></div>

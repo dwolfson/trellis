@@ -62,7 +62,7 @@ export const JUDGEMENTS = [
 export const OBSERVATIONS = [
   { key: 'licence',      label: 'License',      fromAnalysis: 'license_classification' },
   { key: 'environment',  label: 'Environment',  options: ['prod', 'dev', 'test', 'research', 'archive'] },
-  { key: 'retention',    label: 'Retention',    placeholder: 'how long, and by whose rule?' },
+  { key: 'retention',    label: 'Retention',    placeholder: 'how long, and under whose retention rule?' },
 ];
 // The analyses whose current state is the evidence for a judgement.
 const ENRICHMENT_EVIDENCE = ['interface_surface', 'security_scan', 'chaoss_metrics', 'cve_scan',

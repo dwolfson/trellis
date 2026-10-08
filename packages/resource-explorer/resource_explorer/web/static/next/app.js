@@ -177,7 +177,7 @@ import {
   raiseCapabilityRfa,
   removeInvestigationMember,
   removeEntity,
-  runAnalysis,
+  runAnalysis, runAnalysisWithCredential,
   setDisposition,
   setEntityDisposition,
   getEntityDispositionHistory,
@@ -192,6 +192,7 @@ import {
 } from '/static/re-api.js';
 import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
+import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -4738,6 +4739,25 @@ export function bindSurveyRowActions(el, all, slug) {
     }));
 }
 
+/** The definition row's button. It OPENS A DIALOG (the run plan, which since G2 offers "Use different
+ *  credentials for this run"), so the word ends in an ellipsis, the opener cue every other dialog
+ *  opener uses; "re-run →" stays on the analyses rows below, whose button runs at once (brief
+ *  section 8: same word, same effect). */
+export const DEFINITION_RUN_WORD = (c) => (c.last_run_at ? 'Re-run…' : 'Run…');
+
+/** "runs 5 analyses" beside the step count (brief section 9), from the definition's own steps mapped
+ *  through the adapter on the server; the list is one gesture away. Nothing when the server did not
+ *  say (a count the server did not give is not a zero). */
+export function definitionRunsHtml(c) {
+  const own = c.runs_analyses && Array.isArray(c.runs_analyses.own) ? c.runs_analyses.own : null;
+  if (!own) return '';
+  const also = c.runs_analyses.also || [];
+  const list = (xs) => xs.map((a) => `<li>${esc(a.name || a.analysis_id)} <span class="font-mono text-ink-muted">${esc(a.analysis_id)}</span></li>`).join('');
+  return ` · <details data-runs-analyses class="inline"><summary class="inline cursor-pointer underline">runs <span class="tnum">${own.length}</span> analys${own.length === 1 ? 'is' : 'es'}</summary>
+    <ul class="ml-s3 list-disc text-provenance text-ink-muted">${list(own)}</ul>${also.length
+      ? `<div class="text-provenance text-ink-muted">also produces, from the same steps:</div><ul class="ml-s3 list-disc text-provenance text-ink-muted">${list(also)}</ul>` : ''}</details>`;
+}
+
 export function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
   const produces = producesTypes(c);
@@ -4758,16 +4778,16 @@ export function surveyRowHtml(c) {
       // one that fetches twice and one that doesn't. `fetch_steps` is not on
       // every definition row yet (re/stage-page-backend); say nothing rather
       // than a false zero until it is.
-      c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}</div>
+      c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}${definitionRunsHtml(c)}</div>
     <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
     ${catalogRetryHtml(c)}
     ${selectedCredentialUnreadable()
       ? `<button data-run-survey="${esc(c.qualified_name || c.guid)}" disabled title="${CREDENTIAL_UNREADABLE_TEXT}"
       class="shrink-0 cursor-not-allowed rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
-      >${c.last_run_at ? 're-run' : 'run'} →</button>`
+      >${DEFINITION_RUN_WORD(c)}</button>`
       : `<button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-      >${c.last_run_at ? 're-run' : 'run'} →</button>`}
+      >${DEFINITION_RUN_WORD(c)}</button>`}
   </div>`;
 }
 
@@ -5247,7 +5267,57 @@ function analysisRowPrice(cost) {
 // RULING-SUBRESOURCES-PLACEMENT.md: attached to this row, not a fifth tab.
 const SUBRES_ANALYSIS_ID = 'sub_resource_survey';
 
-function analysisIndexRowHtml(row) {
+/** Which definitions run this analysis, and in which step (brief section 9). Words come from the
+ *  server's `definitions` block, which derives them from each definition's `re_analysis_step`
+ *  properties; nothing here keeps a list. Several definitions: "in N definitions" with the list one
+ *  gesture away. */
+export function analysisCoverageHtml(row) {
+  const cov = row.definitions || {};
+  const runs = cov.runs_in || [];
+  const also = cov.also_in || [];
+  const notIn = cov.not_in || [];
+  const names = (xs) => xs.map((d) => esc(d.display_name)).join(', ');
+  const bits = [];
+  if (runs.length === 1) {
+    bits.push(`in ${esc(runs[0].display_name)} · step <span class="font-mono">${esc(runs[0].step)}</span>`);
+  } else if (runs.length > 1) {
+    bits.push(`<details class="inline"><summary class="inline cursor-pointer underline">in <span class="tnum">${runs.length}</span> definitions</summary>
+      <span class="block">${runs.map((d) => `${esc(d.display_name)} · step <span class="font-mono">${esc(d.step)}</span>`).join('<br>')}</span></details>`);
+  } else if (notIn.length) {
+    bits.push(`not part of ${names(notIn)} · runs on its own`);
+  }
+  if (also.length) {
+    bits.push(`also runs when ${names(also)} runs (<span class="font-mono">${[...new Set(also.map((d) => d.step))].map(esc).join(', ')}</span>)`);
+  }
+  return bits.length ? `<span data-analysis-coverage class="text-ink-muted">${bits.join(' · ')}</span>` : '';
+}
+
+/** The credential word beside a database analysis row's button (brief section 8). Only said where it
+ *  is TRUE: an analysis that opens a connection uses the credential saved for the database; a
+ *  zero-fetch one (db_derived) reads stored rows and uses none. The sentence is one hover away. */
+export const STORED_CREDENTIAL_SENTENCE =
+  'runs in the background with the credential saved for this database; Re-run… runs it once, in this process, '
+  + 'with another credential (nothing is stored and it is not retried)';
+export function analysisCredentialHtml(row) {
+  if (row.uses_credential === 'stored') {
+    return `<span data-analysis-credential="stored" title="${esc(STORED_CREDENTIAL_SENTENCE)}" class="text-provenance text-ink-muted">uses stored credential</span>`;
+  }
+  if (row.uses_credential === 'none') {
+    return `<span data-analysis-credential="none" title="This analysis reads rows already stored; it opens no connection." class="text-provenance text-ink-muted">needs no credential</span>`;
+  }
+  return '';
+}
+
+/** "ran as <user> (this run)" and the row's own statement that it was not retried: from the last
+ *  run's activity row, never from the browser's memory of having sent a credential. */
+export function analysisRanAsHtml(row) {
+  const a = row.last_run_ran_as;
+  if (!a || !a.user) return '';
+  return `<span data-analysis-ran-as class="text-ink-muted">· ran as <span class="font-mono">${esc(a.user)}</span> (${esc(a.scope || 'this run')})${
+    row.last_run_not_retried ? ` · ${esc(row.last_run_not_retried)}` : ''}</span>`;
+}
+
+export function analysisIndexRowHtml(row) {
   const failed = state.analysisRunFailures.get(`${state.selectedSlug}|${row.analysis_id}`);
   const g = analysisRowGlyph(row);
   const qn = (row.questions || []).length;
@@ -5268,14 +5338,22 @@ function analysisIndexRowHtml(row) {
           : row.serves === 'chat-only' ? 'chat-only — no question asks' : 'nothing-yet — no question asks, no reader either'}
         · ${row.last_run_at ? `<span class="tnum">${esc(ago(row.last_run_at))}</span>${row.last_run_via ? ` · via ${esc(row.last_run_via.replace(/_/g, ' '))}` : ''}` : 'never run'}
         · ${analysisRowPrice(row.cost)}
+        ${analysisRanAsHtml(row)}
       </div>
+      <div class="mt-[2px] text-provenance">${analysisCoverageHtml(row)}</div>
     </div>
     ${isSubRes ? `<button type="button" data-subres-toggle aria-expanded="false"
       class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
       >🗂 select &amp; catalog</button>` : ''}
+    ${analysisCredentialHtml(row)}
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
       >${row.last_run_at ? 're-run' : 'run'} →</button>
+    ${row.runnable && row.uses_credential === 'stored'
+      ? `<button type="button" data-analysis-override="${esc(row.analysis_id)}"
+      title="Opens a dialog: run this one analysis once with another credential"
+      class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
+      >Re-run…</button>` : ''}
     <span data-analysis-run-error="${esc(row.analysis_id)}"
       class="hidden w-full text-provenance text-state-warn"></span>
     ${failed ? `<span data-analysis-run-failed="${esc(row.analysis_id)}" role="alert"
@@ -5390,15 +5468,18 @@ async function renderAnalysesIndexSection(slug, stage) {
     subresToggle.textContent = opening ? '🗂 select & catalog ▲' : '🗂 select & catalog';
     if (opening) await mountSubResourcePanel(slug, subresPanel);
   });
-  host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', async () => {
-    const aid = b.dataset.analysisRun;
+  const startRun = async (b, aid, credential = null) => {
     const errEl = host.querySelector(`[data-analysis-run-error="${CSS.escape(aid)}"]`);
     if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
     b.disabled = true;
     const original = b.textContent;
     b.textContent = 'Queueing…';
     try {
-      const started = await runAnalysis(slug, aid, apiEntityType(state.resourceType));
+      // A credential typed for this one run goes ONLY into this call's body (browser memory ->
+      // request -> the server's in-process run); the plain call is unchanged.
+      const started = credential
+        ? await runAnalysisWithCredential(slug, aid, credential)
+        : await runAnalysis(slug, aid, apiEntityType(state.resourceType));
       // Watch it rather than tell the user to reload — pollActivity is the
       // same mechanism the Questions checklist's run button already uses
       // (rerun(), above). A five-minute timeout still redraws the section
@@ -5437,7 +5518,70 @@ async function renderAnalysesIndexSection(slug, stage) {
       // to run → the instant the request fails, with nothing else on screen.
       if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
     }
+  };
+  host.querySelectorAll('[data-analysis-run]').forEach((b) => b.addEventListener('click', () =>
+    startRun(b, b.dataset.analysisRun)));
+  host.querySelectorAll('[data-analysis-override]').forEach((b) => b.addEventListener('click', () => {
+    const row = rows.find((r) => r.analysis_id === b.dataset.analysisOverride);
+    if (row) openAnalysisOverrideDialog(row, slug, (credential) => {
+      const runBtn = host.querySelector(`[data-analysis-run="${CSS.escape(row.analysis_id)}"]`);
+      if (runBtn) startRun(runBtn, row.analysis_id, credential);
+    });
   }));
+}
+
+/** "Re-run…" on a database analysis row (brief section 8, optional slice, owner-approved): the same
+ *  credential dialog the definition run offers, for ONE analysis. The credential is held in browser
+ *  memory (run-credential.js, per database), sent in the body of this one call, and the server runs
+ *  the analysis in its own process: not queued, not stored, not retried. */
+export function openAnalysisOverrideDialog(row, slug, onGo) {
+  const el = openDialog(row.name || row.analysis_id, `${slug} · run once with another credential`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = `
+    <p class="max-w-[70ch]">Runs <span class="font-mono">${esc(row.analysis_id)}</span> once, here, with the credential below
+      instead of the one saved for this database. It is not queued and not retried, and nothing is stored.</p>
+    <div class="mt-s2 flex flex-wrap items-center gap-s2">
+      <input data-run-override-user type="text" autocomplete="off" placeholder="user"
+        class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
+      <input data-run-override-password type="password" autocomplete="off" placeholder="password"
+        class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
+    </div>
+    <label class="mt-s1 flex items-baseline gap-s2 text-caveat text-ink-muted">
+      <input type="checkbox" data-run-override-remember>
+      <span>remember for this session</span>
+    </label>
+    <div class="text-caveat text-ink-muted">Used for this run only; never written to the registry. It is forgotten when this tab reloads.</div>
+    <div data-run-override-error class="text-caveat text-state-warn"></div>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="go"
+        class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink">Run once</button>
+      <button type="button" data-act="close"
+        class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+    </div>`;
+  // Values go in as PROPERTIES: a password is never an attribute or markup.
+  const mem = rememberedCredential(slug);
+  if (mem) {
+    body.querySelector('[data-run-override-user]').value = mem.user;
+    body.querySelector('[data-run-override-password]').value = mem.password;
+    body.querySelector('[data-run-override-remember]').checked = true;
+  }
+  body.querySelector('[data-act="go"]').addEventListener('click', (ev) => {
+    const go = ev.currentTarget;
+    if (go.disabled) return;                       // a pressed control ignores a second press
+    const user = body.querySelector('[data-run-override-user]').value.trim();
+    const password = body.querySelector('[data-run-override-password]').value;
+    if (!user || !password) {
+      body.querySelector('[data-run-override-error]').textContent =
+        'A credential for this run needs both a user and a password.';
+      return;
+    }
+    setRemembered(slug, { user, password }, body.querySelector('[data-run-override-remember]').checked);
+    go.disabled = true;
+    go.textContent = 'Starting…';
+    closeCellDetail();
+    onGo({ user, password });
+  });
+  return el;
 }
 
 /** RUN GOES THROUGH THE SAME PREVIEW as the matrix's two plans.
@@ -7105,6 +7249,7 @@ function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, ent
           <p class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">${esc(catalogDescription)}</p>
         </details>` : ''}
       ${overall ? headlineHtml(overall) : ''}
+      ${boardId === 'dependencies' ? '<div class="mt-s2" data-dependency-table-host></div>' : ''}
       ${board ? boardFindingsHtml(board) : ''}
       ${board ? boardCountsHtml(board, disagreeing) : ''}
       ${diagramHtml}
@@ -7286,6 +7431,11 @@ export async function loadByAnalysisPane() {
     )).join('');
     cardsEl.querySelectorAll('[data-by-analysis-card]').forEach((card) => {
       card.addEventListener('toggle', () => setByAnalysisCardOpen(slug, card.dataset.byAnalysisCard, card.open));
+    });
+    // Brief section 3: the dependencies board carries ONE table with a kind column (read-only here;
+    // confirming a runtime row happens under Curate's "how it relates").
+    cardsEl.querySelectorAll('[data-dependency-table-host]').forEach((h) => {
+      mountDependencyTable(h, slug, { confirmable: false, me: '' });
     });
     cardsEl.querySelectorAll('[data-measure]').forEach((n) => {
       n.addEventListener('click', () => openMeasurementDetail({

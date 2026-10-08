@@ -16,7 +16,7 @@ import {
   getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
   getComponentTree, getComponentLeaves, postBranchVerdicts,
   getCatalogueDepthOffer, postCatalogueDepthOfferOutcome,
-  getComponentBlueprints, postBlueprintVerdict,
+  getComponentBlueprints, postBlueprintVerdict, setRepoProjectContext,
 } from '/static/re-api.js';
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
@@ -24,10 +24,12 @@ import {
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand } from '/static/next/stages/publish.js';
+import { repoCommitPanelHtml, commitHeaderHtml } from '/static/next/stages/repo-manifest.js';
+import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
-  apiEntityType,
+  apiEntityType, openCurrentInvestigationStage,
 } from '/static/next/app.js';
 
 
@@ -57,10 +59,12 @@ import {
 // `pick` marks the one column whose rows are confirmed one by one; the
 // others are counts whose members are reviewed, and the contained set is
 // taken whole (the checkbox under the manifest) -- the wireframe's shape.
-/** What pressing Catalog really does (workflows/curate_commit.py `_resurvey_plan` + `execute_curation`). */
+/** What pressing Catalog really does (workflows/curate_commit.py `execute_curation`, brief section 1):
+ *  it publishes the survey ALREADY KEPT, plus what you ticked. It never surveys unless you tick the
+ *  box under the button, and then only the stale steps. */
 export const CATALOG_SENTENCE =
-  'Re-runs only the surveys that have run before and are now out of date (every survey the first time, none if all are fresh), '
-  + 'then publishes the survey report and what you ticked to Egeria. It does not publish an old survey unchecked.';
+  'Publishes the survey already kept on this repository, and what you ticked, to Egeria. It does not run a survey: '
+  + 'tick the box under the button to re-survey the stale steps first.';
 
 const CURATE_COLUMNS = [
   { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalog', pick: true },
@@ -126,6 +130,21 @@ export function stateCue(stateKey, word, title = '') {
   const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
     : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
   return `${open} data-cue="${esc(stateKey)}" title="${esc(title || e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
+}
+
+/** What accepting did to the element's zones, from the promotion's PROOF ROW (the server read the
+ *  element's zones before and after; this file never builds the sentence from the click). A short
+ *  word with a cue: a promotion that failed or was refused is a warning cue, never a check. Empty
+ *  when no promotion has been recorded for the row. */
+export function promotionHtml(p) {
+  if (!p || !p.words) return '';
+  // "left as is" is neither a success nor an error: the zones were not RE's to change. The short word
+  // shows; the sentence is on hover. (run_queue counts it as done, so it must not read as an error.)
+  if (p.status === 'left_as_is') {
+    return `<span data-promotion="left_as_is">· ${stateCue('unrun', 'left as is', p.words)}</span>`;
+  }
+  const ok = p.status === 'promoted' || p.status === 'already_promoted' || p.status === 'already_unzoned';
+  return `<span data-promotion="${esc(p.status || '')}">· ${stateCue(ok ? 'measured' : (p.status === 'skipped' ? 'unrun' : 'error'), p.words)}</span>`;
 }
 
 /** What the mark at the left of a plan row means. It is NOT "accepted" or "published": the
@@ -227,14 +246,14 @@ function curateRecordHtml(rec) {
   if (!rec) return '';
   const g = (taskState) => factGlyph(CURATE_TASK_TO_FACT_STATE[taskState] || 'unclassified');
   return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
+    ${commitHeaderHtml(rec)}
     <div class="text-provenance text-ink-muted">cataloged by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
       · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
-    ${rec.state === 'running' && (rec.steps || []).some((st) => st.state === 'running') ? `<div class="text-caveat text-accent-ink">${g('running').glyph} ${
-      esc((rec.steps.find((st) => st.state === 'running') || {}).name)} is running — the survey step takes minutes; this line updates as steps land.</div>` : ''}
-    ${(rec.steps || []).map((st) => `<div class="flex items-baseline gap-s2 text-caveat">
+    <ol class="list-none pl-0">${(rec.steps || []).map((st, i) => `<li class="flex items-baseline gap-s2 text-caveat" data-commit-step="${esc(st.name)}" data-state="${esc(st.state)}">
+      <span class="tnum text-ink-muted">${i + 1}.</span>
       <span class="${g(st.state).tone} font-glyph">${g(st.state).glyph}</span>
       <span class="font-mono text-ink">${esc(st.name)}</span>
-      <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></div>`).join('')}
+      <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></li>`).join('')}</ol>
   </div>`;
 }
 
@@ -379,11 +398,13 @@ export async function renderCurate(slug) {
         + curateSubsHtml(subLocators, chosenSubs()))}
       ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
-        `<div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
+        `<div id="blueprint-selector"></div>
+         <div id="component-tree" class="text-caveat text-ink-muted">Reading the components…</div>`)}
       ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
         `<div id="blueprint-list"></div>`)}
       ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
-        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join(''))}
+        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
+        + '<div class="mt-s2" data-dependency-table-host></div>')}
       ${curateSectionHtml('curate-sec-writes', 'what gets written',
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
         `${curateWritesHtml(plan, [...picks], chosenSubs().length)}
@@ -391,16 +412,26 @@ export async function renderCurate(slug) {
         <input type="checkbox" data-curate-subs ${chosenSubs().length ? 'checked' : ''}> include the <span class="tnum">${chosenSubs().length}</span> of <span class="tnum">${subLocators.length}</span> worthy sub-resources as contained assets</label>
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
       <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloging, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
-      <div class="mt-s3 flex items-baseline gap-s3">
-        <button type="button" data-curate-go ${plan.in_population && me ? '' : 'disabled'}
-          title="${esc(CATALOG_SENTENCE)}"
-          class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${plan.in_population && me ? 'cursor-pointer' : 'opacity-60'}">Catalog →</button>
-        <span class="text-provenance text-ink-muted">${!me ? 'sign in to catalog — the record needs an author' : !plan.in_population ? 'not in Curate’s population' : 'a queued run; each step reports as it lands'}</span>
-      </div>
+      <div class="mt-s3">${repoCommitPanelHtml({
+        plan, picks, chosenSubs: chosenSubs(), fileTypePicks: curateFileTypePicks(), me,
+        resurvey: !!state.curate.resurvey, sentence: CATALOG_SENTENCE, rec: latest, ps: latest ? (latest.proof_summary || null) : null })}</div>
       ${curateRecordHtml(latest)}
       <div id="catalogue-depth-offer"></div>`)}`;
 
     bindCurateSectionNav(host);
+    // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
+    mountDependencyTable(host.querySelector('[data-dependency-table-host]'), slug, { confirmable: true, me });
+    const counts0Label = () => {
+      const n = [...picks].length + chosenSubs().length;
+      return n ? `Catalog ${n} item${n === 1 ? '' : 's'} →` : 'Catalog →';
+    };
+    host.querySelector('[data-commit-resurvey]')?.addEventListener('change', (ev) => { state.curate.resurvey = ev.target.checked; draw(); });
+    host.querySelector('[data-commit-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
+    host.querySelector('[data-commit-decline]')?.addEventListener('click', async (ev) => {
+      const b = ev.currentTarget; if (b.disabled) return; b.disabled = true; b.textContent = 'declining …';
+      try { await setRepoProjectContext(slug, 'declined'); plan.project = { status: 'declined', word: 'no project (chosen)', name: '' }; draw(); }
+      catch (err) { b.disabled = false; b.textContent = 'decline a project'; host.querySelector('[data-curate-go-hint]').textContent = `not declined · ${err.message}`; }
+    });
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
       state.curate.picks = [...picks]; draw(); renderComponentTree(slug);
@@ -421,17 +452,16 @@ export async function renderCurate(slug) {
     }));
     host.querySelector('[data-curate-go]')?.addEventListener('click', async (ev) => {
       const b = ev.currentTarget; b.disabled = true;
-      // The first step may re-survey before it publishes -- minutes on a large
-      // repository. What it really does (workflows/curate_commit.py, `_resurvey_plan`): it re-runs
-      // only the analyses that have run before and are now stale (all of them on the very first
-      // catalog, none when everything is fresh and the asset already exists), then publishes.
-      // It never publishes an old survey unchecked. Say that, as a cue plus a short word.
+      // What the press does (workflows/curate_commit.py, brief section 1): it publishes the survey
+      // already kept. It re-surveys only if the box under the button is ticked, and then only the
+      // stale steps. Say which, as a cue plus a short word.
+      const resurvey = !!state.curate.resurvey;
       b.innerHTML = stateCue('running', 'Cataloging…', CATALOG_SENTENCE);
       const hint = b.nextElementSibling;
-      if (hint) hint.innerHTML = stateCue('running', 'refreshing stale surveys only, then publishing', CATALOG_SENTENCE);
+      if (hint) hint.innerHTML = stateCue('running', resurvey ? 're-surveying the stale steps, then publishing' : 'publishing the survey already kept', CATALOG_SENTENCE);
       try {
         const out = await curateCommit(slug, {
-          confirm: [...picks], sub_resources: chosenSubs(), data_files: false,
+          confirm: [...picks], sub_resources: chosenSubs(), data_files: false, resurvey_stale: resurvey,
         });
         plan.commits = [out.curation, ...(plan.commits || [])];
         draw();
@@ -444,10 +474,11 @@ export async function renderCurate(slug) {
           } catch { /* the next tick will */ }
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
+        try { plan.survey = (await getCuratePlan(slug)).survey || plan.survey; } catch { /* the table keeps the survey it had */ }
         draw();
         renderCatalogueDepthOffer(slug, host);
       } catch (err) {
-        b.disabled = false; b.textContent = 'Catalog →';
+        b.disabled = false; b.textContent = counts0Label();
         if (b.nextElementSibling) b.nextElementSibling.textContent = '';
         const why = err.status === 401 ? 'sign in to catalog' : err.status === 409 ? err.message : `not cataloged: ${err.message}`;
         host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
@@ -455,9 +486,20 @@ export async function renderCurate(slug) {
     });
   };
   draw();
+  // The file types ticked in the Publish band feed the table's "file types" row.
+  if (state.curateOnPicks) document.removeEventListener('re:curate-picks', state.curateOnPicks);
+  state.curateOnPicks = () => { if (host.isConnected && slug === state.selectedSlug) draw(); };
+  document.addEventListener('re:curate-picks', state.curateOnPicks);
   renderComponentTree(slug);
   renderBlueprintList(slug);
   renderCatalogueDepthOffer(slug, host);
+}
+
+/** The file types ticked in the Publish band (a Set of labels), kept on the Curate state. */
+function curateFileTypePicks() {
+  state.curate = state.curate || {};
+  if (!(state.curate.fileTypePicks instanceof Set)) state.curate.fileTypePicks = new Set();
+  return state.curate.fileTypePicks;
 }
 
 /* ── The layer-2 catalogue-depth offer ────────────────────────────────────
@@ -611,7 +653,7 @@ function branchRowHtml(b, selected) {
  *  ("detect"/"coupling") renders as "found by"; `perspective` (physical/
  *  deployment/logical/dev) renders as "reading" -- two different axes that
  *  used to share one word (§0). */
-function leafRowHtml(l) {
+export function leafRowHtml(l) {
   const multi = (l.proposals || []).length >= 2;
   const proposalLines = multi ? l.proposals.map((p) => `
     <div class="pl-s2 text-provenance text-ink-muted">found by ${esc(p.run_label)}${p.type ? ` — ${esc(p.type)}` : ''} · ${esc(p.perspective || 'physical')} reading · confidence <span class="tnum">${p.confidence ?? 0}</span>%</div>
@@ -627,6 +669,7 @@ function leafRowHtml(l) {
       ${!multi && (l.low_confidence ? `<span class="text-state-warn">· ⚠ confidence <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· confidence <span class="tnum">${l.confidence}</span>%</span>` : '')}
       ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
       <span>· ${verdictBadge(l.verdict)}</span>
+      ${promotionHtml(l.promotion)}
       <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
       <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
     </div>
@@ -822,6 +865,28 @@ async function renderComponentTree(slug, prefix = '') {
  * ONE reading at a time, says so at its head, and switching readings
  * REPLACES the list outright rather than diffing it against the last one. */
 
+/** The blueprint selector at the top of "what it's made of" (brief section 4): one row per KIND RE can
+ *  offer, with its source and its state. The server says what is drawn; a kind that is not drawn is
+ *  listed as "not yet drawn" and offers no view, never a button that opens nothing. "Write to Egeria"
+ *  is per blueprint (the accept on each blueprint row), never per kind. */
+export function blueprintSelectorHtml(kinds, reading) {
+  if (!kinds || !kinds.length) return '';
+  const cue = (k) => (k.state === 'accepted' ? stateCue('measured', 'accepted')
+    : k.state === 'proposed' ? stateCue('proposal', 'proposed') : stateCue('unrun', 'not yet drawn'));
+  return `<div data-blueprint-selector class="mb-s2 border-b border-rule pb-s1">
+    <div class="mb-[2px] text-caps uppercase tracking-caps text-ink-muted">Blueprints this repository can be read as</div>
+    ${kinds.map((k) => `<div data-blueprint-kind="${esc(k.kind)}" class="flex flex-wrap items-baseline gap-x-s2 py-[2px] text-caveat">
+      ${k.drawn
+        ? `<button type="button" data-blueprint-view="${esc(k.perspective)}" aria-pressed="${k.perspective === reading ? 'true' : 'false'}"
+             class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-ink">${k.perspective === reading ? '● viewing' : 'view'}</button>`
+        : `<span class="px-2 py-[1px] text-ink-muted">○</span>`}
+      <span class="text-ink">${esc(k.name)}</span>
+      <span class="text-provenance text-ink-muted">· ${esc(k.source)}</span>
+      <span class="text-provenance">· ${cue(k)}</span>
+    </div>`).join('')}
+  </div>`;
+}
+
 /** The blueprint's own verdict, rendered the same shape as a component's
  *  `verdictBadge` -- but a blueprint verdict never inherits (it has no
  *  ancestor scope the way a path does) and has no "retyped" outcome
@@ -862,7 +927,19 @@ function membershipHonestyLine(bp) {
     class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${parts.join(' and ')} stand apart${icon('chevron-right', { size: 12 })}</button></div>`;
 }
 
-function blueprintRowHtml(bp) {
+/** "Write to Egeria" is per blueprint and only for one with accepted nodes (brief section 4): a
+ *  blueprint none of whose components or child blueprints has been accepted would be written empty.
+ *  Without an accepted node the control is replaced by the reason, in a short word. */
+export function blueprintWriteHtml(bp, accepted) {
+  const nodes = (bp.member_status || []).filter((m) => (m.verdict || {}).verdict === 'accepted').length
+    + (bp.child_status || []).filter((c) => (c.verdict || {}).verdict === 'accepted').length;
+  if (!nodes && !accepted) {
+    return `<span data-blueprint-write-blocked class="text-ink-muted" title="A blueprint is written to Egeria only when at least one of its components or child blueprints is accepted.">no accepted component · not written</span>`;
+  }
+  return `<button data-blueprint-verdict="accepted" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${accepted ? 'change' : 'accept'}</button>`;
+}
+
+export function blueprintRowHtml(bp) {
   const v = bp.verdict;
   const accepted = v?.verdict === 'accepted';
   const rejected = v?.verdict === 'rejected';
@@ -879,7 +956,8 @@ function blueprintRowHtml(bp) {
     </div>
     <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
       <span>${blueprintVerdictBadge(v)}</span>
-      <button data-blueprint-verdict="accepted" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${accepted ? 'change' : 'accept'}</button>
+      ${promotionHtml(bp.promotion)}
+      ${blueprintWriteHtml(bp, accepted)}
       <button data-blueprint-verdict="rejected" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
     </div>
     ${accepted
@@ -931,10 +1009,22 @@ async function renderBlueprintList(slug) {
   catch (err) { host.innerHTML = `<span class="text-accent-ink">The blueprints could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
   const { blueprints, perspectives } = data;
-  if (!perspectives.length) { host.innerHTML = ''; return; }
+  const selectorSlot = $('blueprint-selector');
+  if (!perspectives.length) {
+    if (selectorSlot) selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, '');
+    host.innerHTML = '';
+    return;
+  }
   const rk = blueprintReadingKey(slug);
   if (!rk.reading || !perspectives.includes(rk.reading)) rk.reading = perspectives[0];
   const reading = rk.reading;
+  if (selectorSlot) {
+    selectorSlot.innerHTML = blueprintSelectorHtml(data.kinds, reading);
+    selectorSlot.querySelectorAll('[data-blueprint-view]').forEach((b) => b.addEventListener('click', () => {
+      rk.reading = b.dataset.blueprintView;       // an immediate visible change: the pressed row reads "viewing"
+      renderBlueprintList(slug);
+    }));
+  }
   const inReading = blueprints.filter((bp) => bp.perspective === reading);
   const others = perspectives.filter((p) => p !== reading)
     .map((p) => ({ p, n: blueprints.filter((bp) => bp.perspective === p).length }));

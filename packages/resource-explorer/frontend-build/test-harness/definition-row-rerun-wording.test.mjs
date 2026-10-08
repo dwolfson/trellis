@@ -51,8 +51,8 @@ test('definition row shows "run" (not re-run) when this definition has never run
 
   const btn = container.querySelector('[data-run-survey]');
   assert.ok(btn, 'expected the definition row run button to render');
-  assert.match(btn.textContent, /^run\s*→$/, `expected "run →", got ${JSON.stringify(btn.textContent)}`);
-  assert.doesNotMatch(btn.textContent, /re-run/);
+  assert.equal(btn.textContent.trim(), 'Run…', `expected "Run…", got ${JSON.stringify(btn.textContent)}`);
+  assert.doesNotMatch(btn.textContent, /re-run/i);
 });
 
 test('definition row shows "re-run" once ANY run exists for this definition on this resource', async () => {
@@ -70,7 +70,7 @@ test('definition row shows "re-run" once ANY run exists for this definition on t
 
   const btn = container.querySelector('[data-run-survey]');
   assert.ok(btn, 'expected the definition row run button to render');
-  assert.match(btn.textContent, /^re-run\s*→$/, `expected "re-run →", got ${JSON.stringify(btn.textContent)}`);
+  assert.equal(btn.textContent.trim(), 'Re-run…', `expected "Re-run…", got ${JSON.stringify(btn.textContent)}`);
 });
 
 test('definition row re-run wording survives a pane re-render, same as the rest of the row', async () => {
@@ -91,5 +91,8 @@ test('definition row re-run wording survives a pane re-render, same as the rest 
   container.innerHTML = app.surveyRowHtml(candidate);
 
   const btn = container.querySelector('[data-run-survey]');
-  assert.match(btn.textContent, /^re-run\s*→$/);
+  assert.equal(btn.textContent.trim(), 'Re-run…');
 });
+
+/* Brief section 8 (owner, 2026-10-07): "same word, same effect". The definition row's button OPENS A
+ * DIALOG, so it ends in an ellipsis; the analyses rows' button runs at once and keeps "re-run →". */

@@ -9,9 +9,10 @@ record. Nothing here raises past a step: a step that fails is a failed
 step on the record, and the next step runs unless it depends on it.
 
 Steps, in order:
-  publish_asset     survey + publish, the existing publish path -- creates
-                    or finds the repository's own Asset and links a
-                    SurveyReport (measurements LINKED, not copied)
+  publish_asset     publish the survey already kept (never a survey run by
+                    the press; an optional box re-surveys the stale steps
+                    first) -- creates or finds the repository's own Asset and
+                    links a SurveyReport (measurements LINKED, not copied)
   classifications   enrichment judgements COPIED onto the asset as
                     Confidentiality / Criticality / Retention, with the
                     author as steward and the date in the notes -- they
@@ -212,49 +213,55 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
         return cur.finish(curation_id)
 
     # ── 1. the asset and its survey report ─────────────────────────────
+    #
+    # Brief section 1 (owner, 2026-10-07): the commit PUBLISHES THE SURVEY THE PERSON DECIDED ON. It
+    # does not refresh stale surveys on its own and then publish; re-surveying is a separate act that
+    # the commit offers as a box, off by default. Unchecked, nothing is surveyed here. Checked, exactly
+    # the stale steps run, and then the survey is published. With nothing surveyed yet the commit is
+    # blocked (the route says so before the record exists; this is the same sentence if it is reached).
     asset_guid = ""
-    cur.set_step(curation_id, "publish_asset", "running",
-                 "checking which analyses are already fresh before publishing — see module docstring")
+    cur.set_step(curation_id, "publish_asset", "running", "publishing the survey already kept")
     try:
-        context = registry.get_project_context("repo", slug)
-        if not context or context.get("status") == "unset":
-            inherited = registry.inherited_egeria_project_context("repo", slug)
-            if not inherited:
-                raise RuntimeError("no Egeria Project context — decide it on the Scouting pane (or bind the investigation) and press Catalog again")
-            registry.set_project_context(
-                "repo", slug, status="linked",
-                egeria_project_guid=inherited["egeria_project_guid"],
-                egeria_project_qualified_name=inherited["egeria_project_qualified_name"],
-                free_text_name=f"inherited from investigation '{inherited['_inherited_from_name']}'")
-        from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
-        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+        from resource_explorer import repo_publish
+        from resource_explorer.surveyors import survey_snapshot
 
-        steps, note = _resurvey_plan(registry, slug)
-        existing_guid = registry.get_egeria_asset_guid(slug) or ""
+        context = repo_publish.resolve_project_context(registry, slug)
+        if context is None:
+            raise RuntimeError("no Egeria Project context — decide it on the Scouting pane (or bind the investigation) and press Catalog again")
+        snap = survey_snapshot.latest(registry, slug)
+        if snap is None:
+            raise RuntimeError(survey_snapshot.NO_SURVEY_SENTENCE)
+        resurveyed = ""
+        if sel.get("resurvey_stale"):
+            stale = repo_publish.stale_step_keys(registry, slug, snap)
+            if stale:
+                from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
-        if steps is not None and not steps and existing_guid:
-            # Nothing stale to re-survey, and the asset already exists in
-            # Egeria — no reason to touch Egeria at all this time.
-            asset_guid = existing_guid
-            cur.set_step(curation_id, "publish_asset", "done",
-                         f"{note}; asset {asset_guid} already published — nothing re-published")
-        else:
-            # Either something is stale (steps is a non-empty list),
-            # nothing has ever run for this repo (steps is None — full
-            # survey), or everything is fresh but this repo has no cached
-            # asset yet (steps == [] with no existing_guid — an empty
-            # survey purely so publish() can find-or-create the asset).
-            survey = SurveyOrchestrator(registry=registry).run(slug, steps=steps)
-            import asyncio
-            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
-            try:
-                report_guid = EgeriaPublisher(registry=registry).publish(survey)
-            finally:
-                loop.close(); asyncio.set_event_loop(None)
-            asset_guid = registry.get_egeria_asset_guid(slug) or ""
-            cur.set_step(curation_id, "publish_asset", "done",
-                         f"{note} · asset {asset_guid or '?'} · survey report {report_guid} · "
-                         f"{len(survey.annotations)} annotations linked")
+                cur.set_step(curation_id, "publish_asset", "running",
+                             f"re-surveying {len(stale)} stale step(s) first: {', '.join(stale)}")
+                res = SurveyOrchestrator(registry=registry).run(slug, steps=stale)
+                problems = list(res.errors) + ([res.snapshot_error] if res.snapshot_error else [])
+                snap = survey_snapshot.latest(registry, slug) or snap
+                resurveyed = (f"re-surveyed {len(stale)} stale step(s) first"
+                              + (f" ({len(problems)} problem(s): {'; '.join(problems)[:300]})" if problems else "")
+                              + " · ")
+            else:
+                resurveyed = "nothing was stale · "
+        import asyncio
+        loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+        try:
+            out = repo_publish.publish_snapshot(registry, slug, rec.get("author") or "", context, snap)
+        finally:
+            loop.close(); asyncio.set_event_loop(None)
+        if not out["ok"]:
+            raise RuntimeError(out["error"])
+        asset_guid = out["asset_guid"]
+        cur.set_step(curation_id, "publish_asset", "done",
+                     f"{resurveyed}{'published' if out['read_back'] else 'sent, not yet read back'}"
+                     f" · from the survey of {out['surveyed_at'][:10]}"
+                     f"{' · reused the report already in Egeria' if out['reused'] else ''}"
+                     f" · asset {asset_guid or '?'} · survey report {out['report_guid']} · "
+                     f"{out['annotation_count']} annotations linked")
     except Exception as exc:
         log.warning("curation %s: publish failed for %s: %s", curation_id, slug, exc)
         cur.set_step(curation_id, "publish_asset", "failed", f"{type(exc).__name__}: {exc}")
@@ -313,13 +320,22 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                         want.setdefault(anc, "folder")
             for loc in sorted(want):
                 registry.catalog_sub_resource("repo", slug, loc, want[loc], source_finding="repo_sub_resource_survey")
-            guids = EgeriaPublisher(registry=registry).publish_sub_resources(slug, project.github_url, asset_guid, sorted(want))
+            publisher = EgeriaPublisher(registry=registry)
+            guids = publisher.publish_sub_resources(slug, project.github_url, asset_guid, sorted(want))
+            # A proof row per element sent, by GUID, after a read of that GUID (brief section 2): the
+            # table's state column is made of these rows, never of the request.
+            from resource_explorer import repo_publish
+            proof_counts = repo_publish.record_sub_resource_proofs(
+                registry, slug, curation_id, rec.get("author") or "", want, locators, guids,
+                reader=lambda g: publisher._asset_maker.get_asset_by_guid(g, output_format="JSON"))
             missing = [l for l in locators if l not in guids]
             ancestors = len(want) - len(locators)
             # Count against what was SELECTED; the ancestor folders NestedFile
             # needs are named separately ("32 of 31" on the first live press).
-            cur.set_step(curation_id, "sub_resources", "failed" if missing else "done",
+            cur.set_step(curation_id, "sub_resources", "failed" if missing or proof_counts["failed"] else "done",
                          f"{len(locators) - len(missing)} of {len(locators)} published"
+                         f" · {proof_counts['read_back']} read back"
+                         + (f" · {proof_counts['sent']} sent, not yet read back" if proof_counts["sent"] else "")
                          + (f" · plus {ancestors} ancestor folder{'s' if ancestors != 1 else ''}" if ancestors else "")
                          + (f" · not published: {', '.join(missing[:8])}" if missing else ""))
         except Exception as exc:

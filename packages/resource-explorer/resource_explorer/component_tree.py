@@ -227,6 +227,8 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
                 if v.get("verdict_target", "component") == "component"}
     by_service, _, _ = _ports_by_component(registry, slug)
     ports = _assign_ports(comps, by_service)
+    from resource_explorer.workflows.curate import NODE_PROMOTION_COMPONENT, promotion_by_scope
+    promos = promotion_by_scope(registry, slug, NODE_PROMOTION_COMPONENT)
     b = branch.rstrip("/")
     out = []
     for c in sorted(comps, key=lambda x: x.get("path", "")):
@@ -245,7 +247,9 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
                     # untouched; see resolve_verdict above).
                     "proposals": c.get("proposals") or [],
                     "agreement": bool(c.get("agreement")),
-                    "withdrawn_by": c.get("withdrawn_by") or []})
+                    "withdrawn_by": c.get("withdrawn_by") or [],
+                    # What accepting did to the element's zones, from the promotion's proof row.
+                    "promotion": promos.get(p)})
     return out
 
 

@@ -1434,6 +1434,12 @@ function _runAnalysisPath(entityType, slug, analysisId) {
 export const runAnalysis = (slug, analysisId, entityType) =>
   post(_runAnalysisPath(requireKind('runAnalysis', entityType), slug, analysisId));
 
+/** ONE database analysis with a credential typed for that run (brief section 8). The password goes in
+ *  the body of this call and nowhere else; the server runs it in its own process (not queued, not
+ *  stored, not retried) and no response carries the password back. Database only. */
+export const runAnalysisWithCredential = (slug, analysisId, { user, password }) =>
+  post(_runAnalysisPath('database', slug, analysisId), { db_user: user, db_pwd: password });
+
 /* ── Prerequisite proposals (design §17.1, web/routes/prerequisites.py) ───
  *
  * `/plan` asks what `stepKey` needs before it can answer, WITHOUT running
@@ -1854,6 +1860,15 @@ export const getRepoPublishState = (slug) => get(`/api/egeria/${encodeURICompone
 export const publishRepoReport = (slug, { withoutProject = false } = {}) =>
   post(`/api/egeria/${encodeURIComponent(slug)}/publish-report`, { without_project: withoutProject });
 
+/** Record the repository's Egeria project answer ("declined" = publish without one). RE's registry only. */
+export const setRepoProjectContext = (slug, status) =>
+  post(`/api/project-context/repo/${encodeURIComponent(slug)}`, { status });
+
+/** Run the survey and NOTHING else (brief section 1): no publish, no Egeria write. `steps` names the
+ *  steps to run (the stale ones); omitted runs them all. */
+export const resurveyRepo = (slug, { steps = null } = {}) =>
+  post(`/api/egeria/${encodeURIComponent(slug)}/resurvey`, steps ? { steps } : {});
+
 /** Forget RE's cached Egeria GUIDs and survey history for this resource. Egeria is not contacted. */
 export const forgetEgeriaLinks = (slug) => post(`/api/egeria/${encodeURIComponent(slug)}/forget-links`);
 
@@ -1895,3 +1910,13 @@ export const repairRepointMembership = (slug, fromInvestigation, toInvestigation
 export const repairDropMembership = (slug, investigationSlug) =>
   request(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/`
           + `${encodeURIComponent(investigationSlug)}`, { method: 'DELETE' });
+
+/* ── Dependencies, one table with a kind column (brief section 3) ───────── */
+
+/** The repository's dependencies: `{heading, kinds, counts, rows, runtime_state, summary}`. */
+export const getDependencyTable = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/dependencies`);
+
+/** A person confirms (or withdraws) proposed runtime rows; the answer is the table re-read. */
+export const confirmRuntimeDependencies = (slug, keys, verdict) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/dependencies/confirm`, { keys, verdict });

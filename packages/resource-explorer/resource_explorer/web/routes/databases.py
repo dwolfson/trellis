@@ -822,10 +822,21 @@ class AnalysisRunResult(BaseModel):
     error: str | None = None
     activity_id: str = ""
     run_id: str = ""
+    #: Set only for a run with a credential typed for that run (brief section 8): who it ran as.
+    ran_as: dict | None = None
+
+
+class AnalysisRunRequest(BaseModel):
+    """Optional body of `POST /{slug}/analyses/{analysis_id}/run`. Both fields empty (or no body)
+    is the ordinary enqueue with the stored credential. A password makes it a single in-process run
+    with that credential, kept in memory for the call (never queued, never stored)."""
+    db_user: str = ""
+    db_pwd: str = ""
 
 
 @router.post("/{slug}/analyses/{analysis_id}/run", response_model=AnalysisRunResult)
-async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
+async def run_single_database_analysis(slug: str, analysis_id: str,
+                                       body: AnalysisRunRequest | None = None) -> AnalysisRunResult:
     """Runs only the DatabaseSurveyor step(s) one named local database
     analysis needs, not the whole schema+statistics+views survey every
     time — the per-card "Run" action in Analysis/Assessment (database
@@ -877,6 +888,9 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
     if not db:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
 
+    if body is not None and body.db_pwd:
+        return _start_override_analysis(registry, db, slug, analysis_id, body)
+
     # Validation stays synchronous — an unknown/unmapped analysis_id, or
     # missing credentials, must be a 400 here, not a queued row that fails a
     # minute later in a different process where nobody is looking (same rule
@@ -912,6 +926,55 @@ async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisR
         status="started", slug=slug, analysis_id=analysis_id,
         activity_id=activity_id, run_id=run_id,
     )
+
+
+def _start_override_analysis(registry, db, slug: str, analysis_id: str,
+                             body: AnalysisRunRequest) -> AnalysisRunResult:
+    """One analysis with a credential typed for this run only (brief section 8, owner-approved).
+
+    **Not enqueued.** The run queue refuses to persist a credential and this run must not reach it
+    (nor Prefect): it runs on a thread in THIS process, on RE's own engine, the password held in
+    memory for the call. No retry; the row says so. The password is in no row, log line or response.
+    """
+    import json
+
+    from resource_explorer.activity_logger import log_analysis_run
+    from resource_explorer.run_reconciler import process_identity
+    from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
+    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
+    from resource_explorer.workflows.analysis import (
+        NOT_RETRIED_WORDS,
+        OVERRIDE_SCOPE,
+        execute_override_database_analysis,
+    )
+    from resource_explorer.workflows.survey_definition import start_in_process
+
+    if not body.db_user:
+        raise HTTPException(
+            status_code=400,
+            detail="A credential for this run needs both a user and a password; the password alone is not enough.")
+    if analysis_id in DB_DERIVED_ANALYSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' reads stored rows and opens no connection, so a credential "
+                   "for this run would be used for nothing; run it without one.")
+    if not database_analysis_has_runner(analysis_id):
+        raise HTTPException(status_code=400, detail=f"Analysis '{analysis_id}' has no local survey step(s) mapped.")
+
+    ran_as = {"user": body.db_user, "scope": OVERRIDE_SCOPE}
+    activity_id = log_analysis_run(
+        registry, "database", slug, db.display_name, "running",
+        f"Running '{analysis_id}' on {slug} as {body.db_user} ({OVERRIDE_SCOPE})…", analysis_id,
+        published=None, runner=process_identity(),
+        extra={"ran_as": ran_as, "not_retried": NOT_RETRIED_WORDS})
+    start_in_process(
+        execute_override_database_analysis, slug, analysis_id, activity_id, body.db_user, body.db_pwd,
+        name=f"analysis-override-{activity_id}")
+    log.info("started database analysis override run for %s/%s as %s (activity %s)",
+             slug, analysis_id, body.db_user, activity_id)
+    return AnalysisRunResult(
+        status="started", slug=slug, analysis_id=analysis_id, activity_id=activity_id, run_id="",
+        ran_as=ran_as)
 
 
 @router.delete("/{slug}")

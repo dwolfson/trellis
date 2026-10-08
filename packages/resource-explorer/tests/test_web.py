@@ -872,7 +872,10 @@ class TestCurateBlueprintVerdictsRouter:
 
         element_call = instance.materialize_blueprint_element.call_args
         assert element_call.args == ("repo", "myproj", "physical", "core-services")
-        assert element_call.kwargs["display_name"] == "core-services"
+        # The KIND is in the name (brief section 4): the sole top blueprint of a reading IS the
+        # repository's blueprint of that kind, and the qualifiedName's perspective slot carries the kind.
+        assert element_call.kwargs["display_name"] == "My Project Physical Blueprint"
+        assert element_call.kwargs["kind_slot"] == "Physical Blueprint"
 
     def test_partial_member_materialization_reports_unmaterialized_members_and_still_enqueues(
         self, client, registry,

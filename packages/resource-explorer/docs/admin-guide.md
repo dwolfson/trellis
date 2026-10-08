@@ -165,9 +165,9 @@ Everything RE publishes lands in a **draft zone** and is promoted on curate-acce
 # The zone unreviewed publishes land in. The worker creates it at startup if absent.
 EXPLORER_DRAFT_ZONE=resource-explorer-draft
 
-# Where curate-accept promotes an element. Default: egeria-runtime, which is what the
-# quickstart deployment configures.
-EXPLORER_PUBLISH_ZONES=egeria-runtime
+# Where curate-accept promotes an element. NO default (configured-only, 2026-10-07): when unset,
+# accept clears RE's draft zone and writes no zone ("zones left to Egeria"). Set it only on purpose.
+# EXPLORER_PUBLISH_ZONES=<zone>[,<zone>]
 # A Curate catalogue commit for a database writes this zone only when it is set, and as its last
 # write. Unverified for a second commit (it may lock the service identity, the survey engine and
 # the cataloguer out of the element): first use on a throwaway database, with TWO commits.

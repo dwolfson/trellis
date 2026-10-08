@@ -1672,6 +1672,47 @@ async def get_analysis_measurements(slug: str, analysis_id: str,
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/{slug}/dependencies")
+def get_dependency_table(slug: str) -> dict:
+    """Dependencies as ONE table with a kind column (brief section 3): build-time (measured, from the
+    manifests) and runtime (proposed, from the deployment artifacts, until a person confirms them).
+    RE's own records only; nothing here contacts Egeria."""
+    from resource_explorer import dependency_table
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return dependency_table.build_table(registry, slug)
+
+
+class ConfirmDependencies(BaseModel):
+    keys: list[str]
+    verdict: str = "confirmed"        # confirmed | withdrawn
+
+
+@router.post("/{slug}/dependencies/confirm")
+def confirm_dependencies(slug: str, body: ConfirmDependencies, request: Request) -> dict:
+    """A person confirms (or withdraws) proposed RUNTIME dependency rows. Append-only: a change is a new
+    entry. Returns the table re-read, so the screen's words come from the record."""
+    from resource_explorer import dependency_table
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.registry import ProjectRegistry
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to confirm a dependency — it needs a person who made the call.")
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    try:
+        dependency_table.record_confirmations(registry, slug, body.keys, body.verdict, author)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return dependency_table.build_table(registry, slug)
+
+
 @router.get("/{slug}/analyses-index")
 async def get_analyses_index(slug: str, entity_type: str = _REQUIRED_KIND) -> dict:
     """Every catalog analysis for this resource, with the questions that
@@ -1856,6 +1897,9 @@ class CurateSelection(BaseModel):
     sub_resources: list[str] = Field(default_factory=list)    # locators from the sub-resource survey
     data_files: bool = False                                   # contained datasets -- recorded in the manifest; publish path not built
     note: str = ""
+    #: Re-survey the STALE steps before publishing (brief section 1). Off by default: unchecked, the
+    #: commit publishes the survey already kept and runs nothing.
+    resurvey_stale: bool = False
 
 
 @router.get("/{slug}/curate/plan")
@@ -1897,6 +1941,15 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     unknown = [k for k in body.confirm if k not in known]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Not candidates on this resource: {unknown}")
+    if not body.confirm and not body.sub_resources:
+        # A press that would send nothing the person chose is blocked, and writes nothing (brief section 2).
+        from resource_explorer.curate_plan import NOTHING_SELECTED_SENTENCE
+        raise HTTPException(status_code=409, detail=NOTHING_SELECTED_SENTENCE)
+    from resource_explorer.surveyors import survey_snapshot
+    if survey_snapshot.latest(registry, slug) is None:
+        # Publishing never surveys (brief section 1): with nothing surveyed the commit is blocked, and
+        # the first survey is a separate, explicit act.
+        raise HTTPException(status_code=409, detail=survey_snapshot.NO_SURVEY_SENTENCE)
     manifest = {**plan["writes"], "entities": list(body.confirm),
                 "contained": {"data_files": plan["writes"]["contained"]["data_files"] if body.data_files else 0,
                               "sub_resources": len(body.sub_resources)}}
@@ -1926,10 +1979,13 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
 def curate_commit_status(slug: str, curation_id: str) -> dict:
     from resource_explorer.curate_plan import Curations
     from resource_explorer.registry import ProjectRegistry
-    rec = Curations(ProjectRegistry()).get(curation_id)
+    registry = ProjectRegistry()
+    rec = Curations(registry).get(curation_id)
     if not rec or rec["entity_slug"] != slug:
         raise HTTPException(status_code=404, detail="No such curation")
-    return rec
+    # The state column of the commit table: from proof rows only (brief section 2).
+    from resource_explorer import repo_publish
+    return {**rec, "proof_summary": repo_publish.commit_proof_summary(registry, slug, rec)}
 
 
 # ── Records: the report record beside the catalogue record ───────────────
@@ -2335,7 +2391,38 @@ def components_blueprints(slug: str) -> dict:
     # the readings a curator can switch between, distinct from the diagram's
     # run_label preference and the chrome's unrelated Perspective filter.
     perspectives = sorted({b["perspective"] for b in blueprints if b.get("perspective")})
-    return {"blueprints": blueprints, "perspectives": perspectives}
+    # Brief section 4: the blueprint selector, one row per KIND RE can offer, and the name each one
+    # will be written under.
+    from resource_explorer.blueprint_kinds import (
+        blueprint_display_name, blueprint_kind_rows, kind_key, repo_label)
+    project = registry.get(slug)
+    label = repo_label(slug, getattr(project, "display_name", "") or "")
+    for b in blueprints:
+        sole = (sum(1 for x in blueprints if x["perspective"] == b["perspective"] and not x.get("parent")) == 1
+                and not b.get("parent"))
+        b["kind"] = kind_key(b["perspective"])
+        b["display_name"] = blueprint_display_name(label, b["perspective"], b["cluster_name"], sole_root=sole)
+    evidence_paths: set[str] = set()
+    for r in registry.query_findings(slug, "architecture_interfaces") or []:
+        d = r.get("detail") if isinstance(r.get("detail"), dict) else None
+        if d is None:
+            import json as _json
+            try:
+                d = _json.loads(r.get("detail_json") or "{}")
+            except ValueError:
+                d = {}
+        path = ((d or {}).get("evidence") or {}).get("path")
+        if path:
+            evidence_paths.add(path)
+    build_names = {"build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml"}
+    build_files = sorted({p.rsplit("/", 1)[-1] for p in registry.get_file_inventory(slug) or []
+                          if p.rsplit("/", 1)[-1] in build_names})
+    logical = [bp for bp in blueprints if kind_key(bp["perspective"]) == "logical"]
+    unconfirmed = (sum(1 for bp in logical for m in bp.get("member_status") or [] if not m.get("verdict"))
+                   if logical else None)
+    kinds = blueprint_kind_rows(label=label, blueprints=blueprints, artifact_count=len(evidence_paths),
+                                build_files=build_files, logical_unconfirmed=unconfirmed)
+    return {"blueprints": blueprints, "perspectives": perspectives, "kinds": kinds}
 
 
 @router.get("/{slug}/gaps")

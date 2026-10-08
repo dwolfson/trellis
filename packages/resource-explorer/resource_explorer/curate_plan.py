@@ -47,6 +47,9 @@ from datetime import datetime, timezone
 
 from resource_explorer.registry import ProjectRegistry
 
+#: What a press says when nothing the person chose would be sent (brief section 2): blocked, nothing written.
+NOTHING_SELECTED_SENTENCE = "nothing selected · confirm a line under what it is, or choose folders and files"
+
 #: Curate's population, by disposition (Repo Handoff, model statement 5).
 CURATE_POPULATION = ("tracking", "using")
 
@@ -119,7 +122,9 @@ def _row(kind: str, label: str, *, evidence: str, source: str, state: str, count
 
 
 def build_plan(registry: ProjectRegistry, slug: str) -> dict:
+    from resource_explorer.blueprint_kinds import kind_word
     from resource_explorer.facts import FactLayer
+    from resource_explorer.repo_publish import project_state, survey_state
 
     project = registry.get(slug)
     if not project:
@@ -242,7 +247,9 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
                       evidence="each becomes its own asset, related to this one",
                       source="sub_resource_survey", state=srs.get("state", ""), count=len(worthy),
                       members={"analysis_id": "sub_resource_survey"}, candidate=len(worthy) > 0,
-                      detail={"worthy": [f["check_name"] for f in worthy]}))
+                      detail={"worthy": [f["check_name"] for f in worthy],
+                              # locator -> file|folder, so the commit table can say "N files · M folders"
+                              "kinds": {f["check_name"]: (_detail(f).get("kind") or "folder") for f in worthy}}))
 
     # ── what it is made of ─────────────────────────────────────────────
     verdicts = registry.get_component_verdicts("repo", slug)
@@ -264,7 +271,10 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
              source="architecture_recovery", state=arch.get("state", ""), count=accepted,
              members={"analysis_id": "architecture_recovery"}, candidate=accepted > 0,
              detail={"reviewed": len(comp_v), "blueprints_reviewed": len(bp_v),
-                     "blueprints_accepted": sum(1 for v in bp_v.values() if v.get("verdict") == "accepted")}),
+                     "blueprints_accepted": sum(1 for v in bp_v.values() if v.get("verdict") == "accepted"),
+                     # the kinds of the blueprints accepted ("Deployment Blueprint"), named in the table
+                     "blueprint_kinds": sorted({kind_word(k.split("::", 1)[0]) + " Blueprint"
+                                                for k, v in bp_v.items() if v.get("verdict") == "accepted"})}),
     ]
 
     # ── how it relates ─────────────────────────────────────────────────
@@ -308,6 +318,10 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
         "in_population": disposition in CURATE_POPULATION,
         "population": list(CURATE_POPULATION),
         "last_surveyed_at": getattr(project, "last_surveyed_at", "") or "",
+        # The kept survey a commit would publish (brief sections 1 and 2): its date, age, size, stale steps.
+        "survey": survey_state(registry, slug),
+        # The Egeria project answer ("unset" blocks a press until it is answered), read without writing it.
+        "project": project_state(registry, slug),
         "what_it_is": what_it_is,
         "what_it_holds": holds,
         "made_of": made_of,

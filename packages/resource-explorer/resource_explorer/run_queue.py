@@ -263,25 +263,51 @@ def _handle_catalogue_commit(target: dict, result_ref: str) -> RunOutcome:
 
 def _handle_materialize_components(target: dict, result_ref: str) -> RunOutcome:
     """Accepted components become Egeria SolutionComponents, one at a time,
-    after a branch verdict. Each result is recorded on the activity entry;
-    the run fails only if a materialization did (the detail says which)."""
+    after a branch verdict, then each is promoted out of RE's draft zone (the configured-only zone
+    rule). Run with an event loop on this thread, like its sibling `_handle_curate_commit`: pyegeria's
+    sync wrappers need one and a worker thread has none. The run fails if a materialization did OR a
+    promotion did; the summary says which, separately."""
+    from resource_explorer.catalogue_commit import run_with_loop
+
+    return run_with_loop(_materialize_components, target)
+
+
+def _materialize_components(target: dict) -> RunOutcome:
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.workflows.curate import materialize_component_if_accepted
+    from resource_explorer.workflows.curate import (
+        NODE_PROMOTION_COMPONENT,
+        materialize_component_if_accepted,
+        promote_to_publish_zones,
+        record_promotion,
+    )
 
     registry = ProjectRegistry()
     slug = target["slug"]
-    failed, done = [], 0
+    failed, promo_failed, done = [], [], 0
     for path in target.get("paths") or []:
         try:
             res = materialize_component_if_accepted(registry, "repo", slug, path, "accepted")
             if res and res.get("status") == "error":
                 failed.append(f"{path}: {res.get('error')}")
-            else:
-                done += 1
+                continue
+            guid = (res or {}).get("guid", "")
+            if guid:
+                promotion = promote_to_publish_zones(guid)
+                record_promotion(registry, slug, path, NODE_PROMOTION_COMPONENT, promotion)
+                if promotion.get("status") == "error":
+                    promo_failed.append(f"{path}: {promotion.get('error') or promotion.get('words')}")
+                    continue
+            done += 1                      # counted only once the whole accept (element and zone) landed
         except Exception as exc:
             failed.append(f"{path}: {type(exc).__name__}: {exc}")
-    return RunOutcome(state="failed" if failed else "succeeded",
-                      error=(f"{done} materialised; failed: " + "; ".join(failed)[:1500]) if failed else "")
+    if not failed and not promo_failed:
+        return RunOutcome(state="succeeded")
+    parts = [f"{done} materialised"]
+    if failed:
+        parts.append("materialization failed: " + "; ".join(failed))
+    if promo_failed:
+        parts.append("promotion failed: " + "; ".join(promo_failed))
+    return RunOutcome(state="failed", error=" · ".join(parts)[:1500])
 
 
 HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {

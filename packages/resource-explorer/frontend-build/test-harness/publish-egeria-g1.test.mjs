@@ -19,6 +19,8 @@ function makeServer(over = {}) {
     calls: [],
     inEgeria: false, row: { word: 'none', read_at: '', sentence: '', first: '' }, project: { status: 'unset', word: 'no project', name: '' },
     canAgain: false,
+    survey: { exists: true, surveyed_at: '2026-10-07T01:00:00', age_seconds: 7200, annotations: 42, steps: 12, stale_steps: 0, stale: [] },
+    resurveyAnswers: 'ok',
     publishAnswers: 'ok',     // 'ok' | '428' | '409' | 'drop' (200 but nothing recorded) | 'sent'
     reports: [REPORT], reportsStatus: 200,
     annotations: [{ guid: 'ann-1', annotation_type: 'SchemaAnalysisAnnotation', summary: 'ok', confidence: 90, analysis_step: 'files', explanation: 'because', content_status: '' }],
@@ -27,7 +29,7 @@ function makeServer(over = {}) {
     ...over,
   };
   const state = () => ({ slug: 'egeria_git', in_egeria: s.inEgeria, asset_guid: s.inEgeria ? GUID : '', row: s.row,
-    project: s.project, can_publish_again: s.canAgain });
+    project: s.project, can_publish_again: s.canAgain, survey: s.survey });
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
     const method = opts.method || 'GET';
@@ -36,13 +38,19 @@ function makeServer(over = {}) {
     const ok = (b, status = 200) => ({ ok: true, status, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.endsWith('/publish-state')) return ok(state());
+    if (u.endsWith('/resurvey')) {
+      if (s.resurveyAnswers === '409') return err(409, 'a survey for egeria_git is already running');
+      s.survey = { ...s.survey, exists: true, surveyed_at: '2026-10-07T09:00:00', age_seconds: 5, stale_steps: 0, stale: [] };
+      return ok({ ok: true, errors: [], survey: s.survey });
+    }
     if (u.endsWith('/publish-report')) {
+      if (s.publishAnswers === 'nosurvey') return err(409, 'no survey to publish yet · run the first survey');
       if (s.publishAnswers === '428') return err(428, 'egeria_project_context_required');
       if (s.publishAnswers === '409') return err(409, 'a publish for egeria_git is already running');
       if (body.without_project) s.project = { status: 'declined', word: 'no project (chosen)', name: '' };
       if (s.publishAnswers === 'ok') {
         s.inEgeria = true; s.canAgain = true;
-        s.row = { word: 'published', read_at: new Date().toISOString(), report_guid: REPORT.guid, reused: false, annotation_count: 42 };
+        s.row = { word: 'published', read_at: new Date().toISOString(), report_guid: REPORT.guid, reused: false, annotation_count: 42, surveyed_at: s.survey.surveyed_at };
       } else if (s.publishAnswers === 'sent') {
         s.inEgeria = true; s.canAgain = true; s.row = { word: 'sent', read_at: new Date().toISOString(), sentence: 'sent · waiting for Egeria', first: '' };
       } else if (s.publishAnswers === 'fail') {
@@ -136,7 +144,7 @@ test('publish: POSTs whole (no zones, no steps), then the words come from the re
   await wait();
   const [c] = post(server, '/api/egeria/egeria_git/publish-report');
   assert.deepEqual(c.body, { without_project: false }, 'no zone field, no steps field');
-  assert.match(q(document, '[data-publish-row]').textContent, /published · read back/);
+  assert.match(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
   assert.match(q(document, '[data-publish-status]').textContent, /in Egeria/);
   assert.equal(q(document, '[data-publish-status] [data-guid]').dataset.guid, GUID, 'the asset GUID is shown');
   assert.ok(q(document, '[data-copy-guid]'), 'and copyable');
@@ -151,7 +159,7 @@ test('KNOWN-NEGATIVE: a 200 with nothing recorded does not say published', async
   q(document, '[data-publish-go]').click();
   await wait();
   const t = band(document).textContent;
-  assert.doesNotMatch(t, /published · read back/);
+  assert.doesNotMatch(t, /published · from the survey of 2026-10-07 · read back/);
   assert.match(q(document, '[data-publish-row]').textContent, /no publish recorded here/);
 });
 
@@ -161,7 +169,7 @@ test('a report sent but not read back says "sent · waiting for Egeria", never p
   q(document, '[data-publish-go]').click();
   await wait();
   assert.match(q(document, '[data-publish-row]').textContent, /sent · waiting for Egeria/);
-  assert.doesNotMatch(q(document, '[data-publish-row]').textContent, /published · read back/);
+  assert.doesNotMatch(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
 });
 
 test('Egeria refusing reads "not published · <first sentence>" with the full sentence one gesture away', async () => {
@@ -211,7 +219,7 @@ test('a 428 shows the sentence and the two choices; "Publish without one" presse
   await wait();
   const ps = post(server, '/publish-report');
   assert.deepEqual(ps.map((c) => c.body.without_project), [false, true]);
-  assert.match(q(document, '[data-publish-row]').textContent, /published · read back/);
+  assert.match(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
   assert.match(q(document, '[data-publish-project]').textContent, /no project \(chosen\)/);
 });
 
@@ -351,4 +359,65 @@ test('File types: a repository not in Egeria shows the blocker and offers no com
   await wait();
   assert.match(sec.textContent, /publish the report first/);
   assert.equal(sec.querySelector('[data-file-types-go]').disabled, true);
+});
+
+/* ── brief section 1: publish the survey already kept; re-survey is its own act ───────────────── */
+
+test('the band shows the survey it would publish, with its age, before the press', async () => {
+  const { document } = await setUp('repo');
+  await openCurate(document);
+  const line = q(document, '[data-publish-survey="kept"]');
+  assert.match(line.textContent.replace(/\s+/g, ' '), /from the survey of 2026-10-07 · .*ago · 42 annotations · 12 steps ran/);
+  assert.equal(q(document, '[data-publish-go]').textContent.trim(), 'Publish to Egeria →');
+  assert.equal(q(document, '[data-resurvey-go]').textContent.trim(), 'Re-survey now →');
+  assert.equal(q(document, '[data-publish-stale]'), null, 'nothing stale: no stale line');
+});
+
+test('stale steps are named, not auto-run: a ⚠ cue, the word stale, the list one gesture away', async () => {
+  const { document } = await setUp('repo', { survey: { exists: true, surveyed_at: '2026-10-07T01:00:00', age_seconds: 7200,
+    annotations: 42, steps: 12, stale_steps: 3, stale: ['repo_health', 'repo_language', 'repo_security'] } });
+  await openCurate(document);
+  const stale = q(document, '[data-publish-stale]');
+  assert.match(stale.textContent.replace(/\s+/g, ' '), /stale 3 of 12 steps are stale \(older than their refresh rule\) · re-survey to refresh/);
+  assert.equal(stale.querySelector('[data-cue]').dataset.cue, 'partial');
+  assert.match(stale.querySelector('details').textContent, /repo_health, repo_language, repo_security/);
+});
+
+test('no survey: Publish is disabled, the reason is directly under it, and only the survey control is live', async () => {
+  const { document, server } = await setUp('repo', { survey: { exists: false, sentence: 'no survey to publish yet · run the first survey' } });
+  await openCurate(document);
+  assert.equal(q(document, '[data-publish-go]').disabled, true);
+  assert.equal(q(document, '[data-resurvey-go]').disabled, false);
+  assert.equal(q(document, '[data-resurvey-go]').textContent.trim(), 'Run the first survey →');
+  assert.equal(q(document, '[data-publish-blocker]').textContent.trim(), 'no survey to publish yet · run the first survey');
+  q(document, '[data-publish-go]').click();
+  await wait();
+  assert.equal(post(server, '/publish-report').length, 0, 'a disabled Publish sent nothing');
+});
+
+test('Re-survey now runs the survey and nothing else: no publish is sent, and the age changes from the re-read', async () => {
+  const { document, server } = await setUp('repo', { survey: { exists: true, surveyed_at: '2026-10-01T01:00:00', age_seconds: 600000,
+    annotations: 42, steps: 12, stale_steps: 2, stale: ['repo_health', 'repo_language'] } });
+  await openCurate(document);
+  assert.match(q(document, '[data-publish-survey]').textContent, /2026-10-01/);
+  const b = q(document, '[data-resurvey-go]');
+  b.click();
+  assert.equal(b.disabled, true, 'a pressed control ignores a second press');
+  assert.equal(b.textContent.trim(), 'Re-surveying …', 'an immediate visible change');
+  assert.equal(q(document, '[data-publish-go]').disabled, true, 'no publish mid-survey');
+  await wait(400);
+  assert.equal(post(server, '/resurvey').length, 1);
+  assert.equal(post(server, '/publish-report').length, 0, 're-survey must not publish');
+  assert.match(q(document, '[data-publish-survey]').textContent, /2026-10-07/);
+  assert.equal(q(document, '[data-publish-stale]'), null);
+  assert.equal(q(document, '[data-publish-go]').disabled, false);
+});
+
+test('a publish answered 409 "no survey" says nothing was sent, not "already running"', async () => {
+  const { document } = await setUp('repo', { publishAnswers: 'nosurvey' });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  assert.match(q(document, '[data-publish-feedback]').textContent, /no survey to publish yet · run the first survey/);
+  assert.doesNotMatch(q(document, '[data-publish-feedback]').textContent, /already running/);
 });

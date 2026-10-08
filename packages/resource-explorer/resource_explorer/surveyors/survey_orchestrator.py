@@ -100,6 +100,7 @@ class SurveyOrchestrator:
                 annotations = surveyor.run()
                 for ann in annotations:
                     result.add(ann)
+                result.step_annotations[producer] = list(annotations)
             except Exception as exc:
                 msg = f"prerequisite {producer} raised unexpectedly: {exc}"
                 log.exception(msg)
@@ -456,6 +457,7 @@ class SurveyOrchestrator:
                         annotations = surveyor.run()
                         for ann in annotations:
                             result.add(ann)
+                        result.step_annotations[step_key] = list(annotations)
                         log.info("  → %d annotation(s)", len(annotations))
                     except Exception as exc:
                         msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
@@ -515,6 +517,22 @@ class SurveyOrchestrator:
             len(result.annotations),
             len(result.errors),
         )
+
+        # Keep each completed step's annotations as the repository's latest survey, so a publish can
+        # send the survey a person decided on without running one (brief section 1). A scoped run
+        # (a sub-resource's own analysis) is not the repository's survey and is never kept as one.
+        if not scope_locator and result.step_annotations:
+            from resource_explorer.surveyors import survey_snapshot
+            for step_key, kept in result.step_annotations.items():
+                if step_key in result.step_errors:
+                    continue          # a step that raised keeps its previous result, never a half one
+                try:
+                    survey_snapshot.record_step(self._registry, project.slug, step_key, surveyed_at, kept)
+                except Exception as exc:
+                    result.snapshot_error = (
+                        f"the survey could not be kept for publishing ({step_key}): {exc}")
+                    log.warning("could not keep survey step %s for %s: %s", step_key, project.slug, exc)
+                    break
 
         # Any survey counts as "surveyed" — coarse scan or deep, full or
         # step-filtered — so this is unconditional, unlike the self-logging
