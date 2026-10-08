@@ -488,7 +488,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "file-shape step reads. Closes the gap where the inventory was written "
         "only by RAG ingestion/refresh_profile and never by a survey step, so a "
         "survey reported whatever an earlier, unrelated run had left behind.",
-        ["ResourceMeasureAnnotation"],
+        ["ResourceMeasureAnnotation", "ResourceProfileAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},

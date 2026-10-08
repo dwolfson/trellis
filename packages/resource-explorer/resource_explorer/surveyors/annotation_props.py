@@ -120,6 +120,8 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         AnnotationType.RESOURCE_PHYSICAL_STATUS: "ResourcePhysicalStatusAnnotationProperties",
         AnnotationType.DATA_GRAIN:         "DataGrainAnnotationProperties",
         AnnotationType.FINGERPRINT:        "FingerprintAnnotationProperties",
+        AnnotationType.RESOURCE_PROFILE:   "ResourceProfileAnnotationProperties",
+        AnnotationType.RESOURCE_PROFILE_LOG: "ResourceProfileLogAnnotationProperties",
     }
     egeria_class = _class_map.get(atype, "AnnotationProperties")
 
@@ -159,6 +161,11 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         rp = getattr(ann, "resource_properties", {})
         if rp:
             props["resourceProperties"] = to_string_map(rp)
+        # The annotation envelope (resultState, measuredAt, producingRun, scope) rides here.
+        # Guarded on truthiness: every measure that sets none is byte-identical on the wire.
+        ap = getattr(ann, "additional_properties", {})
+        if ap:
+            props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.CLASSIFICATION:
         cc = getattr(ann, "candidate_classifications", [])
@@ -225,6 +232,25 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             props["interval"] = iv
         if cg:
             props["candidateDataGrainGUIDs"] = cg
+
+    elif atype == AnnotationType.RESOURCE_PROFILE:
+        # Egeria's own field: valueCount, Map<String,Integer>. Counts stay integers.
+        vc = getattr(ann, "value_count", {})
+        if vc:
+            props["valueCount"] = {str(k): int(v) for k, v in vc.items()}
+        ap = getattr(ann, "additional_properties", {})
+        if ap:
+            props["additionalProperties"] = to_string_map(ap)
+
+    elif atype == AnnotationType.RESOURCE_PROFILE_LOG:
+        # The CSV's name travels in additionalProperties: the native field name for the
+        # log file was not verified against Egeria's Java source in this environment.
+        ap = dict(getattr(ann, "additional_properties", {}) or {})
+        lf = getattr(ann, "log_file", "")
+        if lf:
+            ap["logFile"] = lf
+        if ap:
+            props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.FINGERPRINT:
         # The native field names for this subtype are NOT known in this

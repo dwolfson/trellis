@@ -24,8 +24,10 @@ function makeServer(over = {}) {
     publishAnswers: 'ok',     // 'ok' | '428' | '409' | 'drop' (200 but nothing recorded) | 'sent'
     reports: [REPORT], reportsStatus: 200,
     annotations: [{ guid: 'ann-1', annotation_type: 'SchemaAnalysisAnnotation', summary: 'ok', confidence: 90, analysis_step: 'files', explanation: 'because', content_status: '' }],
-    fileTypes: [{ label: 'Python', file_count: 12, extensions: ['.py'], cataloged: false, linked: false, dataset_guid: '' }],
-    blocker: '',
+    measurements: { slug: 'egeria_git', in_egeria: true, inventoried: true,
+      profiles: [{ name: 'Profile File Types', type: 'ResourceProfileAnnotation', summary: '2 types', counts: { Python: 12, Markdown: 4 } }],
+      retired: [{ label: 'Python', dataset_guid: 'ds-old', word: 'retired mechanism · kept in Egeria', qualified_name: 'DataSet::egeria_git::Python' }],
+      retired_word: 'retired mechanism · kept in Egeria' },
     ...over,
   };
   const state = () => ({ slug: 'egeria_git', in_egeria: s.inEgeria, asset_guid: s.inEgeria ? GUID : '', row: s.row,
@@ -64,11 +66,7 @@ function makeServer(over = {}) {
     }
     if (u.endsWith('/egeria-surveys')) return s.reportsStatus === 200 ? ok(s.reports) : err(s.reportsStatus, 'Egeria is not reachable');
     if (u.includes('/egeria-surveys/') && u.endsWith('/annotations')) return ok(s.annotations);
-    if (u.endsWith('/file-types')) return ok({ slug: 'egeria_git', asset_guid: GUID, in_egeria: s.inEgeria, types: s.fileTypes, blocker: s.blocker });
-    if (u.endsWith('/file-types/commit')) {
-      s.fileTypes = s.fileTypes.map((t) => body.elements.some((e) => e.label === t.label) ? { ...t, cataloged: true, linked: true, dataset_guid: 'ds-1' } : t);
-      return ok({ ok: true, items: body.elements.map((e) => ({ label: e.label, state: 'cataloged', guid: 'ds-1', words: 'cataloged · read back' })) });
-    }
+    if (u.endsWith('/file-type-measurements')) return ok(s.measurements);
     if (u.includes('/curate/plan')) return ok({ technology_type: 'Git repository', disposition: 'using', in_population: true,
       last_surveyed_at: null, what_it_is: [], what_it_holds: [], relates: [], commits: [] });
     if (u.includes('/components/tree')) return ok({ branches: [], topology: '' });
@@ -330,35 +328,34 @@ test('a file system: the same component on the file-system route', async () => {
 
 /* ── PI-004 ──────────────────────────────────────────────────────────── */
 
-test('File types: preview first (nothing sent), then Catalog POSTs the chosen types and the list is re-read', async () => {
+test('File types: the section is a read-only display of the report profiles; the old press is gone', async () => {
   const { document, server } = await setUp('repo', { inEgeria: true });
   await openCurate(document);
-  const sec = q(document, '[data-file-types-section]');
-  assert.equal(server.calls.filter((c) => c.url.endsWith('/file-types')).length, 0, 'nothing is read until opened');
+  assert.equal(q(document, '[data-file-types-section]'), null, 'the DataSet section is removed');
+  const sec = q(document, '[data-file-measurements-section]');
+  assert.equal(server.calls.filter((c) => c.url.endsWith('/file-type-measurements')).length, 0, 'nothing is read until opened');
   sec.open = true;
   sec.dispatchEvent(new document.defaultView.Event('toggle'));
   await wait();
-  assert.equal(post(server, '/file-types/commit').length, 0, 'preview sends nothing');
-  const cb = sec.querySelector('[data-ft-label="Python"]');
-  assert.ok(cb && !cb.disabled);
-  cb.checked = true;
-  sec.querySelector('[data-file-types-go]').click();
-  await wait();
-  const [c] = post(server, '/file-types/commit');
-  assert.deepEqual(c.body.elements, [{ label: 'Python', file_count: 12, extensions: ['.py'] }]);
-  assert.match(sec.textContent, /cataloged · read back/);
-  assert.equal(sec.querySelector('[data-ft-label="Python"]').disabled, true, 'already cataloged and linked: not offered twice');
+  const row = sec.querySelector('[data-file-measurement="Profile File Types"]');
+  assert.ok(row, "Egeria's own annotation name is shown verbatim");
+  assert.match(row.textContent.replace(/\s+/g, ' '), /in the report .*Python 12 · Markdown 4/);
+  assert.equal(sec.querySelector('[data-file-types-go]'), null, 'no Catalog file types button');
+  assert.equal(sec.querySelectorAll('input[type=checkbox]').length, 0);
+  const old = sec.querySelector('[data-retired-dataset="Python"]');
+  assert.match(old.textContent.replace(/\s+/g, ' '), /retired mechanism · kept in Egeria/);
+  assert.equal(old.querySelector('button')?.textContent.trim(), 'copy', 'only a copy-GUID control: no delete or archive');
+  assert.equal(server.calls.filter((c) => c.method === 'POST' && /file-types|catalog-elements/.test(c.url)).length, 0, 'nothing is ever posted');
 });
 
-test('File types: a repository not in Egeria shows the blocker and offers no commit', async () => {
-  const { document } = await setUp('repo', { inEgeria: false, blocker: 'publish the report first: the repository is not in Egeria yet' });
+test('File types: no inventory yet says so and shows nothing to press', async () => {
+  const { document } = await setUp('repo', { inEgeria: false, measurements: { inventoried: false, profiles: [], retired: [] } });
   await openCurate(document);
-  const sec = q(document, '[data-file-types-section]');
+  const sec = q(document, '[data-file-measurements-section]');
   sec.open = true;
   sec.dispatchEvent(new document.defaultView.Event('toggle'));
   await wait();
-  assert.match(sec.textContent, /publish the report first/);
-  assert.equal(sec.querySelector('[data-file-types-go]').disabled, true);
+  assert.match(sec.textContent, /survey the repository first/);
 });
 
 /* ── brief section 1: publish the survey already kept; re-survey is its own act ───────────────── */
