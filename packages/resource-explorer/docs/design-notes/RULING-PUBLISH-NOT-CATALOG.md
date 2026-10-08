@@ -27,7 +27,10 @@ they're always published.
 default, RE conforms to it rather than adding a choice it can't honor.
 "Current" defaults, because how to treat database statistics, which
 Postgres only refreshes during maintenance (ANALYZE, VACUUM), is an
-ongoing discussion. Applied here to three things: keys travel with the
+ongoing discussion. RE already records an as-of for statistics it reads
+from the Postgres catalog; that hasn't yet reached Egeria's surveys, so
+their figures publish without one, and RE says so rather than lending
+them its own date. Applied here to three things: keys travel with the
 columns (Detail, below), Egeria's survey records its own measurements (Detail, below), and the
 `Ownership` classification stays as RE writes it today (the owner point
 below).
@@ -64,7 +67,7 @@ depth line and one stated default, each saying what it governs and what it can't
 | Facet | Default | Governs | The honest limit |
 |---|---|---|---|
 | **Keys** (primary, foreign) | always, at "tables and columns" depth | key relationships on published columns | **Not a choice: Egeria's default.** The cataloguer writes keys with the columns it creates, and nothing in its configuration turns that off. The Detail line states it as a fact ("keys · published with columns, Egeria's default"); there's no toggle. |
-| **Statistics** | row counts **on**, column profiles **off** | the statistics annotations in RE's survey report | **Row counts:** each published count carries its source and as-of in the annotation, and the manifest says so ("row counts · estimates from the database's statistics, last analyzed 10-03"; "measured 10-07" when a scan ran). **Column profiles:** off by default, on for those who want them. **Egeria's own survey** measures what it measures. If the commit runs Egeria's survey, its report carries its own statistics whatever this toggle says. That's Egeria's default and RE conforms to it: the manifest's survey row says "Egeria's survey records its own measurements, as of its run" and offers nothing more. **Staleness is an open thread:** Postgres refreshes its statistics only in maintenance operations, so every published count names its source and when that source was last refreshed, and how RE should treat a stale one is still being discussed. |
+| **Statistics** | row counts **on**, column profiles **off** | the statistics annotations in RE's survey report | **Row counts:** each published count carries its source and as-of in the annotation, and the manifest says so ("row counts · estimates from the database's statistics, last analyzed 10-03"; "measured 10-07" when a scan ran). **Column profiles:** off by default, on for those who want them. **Egeria's own survey** measures what it measures. If the commit runs Egeria's survey, its report carries its own statistics whatever this toggle says. That's Egeria's default and RE conforms to it. **The as-of differs by source.** RE's own counts carry the as-of it records from the Postgres catalog (the last analyze). Egeria's survey doesn't record one for catalog statistics yet: that decision hasn't reached its surveys. So the manifest's survey row says "Egeria's survey records its own measurements · no as-of recorded yet", and Egeria's figures are never shown with RE's date beside them. **Staleness is an open thread:** Postgres refreshes its statistics only in maintenance operations, and how RE should treat a stale count is still being discussed. |
 | **Data classes** | on | the data-class findings RE attaches to columns | RE controls these fully: they're RE's annotations. |
 
 Descriptions aren't on the list. A published table without its comment is
