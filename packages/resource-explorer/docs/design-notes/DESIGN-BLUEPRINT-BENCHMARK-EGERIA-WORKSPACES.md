@@ -192,11 +192,101 @@ Deployment Blueprint"`, read back by GUID, recorded as an activity row
 "blueprint renamed forward · 254dbbe6 · OMAG-Server-Platform → Egeria
 Deployment Blueprint · owner-directed <UTC>"; nothing else touched.
 
-## 7. Compare against the dump
+## 7. Compared against the dump (2026-10-08)
 
-When PR/CI's read-only dump of the two blueprints lands, append two
-tables here: per component, found by RE / needs the config detector /
-needs the cross-repository fact / a person's; per wire, label derived by
-the map / told. The count of the first column over the total is the
-number the owner's bar is measured by, and it is recorded in the evidence
-with the dump's path.
+Dump by PR/CI, read-only: `benchmark-blueprints.json` (summary),
+`blueprints-raw.json`, `blueprint-components-raw.json` in PR/CI's scratchpad
+(2 blueprint reads at depth 3, 24 member reads, 0 errors, no credentials).
+Facts from it that correct or sharpen §1–§4: the blueprint's qualifiedName
+is `SolutionBlueprint::<IDENTIFIER>::<displayName>` (identifiers
+`EGERIA-WORKSPACES-RUNTIMES`, `-SERVERS`) with `versionIdentifier`
+6.2-SNAPSHOT and a description, Member Of the CollectionFolder "Egeria
+Solutions" by `CollectionMembership`, **self-anchored, no ZoneMembership
+and no Ownership on the blueprint or any member** (the configured-only
+rule RE adopted matches the owner's own practice); members are
+`SolutionComponent` or `SolutionActorRole`, self-anchored, with
+`identifier`, `description`, `versionIdentifier`,
+`solutionComponentType` (Software Service · Data Storage · Data
+Distribution · User Interface · Software Library · Console Command · one
+"PYEGERIA"), `plannedDeployedImplementationType` (SoftwareServer, or a
+specific type: Marquez Server, Engine Host, View Server, Topic, Jupyter
+Notebook File, pyegeria) and usually `url`; two qualifiedName forms, RE's
+own `SolutionComponent::<IDENTIFIER>::<name>` and the content-pack form
+`Egeria:ValidMetadataValue:<Type>:deployedImplementationType-(<type>)::<name>`
+for components Egeria's content packs already define (the platform,
+Marquez, Airflow, Superset, the four Egeria servers, pyegeria, the notebook
+file). Wires: `SolutionLinkingWire` with `label`, `description`,
+`oneWay=false`, optional `iscQualifiedNames` naming an
+InformationSupplyChain; actor links `SolutionComponentActor` with `role`
+and `description`, no label.
+
+So the class map of §1 is Egeria's own `solutionComponentType` value set,
+and where a component is one Egeria's content packs define, RE should
+**adopt the content-pack element by its qualifiedName** rather than create
+a second component (the platform, the servers, Marquez, Airflow, Superset,
+pyegeria): the same adoption-by-name rule as everywhere else, and it is
+why the owner's two blueprints share members.
+
+### Per component
+
+| Component (type · planned impl.) | Runtimes | Servers | RE finds it by | Class |
+|---|---|---|---|---|
+| OMAG Server Platform (Software Service · OMAG Server Platform) | ✓ | — | compose service `image: odpi/egeria-platform`; content-pack element adopted by name | derivable now |
+| Egeria Workspaces PostgreSQL Server (Data Storage · SoftwareServer) | ✓ | — | compose service, image family `postgres`, volume | derivable now |
+| Apache Kafka (Data Distribution · SoftwareServer) | ✓ | — | compose service, image family `kafka` | derivable now |
+| Marquez Server (Data Storage · Marquez Server) | ✓ | — | compose service; content-pack element | derivable now |
+| Apache Airflow Server (Data Distribution · Apache Airflow Server) | ✓ | ✓ | compose service; content-pack element | derivable now |
+| Apache Superset (User Interface · Apache Superset) | ✓ | — | compose service; content-pack element | derivable now |
+| Apache Web Server (Software Service · SoftwareServer) | ✓ | — | compose service, image family `nginx`/`httpd` | derivable now |
+| Open Lineage Proxy (Software Service · SoftwareServer) | ✓ | ✓ | compose service | derivable now |
+| JupyterHub (Software Service · SoftwareServer) | ✓ | — | compose service | derivable now |
+| Pyegeria-Web (Software Service · SoftwareServer) | ✓ | — | compose service with a `build:` context in the repository → **built here**, a component of this repository as well as a runtime | derivable now |
+| Engine Host, Integration Daemon, View Server (Software Service · their types) | — | ✓ | the OMAG server configuration documents in the repository; content-pack elements | needs the server-config detector |
+| Open Governance / Open Metadata / Open Lineage / Audit Log Topic (Data Distribution · Topic) | — | ✓ | topic names in the same configuration documents | needs the server-config detector |
+| pyegeria (PYEGERIA · pyegeria) | — | ✓ | the Jupyter image's pip requirements → build-time dependency; content-pack element | derivable now as a dependency; as a blueprint member once the cross-repository fact exists |
+| hey_egeria (Console Command), my_egeria (User Interface), Dr.Egeria (Software Library) | — | ✓ | console-script and package names in egeria-python's manifest | needs the cross-repository fact |
+| Jupyter Notebook File (Data Storage · Jupyter Notebook File) | — | ✓ | the file inventory (`*.ipynb`) | derivable now; a member only when a person includes it (brief 2a) |
+| Open Metadata User (actor) | ✓ | ✓ | nothing in the repository | a person's |
+| Python Programmer (actor) | — | ✓ | nothing in the repository | a person's |
+
+**Counts.** Runtimes: 10 of 11 members derivable now from compose (the
+actor is a person's). Servers: 1 of 16 derivable now as a member (the
+notebook file, by inclusion), 7 more with the server-config detector (3
+servers, 4 topics), 2 more as the Airflow and Proxy services already
+found, 4 with the cross-repository fact (pyegeria and the three tools), 2
+actors a person's. So the Runtimes blueprint meets the owner's bar at
+step 1 of §6; the Servers blueprint reaches 10 of 16 at step 3 and 14 of
+16 at step 4, the two actors always told.
+
+### Per wire (internal links only, as the dump counts them)
+
+| Wire (end1 → end2) | Label | Derivation |
+|---|---|---|
+| Superset, OMAG Platform, Airflow, Marquez → PostgreSQL | "stores data" | `connects_to` + store class `postgres` + env family → map ✓ |
+| OMAG Platform → Kafka | "exchanges notifications" | `connects_to` + store class `kafka` → map ✓ |
+| Open Lineage Proxy → Kafka; Airflow → Open Lineage Proxy | "open lineage events" (ISC) | `connects_to` + env `OPENLINEAGE_*` → map ✓; the InformationSupplyChain name is told (a person's, or the map's when one ISC is configured) |
+| Open Metadata User → Apache Web Server | "accesses content" | actor link: a person's |
+| pyegeria, hey_egeria, Dr.Egeria, my_egeria → View Server | "access metadata" | `connects_to` + Egeria view-server URL → map ✓ once the clients are members |
+| Jupyter Notebook File → pyegeria | (none) | file imports pyegeria: the file inventory plus the notebook's imports, derivable |
+| Engine Host, Integration Daemon → Audit Log Topic | "audit log notifications" | server config (audit log destinations) → map ✓ with the detector |
+| Open Governance Topic → Integration Daemon, Engine Host | "configuration change…" | server config → map ✓ with the detector |
+| Open Metadata Topic → Integration Daemon, Engine Host | "metadata change notifications" | server config (OMRS topic) → map ✓ with the detector |
+| Airflow → Proxy, Proxy → Open Lineage Topic, Open Lineage Topic → Integration Daemon | "open lineage events" (ISC) | compose env and server config → map ✓; ISC told |
+| actor → component links with a role | role words | a person's |
+
+**Counts.** Runtimes: 7 of 8 internal links derivable with the map (the
+actor's is told). Servers: 17 of 19 derivable with the map once the
+server-config detector and the client members exist (the two actor links
+are told); the notebook → pyegeria wire is derivable from imports with no
+label to invent.
+
+**What the dump adds to §4.** Three things RE did not have in its plan:
+`versionIdentifier` and `description` on **components** as well as the
+blueprint (proposed from the image tag and the compose service's
+`container_name`/labels, editable); `url` on most components (derivable
+from the compose port mapping and the host RE serves from, proposed); and
+`iscQualifiedNames` on lineage wires, which names an InformationSupplyChain
+a person chooses from Egeria. And one correction: RE's class map is not
+RE's; it is Egeria's `solutionComponentType` value set, read from Egeria
+as valid values, with RE's image-family → type mapping as the only thing RE
+owns.
