@@ -34,6 +34,24 @@ contents get cataloged), `DESIGN-ENRICHMENT-AND-CURATE-PUBLISHING-TO-EGERIA.md`
   the annotation points at). Cataloguing is a separate act that creates
   assets.
 
+## The principle (owner, 2026-10-07): follow Egeria's lead
+
+*"Our needs may evolve but I think it is useful to follow Egeria's lead
+here."* So: **Egeria's folder-survey annotation types and names are the
+default for every file-type and file-count measurement RE publishes, for
+repositories and file systems alike.** Any departure is named in this note
+with its reason. When RE's needs differ later, RE **extends with a distinct
+annotation type** (its own name, declared through the annotation-type
+registry) and never changes the meaning of one of Egeria's.
+
+Departures, today: none in meaning. Two in scope: "Profile File Names" is
+not published by default (size; Egeria writes it as a CSV log and so would
+RE, on request); and RE adds the envelope in `additionalProperties`, which
+Egeria's types do not carry, as the leads already agreed. One addition that
+is RE's own and therefore its own type when it exists: the *selection*
+profile ("what cataloguing the chosen items would create" against "what the
+whole tree holds"), which Egeria's survey has no reason to produce.
+
 ## The ruling
 
 1. **File types are a measurement.** RE publishes them as Egeria's own
@@ -77,6 +95,37 @@ contents get cataloged), `DESIGN-ENRICHMENT-AND-CURATE-PUBLISHING-TO-EGERIA.md`
    "Profile Asset Types" annotation is the bridge: it says what cataloguing
    the current selection would create, so the manifest's "Egeria gets · N
    DataFile" and the profile agree by construction (one test).
+
+## The same mapping for file systems (owner: "this will also apply to file systems")
+
+Egeria's folder survey *is* the file-system survey, so a file system is the
+natural home of these annotation types; a repository is the same
+measurement taken on a checkout. One mapping, two kinds; the table above
+applies to both, with "file system" wherever it says "repository".
+
+Where RE's file-system survey stands, read from code only (file-system
+builds stay on hold by the owner's order):
+
+- `surveyors/filesystem/local_filesystem_surveyor.py` already measures in
+  parity with Egeria's names by its own comments: one walk collecting
+  counts, extensions, OS-level facts, with "Capture File Counts" parity
+  noted in the code, and data-file profiling through the data profiler;
+  `egeria_filesystem_surveyor.py` reads Egeria's native folder survey back
+  with "Capture File Counts" and "Profile File Extensions" parity noted.
+- **The gap**: what RE *publishes* for a file system is
+  `ResourceMeasureAnnotation` (3), `SchemaAnalysisAnnotation` (2, the data
+  profiles), `RequestForActionAnnotation` (3) and one
+  `ClassificationAnnotation`; **no `ResourceProfileAnnotation`**, so the
+  per-extension and per-type counts RE measures reach Egeria as properties
+  on a measure annotation rather than as the profile annotations Egeria's
+  own survey writes. The file-system slice, when the owner lifts the hold,
+  is the same two classes and the same three profile annotations as the
+  repository slice, emitted by the local surveyor, plus "Profile File Names"
+  on request; the hybrid surveyor then compares RE's profile with Egeria's
+  own row for row, which is the parity check the comments promise.
+- Cataloguing contents of a file system follows brief 2a's selection
+  mechanism unchanged (the `resource_scope_events` table is generic across
+  kinds by design).
 
 ## Naming of selected sub-resources (the owner's LICENSE worry)
 
