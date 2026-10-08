@@ -183,13 +183,14 @@ def _sweep_native_surveys() -> None:
     or attribution from the caller (`sweep_in_flight` takes no identity), which
     is the one safe shape for code that runs on nobody's behalf. With nothing
     in flight it is a single registry query and no Egeria call."""
-    from resource_explorer import native_survey_run
+    from resource_explorer import catalog_and_survey, native_survey_run
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     if not registry.list_in_flight_native_survey_runs(limit=1):
         return
-    with native_survey_run.port_session(native_survey_run.PyegeriaSurveyPort()) as port:
+    # The registration port is the survey port plus the reads a registration run needs.
+    with native_survey_run.port_session(catalog_and_survey.PyegeriaRegistrationPort()) as port:
         n = native_survey_run.sweep_in_flight(registry, port)
     if n:
         log.info("Native Egeria survey read-back: read %d in-flight run(s)", n)
