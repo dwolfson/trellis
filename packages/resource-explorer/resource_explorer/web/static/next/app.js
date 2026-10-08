@@ -194,6 +194,7 @@ import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable 
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
+import { installSessionBanner } from '/static/next/session-banner.js';
 
 /* ════════════════════════════════════════════════════════════════════════
  * State
@@ -7358,6 +7359,12 @@ export function renderByAnalysisContents(slug, boards, boardState, settled, tota
 // See NEXT-RENDER-HARNESS-IMPLEMENTED.md for the pattern.
 export async function loadByAnalysisPane() {
   const el = $('content');
+  // Curate's By analysis is not built (project owner, 2026-10-08): one short line, no read, no error.
+  if (state.stage === 'curate') {
+    el.innerHTML = `${subTabsHtml()}<p data-under-construction class="mt-s3 text-answer text-ink-muted">Under construction</p>`;
+    bindSubTabs();
+    return;
+  }
   const blocked = paneNeedsRepo();
   if (blocked) { el.innerHTML = subTabsHtml() + blocked; bindSubTabs(); return; }
   const slug = state.selectedSlug;
@@ -9640,6 +9647,8 @@ function countOf(settled, limit, key) {
 }
 
 async function start() {
+  // One banner for a dead session; the header stops saying "signed in" (session-banner.js).
+  installSessionBanner(document, { onDead: () => { state.me = null; renderTopBar(); } });
   await loadIcons();
   applyWidths();
   initSeams();
