@@ -100,3 +100,6 @@ A blueprint adopted under a legacy name keeps carrying the root name until it is
 * Search behaviour for the new qualifiedName: `get_guid_for_name` searches several properties with no type
   restriction, so `...::deployment` may also match a longer name that contains it, or an element of another
   type. Not run.
+
+Deleting a stale `architecture_materialized_blueprints` row when the same qualifiedName is re-recorded is
+fine: that table is a cache of Egeria elements, not a proof or a decision, and proof rows are never deleted.
