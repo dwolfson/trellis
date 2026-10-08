@@ -1,5 +1,7 @@
 # REPLY — Designer: splitting Curate (and Understanding) by the job a person is doing (2026-10-08)
 
+*Wording follows the owner's decision of the same day: Publish is the one Egeria verb, and "Catalog" is retired from controls (`RULING-PUBLISH-NOT-CATALOG.md`).*
+
 To ASK-DESIGNER-CURATE-SPLIT-BY-JOB.md, a proposal for reaction, read
 against main at 62bcd4ad (`next/app.js` `SUB_TABS` and `subTabsHtml`,
 `stages/curate.js` `CURATE_SECTIONS`, `stages/publish.js`,
@@ -50,8 +52,8 @@ names:**
 
 | Tab | Holds (repository) | Holds (database) |
 |---|---|---|
-| **Describe and publish** | confirmed Context facts, read-only with "edit on Context ›"; Findable (tags, group); ratings; notes (the journal); **Publish to Egeria →** of the survey report; the Egeria reports list; Re-survey now | the same describe bands; the Egeria reports list; the **catalog state, read-only** ("2 schemas cataloged · last commit 10-07 · Contents ›") |
-| **Contents** | what's in it (the selection tree, proposals, containers), what gets written, **Publish N items**, the steps list; **Forget Egeria links** and the project bind (moved, see §4) | the scope tree, the manifest, **Catalog N schemas**, the steps list; Read Egeria again |
+| **Describe and publish** | confirmed Context facts, read-only with "edit on Context ›"; Findable (tags, group); ratings; notes (the journal); **Publish to Egeria →** of the survey report; the Egeria reports list; Re-survey now | the same describe bands; the Egeria reports list; the **publish state, read-only** ("2 schemas published · last commit 10-07 · Contents ›") |
+| **Contents** | what's in it (the selection tree, proposals, containers), what gets written, **Publish N items**, the steps list; **Forget Egeria links** and the project bind (moved, see §4) | the scope tree, the manifest, **Publish N schemas · ‹depth› · ‹facets›**, the steps list; Read Egeria again |
 | **Structure** | what it is (the lines to confirm), what it's made of (components, verdicts), blueprints, how it relates (dependencies, confirmations), term and data-class confirmations, data-class rules | term and logical-schema proposals, data-class rules; dependencies, present and explained ("none detected for databases yet") |
 
 **The one move:** "what it is" (the capability lines a person confirms)
@@ -62,12 +64,12 @@ component verdict. Contents is about *which parts* become assets.
 **Why not four** (relations on their own)? On a database there are no
 dependencies yet, and on a repository the dependency table is 5 controls.
 A tab for 5 controls is a tab that's usually empty. If dependencies grow,
-the split can come later. **Why not two?** "Everything that catalogs or
+the split can come later. **Why not two?** "Everything that publishes parts or
 confirms" is still 70 controls on a repository, which is the problem as
 the owner stated it.
 
-**Names, briefly:** "Contents" rather than "Catalog the contents", because
-the reserved verb (Catalog) belongs on one button, not on a tab. A tab
+**Names, briefly:** "Contents" rather than "Publish the contents", because
+the Egeria verb (Publish) belongs on buttons, not on a tab. A tab
 name that's a verb reads as a press. That's the same lesson as the scope
 row's "catalogue" at the gate.
 
@@ -82,7 +84,7 @@ their counts on the tab name*. "Structure · 12 awaiting you" is how a
 non-expert learns something is waiting without having to understand it.
 
 The one preference worth saving is **which tab Curate opens on** (tab 1
-by default, remembered per person). A steward who catalogs every day lands
+by default, remembered per person). A steward who publishes parts every day lands
 on Contents.
 
 ## 3. A running commit on every tab?
@@ -90,9 +92,9 @@ on Contents.
 **One line on every tab. The stepper only where it was pressed.**
 Directly under the rail, on every Curate tab:
 
-> ◔ **Catalog · commit a3f2 · step 6 of 9 · running** · Contents ›
+> ◔ **Publish · commit a3f2 · step 6 of 9 · running** · Contents ›
 
-When it finishes, the line reads "✓ cataloged · read back 10-08 09:14", and
+When it finishes, the line reads "✓ published · read back 10-08 09:14", and
 it stays until the tab where it ran is next opened. This is the cue rule
 again: the stepper sits where the decision was made. But a commit in
 progress is a consequence that's still happening, and switching tabs must
@@ -103,7 +105,7 @@ not make it invisible. That's why it gets one line, never the steps.
 **Yes, with three controls moved out of it.** Tab 1 is exactly "what do we
 say about this, and is it in Egeria". That's the whole job of the separate
 tool. Three controls in today's Publish band don't belong to a
-non-expert, and they move to **Contents**, beside the catalog plumbing
+non-expert, and they move to **Contents**, beside the publishing plumbing
 they belong to:
 
 - **Forget Egeria links** (with its confirm). It's destructive, and it
@@ -125,10 +127,10 @@ enter facts.
 ## 5. Per kind
 
 **The split doesn't assume a repository, but it shows one real asymmetry.**
-For a repository, *publish* (the survey report) and *catalog contents*
+For a repository, *publish the report* and *publish its parts*
 (publish N items) are two presses. For a database they're **one press**,
 the commit (Classic's Publish retired into it). So a database's tab 1
-shows the catalog **state**, with a link to Contents, and has no press of
+shows the publish **state**, with a link to Contents, and has no press of
 its own. There's one press, in one place, and tab 1 carries its result.
 A file system will look like a database (a scope of directories, one
 commit), so it takes the database's shape.
@@ -180,7 +182,7 @@ visit rule from the scope reply).
 One slice per kind, as the ask says, moving existing sections under the
 tabs **without changing them**. The gate is by use: the owner describes and
 publishes a resource from tab 1 alone, without opening the others. I'd add
-one check: on a database, he finds the catalog press from tab 1's state
+one check: on a database, he finds the publish press from tab 1's state
 line in one click.
 
 ## Left open
