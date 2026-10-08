@@ -456,17 +456,18 @@ export async function renderCurate(slug) {
     plan = await getCuratePlan(slug);
   } catch (err) {
     stopTicker();
+    dropPrefetch();                                 // nothing will paint it: do not leave it to be read as fresh later
     if (host.isConnected) host.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">${paneError(`The plan could not be read after ${secs()} s: `, err)}</div>`;
     return;
   }
   stopTicker();
-  if (slug !== state.selectedSlug) return;
+  if (slug !== state.selectedSlug) { dropPrefetch(); return; }
   state.curate = state.curate || {};
   state.curate.blueprintCounts = ((plan.made_of || [])[0] || {}).detail || {};
   const picks = new Set(state.curate.picks || plan.what_it_is.filter((r) => r.candidate && r.state === 'measured' && r.kind !== 'InfrastructureAsset').map((r) => r.kind));
   let latest = (plan.commits || [])[0];
   await scopeLoad;
-  if (slug !== state.selectedSlug) return;
+  if (slug !== state.selectedSlug) { dropPrefetch(); return; }
 
   const draw = () => {
     const current = isCurrentCommit(latest) ? latest : null;
@@ -597,10 +598,14 @@ export async function renderCurate(slug) {
 /** Reads that need only the slug, started beside the plan request and consumed once by the first paint.
  *  A prefetched promise that nobody takes (the plan failed) must not become an unhandled rejection. */
 let prefetched = null;
+const PREFETCH_TTL_MS = 60000;
+/** True while a started prefetch has not been consumed or dropped (a test reads it). */
+export function curatePrefetchPending() { return !!prefetched; }
+function dropPrefetch() { prefetched = null; }
 function prefetchCurateReads(slug) {
   const keep = (p) => { p.catch(() => {}); return p; };
   prefetched = {
-    slug,
+    slug, at: Date.now(),
     tree: keep(getComponentTree(slug, '')),
     blueprints: keep(getComponentBlueprints(slug)),
     depth: keep(getCatalogueDepthOffer(slug)),
@@ -608,6 +613,7 @@ function prefetchCurateReads(slug) {
 }
 function takePrefetched(slug, key) {
   if (!prefetched || prefetched.slug !== slug || !prefetched[key]) return null;
+  if (Date.now() - prefetched.at > PREFETCH_TTL_MS) { prefetched = null; return null; }
   const p = prefetched[key];
   prefetched[key] = null;
   return p;
@@ -805,7 +811,11 @@ export function leafRowHtml(l) {
  *  the group still has undecided work, default CLOSED once it is fully
  *  decided — the depth-1 accepted signal a reader used to get from the flat
  *  list is still here, just per-group instead of per-branch. */
+/** A leaf with no verdict of its own (an inherited one is the branch's, not a decision about this leaf). */
+export const isUndecidedLeaf = (l) => !l.verdict || !l.verdict.verdict || !!l.verdict.inherited_from;
+
 function leafGroupHtml(g, openByName = null) {
+  const todo = g.members.filter(isUndecidedLeaf).length;
   // A group the person was already working in keeps the state it had; only a first view uses the default.
   const open = openByName && openByName.has(g.name) ? openByName.get(g.name) : g.undecided > 0;
   return `<details data-leaf-group="${esc(g.name)}" class="border-b border-rule py-[3px]" ${open ? 'open' : ''}>
@@ -816,8 +826,8 @@ function leafGroupHtml(g, openByName = null) {
     </summary>
     <div class="pl-s3">
       <div class="flex flex-wrap items-baseline gap-x-s3 py-[2px] text-provenance">
-        <button data-group-verdict="accepted" data-group="${esc(g.name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">accept all ${g.members.length}</button>
-        <button data-group-verdict="rejected" data-group="${esc(g.name)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject all</button>
+        <button data-group-verdict="accepted" data-group="${esc(g.name)}" ${todo ? '' : 'disabled'} title="${todo ? 'Only the undecided ones are recorded' : 'Every one already has a verdict'}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-default disabled:opacity-60">accept all ${todo}</button>
+        <button data-group-verdict="rejected" data-group="${esc(g.name)}" ${todo ? '' : 'disabled'} title="${todo ? 'Only the undecided ones are recorded' : 'Every one already has a verdict'}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline disabled:cursor-default disabled:opacity-60">reject all ${todo}</button>
       </div>
       ${g.members.map(leafRowHtml).join('')}</div>
   </details>`;
@@ -858,10 +868,14 @@ function selectionBarHtml(selected, shown, total) {
 async function renderComponentTree(slug, prefix = '') {
   const host = $('component-tree');
   if (!host) return;
+  // Each render takes a token; every continuation after an await bails out if a newer render has begun, so
+  // two overlapping renders never both bind handlers or both write the DOM.
+  const token = host._renderToken = (host._renderToken || 0) + 1;
+  const stale = () => host._renderToken !== token || !host.isConnected;
   let tree;
   try { tree = await ((!prefix && takePrefetched(slug, 'tree')) || getComponentTree(slug, prefix)); }
-  catch (err) { host.innerHTML = `<span class="text-accent-ink">${paneError('The components could not be read: ', err)}</span>`; return; }
-  if (slug !== state.selectedSlug) return;
+  catch (err) { if (!stale()) host.innerHTML = `<span class="text-accent-ink">${paneError('The components could not be read: ', err)}</span>`; return; }
+  if (slug !== state.selectedSlug || stale()) return;
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   if (!tree.branches.length) {
     host.innerHTML = `<div class="text-caveat text-ink-muted">No components recovered on this resource yet.</div>
@@ -954,13 +968,16 @@ async function renderComponentTree(slug, prefix = '') {
   });
 
   /** Reads a branch's leaves into its box. `refresh` keeps what is on screen (and each group's open state)
-   *  until the new rows arrive, so a verdict does not collapse the place the person is working in. */
+   *  until the new rows arrive, so a verdict does not collapse the place the person is working in.
+   *  A per-box sequence number discards an older response; open state is read when the rows are applied. */
   const loadLeaves = async (path, box, { refresh = false } = {}) => {
-    const openByName = new Map();
-    box.querySelectorAll('details[data-leaf-group]').forEach((d) => openByName.set(d.dataset.leafGroup, d.open));
+    const mine = box._leafSeq = (box._leafSeq || 0) + 1;
     if (!refresh) { box.hidden = false; box.innerHTML = `<span class="text-provenance text-ink-muted">reading…</span>`; }
     try {
       const out = await getComponentLeaves(slug, path);
+      if (box._leafSeq !== mine || !box.isConnected) return;
+      const openByName = new Map();
+      box.querySelectorAll('details[data-leaf-group]').forEach((d) => openByName.set(d.dataset.leafGroup, d.open));
       // Grouped by scope-hierarchy cluster when the backend found groups worth having
       // (`group_leaves`'s own MIN_GROUP=2 rule); ungrouped leaves render plainly; a branch with no
       // groups at all falls back to the flat list.
@@ -973,11 +990,21 @@ async function renderComponentTree(slug, prefix = '') {
       box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
         recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 }, undefined, lb)));
       // Accept all / reject all for a whole group (a scope-hierarchy cluster such as compose-configs/optional-...).
+      // Only the members with no verdict of their own are posted; the confirm says exactly that number.
       box.querySelectorAll('[data-group-verdict]').forEach((gb) => gb.addEventListener('click', () => {
         const g = groups.find((x) => x.name === gb.dataset.group);
         if (!g) return;
-        recordVerdicts(slug, g.members.map((m) => m.path), gb.dataset.groupVerdict, {
-          count: g.members.length, low: g.members.filter((m) => m.low_confidence).length, exists: g.accepted || 0,
+        const todo = g.members.filter(isUndecidedLeaf);
+        if (!todo.length) return;
+        const verdict = gb.dataset.groupVerdict;
+        recordVerdicts(slug, todo.map((m) => m.path), verdict, {
+          count: todo.length, low: todo.filter((m) => m.low_confidence).length, exists: 0, confirmAlways: true,
+          // after a failed batch: how many of the batch now carry the verdict (read fresh from the server)
+          countRecorded: async () => {
+            const again = await getComponentLeaves(slug, path);
+            const now = new Map((again.leaves || []).map((l) => [l.path, l]));
+            return todo.filter((m) => { const v = (now.get(m.path) || {}).verdict; return v && v.verdict === verdict && !v.inherited_from; }).length;
+          },
         }, undefined, gb);
       }));
       box.querySelectorAll('[data-ports-open]').forEach((pb) => pb.addEventListener('click', () => {
@@ -985,7 +1012,12 @@ async function renderComponentTree(slug, prefix = '') {
         if (leaf) openPortsInRail(slug, leaf.path, leaf.ports || []);
       }));
     } catch (err) {
-      if (!refresh) box.innerHTML = `<span class="text-provenance text-accent-ink">could not read: ${esc(err.message)}</span>`;
+      if (box._leafSeq !== mine) return;
+      if (!refresh) { box.innerHTML = `<span class="text-provenance text-accent-ink">could not read: ${esc(err.message)}</span>`; return; }
+      // The rows on screen may be out of date: say so on the box, faintly, with the sentence on demand.
+      box.querySelector('[data-refresh-failed]')?.remove();
+      box.insertAdjacentHTML('afterbegin', `<div data-refresh-failed class="text-provenance">${
+        stateCue('error', 'could not refresh', 'This branch could not be re-read after the change, so the rows below may be out of date. Reload to see the current state.')}</div>`);
     }
   };
   host.querySelectorAll('[data-branch-open]').forEach((b) => b.addEventListener('click', async () => {
@@ -993,6 +1025,10 @@ async function renderComponentTree(slug, prefix = '') {
     if (!box) return;
     if (!box.hidden) { box.hidden = true; return; }
     await loadLeaves(b.dataset.branchOpen, box);
+  }));
+  host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
+    const br = tree.branches.find((x) => x.path === b.dataset.scope);
+    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 }, undefined, b);
   }));
   // Put the open branches back as they were, then refresh them in place from a re-read.
   const refreshes = [];
@@ -1004,12 +1040,10 @@ async function renderComponentTree(slug, prefix = '') {
   }
   scrolls.forEach(([el, top]) => { el.scrollTop = top; });
   if (winY && typeof window !== 'undefined') window.scrollTo(0, winY);
+  // After the refreshes land, restore the saved position only if the person has not scrolled since.
+  const placed = scrolls.map(([el]) => el.scrollTop);
   await Promise.all(refreshes);
-  scrolls.forEach(([el, top]) => { el.scrollTop = top; });
-  host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
-    const br = tree.branches.find((x) => x.path === b.dataset.scope);
-    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 }, undefined, b);
-  }));
+  if (!stale()) scrolls.forEach(([el, top], i) => { if (el.scrollTop === placed[i]) el.scrollTop = top; });
 }
 
 /* ── Blueprints ───────────────────────────────────────────────────────────
@@ -1347,7 +1381,7 @@ function pressPhase(el, phase, word, title = '') {
   el.setAttribute('aria-busy', phase === 'pending' ? 'true' : 'false');
   el.innerHTML = stateCue(phase === 'pending' ? 'running' : phase === 'done' ? 'measured' : 'error', word, title);
 }
-function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }, onDone, pressedEl = null) {
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirmAlways = false, countRecorded = null }, onDone, pressedEl = null) {
   const status = $('component-tree-status');
   const accepting = verdict === 'accepted';
   const go = async () => {
@@ -1371,15 +1405,37 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0 }, onDon
       const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
       pressPhase(pressedEl, 'error', 'failed · press to retry', why);
       if (pressedEl) pressedEl.disabled = false;
-      if (status) status.innerHTML = `<span class="text-accent-ink">not recorded — ${esc(why)}</span>`;
+      let words = `not recorded — ${esc(why)}`;
+      if (countRecorded && scopes.length > 1) {
+        // A batch is posted row by row, so a failure can leave part of it recorded: count what landed.
+        try {
+          const n = await countRecorded();
+          if (n > 0) words = `partly recorded · <span class="tnum">${n}</span> of <span class="tnum">${scopes.length}</span> recorded, <span class="tnum">${scopes.length - n}</span> failed — ${esc(why)}`;
+        } catch { /* the plain sentence stands */ }
+        await renderComponentTree(slug);              // the rows show what really landed; the words are written after it
+      }
+      const st = $('component-tree-status') || status;
+      if (st) st.innerHTML = `<span class="text-accent-ink">${words}</span>`;
     }
   };
-  if (verdict !== 'accepted' || count <= 1) { go(); return; }
+  if (!confirmAlways && (verdict !== 'accepted' || count <= 1)) { go(); return; }
+  if (confirmAlways && count < 1) return;
   const scopeLabel = scopes.length > 1
     ? `${scopes.length} branches selected — ${count} scope${count === 1 ? '' : 's'} total`
     : `${scopes.join(', ')} · ${count} component${count === 1 ? '' : 's'}`;
-  const el = openDialog('Accept at the branch', scopeLabel);
+  const el = openDialog(accepting ? 'Accept at the branch' : 'Reject at the branch', scopeLabel);
   const body = el.querySelector('#wl-detail-body');
+  if (!accepting) {
+    body.innerHTML = `
+    <p class="text-caveat text-ink"><span class="tnum">${count}</span> undecided component${count === 1 ? '' : 's'} will be recorded as rejected. Nothing is created in Egeria.</p>
+    <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
+    <div class="mt-s3 flex gap-s3">
+      <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Reject ${count}</button>
+      <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
+    </div>`;
+    body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
+    return;
+  }
   body.innerHTML = `
     <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
       <span class="tnum">${Math.max(0, count - exists)}</span> will be created as software components in Egeria — the exact Egeria type is not yet pinned${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>

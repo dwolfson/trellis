@@ -37,10 +37,19 @@ function makeServer(over = {}) {
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     const scoped = await s.scope.handle(u, method, body, ok, err);
     if (scoped) return scoped;
-    if (u.endsWith('/components/verdicts')) { body.scope_locators.forEach((p) => { s.verdictState[p] = body.verdict; }); return ok({ verdicts: body.scope_locators.map((x) => ({ scope: x })), queued: 1 }); }
-    if (u.includes('/curate/plan')) { if (s.holdPlan) await s.holdPlan; return ok(s.plan); }
-    if (u.includes('/components/leaves')) return ok(leaves(s.verdictState));
-    if (u.includes('/components/tree')) return ok({ branches: [BRANCH], total_components: 3, accepted: 0, reviewed: 0, topology: '' });
+    if (u.endsWith('/components/verdicts')) {
+      if (s.partial) { s.verdictState[body.scope_locators[0]] = body.verdict; return err(403, 'you may not curate the second one'); }
+      body.scope_locators.forEach((p) => { s.verdictState[p] = body.verdict; }); return ok({ verdicts: body.scope_locators.map((x) => ({ scope: x })), queued: 1 });
+    }
+    if (u.includes('/curate/plan')) { if (s.holdPlan) await s.holdPlan; if (s.planFail) return err(500, 'plan boom'); return ok(s.plan); }
+    if (u.includes('/components/leaves')) {
+      if (s.leavesFail) return err(500, 'boom');
+      const snap = leaves(s.verdictState);                    // the answer reflects the state at REQUEST time
+      const d = (s.leafDelays || []).shift();
+      if (d) await wait(d);
+      return ok(snap);
+    }
+    if (u.includes('/components/tree')) return ok({ branches: [s.branch || BRANCH], total_components: 3, accepted: 0, reviewed: 0, topology: '' });
     if (u.includes('/components/blueprints')) return ok(s.blueprints);
     if (u.endsWith('/dependencies')) return ok({ heading: 'Dependencies · by kind', kinds: [], counts: {}, runtime_state: '', rows: [] });
     if (u.endsWith('/publish-state')) return ok({ slug: 's', in_egeria: false, asset_guid: '', row: { word: 'none' }, project: { status: 'unset', word: 'no project' }, can_publish_again: false, survey: { exists: false } });
@@ -241,4 +250,112 @@ test('a dead session: the panes keep a short word, the page banner carries the p
   assert.ok(host.querySelector('[data-curate-signin-needed]'));
   assert.doesNotMatch(host.textContent, /Authentication required/);
   assert.ok(server);
+});
+
+
+/* ── review of part 2 ─────────────────────────────────────────────────────────────────────────── */
+const verdictPosts = (server) => server.calls.filter((c) => c.url.endsWith('/components/verdicts'));
+const rerender = (document, window) => document.querySelector('[data-select-all-shown]')
+  .dispatchEvent(new window.Event('change', { bubbles: true }));
+
+test('two overlapping tree renders, then ONE press of a branch button posts ONE verdict', async () => {
+  // a one-component branch posts at once (no confirm to hide a doubled handler behind)
+  const { document, server, window } = await setUp({ branch: { ...BRANCH, components: 1 } });
+  await openBranch(document);
+  server.leafDelays = [200, 200];
+  rerender(document, window); rerender(document, window);
+  await wait(500);
+  document.querySelector('[data-branch-verdict="accepted"]').click();
+  await wait(300);
+  assert.equal(verdictPosts(server).length, 1);
+});
+
+test('the branch buttons are live while the open branches are still refreshing', async () => {
+  const { document, server, window } = await setUp();
+  await openBranch(document);
+  server.leafDelays = [400];
+  rerender(document, window);
+  await wait(60);
+  document.querySelector('[data-branch-verdict="accepted"]').click();
+  await wait(60);
+  assert.ok(document.querySelector('[data-act="confirm"]'), 'the press opened its confirm while the refresh was in flight');
+  await wait(450);
+});
+
+test('an older leaves response never overwrites a newer one', async () => {
+  const { document, server, window } = await setUp();
+  await openBranch(document);
+  server.leafDelays = [400, 0];
+  rerender(document, window);                       // render A: slow read of the OLD state
+  await wait(40);
+  server.verdictState['packages/x/solo'] = 'accepted';
+  rerender(document, window);                       // render B: fast read of the NEW state
+  await wait(700);
+  const solo = [...document.querySelectorAll('[data-branch-leaves] [data-leaf-verdict="accepted"]')].find((b) => b.dataset.scope === 'packages/x/solo');
+  assert.match(norm(solo), /change/, 'the newer state won');
+});
+
+test('a group the person toggled while the refresh was in flight is not reset', async () => {
+  const { document, server, window } = await setUp();
+  await openBranch(document);
+  server.leafDelays = [300];
+  rerender(document, window);
+  await wait(50);
+  document.querySelector('[data-leaf-group="compose"]').open = false;
+  await wait(450);
+  assert.equal(document.querySelector('[data-leaf-group="compose"]').open, false);
+});
+
+test('a failed refresh is said on the box, not silent', async () => {
+  const { document, server, window } = await setUp();
+  await openBranch(document);
+  server.leavesFail = true;
+  rerender(document, window);
+  await wait(250);
+  const box = document.querySelector('[data-branch="packages/x"] [data-branch-leaves]');
+  assert.ok(box.querySelector('[data-refresh-failed]'));
+  assert.match(norm(box.querySelector('[data-refresh-failed]')), /could not refresh/);
+});
+
+test('group accept all posts only the UNDECIDED members and says that number; reject all asks first too', async () => {
+  const { document, server } = await setUp();
+  server.verdictState['packages/x/compose/a'] = 'accepted';
+  await openBranch(document);
+  const g = () => document.querySelector('[data-leaf-group="compose"]');
+  assert.match(norm(g().querySelector('[data-group-verdict="accepted"]')), /accept all 1$/);
+  g().querySelector('[data-group-verdict="rejected"]').click();
+  await wait(100);
+  assert.equal(verdictPosts(server).length, 0, 'nothing posted before the reject is confirmed');
+  const dlg = document.querySelector('[data-act="confirm"]');
+  assert.ok(dlg, 'reject all has its own confirm');
+  dlg.click();
+  await wait(300);
+  assert.deepEqual(verdictPosts(server)[0].body.scope_locators, ['packages/x/compose/b']);
+  assert.equal(verdictPosts(server)[0].body.verdict, 'rejected');
+});
+
+test('a partly applied group batch says how many were recorded and how many failed', async () => {
+  const { document, server } = await setUp();
+  await openBranch(document);
+  server.partial = true;
+  document.querySelector('[data-leaf-group="compose"] [data-group-verdict="accepted"]').click();
+  await wait(100);
+  document.querySelector('[data-act="confirm"]').click();
+  await wait(500);
+  const t = norm(document.getElementById('component-tree-status'));
+  assert.match(t, /1 of 2 recorded/);
+  assert.match(t, /1 failed/);
+});
+
+test('a prefetch left by a failed plan, or by a slug change, is not left to be consumed later', async () => {
+  const a = await setUp({ planFail: true }, { settle: 300 });
+  const mod = await import('/static/next/stages/curate.js');
+  assert.equal(mod.curatePrefetchPending(), false, 'plan failed: prefetch dropped');
+  a.document.body.innerHTML = '';
+  let release; const holdPlan = new Promise((r) => { release = r; });
+  const b = await setUp({ holdPlan }, { settle: 100 });
+  b.app.state.selectedSlug = 'another';
+  release();
+  await wait(300);
+  assert.equal(mod.curatePrefetchPending(), false, 'slug changed: prefetch dropped');
 });
