@@ -8,8 +8,18 @@ DDL-free. NOT the per-repository "Forget Egeria links" button (29 presses, and i
 DEFAULT IS A DRY RUN: it prints, per table, what it would clear or mark, writes NOTHING to the registry, writes
 a plan file (JSON, no credentials) and prints the plan's hash.
 
+    cd packages/resource-explorer
     REGISTRY_DATABASE_URL=... uv run python scripts/clear_egeria_pointers_after_reset.py \\
         --reset-at 2026-10-08T18:30Z [--old-collection-id X --new-collection-id Y]
+
+Run it THROUGH `uv run`, from packages/resource-explorer. A bare `python scripts/...` fails with
+ModuleNotFoundError on the resource_explorer import (catalogue_commit): run it through uv run so the
+resource_explorer package is importable.
+
+The owner's run sequence: (1) the dry run; (2) read the header's schema and current_schema line; (3) apply, with
+the exact "to apply:" line it printed; (4) read the snapshot's recorded current_schema; (5) a second dry run,
+which must be empty. The markers' collection ids read "unknown → unknown" until the metadataCollectionId slice
+lands: that is expected and honest, not a fault.
 
 APPLY needs ALL of these, and refuses (exit 2, saying which) when any is missing or false:
 
@@ -28,8 +38,9 @@ APPLY needs ALL of these, and refuses (exit 2, saying which) when any is missing
 What it does (all in RE's registry; no Egeria call; no DDL; no proof row is ever deleted or edited):
 
   CLEAR a pointer column (row kept):      projects/databases/file_systems.egeria_asset_guid, sub_resources.egeria_guid,
-        investigations.egeria_project_guid, entity_egeria_project_context.egeria_project_guid (+ status becomes
-        UNBOUND_STATUS), working_sets.egeria_collection_guid, work_lists.egeria_guid + published_at,
+        investigations.egeria_project_guid (+ egeria_project_status becomes `unbound`, only for rows that were
+        `linked`), entity_egeria_project_context.egeria_project_guid (+ status becomes the VALUE `unbound`;
+        "unbound by reset · rebind to recreate" is display text only, and a publish is gated on it as on `unset`), working_sets.egeria_collection_guid, work_lists.egeria_guid + published_at,
         doc_sources (2 guids), rfa_actions (2 guids), and the report-guid column of the publish-state tables
         (database_surveys, filesystem_surveys, project_egeria_surveys, project_published_analyses,
         project_published_annotation_types). The rows, their times and who made them stay.
@@ -39,7 +50,10 @@ What it does (all in RE's registry; no Egeria call; no DDL; no proof row is ever
   OUTBOX: rows that are not terminal (not done, dead, superseded or cancelled) become 'superseded' with the
         reason "Egeria reset <when>". 'done' rows are kept untouched; 'dead' rows are left 'dead' (listed as
         "dead before the reset · untouched").
-  MARKERS: ONE catalogue_commit_proofs row per resource that has proofs, proof kind 'egeria_reset', read_at = the
+  MARKERS: ONE catalogue_commit_proofs row per resource that has proofs or a "Published" badge row (a badge-only
+        marker says "published claim before the reset (no proof rows)": a project_published_* row is a CLAIM that
+        a publish happened, not proof the resource was in Egeria, so the badge may say "published earlier" for
+        one that was already gone; it re-compares at read time, and the wording says what it rests on), proof kind 'egeria_reset', read_at = the
         reset time, text "Egeria reset <when> · old collection id → new". Status derives from it (see
         catalogue_commit.derive_commit_state).
 
@@ -79,8 +93,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-#: Status an entity_egeria_project_context row takes when its Egeria project is gone (architect's ruling).
-UNBOUND_STATUS = "unbound by reset · rebind to recreate"
+from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS, _known, _ts  # noqa: E402
+
+#: Written into every plan file and into its hash. A plan made by another version of this script is refused with
+#: its own sentence (not the registry-changed one). Bump it when the plan's shape or meaning changes.
+SCRIPT_VERSION = "2026-10-09.1"
+#: The exact prefix of the printed "to apply:" line: what actually works (see the docstring).
+RUN_PREFIX = "uv run python scripts/clear_egeria_pointers_after_reset.py"
+
+# UNBOUND_STATUS is the status VALUE `unbound` (architect's ruling 2026-10-08), written to
+# entity_egeria_project_context.status and investigations.egeria_project_status. The words
+# "unbound by reset · rebind to recreate" are display text only (catalogue_commit.PROJECT_UNBOUND_WORDS);
+# the publish gate treats `unbound` exactly as `unset`.
 
 OUTBOX_TERMINAL = ("done", "dead", "superseded", "cancelled")
 SETTING_PREFIXES = ("egeria_register_claim::", "egeria_server_claim::", "egeria_server_unconfirmed::",
@@ -90,13 +114,19 @@ LAZY_TABLES = ("work_lists",)
 SETTING_KEYS = ("egeria.github_source_control_library_guid",)
 PROOF_KIND = "egeria_reset"
 
-#: (table, key columns, {column: new value}, trigger columns (the row is touched when one is non-empty))
+#: (table, key columns, {column: new value}, trigger columns (the row is touched when one is non-empty)
+#: [, extra SQL condition that must also hold, [, id suffix]])
 CLEAR_SPECS = [
     ("projects", ["slug"], {"egeria_asset_guid": None}, None),
     ("databases", ["slug"], {"egeria_asset_guid": ""}, None),
     ("file_systems", ["slug"], {"egeria_asset_guid": ""}, None),
     ("sub_resources", ["id"], {"egeria_guid": ""}, None),
-    ("investigations", ["slug"], {"egeria_project_guid": ""}, None),
+    # Only a row that was `linked` becomes `unbound`: a status word `linked` with an empty GUID would be a word
+    # without a proof. A row with a GUID but some other status keeps its status and loses only the GUID.
+    ("investigations", ["slug"], {"egeria_project_guid": "", "egeria_project_status": UNBOUND_STATUS}, ["egeria_project_guid"],
+     "egeria_project_status = 'linked'", "linked"),
+    ("investigations", ["slug"], {"egeria_project_guid": ""}, None,
+     "coalesce(egeria_project_status, '') <> 'linked'", "other"),
     ("entity_egeria_project_context", ["entity_type", "entity_slug", "user_id"],
      {"egeria_project_guid": "", "status": UNBOUND_STATUS}, ["egeria_project_guid"]),
     ("working_sets", ["slug"], {"egeria_collection_guid": ""}, None),
@@ -239,7 +269,7 @@ def check_schema(conn, skip: tuple = ()) -> list[str]:
             raise Refused(f"table {t} does not exist yet (created by its own module): nothing to clear there; "
                           f"re-run after creating it, or pass --skip-missing-table {t}")
     want: dict[str, set] = {}
-    for table, keys, setcols, trig in CLEAR_SPECS:
+    for table, keys, setcols, trig, *_ in CLEAR_SPECS:
         if table in skipped:
             continue
         want.setdefault(table, set()).update(keys, setcols, trig or [])
@@ -280,10 +310,6 @@ def human_when(reset_at: str) -> str:
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
-def _ts(iso) -> str:
-    return str(iso or "").replace(" ", "T")[:19]
-
-
 def _nonempty(col: str) -> str:
     return f"({col} IS NOT NULL AND {col} <> '')"
 
@@ -296,15 +322,17 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
                skipped: list | None = None, live_schema: str = "main") -> dict:
     actions = []
     skipped = sorted(skipped or [])
-    for table, keys, setcols, trig in CLEAR_SPECS:
+    for table, keys, setcols, trig, *more in CLEAR_SPECS:
         if table in skipped:
             continue
+        extra = more[0] if more else ""
+        suffix = f":{more[1]}" if len(more) > 1 else ""
         trig = trig or list(setcols)
         cols = list(dict.fromkeys(keys + list(setcols)))
-        where = " OR ".join(_nonempty(c) for c in trig)
+        where = "(" + " OR ".join(_nonempty(c) for c in trig) + ")" + (f" AND {extra}" if extra else "")
         rows = _rows(conn, f"SELECT {', '.join(cols)} FROM {table} WHERE {where} ORDER BY {', '.join(keys)}")
-        actions.append({"id": f"clear:{table}", "kind": "clear_columns", "table": table, "keys": keys,
-                        "set": setcols, "trigger": trig, "rows": rows, "count": len(rows)})
+        actions.append({"id": f"clear:{table}{suffix}", "kind": "clear_columns", "table": table, "keys": keys,
+                        "set": setcols, "trigger": trig, "extra": extra, "rows": rows, "count": len(rows)})
     for table, keys in DELETE_SPECS:
         rows = _rows(conn, f"SELECT {', '.join(keys)} FROM {table} ORDER BY {', '.join(keys)}")
         # the whole row is the snapshot for a removed cache row (these tables hold no credentials)
@@ -332,20 +360,34 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
     for table, node in (("databases", NODE_DATABASE), ("projects", NODE_REPO), ("file_systems", NODE_OTHER)):
         for r in _rows(conn, f"SELECT slug FROM {table}"):
             kinds.setdefault(r["slug"], node)
+    # A resource whose only trace of a publish is a "Published" badge row (project_published_annotation_types /
+    # project_published_analyses) has no proof rows, yet its badge would still say Published for elements the
+    # reset removed. It gets a marker too, because the badge reads the marker.
+    pub_earlier: dict[str, int] = {}
+    for table in ("project_published_annotation_types", "project_published_analyses"):
+        # compared as PARSED times in Python, never as SQL text ('Z', '+00:00', spaces and fractions misorder)
+        for r in _rows(conn, f"SELECT project_slug, published_at FROM {table} "
+                             "WHERE published_at IS NOT NULL AND published_at <> ''"):
+            if _known(r["published_at"]) and _ts(r["published_at"]) < _ts(reset_at):
+                pub_earlier[r["project_slug"]] = pub_earlier.get(r["project_slug"], 0) + 1
     markers, after = [], []
-    for slug in sorted(by):
-        real = [p for p in by[slug] if p["proof"] != PROOF_KIND]
-        have = [p for p in by[slug] if p["proof"] == PROOF_KIND and _ts(p["read_at"]) == _ts(reset_at)]
-        if any(_ts(p["read_at"]) > _ts(reset_at) for p in real):
+    for slug in sorted(set(by) | set(pub_earlier)):
+        rows_for = by.get(slug, [])
+        real = [p for p in rows_for if p["proof"] != PROOF_KIND]
+        have = [p for p in rows_for if p["proof"] == PROOF_KIND and _known(p["read_at"])
+                and _ts(p["read_at"]) == _ts(reset_at)]
+        if any(_known(p["read_at"]) and _ts(p["read_at"]) > _ts(reset_at) for p in real):
             after.append(slug)
-        if have or not any(_ts(p["read_at"]) < _ts(reset_at) for p in real):
+        n_earlier = sum(1 for p in real if _known(p["read_at"]) and _ts(p["read_at"]) < _ts(reset_at))
+        if have or not (n_earlier or pub_earlier.get(slug)):
             continue
         markers.append({"slug": slug, "node_kind": kinds.get(slug, NODE_OTHER),
-                        "earlier_proofs": sum(1 for p in real if _ts(p["read_at"]) < _ts(reset_at)),
-                        "text": f"Egeria reset {human_when(reset_at)} · {old_id or 'unknown'} → {new_id or 'unknown'}"})
+                        "earlier_proofs": n_earlier, "earlier_published_rows": pub_earlier.get(slug, 0),
+                        "text": f"Egeria reset {human_when(reset_at)} · {old_id or 'unknown'} → {new_id or 'unknown'}"
+                                + ("" if n_earlier else " · published claim before the reset (no proof rows)")})
     actions.append({"id": "marker:catalogue_commit_proofs", "kind": "write_markers",
                     "table": "catalogue_commit_proofs", "rows": markers, "count": len(markers)})
-    plan = {"database": db_name, "schema": schema, "current_schema": live_schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
+    plan = {"script_version": SCRIPT_VERSION, "database": db_name, "schema": schema, "current_schema": live_schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
             "new_collection_id": new_id or "unknown", "actions": actions,
             "dead_outbox_untouched": [r["id"] for r in dead], "skipped_tables": skipped,
             "slugs_with_proofs_after_reset": after}
@@ -481,9 +523,10 @@ def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: date
                 if a["kind"] == "clear_columns":
                     sets = ", ".join(f"{c} = ?" for c in a["set"])
                     trig = " OR ".join(_nonempty(c) for c in a["trigger"])
+                    extra = f" AND {a['extra']}" if a.get("extra") else ""
                     for r in a["rows"]:
                         where = " AND ".join(f"{k} = ?" for k in a["keys"])
-                        cur = conn.execute(f"UPDATE {a['table']} SET {sets} WHERE {where} AND ({trig})",
+                        cur = conn.execute(f"UPDATE {a['table']} SET {sets} WHERE {where} AND ({trig}){extra}",
                                            [a["set"][c] for c in a["set"]] + [r[k] for k in a["keys"]])
                         n[0] += cur.rowcount or 0
                 elif a["kind"] == "delete_rows":
@@ -590,11 +633,15 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
                 extra = "".join(f" --skip-missing-table {t}" for t in plan["skipped_tables"])
                 extra += f" --old-collection-id {args.old_collection_id}" if args.old_collection_id else ""
                 extra += f" --new-collection-id {args.new_collection_id}" if args.new_collection_id else ""
-                out(f"to apply: --apply --reset-at {args.reset_at} --plan-file {path} --plan-hash {plan['hash']} "
+                out(f"to apply: {RUN_PREFIX} --apply --reset-at {args.reset_at} --plan-file {path} --plan-hash {plan['hash']} "
                     f"--database {name} --schema {schema}{extra} --cleared-by <who>/<UTC>")
                 return 0
             saved = json.loads(Path(args.plan_file).read_text())
             sp = saved.get("plan") or {}
+            if sp.get("script_version") != SCRIPT_VERSION:
+                raise Refused(f"this plan was made by a different version of the script "
+                              f"({sp.get('script_version') or 'none recorded'}, this is {SCRIPT_VERSION}); "
+                              "run the dry run again")
             if sp.get("schema") != schema:
                 raise Refused(f"the plan file was made for schema {sp.get('schema')!r}, not {schema!r}")
             if sp.get("current_schema") != live:
@@ -608,9 +655,9 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
             if now - made > timedelta(minutes=args.max_plan_age_minutes) or made > now + timedelta(minutes=1):
                 raise Refused(f"the dry run is older than {args.max_plan_age_minutes} minutes; run it again")
             if plan["hash"] != args.plan_hash:
-                raise Refused("the registry changed since the dry run (the plan recomputed now has a different "
-                              f"hash {plan['hash'][:12]} vs {args.plan_hash[:12]}) or --reset-at / collection ids "
-                              "differ; run the dry run again")
+                raise Refused("the registry changed since the dry run; run the dry run again "
+                              f"(the plan recomputed now has hash {plan['hash'][:12]}, the dry run's was "
+                              f"{args.plan_hash[:12]}; --reset-at and the collection ids must also be the same)")
             reasons = activity_guard(conn)
             if reasons:
                 raise Refused("a Resource Explorer process looks active: " + "; ".join(reasons))

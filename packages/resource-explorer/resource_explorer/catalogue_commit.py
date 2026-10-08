@@ -124,6 +124,13 @@ P_ADOPTED = "create_error_adopted"
 #: what was once in Egeria and proves nothing about now; the screen says so, from this row, and counts 0 in
 #: Egeria until a later proof says otherwise. `detail` carries `text` ("Egeria reset <when> · old → new").
 P_EGERIA_RESET = "egeria_reset"
+#: The status value an Egeria project context (entity_egeria_project_context.status, investigations.
+#: egeria_project_status) takes after a reset, when the Egeria project it named is gone. A status VALUE, never
+#: the words: the words are display text only. It is "not answered" exactly as `unset` is, so a publish is
+#: gated and offers the same two choices (bind a project, or publish without one).
+PROJECT_UNBOUND = "unbound"
+PROJECT_UNBOUND_WORDS = "unbound by reset \u00b7 rebind to recreate"
+PROJECT_UNANSWERED = ("unset", PROJECT_UNBOUND)
 RESET_WORDS = "published earlier · Egeria was reset · not in Egeria now"
 #: The schema states that mean "Egeria holds it right now" (read back or attached), for the header's count.
 IN_EGERIA_STATES = ("catalogued", "attached_waiting", "restored")
@@ -191,9 +198,30 @@ def _now() -> str:
 
 
 def _ts(iso) -> str:
-    """A timestamp for comparison as a string: 'T'-separated, to the second. Every writer here uses isoformat()
-    ('T'), but a space-separated or fractional value must not sort wrongly against one (' ' < 'T')."""
-    return str(iso or "").replace(" ", "T")[:19]
+    """THE one timestamp normaliser (the cleanup script imports it; there is no other). A comparable string:
+    UTC, 'T'-separated, to the second, from a PARSED value, so 'Z', '+00:00' or another offset, a space
+    separator and 3- or 6-digit fractions all order correctly against each other. A naive value is read as
+    UTC (every writer here uses datetime.utcnow(); the browser reads naive stamps the same way). One that
+    cannot be parsed is UNKNOWN: '' (it sorts before every real time, and `_known()` says so), never a
+    string that could sort after one and win."""
+    text = str(iso or "").strip()
+    if not text:
+        return ""
+    t = text.replace(" ", "T", 1)
+    if t[-1] in "Zz":
+        t = t[:-1] + "+00:00"
+    try:
+        d = datetime.fromisoformat(t)
+    except ValueError:
+        return ""
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d.isoformat(timespec="seconds")
+
+
+def _known(iso) -> bool:
+    """True when the value parses to a time. An unknown time never makes an earlier-than or since claim."""
+    return bool(_ts(iso))
 
 
 def _hm(iso: str) -> str:
@@ -576,8 +604,11 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     # marker was written still counts.
     reset = _latest(proofs_all, (P_EGERIA_RESET,))
     cutoff = _ts(reset["read_at"]) if reset else ""
+    # ONE tie rule, shared with repo_publish.publish_state: a proof read AT or after the reset time is live.
+    # A proof whose time cannot be read is neither live nor earlier (no claim either way).
     proofs = [p for p in proofs_all if p["proof"] != P_EGERIA_RESET and (reset is None or _ts(p["read_at"]) >= cutoff)]
-    earlier = [p for p in proofs_all if reset is not None and p["proof"] != P_EGERIA_RESET and _ts(p["read_at"]) < cutoff]
+    earlier = [p for p in proofs_all if reset is not None and p["proof"] != P_EGERIA_RESET
+               and _known(p["read_at"]) and _ts(p["read_at"]) < cutoff]
     earlier_by = _by_node(earlier)
     by = _by_node(proofs)
     ob_by_schema = _outbox_by_schema(registry.list_catalogue_outbox_rows(slug))
@@ -1851,3 +1882,42 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     except Exception as exc:
         _fail_step(cur, curation_id, "read_back", exc)
     return cur.finish(curation_id)
+
+
+# ── "published" badges that read the reset marker ────────────────────────────
+
+PUBLISHED_EARLIER_SHORT = "published earlier"
+PUBLISHED_EARLIER_WORDS = "published earlier · Egeria was reset"
+
+
+def egeria_reset_at(registry, slug: str) -> str:
+    """The reset time for this resource from its `egeria_reset` marker, '' when there is none. Tolerates a
+    registry without the reader (a test double): no marker known means no reset claimed."""
+    fn = getattr(registry, "get_egeria_reset_at", None)
+    try:
+        return (fn(slug) if fn else "") or ""
+    except Exception:
+        return ""
+
+
+def published_state(published_at: str, reset_at: str) -> str:
+    """'' (never published), 'published' (at or after the reset, or no reset), or 'published_earlier' (the
+    row predates the marker, so it proves nothing about what Egeria holds now). A badge made from the row's
+    existence alone would say Published for a row Egeria no longer has any element for."""
+    if not published_at:
+        return ""
+    if _known(reset_at) and _known(published_at) and _ts(published_at) < _ts(reset_at):
+        return "published_earlier"
+    return "published"
+
+
+def publish_fields(registry, slug: str, published_at: str, reset_at: str | None = None) -> dict:
+    """The two fields every payload that carries `last_published_at` adds, so the screen can pick its words."""
+    reset = egeria_reset_at(registry, slug) if reset_at is None else reset_at
+    return {"published_state": published_state(published_at, reset), "egeria_reset_at": reset}
+
+
+def reset_since_read(read_at: str, reset_at: str) -> bool:
+    """True when the reset marker postdates a read: what was read is a copy of an element Egeria no longer
+    holds. No marker, or a marker at or before the read, is False (a read at or after the reset is live)."""
+    return _known(read_at) and _known(reset_at) and _ts(reset_at) > _ts(read_at)

@@ -359,7 +359,10 @@ def test_every_kept_table_exists_so_the_byte_identical_check_cannot_be_vacuous(e
 def test_only_the_cleared_columns_of_the_cleared_tables_changed(env):
     applied(env)
     before, after = env["before_all"], dump(env["reg"])
-    for table, keys, setcols, trig in S.CLEAR_SPECS:
+    cleared_cols: dict = {}
+    for table, _keys, setcols, *_ in S.CLEAR_SPECS:     # investigations has two specs (linked / other)
+        cleared_cols.setdefault(table, set()).update(setcols)
+    for table, setcols in cleared_cols.items():
         assert before[table], f"{table} has no seeded row"
         assert len(after[table]) == len(before[table]), table
         for b, a in zip(before[table], after[table]):
@@ -601,8 +604,109 @@ def test_repo_publish_state_reads_the_marker_and_the_unbound_status(env):
     st = repo_publish.publish_state(reg, "repo1")
     assert st["row"]["word"] == "reset" and st["in_egeria"] is False
     assert st["row"]["first"] == "published earlier · Egeria was reset · not in Egeria now"
+    # the status is the VALUE `unbound`; the words are display text only
+    assert st["project"]["status"] == "unbound"
     assert st["project"]["word"] == "unbound by reset · rebind to recreate"
 
+
+# ── reset status words (architect's rulings 2026-10-08) ──────────────────────
+
+def _investigation(reg, slug, status, guid=""):
+    ins(reg, "investigations", slug=slug, display_name=slug, created_at="2026-09-01T00:00:00", egeria_project_status=status,
+        egeria_project_guid=guid, egeria_project_qualified_name=f"Project::Investigation::{slug}" if guid else "")
+
+
+def test_the_script_writes_the_status_value_unbound_not_the_display_string(env):
+    reg = env["reg"]
+    _investigation(reg, "inv-linked", "linked", "22222222-2222-2222-2222-222222222222")
+    _investigation(reg, "inv-local", "local")
+    _investigation(reg, "inv-odd", "deferred", "33333333-3333-3333-3333-333333333333")
+    rc, cap, *_ = applied(env)
+    assert rc == 0, cap.text
+    assert S.UNBOUND_STATUS == "unbound"
+    d = dump(reg, ["entity_egeria_project_context", "investigations"])
+    ctx = {r["entity_slug"]: r for r in d["entity_egeria_project_context"]}
+    assert ctx["repo1"]["status"] == "unbound" and ctx["repo1"]["status"] != "unbound by reset · rebind to recreate"
+    inv = {r["slug"]: r for r in d["investigations"]}
+    # a linked investigation becomes unbound with the empty GUID, never `linked` with an empty GUID
+    assert inv["inv-linked"]["egeria_project_status"] == "unbound" and inv["inv-linked"]["egeria_project_guid"] == ""
+    # one that was not linked keeps its own status and loses only the GUID; a local one is not touched
+    assert inv["inv-odd"]["egeria_project_status"] == "deferred" and inv["inv-odd"]["egeria_project_guid"] == ""
+    assert inv["inv-local"]["egeria_project_status"] == "local"
+    assert not [r for r in d["investigations"] if r["egeria_project_status"] == "linked" and not r["egeria_project_guid"]]
+    # the investigation reads back as unbound, the shape the screens and the bind step read
+    assert reg.get_investigation("inv-linked")["egeria_context"]["status"] == "unbound"
+
+
+def test_an_unbound_context_is_not_an_answer_but_a_rebind_is(env):
+    reg = env["reg"]
+    applied(env)
+    assert reg.get_project_context("repo", "repo1")["status"] == "unbound"
+    assert repo_publish.resolve_project_context(reg, "repo1") is None      # gated, as `unset` is
+    assert reg.get_project_context("repo", "repo2")["status"] == "personal"
+    assert repo_publish.resolve_project_context(reg, "repo2")["status"] == "personal"
+    # a bind (linked + a GUID) answers it again
+    reg.set_project_context("repo", "repo1", "linked", egeria_project_guid="g-new",
+                            egeria_project_qualified_name="Project::X::x")
+    assert repo_publish.resolve_project_context(reg, "repo1")["status"] == "linked"
+
+
+def test_a_resource_with_only_badge_rows_gets_a_marker_too(env):
+    reg = env["reg"]
+    with reg._conn() as c:
+        c.execute("INSERT INTO projects (slug, display_name, github_url, created_at) "
+                  "VALUES ('repo3', 'R3', 'https://x/r3', '2026-09-01')")
+    ins(reg, "project_published_analyses", project_slug="repo3", analysis_id="a1",
+        published_at="2026-09-01T01:00:00", egeria_report_guid="g")
+    applied(env)
+    assert reg.get_egeria_reset_at("repo3") == RESET_ISO
+
+
+def _analysis_id():
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    return get_analyses("repo", include_egeria_live=False)[0]["id"]
+
+
+def test_the_published_badge_reads_the_marker(env):
+    from resource_explorer.workflows.analysis import build_analysis_last_activity
+    reg, aid = env["reg"], _analysis_id()
+    ins(reg, "project_published_analyses", project_slug="repo1", analysis_id=aid,
+        published_at="2026-09-01T01:00:00", egeria_report_guid="g")
+    # no marker: the row says Published
+    la = build_analysis_last_activity(reg, "repo", "repo1")[aid]
+    assert la["last_published_at"] == "2026-09-01T01:00:00"
+    assert la["published_state"] == "published" and la["egeria_reset_at"] == ""
+    applied(env)
+    # published BEFORE the marker: "published earlier · Egeria was reset", not Published
+    la = build_analysis_last_activity(reg, "repo", "repo1")[aid]
+    assert la["published_state"] == "published_earlier" and la["egeria_reset_at"] == RESET_ISO
+    # published AFTER the marker: Published again
+    ins(reg, "project_published_analyses", project_slug="repo1", analysis_id=aid,
+        published_at="2026-10-08T20:00:00", egeria_report_guid="g2")
+    la = build_analysis_last_activity(reg, "repo", "repo1")[aid]
+    assert la["published_state"] == "published" and la["last_published_at"] == "2026-10-08T20:00:00"
+
+
+def test_publish_state_helper_edges():
+    assert cc.published_state("", RESET_ISO) == ""
+    assert cc.published_state("2026-10-08T18:29:59", RESET_ISO) == "published_earlier"
+    assert cc.published_state("2026-10-08T18:30:00", RESET_ISO) == "published"     # at the reset counts as live
+    assert cc.published_state("2026-09-01T00:00:00", "") == "published"
+    assert cc.reset_since_read("2026-10-01T00:00:00", RESET_ISO) is True
+    assert cc.reset_since_read("2026-10-08T19:00:00", RESET_ISO) is False
+    assert cc.reset_since_read("2026-10-01T00:00:00", "") is False
+
+
+def test_survey_results_boards_read_the_marker_even_from_a_persisted_summary(env):
+    # the persisted board summary was written before the reset; the marker is read at answer time
+    from resource_explorer.workflows import analysis as A
+    reg = env["reg"]
+    ins(reg, "project_published_annotation_types", project_slug="repo1", annotation_type="ZZ",
+        published_at="2026-09-01T01:00:00", egeria_report_guid="g")
+    applied(env)
+    fields = A._reset_fields(reg, "repo1", "2026-09-01T01:00:00")
+    assert fields == {"published_state": "published_earlier", "egeria_reset_at": RESET_ISO}
+    assert A._reset_fields(reg, "repo2", "2026-09-01T01:00:00")["published_state"] == "published"
 
 # ── schema guard ─────────────────────────────────────────────────────────────
 

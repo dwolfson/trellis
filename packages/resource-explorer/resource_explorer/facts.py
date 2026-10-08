@@ -498,9 +498,10 @@ def _r_catalogued(reg, p) -> tuple:
     # The GUID alone says "published at some point"; the publish claims say
     # when. Both, or the answer is half of one.
     published = reg.get_last_published_annotation_types(p.slug) or {}
-    when = max(published.values(), default="")
+    from resource_explorer.catalogue_commit import _ts, publish_fields
+    when = max(published.values(), key=_ts, default="")
     return ({"catalogued": bool(guid), "egeria_asset_guid": guid,
-             "last_published_at": when},
+             "last_published_at": when, **publish_fields(reg, p.slug, when)},
             MEASURED if guid else NOTHING_FOUND)
 
 
@@ -852,9 +853,10 @@ def _db_r_catalogued(reg, db) -> tuple:
         )
         if recent:
             when = recent[0].get("ts", "") or ""
+    from resource_explorer.catalogue_commit import publish_fields
     return (
         {"catalogued": bool(status.get("is_published")), "egeria_asset_guid": guid,
-         "last_published_at": when, "note": status.get("note", "")},
+         "last_published_at": when, "note": status.get("note", ""), **publish_fields(reg, db.slug, when)},
         MEASURED if status.get("is_published") else NOTHING_FOUND,
     )
 
@@ -1012,6 +1014,8 @@ def _h_db_catalogued(value: dict, state: str) -> str:
         note = value.get("note") or ""
         return note if note else "Not yet cataloged in Egeria."
     when = value.get("last_published_at") or ""
+    if when and value.get("published_state") == "published_earlier":
+        return f"Cataloged in Egeria, published earlier \u00b7 Egeria was reset ({when})."
     return f"Cataloged in Egeria, published {when}." if when else "Cataloged in Egeria."
 
 

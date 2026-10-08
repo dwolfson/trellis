@@ -637,7 +637,7 @@ class EgeriaResync:
         """Every unpublished repo, with the SAME readiness question the gate asks.
 
         The publish route (`web/routes/egeria.py`, Part 5 gate) accepts a repo
-        when its own context is anything but `unset` **or** when an investigation
+        when its own context is anything but `unset`/`unbound` **or** when an investigation
         it is in scope for supplies one by inheritance. An earlier version of
         this scan answered only the first half — `publish_ready = status !=
         "unset"` — and the two answers agreed right up until they did not.
@@ -704,7 +704,7 @@ class EgeriaResync:
         none was decided). Shared by `_publish_readiness` and
         `_scan_registration_only` so the two cannot answer differently.
         """
-        if context not in ("", "none", "unset"):
+        if context not in ("", "none", "unset", "unbound"):
             return True, f"context '{context}'"
         try:
             inherited = self._registry.inherited_egeria_project_context("repo", slug)
@@ -1288,7 +1288,9 @@ class EgeriaResync:
                 etype, _, eslug = item["ref"].partition(":")
                 # Back to 'unset', not 'personal' or 'declined': the decision
                 # that was made pointed at something gone, so it must be asked
-                # again rather than reinterpreted as an answer never given.
+                # again rather than reinterpreted as an answer never given. ('unset', not 'unbound': this
+                # heal is for a GUID that went stale WITHOUT a reset marker; 'unbound' is only what the
+                # post-reset clean-up script writes. Both gate a publish identically.)
                 conn.execute(
                     "UPDATE entity_egeria_project_context SET egeria_project_guid = '', "
                     "egeria_project_qualified_name = '', status = 'unset' "
@@ -1343,7 +1345,7 @@ class EgeriaResync:
 
         reg = self._registry
         context = reg.get_project_context("repo", slug)
-        if not context or context.get("status") == "unset":
+        if not context or context.get("status") in ("unset", "unbound"):
             inherited = reg.inherited_egeria_project_context("repo", slug)
             if not inherited:
                 # Reached only if the context changed between scan and apply:

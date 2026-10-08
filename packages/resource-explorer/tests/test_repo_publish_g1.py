@@ -251,6 +251,30 @@ class TestProjectContextGate:
         p.return_value.publish.assert_not_called()
         assert registry.list_catalogue_commit_proofs("myproj") == []
 
+    def test_unbound_gates_exactly_like_unset_and_offers_the_two_choices(self, client, registry, stop):
+        # `unbound` is what the Egeria-reset clean-up writes when the project a context named is gone.
+        registry.set_project_context("repo", "myproj", "unbound", egeria_project_qualified_name="Project::X::x")
+        o, p, s = _publishers(registry)
+        stop.append(s)
+        r = client.post("/api/egeria/myproj/publish-report", json={})
+        assert r.status_code == 428
+        assert r.json()["detail"] == "egeria_project_context_required"
+        assert r.json()["sentence"] == ("no Egeria project context · bind this investigation to a project, "
+                                        "or publish without one")
+        p.return_value.publish.assert_not_called()
+        # the other choice proceeds, and answers the question (declined), replacing the unbound row
+        body = client.post("/api/egeria/myproj/publish-report", json={"without_project": True}).json()
+        assert body["row"]["word"] == "published"
+        assert registry.get_project_context("repo", "myproj")["status"] == "declined"
+
+    def test_unbound_is_a_valid_status_and_its_words_are_display_text_only(self, client, registry):
+        r = client.post("/api/project-context/repo/myproj", json={"status": "unbound"})
+        assert r.status_code == 200 and r.json()["status"] == "unbound"
+        assert client.post("/api/project-context/repo/myproj",
+                           json={"status": "unbound by reset · rebind to recreate"}).status_code == 400
+        from resource_explorer import repo_publish
+        assert repo_publish.project_state(registry, "myproj")["word"] == "unbound by reset · rebind to recreate"
+
     def test_publishing_without_one_records_the_choice_and_proceeds(self, client, registry, stop):
         _, p, s = _publishers(registry)
         stop.append(s)

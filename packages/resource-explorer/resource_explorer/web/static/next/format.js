@@ -89,3 +89,34 @@ export function savedLine(who, whenIso) {
 export function readBackAt(date = new Date()) {
   return `read back ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
+
+/* ── Egeria reset: words that read the `egeria_reset` marker (never decided here) ──────────────────────────
+ * The server derives `published_state` ('published' | 'published_earlier' | '') and `egeria_reset_at` from the
+ * marker row; these functions only choose how to say it. A short word on the element, the sentence on demand
+ * (the title). */
+
+export const PUBLISHED_EARLIER_WORD = 'published earlier';
+export const PUBLISHED_EARLIER_SENTENCE = 'published earlier \u00b7 Egeria was reset';
+export const STORED_COPY_RESET_LINE = 'Egeria was reset since \u00b7 the element is not in Egeria now';
+export const UNBOUND_WORDS = 'unbound by reset \u00b7 rebind to recreate';
+
+/** The Published badge for something with `last_published_at`: {text, title, earlier}. Empty text when never
+ *  published. `earlier` is true only when the server says the publish predates the reset. */
+export function publishedBadge(item) {
+  const at = item && item.last_published_at;
+  if (!at) return { text: '', title: '', earlier: false };
+  if (item.published_state === 'published_earlier') {
+    return { text: PUBLISHED_EARLIER_WORD, title: `${PUBLISHED_EARLIER_SENTENCE} (${at}; reset ${item.egeria_reset_at || ''})`, earlier: true };
+  }
+  return { text: 'Published', title: `Last published: ${at}`, earlier: false };
+}
+
+/** The heading of RE's own stored copy of a survey report, and the ONE added line when the reset postdates the
+ *  read. `rep.reset_since` comes from the server. Returns {head, resetLine} (resetLine '' when none). */
+export function storedCopyWords(rep) {
+  const read = rep && (rep.stored_copy_read_at || rep.read_at) || '';
+  return {
+    head: `stored copy \u00b7 read from Egeria ${read || 'at an unrecorded time'}`,
+    resetLine: rep && rep.reset_since ? STORED_COPY_RESET_LINE : '',
+  };
+}

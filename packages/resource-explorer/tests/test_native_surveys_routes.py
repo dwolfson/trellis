@@ -115,6 +115,38 @@ def test_refresh_moves_a_run_to_complete_and_serves_the_report(client, port):
     assert client.get("/api/native-surveys/database/bare/reports/rep-1").status_code == 404
 
 
+def _stored_report(client, port):
+    r = client.post("/api/native-surveys/database/adventureworks/run", json={"process_qualified_name": SURVEY_QN})
+    port.finish(r.json()["run"]["engine_action_guid"], report="rep-1", annotations=[ann(1), ann(2)])
+    client.post("/api/native-surveys/database/adventureworks/refresh")
+    return "/api/native-surveys/database/adventureworks/reports/rep-1"
+
+
+def test_the_stored_copy_carries_its_read_time_and_no_reset_line_without_a_marker(client, port):
+    url = _stored_report(client, port)
+    rep = client.get(url).json()
+    assert rep["stored_copy_read_at"] and rep["stored_copy_read_at"] == max(a["read_at"] for a in rep["annotations"])
+    assert rep["egeria_reset_at"] == "" and rep["reset_since"] is False
+
+
+def test_the_reset_line_appears_only_when_the_marker_postdates_the_read(client, port, registry):
+    url = _stored_report(client, port)
+    before = client.get(url).json()
+    calls = list(port.calls)
+    # a marker BEFORE the read: Egeria was reset, then this was read from the new Egeria -> live, no line
+    registry.append_catalogue_commit_proof("adventureworks", proof="egeria_reset", node_kind="database",
+                                           read_at="2000-01-01T00:00:00", detail={"text": "reset"})
+    assert client.get(url).json()["reset_since"] is False
+    # a marker AFTER the read: the stored copy outlived the element it was read from
+    registry.append_catalogue_commit_proof("adventureworks", proof="egeria_reset", node_kind="database",
+                                           read_at="2999-01-01T00:00:00", detail={"text": "reset"})
+    after = client.get(url).json()
+    assert after["reset_since"] is True and after["egeria_reset_at"] == "2999-01-01T00:00:00"
+    # the data and its ordering are unchanged, and nothing was asked of Egeria
+    assert after["annotations"] == before["annotations"]
+    assert port.calls == calls
+
+
 def test_refresh_with_nothing_in_flight_asks_egeria_nothing(client, port):
     client.post("/api/native-surveys/database/adventureworks/refresh")
     assert port.calls == []

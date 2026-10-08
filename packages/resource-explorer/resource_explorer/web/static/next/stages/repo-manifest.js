@@ -23,6 +23,7 @@ export const NOTHING_SELECTED_SENTENCE = 'nothing selected · confirm a line und
 export const SCOPE_UNREAD_SENTENCE = 'the selection could not be read · reload to try again';
 export const NO_SURVEY_SENTENCE = 'no survey to publish yet · run the first survey';
 export const NO_PROJECT_SENTENCE = 'no Egeria project context · bind this investigation to a project, or decline one';
+export const UNBOUND_PROJECT_SENTENCE = 'unbound by reset \u00b7 rebind to recreate \u00b7 bind this investigation to a project, or decline one';
 export const RESURVEY_BOX_WORDS = 're-survey stale steps first (adds minutes)';
 
 export const cue = (key, word, title = '') => {
@@ -64,7 +65,9 @@ export function commitBlockers({ plan, counts, me }) {
   if (plan.survey && plan.survey.exists === false) out.push({ key: 'no_survey', text: plan.survey.sentence || NO_SURVEY_SENTENCE });
   if (counts.unread) out.push({ key: 'scope_unread', text: SCOPE_UNREAD_SENTENCE });
   else if (counts.items === 0) out.push({ key: 'nothing', text: NOTHING_SELECTED_SENTENCE });
+  // `unbound` (after an Egeria reset) gates exactly as `unset` does, with the same two choices, but says why.
   if (plan.project && plan.project.status === 'unset') out.push({ key: 'no_project', text: NO_PROJECT_SENTENCE });
+  if (plan.project && plan.project.status === 'unbound') out.push({ key: 'no_project', text: UNBOUND_PROJECT_SENTENCE });
   if (!plan.in_population) out.push({ key: 'population', text: 'not in Curate’s population' });
   return out;
 }

@@ -360,6 +360,8 @@ async def list_candidates(
 
         _reg = ProjectRegistry()
         last_activity_by_ref = _reg.get_survey_definition_last_activity(entity_type, slug)
+        from resource_explorer.catalogue_commit import egeria_reset_at, publish_fields
+        _reset_at = egeria_reset_at(_reg, slug)
         # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4 —
         # repo-only: `flag_vanished_publishes` (egeria_
         # resync.py) resolves `project_egeria_surveys.egeria_report_guid`,
@@ -476,6 +478,7 @@ async def list_candidates(
                 # a transient note that a pane reload wipes out.
                 "last_run_engine_note": last_activity.get("last_run_engine_note", ""),
                 "last_published_at": last_activity.get("last_published_at", ""),
+                **publish_fields(_reg, slug, last_activity.get("last_published_at", ""), _reset_at),
                 # 'candidate' = a real per-Survey-Definition publish (the ☁
                 # Publish button on this exact card); 'repo' = inferred from
                 # a whole-repo "Publish survey →" that happened after this
@@ -591,6 +594,7 @@ async def list_candidates(
                 if cand["last_run_at"] <= repo_wide_publish_at:
                     cand["last_published_at"] = repo_wide_publish_at
                     cand["last_published_scope"] = "repo"
+                    cand.update(publish_fields(_reg, slug, repo_wide_publish_at, _reset_at))
 
         # Native Egeria processes for this Technology Type (config/technology_
         # type_processes.yaml), shown as informational only — NOT merged into

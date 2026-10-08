@@ -8537,7 +8537,11 @@ class ProjectRegistry:
         """{annotation_type: latest published_at} for this project — the
         Survey Results route joins this against each dashboard's own
         analysis_ids' known annotation_types (analysis_catalog.yaml) to
-        derive a real per-dashboard last-published timestamp."""
+        derive a real per-dashboard last-published timestamp.
+
+        This is HISTORY: a row says a publish happened, not that Egeria holds it now. After an Egeria reset
+        a badge made from these rows alone would say Published for elements that no longer exist, so every
+        reader passes the timestamp through catalogue_commit.publish_fields() (the `egeria_reset` marker)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
@@ -10194,9 +10198,10 @@ class ProjectRegistry:
         investigation membership at read time, so leaving the investigation's
         working set later would silently un-answer a question already settled.
         """
+        from resource_explorer.catalogue_commit import PROJECT_UNANSWERED
         entity_slug = self._normalize_slug(entity_slug)
         context = self.get_project_context(entity_type, entity_slug)
-        if not context or context.get("status") == "unset":
+        if not context or context.get("status") in PROJECT_UNANSWERED:
             inherited = self.inherited_egeria_project_context(entity_type, entity_slug)
             if not inherited:
                 return False
@@ -10863,6 +10868,19 @@ class ProjectRegistry:
                 d["detail"] = {}
             out.append(d)
         return out
+
+    def get_egeria_reset_at(self, slug: str) -> str:
+        """When Egeria was last reset, for this resource: the newest `egeria_reset` marker's `read_at`
+        (the reset time, not the time the marker was written), or '' when there is no marker.
+        One small read, so list routes can afford it per resource."""
+        slug = self._normalize_slug(slug)
+        from resource_explorer.catalogue_commit import _ts
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT read_at FROM catalogue_commit_proofs "
+                "WHERE database_slug = ? AND proof = 'egeria_reset'", (slug,)).fetchall()
+        # the newest by PARSED time (not MAX() over text, which orders 'Z', '+00:00' and spaces wrongly)
+        return max((r["read_at"] or "" for r in rows), key=_ts, default="")
 
     def list_catalogue_outbox_rows(self, slug: str) -> list[dict]:
         """The outbox rows a catalogue commit queued for one database, oldest first.

@@ -387,6 +387,10 @@ class ScoutingOverview(BaseModel):
     # published_at, one row per publish) but was never surfaced here before;
     # only the bare yes/no was shown.
     last_published_at: str = ""
+    # Read from the `egeria_reset` marker (catalogue_commit.publish_fields): 'published_earlier' when the
+    # newest publish predates an Egeria reset, so the screen does not call it Published.
+    published_state: str = ""
+    egeria_reset_at: str = ""
     disposition: str = "undecided"
     disposition_reason: str = ""
     # Computed from archived/disabled/is_fork/is_template — "archived" >
@@ -445,6 +449,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
 
     linkage = registry.get_egeria_linkage("repo", project.slug) or {}
     publish_linkage = registry.get_egeria_linkage("repo_publish", project.slug) or {}
+    from resource_explorer.catalogue_commit import publish_fields
     from resource_explorer.egeria_linkage import describe_publish_status
     publish_status = describe_publish_status(
         registry, "repo", project.slug, project.egeria_asset_guid or "")
@@ -470,6 +475,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         is_published=publish_status["is_published"],
         egeria_publish_note=publish_status["note"],
         last_published_at=(latest_survey or {}).get("published_at") or "",
+        **publish_fields(registry, project.slug, (latest_survey or {}).get("published_at") or ""),
         disposition=disp.get("disposition", "undecided"),
         disposition_reason=disp.get("reason", ""),
         lifecycle_state=lifecycle_state,

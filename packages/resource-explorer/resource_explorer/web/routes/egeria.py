@@ -742,8 +742,8 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     # through here with different `steps`. Gating here once, rather than in
     # each frontend button handler, means a future publish surface can't
     # forget the check. status "unset" (never decided, including no row at
-    # all) blocks; every other status (personal/linked/deferred/declined —
-    # all deliberate answers) proceeds.
+    # all) and "unbound" (the project it named is gone after an Egeria reset) block; every other status
+    # (personal/linked/deferred/declined — all deliberate answers) proceeds.
     # The shared rule (repo_publish.resolve_project_context): a decided context proceeds; otherwise an
     # investigation bound to an Egeria Project answers (and the answer is WRITTEN, with the investigation
     # that supplied it); otherwise 428.
