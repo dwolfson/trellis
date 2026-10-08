@@ -154,6 +154,16 @@ change. Labels for actor wires are told, always.
 
 ## 6. Order, on the owner's go
 
+0. **The materialiser change** (first, since it stops the next wrong
+   blueprint): for a cluster whose root is a real component, write the
+   root as the single blueprint member plus `SolutionComposition` to each
+   child (adopting content-pack compositions by the pair), no child as a
+   direct member; for a cluster whose root is only a grouping, the
+   children as members and no root element; the blueprint named by kind
+   and repository, never by the root. Tests: egeria_git's fixture yields
+   one member (the platform) and six compositions; a path-rooted fixture
+   yields N members and no composition; a blueprint's name never equals a
+   member's.
 1. Class map and label map as reference data (two small YAML files with
    tests), the Environment Deployment Blueprint drawn with classes and
    labels from compose, description and version proposed: the Runtimes
@@ -282,16 +292,20 @@ blueprint."*
 
 Never both a container and its contents as direct members.
 
-**Which shape the materialiser picks by default.** Shape 1 when the
-evidence says the children are hosted or contained by a component (a
-compose service whose image hosts the servers the configuration documents
-declare; a Kafka service whose topics the configs name; a PostgreSQL
-service whose databases the configs name); shape 2 when the cluster root
-is only a grouping with no hosting evidence (a directory, a Gradle
-umbrella), or when the blueprint's kind is "the servers" (a Servers-kind
-blueprint). The pane says which shape it chose and why in the manifest
-("platform as container · 3 servers as sub-components · from the server
-configuration documents"), and a person may flip it before the write.
+**The default is shape 1, the container shape (owner, 2026-10-08: "I
+actually prefer the sub-component approach").** Hosted or contained
+components are written as sub-components of their container by
+`SolutionComposition`, and only the container is a member of the
+blueprint, so Egeria shows the encapsulation. Shape 2 stays available
+**only** where the cluster root is merely a grouping and not a real
+component (a directory, a Gradle umbrella with no artifact of its own): then
+there is nothing to encapsulate with, and the contents are the members.
+The materialiser decides by one test, "is the root a real component":
+true when the root has its own evidence class (built here or shipped here,
+or a content-pack element), false when the root exists only as a path.
+The manifest names the shape and why ("platform as container · 3 servers
+as sub-components · from the server configuration documents", or "root is
+a grouping · 6 members"), and a person may flip it before the write.
 
 **Exact writes, shape 1** (per container, idempotent, read-before-write
 each):
@@ -331,11 +345,11 @@ removes: it rolls forward). Option (c) becomes:
 That is simpler than creating a second blueprint beside it, and every RE
 write stays additive. Until step 3 the blueprint shows the six servers
 twice, as members and as sub-components, which is honest about the state
-and resolves with the detaches. **Recommendation: this variant.** The
-alternative, a new correctly shaped blueprint beside the old one with the
-old renamed and marked superseded, leaves two blueprints for one
-repository and is only better if the owner prefers not to touch Egeria
-Explorer by hand.
+and resolves with the detaches. **Recommendation under the default: this variant**, the three steps above,
+which leaves one blueprint shaped as the owner prefers. The alternative, a
+new correctly shaped blueprint beside the old one with the old renamed and
+marked superseded, leaves two blueprints for one repository and is only
+better if the owner prefers not to touch Egeria Explorer by hand.
 
 **Earlier options for 254dbbe6 (kept for the record; superseded by the
 variant above).** Egeria rolls forward, never undoes, and no rename call
