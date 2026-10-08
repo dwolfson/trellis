@@ -58,7 +58,12 @@ M_ASSET_TYPES = "Number of asset types"
 #: The names the default publish carries. Profile File Names is deliberately absent (size).
 DEFAULT_NAMES = (CAPTURE_FILE_COUNTS, PROFILE_FILE_EXTENSIONS, PROFILE_FILE_TYPES, PROFILE_ASSET_TYPES)
 
+#: RE's own attribution key, written as `producingStep` in additionalProperties (extend, never change):
+#: which RE step made the annotation. analysisStep itself is Egeria's, verbatim, for these types.
 STEP = "FileInventory"
+#: AnalysisStep.PROFILING_ASSOCIATED_RESOURCES.getName(); SurveyFolderAnnotationType.getAnalysisStep()
+#: returns it for every folder-survey annotation type.
+EGERIA_ANALYSIS_STEP = "Profiling Associated Resources"
 
 
 def java_double_string(x: float) -> str:
@@ -88,7 +93,7 @@ def _directories(paths: list[str]) -> set[str]:
 
 
 def envelope(*, measured_at: str, producing_run: str, partial_reason: str = "") -> dict:
-    env = {"resultState": "MEASURED", "measuredAt": measured_at, "producingRun": producing_run,
+    env = {"producingStep": STEP, "resultState": "MEASURED", "measuredAt": measured_at, "producingRun": producing_run,
            "scope": "PARTIAL" if partial_reason else "WHOLE"}
     if partial_reason:
         env["scopeReason"] = partial_reason
@@ -137,19 +142,19 @@ def build_file_type_annotations(registry, slug: str, *, surveyed_at: str,
 
     out: list[Annotation] = [
         ResourceMeasureAnnotation(
-            check_name="file_counts", analysis_step=STEP, annotation_type_name=CAPTURE_FILE_COUNTS,
+            check_name="file_counts", analysis_step=EGERIA_ANALYSIS_STEP, annotation_type_name=CAPTURE_FILE_COUNTS,
             **_text(CAPTURE_FILE_COUNTS), resource_properties=measures,
             additional_properties={**env, "vendoredFileCount": vendored}),
         ResourceProfileAnnotation(
-            check_name="file_extensions", analysis_step=STEP, annotation_type_name=PROFILE_FILE_EXTENSIONS,
+            check_name="file_extensions", analysis_step=EGERIA_ANALYSIS_STEP, annotation_type_name=PROFILE_FILE_EXTENSIONS,
             **_text(PROFILE_FILE_EXTENSIONS), value_count=dict(ext_counts), additional_properties=dict(env)),
         ResourceProfileAnnotation(
-            check_name="file_types", analysis_step=STEP, annotation_type_name=PROFILE_FILE_TYPES,
+            check_name="file_types", analysis_step=EGERIA_ANALYSIS_STEP, annotation_type_name=PROFILE_FILE_TYPES,
             **_text(PROFILE_FILE_TYPES), value_count=dict(type_counts), additional_properties=dict(env)),
     ]
     if chosen:
         out.append(ResourceProfileAnnotation(
-            check_name="asset_types", analysis_step=STEP, annotation_type_name=PROFILE_ASSET_TYPES,
+            check_name="asset_types", analysis_step=EGERIA_ANALYSIS_STEP, annotation_type_name=PROFILE_ASSET_TYPES,
             **_text(PROFILE_ASSET_TYPES), value_count=dict(chosen),
             additional_properties={**env, "basis": "the selection on Curate"}))
     return out
@@ -167,6 +172,6 @@ def file_names_log_annotation(registry, slug: str, *, surveyed_at: str, csv_path
         for name, n in sorted(names.items(), key=lambda kv: (-kv[1], kv[0])):
             w.writerow([name, n])
     return ResourceProfileLogAnnotation(
-        check_name="file_names", analysis_step=STEP, annotation_type_name=PROFILE_FILE_NAMES,
+        check_name="file_names", analysis_step=EGERIA_ANALYSIS_STEP, annotation_type_name=PROFILE_FILE_NAMES,
         summary=_TEXT[PROFILE_FILE_NAMES][0], explanation=_TEXT[PROFILE_FILE_NAMES][1], log_file=csv_path,
         additional_properties=envelope(measured_at=surveyed_at, producing_run=f"{slug}::{surveyed_at}"))

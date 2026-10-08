@@ -100,7 +100,7 @@ class TestEgeriaNamesVerbatim:
         assert body["valueCount"] == by[PROFILE_FILE_TYPES].value_count
         assert all(isinstance(v, int) for v in body["valueCount"].values())
         assert body["additionalProperties"] == {
-            "resultState": "MEASURED", "measuredAt": "2026-10-07T00:00:00",
+            "producingStep": "FileInventory", "resultState": "MEASURED", "measuredAt": "2026-10-07T00:00:00",
             "producingRun": "egeria_git::2026-10-07T00:00:00", "scope": "WHOLE"}
         capture = build_annotation_props(by[CAPTURE_FILE_COUNTS], "q")
         assert capture["class"] == "ResourceMeasureAnnotationProperties" and capture["annotationType"] == "Capture File Counts"
@@ -356,3 +356,72 @@ class TestTotalFileSizeIsJavaDoubleToString:
     def test_matches_double_tostring(self, n, text):
         from resource_explorer.surveyors.file_type_profile import java_double_string
         assert java_double_string(float(n)) == text
+
+
+# ── analysisStep is Egeria's; RE's attribution key is producingStep ──────────────────────────
+
+EGERIA_STEP = "Profiling Associated Resources"
+
+
+class TestProducingStep:
+    def test_new_annotations_carry_producing_step_and_egerias_analysis_step(self, registry, tmp_path):
+        anns = build_file_type_annotations(registry, "egeria_git", surveyed_at="x")
+        anns.append(file_names_log_annotation(registry, "egeria_git", surveyed_at="x", csv_path=str(tmp_path / "n.csv")))
+        assert len(anns) == 4
+        for a in anns:
+            assert a.analysis_step == EGERIA_STEP, a.annotation_type_name
+            assert a.additional_properties["producingStep"] == "FileInventory"
+            body = build_annotation_props(a, "q")
+            assert body["analysisStep"] == EGERIA_STEP
+            assert body["additionalProperties"]["producingStep"] == "FileInventory"
+
+    def test_other_annotations_of_the_same_step_and_other_steps_are_unchanged(self, registry, tmp_path):
+        from unittest.mock import patch
+        with patch("resource_explorer.ingestion.pipeline.IngestionPipeline._store_file_inventory", return_value=3), \
+             patch("resource_explorer.ingestion.pipeline.IngestionPipeline._record_line_census"):
+            anns = FileInventorySurveyor(registry.get("egeria_git"), registry, local_path=str(tmp_path)).run()
+        old = [a for a in anns if a.check_name == "file_inventory"][0]
+        assert old.analysis_step == "FileInventory" and "producingStep" not in old.additional_properties
+
+    def test_snapshot_round_trip_keeps_producing_step(self, registry):
+        a = build_file_type_annotations(registry, "egeria_git", surveyed_at="x")[1]
+        back = annotation_from_dict(annotation_to_dict(a))
+        assert back.additional_properties["producingStep"] == "FileInventory" and back.analysis_step == EGERIA_STEP
+
+    def test_step_of_reads_producing_step_first_then_analysis_step(self):
+        from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation, step_of
+        new = ResourceMeasureAnnotation(summary="s", analysis_step=EGERIA_STEP, additional_properties={"producingStep": "FileInventory"})
+        old = ResourceMeasureAnnotation(summary="s", analysis_step="FileInventory")
+        assert step_of(new) == step_of(old) == "FileInventory"
+        assert step_of({"analysis_step": "A", "additional_properties": {"producingStep": "B"}}) == "B"
+        assert step_of({"analysis_step": "A"}) == "A"
+
+
+class TestMaterialiserAttribution:
+    def _kind(self, ann):
+        from resource_explorer.surveyors.egeria_annotation_materializer import EgeriaAnnotationMaterializer
+        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+        return EgeriaAnnotationMaterializer(registry=MagicMock(), reader=MagicMock())._kind_for(ann), REPO_ANALYSIS_STEP_MAP
+
+    def test_attributes_via_producing_step_when_analysis_step_is_egerias(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+        analysis, keys = next((a, k) for a, k in REPO_ANALYSIS_STEP_MAP.items() if k)
+        ann = {"annotation_type": "ResourceMeasureAnnotation", "analysis_step": EGERIA_STEP,
+               "additional_properties": {"producingStep": keys[0]}}
+        assert self._kind(ann)[0] == analysis
+
+    def test_old_shape_without_producing_step_is_still_attributed_by_analysis_step(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+        analysis, keys = next((a, k) for a, k in REPO_ANALYSIS_STEP_MAP.items() if k)
+        assert self._kind({"annotation_type": "ResourceMeasureAnnotation", "analysis_step": keys[0]})[0] == analysis
+
+    def test_egeria_step_alone_attributes_to_nothing(self):
+        from resource_explorer.surveyors.egeria_annotation_materializer import UNATTRIBUTED_KIND
+        assert self._kind({"annotation_type": "ResourceMeasureAnnotation", "analysis_step": EGERIA_STEP})[0] == UNATTRIBUTED_KIND
+
+    def test_the_readers_carry_additional_properties_through(self):
+        from resource_explorer.surveyors.egeria_reader import _parse_annotation
+        d = _parse_annotation({"guid": "g", "type": {"typeName": "ResourceProfileAnnotation"}},
+                              {"annotationType": "Profile File Types", "analysisStep": EGERIA_STEP,
+                               "additionalProperties": {"producingStep": "FileInventory"}})
+        assert d["additional_properties"] == {"producingStep": "FileInventory"}
