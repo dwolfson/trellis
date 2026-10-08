@@ -455,6 +455,9 @@ class BlueprintVerdictCreate(BaseModel):
     cluster_name: str
     verdict: str  # "accepted" | "rejected"
     note: str = ""
+    # A person's flip of the blueprint's shape before the write ("container" | "contents"); empty takes
+    # the default the plan names (blueprint_shape.py).
+    shape: str = ""
 
 
 @router.get("/blueprint-verdicts/{entity_type}/{slug}")
@@ -476,6 +479,9 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
             status_code=400,
             detail=f"verdict must be one of {sorted(ProjectRegistry.BLUEPRINT_VERDICTS)}, got {body.verdict!r}",
         )
+    from resource_explorer.blueprint_shape import SHAPES
+    if body.shape and body.shape not in SHAPES:
+        raise HTTPException(status_code=400, detail=f"shape must be one of {list(SHAPES)}, got {body.shape!r}")
     registry = _registry()
     scope_locator = f"{body.perspective}::{body.cluster_name}"
     _authorize_curation(registry, entity_type, slug, scope_locator)
@@ -485,6 +491,7 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
     )
     materialization = _materialize_blueprint_if_accepted(
         registry, entity_type, slug, body.perspective, body.cluster_name, body.verdict,
+        **({"shape": body.shape} if body.shape else {}),
     )
     if materialization is not None:
         verdict["materialization"] = materialization

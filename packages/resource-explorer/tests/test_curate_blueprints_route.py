@@ -94,7 +94,7 @@ class TestAcceptRoundTripsThroughTheNewReader:
             def __init__(self, registry=None):
                 self.registry = registry
 
-            def materialize_blueprint_element(self, entity_type, slug, perspective, cluster_name, *, display_name, oversized=False, kind_slot=''):
+            def materialize_blueprint_element(self, entity_type, slug, perspective, cluster_name, *, display_name, oversized=False, kind_slot='', verify_cached=False):
                 guid = "bp-guid-1"
                 qn = f"SolutionBlueprint::{entity_type}::{slug}::{perspective}::{cluster_name}"
                 self.registry.record_materialized_blueprint(entity_type, slug, perspective, cluster_name, qn, guid)
@@ -133,3 +133,45 @@ class TestAcceptRoundTripsThroughTheNewReader:
         out = client.get("/api/projects/p/components/blueprints").json()
         assert out["blueprints"][0]["verdict"]["verdict"] == "rejected"
         assert out["blueprints"][0]["materialized"] is None
+
+
+class TestTheShapeRidesTheRoute:
+    """The manifest names the shape and why BEFORE the write, and a person can flip it
+    (DESIGN-BLUEPRINT-BENCHMARK-EGERIA-WORKSPACES.md 6a)."""
+
+    def _seed_platform(self, registry):
+        for slug, name in (("platform", "OMAG Server Platform"), ("view", "View Server")):
+            registry.upsert_finding("p", "architecture_recovery", [{
+                "check_name": "component", "label": "x",
+                "detail": {"name": name, "slug": slug, "admission": "built_here"}}],
+                surveyed_at="2026-09-03T00:00:00", scope_locator=f"src/{slug}")
+        _seed_cluster(registry, "p", perspective="deployment", name="OMAG-Server-Platform",
+                      members=["platform", "view"])
+
+    def test_the_reader_carries_the_plan_the_dialog_names(self, client, registry):
+        self._seed_platform(registry)
+        bp = client.get("/api/projects/p/components/blueprints").json()["blueprints"][0]
+        plan = bp["shape_plan"]
+        assert plan["shape"] == "container" and plan["flip_to"] == "contents"
+        assert plan["words"] == "OMAG Server Platform as container · 1 sub-component"
+        assert "real component" in plan["why"]
+
+    def test_a_cluster_with_no_members_has_no_plan(self, client, registry):
+        _seed_cluster(registry, "p", perspective="physical", name="empty")
+        assert client.get("/api/projects/p/components/blueprints").json()["blueprints"][0]["shape_plan"] is None
+
+    def test_a_flip_is_passed_to_the_write_and_a_bad_shape_is_refused(self, client, registry, monkeypatch):
+        self._seed_platform(registry)
+        seen = {}
+
+        def fake(reg, et, slug, perspective, cluster, verdict, **kw):
+            seen.update(kw)
+            return {"status": "materialized", "guid": ""}
+        monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_blueprint_if_accepted", fake)
+        body = {"perspective": "deployment", "cluster_name": "OMAG-Server-Platform", "verdict": "accepted"}
+        assert client.post("/api/curate/blueprint-verdicts/repo/p", json={**body, "shape": "contents"}).status_code == 200
+        assert seen == {"shape": "contents"}
+        seen.clear()
+        assert client.post("/api/curate/blueprint-verdicts/repo/p", json=body).status_code == 200
+        assert seen == {}                      # no flip: the default, nothing passed
+        assert client.post("/api/curate/blueprint-verdicts/repo/p", json={**body, "shape": "both"}).status_code == 400

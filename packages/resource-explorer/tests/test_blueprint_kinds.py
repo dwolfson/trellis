@@ -121,7 +121,7 @@ def test_accepting_writes_the_kind_into_the_display_name_and_the_qualified_name_
             pass
 
         def materialize_blueprint_element(self, et, slug, perspective, cluster, *, display_name,
-                                          oversized=False, kind_slot=""):
+                                          oversized=False, kind_slot="", verify_cached=False):
             seen.update(display_name=display_name, kind_slot=kind_slot)
             return {"status": "materialized", "guid": GUID, "qualified_name": "x"}
 

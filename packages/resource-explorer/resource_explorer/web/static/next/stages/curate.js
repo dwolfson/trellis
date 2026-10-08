@@ -1077,12 +1077,13 @@ async function renderBlueprintList(slug) {
  *  before it does it. Rejecting creates nothing, so it records at once. */
 function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
   const status = $('blueprint-status');
+  let chosenShape = '';   // a person's flip of the shape; '' takes the default the plan names
   const go = async () => {
     if (pressedEl && pressedEl.dataset.phase === 'pending') return;
     pressPhase(pressedEl, 'pending', verdict === 'accepted' ? 'accepting…' : 'rejecting…');
     if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
-      await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict);
+      await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict, '', chosenShape);
       pressPhase(pressedEl, 'done', verdict === 'accepted' ? 'accepted' : 'rejected');
       renderBlueprintList(slug);
     } catch (err) {
@@ -1101,12 +1102,43 @@ function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
       the type is pinned (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §0), unlike an individual component's.</p>
     <p class="text-caveat text-ink-muted">${memberCount ? `<span class="tnum">${memberCount}</span> proposed member${memberCount === 1 ? '' : 's'}, but this does not accept or materialize them —
       only members already accepted and cataloged on their own get queued to link, and that queue is not confirmed done by the time this pane reads it back.` : 'This cluster has no proposed members.'}</p>
+    ${shapeManifestHtml(bp.shape_plan)}
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
       <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Accept</button>
       <button data-act="close" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">not now</button>
     </div>`;
   body.querySelector('[data-act="confirm"]').addEventListener('click', () => { closeCellDetail(); go(); });
+  // The shape is flipped here, before the write: the pressed option reads "chosen", the other stays plain.
+  body.querySelectorAll('[data-shape-option]').forEach((b) => b.addEventListener('click', () => {
+    // A refused flip (no root to be the container) keeps the default and says why, never "chosen".
+    const now = bp.shape_plan.alternatives?.[b.dataset.shapeOption]?.shape || b.dataset.shapeOption;
+    chosenShape = now === bp.shape_plan.default_shape ? '' : now;
+    body.querySelectorAll('[data-shape-option]').forEach((o) => {
+      const on = o.dataset.shapeOption === now;
+      o.setAttribute('aria-pressed', on ? 'true' : 'false');
+      o.querySelector('[data-shape-word]').textContent = on ? 'chosen' : '';
+    });
+    const alt = bp.shape_plan.alternatives?.[b.dataset.shapeOption];
+    const line = body.querySelector('[data-shape-line]');
+    const why = body.querySelector('[data-shape-why]');
+    if (alt && line) line.textContent = alt.words;
+    if (alt && why) why.textContent = alt.flip_refused ? `${alt.why} · ${alt.flip_refused}` : alt.why;
+  }));
+}
+
+/** The manifest line for a blueprint's shape (DESIGN-BLUEPRINT-BENCHMARK-EGERIA-WORKSPACES.md 6a): which
+ *  shape RE will write and why, with the other one offered as a flip. Egeria draws the diagram from the
+ *  metadata; this names only what is written. */
+export function shapeManifestHtml(plan) {
+  if (!plan) return '';
+  const opt = (shape, label) => `<button type="button" data-shape-option="${esc(shape)}" aria-pressed="${plan.shape === shape ? 'true' : 'false'}"
+      class="cursor-pointer rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">${esc(label)} <span data-shape-word class="text-ink-muted">${plan.shape === shape ? 'chosen' : ''}</span></button>`;
+  return `<div data-shape-manifest class="mt-s2 border-t border-rule pt-s2">
+    <div class="text-caveat text-ink"><span class="text-chrome-muted">shape</span> · <span data-shape-line>${esc(plan.words)}</span></div>
+    <div data-shape-why class="text-provenance text-ink-muted">${esc(plan.why)}${plan.flip_refused ? ` · ${esc(plan.flip_refused)}` : ''}</div>
+    <div class="mt-s1 flex gap-s2">${opt('container', 'Container')}${opt('contents', 'Contents')}</div>
+  </div>`;
 }
 
 /** The diagram beside the tree. It is already verdict-aware -- rendered

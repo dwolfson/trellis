@@ -383,7 +383,8 @@ def find_candidate_blueprint(registry: ProjectRegistry, slug: str,
 
 
 def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: str, slug: str,
-                                       perspective: str, cluster_name: str, verdict: str) -> dict | None:
+                                       perspective: str, cluster_name: str, verdict: str,
+                                       shape: str = "") -> dict | None:
     """Same non-fatal-but-visible shape as materialize_component_if_accepted above —
     the verdict itself is already saved and real regardless of whether this
     succeeds. Only 'accepted' triggers a write; only entity_type='repo' is
@@ -392,6 +393,19 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     Partial progress is real progress (Decision 2/step 4 of the plan): an
     unmaterialized member or child is reported, not treated as a reason to
     enqueue nothing.
+
+    **The blueprint is written in ONE of two shapes, never a mix** (project owner, 2026-10-08;
+    `blueprint_shape.py`, DESIGN-BLUEPRINT-BENCHMARK-EGERIA-WORKSPACES.md 6a):
+
+    * container (the default, when the cluster's root is a real component): the root is the ONLY blueprint
+      member and each other member is its sub-component by `SolutionComposition`; Egeria draws the
+      encapsulation.
+    * contents (the root is merely a grouping): the children are the members, no root element.
+
+    `shape` ("container" | "contents" | "") is a person's flip before the write; "" takes the default.
+    The plan, with the words that name the shape and why, comes back as `result["shape"]` and is stored
+    as a `shape` proof row. Egeria draws the diagram: RE writes only components, compositions and
+    memberships.
     """
     if verdict != "accepted" or entity_type != "repo":
         return None
@@ -401,10 +415,21 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
                "error": "no candidate_blueprint finding for this (perspective, cluster_name) "
                         "to materialize"}
 
+    from dataclasses import replace
+
+    from resource_explorer.blueprint_shape import (
+        CONTAINER,
+        SHAPES,
+        component_nodes,
+        distinct_name,
+        find_root,
+        plan_shape,
+    )
     from resource_explorer.surveyors.arch_recovery.blueprint_materializer import (
         BlueprintMaterializationError,
         BlueprintMaterializer,
     )
+    from resource_explorer.surveyors.arch_recovery.materializer import ComponentMaterializer
     materializer = BlueprintMaterializer(registry=registry)
     from resource_explorer.blueprint_kinds import (
         blueprint_display_name,
@@ -413,41 +438,133 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     )
     from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
 
+    requested = shape if shape in SHAPES else ""
+    nodes_by_slug = component_nodes(registry, slug)
+    member_slugs = cluster.get("members") or []
+    # A member the recovery has no component finding for still counts (by its slug); it just carries no
+    # evidence class, so it can never be mistaken for a real-component root.
+    from resource_explorer.blueprint_shape import Node
+    known = [nodes_by_slug.get(s) or Node(slug=s, name=s) for s in member_slugs]
+
     project = registry.get(slug)
     roots = [b for b in _candidate_blueprints_results(registry, slug)
              if b["perspective"] == perspective and not b.get("parent")]
     sole_root = len(roots) == 1 and roots[0]["cluster_name"] == cluster_name
+    # A blueprint's name is the KIND and the repository and never equals a member's name (6a rule 1).
+    display_name = distinct_name(
+        blueprint_display_name(repo_label(slug, getattr(project, "display_name", "") or ""), perspective,
+                               cluster.get("name", cluster_name), sole_root=sole_root),
+        [n.name for n in known])
     try:
         result = materializer.materialize_blueprint_element(
             entity_type, slug, perspective, cluster_name,
             # The KIND is in the name (owner, 2026-10-07): "Egeria Deployment Blueprint".
-            display_name=blueprint_display_name(
-                repo_label(slug, getattr(project, "display_name", "") or ""), perspective,
-                cluster.get("name", cluster_name), sole_root=sole_root),
+            display_name=display_name,
             oversized=bool(cluster.get("oversized")),
             kind_slot=qualified_name_slot(perspective),
+            # A blueprint a person deleted in Egeria must not be trusted from RE's cache.
+            verify_cached=True,
         )
     except BlueprintMaterializationError as exc:
         return {"status": "error", "error": str(exc)}
 
     blueprint_guid = result["guid"]
-    slug_to_scope = slug_to_scope_map(registry, slug)
+    slug_to_scope = {s: n.scope for s, n in nodes_by_slug.items()}
     member_guids, unmaterialized_members = materializer.resolve_member_guids(
-        registry, entity_type, slug, cluster.get("members") or [], slug_to_scope,
+        registry, entity_type, slug, member_slugs, slug_to_scope,
     )
+    # Components that exist in Egeria but this registry never recorded are ADOPTED by qualifiedName.
+    findable = [s for s in unmaterialized_members if s in slug_to_scope]
+    if findable:
+        adopted = materializer.adopt_unmaterialized_members(
+            registry, entity_type, slug, findable, slug_to_scope)
+        member_guids = {**member_guids, **adopted}
+        unmaterialized_members = [s for s in unmaterialized_members if s not in adopted]
     child_guids, unmaterialized_children = materializer.resolve_child_blueprint_guids(
         registry, entity_type, slug, perspective, cluster.get("children") or [],
     )
 
+    # The root may be an element Egeria's content pack already defines: adopt it rather than leave the
+    # container unwritten, and let it count as a real component (the one test, 6a).
+    qn_override: dict[str, str] = {}
+    nodes = [replace(n, guid=member_guids.get(n.slug, "")) for n in known]
+    root = find_root(cluster.get("name", cluster_name), nodes, cluster.get("composed_into", ""))
+    if root is not None and not root.guid and not root.structural:
+        pack = materializer.find_content_pack_component(root.name)
+        if pack:
+            qn_override[root.slug] = pack["qualified_name"]
+            nodes = [replace(n, guid=pack["guid"], content_pack=True) if n.slug == root.slug else n
+                     for n in nodes]
+            unmaterialized_members = [s for s in unmaterialized_members if s != root.slug]
+    plan = plan_shape(cluster.get("name", cluster_name), nodes, requested=requested,
+                      composed_into=cluster.get("composed_into", ""))
+
+    def qn_of(node) -> str:
+        return qn_override.get(node.slug) or ComponentMaterializer.qualified_name_for(
+            entity_type, slug, node.scope)
+
+    scope_key = f"{perspective}::{cluster_name}"
+    member_guid_list: list[str] = []
+    composition_results: list[dict] = []
+    composition_error = ""
+    if plan.shape == CONTAINER:
+        # Only the container is a member. With no element for it there is no membership at all: falling
+        # back to the children would silently be the other shape.
+        if plan.root.guid:
+            member_guid_list = [plan.root.guid]
+            children = [(c.guid, qn_of(c)) for _, c in plan.compositions if c.guid]
+            try:
+                composition_results = materializer.link_sub_components(
+                    plan.root.guid, qn_of(plan.root), children)
+            except BlueprintMaterializationError as exc:
+                composition_error = str(exc)
+        elif plan.root.slug not in unmaterialized_members:
+            unmaterialized_members = [*unmaterialized_members, plan.root.slug]
+    else:
+        member_guid_list = [n.guid for n in plan.members if n.guid]
+
     from resource_explorer.egeria_outbox import enqueue_blueprint_members
-    all_member_guids = list(member_guids.values()) + list(child_guids.values())
+    all_member_guids = member_guid_list + list(child_guids.values())
     row_ids = enqueue_blueprint_members(registry, entity_type, slug, blueprint_guid, all_member_guids)
 
+    _record_shape_proofs(registry, slug, scope_key, blueprint_guid, plan, composition_results)
+
+    result["shape"] = plan.to_dict()
+    result["compositions"] = composition_results
+    if composition_error:
+        result["composition_error"] = composition_error
     result["enqueued_membership_rows"] = len(row_ids)
     if unmaterialized_members:
         result["unmaterialized_members"] = unmaterialized_members
     if unmaterialized_children:
         result["unmaterialized_children"] = unmaterialized_children
-    if unmaterialized_members or unmaterialized_children:
+    unfinished = [c for c in composition_results if c["status"] in ("unconfirmed", "error")]
+    if unmaterialized_members or unmaterialized_children or composition_error or unfinished:
         result["status"] = "partial"
     return result
+
+
+P_SHAPE = "shape"
+P_COMPOSITION = "composition"
+NODE_BLUEPRINT_SHAPE = "blueprint_shape"
+
+
+def _record_shape_proofs(registry: ProjectRegistry, slug: str, scope_key: str, blueprint_guid: str,
+                         plan, compositions: list[dict]) -> None:
+    """Proof rows (`catalogue_commit_proofs`, no new table): one for the shape that was chosen and why,
+    and one per composition, each written AFTER the container's sub-components were read back by GUID.
+    A failed proof write never undoes the Egeria write; it is logged."""
+    try:
+        registry.append_catalogue_commit_proof(
+            slug, proof=P_SHAPE, node_kind=NODE_BLUEPRINT_SHAPE, table_name=scope_key,
+            element_guid=blueprint_guid,
+            detail={"shape": plan.shape, "default_shape": plan.default_shape, "why": plan.why,
+                    "words": plan.words, "flipped": plan.flipped, "flip_refused": plan.flip_refused,
+                    "root": plan.root.name if plan.root else ""})
+        for c in compositions:
+            registry.append_catalogue_commit_proof(
+                slug, proof=P_COMPOSITION, node_kind=NODE_BLUEPRINT_SHAPE, table_name=scope_key,
+                element_guid=c["container_guid"], target_guid=c["child_guid"], qualified_name=c["key"],
+                detail={"status": c["status"], "read_back": True, "error": c.get("error", "")})
+    except Exception as exc:                      # the Egeria write stands; the proof is what failed
+        log.warning("could not record the shape proofs for %s: %s", scope_key, exc)
