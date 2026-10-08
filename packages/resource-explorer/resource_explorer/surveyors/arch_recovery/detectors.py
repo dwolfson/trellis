@@ -521,20 +521,25 @@ def _component_dir(c: Component) -> str:
 
 def _builds_twin(twin: Component, facts: dict, unit: str) -> bool:
     """May this compose service be merged into `twin`, a Dockerfile or manifest component? Only if it
-    BUILDS the twin's directory (its build context resolves to it), or declares no build and names no image
-    at all. A service that runs a foreign image (`image: nginx`, no build) is not that component, however
-    the names line up."""
+    BUILDS the twin's directory, or declares no build and names no image at all. "Builds the directory"
+    means: the directory of the Dockerfile it uses, when `dockerfile:` is given (resolved against the build
+    context, which is resolved against the compose file's directory), else the build context itself. A
+    remote build URL counts as no build. A service that runs a foreign image (`image: nginx`, no build) is
+    not that component, however the names line up."""
     if facts.get("build"):
-        return os.path.normpath(os.path.join(unit, facts["build"])) == os.path.normpath(_component_dir(twin))
+        ctx = os.path.join(unit, facts["build"])
+        df = facts.get("dockerfile") or ""
+        target = (os.path.dirname(os.path.join(ctx, df)) or ".") if df else ctx
+        return os.path.normpath(target) == os.path.normpath(_component_dir(twin))
     return not facts.get("image")
 
 
-def build_components(root: str, files: list[str], all_files: list[str] | None = None,
-                     ) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
-    components: list[Component] = []
-    evidence: list[Evidence] = []
-    notes: list[str] = []
-
+def _manifest_and_dockerfile_components(root: str, files: list[str], components: list[Component],
+                                        evidence: list[Evidence], notes: list[str],
+                                        ) -> tuple[dict, list[dict], set[str]]:
+    """The manifest and Dockerfile-unit passes of `build_components`, over `files`. Returns (units,
+    manifests, slugs of the Dockerfile-unit components). Split out so the compose pass can ask the same
+    question of the WHOLE repository (the census) as of the files a scoped run was handed."""
     units = deployment_units(root, files)
     manifests = python_manifests(root, files) + node_manifests(root, files)
 
@@ -661,6 +666,69 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
                 locations=[Location(dockerfiles[0], line, excerpt)],
                 confidence=70, confidence_level="Derived",
             ))
+    return units, manifests, dockerfile_slugs
+
+
+_HASHED = re.compile(r"\.[0-9a-f]{6}$")
+
+
+def _plan_compose(root: str, census: list[str], census_comps: list[Component], dockerfile_slugs: set[str],
+                  per_unit: dict, per_unit_facts: dict) -> dict[tuple[str, str], tuple[str, str | None]]:
+    """{(unit, service key): (slug, slug of the component it merges into or None)}, over the whole census.
+
+    Order and scope independent: services are visited in sorted order over the CENSUS, so a scoped run and
+    the full run give the same service the same slug and the same merge.
+    1. natural slugs are claimed first (plain, or qualified by directory), then a service that does NOT
+       build its same-named Dockerfile/manifest twin takes `<slug>.svc`, and a qualified slug that needed a
+       hash takes that; these DERIVED slugs are then made unique against every slug in use by extending
+       them with `.2`, `.3`, ... so a service literally named `foo.svc` cannot collide."""
+    slugs = compose_slugs(root, census)
+    used = {c.slug for c in census_comps}
+    plan: dict[tuple[str, str], tuple[str, str | None]] = {}
+    derived: list[tuple[tuple[str, str], str]] = []
+    claimed: dict[str, tuple[str, str]] = {}                       # natural compose slug -> its service
+    for unit in sorted(per_unit):
+        for key in sorted(per_unit[unit]):
+            name = per_unit[unit][key][0]
+            plain = _slug(os.path.basename(unit), name)
+            slug = slugs.get((unit, plain), plain)
+            f = per_unit_facts[unit].get(key, {"image": "", "build": ""})
+            twin = next((c for c in census_comps if c.slug == slug), None)
+            if twin is None:
+                twin = next((c for c in census_comps if c.slug in dockerfile_slugs and c.perspective != "deployment"
+                             and c.identity.deployment_context == unit and c.identity.value == name), None)
+            if twin is not None and twin.perspective != "deployment":
+                if _builds_twin(twin, f, unit):
+                    plan[(unit, key)] = (slug, twin.slug)
+                    continue
+                derived.append(((unit, key), f"{slug}.svc" if slug in used else slug))
+                continue
+            if _HASHED.search(slug):
+                derived.append(((unit, key), slug))
+                continue
+            if slug in claimed:                                    # layered duplicate of a compose service
+                plan[(unit, key)] = (slug, slug)
+                continue
+            claimed[slug] = (unit, key)
+            used.add(slug)
+            plan[(unit, key)] = (slug, None)
+    for k, slug in derived:
+        final, n = slug, 1
+        while final in used:
+            n += 1
+            final = f"{slug}.{n}"
+        used.add(final)
+        plan[k] = (final, None)
+    return plan
+
+
+def build_components(root: str, files: list[str], all_files: list[str] | None = None,
+                     ) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
+    components: list[Component] = []
+    evidence: list[Evidence] = []
+    notes: list[str] = []
+
+    units, manifests, dockerfile_slugs = _manifest_and_dockerfile_components(root, files, components, evidence, notes)
 
     # Compose services are components with no first-party code of their own
     # (§8.2b's add-on and shared-infra tiers) — real components, but not ones a
@@ -677,10 +745,22 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
     # the evidence of its boundary: a build context here (built), an image this repository publishes
     # (shipped), or an image it neither builds nor publishes (referenced only, which `admission.split`
     # takes out of the components). Compose files under test/example directories are fixtures.
+    # EVERYTHING that decides a compose service's slug, its merge and its class is read from the whole
+    # repository (`census`, the full first-party list), never from the files a scoped run was handed, so a
+    # scoped run and the full run agree on the same service: its slug (a reclassification keys on it), its
+    # twin, and whether CI publishes its image. A scoped run only chooses which services to EMIT.
+    census = all_files if all_files is not None else files
+    if census is files or list(census) == list(files):
+        census_comps, census_units, census_manifests, census_dockerfile_slugs = (
+            components, units, manifests, dockerfile_slugs)
+    else:
+        census_comps = []
+        census_units, census_manifests, census_dockerfile_slugs = _manifest_and_dockerfile_components(
+            root, census, census_comps, [], [])
     per_unit: dict[str, dict[str, tuple[str, str, int]]] = {}
     per_unit_facts: dict[str, dict[str, dict]] = {}
     fixture_services = 0
-    for unit, decls in units.items():
+    for unit, decls in census_units.items():
         merged: dict[str, tuple[str, str, int]] = {}   # service key -> (name, decl, line)
         facts: dict[str, dict] = {}                     # service key -> {"image", "build"} merged across files
         for decl in decls:
@@ -691,10 +771,10 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
                 fixture_services += len(svc_facts)
                 continue
             for key, f in svc_facts.items():
-                cur = facts.setdefault(key, {"image": "", "build": "", "decl": decl})
+                cur = facts.setdefault(key, {"image": "", "build": "", "dockerfile": "", "decl": decl})
                 cur["image"] = cur["image"] or f["image"]
                 if f["build"] and not cur["build"]:
-                    cur["build"], cur["decl"] = f["build"], decl
+                    cur["build"], cur["dockerfile"], cur["decl"] = f["build"], f.get("dockerfile", ""), decl
             for key, name, line in compose_services(root, decl):
                 prior = merged.get(key)
                 # A declared container_name always beats a bare service key,
@@ -706,42 +786,31 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
         notes.append(f"{fixture_services} compose service(s) under test or example directories — a fixture, "
                      f"never a component")
 
-    published = _admission.published_images(root, files, [m["name"] for m in manifests])
+    published = _admission.published_images(root, census, [m["name"] for m in census_manifests])
     for facts in per_unit_facts.values():
         for f in facts.values():
             if f["build"] and f["image"]:
                 published.setdefault(_admission.normalise_image(f["image"]), f["decl"])
 
-    # Which plain slugs more than one directory carries is decided from the WHOLE repository's compose files
-    # (`all_files`, the full census), not from the files this run was handed: a scoped run sees one
-    # directory and would otherwise hand that service a plain slug the full run had qualified.
-    slugs = compose_slugs(root, all_files if all_files is not None else files)
+    plan = _plan_compose(root, census, census_comps, census_dockerfile_slugs, per_unit, per_unit_facts)
+    by_slug = {c.slug: c for c in components}
     for unit, merged in per_unit.items():
+        if unit not in units:
+            continue                                    # outside this run's scope: decided, not emitted
         for key, (name, decl, line) in merged.items():
-            plain = _slug(os.path.basename(unit), name)
-            slug = slugs.get((unit, plain), plain)
             f = per_unit_facts[unit].get(key, {"image": "", "build": ""})
-            # The same unit already found by its Dockerfile or manifest is the stronger, built-here reading,
-            # and the compose service merges into it, but only if it BUILDS that directory (_builds_twin).
-            # A twin is found by slug, or, for a Dockerfile component only, by directory and name so that
-            # a qualified slug still merges. A compose twin (layered files) merges unconditionally.
-            twin = next((c for c in components if c.slug == slug), None)
-            if twin is None:
-                twin = next((c for c in components if c.slug in dockerfile_slugs and c.perspective != "deployment"
-                             and c.identity.deployment_context == unit and c.identity.value == name), None)
-            if twin is not None and twin.perspective != "deployment" and not _builds_twin(twin, f, unit):
-                # A different thing that happens to share the name: its own node, under a slug of its own.
-                twin = None
-                if any(c.slug == slug for c in components):
-                    slug = f"{slug}.svc"
-            if twin is not None:
-                # The compose service still names the image it ships, which is how a service elsewhere is
-                # linked to the repository that builds it.
-                twin.image = twin.image or _admission.normalise_image(f["image"])
+            slug, merge_into = plan[(unit, key)]
+            if merge_into is not None:
+                # Merged into the Dockerfile/manifest component of the same directory: the stronger,
+                # built-here reading. The compose service still names the image it ships, which is how a
+                # service elsewhere is linked to the repository that builds it.
+                twin = by_slug.get(merge_into)
+                if twin is not None:
+                    twin.image = twin.image or _admission.normalise_image(f["image"])
                 continue
             named = name != key
             cls, why = _admission.classify_compose_service(f, f.get("decl") or decl, published)
-            components.append(Component(
+            comp = Component(
                 slug=slug, name=name, type="Third Party Process",
                 identity=Identity("deployment-unit", name, unit),
                 files=[], confidence=75 if named else 65, confidence_level="Derived",
@@ -751,7 +820,9 @@ def build_components(root: str, files: list[str], all_files: list[str] | None = 
                 # Dockerfile/manifest components below, which stay `physical`.
                 perspective="deployment",
                 admission=cls, admission_evidence=why, image=_admission.normalise_image(f["image"]),
-            ))
+            )
+            components.append(comp)
+            by_slug[slug] = comp
             evidence.append(Evidence(
                 subject_kind="component", subject_slug=slug,
                 assertion=("declared container_name on a compose service" if named

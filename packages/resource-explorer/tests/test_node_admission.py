@@ -114,7 +114,8 @@ def _survey(registry, slug, root, name=None):
 def test_images_are_compared_by_name_not_tag_registry_or_variable():
     assert adm.normalise_image("${R:-odpi}/egeria-platform:${V:-latest}") == "odpi/egeria-platform"
     assert adm.normalise_image("ghcr.io/odpi/egeria-platform@sha256:abc") == "odpi/egeria-platform"
-    assert adm.same_image("egeria-platform", "odpi/egeria-platform:1")
+    assert adm.same_image("ghcr.io/odpi/egeria-platform:1", "odpi/egeria-platform")
+    assert not adm.same_image("egeria-platform", "odpi/egeria-platform:1")      # namespaces must agree
     assert not adm.same_image("postgres", "odpi/egeria-platform")
 
 
@@ -633,3 +634,126 @@ def test_a_unitless_slug_entry_on_a_node_with_no_directory_does_not_apply():
     entry, note = node_admission.effective({"a-b::x": [{"to": "built_here", "reason": "r", "by": "d", "at": "t"}]},
                                            "a-b::x", "", "x")
     assert entry is None and "not applied" in note
+
+
+# ── build: dockerfile:, scoped == full, uniqueness, fixtures, and the published-image rule ─────────
+
+def _mono(tmp_path, name, build_yaml):
+    root = str(tmp_path / name)
+    _write(root, "services/compose.yaml", "services:\n  api:\n" + build_yaml)
+    _write(root, "services/api/Dockerfile", "FROM python:3\nCMD [\"python\", \"app.py\"]\n")
+    _write(root, "services/api/app.py", "print(1)\n")
+    _git(root)
+    return root
+
+
+class TestDockerfileKey:
+    def test_a_dockerfile_key_decides_which_directory_a_service_builds(self, tmp_path):
+        # context is the repository root, the Dockerfile is in the twin's directory: it builds that directory
+        root = _mono(tmp_path, "df1", "    image: odpi/api:1\n    build:\n      context: ..\n"
+                                     "      dockerfile: services/api/Dockerfile\n")
+        api = _components_named(root, "api")
+        assert len(api) == 1 and api[0].admission == "built_here" and api[0].image == "odpi/api"
+
+    def test_a_context_in_the_twins_directory_with_a_dockerfile_elsewhere_does_not_merge(self, tmp_path):
+        root = str(tmp_path / "df2")
+        _write(root, "services/api/compose.yaml",
+               "services:\n  api:\n    build:\n      context: .\n      dockerfile: ../../other/Dockerfile\n")
+        _write(root, "services/api/pyproject.toml",
+               '[project]\nname = "api"\nversion = "1"\n[project.scripts]\napi = "api:main"\n')
+        _write(root, "other/Dockerfile", "FROM alpine\n")
+        _git(root)
+        assert len(_components_named(root, "api")) == 2
+
+    def test_the_plain_shapes_still_work(self, tmp_path):
+        for n, yml in (("a", "    build: ./api\n"), ("b", "    build:\n      context: ./api\n"),
+                       ("c", "    build:\n      context: ./api\n      dockerfile: Dockerfile\n")):
+            root = _mono(tmp_path, f"df3{n}", yml)
+            assert len(_components_named(root, "api")) == 1, n
+
+
+def test_a_remote_build_context_is_no_build(tmp_path):
+    root = str(tmp_path / "rm")
+    _write(root, "c.yaml", "services:\n  api:\n    build: https://github.com/o/r.git\n")
+    assert adm.compose_service_facts(root, "c.yaml")["api"]["build"] == ""
+
+
+class TestScopedEqualsFull:
+    def _scoped_and_full(self, root):
+        from resource_explorer.surveyors.arch_recovery import detectors, exclusion
+        full = exclusion.scan(root).first_party
+        scoped = [f for f in full if f.startswith("b/")]
+        f_comps = detectors.build_components(root, full, all_files=full)[0]
+        s_comps = detectors.build_components(root, scoped, all_files=full)[0]
+        return ({c.slug: (c.admission, c.image) for c in f_comps},
+                {c.slug: (c.admission, c.image) for c in s_comps})
+
+    def test_a_scoped_run_that_excludes_the_twins_directory_still_decides_from_the_census(self, tmp_path):
+        from resource_explorer.surveyors.arch_recovery import detectors, exclusion
+        root = str(tmp_path / "sc")
+        _write(root, "X/compose.yaml", "services:\n  web:\n    image: nginx:1\n")
+        _write(root, "X/web/Dockerfile", "FROM python:3\nCMD [\"python\", \"app.py\"]\n")
+        _write(root, "X/web/app.py", "print(1)\n")
+        _git(root)
+        full = exclusion.scan(root).first_party
+        scoped = [f for f in full if not f.startswith("X/web/")]            # the twin is outside the scope
+        f_c = {c.slug: c.admission for c in detectors.build_components(root, full, all_files=full)[0]}
+        s_c = {c.slug: c.admission for c in detectors.build_components(root, scoped, all_files=full)[0]}
+        assert s_c == {"X::web.svc": "referenced_only"} and f_c["X::web.svc"] == "referenced_only"
+
+    def test_a_scoped_run_keeps_ci_publish_evidence_from_outside_its_scope(self, tmp_path):
+        root = str(tmp_path / "sc2")
+        _write(root, ".github/workflows/p.yml", "steps:\n  - with:\n      tags: odpi/web:latest\n")
+        _write(root, "b/compose.yaml", "services:\n  web:\n    image: odpi/web:1\n")
+        _git(root)
+        full, scoped = self._scoped_and_full(root)
+        assert full["b::web"][0] == "shipped_here" and scoped["b::web"][0] == "shipped_here"
+
+
+def test_a_service_literally_named_like_a_derived_slug_cannot_collide(tmp_path):
+    root = str(tmp_path / "lit")
+    _write(root, "X/compose.yaml", "services:\n  web:\n    image: nginx:1\n  web.svc:\n    image: redis:7\n")
+    _write(root, "X/web/Dockerfile", "FROM python:3\nCMD [\"python\", \"app.py\"]\n")
+    _write(root, "X/web/app.py", "print(1)\n")
+    _git(root)
+    from resource_explorer.surveyors.arch_recovery import detectors, exclusion
+    first = exclusion.scan(root).first_party
+    slugs = [c.slug for c in detectors.build_components(root, first, all_files=first)[0]]
+    assert len(slugs) == len(set(slugs))
+    assert "X::web.svc" in slugs                       # the literally named service keeps its natural slug
+
+
+def test_a_fixture_compose_service_does_not_qualify_a_real_one(tmp_path):
+    root = str(tmp_path / "fx")
+    _write(root, "deploy/compose.yaml", "services:\n  kafka:\n    image: apache/kafka:3\n")
+    _write(root, "tests/deploy/compose.yaml", "services:\n  kafka:\n    image: apache/kafka:3\n")
+    _git(root)
+    assert [c.slug for c in _components_named(root, "kafka")] == ["deploy::kafka"]
+
+
+class TestPublishedImageRule:
+    def _repo(self, tmp_path, name, with_ci):
+        root = str(tmp_path / name)
+        _write(root, "pyproject.toml", '[project]\nname = "redis"\nversion = "1"\n[project.scripts]\nredis = "redis:main"\n')
+        _write(root, "compose.yaml", "services:\n  cache:\n    image: bitnami/redis:7\n")
+        if with_ci:
+            _write(root, ".github/workflows/p.yml", "steps:\n  - run: docker push bitnami/redis:7\n")
+        _git(root)
+        return root
+
+    def test_a_package_named_like_a_third_party_image_does_not_make_it_shipped(self, tmp_path):
+        cache = _components_named(self._repo(tmp_path, "ph1", False), "cache")
+        assert [c.admission for c in cache] == ["referenced_only"]
+
+    def test_the_same_with_a_workflow_that_pushes_that_image_is_shipped(self, tmp_path):
+        cache = _components_named(self._repo(tmp_path, "ph2", True), "cache")
+        assert [c.admission for c in cache] == ["shipped_here"]
+
+    def test_a_bare_ci_push_counts_only_with_a_matching_package_name(self, tmp_path):
+        root = str(tmp_path / "ph3")
+        _write(root, "pyproject.toml", '[project]\nname = "app"\nversion = "1"\n[project.scripts]\napp = "app:main"\n')
+        _write(root, "compose.yaml", "services:\n  a:\n    image: app:1\n  b:\n    image: other:1\n")
+        _write(root, ".github/workflows/p.yml", "steps:\n  - run: docker push app:1\n  - run: docker push other:1\n")
+        _git(root)
+        by = {c.name: c.admission for c in _components_named(root, "a") + _components_named(root, "b")}
+        assert by == {"a": "shipped_here", "b": "referenced_only"}

@@ -57,15 +57,12 @@ def normalise_image(image: str) -> str:
 
 
 def same_image(a: str, b: str) -> bool:
-    """Two image names are one when their normalised paths match, or the last segments match and one
-    of them names no namespace (`egeria-platform` is `odpi/egeria-platform`)."""
+    """Two image names are one image only when their normalised paths (registry host, tag and digest
+    removed) are EQUAL. `redis` is not `bitnami/redis` and `egeria-platform` is not
+    `odpi/egeria-platform`: matching last segments across namespaces turned every third-party image that
+    shares a word with a package of this repository into one the repository ships."""
     na, nb = normalise_image(a), normalise_image(b)
-    if not na or not nb:
-        return False
-    if na == nb:
-        return True
-    la, lb = na.rsplit("/", 1)[-1], nb.rsplit("/", 1)[-1]
-    return la == lb and ("/" not in na or "/" not in nb)
+    return bool(na) and na == nb
 
 
 def is_fixture_path(rel: str) -> bool:
@@ -73,8 +70,9 @@ def is_fixture_path(rel: str) -> bool:
 
 
 def compose_service_facts(root: str, rel: str) -> dict[str, dict]:
-    """{service key: {"image": str, "build": str}} for one compose file. `build` is the build context
-    when it is inside the repository ("." counts), "" when there is none or it is a remote URL."""
+    """{service key: {"image", "build", "dockerfile"}} for one compose file. `build` is the build context
+    when it is inside the repository ("." counts), "" when there is none or it is a remote URL;
+    `dockerfile` is the `dockerfile:` of a mapping-form build (relative to the context), else ""."""
     try:
         with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
             data = yaml.safe_load(fh.read())
@@ -89,22 +87,32 @@ def compose_service_facts(root: str, rel: str) -> dict[str, dict]:
             continue
         build = body.get("build")
         ctx = ""
+        dockerfile = ""
         if isinstance(build, str):
             ctx = build
         elif isinstance(build, dict):
             ctx = str(build.get("context") or ".")
+            dockerfile = str(build.get("dockerfile") or "")
         remote = bool(re.match(r"^(https?://|git@|git://|github\.com/)", ctx))
         image = body.get("image")
         out[key] = {"image": image.strip() if isinstance(image, str) else "",
-                    "build": "" if remote else (ctx or ("." if build else ""))}
+                    "build": "" if remote else (ctx or ("." if build else "")),
+                    "dockerfile": "" if remote else dockerfile}
     return out
 
 
 def published_images(root: str, files: list[str], package_names: list[str]) -> dict[str, str]:
-    """{image name: where this repository says it publishes it}. Three sources: a CI publish step
-    (a workflow's `tags:`/`images:` or a `docker push`/`tag`/`build -t`), a compose service that BUILDS
-    and names its image (passed in by the caller through `built_images`), and a manifest's package name."""
+    """{image name: where this repository says it publishes it}: only what a PUBLISH SIGNAL says.
+
+    * a CI workflow step that builds, tags or pushes a NAMESPACED image (`odpi/egeria-ui`);
+    * a CI step that pushes a bare image name, only when it equals one of this repository's manifest
+      package names (the manifest names what the bare image is; the CI step is the signal).
+
+    A manifest package name alone is NOT a publish signal: a repository with a package called `redis` does
+    not ship `bitnami/redis`. A compose service that builds and names an image is a signal too; the caller
+    adds those (it already has the compose facts). Anything undecidable stays referenced only."""
     out: dict[str, str] = {}
+    packages = {normalise_image(n) for n in package_names if n}
     for rel in files:
         low = rel.replace("\\", "/")
         if not (low.startswith(".github/workflows/") or low.startswith(".gitlab-ci") or
@@ -121,12 +129,12 @@ def published_images(root: str, files: list[str], package_names: list[str]) -> d
             if t:
                 names += [x for x in re.split(r"[,\s]+", t.group("v")) if x and not x.startswith(("|", ">"))]
             for name in names:
-                if "/" in name or ":" in name:
-                    out.setdefault(normalise_image(name), f"{rel}:{n}")
-    for name in package_names:
-        if name:
-            out.setdefault(normalise_image(name), "manifest")
-    return {k: v for k, v in out.items() if k}
+                norm = normalise_image(name)
+                if not norm:
+                    continue
+                if "/" in norm or norm in packages:
+                    out.setdefault(norm, f"{rel}:{n}")
+    return out
 
 
 def classify_compose_service(facts: dict, decl: str, published: dict[str, str]) -> tuple[str, str]:

@@ -16,6 +16,24 @@ Built from `DESIGN-BLUEPRINT-NODE-ADMISSION.md`, branch `re/blueprint-node-admis
   qualified by the whole directory path for every one of them, decided from the full census.
 - A compose service merges into a Dockerfile/manifest node only if it builds that directory.
 
-Known heuristic, left as designed: the published-image rule treats a manifest package name equal to an
-image's last segment as "shipped here", even when the namespaces differ (package `kafka` makes a
-`confluentinc/kafka` service shipped here). It is a proposal a person can reclassify, not a decision.
+## Published-image rule (what makes a service "shipped here")
+
+An image counts as published by this repository only on a PUBLISH SIGNAL, and image names are compared for
+equality (registry host, tag and digest removed), never by last segment across namespaces:
+
+- a CI workflow step that builds, tags or pushes a namespaced image (`odpi/egeria-ui`);
+- a CI step that pushes a bare image name, only when it equals one of the repository's own manifest
+  package names (the manifest says what the bare name is; the CI step is the signal);
+- a compose service that builds (`build:`) and names its image.
+
+A manifest package name alone is not a signal: a package called `redis` does not make `bitnami/redis`
+shipped. Whatever cannot be decided from this evidence stays **referenced only**, the honest default:
+a repository's image published by a pipeline outside the repository, an image published under a bare name
+with no matching package, and an image whose namespace differs from every signal. A person can reclassify.
+
+## Same-named compose services, scoped runs
+
+Slug, merge and class of a compose service are decided from the whole census, so a scoped run agrees with
+the full run. A service merges into a Dockerfile/manifest node only if it builds that node's directory: the
+directory of its `dockerfile:` (resolved against the context, itself against the compose file), else its
+build context. Derived slugs (`.svc`, hash) are made unique against every slug in use.
