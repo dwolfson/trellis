@@ -93,6 +93,8 @@ import json
 import logging
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
+from types import MappingProxyType
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -3080,13 +3082,29 @@ _recovery_snapshot_build_locks: dict[tuple, threading.Lock] = {}
 recovery_snapshot_stats = {"hits": 0, "misses": 0}
 
 
+def _freeze_snapshot(snapshot: dict) -> Mapping:
+    """Make the shared snapshot read-only: every dict a `MappingProxyType`, every list a tuple.
+
+    Every caller of `_recovery_snapshot` gets the SAME objects while the fingerprint holds, so one
+    reader writing `row["label"] = ...` would corrupt every later request in the process until the next
+    survey write. A write now raises TypeError instead. Readers only index, `.get`, iterate and
+    compare, all of which a proxy/tuple supports unchanged."""
+    def freeze(o):
+        if isinstance(o, dict):
+            return MappingProxyType({k: freeze(v) for k, v in o.items()})
+        if isinstance(o, (list, tuple)):
+            return tuple(freeze(v) for v in o)
+        return o
+    return freeze(snapshot)
+
+
 def _recovery_snapshot(registry, slug: str) -> dict:
     """Every `architecture_recovery` finding row (all runs, grouped by scope) and
     each scope's latest metrics, in a few statements rather than ~2 per scope.
 
-    Callers treat the returned structure as READ-ONLY (it is shared between
-    callers while the fingerprint holds); `tests/test_curate_open_speedup.py`
-    pins that no reader mutates it."""
+    The returned structure is READ-ONLY by construction (`_freeze_snapshot`): it is shared between
+    callers while the fingerprint holds. Not to be confused with `read_memo`, which is a different,
+    per-`FactLayer.fact()` memo that deep-copies. At most `_RECOVERY_SNAPSHOT_CACHE_MAX` (6) slugs are held."""
     key = (registry.database_url, registry._normalize_slug(slug))
     fp = registry.analysis_data_fingerprint(slug, ("architecture_recovery",))
     hit = _recovery_snapshot_lookup(key, fp)
@@ -3103,20 +3121,20 @@ def _recovery_snapshot(registry, slug: str) -> dict:
         hit = _recovery_snapshot_lookup(key, fp)
         if hit is not None:
             return hit
-        snapshot = {
+        snapshot = _freeze_snapshot({
             # Component rows and evidence rows are read as two separate lists, so only ties WITHIN
             # a class are observable (see the registry method's docstring).
             "rows": registry.query_findings_all_runs_by_scope(
                 slug, "architecture_recovery", order_class=lambda r: r["check_name"] == "component"),
             "metrics": registry.query_metrics_by_scope(slug, "architecture_recovery"),
             # The live-scope lists, from the registry's own method (its withdrawal rule is the
-            # definition) and stored as tuples; they read the same table the fingerprint covers.
+            # definition); they read the same table the fingerprint covers.
             "scopes": {
                 check_name: tuple(registry.query_finding_scopes(
                     slug, "architecture_recovery", check_name=check_name))
                 for check_name in ("component", "structural_node")
             },
-        }
+        })
         # The fingerprint was read BEFORE the data. A write landing between the two means the
         # snapshot holds newer data than the fingerprint says: the next call sees a different
         # fingerprint and rebuilds. The reverse (snapshot older than its fingerprint) cannot
@@ -3126,6 +3144,8 @@ def _recovery_snapshot(registry, slug: str) -> dict:
             _recovery_snapshot_cache[key] = (fp, snapshot)
             _recovery_snapshot_cache.move_to_end(key)
             while len(_recovery_snapshot_cache) > _RECOVERY_SNAPSHOT_CACHE_MAX:
+                # Popping the evicted key's build lock while another thread still waits on it can let
+                # a second build of that key run. Harmless: same data, stored again.
                 evicted, _ = _recovery_snapshot_cache.popitem(last=False)
                 _recovery_snapshot_build_locks.pop(evicted, None)
         return snapshot

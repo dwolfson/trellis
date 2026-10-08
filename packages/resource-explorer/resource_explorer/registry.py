@@ -7384,13 +7384,22 @@ class ProjectRegistry:
         delete-then-reinsert still raises `MAX(id)` because ids never recycle.
         The signature is read from the database on every call, so a write by
         ANY process or registry instance changes it.
+
+        **Known blind spots** (none reachable by a write path today, per review):
+        an in-place UPDATE of `label`/`summary`/`detail_json`/`confidence` on an
+        existing row changes none of the terms (RE only ever UPDATEs `superseded_at`
+        and `egeria_annotation_guid`, and the latter is not read by these readers);
+        and a SQLite file deleted and recreated at the same path with identical
+        counts, ids and timestamps would look unchanged (a test-only hazard; the
+        cache is also keyed on the database URL). `MAX(superseded_at)` is included
+        so two different supersede stamps cannot cancel in the count.
         """
         slug = self._normalize_slug(slug)
         marks = ",".join("?" for _ in kinds)
         with self._conn() as conn:
             f = conn.execute(
                 "SELECT kind, COUNT(*), COALESCE(MAX(id), 0), COALESCE(MAX(surveyed_at), ''), "
-                "COALESCE(SUM(CASE WHEN superseded_at IS NULL THEN 0 ELSE 1 END), 0) "
+                "COALESCE(SUM(CASE WHEN superseded_at IS NULL THEN 0 ELSE 1 END), 0), COALESCE(MAX(superseded_at), '') "
                 f"FROM project_analysis_findings WHERE project_slug = ? AND kind IN ({marks}) "
                 "GROUP BY kind ORDER BY kind",
                 (slug, *kinds),
@@ -7402,7 +7411,7 @@ class ProjectRegistry:
                 (slug, *kinds),
             ).fetchall()
         # Index access, not tuple(row): RowWrapper iterates its KEYS, sqlite3.Row its values.
-        return (tuple(tuple(r[i] for i in range(5)) for r in f),
+        return (tuple(tuple(r[i] for i in range(6)) for r in f),
                 tuple(tuple(r[i] for i in range(4)) for r in m))
 
     def get_file_inventory_with_sizes(self, slug: str, *, include_vendored: bool = False) -> list[dict]:

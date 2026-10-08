@@ -271,6 +271,16 @@ class TestFingerprint:
         registry.remove("p")
         assert self._fp(registry) != before
 
+    def test_a_different_supersede_stamp_moves_it_even_when_the_count_is_unchanged(self, registry):
+        _seed(registry)
+        registry.upsert_finding("p", KIND, [], surveyed_at="2026-10-05T00:00:00", scope_locator="svc/b",
+                                supersedes_previous=True)
+        before = self._fp(registry)
+        with registry._conn() as conn:
+            conn.execute("UPDATE project_analysis_findings SET superseded_at = '2026-10-09T00:00:00' "
+                         "WHERE superseded_at IS NOT NULL")
+        assert self._fp(registry) != before
+
     def test_another_kind_or_another_project_does_not(self, registry):
         _seed(registry)
         _add(registry, "q")
@@ -488,18 +498,60 @@ class TestSnapshotCacheIsKeyedOnData:
         [t.join() for t in ts]
         assert not errors and c.n == 1
 
-    def test_no_reader_mutates_the_shared_snapshot(self, registry, tmp_path):
-        """Callers share the snapshot while the fingerprint holds, so a reader that edited it would corrupt every
-        later read. Run every reader and the consumers of the results, then compare with a copy taken before."""
+    @staticmethod
+    def _thaw(o):
+        from types import MappingProxyType
+        if isinstance(o, MappingProxyType):
+            return {k: TestSnapshotCacheIsKeyedOnData._thaw(v) for k, v in o.items()}
+        if isinstance(o, tuple):
+            return [TestSnapshotCacheIsKeyedOnData._thaw(v) for v in o]
+        return o
+
+    def test_the_snapshot_is_read_only_by_construction(self, registry):
+        """One `row["label"] = ...` in a future reader would corrupt every later request in the process
+        until the next survey write. Frozen: it raises instead."""
         _seed(registry)
+        snap = A._recovery_snapshot(registry, "p")
+        row = snap["rows"]["svc/a"][0]
+        for bad in (lambda: row.__setitem__("label", "x"),
+                    lambda: snap["rows"].__setitem__("zzz", ()),
+                    lambda: snap["metrics"]["svc/a"].__setitem__("confidence", 0),
+                    lambda: snap["scopes"].__setitem__("component", ()),
+                    lambda: snap["rows"]["svc/a"].append(row)):
+            with pytest.raises((TypeError, AttributeError)):
+                bad()
+
+    def test_no_reader_changes_the_shared_snapshot(self, registry, tmp_path, monkeypatch):
+        """Compare the snapshot with a thawed copy taken before, after EVERY reader that consumes it: results,
+        evidence, blueprints, diagram fact, component tree and leaves, depth offer, plan, dependencies and
+        blueprint_shape.component_nodes."""
+        from resource_explorer import blueprint_shape
+        from resource_explorer.curate_plan import build_plan
+        from resource_explorer.facts import FactLayer
+        from resource_explorer.workflows.catalogue_depth_offer import build_catalogue_depth_offer
+        monkeypatch.setattr("resource_explorer.gaps.record_gaps_for", lambda *a, **k: [])
+        _seed(registry)
+        registry.upsert_finding("p", "architecture_blueprints", [{
+            "check_name": "candidate_blueprint", "label": "logical-1",
+            "detail": {"perspective": "logical", "name": "logical-1", "members": ["code::svc/a"], "children": []}}],
+            surveyed_at="2026-10-02T00:00:00", scope_locator="")
         A._architecture_recovery_results(registry, "p")
         key = (registry.database_url, "p")
-        before = copy.deepcopy(A._recovery_snapshot_cache[key][1])
-        _readers(registry)
-        ct.component_tree(registry, "p")
-        ct.leaves(registry, "p", "svc")
-        node_admission.summary(registry, "p")
-        assert A._recovery_snapshot_cache[key][1] == before
+        before = self._thaw(A._recovery_snapshot_cache[key][1])
+        readers = {
+            "results": lambda: _readers(registry),
+            "tree": lambda: ct.component_tree(registry, "p"),
+            "leaves": lambda: ct.leaves(registry, "p", "svc"),
+            "depth_offer": lambda: build_catalogue_depth_offer(registry, "p"),
+            "plan": lambda: build_plan(registry, "p"),
+            "dependencies": lambda: dt.build_table(registry, "p"),
+            "component_nodes": lambda: blueprint_shape.component_nodes(registry, "p"),
+            "admission": lambda: node_admission.summary(registry, "p"),
+            "diagram_fact": lambda: FactLayer(registry).fact("p", "architecture_diagram"),
+        }
+        for name, read in readers.items():
+            read()
+            assert self._thaw(A._recovery_snapshot_cache[key][1]) == before, f"{name} changed the snapshot"
 
     def test_what_is_cached_is_only_findings_derived_data(self, registry):
         """Verdicts, materialization, promotions, reclassifications and confirmations are re-read every call; the
