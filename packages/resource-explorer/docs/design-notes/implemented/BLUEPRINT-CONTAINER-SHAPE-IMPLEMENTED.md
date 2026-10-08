@@ -173,3 +173,24 @@ the element was read back and the cache row rewritten. No DDL and no new table. 
 deleted. RE writes nothing to the element: the publish does not touch `additionalProperties` after create, and
 there is no new Egeria write kind, so the old `re_cluster_key` stays on the element as a hint, never a conflict;
 the registry row is the authority.
+
+### Concurrency, claimants and unproven re-keys (review round)
+
+* **A claim around adoption.** `materialize_blueprint_element` takes a claim keyed on the new-form qualifiedName
+  (`blueprint-claim::<qn>` in `app_settings`; one `INSERT ... ON CONFLICT DO NOTHING`, rowcount 1 = taken; a
+  claim older than 15 minutes is treated as a crashed holder's and cleared; no new table). It is held across
+  check, adopt or create, cache row and proof, and released in a `finally` only by the process that holds it.
+  A refused claim answers "another press is adopting this blueprint right now: nothing was written". The
+  mechanism is copied in small, with no dependency on the catalog-and-survey branch.
+* **Claimants are the clusters accepted in the run** (architect's ruling A). Today the route accepts one cluster
+  per request, so the existing accept set is the pressed cluster and `batch` defaults to it: beta pressed alone
+  adopts even though an unaccepted alpha sorts first, and alpha pressed afterwards is refused because beta now
+  holds the element. First-by-name is the tie-break only inside a batch a caller passes in. No new API surface:
+  `materialize_blueprint_element(..., batch=...)` is an optional parameter, passed by nobody yet.
+* **The proof records the previous key**, from the registry row being re-keyed, falling back to the element's
+  (never rewritten) property; `old_key_source` says which.
+* **An unprovable re-key is surfaced.** If the proof row cannot be written (or there is no registry) the result
+  carries `status: "adopted_unproven"` and `proof_error`, and an activity row says UNPROVEN. The adoption stands.
+* **State readers.** `derive_commit_state` counts any proof row on a slug as "something was committed", as it
+  already does for the blueprint `shape` rows; a repository slug is not shown that header, so a `rekey` row
+  changes nothing a reader displays. `publish_state` ignores it.
