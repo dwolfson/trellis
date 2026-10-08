@@ -65,3 +65,12 @@ def test_no_log_record_ever_carries_the_password(tmp_path, caplog, monkeypatch):
     assert PW not in caplog.text
     assert PW not in "".join(r.getMessage() for r in caplog.records)
     assert R  # silence linter
+
+
+def test_describe_registry_prints_only_host_port_and_database_even_for_an_awkward_password():
+    url = "postgresql://dwolfson:p%40ss%3Aw%2Frd@db.example:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer"
+    line = L.describe_registry(url)
+    assert line == "registry: db.example:5442/egeria_advisor schema=resource_explorer"
+    for leak in ("dwolfson", "p%40ss", "p@ss", "w%2Frd", "w/rd"):
+        assert leak not in line
+    assert "<unparseable url>" == L.describe_registry("postgresql://u:pw@[bad/db").split("registry: ")[-1]
