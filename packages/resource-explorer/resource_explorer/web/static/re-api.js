@@ -68,10 +68,20 @@ async function request(path, options = {}) {
   }
   if (!res.ok) {
     let detail = res.statusText;
+    let code = '';
     try {
       const body = await res.json();
       detail = body.detail || body.message || detail;
+      code = body.error || '';
     } catch (_) { /* a non-JSON error body is still an error */ }
+    if (res.status === 401 && code === 'login_required') {
+      // A dead session, not this pane's failure: say it once (session-banner.js listens) and give the
+      // caller a short word instead of the server's whole sentence, which every pane would repeat.
+      try { globalThis.document?.dispatchEvent(new globalThis.CustomEvent('re:session-dead')); } catch { /* no document */ }
+      const dead = new ApiError(401, 'sign-in needed', path);
+      dead.loginRequired = true;
+      throw dead;
+    }
     throw new ApiError(res.status, detail, path);
   }
   if (res.status === 204) return null;

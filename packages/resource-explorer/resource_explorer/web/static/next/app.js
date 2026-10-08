@@ -194,6 +194,7 @@ import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable 
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
+import { installSessionBanner } from '/static/next/session-banner.js';
 
 /* ════════════════════════════════════════════════════════════════════════
  * State
@@ -9646,6 +9647,8 @@ function countOf(settled, limit, key) {
 }
 
 async function start() {
+  // One banner for a dead session; the header stops saying "signed in" (session-banner.js).
+  installSessionBanner(document, { onDead: () => { state.me = null; renderTopBar(); } });
   await loadIcons();
   applyWidths();
   initSeams();
