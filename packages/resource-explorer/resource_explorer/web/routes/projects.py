@@ -1478,9 +1478,11 @@ async def get_scope_events(slug: str) -> dict:
     from resource_explorer import resource_scope
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    if not registry.get(slug):
+    project = registry.get(slug)
+    if not project:
         raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
-    return {"slug": slug, **await asyncio.to_thread(resource_scope.build_view, registry, slug)}
+    return {"slug": slug, "in_egeria": bool(project.egeria_asset_guid),
+            **await asyncio.to_thread(resource_scope.build_view, registry, slug)}
 
 
 @router.post("/{slug}/scope-events")
@@ -1492,7 +1494,8 @@ async def post_scope_events(slug: str, body: ScopeEventsRequest, request: Reques
     from resource_explorer.registry import ProjectRegistry
     author = _scope_author(request, "save a choice")
     registry = ProjectRegistry()
-    if not registry.get(slug):
+    project = registry.get(slug)
+    if not project:
         raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
     try:
         clean = resource_scope.validate_events(registry, slug, [e.model_dump() for e in body.events])
@@ -1501,7 +1504,7 @@ async def post_scope_events(slug: str, body: ScopeEventsRequest, request: Reques
     for e in clean:
         registry.append_resource_scope_event(resource_scope.RESOURCE_TYPE, slug, author=author, **e)
     view = await asyncio.to_thread(resource_scope.build_view, registry, slug)
-    return {"slug": slug, "written": len(clean), **view}
+    return {"slug": slug, "in_egeria": bool(project.egeria_asset_guid), "written": len(clean), **view}
 
 
 @router.post("/{slug}/sub-resources/catalog", response_model=SubResourceCatalogResult)
