@@ -40,7 +40,7 @@ test('before the press the numbers equal the selection record', async () => {
   box.innerHTML = m.repoManifestHtml(sel());
   assert.equal(cell(box, 'report', 2), '1 report · 42 annotations');
   assert.match(cell(box, 'report', 3), /survey of 2026-10-07 \(.*ago\)/);
-  assert.equal(cell(box, 'entities', 2), '2 entities · 1 not confirmed');
+  assert.equal(cell(box, 'entities', 2), '2 entities · 1 proposed, not ticked');
   assert.equal(cell(box, 'files', 2), '2 DataFiles');
   assert.equal(cell(box, 'files', 3), 'your selection');
   assert.equal(cell(box, 'folders', 2), '1 FileFolder');
