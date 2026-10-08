@@ -92,7 +92,6 @@
   "resource_explorer/web/routes/databases.py::survey_database": 2,
   "resource_explorer/web/routes/doc_sources.py::add_doc_source": 1,
   "resource_explorer/web/routes/egeria.py::_fetch": 1,
-  "resource_explorer/web/routes/egeria.py::catalog_elements": 1,
   "resource_explorer/web/routes/egeria.py::get_survey_report": 2,
   "resource_explorer/web/routes/filesystems.py::publish_survey_to_egeria": 1,
   "resource_explorer/web/routes/filesystems.py::survey_filesystem": 1,

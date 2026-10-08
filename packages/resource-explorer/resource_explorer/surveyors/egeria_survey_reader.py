@@ -120,6 +120,7 @@ def annotations_from_report(result: dict) -> list[dict]:
             "summary": props.get("summary", ""),
             "confidence": _safe_int(props.get("confidence", 100)),
             "analysis_step": props.get("analysisStep", ""),
+            "additional_properties": props.get("additionalProperties") or {},
             "explanation": props.get("explanation", ""),
             "expression": props.get("expression", ""),
             "json_properties": parse_json_properties(props.get("jsonProperties")),

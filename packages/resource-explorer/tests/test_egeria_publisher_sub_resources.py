@@ -164,6 +164,9 @@ class TestOrderingAndParentResolution:
         expected_qn = f"GitHubRepository::{GITHUB_URL}::docs"
         assert body["replacementProperties"] == {
             "class": "AssetProperties", "qualifiedName": expected_qn,
+            # The naming rule (ruling 2026-10-07): path and repository; MagicMock registry
+            # has no project, so the repository reads as the slug.
+            "displayName": "docs/ \u00b7 myproj",
         }
 
 
