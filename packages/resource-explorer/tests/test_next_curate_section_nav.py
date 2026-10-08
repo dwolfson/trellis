@@ -63,16 +63,17 @@ class TestSixSectionsExistWithStableIds:
         assert "component-tree" in made_of_call
 
 
-class TestSectionsAreCollapsibleDetailsDefaultOpen:
+class TestSectionsAreCollapsibleDetailsDefaultCollapsed:
     """Matching /next's existing disclosure idiom (app.js's other <details>
     usage): <details>/<summary>, summary is the section's own heading text,
-    default open -- the reported problem was missing navigation/structure,
-    not too much visible at once, so collapse must not default-hide."""
+    default COLLAPSED (owner, 2026-10-08; this used to pin default open)."""
 
     def test_the_section_wrapper_is_a_details_element(self):
         src = _curate_src()
         body = src[src.index("function curateSectionHtml("):src.index("async function renderCurate(")]
-        assert "<details id=\"${id}\" open" in body
+        # Owner, 2026-10-08: every section starts collapsed; a person's opening is remembered per viewer.
+        assert "<details id=\"${id}\" ${sectionOpen(id) ? 'open' : ''}" in body
+        assert "<details id=\"${id}\" open" not in body
         assert "<summary" in body
 
     def test_every_call_site_uses_the_shared_wrapper_for_all_six_sections(self):
@@ -90,15 +91,24 @@ class TestAnchorScrollMatchesClassicsConvention:
     (classic's jump-to-component/blueprint is a narrower cross-reference
     feature, not this)."""
 
-    def test_the_nav_click_handler_calls_scrollintoview_smooth_center(self):
+    def test_the_nav_click_handler_anchors_the_section_start_smoothly(self):
+        # Owner, 2026-10-08: block 'center' on a very tall section (hundreds of cluster rows) landed mid-list.
         src = _curate_src()
-        body = src[src.index("function bindCurateSectionNav("):src.index("function curateSectionHtml(")]
-        assert "scrollIntoView({ behavior: 'smooth', block: 'center' })" in body
+        body = src[src.index("export function jumpToCurateSection("):src.index("function curateSectionHtml(")]
+        assert "scrollIntoView({ behavior: 'smooth', block: 'start' })" in body
+        assert "block: 'center'" not in body
+        assert "jumpToCurateSection(a.dataset.curateNav)" in body      # every link goes through the one jump
 
     def test_clicking_a_collapsed_section_opens_it_before_scrolling(self):
         src = _curate_src()
-        body = src[src.index("function bindCurateSectionNav("):src.index("function curateSectionHtml(")]
+        body = src[src.index("export function jumpToCurateSection("):src.index("function curateSectionHtml(")]
         assert "el.open = true" in body
+        assert body.index("el.open = true") < body.index("el.scrollIntoView(")
+
+    def test_every_section_has_a_scroll_margin_for_the_sticky_jump_line(self):
+        src = _curate_src()
+        body = src[src.index("function curateSectionHtml("):src.index("function paneError(")]
+        assert 'style="scroll-margin-top:4rem"' in body
 
 
 class TestComponentTreeInternalsUntouched:

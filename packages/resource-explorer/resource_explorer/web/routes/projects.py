@@ -2479,8 +2479,11 @@ def components_blueprints(slug: str) -> dict:
                    if logical else None)
     # What admitted each node, and what was found and not admitted (DESIGN-BLUEPRINT-NODE-ADMISSION.md).
     from resource_explorer import node_admission
-    admission = node_admission.summary(registry, slug)
-    env = node_admission.environment(registry, slug) if admission["referenced"] else {"nodes": [], "linked": 0}
+    # One read of the recovery results, passed to both: `summary` always needs it and `environment` needs it
+    # whenever a person moved a component to referenced-only (module comment in node_admission.summary).
+    paths = node_admission.component_paths(registry, slug)
+    admission = node_admission.summary(registry, slug, paths)
+    env = node_admission.environment(registry, slug, paths) if admission["referenced"] else {"nodes": [], "linked": 0}
     kinds = blueprint_kind_rows(label=label, blueprints=blueprints, artifact_count=len(evidence_paths),
                                 build_files=build_files, logical_unconfirmed=unconfirmed,
                                 environment_services=len(env["nodes"]), environment_linked=env["linked"])

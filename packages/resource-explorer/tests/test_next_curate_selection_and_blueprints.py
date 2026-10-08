@@ -109,7 +109,7 @@ class TestTheBlueprintList:
     def test_the_foot_names_the_current_and_other_readings(self):
         app = _app()
         body = app[app.index("async function renderBlueprintList("):app.index("/** Same shared-preview-dialog rule")]
-        assert "clusters shown · all in the" in body
+        assert "clusters shown" in body and "· all in the" in body
         assert "the ${esc(o.p)} reading has" in body
 
     def test_accepting_names_the_pinned_type_and_does_not_invent_one_for_components(self):

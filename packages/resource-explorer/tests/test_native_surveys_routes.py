@@ -83,10 +83,10 @@ def test_a_second_run_while_in_flight_is_409(client):
 def test_a_survey_re_cannot_run_is_422_with_the_reason(client):
     r = client.post("/api/native-surveys/database/bare/run",
                     json={"process_qualified_name": SURVEY_QN})
-    assert r.status_code == 422 and "Publish it to Egeria" in r.json()["detail"]
+    assert r.status_code == 422 and "has not been given this database" in r.json()["detail"]
     r = client.post("/api/native-surveys/database/adventureworks/run",
                     json={"process_qualified_name": CATALOG_QN})
-    assert r.status_code == 422 and "template" in r.json()["detail"]
+    assert r.status_code == 422 and "Register the server with Egeria" in r.json()["detail"]
 
 
 def test_egeria_refusing_the_submission_is_502_and_recorded(client, port, registry):

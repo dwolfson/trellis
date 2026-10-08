@@ -119,7 +119,7 @@ export function repoManifestHtml({ plan, picks, scope, fileTypePicks, ps = null 
       sv ? `1 report · ${num(sv.annotations)} annotations` : 'no survey yet',
       sv ? `survey of ${esc(String(sv.surveyed_at).slice(0, 10))} (${esc(ago(sv.surveyed_at))})` : '—', stateCell('report', ps)),
     row('entities', 'Egeria gets', 'the lines you confirmed under “what it is”',
-      `${num(c.entities)} entit${c.entities === 1 ? 'y' : 'ies'}${c.notConfirmed ? ` · ${num(c.notConfirmed)} not confirmed` : ''}`,
+      `${num(c.entities)} entit${c.entities === 1 ? 'y' : 'ies'}${c.notConfirmed ? ` · ${num(c.notConfirmed)} proposed, not ticked` : ''}`,
       'your confirmations', stateCell('entities', ps)),
     row('files', 'Egeria gets', 'the files you chose', `${num(c.files)} DataFile${c.files === 1 ? '' : 's'}`,
       'your selection', stateCell('files', ps)),

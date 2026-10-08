@@ -134,6 +134,11 @@ export const STATES = {
   // ── ○ not run, and can be ───────────────────────────────────────────
   unrun: { glyph: '○', family: 'not-run', word: 'not run', tone: 'text-state-warn' },
 
+  // ── ○ optional, not done -- NEUTRAL (EGERIA-REGISTRATION: registering with Egeria is a choice) ──
+  // Same family as `unrun` so the glyph reads "not done"; the tone is muted, not the warn colour, and the
+  // word says it is not a fault. Used where nothing is wrong and nothing is owed.
+  optional: { glyph: '○', family: 'not-run', word: 'not registered', tone: 'text-ink-muted' },
+
   // ── ◌ can't be answered here yet ────────────────────────────────────
   // `no-surveyor` MOVES here from ○ per the reply -- it used to share a
   // glyph with `unrun`, told apart (in worklist.js's CELL) by colour alone,
@@ -151,6 +156,8 @@ export const STATES = {
   // than a paraphrase, so a schema row's title/aria-label matches its
   // visible word one-for-one.
   not_established: { glyph: '?', family: 'not-established', word: 'not established', tone: 'text-ink-muted' },
+  // A registration that existed: Egeria answered that the element RE had stored no longer exists.
+  gone:            { glyph: '?', family: 'not-established', word: 'no longer in Egeria', tone: 'text-ink-muted' },
   not_measured:    { glyph: '?', family: 'not-established', word: 'rows not measured', tone: 'text-ink-muted' },
   no_access:       { glyph: '?', family: 'not-established', word: 'no access', tone: 'text-ink-muted' },
 

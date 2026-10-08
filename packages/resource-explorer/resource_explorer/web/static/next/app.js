@@ -77,7 +77,7 @@ import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation,
 import { openInvestigationPicker, scopeActWording } from '/static/next/investigation-picker.js';
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
-import { renderCurate } from '/static/next/stages/curate.js';
+import { renderCurate, jumpToCurateSection } from '/static/next/stages/curate.js';
 import { inventoryHeaderText, nodeSourceLine, credentialLineText } from '/static/next/stages/scope-sources.js';
 import { surveySourceWord, threeNumberLine, fkTarget } from '/static/next/stages/db-report.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
@@ -6640,6 +6640,10 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
   }
   const groups = data.groups || [];
   const shown = groups.reduce((n, g) => n + g.members.length, 0);
+  // The sub-resource survey's members are CANDIDATES. Ticks here would be a one-off browser selection that
+  // saves nothing; what is published is chosen with Include in "what's in it", so this list is read-only
+  // and points there.
+  const readOnly = analysisId === 'sub_resource_survey' && state.resourceType === 'repo';
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading uppercase tracking-caps text-caps text-accent-on-dark">Members</span>
@@ -6656,14 +6660,15 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
       ${data.scope_honoured ? '' : `<span class="text-chrome-muted">· scope not applicable to this set</span>`}
     </div>
     ${data.note ? `<div class="mb-s2 text-caps text-chrome-muted">${esc(data.note)}</div>` : ''}
-    ${facetsHtml(groups, data)}
+    ${readOnly ? `<div data-members-not-saved class="mb-s2 text-caps text-chrome-ink"><span class="font-glyph" aria-hidden="true">○</span> not saved here · choose what is published with Include in what's in it
+      ${state.stage === 'curate' ? `· <button data-members-goto-scope class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">go to what's in it ›</button>` : ''}</div>` : facetsHtml(groups, data)}
     ${groups.length ? '' : `<div class="text-caps text-chrome-muted">Nothing listed — <span class="font-mono">${esc(data.source)}</span> holds no rows for this analysis on this resource.</div>`}
     <div class="flex flex-col gap-s1">
       ${groups.map((g, gi) => `<details class="border-b border-chrome-line-soft pb-s1" ${gi < 3 ? 'open' : ''}>
         <summary class="cursor-pointer text-subtab text-chrome-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</summary>
         <ul class="m-0 mt-[2px] list-none p-0 pl-s2">
           ${g.members.map((m) => `<li class="flex items-baseline gap-s2 py-[2px] text-caps">
-            ${m.children_key ? '' : `<input type="checkbox" data-pick="${esc(m.name)}" data-group="${esc(g.name)}" data-detail="${esc(m.detail || '')}" class="shrink-0">`}
+            ${m.children_key || readOnly ? '' : `<input type="checkbox" data-pick="${esc(m.name)}" data-group="${esc(g.name)}" data-detail="${esc(m.detail || '')}" class="shrink-0">`}
             ${m.children_key
               ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
                  <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
@@ -6680,7 +6685,12 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     <div id="member-selection" class="mt-s2 border-t border-chrome-line pt-s2"></div>`;
 
   out.querySelector('[data-act="close-members"]')?.addEventListener('click', () => { out.innerHTML = ''; });
-  wireSelection(out, { slug, analysisId, metric, data });
+  if (readOnly) {
+    out.querySelector('#member-selection')?.remove();
+    out.querySelector('[data-members-goto-scope]')?.addEventListener('click', () => jumpToCurateSection('curate-sec-what-holds'));
+  } else {
+    wireSelection(out, { slug, analysisId, metric, data });
+  }
   out.querySelector('[data-act="member-history"]')?.addEventListener('click', () => openMeasurementDetail({
     slug, analysisId, title: title || analysisId, metric,
   }));
@@ -8059,6 +8069,19 @@ async function loadPane() {
   bindSubTabs();
   bindResourceHeader();
 
+  // Curate uses none of the checklist reads below, so it starts NOW and does not wait behind them
+  // (getQuestions, getContext and the unfiltered getQuestions run in series and cost seconds). The
+  // other stages are unchanged: they need `checklist` and render after it.
+  let curateStarted = false;
+  if (state.stage === 'curate') {
+    curateStarted = true;
+    renderCurate(slug).catch((err) => {
+      if (slug !== state.selectedSlug) return;
+      const box = $('question-rows');
+      if (box) box.innerHTML = `<div class="py-s3 text-answer text-accent-ink">Curate could not be drawn: ${esc(err.message)}</div>`;
+    });
+  }
+
   let checklist;
   try {
     checklist = await getQuestions(slug, {
@@ -8113,7 +8136,7 @@ async function loadPane() {
   // whether or not the catalog has rows for the stage (today it has none).
   // A failed render must be visible, never an empty body: the pane used to
   // go blank here when its host element had been deleted.
-  if (state.stage === 'curate') {
+  if (state.stage === 'curate' && !curateStarted) {
     renderCurate(slug).catch((err) => {
       if (slug !== state.selectedSlug) return;
       const box = $('question-rows');

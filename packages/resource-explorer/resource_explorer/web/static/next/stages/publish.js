@@ -65,12 +65,12 @@ const num = (n) => `<span class="tnum">${esc(n ?? 0)}</span>`;
 const whoAmI = () => (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
 const stale = (el, slug) => !el.isConnected || slug !== state.selectedSlug;
 
-const cue = (stateKey, word) => {
+const cue = (stateKey, word, title = '') => {
   const e = stateEntry(stateKey);
   // The tone class is a literal in each branch (no class interpolation): ok, warn, or muted.
   const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
     : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
-  return `${open} data-cue="${esc(stateKey)}" title="${esc(e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
+  return `${open} data-cue="${esc(stateKey)}" title="${esc(title || e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
 };
 
 const guidHtml = (guid) => guid
@@ -93,13 +93,23 @@ const sentenceHtml = (first, full) => (!full || full === first) ? esc(first) : `
 /** Elements by attribute value without CSS.escape (a GUID is safe, but a label is not). */
 const byAttr = (root, attr, value) => [...root.querySelectorAll(`[${attr}]`)].find((e) => e.getAttribute(attr) === value) || null;
 
+/** The published report was made from an older survey than the kept one: a visible cue and a short word,
+ *  the sentence on hover. Nothing when the two match, or when either date is unknown. */
+export function behindCue(row, kept) {
+  const a = Date.parse(row && row.surveyed_at);
+  const b = Date.parse(kept && kept.exists ? kept.surveyed_at : '');
+  if (Number.isNaN(a) || Number.isNaN(b) || a >= b) return '';
+  return ` <span data-publish-behind>${cue('partial', 'behind', `The report in Egeria was made from the survey of ${String(row.surveyed_at).slice(0, 10)}; the kept survey is newer (${String(kept.surveyed_at).slice(0, 10)}). Publish again to bring it up to date.`)}</span>`;
+}
+
 /* ── the report row: words from the server's row, never from the click ─ */
 
 /** `row` is `publish_state().row` from the server. Returns `{ state, html }`. */
-export function reportRowHtml(row) {
+export function reportRowHtml(row, keptSurvey = null) {
   switch (row?.word) {
     case 'published':
       return cue('measured', `published · ${row.surveyed_at ? `from the survey of ${row.surveyed_at.slice(0, 10)} · ` : ''}read back ${ago(row.read_at)}`)
+        + behindCue(row, keptSurvey)
         + (row.reused ? ' <span class="text-provenance text-ink-muted">· reused the report already in Egeria</span>' : '')
         + (row.annotation_count != null ? ` <span class="text-provenance text-ink-muted">· ${num(row.annotation_count)} annotations</span>` : '');
     case 'sent':
@@ -318,7 +328,7 @@ export function surveyLineHtml(survey) {
         <span class="text-ink-muted">${num(survey.stale_steps)} of ${num(survey.steps)} steps are stale (older than their refresh rule) · re-survey to refresh</span>
         <details class="inline"><summary class="inline cursor-pointer text-ink-muted underline">which</summary>
           <span class="block font-mono text-provenance text-ink-muted">${(survey.stale || []).map(esc).join(', ')}</span></details></div>` : '';
-  return `<div class="mt-s1 text-caveat" data-publish-survey="kept">from the survey of <span class="tnum">${esc(date)}</span>
+  return `<div class="mt-s1 text-caveat" data-publish-survey="kept">kept survey · <span class="tnum">${esc(date)}</span>
       <span class="text-ink-muted">· ${esc(ago(survey.surveyed_at))} · ${num(survey.annotations)} annotations · ${num(survey.steps)} steps ran</span></div>${stale}`;
 }
 
@@ -326,7 +336,7 @@ function repoStatusHtml(s) {
   return `<div class="text-caveat" data-publish-status>${s.in_egeria
     ? cue('measured', 'in Egeria') + ` <span class="text-provenance text-ink-muted">· asset</span> ${guidHtml(s.asset_guid)}`
     : cue('unrun', 'not in Egeria')}</div>
-    <div class="mt-s1 text-caveat" data-publish-row>${reportRowHtml(s.row)}</div>
+    <div class="mt-s1 text-caveat" data-publish-row>${reportRowHtml(s.row, s.survey)}</div>
     <div class="mt-s1 text-provenance text-ink-muted" data-publish-project>project · ${projectHtml(s.project)}</div>
     ${surveyLineHtml(s.survey)}`;
 }
