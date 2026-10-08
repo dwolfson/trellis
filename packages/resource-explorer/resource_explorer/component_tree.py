@@ -107,6 +107,28 @@ def resolve_verdict(path: str, verdicts: dict[str, dict]) -> dict | None:
     return None
 
 
+def _component_verdicts(registry: ProjectRegistry, slug: str) -> dict[str, dict]:
+    return {k: v for k, v in registry.get_component_verdicts("repo", slug).items()
+            if v.get("verdict_target", "component") == "component"}
+
+
+def _total_and_accepted(comps: list[dict], verdicts: dict[str, dict]) -> tuple[int, int]:
+    """(components, accepted components) -- the two counts `component_tree` reports as
+    `total_components` / `accepted`, defined once so the tree and `totals` cannot drift."""
+    total = sum(1 for c in comps if not c.get("structural"))
+    accepted = sum(1 for c in comps if not c.get("structural") and (resolve_verdict(c["path"], verdicts) or {}).get("verdict") == "accepted")
+    return total, accepted
+
+
+def totals(registry: ProjectRegistry, slug: str) -> dict:
+    """`{"total_components", "accepted"}` exactly as `component_tree(registry, slug)` reports them, without
+    building the branches, the port assignment or the topology sentence -- for a caller (the catalogue
+    depth offer) that wants only the two counts and used to rebuild the whole tree for them."""
+    comps = [c for c in _components(registry, slug) if c.get("path")]
+    total, accepted = _total_and_accepted(comps, _component_verdicts(registry, slug))
+    return {"total_components": total, "accepted": accepted}
+
+
 def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> dict:
     """The branches directly under `prefix` ('' = the root), each with what a
     curator needs before opening it: how many components, their type mix,
@@ -116,8 +138,7 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
     that holds components but is not one -- is marked with the classic
     UI's own words."""
     comps = [c for c in _components(registry, slug) if c.get("path")]
-    verdicts = {k: v for k, v in registry.get_component_verdicts("repo", slug).items()
-                if v.get("verdict_target", "component") == "component"}
+    verdicts = _component_verdicts(registry, slug)
     by_service, n_ports, n_wires = _ports_by_component(registry, slug)
     ports = _assign_ports(comps, by_service)
     pre = prefix.rstrip("/")
@@ -179,8 +200,7 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         out.append(b)
 
     owned = sum(len(v) for v in ports.values())
-    total = sum(1 for c in comps if not c.get("structural"))
-    accepted = sum(1 for c in comps if not c.get("structural") and (resolve_verdict(c["path"], verdicts) or {}).get("verdict") == "accepted")
+    total, accepted = _total_and_accepted(comps, verdicts)
     return {
         "slug": slug, "prefix": pre, "branches": out,
         "total_components": total, "accepted": accepted,

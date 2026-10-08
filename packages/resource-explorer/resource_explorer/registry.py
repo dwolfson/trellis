@@ -7266,6 +7266,145 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def query_findings_all_runs_by_scope(
+        self, slug: str, kind: str, order_class=None,
+    ) -> dict[str, list[dict]]:
+        """`query_findings_all_runs` for EVERY scope of one (slug, kind) in one
+        statement (plus a re-read of the few scopes named below): {scope_locator:
+        rows}, each list identical to what `query_findings_all_runs(slug, kind,
+        scope)` returns for that scope -- same keys, same order (`scope_locator`
+        is the grouping key and is not repeated on the rows).
+
+        Exists because architecture recovery has ~1000 scopes on `egeria_git`
+        and the per-scope form paid one round trip each, several times per
+        rebuild, eight rebuilds per Curate open.
+
+        **Why "same order" needs a second step.** The per-scope query orders by
+        `surveyed_at` only. Rows written in one batch share a `surveyed_at`
+        (a detect row and a coupling row of one survey), and the order among
+        equal keys is whatever Postgres' sort returns for that scope's rows --
+        deterministic for given physical data, not defined by any column. One
+        bulk query cannot reproduce it, and measured on `egeria_git` it differs
+        for 105 of 1,094 components (evidence listed in another order; for one,
+        a different one of two equal-timestamp component rows read as "latest").
+        So a scope whose tie group holds rows that are NOT interchangeable is
+        re-read with the per-scope query itself, which is exact by construction.
+
+        `order_class(row)` says which rows' relative order the caller can see:
+        ties are only looked for among rows of the SAME class (the caller reads
+        components and evidence as two separate lists, so a component row
+        swapping places with an evidence row is invisible). Default: one class.
+        Rows within a tie that are field-for-field identical are interchangeable
+        and do not trigger the re-read.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT scope_locator, check_name, label, summary, confidence, detail_json, surveyed_at "
+                "FROM project_analysis_findings "
+                "WHERE project_slug = ? AND kind = ? "
+                "ORDER BY scope_locator, surveyed_at ASC, id ASC",
+                (slug, kind),
+            ).fetchall()
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            d = dict(r)
+            out.setdefault(d.pop("scope_locator"), []).append(d)
+        cls = order_class or (lambda _row: None)
+        for scope, scope_rows in list(out.items()):
+            seen: dict[tuple, dict] = {}
+            ambiguous = False
+            for row in scope_rows:
+                key = (cls(row), row["surveyed_at"])
+                prior = seen.get(key)
+                if prior is None:
+                    seen[key] = row
+                elif prior != row:
+                    ambiguous = True
+                    break
+            if ambiguous:
+                out[scope] = self.query_findings_all_runs(slug, kind, scope)
+        return out
+
+    def query_metrics_by_scope(self, slug: str, kind: str) -> dict[str, dict]:
+        """`query_metrics` for EVERY scope of one (slug, kind) in one statement
+        (plus a re-read of the few scopes named below): {scope_locator: the dict
+        query_metrics(slug, kind, scope) returns}. A scope with no metric rows is
+        absent here and `{}` there.
+
+        Two survey steps that run in one batch share a `surveyed_at`, so a scope
+        can hold the same `metric_name` twice at its latest instant (measured on
+        `genaiexamples`: 45 of them, 44 with different values). `query_metrics`
+        has no ORDER BY, so which of the two it reports is whichever the database
+        returns last -- physical order, which is not `id` order for a row that was
+        ever moved. A scope with such a conflict is therefore re-read with the
+        per-scope query itself; a duplicate with identical value and detail is
+        interchangeable and is not.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT m.scope_locator, m.surveyed_at, m.metric_name, m.metric_value, m.detail_json "
+                "FROM project_analysis_metrics m "
+                "JOIN (SELECT scope_locator, MAX(surveyed_at) AS ts FROM project_analysis_metrics "
+                "      WHERE project_slug = ? AND kind = ? GROUP BY scope_locator) latest "
+                "  ON m.scope_locator = latest.scope_locator AND m.surveyed_at = latest.ts "
+                "WHERE m.project_slug = ? AND m.kind = ? "
+                # metric_name before id: the per-scope form has no ORDER BY and, on the live Postgres,
+                # the planner serves it from the (slug, kind, metric_name) index, i.e. alphabetically --
+                # and the key order of the dict built below reaches the JSON the UI receives.
+                "ORDER BY m.scope_locator, m.metric_name, m.id",
+                (slug, kind, slug, kind),
+            ).fetchall()
+        out: dict[str, dict] = {}
+        first_seen: dict[tuple, tuple] = {}
+        conflicted: set[str] = set()
+        for r in rows:
+            scope, name = r["scope_locator"], r["metric_name"]
+            m = out.setdefault(scope, {"surveyed_at": r["surveyed_at"]})
+            m[name] = r["metric_value"]
+            if r["detail_json"]:
+                m["detail"] = json.loads(r["detail_json"])
+            seen = first_seen.setdefault((scope, name), (r["metric_value"], r["detail_json"]))
+            if seen != (r["metric_value"], r["detail_json"]):
+                conflicted.add(scope)
+        for scope in conflicted:
+            out[scope] = self.query_metrics(slug, kind, scope)
+        return out
+
+    def analysis_data_fingerprint(self, slug: str, kinds: tuple[str, ...]) -> tuple:
+        """A cheap signature of everything `project_analysis_findings` and
+        `project_analysis_metrics` hold for (slug, kinds) — what a cache of a
+        derived view must key on so that it is DATA-keyed, not process-keyed.
+
+        Both tables are append-only for these readers, with two exceptions this
+        covers: `superseded_at` is stamped in place (so it is counted), and a
+        project removal deletes rows (the count and max `id` both move). Any
+        insert raises `MAX(id)`; any delete lowers `COUNT(*)` or the max, and a
+        delete-then-reinsert still raises `MAX(id)` because ids never recycle.
+        The signature is read from the database on every call, so a write by
+        ANY process or registry instance changes it.
+        """
+        slug = self._normalize_slug(slug)
+        marks = ",".join("?" for _ in kinds)
+        with self._conn() as conn:
+            f = conn.execute(
+                "SELECT kind, COUNT(*), COALESCE(MAX(id), 0), COALESCE(MAX(surveyed_at), ''), "
+                "COALESCE(SUM(CASE WHEN superseded_at IS NULL THEN 0 ELSE 1 END), 0) "
+                f"FROM project_analysis_findings WHERE project_slug = ? AND kind IN ({marks}) "
+                "GROUP BY kind ORDER BY kind",
+                (slug, *kinds),
+            ).fetchall()
+            m = conn.execute(
+                "SELECT kind, COUNT(*), COALESCE(MAX(id), 0), COALESCE(MAX(surveyed_at), '') "
+                f"FROM project_analysis_metrics WHERE project_slug = ? AND kind IN ({marks}) "
+                "GROUP BY kind ORDER BY kind",
+                (slug, *kinds),
+            ).fetchall()
+        # Index access, not tuple(row): RowWrapper iterates its KEYS, sqlite3.Row its values.
+        return (tuple(tuple(r[i] for i in range(5)) for r in f),
+                tuple(tuple(r[i] for i in range(4)) for r in m))
+
     def get_file_inventory_with_sizes(self, slug: str, *, include_vendored: bool = False) -> list[dict]:
         """Return file paths, sizes, and git mode bits from the inventory for a project.
 

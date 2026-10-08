@@ -252,13 +252,19 @@ def distinct_name(display_name: str, member_names: list[str]) -> str:
     return name
 
 
-def component_nodes(registry, slug: str) -> dict[str, Node]:
+def component_nodes(registry, slug: str, snapshot: dict | None = None) -> dict[str, Node]:
     """{component slug: Node} for every live architecture_recovery component finding of a resource, newest
     row per scope. `Node.scope` is the scope_locator verdicts and materialisation are keyed by (the
-    identity-mismatch trap the plan names: clustering keys members by slug)."""
+    identity-mismatch trap the plan names: clustering keys members by slug).
+
+    Read from the shared recovery snapshot (one bulk read, cached on the data's fingerprint) rather than one
+    query per scope; a caller that already holds the snapshot passes it."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import _recovery_scopes, _recovery_snapshot
+    snapshot = snapshot if snapshot is not None else _recovery_snapshot(registry, slug)
+    rows_by_scope = snapshot["rows"]
     out: dict[str, Node] = {}
-    for scope in registry.query_finding_scopes(slug, "architecture_recovery", check_name="component"):
-        rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+    for scope in _recovery_scopes(registry, slug, "component", snapshot):
+        rows = [r for r in rows_by_scope.get(scope, [])
                 if r["check_name"] == "component"]
         if not rows:
             continue

@@ -1232,6 +1232,14 @@ class FactLayer:
 
     # ── one analysis ────────────────────────────────────────────────────────
     def fact(self, slug: str, analysis_id: str, level: str = "resource") -> Fact:
+        # One scope per fact: the results reader and the headline reader of an analysis often run the
+        # same expensive read; `read_memo` lets the second reuse the first's (copied) answer and
+        # nothing longer-lived (see that module's docstring).
+        from resource_explorer import read_memo
+        with read_memo.scope():
+            return self._fact(slug, analysis_id, level)
+
+    def _fact(self, slug: str, analysis_id: str, level: str = "resource") -> Fact:
         results_map = self._map("analysis_results_map")
         source_steps = self._map("analysis_source_steps") or {}
 

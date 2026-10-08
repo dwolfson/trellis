@@ -91,6 +91,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -98,6 +100,7 @@ from typing import Callable
 
 from trellis_microflow import ResourceProvider
 
+from resource_explorer import read_memo
 from resource_explorer.registry import WITHDRAWN_LABEL
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
 from resource_explorer.surveyors import result_status
@@ -2890,7 +2893,7 @@ def _doc_ingestion_state(registry, slug: str) -> dict:
         return {"state": "", "detail": ""}
 
 
-def _architecture_verdict_coverage(registry, slug: str) -> dict:
+def _architecture_verdict_coverage(registry, slug: str, snapshot: dict | None = None) -> dict:
     """How much of what's been proposed has actually been curator-reviewed —
     `docs/curated-architecture-answers-design.md` §6 item 1, the first piece
     of that design to ship.
@@ -2949,8 +2952,7 @@ def _architecture_verdict_coverage(registry, slug: str) -> dict:
                 "retyped": retyped, "reviewed": reviewed,
                 "pending": total - reviewed}
 
-    component_scopes = set(
-        registry.query_finding_scopes(slug, "architecture_recovery", check_name="component"))
+    component_scopes = set(_recovery_scopes(registry, slug, "component", snapshot))
 
     bp_rows = [r for r in (registry.query_findings_all_runs(slug, BLUEPRINT_KIND, "") or [])
                if r.get("check_name") == "candidate_blueprint"]
@@ -3056,6 +3058,96 @@ def _materialized_view(row: dict | None) -> dict | None:
             "materialized_at": row.get("materialized_at", "")}
 
 
+#: The data-keyed cache behind `_recovery_snapshot`. Class-of-process state, not
+#: per-registry-instance state, on purpose: the web layer builds a fresh
+#: `ProjectRegistry()` per request, so an instance cache is empty on every
+#: request, while the long-lived holders (run_queue's worker loop, its
+#: reconciler, egeria_resync) keep ONE instance for the process lifetime. Neither
+#: works. What does is a key derived from the DATA: every read first asks the
+#: database for `analysis_data_fingerprint` (two cheap aggregate statements) and
+#: a stored snapshot is served only when the fingerprint it was built under is
+#: unchanged — so a write by any process, through any instance, invalidates it.
+#:
+#: Only the two findings/metrics tables are cached. Verdicts, materialization,
+#: promotions, reclassifications and dependency data are NEVER cached here: they
+#: are re-read on every call, which is why a verdict/scope/reclassify/dependency
+#: write needs no invalidation hook (and cannot be forgotten by a new write path).
+_RECOVERY_SNAPSHOT_CACHE_MAX = 6
+_recovery_snapshot_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+_recovery_snapshot_lock = threading.Lock()
+_recovery_snapshot_build_locks: dict[tuple, threading.Lock] = {}
+#: Counters for tests and for the timing script ("how many rebuilds read the DB").
+recovery_snapshot_stats = {"hits": 0, "misses": 0}
+
+
+def _recovery_snapshot(registry, slug: str) -> dict:
+    """Every `architecture_recovery` finding row (all runs, grouped by scope) and
+    each scope's latest metrics, in a few statements rather than ~2 per scope.
+
+    Callers treat the returned structure as READ-ONLY (it is shared between
+    callers while the fingerprint holds); `tests/test_curate_open_speedup.py`
+    pins that no reader mutates it."""
+    key = (registry.database_url, registry._normalize_slug(slug))
+    fp = registry.analysis_data_fingerprint(slug, ("architecture_recovery",))
+    hit = _recovery_snapshot_lookup(key, fp)
+    if hit is not None:
+        return hit
+    # A page open fires several requests at once, all cold after a survey: one builds, the rest
+    # wait for it and then find it in the cache instead of each reading the same ~30k rows.
+    with _recovery_snapshot_lock:
+        build_lock = _recovery_snapshot_build_locks.setdefault(key, threading.Lock())
+    with build_lock:
+        # Re-read the fingerprint after waiting: the snapshot another thread just stored may have
+        # been built under a fingerprint that is already out of date, and it is compared against fresh data.
+        fp = registry.analysis_data_fingerprint(slug, ("architecture_recovery",))
+        hit = _recovery_snapshot_lookup(key, fp)
+        if hit is not None:
+            return hit
+        snapshot = {
+            # Component rows and evidence rows are read as two separate lists, so only ties WITHIN
+            # a class are observable (see the registry method's docstring).
+            "rows": registry.query_findings_all_runs_by_scope(
+                slug, "architecture_recovery", order_class=lambda r: r["check_name"] == "component"),
+            "metrics": registry.query_metrics_by_scope(slug, "architecture_recovery"),
+            # The live-scope lists, from the registry's own method (its withdrawal rule is the
+            # definition) and stored as tuples; they read the same table the fingerprint covers.
+            "scopes": {
+                check_name: tuple(registry.query_finding_scopes(
+                    slug, "architecture_recovery", check_name=check_name))
+                for check_name in ("component", "structural_node")
+            },
+        }
+        # The fingerprint was read BEFORE the data. A write landing between the two means the
+        # snapshot holds newer data than the fingerprint says: the next call sees a different
+        # fingerprint and rebuilds. The reverse (snapshot older than its fingerprint) cannot
+        # happen -- that is why the order matters.
+        with _recovery_snapshot_lock:
+            recovery_snapshot_stats["misses"] += 1
+            _recovery_snapshot_cache[key] = (fp, snapshot)
+            _recovery_snapshot_cache.move_to_end(key)
+            while len(_recovery_snapshot_cache) > _RECOVERY_SNAPSHOT_CACHE_MAX:
+                evicted, _ = _recovery_snapshot_cache.popitem(last=False)
+                _recovery_snapshot_build_locks.pop(evicted, None)
+        return snapshot
+
+
+def _recovery_scopes(registry, slug: str, check_name: str, snapshot: dict | None = None) -> tuple:
+    """`registry.query_finding_scopes(slug, "architecture_recovery", check_name=...)`, served from
+    the same data-keyed snapshot as the rows it is used with (and therefore consistent with them)."""
+    return (snapshot if snapshot is not None else _recovery_snapshot(registry, slug))["scopes"][check_name]
+
+
+def _recovery_snapshot_lookup(key: tuple, fp: tuple) -> dict | None:
+    with _recovery_snapshot_lock:
+        hit = _recovery_snapshot_cache.get(key)
+        if hit is not None and hit[0] == fp:
+            _recovery_snapshot_cache.move_to_end(key)
+            recovery_snapshot_stats["hits"] += 1
+            return hit[1]
+    return None
+
+
+@read_memo.memoize
 def _architecture_recovery_results(
     registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
 ) -> dict:
@@ -3082,7 +3174,8 @@ def _architecture_recovery_results(
     `max_depth=None` for the full, unprojected hierarchy (e.g. component-
     scoped analytics, design §6, which wants the fine-grained partition).
     """
-    scopes = registry.query_finding_scopes(slug, "architecture_recovery", check_name="component")
+    snapshot = _recovery_snapshot(registry, slug)
+    scopes = _recovery_scopes(registry, slug, "component", snapshot)
     components = []
     slug_to_path: dict[str, str] = {}
     # A curator's accept/reject/retype call (docs/Backlog.md "take
@@ -3093,8 +3186,9 @@ def _architecture_recovery_results(
     # reasoning as everything else here that avoids a per-scope round trip.
     verdicts = registry.get_component_verdicts("repo", slug)
     materialized = registry.get_materialized_components("repo", slug)
+    rows_by_scope, metrics_by_scope = snapshot["rows"], snapshot["metrics"]
     for scope in scopes:
-        rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+        rows = rows_by_scope.get(scope, [])
         comp_rows = [r for r in rows if r["check_name"] == "component"]
         evidence_rows = [r for r in rows if r["check_name"] != "component"]
         if not comp_rows:
@@ -3159,7 +3253,7 @@ def _architecture_recovery_results(
         # rows showed `spring, withdrawn` on their provenance line.
         approaches = sorted({r["label"] for r in evidence_rows
                              if r["label"] and r["label"] != WITHDRAWN_LABEL})
-        metrics = registry.query_metrics(slug, "architecture_recovery", scope)
+        metrics = metrics_by_scope.get(scope, {})
         if detail.get("slug"):
             slug_to_path[detail["slug"]] = scope
         components.append({
@@ -3233,9 +3327,8 @@ def _architecture_recovery_results(
     # They carry no type and no confidence by design — they have no evidence of
     # their own — so they are marked `structural` and a consumer can render
     # them as grouping rather than as a recovered component.
-    for scope in registry.query_finding_scopes(
-            slug, "architecture_recovery", check_name="structural_node"):
-        rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+    for scope in _recovery_scopes(registry, slug, "structural_node", snapshot):
+        rows = [r for r in rows_by_scope.get(scope, [])
                 if r["check_name"] == "structural_node"]
         if not rows:
             continue
@@ -3365,7 +3458,7 @@ def _architecture_recovery_results(
     # scope_locator is correct regardless of how many perspectives claim
     # it, and needs no persist-time fix — the blueprints list is already
     # the source of truth clustering.py itself writes.
-    blueprints = _candidate_blueprints_results(registry, slug)
+    blueprints = _candidate_blueprints_results(registry, slug, snapshot)
     scope_to_blueprints: dict[str, list[dict]] = {}
     for bp in blueprints:
         for member_slug in bp["members"]:
@@ -3377,7 +3470,7 @@ def _architecture_recovery_results(
     for c in displayed:
         c["candidate_blueprints"] = scope_to_blueprints.get(c["path"], [])
 
-    _verdict_coverage = _architecture_verdict_coverage(registry, slug)
+    _verdict_coverage = _architecture_verdict_coverage(registry, slug, snapshot)
 
     return {
         # Carried so the renderer can call the curator-verdict endpoints
@@ -3459,7 +3552,7 @@ def _json_or_empty(raw) -> dict:
         return {}
 
 
-def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
+def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = None) -> list[dict]:
     """The `data.blueprints` key for `_architecture_recovery_results` —
     Phase C's frontend-facing read of clustering.py's proposals (Backlog.md
     item 1 / blueprint-materialization-plan.md), so Curate can offer an
@@ -3512,11 +3605,11 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
     verdicts = registry.get_component_verdicts("repo", slug)
     materialized_components = registry.get_materialized_components("repo", slug)
     materialized_blueprints = registry.get_materialized_blueprints("repo", slug)
-    slug_to_scope = _blueprint_slug_to_scope_map(registry, slug)
+    slug_to_scope = _blueprint_slug_to_scope_map(registry, slug, snapshot)
     # The shape each cluster WOULD be written in (container or contents, and why), so the accept dialog
     # can name it before the write. Content-pack elements are only knowable from Egeria at the write.
     from resource_explorer.blueprint_shape import component_nodes, plan_with_alternatives
-    shape_nodes = component_nodes(registry, slug)
+    shape_nodes = component_nodes(registry, slug, snapshot)
     from resource_explorer.workflows.curate import NODE_PROMOTION_BLUEPRINT, promotion_by_scope
     promotions = promotion_by_scope(registry, slug, NODE_PROMOTION_BLUEPRINT)
 
@@ -3570,7 +3663,7 @@ def _candidate_blueprints_results(registry, slug: str) -> list[dict]:
     return blueprints
 
 
-def _blueprint_slug_to_scope_map(registry, slug: str) -> dict[str, str]:
+def _blueprint_slug_to_scope_map(registry, slug: str, snapshot: dict | None = None) -> dict[str, str]:
     """component slug -> scope_locator, for every currently-live
     architecture_recovery component finding — byte-for-byte the same walk
     `curate.py`'s `_slug_to_scope_map` does, and `_architecture_recovery_
@@ -3585,8 +3678,10 @@ def _blueprint_slug_to_scope_map(registry, slug: str) -> dict[str, str]:
     first silently finds nothing for every member.
     """
     out: dict[str, str] = {}
-    for scope in registry.query_finding_scopes(slug, "architecture_recovery", check_name="component"):
-        rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+    snapshot = snapshot if snapshot is not None else _recovery_snapshot(registry, slug)
+    rows_by_scope = snapshot["rows"]
+    for scope in _recovery_scopes(registry, slug, "component", snapshot):
+        rows = [r for r in rows_by_scope.get(scope, [])
                 if r["check_name"] == "component"]
         if not rows:
             continue
@@ -3640,7 +3735,7 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
 _DIAGRAM_PERSPECTIVE_PREFERENCE = ("coupling", "detect")
 
 
-def _read_arch_recovery_ir(registry, slug: str, run_label: str):
+def _read_arch_recovery_ir(registry, slug: str, run_label: str, snapshot: dict | None = None):
     """Reconstruct ONE survey step's IR from the generic findings tables —
     the same `Component`/ports/wires shape `persist_ir` held in memory when
     `_persist_diagram` used to render from it directly, read back instead of
@@ -3682,12 +3777,14 @@ def _read_arch_recovery_ir(registry, slug: str, run_label: str):
     """
     from resource_explorer.surveyors.arch_recovery.ir import IR, Component, Identity
 
-    live_scopes = registry.query_finding_scopes(slug, "architecture_recovery", check_name="component")
+    snapshot = snapshot if snapshot is not None else _recovery_snapshot(registry, slug)
+    live_scopes = _recovery_scopes(registry, slug, "component", snapshot)
     components: list = []
     slug_to_scope: dict[str, str] = {}
     latest_surveyed_at = ""
+    rows_by_scope = snapshot["rows"]
     for scope in live_scopes:
-        rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+        rows = rows_by_scope.get(scope, [])
         own_rows = [r for r in rows if r["check_name"] == "component"
                    and _json_or_empty(r.get("detail_json")).get("run_label") == run_label]
         if not own_rows:
@@ -3765,6 +3862,7 @@ def _read_arch_recovery_ir(registry, slug: str, run_label: str):
     return ir, slug_to_scope, latest_surveyed_at
 
 
+@read_memo.memoize
 def _architecture_diagram_results(registry, slug: str) -> dict:
     """The architecture Mermaid diagram, rendered fresh on every read.
 
@@ -3799,9 +3897,10 @@ def _architecture_diagram_results(registry, slug: str) -> dict:
     """
     from resource_explorer.surveyors.arch_recovery import mermaid
 
+    snapshot = _recovery_snapshot(registry, slug)
     available: dict[str, tuple] = {}
     for run_label in _DIAGRAM_PERSPECTIVE_PREFERENCE:
-        ir, slug_to_scope, surveyed_at = _read_arch_recovery_ir(registry, slug, run_label)
+        ir, slug_to_scope, surveyed_at = _read_arch_recovery_ir(registry, slug, run_label, snapshot)
         if ir is not None:
             available[run_label] = (ir, slug_to_scope, surveyed_at)
 
@@ -3871,7 +3970,7 @@ def _architecture_diagram_results(registry, slug: str) -> dict:
     # once non-empty) — the diagram's own description would silently drop
     # out of the visible answer, leaving only the coverage clause.
     coverage_sentence = _architecture_verdict_coverage_sentence(
-        _architecture_verdict_coverage(registry, slug))
+        _architecture_verdict_coverage(registry, slug, snapshot))
     if coverage_sentence:
         caption_text = f"{caption_text} {coverage_sentence}."
 
