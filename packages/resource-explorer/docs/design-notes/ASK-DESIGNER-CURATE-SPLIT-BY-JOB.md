@@ -79,6 +79,35 @@ names; the cue vocabulary applies unchanged inside each tab.
    controls the owner pressed in two days of gate walks; would you want
    those numbers before drawing?
 
+## The same shape for Understanding (owner, the same day)
+
+> The other thing I'd point out is that we might want to structure the
+> Understanding stage similarly.
+
+Understanding today, on a repository, lists every chart kind (stars,
+commits, languages, health, file types, weekly commits, top committers,
+survey history) and the changes-since-last-run banner; on a database, the
+three charts, the trend, the survey-history table with invalid rows, the
+three-number line, the ranked tables, the Views section, the changes
+banner. It has the same shape of problem: one long pane, every kind of
+reader at once. The same split by job would read:
+
+| Tab | The question | Repository | Database |
+|---|---|---|---|
+| **1. At a glance** | what is this and how is it doing | the overview tiles, health, the changes-since-last-run banner, the survey-history trend | the three-number line, the changes banner, the trend |
+| **2. Inside it** | what does it contain, and how is that distributed | file types, languages, top committers, weekly commits | schemas, tables and column-type charts, the ranked tables, the Views section |
+| **3. Over time and in detail** | how has it changed, and what exactly ran | survey history with invalid rows, per-run detail, the runs dialog | the survey-history table with invalid rows, per-table growth, per-run detail |
+
+The same rules: tabs never disappear, counts on the tab names, the first
+tab the landing, the cue vocabulary inside. Two questions in addition to
+the six above: (7) does one split serve both stages, so a person learns
+it once, or do Curate's jobs (decide, confirm, publish) and
+Understanding's (look, compare, trace) want different tab names with the
+same three-level shape? (8) The context-as-product note's "on a screen"
+form is Understanding's tab 1 plus Curate's tab 1 seen by a non-expert;
+is that the surface the chat-first application renders, and does it
+change what belongs on either tab 1?
+
 ## Constraints
 
 Status words derive from proof rows; tabs never disappear; the accent is
