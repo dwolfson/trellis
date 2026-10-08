@@ -47,7 +47,7 @@ test('before the press the numbers equal the selection record', async () => {
   assert.equal(cell(box, 'containers', 1), 'folders needed as containers');
   assert.equal(cell(box, 'containers', 2), '1 FileFolder');
   assert.equal(cell(box, 'containers', 3), 'the files above');
-  assert.equal(cell(box, 'file_types', 2), '1 DataSet element');
+  assert.equal(box.querySelector('[data-manifest-row="file_types"]'), null, 'the DataSet-per-type row is retired');
   assert.equal(cell(box, 'blueprints', 2), '2 (Deployment Blueprint)');
   assert.equal(cell(box, 'left_out', 0), 'Left out');
   assert.equal(cell(box, 'left_out', 2), '2 not selected · 1 proposal not accepted · 3 left out');

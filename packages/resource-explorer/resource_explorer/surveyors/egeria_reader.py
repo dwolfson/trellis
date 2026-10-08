@@ -250,6 +250,7 @@ def _parse_annotation(header: dict, props: dict) -> dict:
         "summary": props.get("summary", ""),
         "confidence": props.get("confidence"),
         "analysis_step": props.get("analysisStep", ""),
+        "additional_properties": props.get("additionalProperties") or {},
         "explanation": props.get("explanation", ""),
         "expression": props.get("expression", ""),
         "json_properties": json_props,

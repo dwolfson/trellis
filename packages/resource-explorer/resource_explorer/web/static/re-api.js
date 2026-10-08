@@ -1888,12 +1888,8 @@ export const getEgeriaReports = (entityType, slug) => get(`${egeriaReportsPath(e
 export const getEgeriaReportAnnotations = (entityType, slug, reportGuid) =>
   get(`${egeriaReportsPath(entityType, slug)}/egeria-surveys/${encodeURIComponent(reportGuid)}/annotations`);
 
-/** Preview only: what cataloging file types would create. Nothing is sent. */
-export const getRepoFileTypes = (slug) => get(`/api/egeria/${encodeURIComponent(slug)}/file-types`);
-
-/** Catalog the chosen file types; each is read back by GUID before its row says cataloged. */
-export const commitRepoFileTypes = (slug, elements) =>
-  post(`/api/egeria/${encodeURIComponent(slug)}/file-types/commit`, { elements });
+/** Read only: the file-type annotations the survey report carries, and the retired DataSets. */
+export const getFileTypeMeasurements = (slug) => get(`/api/egeria/${encodeURIComponent(slug)}/file-type-measurements`);
 
 /* ── Repair — per-repository correction (resource_explorer/repair.py) ──────
  * A different job from Resync: fixing one repo that was registered wrong,

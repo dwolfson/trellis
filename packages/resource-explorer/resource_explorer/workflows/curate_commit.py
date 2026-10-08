@@ -300,6 +300,7 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
     else:
         cur.set_step(curation_id, "sub_resources", "running")
         try:
+            from resource_explorer.surveyors.egeria_publisher import rename_sentence
             # The list is the selection RECORD as it stood at the press (the route froze it into the
             # selection); this step never reads a request's list. Local cataloguing, the ancestor folders a
             # NestedFile needs, the publish and a proof row per element by GUID are one shared function.
@@ -317,7 +318,8 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
                          f" · {proof_counts['read_back']} read back"
                          + (f" · {proof_counts['sent']} sent, not yet read back" if proof_counts["sent"] else "")
                          + (f" · plus {ancestors} ancestor folder{'s' if ancestors != 1 else ''}" if ancestors else "")
-                         + (f" · not published: {', '.join(missing[:8])}" if missing else ""))
+                         + (f" · not published: {', '.join(missing[:8])}" if missing else "")
+                         + rename_sentence(getattr(publisher, "rename_counts", None)))
         except Exception as exc:
             cur.set_step(curation_id, "sub_resources", "failed", f"{type(exc).__name__}: {exc}")
 

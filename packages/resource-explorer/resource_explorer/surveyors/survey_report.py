@@ -58,6 +58,12 @@ class AnnotationType(str, Enum):
     #: present, and no probe has sent one), so its payload travels as
     #: `additionalProperties` — see `annotation_props.py`.
     FINGERPRINT = "FingerprintAnnotation"
+    #: Added 2026-10-07 (file types as annotations ruling). Egeria's real
+    #: `ResourceProfileAnnotationProperties` / `ResourceProfileLogAnnotationProperties`,
+    #: the types its own folder survey writes ("Profile File Extensions",
+    #: "Profile File Types", "Profile Asset Types", "Profile File Names to External Log").
+    RESOURCE_PROFILE = "ResourceProfileAnnotation"
+    RESOURCE_PROFILE_LOG = "ResourceProfileLogAnnotation"
 
 
 @dataclass
@@ -171,6 +177,25 @@ class ResourceMeasureAnnotation(Annotation):
     """File/size/language counts for a project or sub-scope."""
     annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_MEASURE, init=False)
     resource_properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResourceProfileAnnotation(Annotation):
+    """A profile of a resource: a count per value (per extension, per file type,
+    per asset type). Egeria's `ResourceProfileAnnotationProperties`; the counts
+    travel in its `valueCount` map. The annotation NAME (Egeria's own, verbatim:
+    "Profile File Extensions" ...) is carried by `annotation_type_name`."""
+    annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_PROFILE, init=False)
+    value_count: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class ResourceProfileLogAnnotation(Annotation):
+    """A profile too large to hold in the report, logged to a file the annotation
+    points at ("Profile File Names": per-name counts, a CSV). Published only when
+    a person asks for it."""
+    annotation_type: AnnotationType = field(default=AnnotationType.RESOURCE_PROFILE_LOG, init=False)
+    log_file: str = ""
 
 
 @dataclass
@@ -370,6 +395,22 @@ ANNOTATION_TYPES_REGISTRY = [
         "python_class": "ResourceMeasureAnnotation",
     },
     {
+        "type": "ResourceProfileAnnotation",
+        "display_name": "Resource Profile",
+        "description": "Represents a count per value over a resource (e.g. files per extension, per file type, assets per asset type), as Egeria's own folder survey writes it.",
+        "properties": ["value_count (dict[str, int])"],
+        "egeria_type": "ResourceProfileAnnotationProperties",
+        "python_class": "ResourceProfileAnnotation",
+    },
+    {
+        "type": "ResourceProfileLogAnnotation",
+        "display_name": "Resource Profile Log",
+        "description": "Represents a profile too large to hold in the report (e.g. a count per file name), logged to a CSV the annotation points at. Published only on request.",
+        "properties": ["log_file (str)"],
+        "egeria_type": "ResourceProfileLogAnnotationProperties",
+        "python_class": "ResourceProfileLogAnnotation",
+    },
+    {
         "type": "ClassificationAnnotation",
         "display_name": "Classification",
         "description": "Represents categorization or labels assigned to a resource (e.g. language name, framework/technology detected, project type, file format, etc.).",
@@ -450,6 +491,18 @@ ANNOTATION_TYPES_REGISTRY = [
 _MAX_GROUP_ITEMS = 25
 
 
+def step_of(annotation) -> str:
+    """The step an annotation is attributed to: RE's `producingStep` first (additionalProperties),
+    then `analysis_step`, so annotations written before producingStep existed keep working.
+    Accepts an Annotation or the flat dict a reader returns."""
+    if isinstance(annotation, dict):
+        extra, step = annotation.get("additional_properties"), annotation.get("analysis_step")
+    else:
+        extra, step = getattr(annotation, "additional_properties", None), getattr(annotation, "analysis_step", "")
+    produced = extra.get("producingStep") if isinstance(extra, dict) else ""
+    return (produced or step or "")
+
+
 def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
     """Group a run's annotations for the activity log, by (step, type).
 
@@ -486,7 +539,7 @@ def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
         value = getattr(ann_type, "value", None)
         if not value:
             continue
-        step = getattr(a, "analysis_step", None) or value
+        step = step_of(a) or value
         group = by_step[(step, value)]
         group["count"] += 1
         # Every member kept, not just the first (2026-09-02).
@@ -545,13 +598,13 @@ def disambiguate_shared_check_names(annotations) -> int:
     for ann in annotations:
         check = getattr(ann, "check_name", "") or ""
         if check and not (getattr(ann, "item_key", "") or ""):
-            steps_by_check.setdefault(check, set()).add(getattr(ann, "analysis_step", "") or "")
+            steps_by_check.setdefault(check, set()).add(step_of(ann))
     shared = {c for c, steps in steps_by_check.items() if len(steps) > 1}
     stamped = 0
     for ann in annotations:
         check = getattr(ann, "check_name", "") or ""
         if check in shared and not (getattr(ann, "item_key", "") or "") and hasattr(ann, "item_key"):
-            step = getattr(ann, "analysis_step", "") or ""
+            step = step_of(ann)
             if step:
                 ann.item_key = step
                 stamped += 1
@@ -570,12 +623,12 @@ def disambiguate_shared_check_names(annotations) -> int:
         check = getattr(ann, "check_name", "") or ""
         key = getattr(ann, "item_key", "") or ""
         if check and key:
-            steps_by_key.setdefault((check, key), set()).add(getattr(ann, "analysis_step", "") or "")
+            steps_by_key.setdefault((check, key), set()).add(step_of(ann))
     ambiguous = {k for k, steps in steps_by_key.items() if len(steps) > 1}
     for ann in annotations:
         check = getattr(ann, "check_name", "") or ""
         key = getattr(ann, "item_key", "") or ""
-        step = getattr(ann, "analysis_step", "") or ""
+        step = step_of(ann)
         if (check, key) in ambiguous and step and hasattr(ann, "item_key"):
             ann.item_key = f"{key}::{step}"
             stamped += 1

@@ -413,139 +413,36 @@ def forget_links(registry, slug: str, author: str) -> dict:
             **publish_state(registry, slug)}
 
 
-# ── catalog selected file types (PI-004) ─────────────────────────────────────
+# ── file types: a measurement, not a press (ruling 2026-10-07) ───────────────
 
-class FileTypeGateway:
-    """What the file-type commit needs from Egeria. The real one drives pyegeria's AssetMaker; tests
-    substitute a fake with the same four methods."""
+#: The one sentence the retired routes answer (HTTP 410). From DESIGN-FILE-TYPES-AS-ANNOTATIONS.md.
+FILE_TYPES_RETIRED_SENTENCE = ("file types are published as profile annotations in the survey report; "
+                               "files are cataloged by selection on Curate")
 
-    def __init__(self, registry=None):
-        import os
-        self._registry = registry
-        self._env = (os.getenv("EGERIA_VIEW_SERVER", "qs-view-server"),
-                     os.getenv("EGERIA_PLATFORM_URL", "https://localhost:9443"),
-                     os.getenv("EGERIA_USER", "erinoverview"),
-                     os.getenv("EGERIA_USER_PASSWORD", "secret"))
-        self._am = None
-
-    def _maker(self):
-        if self._am is None:
-            from pyegeria import AssetMaker
-            view_server, url, user, pwd = self._env
-            self._am = AssetMaker(view_server, url, user, pwd)
-            self._am.create_egeria_bearer_token(user, pwd)
-        return self._am
-
-    def find(self, qualified_name: str) -> str:
-        from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
-        pub = EgeriaPublisher(registry=self._registry)
-        pub._connect()
-        return pub._find_element_guid(qualified_name)
-
-    def create(self, body: dict) -> str:
-        return self._maker().create_asset(body=body)
-
-    def read(self, guid: str) -> dict | None:
-        out = self._maker().get_asset_by_guid(guid, output_format="JSON")
-        return out if isinstance(out, dict) else None
-
-    def link(self, asset_guid: str, dataset_guid: str, label: str) -> None:
-        self._maker().add_capability_asset_use(
-            software_capability_guid=asset_guid, asset_guid=dataset_guid,
-            body={"class": "NewRelationshipRequestBody",
-                  "properties": {"class": "CapabilityAssetUseProperties", "useType": "GOVERNS",
-                                 "description": f"{label} files managed by this repository"}})
+#: What an earlier DataSet reads as. They stay in Egeria; nothing here deletes or archives one.
+RETIRED_DATASET_WORD = "retired mechanism · kept in Egeria"
 
 
-def file_type_qualified_name(slug: str, label: str) -> str:
-    return f"DataSet::{slug}::{label}"
+def file_type_measurements(registry, project, slug: str) -> dict:
+    """READ ONLY. What the survey report carries for file types, and the DataSets earlier presses made.
 
+    `profiles`  the annotations a publish sends (Egeria's names verbatim), counted from the stored
+                inventory: the same function the survey step uses, so screen and report agree.
+    `retired`   one row per DataSet an earlier press created and read back, each marked
+                "retired mechanism · kept in Egeria". Nothing here calls Egeria."""
+    from resource_explorer.surveyors.file_type_profile import build_file_type_annotations
 
-def _file_type_body(project, slug: str, label: str, count: int, extensions: list[str]) -> dict:
-    return {"class": "NewElementRequestBody",
-            "properties": {
-                "class": "DataSetProperties", "typeName": "DataSet",
-                "qualifiedName": file_type_qualified_name(slug, label),
-                "displayName": f"{label} — {project.display_name}",
-                "description": (f"{count} {label} file(s) in {project.github_url}. "
-                                + (f"Extensions: {', '.join(extensions)}." if extensions else "")),
-                "additionalProperties": {"project_slug": slug, "file_type_label": label,
-                                         "file_count": str(count), "extensions": ", ".join(extensions),
-                                         "github_url": project.github_url}}}
-
-
-def file_types_preview(registry, project, slug: str) -> dict:
-    """What a commit WOULD create, from RE's own survey rows. Nothing is sent. A type already
-    cataloged by an earlier commit (a proof row) is marked, so the press never adds a second one."""
-    import json as _json
-    done = {}
+    summary = registry.file_inventory_summary(slug)
+    anns = build_file_type_annotations(registry, slug, surveyed_at=summary.get("indexed_at") or "")
+    profiles = [{"name": a.annotation_type_name, "type": a.annotation_type.value, "summary": a.summary,
+                 "counts": dict(getattr(a, "value_count", None) or getattr(a, "resource_properties", {}))}
+                for a in anns]
+    retired = []
     for p in _repo_proofs(registry, slug, NODE_FILE_TYPE):
         if p["proof"] == P_FILE_TYPE:
-            done[p["table_name"]] = p
-    rows = []
-    for r in registry.query_file_type_counts(slug):
-        label = r["type_label"]
-        exts: list[str] = []
-        if r.get("details_json"):
-            try:
-                d = _json.loads(r["details_json"])
-                exts = sorted(d) if isinstance(d, dict) else list(d)
-            except Exception:
-                exts = []
-        rows.append({"label": label, "file_count": r["file_count"], "extensions": exts,
-                     "qualified_name": file_type_qualified_name(slug, label),
-                     "cataloged": label in done, "dataset_guid": done[label]["element_guid"] if label in done else "",
-                     "linked": bool(done[label]["detail"].get("linked")) if label in done else False})
-    asset = registry.get_egeria_asset_guid(slug) or ""
-    return {"slug": slug, "asset_guid": asset, "in_egeria": bool(asset), "types": rows,
-            "blocker": "" if asset else "publish the report first: the repository is not in Egeria yet"}
-
-
-def file_types_commit(registry, project, slug: str, elements: list[dict], author: str,
-                      gateway: FileTypeGateway | Any) -> dict:
-    """Catalog the chosen file types as DataSets. Each one: look the name up (adopt, never a second
-    element), create when missing, READ the GUID back, and only then write the success row. The link
-    to the repository asset is a separate step with its own row: a link that fails leaves the DataSet
-    created and says so, with Egeria's full sentence stored."""
-    asset = registry.get_egeria_asset_guid(slug) or ""
-    if not asset:
-        raise ValueError("the repository is not in Egeria yet: publish the report first")
-    out = []
-    for e in elements:
-        label = e["label"]
-        qn = file_type_qualified_name(slug, label)
-        item = {"label": label, "qualified_name": qn, "guid": "", "state": "failed", "words": ""}
-        try:
-            guid = gateway.find(qn)
-            adopted = bool(guid)
-            if not guid:
-                guid = gateway.create(_file_type_body(project, slug, label, int(e.get("file_count") or 0),
-                                                      list(e.get("extensions") or [])))
-            seen = gateway.read(guid)
-            if not seen:
-                raise RuntimeError(f"Egeria did not return the element {guid} when it was read back")
-        except Exception as exc:
-            full = str(exc)
-            _proof(registry, slug, P_READ_FAILED, node_kind=NODE_FILE_TYPE, table_name=label, qualified_name=qn,
-                   recorded_by=author, detail={"error": full, "what": f"file type {label}"})
-            first, rest = egeria_first_sentence(full)
-            item.update(words=f"not cataloged · {first}", details=rest)
-            out.append(item)
-            continue
-        linked, link_error = True, ""
-        try:
-            gateway.link(asset, guid, label)
-        except Exception as exc:
-            linked, link_error = False, str(exc)
-        _proof(registry, slug, P_FILE_TYPE, node_kind=NODE_FILE_TYPE, table_name=label, element_guid=guid,
-               target_guid=asset, qualified_name=qn, recorded_by=author,
-               detail={"adopted": adopted, "linked": linked, "link_error": link_error,
-                       "file_count": e.get("file_count")})
-        if linked:
-            item.update(state="cataloged", guid=guid, words="cataloged · read back")
-        else:
-            first, rest = egeria_first_sentence(link_error)
-            item.update(state="cataloged_unlinked", guid=guid,
-                        words=f"cataloged, not linked to the repository · {first}", details=rest)
-        out.append(item)
-    return {"ok": all(i["state"] != "failed" for i in out), "items": out}
+            retired.append({"label": p["table_name"], "dataset_guid": p["element_guid"],
+                            "qualified_name": p["qualified_name"], "word": RETIRED_DATASET_WORD,
+                            "read_at": p["read_at"]})
+    return {"slug": slug, "in_egeria": bool(registry.get_egeria_asset_guid(slug)),
+            "inventoried": bool(summary.get("total")), "profiles": profiles, "retired": retired,
+            "retired_word": RETIRED_DATASET_WORD}
