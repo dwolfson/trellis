@@ -41,6 +41,32 @@ export function requireKind(fnName, value, paramName = 'entityType') {
   return value;
 }
 
+/** One failed response as an ApiError. A 401 `login_required` is a dead session, not this caller's
+ *  failure: `re:session-dead` is raised (once per burst: repeats within a second are ignored, so the header
+ *  is not redrawn N times) and the error carries the short message 'sign-in needed' with `loginRequired`.
+ *  Callers that print `err.message` without branching on status now show only that short word. */
+let lastSessionDead = 0;
+async function apiErrorFrom(res, path) {
+  let detail = res.statusText;
+  let code = '';
+  try {
+    const body = await res.json();
+    detail = body.detail || body.message || detail;
+    code = body.error || '';
+  } catch (_) { /* a non-JSON error body is still an error */ }
+  if (res.status === 401 && code === 'login_required') {
+    const now = Date.now();
+    if (now - lastSessionDead > 1000) {
+      lastSessionDead = now;
+      try { globalThis.document?.dispatchEvent(new globalThis.CustomEvent('re:session-dead')); } catch { /* no document */ }
+    }
+    const dead = new ApiError(401, 'sign-in needed', path);
+    dead.loginRequired = true;
+    return dead;
+  }
+  return new ApiError(res.status, detail, path);
+}
+
 async function request(path, options = {}) {
   let res;
   try {
@@ -66,14 +92,7 @@ async function request(path, options = {}) {
       path,
     );
   }
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = body.detail || body.message || detail;
-    } catch (_) { /* a non-JSON error body is still an error */ }
-    throw new ApiError(res.status, detail, path);
-  }
+  if (!res.ok) throw await apiErrorFrom(res, path);
   if (res.status === 204) return null;
   return res.json();
 }
@@ -275,11 +294,7 @@ export async function fetchCsvFile(path, options = {}) {
   } catch (err) {
     throw new ApiError(0, `Resource Explorer at ${window.location.origin} is not responding.`, path);
   }
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON error body */ }
-    throw new ApiError(res.status, detail, path);
-  }
+  if (!res.ok) throw await apiErrorFrom(res, path);
   const text = await res.text();
   const cd = (res.headers && res.headers.get && res.headers.get('content-disposition')) || '';
   const m = cd.match(/filename="?([^";]+)"?/);
@@ -698,11 +713,7 @@ export const discoverFromList = (text) => post('/api/discovery/from-list', { tex
  *  the DOM layer cannot do on its own. */
 export async function fetchInventoryCsv() {
   const res = await fetch('/api/discovery/inventory.csv');
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON error body */ }
-    throw new ApiError(res.status, detail, '/api/discovery/inventory.csv');
-  }
+  if (!res.ok) throw await apiErrorFrom(res, '/api/discovery/inventory.csv');
   const text = await res.text();
   const cd = res.headers.get('content-disposition') || '';
   const m = cd.match(/filename="?([^";]+)"?/);
@@ -877,11 +888,7 @@ export async function* askStream(query, { resourceSlug, entityType, perspectives
       session_id: sessionId || null,
     }),
   });
-  if (!res.ok || !res.body) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
-    throw new ApiError(res.status, detail, '/api/query/stream');
-  }
+  if (!res.ok || !res.body) throw await apiErrorFrom(res, '/api/query/stream');
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';

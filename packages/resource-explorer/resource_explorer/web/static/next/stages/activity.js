@@ -218,6 +218,48 @@ function filteredEntries() {
   });
 }
 
+/** A run's `detail` is usually a JSON object the logger serialised. Shown as it is stored, it is a wall
+ *  of braces. Here: a summary line (the error first, then the first few plain values), one row per key
+ *  with nested values compact, and the stored text itself behind a collapsed "raw" disclosure. Text that
+ *  is not a JSON object keeps the plain rendering. */
+const SUMMARY_KEYS = 4;
+const DETAIL_ROW_CAP = 40;
+function plainValue(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'object') return Array.isArray(v) ? `${v.length} item${v.length === 1 ? '' : 's'}` : `${Object.keys(v).length} field${Object.keys(v).length === 1 ? '' : 's'}`;
+  return String(v);
+}
+function compactValue(v) {
+  if (v === null || v === undefined) return '—';
+  if (Array.isArray(v)) return v.length <= 6 && v.every((x) => typeof x !== 'object' || x === null) ? v.map(String).join(', ') || '—' : plainValue(v);
+  if (typeof v === 'object') return Object.entries(v).map(([k, x]) => `${k}: ${typeof x === 'object' && x !== null ? plainValue(x) : String(x)}`).join(' · ') || '—';
+  return String(v);
+}
+export function readableDetailHtml(detail) {
+  let obj = null;
+  try { const parsed = JSON.parse(detail); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed; } catch { /* not JSON */ }
+  if (!obj) {
+    return `<div class="mt-s2 whitespace-pre-wrap text-provenance text-ink-muted">${
+      detail.split('\n').map((line) => hiGuid(esc(line))).join('<br/>')}</div>`;
+  }
+  const entries = Object.entries(obj);
+  const failing = entries.filter(([k, v]) => /^(error|errors|failure|reason)$/i.test(k) && v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length));
+  const rest = entries.filter(([k, v]) => !failing.some(([fk]) => fk === k) && (v === null || typeof v !== 'object') && v !== null && v !== '');
+  const lead = [...failing, ...rest].slice(0, SUMMARY_KEYS);
+  const summary = lead.map(([k, v]) => `${esc(k)}: ${hiGuid(esc(plainValue(v)))}`).join(' · ');
+  const more = Math.max(0, entries.length - DETAIL_ROW_CAP);
+  const rows = entries.slice(0, DETAIL_ROW_CAP).map(([k, v]) => `<tr data-activity-detail-row>
+    <td class="w-40 py-[2px] pr-2 align-top text-ink-muted">${esc(k)}</td>
+    <td class="py-[2px] font-mono text-ink">${hiGuid(esc(compactValue(v)))}</td></tr>`).join('');
+  return `<div class="mt-s2 text-provenance">
+    <div data-activity-detail-summary class="text-ink">${summary || 'no fields'}</div>
+    <table class="mt-s1 w-full border-collapse"><tbody class="divide-y divide-rule">${rows}</tbody></table>
+    ${more ? `<div class="text-ink-muted"><span class="tnum">${more}</span> more in raw</div>` : ''}
+    <details data-activity-raw class="mt-s1"><summary class="cursor-pointer text-accent-ink">raw</summary>
+      <pre class="mt-[2px] max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-ink-muted">${esc(JSON.stringify(obj, null, 2))}</pre></details>
+  </div>`;
+}
+
 function entryRowHtml(op) {
   const opLabel = OPERATION_LABEL[op.operation] || op.operation || 'Operation';
   const opIcon = OPERATION_ICON[op.operation] || '•';
@@ -247,10 +289,7 @@ function entryRowHtml(op) {
         </tr>`).join('')}</tbody></table>`
     : '';
 
-  const detailHtml = op.detail
-    ? `<div class="mt-s2 whitespace-pre-wrap text-provenance text-ink-muted">${
-        op.detail.split('\n').map((line) => hiGuid(esc(line))).join('<br/>')}</div>`
-    : '';
+  const detailHtml = op.detail ? readableDetailHtml(op.detail) : '';
 
   const hasDetail = !!(annHtml || itemsHtml || detailHtml);
   const detailId = `activity-d-${esc(op.id || '').replace(/[^a-z0-9]/gi, '_').slice(0, 24)}`;
