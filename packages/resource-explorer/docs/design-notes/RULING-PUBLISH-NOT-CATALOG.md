@@ -76,6 +76,66 @@ manifest's rows read:
 | Egeria's cataloguer creates | your included schemas, at table depth | 2 schemas | this refresh |
 | Egeria's survey | the same schemas | 2 | after attach |
 
+## What we say about it: Enrichment facts, optionally published
+
+**Decision (project owner, 2026-10-08):** a database's Enrichment data is
+published too, optionally, by the same press. The repository commit
+already copies its judgements (`curate_plan.py`'s "what gets written":
+sensitivity → Confidentiality, criticality → Criticality, retention →
+Retention, plus owner and licence). The database commit does the same,
+under the same rules.
+
+**It's the module's fourth slot**, and the first one a person meets. The
+three slots above describe the resource's *contents*. This one describes
+*the resource as a whole*, so it lives on Curate's first tab ("What we
+say about it", split-by-job reply §1), not on Contents.
+
+| Context fact | Goes to Egeria as | Default |
+|---|---|---|
+| sensitivity, criticality, retention | the governance classification of that name, with author and date in its notes (as the repository commit does) | **publish**, when signed and confirmed |
+| licence | the licence (observation, with its state) | **publish**, when signed and confirmed |
+| owner | the owner (see the open point below) | **publish**, when signed and confirmed, once the owner mapping is ruled; kept in RE until then |
+| documentation sources | external references (they already carry a GUID field) | **publish** |
+| answers to the human questions | no Egeria home yet | shown with "no Egeria home yet": present and explained, never silently dropped |
+
+**Rules, the same as everywhere else:**
+
+- **Each fact row gets the same two-part selector**, "Publish? [ Publish |
+  Keep in RE ]", beside its value. Facts are *edited* on Context. Whether
+  each one *travels* is a curation choice, made here and saved like any
+  other choice (signed, dated).
+- **Only testimony that can be questioned travels.** An unsigned fact
+  can't be published: its selector is disabled with "no author: sign it
+  on Context first". An **interim** fact, or one marked **review**
+  (evidence moved), defaults to **Keep in RE**, with its reason. A person
+  can still choose Publish, and the row then says so.
+- **One press carries it.** On a database, the Publish commit on Contents
+  takes the chosen facts, and its manifest gains a row: "What we say · 4
+  facts · owner, licence, confidentiality, retention · 1 kept in RE
+  (criticality, interim)". On a repository, the commit that publishes the
+  asset carries them, as it does today.
+- **After publishing**, each fact row reads "published · read back
+  ‹when›". A fact changed on Context afterward reads **"changed since
+  published"**, and the tab 1 line counts them ("2 facts changed since
+  the last publish · Publish again"). The fact is never re-sent silently.
+
+**Folded like Detail:** "What we say · 4 of 5 facts will be published ·
+change ›" is the whole line until it's opened. So the module stays one
+line per slot for someone who takes the defaults.
+
+**Open, for the architect: two "owners" in one classification.** RE
+already writes Egeria's `Ownership` classification on everything it
+publishes, set to the *requesting user*, because the curate authorization
+reads it (`egeria_identity.py`). The Context **owner** is a different fact:
+who is accountable for the database. Egeria gives an element one
+`Ownership`. Publishing the Context owner there would overwrite what the
+authorization depends on. Keeping RE's would make Egeria name the wrong
+owner. Which one gets the classification, and where the other goes, is
+the architecture session's call. Until it's ruled, the owner row's
+selector is disabled with "kept in RE until the owner mapping is decided",
+and the manifest row says the same. Once it's ruled, the selector turns
+on and the manifest names where the owner goes.
+
 ## How this simplifies, rather than adding controls
 
 The owner's aim is to simplify and modularize, so the three choices must
@@ -89,11 +149,13 @@ cost nothing for someone who doesn't need them:
 - **One verb.** Save for RE, Publish for Egeria. The vocabulary shrinks
   from three reserved words to two.
 - **One module, every kind.** "What gets published" is the same component
-  with the same three slots on every resource. Only each slot's contents
+  with the same four slots on every resource (What we say, Parts, Depth,
+  Detail). Only each slot's contents
   change by kind:
 
   | Slot | Database | Repository | File share (later) |
   |---|---|---|---|
+  | What we say | Context facts | Context facts | Context facts |
   | Parts | schemas, tables | files, folders (the selection tree) | directories, files |
   | Depth | database … columns | resource … items | share … files |
   | Detail | keys, statistics, data classes | survey report facets | sizes, data classes |
