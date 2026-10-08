@@ -4432,7 +4432,8 @@ class ProjectRegistry:
             rows = conn.execute(
                 "SELECT key, value FROM app_settings WHERE key LIKE ? ESCAPE '\\' ORDER BY key", (like,)
             ).fetchall()
-        return [(r["key"], r["value"]) for r in rows]
+        # SQLite's LIKE ignores case; a key is case-sensitive, so the prefix is matched again exactly.
+        return [(r["key"], r["value"]) for r in rows if r["key"].startswith(prefix)]
 
     # ── per-call Egeria timing ────────────────────────────────────────────
 

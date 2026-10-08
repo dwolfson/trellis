@@ -26,8 +26,9 @@ export function admissionHtml(l) {
   const why = l.admission_evidence || '';
   const moved = l.reclassified
     ? `<span class="text-ink">· moved by ${esc(l.reclassified.by)}: ${esc(l.reclassified.reason)}</span>` : '';
+  const note = l.reclassification_note ? `<span class="text-state-warn">· ⚠ ${esc(l.reclassification_note)}</span>` : '';
   return `<span data-admission="${esc(l.admission || 'built_here')}" class="text-ink-muted" title="${esc(why)}">
-      <span class="font-glyph" aria-hidden="true">${cue.glyph}</span> ${cue.word}${why ? ` · ${esc(why)}` : ''}</span>${moved}
+      <span class="font-glyph" aria-hidden="true">${cue.glyph}</span> ${cue.word}${why ? ` · ${esc(why)}` : ''}</span>${moved}${note}
     <span data-admission-box="${esc(l.path)}"><button type="button" data-admission-open="${esc(l.path)}"
       class="cursor-pointer bg-transparent p-0 text-ink-muted underline">only referenced</button></span>`;
 }

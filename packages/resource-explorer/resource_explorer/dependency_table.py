@@ -127,6 +127,8 @@ def _referenced_rows(registry, slug: str, confirmations: dict) -> list[dict]:
         artifact = evidence.split("from ", 1)[-1].split(" ")[0] if "from " in evidence else "a deployment artifact"
         moved = r.get("reclassified")
         tail = f" · reclassified by {moved['by']}: {moved['reason']}" if moved else ""
+        if r.get("reclassification_note"):
+            tail += f" · {r['reclassification_note']}"
         if latest and latest["verdict"] == VERDICT_CONFIRMED:
             state, words = "confirmed", f"confirmed · by {latest['by']} · from {artifact}"
         elif latest and latest["verdict"] == VERDICT_WITHDRAWN:

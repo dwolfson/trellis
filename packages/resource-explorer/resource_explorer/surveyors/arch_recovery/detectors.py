@@ -469,7 +469,29 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
     return sorted(found.values(), key=lambda e: e["dir"])
 
 
-def build_components(root: str, files: list[str],
+def compose_slug_units(root: str, files: list[str]) -> dict[str, set[str]]:
+    """{plain compose slug: the deployment units that would carry it}, over `files`.
+
+    A compose service has no files, so its slug IS its scope locator, and reclassifications, verdicts
+    and referenced-only rows key on it. A slug shared by services in two directories (a/deploy and
+    b/deploy both run `kafka`) must therefore not depend on which one is seen first, or on which files a
+    scoped run was handed: every service whose plain slug more than one unit carries is qualified by its
+    whole directory path (see `build_components`)."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for unit, decls in deployment_units(root, files).items():
+        names: dict[str, str] = {}
+        for decl in decls:
+            if os.path.basename(decl).startswith("Dockerfile") or _admission.is_fixture_path(decl):
+                continue
+            for key, name, _line in compose_services(root, decl):
+                if key not in names or (name != key and names[key] == key):
+                    names[key] = name
+        for name in names.values():
+            out[_slug(os.path.basename(unit), name)].add(unit)
+    return out
+
+
+def build_components(root: str, files: list[str], all_files: list[str] | None = None,
                      ) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
     components: list[Component] = []
     evidence: list[Evidence] = []
@@ -650,17 +672,20 @@ def build_components(root: str, files: list[str],
             if f["build"] and f["image"]:
                 published.setdefault(_admission.normalise_image(f["image"]), f["decl"])
 
+    # Which plain slugs more than one directory carries is decided from the WHOLE repository's compose files
+    # (`all_files`, the full census), not from the files this run was handed: a scoped run sees one
+    # directory and would otherwise hand that service a plain slug the full run had qualified.
+    shared = {slug for slug, us in compose_slug_units(root, all_files if all_files is not None else files).items()
+              if len(us) > 1}
     for unit, merged in per_unit.items():
         for key, (name, decl, line) in merged.items():
             slug = _slug(os.path.basename(unit), name)
+            if slug in shared:
+                # Two services of the same name in same-named directories (a/deploy, b/deploy) are two
+                # services: every one is qualified by its whole directory path, independent of order.
+                slug = _slug(unit.replace(os.sep, "-"), name)
             f = per_unit_facts[unit].get(key, {"image": "", "build": ""})
             twin = next((c for c in components if c.slug == slug), None)
-            if (twin is not None and twin.perspective == "deployment"
-                    and twin.identity.deployment_context != unit):
-                # Two compose services of the same name in two same-named directories (a/deploy, b/deploy)
-                # are two services, not one: qualify by the whole directory path rather than lose one.
-                slug = _slug(unit.replace(os.sep, "-"), name)
-                twin = next((c for c in components if c.slug == slug), None)
             if twin is not None:
                 # The same unit was already found by its Dockerfile or manifest: that is the stronger,
                 # built-here reading. The compose service still names the image it ships, which is how a

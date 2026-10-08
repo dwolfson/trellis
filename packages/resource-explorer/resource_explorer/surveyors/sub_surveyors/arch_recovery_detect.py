@@ -158,7 +158,7 @@ class ArchDetectSurveyor(BaseSurveyor):
             if self._scope_locator:
                 first_party = [f for f in first_party if path_matches_scope(f, self._scope_locator)]
 
-            components, evidence, notes, code_marker_operations = build_components(root, first_party)
+            components, evidence, notes, code_marker_operations = build_components(root, first_party, all_files=census.first_party)
 
             # Whose boundary is each node (DESIGN-BLUEPRINT-NODE-ADMISSION.md)? A person's earlier
             # reclassifications are honoured first; then the services running images this repository

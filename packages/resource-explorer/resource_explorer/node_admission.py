@@ -38,7 +38,8 @@ MAX_SCOPE = 1024
 
 
 def _prefix(slug: str) -> str:
-    return f"repo_node_reclassifications::{slug}::"
+    # The slug is encoded so one with colons in it cannot reach into another slug's entries.
+    return f"repo_node_reclassifications::{slug.replace('%', '%25').replace(':', '%3A')}::"
 
 
 def _valid(e) -> bool:
@@ -54,18 +55,20 @@ def _read_trails(registry, slug: str) -> tuple[dict, int]:
     damaged entry cannot take the history with it. An unreadable or malformed entry is skipped with a
     logged warning and counted, never silently."""
     out: dict[str, list[dict]] = {}
-    bad = 0
+    bad: list[str] = []
     for key, raw in registry.list_settings_with_prefix(_prefix(slug)):
         try:
             e = json.loads(raw)
         except (ValueError, TypeError):
             e = None
         if not _valid(e):
-            bad += 1
-            log.warning("unreadable node reclassification %s for %s; ignoring it", key, slug)
+            bad.append(key)
             continue
-        out.setdefault(e["scope"], []).append({k: e[k] for k in ("to", "reason", "by", "at")})
-    return out, bad
+        out.setdefault(e["scope"], []).append(
+            {k: e[k] for k in ("to", "reason", "by", "at")} | ({"unit": e["unit"]} if isinstance(e.get("unit"), str) else {}))
+    if bad:
+        log.warning("%d unreadable node reclassification(s) for %s ignored: %s", len(bad), slug, ", ".join(bad[:5]))
+    return out, len(bad)
 
 
 def read_reclassifications(registry, slug: str) -> dict:
@@ -79,6 +82,20 @@ def unreadable_count(registry, slug: str) -> int:
 def latest(reclass: dict, scope: str) -> dict | None:
     trail = reclass.get(scope) or []
     return trail[-1] if trail else None
+
+
+def _unit_of(component: dict) -> str:
+    return ((component.get("identity") or {}).get("deployment_context") or "")
+
+
+def effective(reclass: dict, scope: str, node_unit: str) -> tuple[dict | None, str]:
+    """(the entry that applies to this node, a sentence when one exists but does not). A reclassification
+    belongs to the DIRECTORY (unit) its node was in when the person made it; if the node at that scope
+    now sits in another directory, the entry is not applied and the row says so, never silently."""
+    entry = latest(reclass, scope)
+    if entry and entry.get("unit") and node_unit and entry["unit"] != node_unit:
+        return None, f"reclassification belongs to {entry['unit']}; not applied"
+    return entry, ""
 
 
 def _stored(registry, slug: str) -> dict:
@@ -116,14 +133,16 @@ def reclassify(registry, slug: str, scope: str, to: str, reason: str, by: str) -
     if not by:
         raise ValueError("a reclassification needs a person who made it")
     stored = _stored(registry, slug)
-    known = {i["scope"] for i in stored.get("referenced", [])} | set(_component_paths(registry, slug))
-    if scope not in known:
+    units = {i["scope"]: i.get("unit", "") for i in stored.get("referenced", [])}
+    units.update({p: _unit_of(c) for p, c in _component_paths(registry, slug).items()})
+    if scope not in units:
         raise ValueError(f"not a node of this repository: {scope!r}")
     now = datetime.now(timezone.utc)
     entry = {"to": to, "reason": reason.strip(), "by": by, "at": now.isoformat(timespec="seconds")}
     # Its own key, written once: time_ns orders entries, the random suffix keeps two writers apart.
     key = f"{_prefix(slug)}{time.time_ns():020d}-{uuid.uuid4().hex[:8]}"
-    registry.add_setting_once(key, json.dumps({**entry, "scope": scope}))
+    registry.add_setting_once(key, json.dumps({**entry, "scope": scope, "unit": units[scope]}))
+    entry["unit"] = units[scope]
     return entry
 
 
@@ -131,7 +150,7 @@ def apply_to_components(components: list, reclass: dict) -> None:
     """Survey time: honour the trail on freshly detected Components (mutates them)."""
     for c in components:
         from resource_explorer.surveyors.arch_recovery.persist import scope_locator_for
-        entry = latest(reclass, scope_locator_for(c))
+        entry, _note = effective(reclass, scope_locator_for(c), c.identity.deployment_context or "")
         if entry:
             c.admission = entry["to"]
             c.admission_evidence = f"reclassified by {entry['by']} · {entry['reason']}"
@@ -144,10 +163,10 @@ def referenced_rows(registry, slug: str) -> list[dict]:
     reclass = read_reclassifications(registry, slug)
     rows = []
     for i in _stored(registry, slug).get("referenced", []):
-        entry = latest(reclass, i["scope"])
+        entry, note = effective(reclass, i["scope"], i.get("unit", ""))
         if entry and entry["to"] == adm.BUILT:
             continue
-        rows.append({**i, "reclassified": entry})
+        rows.append({**i, "reclassified": entry, "reclassification_note": note})
     have = {r["scope"] for r in rows}
     moved = [s for s, t in reclass.items() if t and t[-1]["to"] == adm.REFERENCED and s not in have]
     if moved:
@@ -156,9 +175,12 @@ def referenced_rows(registry, slug: str) -> list[dict]:
             c = comps.get(scope)
             if c is None:
                 continue
+            entry, note = effective(reclass, scope, _unit_of(c))
+            if entry is None or entry["to"] != adm.REFERENCED:
+                continue
             rows.append({"scope": scope, "name": c.get("name") or scope, "slug": scope,
                          "image": c.get("image") or "", "evidence": c.get("admission_evidence") or "",
-                         "unit": "", "reclassified": latest(reclass, scope)})
+                         "unit": _unit_of(c), "reclassified": entry, "reclassification_note": ""})
     return rows
 
 
@@ -171,16 +193,18 @@ def apply_to_tree_components(registry, slug: str, comps: list[dict]) -> list[dic
         return comps
     out = []
     for c in comps:
-        entry = latest(reclass, c.get("path", ""))
+        entry, note = effective(reclass, c.get("path", ""), _unit_of(c))
         if entry and entry["to"] == adm.REFERENCED:
             continue
         if entry:
             c = {**c, "reclassified": entry, "admission": entry["to"],
                  "admission_evidence": f"reclassified by {entry['by']} · {entry['reason']}"}
+        elif note:
+            c = {**c, "reclassification_note": note}
         out.append(c)
     present = {c.get("path") for c in out}
     for i in _stored(registry, slug).get("referenced", []):
-        entry = latest(reclass, i["scope"])
+        entry, _note = effective(reclass, i["scope"], i.get("unit", ""))
         if entry and entry["to"] == adm.BUILT and i["scope"] not in present:
             out.append({"path": i["scope"], "name": i["name"], "type": "Third Party Process", "confidence": 60,
                         "perspective": "deployment", "proposed_by": [], "proposals": [], "agreement": False,
@@ -210,6 +234,17 @@ def summary(registry, slug: str) -> dict:
     if refs:
         left_out.insert(0, f"{len(refs)} service{'' if len(refs) == 1 else 's'} referenced only · "
                            f"listed as runtime dependencies")
+    # Entries that exist but do not apply: say which, never silently.
+    reclass = read_reclassifications(registry, slug)
+    units = {i["scope"]: i.get("unit", "") for i in stored.get("referenced", [])}
+    units.update({p: _unit_of(c) for p, c in _component_paths(registry, slug).items()})
+    for scope in sorted(reclass):
+        if scope not in units:
+            left_out.append(f"reclassification of {scope} no longer matches any node · not applied")
+        else:
+            _entry, note = effective(reclass, scope, units[scope])
+            if note:
+                left_out.append(f"reclassification of {scope}: {note}")
     bad = unreadable_count(registry, slug)
     if bad:
         left_out.append(f"{bad} unreadable reclassification{'' if bad == 1 else 's'} · ignored, not applied")

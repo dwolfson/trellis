@@ -411,3 +411,93 @@ def test_the_route_refuses_an_unsigned_caller_and_oversized_input_with_a_sentenc
     r = TestClient(app).post("/api/projects/workspaces/components/reclassify",
                              json={"scope_locator": "x", "to": "built_here", "reason": "y" * 600})
     assert r.status_code == 400 and "500 characters" in r.json()["detail"]
+
+
+# ── stable slugs for same-named services; a reclassification belongs to its directory ─────────
+
+def _twin_repo(tmp_path, dirs, name="twin"):
+    root = str(tmp_path / name)
+    for d in dirs:
+        _write(root, f"{d}/compose.yaml", "services:\n  kafka:\n    image: apache/kafka:3\n")
+    _git(root)
+    return root
+
+
+def _scopes(registry, slug):
+    return sorted(r["scope"] for r in node_admission.referenced_rows(registry, slug))
+
+
+class TestStableSlugs:
+    def test_every_same_named_service_is_qualified_independent_of_order(self, registry, tmp_path):
+        _survey(registry, "t1", _twin_repo(tmp_path, ["a/deploy", "b/deploy"], "t1"))
+        assert _scopes(registry, "t1") == ["a-deploy::kafka", "b-deploy::kafka"]
+
+    def test_a_unique_name_keeps_the_plain_slug(self, registry, tmp_path):
+        _survey(registry, "t2", _twin_repo(tmp_path, ["b/deploy"], "t2"))
+        assert _scopes(registry, "t2") == ["deploy::kafka"]
+
+    def test_adding_an_earlier_sorting_sibling_never_re_points_a_reclassification(self, registry, tmp_path):
+        root = _twin_repo(tmp_path, ["b/deploy"], "t3")
+        project = _survey(registry, "t3", root)
+        node_admission.reclassify(registry, "t3", "deploy::kafka", "built_here", "ours", "dan")
+        _write(root, "a/deploy/compose.yaml", "services:\n  kafka:\n    image: apache/kafka:3\n")
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        ArchDetectSurveyor(project, registry, local_path=root, surveyed_at="2026-10-09T00:00:00").run()
+        # neither service is treated as built here by the old entry
+        assert _scopes(registry, "t3") == ["a-deploy::kafka", "b-deploy::kafka"]
+        assert all(r["reclassified"] is None for r in node_admission.referenced_rows(registry, "t3"))
+        left = node_admission.summary(registry, "t3")["left_out"]
+        assert any("deploy::kafka" in l and "not applied" in l for l in left)
+
+    def test_deleting_one_of_two_never_re_points_a_reclassification(self, registry, tmp_path):
+        root = _twin_repo(tmp_path, ["a/deploy", "b/deploy"], "t4")
+        project = _survey(registry, "t4", root)
+        node_admission.reclassify(registry, "t4", "b-deploy::kafka", "built_here", "ours", "dan")
+        subprocess.run(["git", "rm", "-rq", "a"], cwd=root, check=True)
+        ArchDetectSurveyor(project, registry, local_path=root, surveyed_at="2026-10-09T00:00:00").run()
+        rows = node_admission.referenced_rows(registry, "t4")
+        assert [r["scope"] for r in rows] == ["deploy::kafka"] and rows[0]["reclassified"] is None
+        assert any("b-deploy::kafka" in l and "not applied" in l
+                   for l in node_admission.summary(registry, "t4")["left_out"])
+
+    def test_a_scoped_run_does_not_change_slugs(self, registry, tmp_path):
+        root = _twin_repo(tmp_path, ["a/deploy", "b/deploy"], "t5")
+        project = _survey(registry, "t5", root)
+        ArchDetectSurveyor(project, registry, scope_locator="a/deploy", local_path=root,
+                           surveyed_at="2026-10-09T00:00:00").run()
+        scopes = registry.query_finding_scopes("t5", "architecture_recovery", check_name="component")
+        assert "deploy::kafka" not in scopes
+        assert _scopes(registry, "t5") == ["a-deploy::kafka", "b-deploy::kafka"]
+
+    def test_a_stored_unit_that_no_longer_matches_is_reported_not_applied(self, registry, tmp_path):
+        _survey(registry, "t6", _twin_repo(tmp_path, ["b/deploy"], "t6"))
+        registry.add_setting_once(
+            "repo_node_reclassifications::t6::00000000000000000009-zz",
+            '{"scope": "deploy::kafka", "to": "built_here", "reason": "r", "by": "dan", '
+            '"at": "2026-10-09T00:00:00+00:00", "unit": "x/elsewhere"}')
+        assert all(r["reclassified"] is None for r in node_admission.referenced_rows(registry, "t6"))
+        assert any("belongs to x/elsewhere" in l and "not applied" in l
+                   for l in node_admission.summary(registry, "t6")["left_out"])
+
+    def test_reclassify_stores_the_unit(self, registry, tmp_path):
+        _survey(registry, "t7", _twin_repo(tmp_path, ["b/deploy"], "t7"))
+        node_admission.reclassify(registry, "t7", "deploy::kafka", "built_here", "ours", "dan")
+        (key, raw), = registry.list_settings_with_prefix("repo_node_reclassifications::t7::")
+        assert '"unit": "b/deploy"' in raw
+
+
+def test_unreadable_entries_are_one_warning_per_read(registry, tmp_path, caplog):
+    _survey(registry, "t8", _twin_repo(tmp_path, ["b/deploy"], "t8"))
+    for i in range(3):
+        registry.set_setting(f"repo_node_reclassifications::t8::0000000000000000000{i}-bad", "nope")
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        node_admission.read_reclassifications(registry, "t8")
+    assert len([r for r in caplog.records if "unreadable" in r.getMessage()]) == 1
+
+
+def test_a_slug_with_colons_cannot_read_another_slugs_entries(registry, tmp_path):
+    _survey(registry, "t9", _twin_repo(tmp_path, ["b/deploy"], "t9"))
+    node_admission.reclassify(registry, "t9", "deploy::kafka", "built_here", "ours", "dan")
+    assert node_admission.read_reclassifications(registry, "t9::deploy") == {}
+    assert node_admission.read_reclassifications(registry, "T9") == {}

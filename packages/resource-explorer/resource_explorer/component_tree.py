@@ -257,6 +257,7 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
                     "admission": c.get("admission") or "built_here",
                     "admission_evidence": c.get("admission_evidence") or "",
                     "reclassified": c.get("reclassified"),
+                    "reclassification_note": c.get("reclassification_note") or "",
                     # What accepting did to the element's zones, from the promotion's proof row.
                     "promotion": promos.get(p)})
     return out
