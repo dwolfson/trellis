@@ -324,8 +324,22 @@ each):
 **Exact writes, shape 2:** steps 2 and 5, and `CollectionMembership`
 blueprint → each content; no container element, no composition.
 
-**The existing blueprint 254dbbe6 under this rule** (RE never detaches or
-removes: it rolls forward). Option (c) becomes:
+**Decided (owner, 2026-10-08): delete 254dbbe6 and create the new one.**
+*"I think we can just delete that blueprint and create a new one with the
+new content; remember this is a test environment and it doesn't need to be
+kept pristine."* So the rename-forward and the steward's detaches below are
+**superseded**. The old blueprint is deleted by the owner in Egeria
+Explorer, or by a scripted delete only on his direct word and a peer round
+(RE has no blueprint delete path and the ISSUE-117 block stays on; this is
+an Egeria-side act, not an RE press). The next accepted verdict on
+egeria_git then creates "Egeria Deployment Blueprint" under the container
+shape, adopting the seven existing components by qualifiedName (the
+platform as the single member, the six servers as its sub-components by
+composition). The roll-forward principle is unchanged for anything that is
+not a test environment; this is the owner's call for this one.
+
+**The earlier roll-forward plan for 254dbbe6** (superseded 2026-10-08 by the
+decision above; kept for the record). Option (c) would have become:
 
 1. **Rename forward** 254dbbe6: one merge update, `displayName` "Egeria
    Deployment Blueprint", qualifiedName's perspective slot likewise, read

@@ -3854,7 +3854,11 @@ def _architecture_diagram_results(registry, slug: str) -> dict:
     ir.components = kept
 
     max_depth = arch_projection.DEFAULT_PROJECTION_DEPTH
-    diagram = mermaid.render(ir, max_depth, component_verdicts=component_verdicts)
+    # Services the repository runs but does not build are ports on the blueprint's edge, not boxes
+    # (DESIGN-DEPENDENCY-ROW-TWO-ENDS.md): the same names the dependency table's `edge port` rows use.
+    from resource_explorer import dependency_table
+    diagram = mermaid.render(ir, max_depth, component_verdicts=component_verdicts,
+                             edge_ports=dependency_table.diagram_edge_ports(registry, slug))
     caption_text = mermaid.caption(ir, max_depth, component_verdicts=component_verdicts)
 
     # docs/curated-architecture-answers-design.md §6 item 1 (2026-09-08,
