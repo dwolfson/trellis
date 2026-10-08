@@ -83,7 +83,7 @@ const rowHtml = (r, confirmable, me) => {
       <div role="cell" data-dep-drawn="${esc(r.drawn || '')}" class="w-[8rem] shrink-0 break-words text-provenance text-ink-muted" title="${esc(r.drawn_words || '')}">${esc(r.drawn || '')}</div>
       ${confirmable ? `<div role="cell" class="w-[7rem] shrink-0">${confirmableRow(r) && me
         ? (r.state === 'confirmed'
-          ? `<button type="button" data-dep-withdraw="${esc(r.key)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">withdraw</button>`
+          ? `<button type="button" data-dep-withdraw="${esc(r.key)}" title="affects future surveys only; what is already published stays" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">withdraw</button>`
           : `<button type="button" data-dep-confirm="${esc(r.key)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">confirm</button>`) : ''}</div>` : ''}
     </div>`;
 };

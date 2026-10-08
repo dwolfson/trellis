@@ -180,7 +180,7 @@ def apply_to_components(components: list, reclass: dict) -> None:
             c.admission_evidence = f"reclassified by {entry['by']} · {entry['reason']}"
 
 
-def referenced_rows(registry, slug: str) -> list[dict]:
+def referenced_rows(registry, slug: str, paths: dict | None = None) -> list[dict]:
     """The referenced-only services, reclassifications applied: a stored referenced-only service a person
     moved to built-here is gone from this list; an admitted component a person moved to referenced-only
     is on it."""
@@ -194,7 +194,7 @@ def referenced_rows(registry, slug: str) -> list[dict]:
     have = {r["scope"] for r in rows}
     moved = [s for s, t in reclass.items() if t and t[-1]["to"] == adm.REFERENCED and s not in have]
     if moved:
-        comps = _component_paths(registry, slug)
+        comps = paths if paths is not None else _component_paths(registry, slug)
         for scope in moved:
             c = comps.get(scope)
             if c is None:
@@ -238,18 +238,22 @@ def apply_to_tree_components(registry, slug: str, comps: list[dict]) -> list[dic
     return out
 
 
-def summary(registry, slug: str) -> dict:
+def summary(registry, slug: str, paths: dict | None = None) -> dict:
     """What was admitted by class, what was found and not admitted, and the zero-component sentence."""
     stored = _stored(registry, slug)
+    # `paths` is the caller's own read of the components ({path: component}); a request that already has
+    # it passes it so the recovery results are not rebuilt for each reader.
+    if paths is None:
+        paths = _component_paths(registry, slug)
     comps = apply_to_tree_components(registry, slug, [
-        c for c in _component_paths(registry, slug).values()
+        c for c in paths.values()
         if not c.get("structural") and c.get("path") not in ("", ".", "*")])
     counts = {adm.BUILT: 0, adm.SHIPPED: 0}
     for c in comps:
         k = c.get("admission") or adm.BUILT
         if k in counts:
             counts[k] += 1
-    refs = referenced_rows(registry, slug)
+    refs = referenced_rows(registry, slug, paths)
     admitted = sum(counts.values())
     left_out = list(stored.get("left_out") or [])
     # The referenced-only line is derived from the rows as they stand now (a reclassification moves one),
@@ -261,7 +265,7 @@ def summary(registry, slug: str) -> dict:
     # Entries that exist but do not apply: say which, never silently.
     reclass = read_reclassifications(registry, slug)
     units = {i["scope"]: (i.get("unit", ""), i.get("name", "")) for i in stored.get("referenced", [])}
-    units.update({p: (_unit_of(c), c.get("name") or "") for p, c in _component_paths(registry, slug).items()})
+    units.update({p: (_unit_of(c), c.get("name") or "") for p, c in paths.items()})
     for scope in sorted(reclass):
         if scope not in units:
             left_out.append(f"reclassification of {scope} no longer matches any node · not applied")

@@ -85,13 +85,16 @@ MIXED = """services:
 """
 
 
-def _mixed(tmp_path):
+def _mixed(tmp_path, prod=False):
     root = str(tmp_path / "mixed")
     _write(root, "docker/compose.yaml", MIXED)
     _write(root, "docker/api/Dockerfile", "FROM python:3.12\n")
     _write(root, "docker/api/start.sh", "#!/bin/sh\n")
     _write(root, "docker/worker/Dockerfile", "FROM python:3.12\n")
     _write(root, "docker/worker/start.sh", "#!/bin/sh\n")
+    if prod:       # the same api -> kafka link, declared again in a second artifact
+        _write(root, "docker/compose.prod.yaml", "services:\n  api:\n    build: ./api\n    depends_on: [kafka]\n"
+                                                  "  kafka:\n    image: apache/kafka:3.7.0\n")
     _git(root)
     return root
 
@@ -342,3 +345,130 @@ def test_the_header_says_what_the_table_does_not_read(registry, tmp_path):
     t = dt.build_table(registry, "mixed")
     assert t["not_derived"] == ("module-to-module requires not yet derived · "
                                 "reads/writes, endpoints and host:port not derived")
+
+
+# ── review fixes ───────────────────────────────────────────────────────────────────────────────
+
+def _mixed_two_artifacts(tmp_path):
+    return _mixed(tmp_path, prod=True)
+
+
+def test_one_link_in_two_artifacts_is_one_row_with_all_its_evidence(registry, tmp_path):
+    _survey(registry, "mixed", _mixed_two_artifacts(tmp_path))
+    hits = [r for r in _rows(registry, "mixed")
+            if (r["dependent"], r["relation"], r["target_name"]) == ("api", "connects_to", "kafka")]
+    assert len(hits) == 1
+    r = hits[0]
+    assert sorted(e["path"] for e in r["evidences"]) == ["docker/compose.prod.yaml", "docker/compose.yaml"]
+    assert all(e["line"] for e in r["evidences"]) and "docker/compose.prod.yaml" in r["evidence"] and len(r["keys"]) == 2
+
+
+def test_confirming_the_collapsed_row_once_publishes_one_annotation_without_the_refusal(registry, tmp_path):
+    from resource_explorer.surveyors.survey_report import assert_unique_qualified_names
+    _survey(registry, "mixed", _mixed_two_artifacts(tmp_path))
+    r = next(x for x in _rows(registry, "mixed") if (x["dependent"], x["target_name"]) == ("api", "kafka"))
+    # either member key is accepted; one confirmation covers the link
+    dt.record_confirmations(registry, "mixed", [r["keys"][0], r["keys"][1]], "confirmed", "dan")
+    anns = dt.runtime_annotations(registry, "mixed")
+    assert len(anns) == 1
+    assert_unique_qualified_names("run1", anns)
+    ev = json.loads(anns[0].resource_properties["evidence_list"]) if isinstance(
+        anns[0].resource_properties["evidence_list"], str) else anns[0].resource_properties["evidence_list"]
+    assert sorted(e["path"] for e in ev) == ["docker/compose.prod.yaml", "docker/compose.yaml"]
+
+
+def test_a_link_confirmed_under_the_old_per_evidence_key_still_reads_confirmed(registry, tmp_path):
+    _survey(registry, "mixed", _mixed_two_artifacts(tmp_path))
+    r = next(x for x in _rows(registry, "mixed") if (x["dependent"], x["target_name"]) == ("api", "kafka"))
+    old = "api->kafka@docker/compose.prod.yaml"
+    assert old in r["keys"]
+    registry.set_setting("repo_dependency_confirmations::mixed", json.dumps(
+        {old: [{"verdict": "confirmed", "by": "dan", "at": "2026-10-07T00:00:00+00:00"}]}))
+    r = next(x for x in _rows(registry, "mixed") if (x["dependent"], x["target_name"]) == ("api", "kafka"))
+    assert r["state"] == "confirmed" and r["by"] == "dan"
+    assert len(dt.runtime_annotations(registry, "mixed")) == 1
+    # a later withdrawal under the other key wins by order, not by which key it was recorded under
+    other = next(k for k in r["keys"] if k != old)
+    dt.record_confirmations(registry, "mixed", [other], "withdrawn", "mandy")
+    r = next(x for x in _rows(registry, "mixed") if (x["dependent"], x["target_name"]) == ("api", "kafka"))
+    assert r["state"] == "withdrawn" and r["by"] == "mandy"
+
+
+def test_the_whole_request_builds_the_nodes_and_reads_the_recovery_and_the_wires_once(registry, tmp_path, monkeypatch):
+    from resource_explorer.surveyors import repo_survey_definition_adapter as adapter
+    _survey(registry, "mixed", _mixed_two_artifacts(tmp_path))
+    calls = {"recovery": 0, "interfaces": 0}
+    real = adapter._architecture_recovery_results
+    monkeypatch.setattr(adapter, "_architecture_recovery_results",
+                        lambda *a, **k: (calls.__setitem__("recovery", calls["recovery"] + 1), real(*a, **k))[1])
+    real_q = registry.query_findings
+    monkeypatch.setattr(registry, "query_findings", lambda slug, kind, *a, **k: (
+        calls.__setitem__("interfaces", calls["interfaces"] + (kind == "architecture_interfaces")), real_q(slug, kind, *a, **k))[1])
+    dt.build_table(registry, "mixed")
+    # one rebuild of the recovery results (which itself reads the interfaces once) plus this module's ONE read
+    assert calls == {"recovery": 1, "interfaces": 2}, calls
+    calls.update(recovery=0, interfaces=0)
+    key = next(x for x in _rows(registry, "mixed") if x["target_name"] == "kafka" and x["dependent"] == "api")["key"]
+    calls.update(recovery=0, interfaces=0)
+    ctx = dt.Context(registry, "mixed")
+    dt.record_confirmations(registry, "mixed", [key], "confirmed", "dan", ctx=ctx)
+    dt.runtime_annotations(registry, "mixed", ctx=ctx)
+    dt.environment_wires(registry, "mixed", ctx=ctx)
+    dt.build_table(registry, "mixed", ctx=ctx)
+    # one rebuild of the recovery results (which itself reads the interfaces once) plus this module's ONE read
+    assert calls == {"recovery": 1, "interfaces": 2}, calls
+
+
+def test_the_confirm_limits_say_a_sentence_and_a_reason_is_stored(registry, tmp_path):
+    _survey(registry, "mixed", _mixed(tmp_path))
+    key = next(x for x in _rows(registry, "mixed") if x["target_name"] == "kafka" and x["dependent"] == "api")["key"]
+    with pytest.raises(ValueError, match="at most 200"):
+        dt.record_confirmations(registry, "mixed", [f"k{i}" for i in range(201)], "confirmed", "dan")
+    with pytest.raises(ValueError, match="512"):
+        dt.record_confirmations(registry, "mixed", ["x" * 513], "confirmed", "dan")
+    with pytest.raises(ValueError, match="500"):
+        dt.record_confirmations(registry, "mixed", [key], "confirmed", "dan", reason="r" * 501)
+    assert dt.record_confirmations(registry, "mixed", [key, key, key], "confirmed", "dan", reason="seen in prod") == 1
+    assert len(registry.list_settings_with_prefix("repo_dependency_confirmations::mixed::")) == 1
+    r = next(x for x in _rows(registry, "mixed") if x["key"] == key)
+    assert r["reason"] == "seen in prod"
+    (a,) = dt.runtime_annotations(registry, "mixed")
+    assert a.resource_properties["confirm_reason"] == "seen in prod"
+
+
+def test_a_withdrawn_row_says_it_affects_future_surveys_only(registry, tmp_path):
+    _survey(registry, "mixed", _mixed(tmp_path))
+    key = next(x for x in _rows(registry, "mixed") if x["target_name"] == "kafka" and x["dependent"] == "api")["key"]
+    dt.record_confirmations(registry, "mixed", [key], "withdrawn", "dan")
+    r = next(x for x in _rows(registry, "mixed") if x["key"] == key)
+    assert "future surveys only" in r["state_words"]
+
+
+def test_the_confirm_route_checks_401_then_404_then_403_then_400(registry, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from resource_explorer.workflows.curate import CurationDenied
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+    user = {"user_id": "dan"}
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: user)
+    from resource_explorer.web.app import app
+    client = TestClient(app)
+    _survey(registry, "mixed", _mixed(tmp_path))
+    key = next(x for x in _rows(registry, "mixed") if x["target_name"] == "kafka" and x["dependent"] == "api")["key"]
+
+    def deny(*a, **k):
+        raise CurationDenied("not a curator of this resource")
+    monkeypatch.setattr("resource_explorer.web.routes.curate._require_curation_rights", deny)
+    url = "/api/projects/mixed/dependencies/confirm"
+    assert client.post("/api/projects/nope/dependencies/confirm", json={"keys": [key]}).status_code == 404
+    denied = client.post(url, json={"keys": ["bogus"]})
+    assert denied.status_code == 403 and "curator" in denied.json()["detail"]      # 403 before the 400 on a bad key
+    assert registry.list_settings_with_prefix("repo_dependency_confirmations::mixed::") == []
+    monkeypatch.setattr("resource_explorer.web.routes.curate._require_curation_rights", lambda *a, **k: None)
+    assert client.post(url, json={"keys": ["bogus"]}).status_code == 400
+    assert client.post(url, json={"keys": [key], "reason": "r" * 501}).status_code == 400
+    assert client.post(url, json={"keys": [key], "reason": "ok"}).status_code == 200
+    user = None
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: None)
+    assert client.post(url, json={"keys": [key]}).status_code == 401

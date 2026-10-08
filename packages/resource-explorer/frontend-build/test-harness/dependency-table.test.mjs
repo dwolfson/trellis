@@ -205,3 +205,11 @@ test('the header says what the table does not read, so an absence is never read 
   assert.equal(text(box.querySelector('[data-dep-not-derived]')),
     'module-to-module requires not yet derived · reads/writes, endpoints and host:port not derived');
 });
+
+test('withdraw says it affects future surveys only', async () => {
+  const { m, document } = await mod();
+  const box = document.createElement('div');
+  const confirmed = { ...DATA, rows: [{ ...DATA.rows[2], state: 'confirmed', state_words: 'confirmed · by dan · from docker-compose.yml' }] };
+  box.innerHTML = m.dependencyTableHtml(confirmed, {}, { confirmable: true, me: 'dan' });
+  assert.match(box.querySelector('[data-dep-withdraw]').title, /future surveys only/);
+});
