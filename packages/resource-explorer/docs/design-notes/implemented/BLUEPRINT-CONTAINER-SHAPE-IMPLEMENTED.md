@@ -103,3 +103,47 @@ A blueprint adopted under a legacy name keeps carrying the root name until it is
 
 Deleting a stale `architecture_materialized_blueprints` row when the same qualifiedName is re-recorded is
 fine: that table is a cache of Egeria elements, not a proof or a decision, and proof rows are never deleted.
+
+### Provenance, typed search and adoption (review round)
+
+**Provenance.** On every SolutionBlueprint it creates, RE writes in `additionalProperties`: `re_entity_type`,
+`re_slug`, `re_kind`, `re_cluster_key` (RE's internal cluster key, the registry column), `re_identifier` (only
+when a person gave one) and `re_version` ("1", the format of this provenance). The element is the record; the
+registry is its cache. A displayName changes with the suffix ruling and later classification, and the reset
+script clears registry rows by design, but a property RE wrote survives both.
+
+**Adopting an element found by qualifiedName** (no usable cache row for this cluster):
+
+* (a) `re_cluster_key` equals this cluster's: adopt, and rewrite the lost registry row.
+* (b) `re_cluster_key` present and different: refuse, "an element named <qn> already exists in Egeria for
+  another cluster (<its key>) · give this one an identifier"; nothing created or attached. A renamed root
+  cluster therefore also asks for an identifier rather than taking the old cluster's element.
+* (c) no provenance (not RE-made, or made before it): adopt only when the displayName equals what this
+  cluster would produce and no other cluster's row records the qualifiedName; otherwise refuse, "an element
+  named <qn> already exists in Egeria and RE cannot tell which cluster it is for · give this one an
+  identifier". A displayName that has legitimately changed since the create lands here and is refused.
+
+Each adoption and each refusal writes an activity row with the GUID. The legacy-named adoption row is written
+once per adopted blueprint (not on every cache hit) and carries the repository scope on the feed.
+
+**The search is typed and verified.** `get_guid_for_name(qn, property_name=["qualifiedName"],
+type_name="SolutionBlueprint")`, then the hit is read back: type SolutionBlueprint and an exactly equal
+qualifiedName, else nothing is adopted or created. More than one hit (pyegeria raises on it) is reported as
+ambiguous, not as a failed search.
+
+**Uniqueness** of a person's identifier is checked on the resulting Egeria identifier, so `a b` and `a-b`, or
+`X` and `x`, are the same identity and the second is refused as already used. Re-recording a row under a
+qualifiedName another cluster's row held replaces that row and says whose, in the activity log.
+
+**Known stale state (not fixed).** A takeover after the accept pane rendered leaves `needs_identifier` stale
+until the pane reloads.
+
+### Unverified live (review round)
+
+* Egeria persisting `additionalProperties` on a SolutionBlueprint create, and returning them from
+  `get_solution_blueprint_by_guid` under the "Solution-Blueprint" report spec (pyegeria's raw shape is
+  `properties.additionalProperties`; a formatted one `additional_properties`). If the read omits them, every
+  existing element falls to rule (c), which is the safe side.
+* That the typed search (`property_name=["qualifiedName"]`, `type_name="SolutionBlueprint"`) matches an exact
+  qualifiedName, and that the read-back carries `typeName` (an absent type is accepted when the qualifiedName
+  matches).

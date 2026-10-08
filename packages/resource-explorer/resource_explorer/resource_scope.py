@@ -21,6 +21,11 @@ SURVEY_KIND = "repo_sub_resource_survey"
 #: The word on a row whose folder holds an included file but is not itself included.
 CONTAINER_WORDS = "needed as a container · not an asset of its own"
 
+#: The survey reason of a folder that is worthy ONLY because a worthy file lives in it (it has no merit of its
+#: own). It is a holder, never a proposal. Read from the stored reason, so surveys stored before this rule
+#: render the same without a re-survey.
+HOLDER_ONLY_REASON = "container_for_worthy_file"
+
 
 def _ancestors(locator: str) -> list[str]:
     from resource_explorer.surveyors.sub_surveyors import ancestor_folder_paths
@@ -97,7 +102,9 @@ def build_view(registry, slug: str) -> dict:
             "by": ev.get("author", ""), "at": ev.get("changed_at", ""),
             "cleared": bool(ev) and not choice,
             "role": "container" if loc in containers else "",
-            "proposed": bool(c) and c["label"] == "worthy" and not choice,
+            "proposed": bool(c) and c["label"] == "worthy" and not choice
+                        and c["reason"] != HOLDER_ONLY_REASON,
+            "holder_only": bool(c) and c["reason"] == HOLDER_ONLY_REASON,
             "published": published.get(loc),
         })
 

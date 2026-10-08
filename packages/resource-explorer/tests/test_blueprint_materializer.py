@@ -182,6 +182,10 @@ class TestIdempotency:
         m._automated_curation.get_guid_for_name.return_value = [
             "33333333-3333-3333-3333-333333333333"
         ]
+        m._solution_architect.get_solution_blueprint_by_guid.return_value = {
+            "elementHeader": {"type": {"typeName": "SolutionBlueprint"}},
+            "properties": {"qualifiedName": "SolutionBlueprint::repo::myproj::deployment",
+                           "displayName": "svc cluster"}}
         result = m.materialize_blueprint_element(
             "repo", "myproj", "deployment", "svc-cluster", display_name="svc cluster",
         )

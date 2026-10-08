@@ -5260,6 +5260,12 @@ class ProjectRegistry:
             "materialized_at": datetime.now(timezone.utc).isoformat(),
         }
         with self._conn() as conn:
+            # Another cluster's cache row under this same qualifiedName is about to be replaced: say whose.
+            displaced = [r["cluster_name"] for r in conn.execute(
+                """SELECT cluster_name, perspective FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=? AND qualified_name=?""",
+                (entity_type, entity_slug, qualified_name)).fetchall()
+                if not (r["cluster_name"] == cluster_name and r["perspective"] == perspective)]
             conn.execute(
                 """DELETE FROM architecture_materialized_blueprints
                    WHERE entity_type=? AND entity_slug=? AND perspective=? AND cluster_name=?""",
@@ -5278,7 +5284,10 @@ class ProjectRegistry:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(entry.values()),
             )
-        return entry
+        if displaced:
+            log.warning("blueprint cache: %s/%s %s re-keyed to cluster %r, displacing %s",
+                        entity_type, entity_slug, qualified_name, cluster_name, displaced)
+        return {**entry, "displaced": displaced}
 
     def get_materialized_port(
         self, entity_type: str, entity_slug: str, scope_locator: str, port_name: str,

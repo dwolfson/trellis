@@ -23,7 +23,12 @@ def _m(find=None):
     m._solution_architect = MagicMock()
     m._automated_curation = MagicMock()
     m._connect = MagicMock()
-    m._automated_curation.get_guid_for_name.side_effect = find or (lambda qn: [])
+    m._automated_curation.get_guid_for_name.side_effect = (
+        (lambda qn, **kw: find(qn)) if find else (lambda qn, **kw: []))
+    m._solution_architect.get_solution_blueprint_by_guid.side_effect = lambda guid: {
+        "elementHeader": {"type": {"typeName": "SolutionBlueprint"}},
+        "properties": {"qualifiedName": "SolutionBlueprint::repo::egeria_git::deployment::core",
+                       "displayName": "Egeria Deployment Blueprint"}}
     m._solution_architect.create_solution_blueprint.return_value = GUID
     return m
 
