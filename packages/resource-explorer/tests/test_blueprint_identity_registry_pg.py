@@ -48,3 +48,13 @@ def test_another_slugs_row_under_the_same_qualified_name_is_untouched(pg_registr
     pg_registry.record_materialized_blueprint("repo", mine, "deployment", "c2", shared, G2)
     assert pg_registry.get_materialized_blueprint_by_identity("repo", other, shared)["guid"] == G3
     assert pg_registry.get_materialized_blueprint_by_identity("repo", mine, shared)["guid"] == G2
+
+
+def test_re_recording_returns_the_cluster_it_displaced(pg_registry):
+    slug = "bpid_pg_displaced"
+    first = pg_registry.record_materialized_blueprint("repo", slug, "deployment", "web", _qn(slug), G1)
+    assert first["displaced"] == []
+    second = pg_registry.record_materialized_blueprint("repo", slug, "deployment", "db", _qn(slug), G1)
+    assert second["displaced"] == ["web"]
+    again = pg_registry.record_materialized_blueprint("repo", slug, "deployment", "db", _qn(slug), G1)
+    assert again["displaced"] == []

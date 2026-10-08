@@ -105,6 +105,15 @@ class BlueprintIdentifierNeeded(BlueprintMaterializationError):
     search or create: nothing was written. The message is the sentence the pane shows."""
 
 
+class BlueprintAmbiguous(BlueprintMaterializationError):
+    """More than one element answers to the qualifiedName searched. Fail safe: nothing is adopted or created."""
+
+
+#: The provenance RE writes on every SolutionBlueprint it creates (additionalProperties). The element is the
+#: record; the registry is only its cache, so a cleared row is rebuilt from these.
+PROVENANCE_VERSION = "1"
+
+
 class BlueprintMaterializer:
     """Owns its own lightweight Egeria connection rather than reusing
     EgeriaPublisher or ComponentMaterializer — mirrors ComponentMaterializer's
@@ -211,19 +220,179 @@ class BlueprintMaterializer:
         created under it. The identity RE writes is `blueprint_kinds.identity_qualified_name` (kind + repository)."""
         return f"SolutionBlueprint::{entity_type}::{entity_slug}::{perspective}::{cluster_name}"
 
-    def _log_legacy_adoption(self, entity_type: str, entity_slug: str, guid: str) -> None:
-        """Say, in the activity log, why a blueprint still carries a root name. Never raises: it is the
-        visibility mechanism, not the work."""
+    def _activity(self, entity_type: str, entity_slug: str, summary: str, *, name: str = "",
+                  location: str = "", status: str = "ok") -> None:
+        """One activity row on the repository's feed. Never raises: it is the visibility mechanism, not the work."""
         if not self._registry:
             return
         try:
             from resource_explorer.activity_logger import log_catalog
-            log_catalog(
-                self._registry, entity_type, entity_slug, "", "", status="ok",
-                summary=f"adopted legacy-named blueprint {guid} \u00b7 delete it in Egeria to recreate under the new name",
-            )
+            log_catalog(self._registry, entity_type, entity_slug, name, location, status=status, summary=summary)
         except Exception:
-            log.warning("could not write the legacy-adoption activity row for %s", guid, exc_info=True)
+            log.warning("could not write the activity row: %s", summary, exc_info=True)
+
+    def _already_logged(self, entity_type: str, entity_slug: str, needle: str) -> bool:
+        try:
+            rows = self._registry.list_activity(entity_type=entity_type, entity_slug=entity_slug,
+                                                operation="catalog", limit=500)
+            return any(needle in (r.get("summary") or "") for r in rows)
+        except Exception:
+            return False
+
+    def _log_legacy_adoption(self, entity_type: str, entity_slug: str, guid: str, *, name: str = "",
+                             location: str = "") -> None:
+        """Say, once per adopted blueprint, why it still carries a root name (never on a repeat cache hit)."""
+        if not self._registry:
+            return
+        summary = f"adopted legacy-named blueprint {guid} \u00b7 delete it in Egeria to recreate under the new name"
+        if self._already_logged(entity_type, entity_slug, f"adopted legacy-named blueprint {guid}"):
+            return
+        self._activity(entity_type, entity_slug, summary, name=name, location=location)
+
+    def _record(self, entity_type, entity_slug, perspective, cluster_name, qualified_name, guid) -> None:
+        """Record the cache row; say so when it displaced another cluster's row under the same qualifiedName."""
+        if not self._registry:
+            return
+        entry = self._registry.record_materialized_blueprint(
+            entity_type, entity_slug, perspective, cluster_name, qualified_name, guid)
+        displaced = entry.get("displaced") if isinstance(entry, dict) else None
+        if displaced:
+            self._activity(entity_type, entity_slug,
+                           f"blueprint {qualified_name} re-keyed to cluster {cluster_name!r}; displaced the cached "
+                           f"row of cluster(s) {', '.join(repr(d) for d in displaced)}",
+                           name=cluster_name, location=qualified_name)
+
+    @staticmethod
+    def _additional_properties(element) -> dict:
+        """The additionalProperties of an element read by GUID, raw (`properties.additionalProperties`) or
+        formatted (`additionalProperties` / `additional_properties`). {} when the answer carries none."""
+        if not isinstance(element, dict):
+            return {}
+        props = element.get("properties") if isinstance(element.get("properties"), dict) else {}
+        for source in (props, element):
+            for key in ("additionalProperties", "additional_properties"):
+                value = source.get(key)
+                if isinstance(value, dict):
+                    return value
+        return {}
+
+    def _find_blueprint(self, qualified_name: str) -> dict | None:
+        """The SolutionBlueprint whose qualifiedName is EXACTLY this, or None. The search is restricted to the
+        qualifiedName property and the SolutionBlueprint type, and the hit is READ BACK and verified (type
+        SolutionBlueprint, qualifiedName equal): a hit that fails is not ours and raises, because creating
+        beside it could duplicate the qualifiedName. More than one hit is `BlueprintAmbiguous`.
+        Returns {guid, display_name, additional}."""
+        try:
+            result = self._automated_curation.get_guid_for_name(
+                qualified_name, property_name=["qualifiedName"], type_name="SolutionBlueprint")
+        except Exception as exc:
+            text = f"{exc} {getattr(exc, 'context', '')}"
+            if "Multiple elements" in text or "more than one" in text.lower():
+                raise BlueprintAmbiguous(
+                    f"ambiguous: more than one element in Egeria answers to {qualified_name}: "
+                    f"nothing was adopted or created") from exc
+            raise
+        guid = ""
+        if isinstance(result, list) and result:
+            if len(result) > 1:
+                raise BlueprintAmbiguous(
+                    f"ambiguous: more than one element in Egeria answers to {qualified_name}: "
+                    f"nothing was adopted or created")
+            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
+            guid = candidate if _UUID_RE.match(candidate or "") else ""
+        elif isinstance(result, str) and _UUID_RE.match(result):
+            guid = result
+        if not guid:
+            return None
+        element = self._solution_architect.get_solution_blueprint_by_guid(guid)
+        type_name, found_qn = self._element_type_and_qn(element)
+        if found_qn != qualified_name or (type_name and type_name != "SolutionBlueprint"):
+            raise BlueprintMaterializationError(
+                f"the element {guid} found for {qualified_name} is not that SolutionBlueprint "
+                f"(type {type_name or 'unknown'}, qualifiedName {found_qn or 'unreadable'}): nothing was created")
+        props = element.get("properties") if isinstance(element.get("properties"), dict) else {}
+        display = (props.get("displayName") or element.get("displayName") or element.get("display_name") or "")
+        return {"guid": guid, "display_name": display, "additional": self._additional_properties(element)}
+
+    def _identity_clash(self, entity_type, entity_slug, perspective, cluster_name, identifier, live_clusters):
+        """The registry row of ANOTHER live cluster whose identity gives the same Egeria identifier as the one
+        asked for (`EGERIA-GIT-DEPLOYMENT[-<IDENTIFIER>]`, case and separators collapsed), or None."""
+        from resource_explorer.blueprint_kinds import (
+            identity_property,
+            identity_qualified_name,
+            legacy_qualified_names,
+        )
+        rows = self._registry.get_materialized_blueprints(entity_type, entity_slug)
+        if not isinstance(rows, dict):
+            return None
+        want = identity_property(entity_slug, perspective, identifier)
+        prefix = identity_qualified_name(entity_type, entity_slug, perspective)
+        for row in rows.values():
+            if row.get("cluster_name") == cluster_name and row.get("perspective") == perspective:
+                continue
+            if live_clusters is not None and row.get("cluster_name") not in live_clusters:
+                continue
+            qn = row.get("qualified_name") or ""
+            if qn in legacy_qualified_names(entity_type, entity_slug, row.get("perspective", ""),
+                                            row.get("cluster_name", "")):
+                continue
+            if qn == prefix:
+                theirs = ""
+            elif qn.startswith(prefix + "::"):
+                theirs = qn[len(prefix) + 2:]
+            else:
+                continue
+            if identity_property(entity_slug, perspective, theirs) == want:
+                return row
+        return None
+
+    def _decide_adoption(self, entity_type, entity_slug, perspective, cluster_name, qualified_name,
+                         identifier, display_name, found) -> None:
+        """An element exists under the NEW qualifiedName and this cluster has no usable cache row. Adopt it, or
+        refuse (raise), and say which in the activity log. Provenance RE wrote on the element is the PRIMARY
+        rule; the displayName is the FALLBACK for an element without it.
+
+        (a) re_cluster_key equals this cluster's: adopt (the caller rewrites a lost row: the element is the
+            record, the registry its cache).
+        (b) re_cluster_key present and different: refuse, nothing created or attached.
+        (c) no provenance (not RE-made, or made before it): adopt only when the displayName equals what this
+            cluster would produce and no other cluster's row records the qualifiedName; else refuse.
+        """
+        from resource_explorer.blueprint_kinds import kind_word
+        guid, prov = found["guid"], found["additional"]
+        key = prov.get("re_cluster_key")
+        why = ""
+        if key == cluster_name and key is not None:
+            self._activity(entity_type, entity_slug,
+                           f"adopted blueprint {guid} named {qualified_name} for cluster {cluster_name!r} "
+                           "\u00b7 matched by the provenance RE wrote on it",
+                           name=display_name, location=qualified_name)
+            return
+        if key:
+            why = (f"an element named {qualified_name} already exists in Egeria for another cluster ({key}) "
+                   "\u00b7 give this one an identifier")
+        else:
+            others = []
+            if self._registry:
+                rows = self._registry.get_materialized_blueprints(entity_type, entity_slug)
+                if isinstance(rows, dict):
+                    others = [r for r in rows.values() if r.get("qualified_name") == qualified_name
+                              and not (r.get("cluster_name") == cluster_name and r.get("perspective") == perspective)]
+            if found["display_name"] == display_name and not others:
+                self._activity(entity_type, entity_slug,
+                               f"adopted blueprint {guid} named {qualified_name} for cluster {cluster_name!r} "
+                               "\u00b7 no provenance on it; matched by its displayName",
+                               name=display_name, location=qualified_name)
+                return
+            why = (f"an element named {qualified_name} already exists in Egeria and RE cannot tell which "
+                   "cluster it is for \u00b7 give this one an identifier")
+        self._activity(entity_type, entity_slug,
+                       f"refused to adopt blueprint {guid} named {qualified_name} for cluster {cluster_name!r}: "
+                       f"{why}", name=display_name, location=qualified_name, status="failed")
+        if identifier:
+            why = why.replace("give this one an identifier", "give this one a different identifier")
+            raise BlueprintMaterializationError(f"{why}: nothing was created")
+        raise BlueprintIdentifierNeeded(why)
 
     def materialize_blueprint_element(
         self,
@@ -284,6 +453,7 @@ class BlueprintMaterializer:
         # search call, let alone a create. The cluster's own row is read whatever name it was written
         # under (the registry's (..., perspective, cluster_name) key is the legacy key, read through the
         # mapping: a row whose qualifiedName is one of the old forms is an ADOPTED legacy blueprint).
+        # The adoption was logged when it happened; a repeat cache hit logs nothing.
         if self._registry:
             cached = self._registry.get_materialized_blueprint(
                 entity_type, entity_slug, perspective, cluster_name
@@ -296,20 +466,16 @@ class BlueprintMaterializer:
                 hit = {"status": "already_materialized", "guid": cached["guid"],
                        "qualified_name": cached["qualified_name"]}
                 if not verify_cached:
-                    if cached["qualified_name"] in legacy_names:
-                        self._log_legacy_adoption(entity_type, entity_slug, cached["guid"])
                     return hit
                 self._ensure_connected()
                 if self.blueprint_exists(cached["guid"]):
-                    if cached["qualified_name"] in legacy_names:
-                        self._log_legacy_adoption(entity_type, entity_slug, cached["guid"])
                     return hit
 
-            # A second blueprint of the kind: another LIVE cluster already holds this identity.
-            other = self._registry.get_materialized_blueprint_by_identity(
-                entity_type, entity_slug, qualified_name)
-            if (isinstance(other, dict) and other.get("cluster_name") != cluster_name
-                    and (live_clusters is None or other.get("cluster_name") in live_clusters)):
+            # A second blueprint of the kind: another LIVE cluster already holds an identity that gives the
+            # same Egeria identifier (case and separators collapsed, as `identity_property` does).
+            clash = self._identity_clash(entity_type, entity_slug, perspective, cluster_name, identifier,
+                                         live_clusters)
+            if clash:
                 if not identifier:
                     raise BlueprintIdentifierNeeded(identifier_needed_sentence(perspective, entity_slug))
                 raise BlueprintMaterializationError(
@@ -325,26 +491,29 @@ class BlueprintMaterializer:
         # blueprint that is there (an outage, an index lag). Refuse instead.
         adopted_legacy = False
         try:
-            existing_guid = self._find_element_guid(qualified_name)
-            if not existing_guid:
+            found = self._find_blueprint(qualified_name)
+            if not found:
                 for legacy in legacy_names:
-                    existing_guid = self._find_element_guid(legacy)
-                    if existing_guid:
+                    found = self._find_blueprint(legacy)
+                    if found:
                         qualified_name, adopted_legacy = legacy, True
                         break
+        except BlueprintMaterializationError:
+            raise
         except Exception as exc:
             raise BlueprintMaterializationError(
                 f"could not search Egeria for the blueprint by qualifiedName ({type(exc).__name__}): "
                 f"nothing was created") from exc
-        if existing_guid:
-            if self._registry:
-                self._registry.record_materialized_blueprint(
-                    entity_type, entity_slug, perspective, cluster_name, qualified_name, existing_guid,
-                )
+        if found:
+            guid = found["guid"]
+            if not adopted_legacy:
+                self._decide_adoption(entity_type, entity_slug, perspective, cluster_name, qualified_name,
+                                      identifier, display_name, found)
+            self._record(entity_type, entity_slug, perspective, cluster_name, qualified_name, guid)
             if adopted_legacy:
-                self._log_legacy_adoption(entity_type, entity_slug, existing_guid)
-            return {"status": "already_materialized", "guid": existing_guid,
-                    "qualified_name": qualified_name}
+                self._log_legacy_adoption(entity_type, entity_slug, guid, name=display_name,
+                                          location=qualified_name)
+            return {"status": "already_materialized", "guid": guid, "qualified_name": qualified_name}
 
         properties: dict = {
             "class": "SolutionBlueprintProperties",
@@ -379,6 +548,15 @@ class BlueprintMaterializer:
         # real element a curator just decided is real, so it rides in
         # additionalProperties rather than inventing a typed field.
         additional = {"recoveredBy": "architecture_recovery"}
+        # Provenance (architect's ruling, 2026-10-08): what RE needs to recognise this element as its own
+        # and as THIS cluster's, surviving a cleared registry row and a changed displayName.
+        from resource_explorer.blueprint_kinds import kind_key
+        additional.update({
+            "re_entity_type": entity_type, "re_slug": entity_slug, "re_kind": kind_key(perspective),
+            "re_cluster_key": cluster_name, "re_version": PROVENANCE_VERSION,
+        })
+        if identifier:
+            additional["re_identifier"] = identifier
         if oversized:
             additional["oversized"] = "true"
         properties["additionalProperties"] = additional
@@ -429,10 +607,7 @@ class BlueprintMaterializer:
                 f"Egeria returned no usable GUID for the new SolutionBlueprint (got {guid!r})"
             )
 
-        if self._registry:
-            self._registry.record_materialized_blueprint(
-                entity_type, entity_slug, perspective, cluster_name, qualified_name, guid,
-            )
+        self._record(entity_type, entity_slug, perspective, cluster_name, qualified_name, guid)
         return {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
 
     # ── the shape writes (DESIGN-BLUEPRINT-BENCHMARK-EGERIA-WORKSPACES.md 6a) ─────────────────────────────
