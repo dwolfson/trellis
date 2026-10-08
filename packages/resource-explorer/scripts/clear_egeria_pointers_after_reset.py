@@ -16,6 +16,9 @@ APPLY needs ALL of these, and refuses (exit 2, saying which) when any is missing
     --apply  --plan-file <the dry run's file>  --plan-hash <hash it printed>
     --database <name>              the registry database name, passed again; must equal the one in
                                    REGISTRY_DATABASE_URL
+    --schema <name>                the schema from that URL's ?options=-csearch_path=..., passed again (a
+                                   Postgres URL with none is refused, dry run and apply; on SQLite the schema is
+                                   'main' and the flag is optional, or must equal 'main')
     --cleared-by <who>/<UTC>       e.g. dwolfson/2026-10-08T19:05Z; recorded in an activity_log row
     and: the plan file is recent (--max-plan-age-minutes, default 15) and was made for this database; the plan
     recomputed from the live data now has the SAME hash (anything that changed since the dry run refuses); no
@@ -40,6 +43,21 @@ What it does (all in RE's registry; no Egeria call; no DDL; no proof row is ever
   MARKERS: ONE catalogue_commit_proofs row per resource that has proofs or a "Published" badge row, proof kind 'egeria_reset', read_at = the
         reset time, text "Egeria reset <when> · old collection id → new". Status derives from it (see
         catalogue_commit.derive_commit_state).
+
+KEPT ON PURPOSE: the qualified-name mirrors (investigations.egeria_project_qualified_name,
+working_sets.egeria_collection_qualified_name, entity_egeria_project_context.egeria_project_qualified_name). A
+rebind recreates the Egeria project or collection under the SAME name (architect's ruling), so the name is the
+decision and only the GUID is the pointer. Status VALUES are not this script's business beyond what is written
+here; the stacked branch that owns the status vocabulary decides them.
+
+ORDER: the egeria_reset markers are written FIRST. They are INSERT-only and idempotent, so if a later group
+fails the screens already say "Egeria was reset" instead of showing cleared pointers with no explanation; a
+re-run (after a fresh dry run) skips the markers already there and finishes the rest. A failure names the failing
+group and the groups that had committed, and prints no traceback.
+
+--skip-missing-table work_lists: work_lists is created lazily by its own module, so on a fresh schema it may not
+exist. The run refuses by default; the flag skips it (only if it is really missing), and the skip is recorded in
+the plan (so the hash), the dry-run text and the activity row.
 
 KEPT UNTOUCHED: every proof row, verdicts, both scope tables, enrichment and answers, journal,
 reclassifications, groups, work list members, native_survey_annotations (GUIDs included: they are measurements
@@ -70,7 +88,10 @@ from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS
 # the publish gate treats `unbound` exactly as `unset`.
 
 OUTBOX_TERMINAL = ("done", "dead", "superseded", "cancelled")
-SETTING_PREFIXES = ("egeria_register_claim::", "egeria_server_claim::", "egeria_server_unconfirmed::")
+SETTING_PREFIXES = ("egeria_register_claim::", "egeria_server_claim::", "egeria_server_unconfirmed::",
+                    "egeria_server_guid::", "egeria_server_cred_slug::", "egeria_asset_guid::")
+#: Tables created lazily by their own module; the only ones --skip-missing-table accepts.
+LAZY_TABLES = ("work_lists",)
 SETTING_KEYS = ("egeria.github_source_control_library_guid",)
 PROOF_KIND = "egeria_reset"
 
@@ -91,6 +112,8 @@ CLEAR_SPECS = [
      {"egeria_project_guid": "", "status": UNBOUND_STATUS}, ["egeria_project_guid"]),
     ("working_sets", ["slug"], {"egeria_collection_guid": ""}, None),
     ("work_lists", ["slug"], {"egeria_guid": "", "published_at": ""}, None),
+    # a pointer: the Egeria NotificationType element (empty on every row today, so normally nothing to clear)
+    ("notification_subscriptions", ["id"], {"egeria_notification_type_guid": ""}, None),
     ("doc_sources", ["id"], {"egeria_external_ref_guid": "", "egeria_link_relationship_guid": ""}, None),
     ("rfa_actions", ["id"], {"egeria_todo_guid": "", "egeria_notelog_guid": ""}, None),
     ("database_surveys", ["id"], {"egeria_report_guid": ""}, None),
@@ -111,11 +134,20 @@ DELETE_SPECS = [
 EXTRA_READS = {
     "app_settings": ["key", "value"], "egeria_outbox": ["id", "status", "element_kind", "entity_slug"],
     "catalogue_commit_proofs": ["id", "database_slug", "proof", "read_at", "node_kind"],
+    "egeria_outbox_snapshot": ["claimed_at", "next_attempt_at", "completed_at", "last_error"],
     "activity_log": ["id", "status", "detail"], "runs": ["id", "state"],
     "databases": ["slug"], "projects": ["slug"], "file_systems": ["slug"],
 }
 
 NODE_DATABASE, NODE_REPO, NODE_OTHER = "database", "repo_report", "resource"
+
+
+class ApplyFailed(Exception):
+    """A table group failed. Names it and the groups that had already committed."""
+
+    def __init__(self, group: str, committed: list, exc: Exception):
+        super().__init__(f"{type(exc).__name__} in group {group}")
+        self.group, self.committed, self.exc_type = group, committed, type(exc).__name__
 
 
 class Refused(Exception):
@@ -139,6 +171,20 @@ def database_name(url: str) -> str:
     return (urlsplit(url).path or "/").lstrip("/") or "?"
 
 
+def target_schema(url: str) -> str:
+    """The schema unqualified table names resolve in: the search_path named by the URL's options (the
+    registry's own parser). SQLite is always 'main'. A Postgres URL with none is refused: the tables would
+    resolve in `public`, which is not where RE keeps them."""
+    if url.startswith("sqlite"):
+        return "main"
+    from resource_explorer.registry_label import _search_path
+    schema = _search_path(urlsplit(url).query)
+    if not schema:
+        raise Refused("REGISTRY_DATABASE_URL names no schema (no ?options=-csearch_path=<schema>); the script "
+                      "will not run against whatever schema the server defaults to")
+    return schema
+
+
 def connect(url: str):
     from sqlalchemy import create_engine
     from resource_explorer.registry import ConnectionWrapper
@@ -152,15 +198,32 @@ def connect(url: str):
     return ConnectionWrapper(raw, is_pg)
 
 
-def check_schema(conn) -> None:
-    """Every table and column the script touches must exist. A missing one stops the run, naming it."""
+def _missing_table(conn, table: str) -> bool:
+    try:
+        conn.execute(f"SELECT 1 FROM {table} WHERE 1 = 0").fetchall()
+        return False
+    except Exception:
+        conn.raw_conn.rollback()
+        return True
+
+
+def check_schema(conn, skip: tuple = ()) -> list[str]:
+    """Every table and column the script touches must exist. A missing one stops the run, naming it.
+    A lazily-created table (LAZY_TABLES) that is really missing and named in `skip` is skipped and returned."""
+    skipped = [t for t in skip if t in LAZY_TABLES and _missing_table(conn, t)]
+    for t in LAZY_TABLES:
+        if t not in skipped and _missing_table(conn, t):
+            raise Refused(f"table {t} does not exist yet (created by its own module): nothing to clear there; "
+                          f"re-run after creating it, or pass --skip-missing-table {t}")
     want: dict[str, set] = {}
     for table, keys, setcols, trig, *_ in CLEAR_SPECS:
+        if table in skipped:
+            continue
         want.setdefault(table, set()).update(keys, setcols, trig or [])
     for table, keys in DELETE_SPECS:
         want.setdefault(table, set()).update(keys)
     for table, cols in EXTRA_READS.items():
-        want.setdefault(table, set()).update(cols)
+        want.setdefault("egeria_outbox" if table == "egeria_outbox_snapshot" else table, set()).update(cols)
     for table in sorted(want):
         for col in sorted(want[table]):
             try:
@@ -169,6 +232,7 @@ def check_schema(conn) -> None:
                 conn.raw_conn.rollback()
                 raise Refused(f"schema check failed: {table}.{col} is not readable "
                               f"({type(exc).__name__}); the script will not guess. Nothing was written.") from exc
+    return skipped
 
 
 # ── time ─────────────────────────────────────────────────────────────────────
@@ -193,6 +257,10 @@ def human_when(reset_at: str) -> str:
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
+def _ts(iso) -> str:
+    return str(iso or "").replace(" ", "T")[:19]
+
+
 def _nonempty(col: str) -> str:
     return f"({col} IS NOT NULL AND {col} <> '')"
 
@@ -201,9 +269,13 @@ def _rows(conn, sql: str, params=()) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> dict:
+def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, schema: str = "main",
+               skipped: list | None = None) -> dict:
     actions = []
+    skipped = sorted(skipped or [])
     for table, keys, setcols, trig, *more in CLEAR_SPECS:
+        if table in skipped:
+            continue
         extra = more[0] if more else ""
         suffix = f":{more[1]}" if len(more) > 1 else ""
         trig = trig or list(setcols)
@@ -223,7 +295,8 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> d
     actions.append({"id": "delete:app_settings", "kind": "delete_rows", "table": "app_settings", "keys": ["key"],
                     "rows": hit, "count": len(hit)})
 
-    ob = _rows(conn, "SELECT id, entity_slug, element_kind, status FROM egeria_outbox ORDER BY id")
+    ob = _rows(conn, "SELECT id, entity_slug, element_kind, status, last_error, claimed_at, next_attempt_at, "
+               "completed_at FROM egeria_outbox ORDER BY id")
     pending = [r for r in ob if r["status"] not in OUTBOX_TERMINAL]
     dead = [r for r in ob if r["status"] == "dead"]
     actions.append({"id": "supersede:egeria_outbox", "kind": "supersede_outbox", "table": "egeria_outbox",
@@ -251,10 +324,10 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> d
     for slug in sorted(set(by) | set(pub_earlier)):
         rows_for = by.get(slug, [])
         real = [p for p in rows_for if p["proof"] != PROOF_KIND]
-        have = [p for p in rows_for if p["proof"] == PROOF_KIND and (p["read_at"] or "") == reset_at]
-        if any((p["read_at"] or "") > reset_at for p in real):
+        have = [p for p in rows_for if p["proof"] == PROOF_KIND and _ts(p["read_at"]) == _ts(reset_at)]
+        if any(_ts(p["read_at"]) > _ts(reset_at) for p in real):
             after.append(slug)
-        n_earlier = sum(1 for p in real if (p["read_at"] or "") < reset_at)
+        n_earlier = sum(1 for p in real if _ts(p["read_at"]) < _ts(reset_at))
         if have or not (n_earlier or pub_earlier.get(slug)):
             continue
         markers.append({"slug": slug, "node_kind": kinds.get(slug, NODE_OTHER),
@@ -262,10 +335,12 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str) -> d
                         "text": f"Egeria reset {human_when(reset_at)} · {old_id or 'unknown'} → {new_id or 'unknown'}"})
     actions.append({"id": "marker:catalogue_commit_proofs", "kind": "write_markers",
                     "table": "catalogue_commit_proofs", "rows": markers, "count": len(markers)})
-    plan = {"database": db_name, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
+    plan = {"database": db_name, "schema": schema, "reset_at": reset_at, "old_collection_id": old_id or "unknown",
             "new_collection_id": new_id or "unknown", "actions": actions,
-            "dead_outbox_untouched": [r["id"] for r in dead],
+            "dead_outbox_untouched": [r["id"] for r in dead], "skipped_tables": skipped,
             "slugs_with_proofs_after_reset": after}
+    # the markers go FIRST (see ORDER in the module docstring)
+    plan["actions"].sort(key=lambda a: a["kind"] != "write_markers")
     plan["hash"] = plan_hash(plan)
     return plan
 
@@ -276,7 +351,7 @@ def plan_hash(plan: dict) -> str:
 
 
 def render(plan: dict, title: str) -> str:
-    out = [f"{title} · database: {plan['database']} · reset at {human_when(plan['reset_at'])}", ""]
+    out = [f"{title} · database: {plan['database']} · schema: {plan['schema']} · reset at {human_when(plan['reset_at'])}", ""]
     out.append(f"{'action':<10}{'table':<44}{'rows':>6}  detail")
     for a in plan["actions"]:
         verb = {"clear_columns": "clear", "delete_rows": "remove", "supersede_outbox": "supersede",
@@ -296,6 +371,8 @@ def render(plan: dict, title: str) -> str:
             detail = ", ".join(r["key"] for r in a["rows"][:20])
         out.append(f"{verb:<10}{a['table']:<44}{a['count']:>6}  {detail}")
     out.append("")
+    if plan.get("skipped_tables"):
+        out.append("SKIPPED (table does not exist yet): " + ", ".join(plan["skipped_tables"]))
     out.append(f"dead before the reset · untouched: {len(plan['dead_outbox_untouched'])} outbox rows "
                f"{plan['dead_outbox_untouched'][:20]}")
     if plan["slugs_with_proofs_after_reset"]:
@@ -350,6 +427,14 @@ def _group(conn, fn):
         raise
 
 
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: datetime) -> dict:
     """Write the snapshot, then change the registry one table group at a time. Returns what was done."""
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -361,12 +446,13 @@ def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: date
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, snapshot_path)
+    _fsync_dir(snapshot_path.parent)
 
     from resource_explorer.run_reconciler import process_identity
     act_id = str(uuid.uuid4())
     ts = now.isoformat()
     detail = {"cleared_by": cleared_by, "plan_hash": plan["hash"], "snapshot": snapshot_path.name,
-              "_runner": process_identity()}
+              "skipped_tables": plan.get("skipped_tables", []), "_runner": process_identity()}
     _group(conn, lambda: conn.execute(
         "INSERT INTO activity_log (id, ts, operation, intent, entity_type, entity_slug, entity_name, "
         "entity_location, status, summary, detail, items_json, annotations_json) "
@@ -374,8 +460,10 @@ def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: date
         (act_id, ts, "egeria_reset_cleanup", "maintenance", "registry", plan["database"], "", "", "running",
          f"Egeria reset cleanup started by {cleared_by}", json.dumps(detail), "[]", "[]")))
     done: dict[str, int] = {}
+    group = ""
     try:
         for a in plan["actions"]:
+            group = a["id"]
             n = [0]
 
             def run(a=a, n=n):
@@ -420,8 +508,9 @@ def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: date
     except Exception as exc:
         _group(conn, lambda: conn.execute(
             "UPDATE activity_log SET status = 'error', summary = ? WHERE id = ?",
-            (f"Egeria reset cleanup FAILED after {len(done)} group(s): {type(exc).__name__}", act_id)))
-        raise
+            (f"Egeria reset cleanup FAILED in group {group} after {len(done)} committed: {type(exc).__name__}",
+             act_id)))
+        raise ApplyFailed(group, list(done), exc) from None
     _group(conn, lambda: conn.execute(
         "UPDATE activity_log SET status = 'ok', summary = ? WHERE id = ?",
         (f"Egeria reset cleanup by {cleared_by}: " + ", ".join(f"{k} {v}" for k, v in done.items() if v), act_id)))
@@ -440,6 +529,10 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
     ap.add_argument("--plan-file", default="")
     ap.add_argument("--plan-hash", default="")
     ap.add_argument("--database", default="")
+    ap.add_argument("--skip-missing-table", action="append", default=[], metavar="TABLE",
+                    help="skip a lazily-created table that does not exist yet (only: work_lists); recorded in the plan")
+    ap.add_argument("--schema", default="", help="the schema parsed from REGISTRY_DATABASE_URL's search_path, "
+                    "passed again on apply (SQLite: schema is 'main'; the flag is optional there, or must be 'main')")
     ap.add_argument("--cleared-by", default="")
     ap.add_argument("--max-plan-age-minutes", type=int, default=15)
     args = ap.parse_args(argv)
@@ -448,23 +541,31 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
         url = registry_url()
         name = database_name(url)
         reset_at = parse_utc(args.reset_at, "--reset-at")
+        schema = target_schema(url)
         if args.apply:
             who, _ = parse_cleared_by(args.cleared_by, now)
             if args.database != name:
                 raise Refused(f"--database {args.database!r} is not the registry database in REGISTRY_DATABASE_URL "
                               f"({name!r}); pass the name again to confirm the target")
+            if not (args.schema == schema or (schema == "main" and not args.schema)):
+                raise Refused(f"--schema {args.schema!r} is not the schema in REGISTRY_DATABASE_URL ({schema!r}); "
+                              "pass the schema name again to confirm the target")
             if not args.plan_file or not args.plan_hash:
                 raise Refused("--apply needs --plan-file and --plan-hash from a dry run of this database")
         conn = connect(url)
         try:
-            check_schema(conn)
-            plan = build_plan(conn, name, reset_at, args.old_collection_id, args.new_collection_id)
+            skipped = check_schema(conn, tuple(args.skip_missing_table))
+            plan = build_plan(conn, name, reset_at, args.old_collection_id, args.new_collection_id, schema, skipped)
             if not args.apply:
                 out_dir = Path(args.out_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
                 path = out_dir / f"egeria-reset-plan-{name}-{plan['hash'][:12]}.json"
-                path.write_text(json.dumps({"generated_at": now.isoformat(), "plan": plan}, indent=1,
-                                           default=str, sort_keys=True))
+                fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as pf:
+                    pf.write(json.dumps({"generated_at": now.isoformat(), "plan": plan}, indent=1,
+                                        default=str, sort_keys=True))
+                os.chmod(path, 0o600)
+                _fsync_dir(out_dir)
                 out(render(plan, "DRY RUN (nothing written to the registry)"))
                 out(f"plan file: {path}")
                 out("to apply: --apply --plan-file <that file> --plan-hash <hash> "
@@ -472,6 +573,8 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
                 return 0
             saved = json.loads(Path(args.plan_file).read_text())
             sp = saved.get("plan") or {}
+            if sp.get("schema") != schema:
+                raise Refused(f"the plan file was made for schema {sp.get('schema')!r}, not {schema!r}")
             if sp.get("database") != name:
                 raise Refused(f"the plan file was made for database {sp.get('database')!r}, not {name!r}")
             if plan_hash(sp) != sp.get("hash") or sp.get("hash") != args.plan_hash:
@@ -498,6 +601,15 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
     except Refused as exc:
         out(f"REFUSED: {exc}")
         return 2
+    except ApplyFailed as exc:
+        out(f"FAILED in group {exc.group} ({exc.exc_type}); groups already committed: "
+            f"{', '.join(exc.committed) or 'none'}. Earlier groups stay applied, the failing group was rolled back. "
+            "Run a fresh dry run, then apply again to finish (markers already written are skipped).")
+        return 3
+    except Exception as exc:
+        out(f"FAILED ({type(exc).__name__}) before any change was made or while reading the registry; "
+            "no traceback is printed. Run the dry run again to see the state.")
+        return 3
 
 
 if __name__ == "__main__":

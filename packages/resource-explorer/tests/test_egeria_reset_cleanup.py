@@ -362,20 +362,113 @@ def test_second_run_clears_nothing_and_writes_no_second_marker(env):
     assert sum(1 for p in after_second["catalogue_commit_proofs"] if p["proof"] == "egeria_reset") == 2
 
 
-def test_a_failure_in_one_group_rolls_that_group_back_and_stops(env):
+def test_a_failure_names_the_group_and_leaves_markers_first_and_no_traceback(env):
     _, _, h, f = dry(env)
     reg = env["reg"]
     with reg._conn() as c:
         c.execute("CREATE TRIGGER boom BEFORE UPDATE ON egeria_outbox BEGIN SELECT RAISE(ABORT, 'boom'); END")
-    with pytest.raises(Exception, match="boom"):
-        apply(env, h, f)
+    rc, cap = apply(env, h, f)
+    assert rc == 3 and "FAILED in group supersede:egeria_outbox" in cap.text
+    assert "Traceback" not in cap.text and "boom" not in cap.text
     d = dump(reg)
-    assert d["sub_resources"][0]["egeria_guid"] == ""            # the groups before it were committed
     ob = {r["qualified_name"]: r["status"] for r in d["egeria_outbox"]}
-    assert ob["qn-pending"] == "pending" and ob["qn-failed"] == "failed"   # the failing group rolled back whole
-    assert all(p["proof"] != "egeria_reset" for p in d["catalogue_commit_proofs"])   # and nothing after it ran
+    assert ob["qn-pending"] == "pending" and ob["qn-failed"] == "failed"     # the failing group rolled back whole
+    # the markers went first, so no screen shows cleared pointers without "Egeria was reset"
+    assert sum(1 for p in d["catalogue_commit_proofs"] if p["proof"] == "egeria_reset") == 2
+    assert "marker:catalogue_commit_proofs" in cap.text
     act = [r for r in d["activity_log"] if r["operation"] == "egeria_reset_cleanup"]
-    assert act and act[0]["status"] == "error"
+    assert act and act[0]["status"] == "error" and "supersede:egeria_outbox" in act[0]["summary"]
+
+
+def test_the_marker_group_is_the_first_action(env):
+    _, _, _, f = dry(env)
+    acts = json.loads(Path(f).read_text())["plan"]["actions"]
+    assert acts[0]["kind"] == "write_markers"
+
+
+def test_an_unexpected_error_prints_only_its_type(env, monkeypatch):
+    monkeypatch.setattr(S, "build_plan", lambda *a, **k: (_ for _ in ()).throw(KeyError("secretvalue")))
+    cap = Cap()
+    assert S.run(["--reset-at", RESET], out=cap, now=NOW) == 3
+    assert "KeyError" in cap.text and "secretvalue" not in cap.text and "Traceback" not in cap.text
+
+
+def test_plan_file_is_0600(env):
+    _, _, _, f = dry(env)
+    assert oct(Path(f).stat().st_mode & 0o777) == "0o600"
+
+
+def test_outbox_snapshot_has_every_column_the_supersede_overwrites(env):
+    _, _, _, f = dry(env)
+    row = next(a for a in json.loads(Path(f).read_text())["plan"]["actions"]
+               if a["id"] == "supersede:egeria_outbox")["rows"][0]
+    for col in ("id", "entity_slug", "element_kind", "status", "last_error", "claimed_at", "next_attempt_at",
+                "completed_at"):
+        assert col in row
+
+
+def test_more_claim_prefixes_and_notification_guid_are_cleared(env):
+    reg = env["reg"]
+    for k in ("egeria_server_guid::h", "egeria_server_cred_slug::h", "egeria_asset_guid::x"):
+        reg.set_setting(k, "v")
+    ins(reg, "notification_subscriptions", entity_type="repo", entity_slug="repo1", analysis_id="a",
+        egeria_notification_type_guid="G", created_at="2026-09-01") if _cols_ok(reg) else None
+    applied(env)
+    d = dump(reg)
+    assert {r["key"] for r in d["app_settings"]} == {"repo_survey_step::repo1::x"}
+    assert all(r["egeria_notification_type_guid"] in ("", None) for r in d["notification_subscriptions"])
+
+
+def _cols_ok(reg):
+    with reg._conn() as c:
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(notification_subscriptions)").fetchall()}
+    return {"analysis_id", "created_at"} <= cols
+
+
+def test_missing_work_lists_refuses_with_the_sentence_and_the_flag_skips_and_records(env):
+    with env["reg"]._conn() as c:
+        c.execute("DROP TABLE work_list_runs")
+        c.execute("DROP TABLE work_list_members")
+        c.execute("DROP TABLE work_lists")
+    rc, cap, _, _ = dry(env)
+    assert rc == 2 and ("table work_lists does not exist yet (created by its own module): nothing to clear there; "
+                        "re-run after creating it, or pass --skip-missing-table work_lists") in cap.text
+    rc, cap, h, f = dry(env, "--skip-missing-table", "work_lists")
+    assert rc == 0 and "SKIPPED (table does not exist yet): work_lists" in cap.text
+    plan = json.loads(Path(f).read_text())["plan"]
+    assert plan["skipped_tables"] == ["work_lists"] and all(a["table"] != "work_lists" for a in plan["actions"])
+    _, _, h2, _ = dry(env, "--skip-missing-table", "work_lists")
+    assert h == h2
+    rc, cap = apply(env, h, f, extra=("--skip-missing-table", "work_lists"))
+    assert rc == 0, cap.text
+    act = [r for r in dump(env["reg"])["activity_log"] if r["operation"] == "egeria_reset_cleanup"][0]
+    assert "work_lists" in act["detail"]
+
+
+def test_the_skip_flag_does_not_accept_other_tables_or_skip_an_existing_one(env):
+    rc, cap, _, f = dry(env, "--skip-missing-table", "databases")
+    assert rc == 0 and json.loads(Path(f).read_text())["plan"]["skipped_tables"] == []
+    with env["reg"]._conn() as c:
+        c.execute("DROP TABLE survey_definition_cache")
+    rc, cap, _, _ = dry(env, "--skip-missing-table", "survey_definition_cache")
+    assert rc == 2 and "survey_definition_cache" in cap.text
+
+
+def test_marker_read_at_is_T_separated_and_derivation_compares_both_forms(env):
+    reg = env["reg"]
+    applied(env)
+    m = [p for p in reg.list_catalogue_commit_proofs("db1") if p["proof"] == "egeria_reset"][0]
+    assert m["read_at"] == RESET_ISO and "T" in m["read_at"]
+    # a hand-written, space-separated proof from after the reset still counts as after it (' ' < 'T' as a string)
+    reg.append_catalogue_commit_proof("db1", proof="elements_read_back", node_kind="schema", schema_name="s1",
+                                      element_guid="n", detail={"tables": ["t"]}, read_at="2026-10-08 20:00:00")
+    assert cc.derive_commit_state(reg, "db1", _view(reg))["schemas"]["s1"]["state"] == "catalogued"
+    # and a space-separated one from before the reset does not
+    with reg._conn() as c:
+        c.execute("DELETE FROM catalogue_commit_proofs WHERE element_guid = 'n'")
+    reg.append_catalogue_commit_proof("db1", proof="elements_read_back", node_kind="schema", schema_name="s1",
+                                      element_guid="o", detail={"tables": ["t"]}, read_at="2026-10-08 10:00:00")
+    assert cc.derive_commit_state(reg, "db1", _view(reg))["schemas"]["s1"]["state"] == "reset"
 
 
 # ── the status derives from the marker ───────────────────────────────────────
@@ -527,3 +620,62 @@ def test_survey_results_boards_read_the_marker_even_from_a_persisted_summary(env
     fields = A._reset_fields(reg, "repo1", "2026-09-01T01:00:00")
     assert fields == {"published_state": "published_earlier", "egeria_reset_at": RESET_ISO}
     assert A._reset_fields(reg, "repo2", "2026-09-01T01:00:00")["published_state"] == "published"
+
+# ── schema guard ─────────────────────────────────────────────────────────────
+
+PG = "postgresql://u:secret@localhost:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer"
+
+
+def test_target_schema_parses_the_registry_url_and_refuses_a_missing_one():
+    assert S.target_schema(PG) == "resource_explorer"
+    assert S.target_schema("sqlite:///x.db") == "main"
+    with pytest.raises(S.Refused, match="names no schema"):
+        S.target_schema("postgresql://u:p@localhost:5442/egeria_advisor")
+
+
+def test_a_postgres_url_without_a_search_path_is_refused_in_dry_run_and_apply(monkeypatch):
+    monkeypatch.setenv("REGISTRY_DATABASE_URL", "postgresql://u:secret@localhost:1/egeria_advisor")
+    for extra in ([], ["--apply", "--database", "egeria_advisor", "--schema", "public", "--cleared-by", TOKEN,
+                       "--plan-file", "x", "--plan-hash", "y"]):
+        cap = Cap()
+        assert S.run(["--reset-at", RESET, *extra], out=cap, now=NOW) == 2
+        assert "names no schema" in cap.text and "secret" not in cap.text
+
+
+def test_dry_run_header_prints_the_schema_only(env):
+    _, cap, _, f = dry(env)
+    assert "schema: main" in cap.text
+    assert json.loads(Path(f).read_text())["plan"]["schema"] == "main"
+
+
+def test_the_plan_hash_covers_the_schema(env):
+    reg = env["reg"]
+    with reg._conn() as c:
+        a = S.build_plan(c, "d", RESET_ISO, "", "", "resource_explorer")
+        b = S.build_plan(c, "d", RESET_ISO, "", "", "public")
+    assert a["hash"] != b["hash"]
+
+
+def test_sqlite_apply_accepts_no_schema_flag_or_main_but_not_another(env):
+    _, _, h, f = dry(env)
+    before = dump(env["reg"])
+    rc, cap = apply(env, h, f, **{"--schema": "resource_explorer"})
+    assert rc == 2 and "--schema" in cap.text and dump(env["reg"]) == before
+    rc, cap = apply(env, h, f, **{"--schema": "main"})
+    assert rc == 0, cap.text
+
+
+def test_sqlite_apply_without_the_schema_flag_is_accepted(env):
+    _, _, h, f = dry(env)
+    rc, cap = apply(env, h, f)
+    assert rc == 0, cap.text
+
+
+def test_a_plan_file_made_for_another_schema_is_refused(env):
+    _, _, h, f = dry(env)
+    data = json.loads(Path(f).read_text())
+    data["plan"]["schema"] = "public"
+    data["plan"]["hash"] = S.plan_hash(data["plan"])
+    Path(f).write_text(json.dumps(data))
+    rc, cap = apply(env, data["plan"]["hash"], f)
+    assert rc == 2 and "schema" in cap.text

@@ -197,6 +197,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
+def _ts(iso) -> str:
+    """A timestamp for comparison as a string: 'T'-separated, to the second. Every writer here uses isoformat()
+    ('T'), but a space-separated or fractional value must not sort wrongly against one (' ' < 'T')."""
+    return str(iso or "").replace(" ", "T")[:19]
+
+
 def _hm(iso: str) -> str:
     s = str(iso or "")
     return s[11:16] if len(s) >= 16 else ""
@@ -576,9 +582,9 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     # Ordered by read_at (the reset time), never by id, so a proof recorded after the reset but before the
     # marker was written still counts.
     reset = _latest(proofs_all, (P_EGERIA_RESET,))
-    cutoff = (reset["read_at"] or "") if reset else ""
-    proofs = [p for p in proofs_all if p["proof"] != P_EGERIA_RESET and (reset is None or (p["read_at"] or "") >= cutoff)]
-    earlier = [p for p in proofs_all if reset is not None and p["proof"] != P_EGERIA_RESET and (p["read_at"] or "") < cutoff]
+    cutoff = _ts(reset["read_at"]) if reset else ""
+    proofs = [p for p in proofs_all if p["proof"] != P_EGERIA_RESET and (reset is None or _ts(p["read_at"]) >= cutoff)]
+    earlier = [p for p in proofs_all if reset is not None and p["proof"] != P_EGERIA_RESET and _ts(p["read_at"]) < cutoff]
     earlier_by = _by_node(earlier)
     by = _by_node(proofs)
     ob_by_schema = _outbox_by_schema(registry.list_catalogue_outbox_rows(slug))
@@ -1861,7 +1867,7 @@ PUBLISHED_EARLIER_WORDS = "published earlier · Egeria was reset"
 
 
 def _iso_key(text: str) -> str:
-    return (text or "").strip().replace(" ", "T").rstrip("Z")
+    return _ts((text or "").strip().rstrip("Z"))
 
 
 def egeria_reset_at(registry, slug: str) -> str:

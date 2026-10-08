@@ -30,7 +30,7 @@ from typing import Any, Callable
 
 from resource_explorer.catalogue_commit import (
     P_EGERIA_RESET, P_READ_FAILED, P_REPORT, PROJECT_UNANSWERED, PROJECT_UNBOUND, PROJECT_UNBOUND_WORDS,
-    RESET_WORDS, egeria_first_sentence)
+    RESET_WORDS, _ts, egeria_first_sentence)
 from resource_explorer.surveyors import survey_snapshot
 from resource_explorer.surveyors.survey_snapshot import NO_SURVEY_SENTENCE
 
@@ -184,7 +184,7 @@ def publish_state(registry, slug: str) -> dict:
               if p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED, P_FORGOTTEN, P_EGERIA_RESET)]
     # The newest fact by time (read_at), not by row id: the reset marker is written after the fact, but it
     # carries the reset time, so a publish made after the reset still wins over it.
-    proofs.sort(key=lambda p: (p["read_at"] or "", p["id"]))
+    proofs.sort(key=lambda p: (_ts(p["read_at"]), p["id"]))
     last = proofs[-1] if proofs else None
     proofs = [p for p in proofs if p["proof"] != P_EGERIA_RESET]
     project = project_state(registry, slug)
