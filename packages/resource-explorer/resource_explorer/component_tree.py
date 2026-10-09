@@ -386,3 +386,23 @@ def group_leaves(leaf_rows: list[dict]) -> tuple[list[dict], list[dict]]:
             groups.append({"name": group_name, "members": members,
                            "accepted": accepted, "rejected": rejected, "undecided": undecided})
     return groups, ungrouped
+
+
+FINDER_CAP = 5000
+
+
+def finder_rows(registry: ProjectRegistry, slug: str, limit: int = FINDER_CAP) -> dict:
+    """What a component search needs and nothing more: path, name, type and the readings each component was
+    proposed in ('' = none recorded). No verdicts, ports or grouping. `total` is the whole count, from the same
+    population as `component_tree`'s `total_components`; `truncated` is true when `limit` cut the list, so a
+    caller can say "first N of M" instead of searching a silent subset."""
+    comps = sorted((c for c in _components(registry, slug) if c.get("path") and not c.get("structural")),
+                   key=lambda c: c["path"])
+    total = len(comps)
+    rows = []
+    for c in comps[: max(0, limit)]:
+        readings = sorted({(p.get("perspective") or "physical") for p in (c.get("proposals") or [])}) or [""]
+        rows.append({"path": c["path"], "name": c.get("name") or c["path"], "type": c.get("type") or "",
+                     "readings": readings})
+    return {"branch": "", "leaves": rows, "total": total, "shown": len(rows), "truncated": len(rows) < total,
+            "limit": limit}

@@ -45,14 +45,19 @@ function makeServer(over = {}) {
       survey: { exists: true, surveyed_at: '2026-10-07T01:00:00', age_seconds: 7200, annotations: 1, steps: 1, stale_steps: 0, stale: [] },
       project: { status: 'linked', word: 'project', name: 'P' } });
     if (u.includes('/components/leaves')) {
-      const b = decodeURIComponent(u.split('branch=')[1] || '');
+      const b = decodeURIComponent((u.split('branch=')[1] || '').split('&')[0]);
       if (b === '' && s.rootFails) return err(500, 'root read failed');
+      if (b === '' && u.includes('groups=false')) {
+        const slim = COMPS.map((c) => ({ path: c.path, name: c.name, type: c.type, readings: c.proposals.length ? [...new Set(c.proposals.map((p) => p.perspective))] : [''] }));
+        const shown = slim.slice(0, s.cap || slim.length);
+        return ok({ branch: '', leaves: shown, total: s.finderTotal ?? slim.length, shown: shown.length, truncated: shown.length < slim.length });
+      }
       const leaves = COMPS.filter((c) => !b || c.path === b || c.path.startsWith(`${b}/`));
       const groupMembers = leaves.filter((l) => l.path.startsWith('packages/x/compose/'));
       return ok({ leaves, groups: groupMembers.length ? [{ name: 'compose', accepted: 0, rejected: 0, undecided: groupMembers.length, members: groupMembers }] : [],
         ungrouped: leaves.filter((l) => !groupMembers.includes(l)) });
     }
-    if (u.includes('/components/tree')) return ok({ branches: BRANCHES, total_components: COMPS.length, accepted: 0, reviewed: 0, topology: '' });
+    if (u.includes('/components/tree')) return ok({ branches: BRANCHES, total_components: s.treeTotal ?? COMPS.length, accepted: 0, reviewed: 0, topology: '' });
     if (u.includes('/components/blueprints')) {
       if (s.blueprintsFail) return err(500, 'blueprint read failed');
       return ok({ blueprints: s.blueprints, perspectives: [...new Set(s.blueprints.map((b) => b.perspective))].sort(), kinds: [] });
@@ -182,7 +187,7 @@ test('PI-072: searching narrows the branches to those holding a match, counts th
   const input = document.querySelector('[data-tree-search]');
   assert.ok(input, 'a search box sits above the tree');
   await typeInto(document, input, 'solo');
-  assert.ok(server.calls.some((c) => c.url.includes('/components/leaves?branch=') && decodeURIComponent(c.url.split('branch=')[1]) === ''), 'every component was read once');
+  assert.ok(server.calls.some((c) => c.url.includes('/components/leaves?branch=&groups=false')), 'every component was read once');
   const status = text(document.querySelector('[data-find-status]'));
   assert.match(status, /1 of 5 components match · in 1 of 3 branches/);
   assert.deepEqual([...document.querySelectorAll('[data-branch]')].map((b) => b.dataset.branch), ['packages']);
@@ -249,4 +254,25 @@ test('PI-072: componentMatches and readingsOf: name, path or type; "" is no read
   assert.equal(componentMatches(c, 'solo', 'physical'), false);
   assert.deepEqual(readingsOf(comp('a', '')), ['']);
   assert.deepEqual(readingsOf({ proposals: [{ }, { perspective: 'logical' }] }), ['physical', 'logical']);
+});
+
+test('PI-072: the "of M" in the search is the header\'s own total (tree.total_components), never a second count', async () => {
+  const { document } = await setUp({ treeTotal: 7 });
+  await typeInto(document, document.querySelector('[data-tree-search]'), 'solo');
+  assert.match(text(document.querySelector('[data-find-status]')), /1 of 7 components match/);
+  document.querySelector('[data-tree-find-clear]').click();
+  await wait(300);
+  document.querySelector('[data-tree-readings-open]').click();
+  await wait(300);
+  assert.match(text(document.querySelector('[data-tree-reading=""]')), /^● all 7$/);
+});
+
+test('PI-072: a list the server capped is searched as "first N of M" with M from the server, never cut silently', async () => {
+  const { document, server } = await setUp({ cap: 3 });
+  await typeInto(document, document.querySelector('[data-tree-search]'), 'a');
+  const status = text(document.querySelector('[data-find-status]'));
+  assert.match(status, /first 3 of 5 searched/);
+  const read = server.calls.find((c) => c.url.includes('groups=false'));
+  assert.ok(read, 'the search asks for the slim, ungrouped read');
+  assert.ok(!server.calls.some((c) => c.url.includes('branch=&') && !c.url.includes('groups=false')), 'no whole-set grouped read');
 });

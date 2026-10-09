@@ -698,6 +698,10 @@ function aliasHtml(turn) {
   let tail;
   if (st.state === 'saved') {
     tail = `${cue('measured', 'remembered', 'Saved, and read back from the alias list.')} <span data-alias-saved>“${esc(a.term)}” will resolve to ${esc(a.candidate_slug)} in future questions.</span>`;
+  } else if (st.state === 'conflict') {
+    tail = `${cue('partial', `already used for ${st.other}`, 'This name already points at another resource. Moving it changes what it means in every future question.')}
+      <button type="button" data-alias-move class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink">Move it here</button>
+      <button type="button" data-alias-no class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Leave it</button>`;
   } else if (st.state === 'declined') {
     tail = `${cue('optional', 'not remembered', 'You said no. Nothing was saved.')} <span>asked again next time</span>`;
   } else if (st.state === 'saving') {
@@ -710,18 +714,20 @@ function aliasHtml(turn) {
   return `<div data-alias-box class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caveat text-ink-muted">${head} ${tail}</div>`;
 }
 
-async function confirmAliasSuggestion(turn) {
+async function confirmAliasSuggestion(turn, { move = false } = {}) {
   const a = turn.aliasSuggestion;
   if (!a || (turn.aliasState || {}).state === 'saving') return;
   turn.aliasState = { state: 'saving' };
   redrawAlias(turn);
   try {
-    await addAlias(a.term, a.candidate_slug);
+    await addAlias(a.term, a.candidate_slug, { move });
     const held = await listAliases(a.candidate_slug);
     const want = normaliseAlias(a.term);
     const found = (held.aliases || []).some((x) => x.alias === want && x.project_slug === a.candidate_slug);
     turn.aliasState = found ? { state: 'saved' } : { state: 'error', msg: 'The save went through but the alias is not in the list the server holds.' };
   } catch (err) {
+    const held = err.status === 409 ? /already used for (.+)$/.exec(err.message) : null;
+    if (held) { turn.aliasState = { state: 'conflict', other: held[1] }; redrawAlias(turn); return; }
     turn.aliasState = { state: 'error', msg: err.status === 401 ? 'Sign in to save an alias.' : err.message };
   }
   redrawAlias(turn);
@@ -737,6 +743,7 @@ function redrawAlias(turn) {
 function wireAlias(turn) {
   const box = document.querySelector('#chat-turn-footer [data-alias-box]');
   box?.querySelector('[data-alias-yes]')?.addEventListener('click', () => confirmAliasSuggestion(turn));
+  box?.querySelector('[data-alias-move]')?.addEventListener('click', () => confirmAliasSuggestion(turn, { move: true }));
   box?.querySelector('[data-alias-no]')?.addEventListener('click', () => { turn.aliasState = { state: 'declined' }; redrawAlias(turn); });
 }
 

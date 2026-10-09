@@ -13,7 +13,7 @@ import { ago, PUBLISHED_EARLIER_SENTENCE, PUBLISHED_EARLIER_WORD } from '/static
 import { stateEntry } from '/static/next/glyphs.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import {
-  getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
+  getComponentFinder, getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
   getComponentTree, getComponentLeaves, postBranchVerdicts,
   getCatalogueDepthOffer, postCatalogueDepthOfferOutcome,
   getComponentBlueprints, postBlueprintVerdict, setRepoProjectContext,
@@ -1089,15 +1089,16 @@ function selectionBarHtml(selected, shown, total) {
  * is the whole repository, through the same rows a branch shows, read once per resource and only when a
  * search or the readings are asked for. A reading is the Perspective a proposal was made in (physical,
  * deployment, logical, dev); a component with no proposal on record has no reading and says so. */
-let finderRows = null;   // { slug, rows }
+let finderRows = null;   // { slug, rows, total, truncated }
 async function readFinder(slug) {
-  if (finderRows && finderRows.slug === slug) return finderRows.rows;
-  const out = await getComponentLeaves(slug, '');
-  finderRows = { slug, rows: out.leaves || [] };
-  return finderRows.rows;
+  if (finderRows && finderRows.slug === slug) return finderRows;
+  const out = await getComponentFinder(slug);
+  finderRows = { slug, rows: out.leaves || [], total: out.total ?? (out.leaves || []).length, truncated: !!out.truncated };
+  return finderRows;
 }
 /** The readings a component was proposed in; '' stands for none recorded. */
 export function readingsOf(row) {
+  if (Array.isArray(row.readings)) return row.readings.length ? row.readings : [''];
   const ps = [...new Set((row.proposals || []).map((p) => p.perspective || 'physical'))];
   return ps.length ? ps : [''];
 }
@@ -1111,7 +1112,7 @@ export function componentMatches(row, search, reading) {
 }
 const NO_READING = '*none*';
 
-function findControlsHtml({ search, readingPick, finder, finderError, filtering, matched, shownBranches, allBranches }) {
+function findControlsHtml({ search, readingPick, finder, finderError, filtering, matched, shownBranches, allBranches, total, cut }) {
   const readingsOpen = !!state.componentReadingsOpen || !!readingPick;
   let readings;
   if (!readingsOpen) {
@@ -1125,7 +1126,7 @@ function findControlsHtml({ search, readingPick, finder, finderError, filtering,
       return `<button type="button" data-tree-reading="${esc(value)}" aria-pressed="${on ? 'true' : 'false'}"
         class="cursor-pointer bg-transparent p-0 ${on ? 'text-ink' : 'text-accent-ink underline'}">${on ? '● ' : ''}${esc(label)} <span class="tnum">${n}</span></button>`;
     };
-    readings = `<span data-tree-readings>reading: ${chip('', 'all', finder.length)}${
+    readings = `<span data-tree-readings>reading: ${chip('', 'all', total)}${
       [...counts.keys()].filter(Boolean).sort().map((r) => ` / ${chip(r, r, counts.get(r))}`).join('')}${
       counts.get('') ? ` / ${chip(NO_READING, 'no reading recorded', counts.get(''))}` : ''}</span>`;
   } else {
@@ -1135,7 +1136,7 @@ function findControlsHtml({ search, readingPick, finder, finderError, filtering,
   if (finderError && (filtering || readingsOpen)) {
     status = `<span data-find-status>${stateCue('unknown', 'search not read', `The components could not be read for the search: ${finderError}. The tree below is not filtered.`)} <span class="text-ink-muted">${esc(finderError)} · the tree below is not filtered</span></span>`;
   } else if (filtering && matched !== null && finder) {
-    status = `<span data-find-status>${matched === 0 ? `${stateCue('nothing', 'no component matches', 'The search read every component and none matches.')} ` : ''}<span class="tnum">${matched}</span> of <span class="tnum">${finder.length}</span> components match · in <span class="tnum">${shownBranches}</span> of <span class="tnum">${allBranches}</span> branches
+    status = `<span data-find-status>${matched === 0 ? `${stateCue('nothing', 'no component matches', 'The search read every component and none matches.')} ` : ''}<span class="tnum">${matched}</span> of <span class="tnum">${total}</span> components match${cut ? ` ${stateCue('partial', `first ${cut.shown} of ${cut.total} searched`, 'The server capped the list the search reads; components past the cap are not searched.')}` : ''} · in <span class="tnum">${shownBranches}</span> of <span class="tnum">${allBranches}</span> branches
       <button type="button" data-tree-find-clear class="cursor-pointer bg-transparent p-0 text-accent-ink underline">clear</button></span>`;
   }
   return `<div data-tree-find class="mb-s1 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-provenance">
@@ -1174,8 +1175,9 @@ async function renderComponentTree(slug, prefix = '') {
   const filtering = !!(search.trim() || readingPick);
   let finder = null;            // every component, once read
   let finderError = '';
+  let cut = null;               // set when the server capped the list the search reads
   if (filtering || state.componentReadingsOpen) {
-    try { finder = await readFinder(slug); } catch (err) { finderError = err.message || 'could not be read'; }
+    try { const fr = await readFinder(slug); finder = fr.rows; cut = fr.truncated ? { shown: fr.rows.length, total: fr.total } : null; } catch (err) { finderError = err.message || 'could not be read'; }
     if (slug !== state.selectedSlug || stale()) return true;
   }
   let matchPaths = null;        // the components that pass the filter; null = no filter in force
@@ -1189,7 +1191,8 @@ async function renderComponentTree(slug, prefix = '') {
     }
     rows = rows.filter((b) => matchesIn.get(b.path) > 0);
   }
-  const findHtml = findControlsHtml({ search, readingPick, finder, finderError, filtering, matched: matchPaths ? matchPaths.size : null, shownBranches: rows.length, allBranches: tree.branches.length });
+  const findHtml = findControlsHtml({ search, readingPick, finder, finderError, filtering, matched: matchPaths ? matchPaths.size : null, shownBranches: rows.length, allBranches: tree.branches.length,
+    total: tree.total_components, cut });
   // A sort, never a filter: the ⚠ count already rides on the branch, so
   // ordering by evidence puts the weakest clusters first without hiding
   // one. By size is the repository's own shape.

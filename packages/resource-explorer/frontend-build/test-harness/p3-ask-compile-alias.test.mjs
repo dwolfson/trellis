@@ -25,6 +25,11 @@ const Q_NONE = {
   perspectives: [], analysis_ids: [], answering_mechanism: 'Human-Supplied',
   derivation: { matched_perspectives: [], matched_purposes: [], purpose_ranked: false, analysis_ids: [], checks: [] },
 };
+const Q_TWO = {
+  question: 'Is it safe and maintained?', stage: 'Scouting', kind: 'analysis', perspectives: [], purposes: [],
+  analysis_ids: ['activity_metrics', 'cve_scan'], answering_mechanism: 'Analysis',
+  derivation: { matched_perspectives: [], matched_purposes: [], purpose_ranked: false, analysis_ids: ['activity_metrics', 'cve_scan'], checks: [] },
+};
 const HEADLINE = 'Active: 40 commits in the last 90 days.';
 const unrunEnv = () => ({ answerable: false, blocked_reason: 'Not run yet.', facts: [
   { is_known: false, analysis_id: 'activity_metrics', state: 'never_run', can_run: ['activity_metrics'] }] });
@@ -46,6 +51,9 @@ function makeServer(over = {}) {
     const ok = (b) => ({ ok: true, status: 200, json: async () => b, text: async () => JSON.stringify(b) });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/scouting-questions')) return ok({ questions: s.questions });
+    if (u.includes(`/api/analyses/facts/${SLUG}/answer`) && u.includes('safe')) return ok({ answerable: false, blocked_reason: 'Part of this has not run.', facts: [
+      { is_known: true, analysis_id: 'activity_metrics', state: 'measured', headline: HEADLINE, last_run_at: '2026-10-09T10:00:00' },
+      { is_known: false, analysis_id: 'cve_scan', state: 'never_run', can_run: ['cve_scan'] }] });
     if (u.includes(`/api/analyses/facts/${SLUG}/answer`)) return ok(s.ran.has('activity_metrics') ? answeredEnv() : unrunEnv());
     const run = u.match(/\/analyses\/([a-z_]+)\/run$/);
     if (run && method === 'POST') { s.ran.add(run[1]); s.lastRun = run[1]; return ok({ activity_id: `act-${run[1]}`, status: 'started' }); }
@@ -67,6 +75,9 @@ function makeServer(over = {}) {
       return ok({ text: 'compiled text', manifest, derivation: [], compile_id: 'c1' });
     }
     if (u === '/api/aliases/' && method === 'POST') {
+      const norm = String(body.alias).toLowerCase().replace(/[ -]/g, '_');
+      const held = (s.otherAliases || {})[norm];
+      if (held && !body.move) return err(409, `alias already used for ${held}`);
       s.aliases.push({ alias: String(body.alias).toLowerCase().replace(/[ -]/g, '_'), project_slug: body.project_slug });
       return ok({ saved: true });
     }
@@ -341,7 +352,7 @@ test('PI-119: a suggested alias can be confirmed; it is saved and READ BACK from
   box.querySelector('[data-alias-yes]').click();
   await wait();
   const post = posts(server, /\/api\/aliases\//)[0];
-  assert.deepEqual(post.body, { alias: 'Foo Bar', project_slug: 'foo_bar' });
+  assert.deepEqual(post.body, { alias: 'Foo Bar', project_slug: 'foo_bar', move: false });
   assert.ok(server.calls.some((c) => c.method === 'GET' && c.url === '/api/aliases/foo_bar'), 'read back after the save');
   const after = text(document.querySelector('[data-alias-box]'));
   assert.match(after, /remembered/);
@@ -386,4 +397,42 @@ test('PI-118: a free-text answer lists the analyses its compile found missing; r
   assert.ok(ids().includes('activity_metrics'), 'what is still missing stays listed');
   assert.match(text(document.querySelector('[data-recheck-note]')), /Ran cve_scan; it now has a stored result\. This answer was written before it ran, so ask again to use it\./);
   assert.equal(app.state.chat.length, 1, 'no second question was asked');
+});
+
+/* ── review round 2 ─────────────────────────────────────────────────────── */
+
+test('review 1: "has run" is per analysis: one that has nothing recorded reads "not run" beside one that has run', async () => {
+  const { document } = await setUp({ questions: [Q_TWO] });
+  document.querySelector('#qrow-0 button[data-ask-chat]').click();
+  await wait();
+  assert.match(text(document.querySelector('[data-runnable="activity_metrics"] [data-run-status]')), /has run/);
+  const other = text(document.querySelector('[data-runnable="cve_scan"] [data-run-status]'));
+  assert.match(other, /not run/);
+  assert.doesNotMatch(other, /has run/);
+});
+
+test('review 4: an alias already used for another resource is not moved silently; "Move it here" is a second press', async () => {
+  const { document, server } = await askWithAlias({ otherAliases: { foo_bar: 'old_repo' } });
+  document.querySelector('[data-alias-yes]').click();
+  await wait();
+  let box = text(document.querySelector('[data-alias-box]'));
+  assert.match(box, /already used for old_repo/);
+  assert.doesNotMatch(box, /remembered/);
+  assert.equal(posts(server, /\/api\/aliases\//)[0].body.move, false);
+  assert.deepEqual(server.aliases, [], 'nothing moved');
+  document.querySelector('[data-alias-move]').click();
+  await wait();
+  assert.equal(posts(server, /\/api\/aliases\//)[1].body.move, true);
+  box = text(document.querySelector('[data-alias-box]'));
+  assert.match(box, /remembered/);
+});
+
+test('review 5: nothing the disclosure says uses the word "catalog"', async () => {
+  const { document, app } = await setUp({ questions: [{ ...Q_NONE, purposes: [] }, Q_RUN] });
+  app.state.investigations = [{ slug: 'inv', purposes: ['Learn'] }];
+  app.state.investigation = 'inv';
+  const html = app.whyHereHtml({ ...Q_RUN, purposes: ['Assess'] }, 0) + app.whyHereHtml({ ...Q_NONE, purposes: [] }, 1);
+  assert.match(html, /none stated in the question list/);
+  assert.match(html, /follows in the list's own order/);
+  assert.doesNotMatch(html, /catalog/i);
 });

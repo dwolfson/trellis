@@ -8551,11 +8551,11 @@ export function whyHereHtml(entry, i) {
   if (Array.isArray(entry.purposes)) {
     const mine = entry.purposes;
     const inv = currentPurposes();
-    bits.push(line('Serves purpose:', mine.length ? mine.map(esc).join(', ') : 'none stated in the catalog'));
+    bits.push(line('Serves purpose:', mine.length ? mine.map(esc).join(', ') : 'none stated in the question list'));
     if (inv.length) {
       bits.push(line('This investigation:', d.purpose_ranked
         ? `leads, because it serves ${(d.matched_purposes || []).map(esc).join(', ')}`
-        : `${esc(inv.join(', '))} — it serves none of these, so it follows in catalog order`));
+        : `${esc(inv.join(', '))} — it serves none of these, so it follows in the list's own order`));
     }
   } else {
     bits.push(line('Serves purpose:', 'not reported'));
@@ -9652,12 +9652,16 @@ function rowAsMarkdown(entry, i) {
  *  it (what "run" and "schedule" in the chat act on). `ran` is read from the same envelope the row drew. */
 function rowChatTurn(entry) {
   const p = rowAnswerParts(entry);
-  const ran = !!(p.lines && (p.lines.lastRun || p.lines.runTimeUnrecorded));
+  // Per analysis, from the envelope's own facts: an analysis with nothing recorded is "not run" even when a
+  // sibling analysis behind the same question has run.
+  const env = state.answers.get(entry.question);
+  const facts = (env && env !== 'loading' && !env.__error && env.facts) || [];
+  const hasRun = (id) => facts.some((f) => f.analysis_id === id && (f.is_known || f.last_run_at));
   const text = p.caveat ? `${p.answer}\n\n${p.caveat}` : p.answer;
   return {
     answer: text,
     source: p.bits.filter(Boolean).join(' · '),
-    runnable: (entry.analysis_ids || []).map((id) => ({ id, ran })),
+    runnable: (entry.analysis_ids || []).map((id) => ({ id, ran: hasRun(id) })),
   };
 }
 

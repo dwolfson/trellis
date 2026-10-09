@@ -47,3 +47,46 @@ def test_the_route_serves_the_root(registry, monkeypatch):
     from resource_explorer.web.app import app
     out = TestClient(app).get("/api/projects/p/components/leaves", params={"branch": ""}).json()
     assert [l["path"] for l in out["leaves"]] == ["pyegeria", "pyegeria/commands", "server"]
+
+
+# ── review round 2 ─────────────────────────────────────────────────────────
+
+def test_the_finder_read_is_slim_capped_and_says_the_servers_total(registry):
+    from resource_explorer.component_tree import finder_rows
+    out = finder_rows(registry, "p", limit=2)
+    assert out["total"] == 3 and out["shown"] == 2 and out["truncated"] is True
+    assert [r["path"] for r in out["leaves"]] == ["pyegeria", "pyegeria/commands"]
+    assert set(out["leaves"][0]) == {"path", "name", "type", "readings"}      # no verdicts, ports or proposals
+    assert out["leaves"][1]["readings"] == ["logical"] and out["leaves"][0]["readings"] == ["physical"]
+    full = finder_rows(registry, "p")
+    assert full["truncated"] is False and full["total"] == 3 and full["leaves"][2]["readings"] == [""]
+
+
+def test_the_route_serves_finder_mode_and_never_groups_the_whole_set(registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+    from resource_explorer.web.app import app
+    c = TestClient(app)
+    slim = c.get("/api/projects/p/components/leaves", params={"branch": "", "groups": "false", "limit": 1}).json()
+    assert slim["total"] == 3 and slim["truncated"] is True and len(slim["leaves"]) == 1 and "groups" not in slim
+    plain = c.get("/api/projects/p/components/leaves", params={"branch": ""}).json()
+    assert plain["groups"] == [] and len(plain["ungrouped"]) == 3
+
+
+def test_an_alias_held_by_another_resource_is_not_moved_without_move(registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: {"user_id": "dan"})
+    registry.add(Project(slug="q", display_name="Q repo", github_url="https://github.com/x/q", description=""))
+    from resource_explorer.web.app import app
+    c = TestClient(app)
+    assert c.post("/api/aliases/", json={"alias": "Foo Bar", "project_slug": "p"}).status_code == 200
+    r = c.post("/api/aliases/", json={"alias": "foo bar", "project_slug": "q"})
+    assert r.status_code == 409 and "already used for p" in r.json()["detail"]
+    assert registry.resolve_alias("Foo Bar") == "p"
+    assert c.post("/api/aliases/", json={"alias": "foo bar", "project_slug": "p"}).status_code == 200   # same resource: fine
+    assert c.post("/api/aliases/", json={"alias": "foo bar", "project_slug": "q", "move": True}).status_code == 200
+    assert registry.resolve_alias("Foo Bar") == "q"
+    assert [a["confirmed_by"] for a in registry.list_aliases("q")] == ["dan"]

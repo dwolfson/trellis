@@ -870,7 +870,7 @@ export const compileContext = ({ resourceSlug, question, entityType, perspective
 
 /** Remember "this name means that resource" (the answer to an alias suggestion). The server stores the
  *  alias normalised (lower case, spaces and hyphens to underscores), so read it back with `listAliases`. */
-export const addAlias = (alias, slug) => post('/api/aliases/', { alias, project_slug: slug });
+export const addAlias = (alias, slug, { move = false } = {}) => post('/api/aliases/', { alias, project_slug: slug, move });
 export const listAliases = (slug) => get(`/api/aliases/${encodeURIComponent(slug)}`);
 
 /** Foundation pre-filters for the repo search: {key: {label, org?, topic?}}. */
@@ -1720,6 +1720,10 @@ export const getComponentTree = (slug, prefix = '') =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/tree?prefix=${encodeURIComponent(prefix)}`);
 export const getComponentLeaves = (slug, branch) =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/leaves?branch=${encodeURIComponent(branch)}`);
+/** Every component, slim (path, name, type, readings) and capped, for the component search. The reply carries
+ *  the server's own `total` and `truncated`, so a cut is said, never silent. */
+export const getComponentFinder = (slug, limit = 5000) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/components/leaves?branch=&groups=false&limit=${limit}`);
 /** A person moves a node between the blueprint and the runtime dependencies, with a reason
  *  (DESIGN-BLUEPRINT-NODE-ADMISSION.md). `to` is 'built_here' or 'referenced_only'. */
 export const postNodeReclassify = (slug, scopeLocator, to, reason) =>
