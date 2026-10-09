@@ -72,12 +72,6 @@ async def _lifespan(app: FastAPI):
 
     heal_missing()
 
-    # Every web process, embedded worker or not, runs its own callers' queued actions (Brief I):
-    # it alone holds their Egeria tokens in memory.
-    from resource_explorer.run_queue import start_caller_run_executor, stop_caller_run_executor
-
-    start_caller_run_executor()
-
     worker_stop = None
     if _embed_worker_enabled():
         from resource_explorer.worker import start_embedded_worker
@@ -90,7 +84,6 @@ async def _lifespan(app: FastAPI):
             "disabled) — background loops require `resource-explorer worker`"
         )
     yield
-    stop_caller_run_executor()
     if worker_stop is not None:
         worker_stop.set()
 

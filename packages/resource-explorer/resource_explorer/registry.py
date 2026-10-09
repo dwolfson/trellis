@@ -4139,15 +4139,8 @@ class ProjectRegistry:
         result_ref: str = "",
         run_id: str | None = None,
         now: str | None = None,
-        owner: str = "",
     ) -> str:
         """Add one unit of work to the queue and return its id.
-
-        `owner` (Brief I, round 2): for a person's own queued action, the process that holds
-        their Egeria token in memory (`run_queue.process_marker()`). It is written to the
-        EXISTING `runner` column while the row is queued — no DDL — and only that process may
-        claim the row (`claim_next_run(owner=...)`); every other claimer skips it. The claim
-        overwrites `runner` with the claimer's identity as before.
 
         `requested_by` is the user id the run is attributed to. Since RE
         adopted trellis-auth (2026-09-04, plan §4) it is a real signed-in user
@@ -4163,9 +4156,9 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO runs (id, kind, target, requested_by, state,
-                                     enqueued_at, result_ref, runner)
-                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)""",
-                (run_id, kind, json.dumps(target or {}), requested_by, now, result_ref, owner),
+                                     enqueued_at, result_ref)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?)""",
+                (run_id, kind, json.dumps(target or {}), requested_by, now, result_ref),
             )
         return run_id
 
@@ -4176,14 +4169,8 @@ class ProjectRegistry:
         *,
         kinds: "list[str] | None" = None,
         now: str | None = None,
-        owner: str = "",
     ) -> dict | None:
         """Take the oldest queued row this worker is allowed to run, or None.
-
-        **Owned rows (Brief I, round 2).** A queued row whose `runner` carries an owner marker
-        belongs to that process (it holds the person's token in memory). With `owner=""` (every
-        ordinary worker) such rows are skipped; with `owner=<marker>` ONLY rows owned by that
-        marker are taken.
 
         **Concurrency.** Select-and-mark happen in one transaction, and on
         Postgres the SELECT carries `FOR UPDATE SKIP LOCKED` so a second
@@ -4219,8 +4206,6 @@ class ProjectRegistry:
             f"        AND busy.state IN ({','.join('?' * len(self._RUN_ACTIVE_STATES))}))) "
         )
         params: list = list(self._RUN_ACTIVE_STATES)
-        sql += "  AND r.runner = ? "
-        params.append(owner)
         if kinds:
             sql += f"  AND r.kind IN ({','.join('?' * len(kinds))}) "
             params.extend(kinds)
@@ -4376,22 +4361,6 @@ class ProjectRegistry:
                 "UPDATE activity_log SET detail = ? WHERE id = ?",
                 (json.dumps(detail), entry_id),
             )
-
-    def queued_owned_runs(self) -> list[dict]:
-        """Queued rows that carry an owner marker (a person's queued action, Brief I)."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM runs WHERE state = 'queued' AND runner <> ''").fetchall()
-        return [dict(r) for r in rows]
-
-    def fail_queued_run(self, run_id: str, error: str, *, now: str | None = None) -> bool:
-        """Fail a row that is still queued (never claimed). False when it was not queued."""
-        now = now or datetime.now(timezone.utc).isoformat()
-        with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE runs SET state='failed', finished_at=?, error=? WHERE id=? AND state='queued'",
-                (now, error, run_id))
-            return bool(getattr(cur, "rowcount", 0))
 
     def stale_active_runs(self, cutoff_iso: str) -> list[dict]:
         """Claimed/running rows whose heartbeat is older than `cutoff_iso`.

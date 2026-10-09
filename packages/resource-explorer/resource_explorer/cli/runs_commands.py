@@ -403,10 +403,6 @@ def runs_enqueue(
             "--requested-by.[/yellow]"
         )
 
-    if kind in run_queue.CALLER_RUN_KINDS:
-        # A person's own action runs as them, on their web sign-in's token (Brief I).
-        console.print(f"[red]{run_queue.CLI_NO_SIGN_IN}[/red]")
-        raise typer.Exit(1)
     run_id = _registry().enqueue_run(kind, parsed, requested_by=attributed_to)
     console.print(run_id, highlight=False)
 

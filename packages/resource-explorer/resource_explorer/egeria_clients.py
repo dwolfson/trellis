@@ -9,7 +9,7 @@ daemon-like or governance-action work runs under a named RE daemon identity, wit
 recorded. Who a client acts as is always named, never defaulted:
 
 * `Caller()` — the signed-in person, from `a2a_auth.current_caller`. Their Egeria bearer token
-  (from the app JWT, or handed to a queued publish in memory, see `run_queue`) is set on every
+  (from the app JWT) is set on every
   sub-client, so Egeria's own provenance names them. With no caller it raises
   `NoCallerIdentity`; it NEVER falls back to the daemon. A token past its `exp` raises
   `CallerTokenExpired`, which the web app maps to 401 with `EXPIRED_SENTENCE`.
@@ -165,8 +165,12 @@ def _daemon_credential() -> tuple[str, str]:
     (`config.egeria`, unchanged). Kept a single small function so the loading can move (e.g. to
     the secrets store) without touching any caller.
 
-    TODO(Brief I, research 2026-10-09): Egeria daemons hold their identity in an omsecrets
-    `tokenAPI` collection — `secretsCollections: {ResourceExplorer: {tokenAPI: {httpRequestType:
+    The daemon exists in Egeria as userId `resourceexplorernpa` (ITProfile
+    `ITProfile::ResourceExplorer`); deployments set EGERIA_USER_ID to it.
+
+    TODO(Brief I, follow-up after merge): Egeria daemons hold their identity in an omsecrets
+    `tokenAPI` collection, here named "Resource Explorer" (with a space) —
+    `secretsCollections: {"Resource Explorer": {tokenAPI: {httpRequestType:
     POST, url: <platform>/api/token, requestBody: {userId, password}}}}` — read through
     `omsecrets_store._load`. Switch this function to that when the owner decides; nothing else."""
     from resource_explorer.config import get_config
@@ -363,10 +367,12 @@ def _person_in_request() -> str:
 def _record(identity: EgeriaIdentity, purpose: str) -> None:
     if identity.kind == KIND_CALLER:
         key, as_words = identity.user_id, "you"
-    elif identity.kind == KIND_DAEMON and (identity.requested_by or _person_in_request()):
-        # Queued work for a person, or a daemon call made inside a person's request (e.g.
-        # reachability): theirs to see, labelled as the service account.
-        key, as_words = identity.requested_by or _person_in_request(), "service account (background)"
+    elif identity.kind == KIND_DAEMON and identity.requested_by:
+        # Queued work for a person (owner's wording, 2026-10-09).
+        key, as_words = identity.requested_by, "service account (Resource Explorer) on your behalf"
+    elif identity.kind == KIND_DAEMON and _person_in_request():
+        # A daemon call made inside a person's request (e.g. reachability): theirs to see.
+        key, as_words = _person_in_request(), "service account (background)"
     elif identity.kind == KIND_STORED:
         key, as_words = "", "stored resource credential"
     else:

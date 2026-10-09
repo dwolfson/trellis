@@ -1522,11 +1522,9 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         summary=f"Cataloging {db_entity.display_name}: {len(selection['attach'])} schema targets…")
     rec = Curations(registry).create("database", slug, author=author, selection=selection,
                                      manifest=preview["manifest"], steps=list(STEPS_DB), activity_id=activity_id)
-    from resource_explorer.run_queue import enqueue_as_caller
-
-    # The person's own action: it runs AS them, on their token handed over in memory (Brief I).
-    run_id = enqueue_as_caller(registry, "catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
-                               result_ref=activity_id, requested_by=author)
+    # Queued: committed by RE's daemon on the author's behalf, Ownership = the author (Brief I).
+    run_id = registry.enqueue_run("catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
+                                  result_ref=activity_id, requested_by=author)
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
 
 

@@ -173,7 +173,7 @@ def test_the_popover_value_is_recorded_per_person_not_inferred(monkeypatch):
     assert ec.last_egeria_identity("p")["as"] == "you"
     ec.egeria_client(ec.Daemon(ec.DaemonReason.RUN_QUEUE, requested_by="p"), purpose="survey").of(FakeClient)
     rec = ec.last_egeria_identity("p")
-    assert rec["as"] == "service account (background)" and rec["purpose"] == "survey"
+    assert rec["as"] == "service account (Resource Explorer) on your behalf" and rec["purpose"] == "survey"
 
 
 def test_whoami_returns_the_recorded_value(monkeypatch):
@@ -188,4 +188,4 @@ def test_whoami_returns_the_recorded_value(monkeypatch):
     assert c.get("/api/egeria/whoami", headers=hdr).json()["last_egeria_call"] is None
     ec.egeria_client(ec.Daemon(ec.DaemonReason.RUN_QUEUE, requested_by="p"), purpose="survey").of(FakeClient)
     got = c.get("/api/egeria/whoami", headers=hdr).json()["last_egeria_call"]
-    assert got["as"] == "service account (background)"
+    assert got["as"] == "service account (Resource Explorer) on your behalf"

@@ -23,9 +23,10 @@ attributed to it: `egeria_clients.Daemon(reason)`, with `reason` from a closed
 enum, so a reader can tell a deliberate daemon call from one that merely forgot
 a token. Nothing falls back to it silently.
 
-**Interim, and deliberate: a queued survey does not carry a token.** (A person's
-own queued action — Publish, Curate commit — does: its token is handed over in
-memory at enqueue, see `run_queue.enqueue_as_caller`.) An Egeria
+**Deliberate, and Egeria-consistent: a queued run does not carry a token**
+(owner, 2026-10-09). Any queued work — a survey, or a person's own Publish or
+Curate commit — is committed by RE's daemon, as Egeria's engine hosts commit
+theirs, with the person recorded as `requested_by` and stamped as Ownership. An Egeria
 bearer token lives one hour (measured — `trellis_auth.
 EGERIA_TOKEN_TTL_SECONDS_OBSERVED`) and dies whenever the platform restarts,
 while a queued survey may sit in the queue longer than that and then run for

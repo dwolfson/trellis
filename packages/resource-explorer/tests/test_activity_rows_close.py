@@ -26,10 +26,8 @@ def _open_activity(reg, summary="working…"):
 
 
 def _run(reg, monkeypatch, kind, target, handler, activity_id):
-    run_id = reg.enqueue_run(kind, target, result_ref=activity_id)
-    if kind in rq.CALLER_RUN_KINDS:
-        # Brief I: a person's own queued action runs on the token handed over at enqueue.
-        rq._caller_tokens.put(run_id, "a", "tok-a")
+    # Brief I: a person's queued action must record whose it is.
+    reg.enqueue_run(kind, target, result_ref=activity_id, requested_by="a")
     row = reg.claim_next_run("host:1", {"pid": os.getpid()})
     monkeypatch.setitem(rq.HANDLERS, kind, handler)
     return rq.execute_run(row, reg)

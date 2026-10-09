@@ -2055,11 +2055,9 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
         rec = Curations(registry).create(
             "repo", slug, author=author, selection={**body.model_dump(), "sub_resources": chosen}, manifest=manifest,
             steps=list(STEPS), activity_id=activity_id)
-        from resource_explorer.run_queue import enqueue_as_caller
-
-        # The person's own action: it runs AS them, on their token handed over in memory (Brief I).
-        run_id = enqueue_as_caller(registry, "curate_commit", {"slug": slug, "curation_id": rec["id"]},
-                                   result_ref=activity_id, requested_by=_requested_by())
+        # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
+        run_id = registry.enqueue_run("curate_commit", {"slug": slug, "curation_id": rec["id"]},
+                                      result_ref=activity_id, requested_by=_requested_by())
     except Exception as exc:
         # The row above was opened 'running'; nothing will ever run to close it.
         registry.update_activity_status(
@@ -2502,13 +2500,9 @@ def architecture_publish(slug: str, request: Request) -> dict:
         intent="curate", status="running",
         summary=f"Publishing {plan['label'].removeprefix('Publish ')} of {project.display_name}…")
     try:
-        from resource_explorer.run_queue import enqueue_as_caller
-
-        # Publish runs AS the person who pressed it, on their token handed over in memory; never
-        # the daemon (owner, 2026-10-09).
-        run_id = enqueue_as_caller(registry, "publish_architecture",
-                                   {"slug": slug, "paths": paths, "blueprints": keys},
-                                   result_ref=activity_id, requested_by=_requested_by())
+        # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
+        run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys},
+                                      result_ref=activity_id, requested_by=_requested_by())
     except Exception as exc:
         # Opened 'running' above; nothing will run to close it.
         registry.update_activity_status(

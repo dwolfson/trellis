@@ -421,82 +421,45 @@ def test_a_queued_survey_runs_as_the_daemon_and_stamps_ownership_as_the_requeste
         "and the daemon authenticates"
 
 
-# ── the run queue: Publish → the person, on a token handed over in memory ────
+# ── the run queue: a queued Publish → Daemon(RUN_QUEUE, requested_by) ─────
+# Owner's Egeria-consistent ruling (2026-10-09): a queued write is committed by RE's daemon, and
+# the person is the recorded requester and the Ownership owner.
 
-def _publish_handler(boundary, seen):
+def test_a_queued_publish_is_committed_by_the_daemon_with_ownership_the_requester(boundary, reg, monkeypatch):
     from resource_explorer import run_queue as rq
+
+    stamped = []
+    monkeypatch.setattr("pyegeria.ClassificationExplorer", boundary.fake(
+        "ClassificationExplorer",
+        add_ownership_to_element=lambda guid, body: stamped.append(body["properties"]["owner"])))
 
     def handler(target, result_ref):
-        from resource_explorer.egeria_clients import current_principal, egeria_client
+        from resource_explorer.egeria_identity import caller_credentials, set_ownership
 
-        seen.append(current_principal())
-        egeria_client(current_principal(), purpose="publish").of(boundary.fake("SolutionArchitect"))
+        who = caller_credentials()
+        assert who.kind == "daemon" and who.requested_by == "dana"
+        assert set_ownership("guid-bp", who.user_id) is True
         return rq.RunOutcome(state="succeeded")
-    return handler
+
+    monkeypatch.setitem(rq.HANDLERS, "publish_architecture", handler)
+    run_id = reg.enqueue_run("publish_architecture", {"slug": "p"}, requested_by="dana")
+    row = reg.claim_next_run("host:1", {"pid": os.getpid()})
+    assert rq.execute_run(row, reg).state == "succeeded"
+    assert stamped == ["dana"]
+    assert [(c["user"], c["minted"]) for c in boundary.clients] == [(DAEMON_USER, True)]
+    assert reg.get_run(run_id)["requested_by"] == "dana"
 
 
-def test_a_publish_runs_as_the_person_on_the_handed_over_token_and_drops_it(boundary, reg, monkeypatch, signed_in_caller):
+@pytest.mark.parametrize("kind", ["publish_architecture", "curate_commit", "catalogue_commit",
+                                  "materialize_components"])
+def test_a_persons_queued_action_with_no_requester_fails_loudly_and_writes_nothing(boundary, reg, monkeypatch, kind):
     from resource_explorer import run_queue as rq
 
-    seen: list = []
-    monkeypatch.setitem(rq.HANDLERS, "publish_architecture", _publish_handler(boundary, seen))
-    run_id = rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"})
-    assert rq._caller_tokens.has(run_id)
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
-    # the worker thread has no request context at all — the token comes from the handoff only
-    out = {}
-    t = threading.Thread(target=lambda: out.setdefault("o", rq.execute_run(row, reg)))
-    t.start()
-    t.join(30)
-    assert out["o"].state == "succeeded"
-    assert seen[0].kind == "caller" and seen[0].user_id == "test-caller"
-    assert boundary.users_and_tokens() == {("SolutionArchitect", "test-caller", "tok-test-caller", False)}
-    assert not rq._caller_tokens.has(run_id), "dropped once the run has it"
-
-
-def test_a_publish_after_a_restart_fails_with_the_sentence_and_never_uses_the_daemon(boundary, reg, monkeypatch, signed_in_caller):
-    from resource_explorer import run_queue as rq
-
-    seen: list = []
-    monkeypatch.setitem(rq.HANDLERS, "publish_architecture", _publish_handler(boundary, seen))
-    run_id = rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"})
-    rq._caller_tokens.clear()                     # the process restarted: memory is gone
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
-    outcome = rq.execute_run(row, reg)
-    assert outcome.state == "failed" and outcome.error == "your Egeria sign-in expired; sign in again"
-    assert seen == [] and boundary.clients == [], "never run, never as the daemon"
-    assert reg.get_run(run_id)["error"] == "your Egeria sign-in expired; sign in again"
-
-
-def test_an_expired_handed_over_token_fails_the_run_the_same_way(boundary, reg, monkeypatch, signed_in_caller):
-    from resource_explorer import run_queue as rq
-
-    seen: list = []
-    monkeypatch.setitem(rq.HANDLERS, "curate_commit", _publish_handler(boundary, seen))
-    rq.enqueue_as_caller(reg, "curate_commit", {"slug": "p"})
-    monkeypatch.setattr("trellis_auth.auth.egeria_token_expiry", lambda tok: int(time.time()) - 1)
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
-    assert rq.execute_run(row, reg).error == "your Egeria sign-in expired; sign in again"
-    assert seen == [] and boundary.clients == []
-
-
-def test_the_handed_over_token_never_reaches_the_runs_table_logs_or_activity(boundary, reg, monkeypatch, caplog, signed_in_caller):
-    from resource_explorer import run_queue as rq
-    from resource_explorer.activity_logger import log_survey
-
-    caplog.set_level(logging.DEBUG)
-    seen: list = []
-    monkeypatch.setitem(rq.HANDLERS, "publish_architecture", _publish_handler(boundary, seen))
-    act = log_survey(reg, entity_type="repo", entity_slug="p", entity_name="P", entity_location="x",
-                     intent="curate", status="running", summary="Publishing P…")
-    rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"}, result_ref=act)
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
-    rq.execute_run(row, reg)
-    rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"})        # and one left queued
-    db = reg.database_url.removeprefix("sqlite:///")
-    with sqlite3.connect(db) as conn:
-        dump = "\n".join(conn.iterdump())
-    assert "tok-test-caller" not in dump, "no table — runs, activity_log, anything — holds the token"
-    assert "tok-test-caller" not in caplog.text
-    assert "tok-test-caller" not in json.dumps(reg.get_activity(act))
-    assert "tok-test-caller" not in repr(rq._caller_tokens)
+    ran = []
+    monkeypatch.setitem(rq.HANDLERS, kind, lambda t, r: ran.append(1) or rq.RunOutcome("succeeded"))
+    run_id = reg.enqueue_run(kind, {"slug": "p"})
+    row = reg.claim_next_run("host:1", {"pid": os.getpid()})
+    out = rq.execute_run(row, reg)
+    assert out.state == "failed" and out.error == rq.NO_REQUESTER_SENTENCE
+    assert ran == [] and boundary.clients == []
+    assert reg.get_run(run_id)["error"] == rq.NO_REQUESTER_SENTENCE

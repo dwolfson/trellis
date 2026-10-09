@@ -394,193 +394,28 @@ class _Heartbeat:
         self._stop.set()
 
 
-# ── who a run acts as (Brief I, owner's scope update 2026-10-09) ────────────
+# ── who a run acts as (Brief I, owner's Egeria-consistent ruling 2026-10-09) ──
 
-#: A person's direct actions that are queued: they run AS that person. The person's Egeria
-#: bearer token is handed to the run in memory at enqueue (`enqueue_as_caller`) and never
-#: persisted, logged or written to an activity row. Missing (restart, another process) or
-#: expired: the run fails with "your Egeria sign-in expired; sign in again" and is never run as
-#: the daemon. Every other kind (surveys, analyses, scheduled work) runs as
-#: `Daemon(RUN_QUEUE, requested_by)`, Ownership stamped as the requester, as before.
-CALLER_RUN_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit",
-                              "materialize_components"})
+#: A person's own actions that are queued. Like Egeria's engine hosts, a queued write is
+#: committed under RE's daemon identity; the person's accountability is the recorded
+#: `requested_by` and the Ownership classification stamped with it. So these kinds MUST carry a
+#: requester: queued with none, they fail loudly rather than write anonymously on someone's behalf.
+PERSON_ACTION_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit",
+                                 "materialize_components"})
 
-
-#: How long a handed-over token may wait for its run; a token lives about an hour anyway.
-CALLER_TOKEN_TTL_SECONDS = 2 * 60 * 60
-
-CLI_NO_SIGN_IN = "Publish from the web UI; the CLI has no sign-in"
-
-
-class _CallerTokenHandoff:
-    """run id -> (user id, Egeria bearer token, put-at). Process-local and in memory only."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._by_run: dict[str, tuple[str, str, float]] = {}
-
-    def put(self, run_id: str, user_id: str, token: str) -> None:
-        import time as _time
-
-        with self._lock:
-            self._by_run[run_id] = (user_id, token, _time.time())
-
-    def take(self, run_id: str) -> "tuple[str, str] | None":
-        with self._lock:
-            got = self._by_run.pop(run_id, None)
-        return (got[0], got[1]) if got else None
-
-    def drop(self, run_id: str) -> bool:
-        with self._lock:
-            return self._by_run.pop(run_id, None) is not None
-
-    def ids(self) -> list[str]:
-        with self._lock:
-            return list(self._by_run)
-
-    def has(self, run_id: str) -> bool:
-        with self._lock:
-            return run_id in self._by_run
-
-    def expired_ids(self, ttl: float = CALLER_TOKEN_TTL_SECONDS) -> list[str]:
-        import time as _time
-
-        cutoff = _time.time() - ttl
-        with self._lock:
-            return [r for r, (_, _, at) in self._by_run.items() if at < cutoff]
-
-    def clear(self) -> None:
-        with self._lock:
-            self._by_run.clear()
-
-    def __repr__(self) -> str:          # never the tokens, even by accident
-        with self._lock:
-            return f"<_CallerTokenHandoff runs={len(self._by_run)}>"
-
-
-_caller_tokens = _CallerTokenHandoff()
-
-_MARKER: "tuple[int, str] | None" = None
-
-
-def process_marker() -> str:
-    """This process, as the owner marker of its callers' queued runs: host, pid and process
-    start time (pids are reused). Cached per pid, so a fork computes its own."""
-    global _MARKER
-    import json as _json
-
-    if _MARKER is None or _MARKER[0] != os.getpid():
-        from resource_explorer.run_reconciler import process_identity
-
-        _MARKER = (os.getpid(), _json.dumps(
-            {"caller_runs_of": {"host": socket.gethostname(), **process_identity()}}, sort_keys=True))
-    return _MARKER[1]
-
-
-def enqueue_as_caller(registry, kind: str, target: dict, **kwargs) -> str:
-    """Enqueue a person's own action and hand their Egeria token to it, in memory.
-
-    `Caller()` is read FIRST, so no caller or an expired sign-in is a 401 before anything is
-    queued. The token is put in this process's map BEFORE the row exists, and the row is marked
-    as owned by this process (`runner`), so only this process's caller-run executor claims it.
-    `requested_by` defaults to the caller's id."""
-    import uuid
-
-    from resource_explorer.egeria_clients import Caller
-
-    if kind not in CALLER_RUN_KINDS:
-        raise ValueError(f"{kind!r} is not a caller run kind")
-    caller = Caller()
-    kwargs.setdefault("requested_by", caller.user_id)
-    run_id = kwargs.pop("run_id", None) or str(uuid.uuid4())
-    _caller_tokens.put(run_id, caller.user_id, caller.token)
-    try:
-        return registry.enqueue_run(kind, target, run_id=run_id, owner=process_marker(), **kwargs)
-    except BaseException:
-        _caller_tokens.drop(run_id)
-        raise
-
-
-def drop_caller_token(run_id: str) -> bool:
-    """Forget a run's handed-over token (it was cancelled, or failed before it was claimed)."""
-    return _caller_tokens.drop(run_id)
-
-
-def sweep_caller_runs(registry, *, now: "float | None" = None) -> list[str]:
-    """Fail the queued caller runs that can no longer run, and drop their tokens. Returns ids.
-
-    * this process holds a token past `CALLER_TOKEN_TTL_SECONDS` — dropped, run failed;
-    * a queued row owned by a process on THIS host that is gone — failed (its token died with it);
-    * a queued row owned here whose token is missing — failed.
-    Every failure carries "your Egeria sign-in expired; sign in again"."""
-    import json as _json
-
-    from resource_explorer.egeria_clients import EXPIRED_SENTENCE
-    from resource_explorer.run_reconciler import _is_alive
-
-    failed = []
-    # A token whose run is no longer queued (cancelled elsewhere, e.g. from the CLI, or failed)
-    # has nothing left to serve: drop it.
-    for run_id in _caller_tokens.ids():
-        row = registry.get_run(run_id)
-        if row is None or row.get("state") != "queued":
-            _caller_tokens.drop(run_id)
-    for run_id in _caller_tokens.expired_ids():
-        _caller_tokens.drop(run_id)
-        if registry.fail_queued_run(run_id, EXPIRED_SENTENCE):
-            failed.append(run_id)
-    mine = process_marker()
-    for row in registry.queued_owned_runs():
-        if row.get("kind") not in CALLER_RUN_KINDS:
-            continue
-        if row.get("runner") == mine:
-            dead = not _caller_tokens.has(row["id"])
-        else:
-            try:
-                owner = (_json.loads(row.get("runner") or "{}") or {}).get("caller_runs_of") or {}
-            except (TypeError, ValueError):
-                owner = {}
-            dead = owner.get("host") == socket.gethostname() and _is_alive(owner) is False
-        if dead and registry.fail_queued_run(row["id"], EXPIRED_SENTENCE):
-            _caller_tokens.drop(row["id"])
-            failed.append(row["id"])
-    for run_id in failed:
-        log.warning("caller run %s failed before it was claimed: no live sign-in held for it", run_id)
-        row = registry.get_run(run_id) or {}
-        try:
-            target = _json.loads(row.get("target") or "{}")
-        except (TypeError, ValueError):
-            target = {}
-        _close_activity(registry, row.get("result_ref") or "", row.get("kind") or "", target,
-                        RunOutcome(state="failed", error=EXPIRED_SENTENCE))
-    return failed
+NO_REQUESTER_SENTENCE = ("this action was queued with no requester recorded; RE does not write to "
+                         "Egeria on a person's behalf without saying whose")
 
 
 @contextmanager
 def _run_as_requester(row: dict):
-    """Execute a claimed row as the identity its kind calls for.
-
-    * A caller kind (`CALLER_RUN_KINDS`) runs as the person, on the token handed over at enqueue.
-      The caller of this context manager has already checked the token is there and live.
-    * Any other kind runs as `Daemon(RUN_QUEUE, requested_by)`: the daemon authenticates and
-      `Ownership` is stamped with `requested_by` (the interim shape `egeria_identity`'s module
-      docstring explains: no token survives a long queue). `current_caller` still names the
-      requester (token-less), because the registry's user scoping reads it.
-    """
+    """Execute a claimed row as `Daemon(RUN_QUEUE, requested_by)`: the daemon authenticates and
+    `Ownership` is stamped with `requested_by` (no token survives a queue; this is also how
+    Egeria's own engine hosts commit queued work). `current_caller` names the requester
+    (token-less), because the registry's user scoping reads it. A row with no requester is the
+    worker's own work: `Daemon(RUN_QUEUE)` with nobody recorded."""
     from resource_explorer.a2a_auth import CallerIdentity, current_caller
-    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as, client_scope
-
-    handed = row.get("_caller_token")
-    if handed is not None:
-        user_id, token = handed
-        reset = current_caller.set(CallerIdentity(user_id=user_id, egeria_token=token,
-                                                  auth_source="run-handoff", role="user"))
-        try:
-            with client_scope():
-                yield
-        finally:
-            current_caller.reset(reset)
-        return
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
     requester = (row.get("requested_by") or "").strip()
     reset = current_caller.set(
@@ -591,21 +426,6 @@ def _run_as_requester(row: dict):
             yield
     finally:
         current_caller.reset(reset)
-
-
-def _take_caller_token(run_id: str) -> "tuple[str, str] | None":
-    """The handed-over token for a caller run, dropped from memory as it is taken; None when it is
-    missing or already expired (both mean: sign in again)."""
-    handed = _caller_tokens.take(run_id)
-    if handed is None:
-        return None
-    from trellis_auth.auth import egeria_token_expiry
-    import time as _time
-
-    exp = egeria_token_expiry(handed[1])
-    if exp is not None and exp <= _time.time():
-        return None
-    return handed
 
 
 def _first_sentence(text: str, limit: int = 240) -> str:
@@ -702,20 +522,13 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
         _close_activity(registry, result_ref, kind, target, outcome)
         return outcome
 
-    handed = None
-    if kind in CALLER_RUN_KINDS:
-        handed = _take_caller_token(run_id)
-        if handed is None:
-            # Never the daemon for a person's own action (Brief I). The token lived in the
-            # enqueuing process's memory only: a restart, another process, or an hour drops it.
-            from resource_explorer.egeria_clients import EXPIRED_SENTENCE
-
-            log.warning("run %s (%s): no live sign-in handed over — failing, not running as the daemon",
-                        run_id, kind)
-            registry.finish_run(run_id, "failed", error=EXPIRED_SENTENCE)
-            outcome = RunOutcome(state="failed", error=EXPIRED_SENTENCE)
-            _close_activity(registry, result_ref, kind, target, outcome)
-            return outcome
+    if kind in PERSON_ACTION_KINDS and not (row.get("requested_by") or "").strip():
+        # A person's action with nobody recorded: never an anonymous daemon write (Brief I).
+        log.error("run %s (%s): %s", run_id, kind, NO_REQUESTER_SENTENCE)
+        registry.finish_run(run_id, "failed", error=NO_REQUESTER_SENTENCE)
+        outcome = RunOutcome(state="failed", error=NO_REQUESTER_SENTENCE)
+        _close_activity(registry, result_ref, kind, target, outcome)
+        return outcome
 
     registry.mark_run_running(run_id)
     if result_ref:
@@ -742,7 +555,7 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
         from resource_explorer.observability import acquisition, llm_usage
 
         with _Heartbeat(registry, run_id), \
-                _run_as_requester({**row, "_caller_token": handed} if handed else row), \
+                _run_as_requester(row), \
                 llm_usage.usage_scope() as usage, \
                 acquisition.acquisition_scope() as acquired:
             outcome = handler(target, result_ref)
@@ -794,8 +607,7 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
 # ── the claim loop ───────────────────────────────────────────────────────────
 
 
-def claim_and_execute_once(registry=None, *, kinds: list[str] | None = None,
-                           owner: str = "") -> dict | None:
+def claim_and_execute_once(registry=None, *, kinds: list[str] | None = None) -> dict | None:
     """Claim at most one row and run it. Returns the row, or None if the queue
     had nothing this worker was allowed to take.
 
@@ -808,7 +620,7 @@ def claim_and_execute_once(registry=None, *, kinds: list[str] | None = None,
 
     registry = registry or ProjectRegistry()
     identity = worker_identity()
-    row = registry.claim_next_run(identity, process_identity(), kinds=kinds, owner=owner)
+    row = registry.claim_next_run(identity, process_identity(), kinds=kinds)
     if row is None:
         return None
     log.info("run claimed: id=%s kind=%s claimed_by=%s", row["id"], row["kind"], identity)
@@ -877,70 +689,6 @@ class QueueRunner:
         self._stop.set()
         self._thread = None
         log.info("run-queue loop stopped")
-
-
-class CallerRunExecutor:
-    """Every web process runs one (Brief I, round 2), embedded worker or not: it claims ONLY the
-    queued caller runs this process owns (it holds their tokens in memory) and runs them one at
-    a time; a separate worker never claims them (`claim_next_run(owner="")` skips owned rows).
-    Each pass also sweeps caller runs that can no longer run (`sweep_caller_runs`)."""
-
-    def __init__(self, *, poll_interval: float = 1.0, sweep_every: float = 60.0):
-        self.poll_interval = poll_interval
-        self.sweep_every = sweep_every
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def run_once(self, registry=None) -> "dict | None":
-        from resource_explorer.registry import ProjectRegistry
-
-        registry = registry or ProjectRegistry()
-        return claim_and_execute_once(registry, kinds=sorted(CALLER_RUN_KINDS), owner=process_marker())
-
-    def _loop(self) -> None:
-        import time as _time
-
-        last_sweep = 0.0
-        while not self._stop.is_set():
-            claimed = None
-            try:
-                from resource_explorer.registry import ProjectRegistry
-
-                registry = ProjectRegistry()
-                if _time.monotonic() - last_sweep >= self.sweep_every:
-                    sweep_caller_runs(registry)
-                    last_sweep = _time.monotonic()
-                claimed = self.run_once(registry)
-            except Exception:
-                import traceback
-                from resource_explorer.secret_redaction import scrub_text
-
-                log.error("caller-run executor tick failed; continuing\n%s", scrub_text(traceback.format_exc()))
-            if claimed is None and self._stop.wait(self.poll_interval):
-                return
-
-    def start(self) -> None:
-        if self._thread is not None:
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="re-caller-runs", daemon=True)
-        self._thread.start()
-        log.info("caller-run executor started: owner=%s", worker_identity())
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread = None
-
-
-_caller_executor = CallerRunExecutor()
-
-
-def start_caller_run_executor() -> None:
-    _caller_executor.start()
-
-
-def stop_caller_run_executor() -> None:
-    _caller_executor.stop()
 
 
 #: The worker role's single instance, so `worker.py` can start and stop it the
