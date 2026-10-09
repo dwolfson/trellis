@@ -31,7 +31,7 @@
 import { openDialog } from '/static/next/worklist.js';
 import {
   searchDiscoveryRepos, discoverFromList, fetchInventoryCsv, importDiscoveredRepos,
-  setDisposition, listGroups,
+  setDisposition, listGroups, listFoundations,
 } from '/static/re-api.js';
 import { esc, icon, refreshGroupsAndSidebar } from '/static/next/app.js';
 
@@ -49,6 +49,8 @@ const view = {
   selected: new Set(),     // indices into `results`
   filterText: '',
   groups: [],
+  foundations: null,       // {key: {label, org?, topic?}} once read; null = not read
+  foundationsError: '',
   status: '',              // feedback line above the results table
   statusIsError: false,
   listStatus: '',          // separate feedback line for the from-list panel
@@ -69,6 +71,8 @@ export async function openFindReposDialog() {
     'Search GitHub or load a list — nothing is registered until you select rows below',
     { wide: true });
   try { view.groups = await listGroups(); } catch { view.groups = []; }
+  try { view.foundations = await listFoundations(); view.foundationsError = ''; }
+  catch (err) { view.foundations = null; view.foundationsError = err.message || 'could not be read'; }
   render(el);
 }
 
@@ -111,6 +115,7 @@ function searchFormHtml() {
     `<input data-f="${key}" type="${type}" placeholder="${esc(placeholder)}" value="${esc(f[key] ?? '')}"
        class="w-full rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">`;
   return `
+    ${foundationChipsHtml()}
     <p class="mb-s2 max-w-[70ch] text-caveat text-ink-muted">
       A general GitHub search for candidate repos — independent of any specific org. To pull in a
       whole account's repos, put an org/user search filter here, or paste an account URL
@@ -132,6 +137,33 @@ function searchFormHtml() {
       <button data-act="search" class="ml-auto cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink" ${view.busy ? 'disabled' : ''}
         >${view.busy ? 'Searching…' : 'Search'}</button>
     </div>`;
+}
+
+/** A foundation pre-filter fills the Org and Topic the foundation is known by. It is a starting point for the
+ *  search form, not a separate search: the fields stay editable, and pressing the chip runs the search
+ *  (classic's behaviour). A foundation that has not been read says so; an empty list says none are configured. */
+function foundationChipsHtml() {
+  const f = view.filters;
+  const label = '<span class="text-caps uppercase tracking-caps text-ink-muted">Foundation</span>';
+  if (view.foundations === null) {
+    return `<div data-foundations class="mb-s2 flex flex-wrap items-baseline gap-s2 text-caveat">${label}
+      <span data-foundations-unread class="text-state-warn" title="${esc(view.foundationsError)}"><span class="font-glyph" aria-hidden="true">?</span> not read</span>
+      <span class="text-ink-muted">${esc(view.foundationsError ? `the foundation list could not be read: ${view.foundationsError}` : 'the foundation list has not been read')}</span></div>`;
+  }
+  const entries = Object.entries(view.foundations);
+  if (!entries.length) {
+    return `<div data-foundations class="mb-s2 flex flex-wrap items-baseline gap-s2 text-caveat">${label}
+      <span class="text-ink-muted">none configured</span></div>`;
+  }
+  return `<div data-foundations class="mb-s2 flex flex-wrap items-baseline gap-s2 text-caveat">${label}
+    ${entries.map(([key, fd]) => {
+      const on = (fd.org || '') === (f.org || '') && (fd.topic || '') === (f.topic || '') && !!(fd.org || fd.topic);
+      return `<button type="button" data-foundation="${esc(key)}" aria-pressed="${on ? 'true' : 'false'}"
+        title="${on ? 'Filling the Org and Topic fields with this foundation. Press again to clear them.' : 'Fill Org and Topic with this foundation and search'}"
+        class="cursor-pointer rounded-pill border bg-transparent px-[8px] py-[1px] ${on ? 'border-accent text-ink' : 'border-rule text-accent-ink'}">${on ? '● ' : ''}${esc(fd.label || key)}</button>`;
+    }).join('')}
+    ${f.org || f.topic ? '' : '<span class="text-ink-muted">press one to fill Org and Topic and search</span>'}
+  </div>`;
 }
 
 function readFiltersFromDom(el) {
@@ -417,6 +449,21 @@ function bind(el) {
   }));
 
   el.querySelector('[data-act="search"]')?.addEventListener('click', () => runSearch(el));
+  el.querySelectorAll('[data-foundation]').forEach((b) => b.addEventListener('click', () => {
+    readFiltersFromDom(el);                       // keep what was typed in the other fields
+    const fd = (view.foundations || {})[b.dataset.foundation];
+    if (!fd) return;
+    if (b.getAttribute('aria-pressed') === 'true') {   // pressed again: clear what it filled, search nothing
+      view.filters.org = ''; view.filters.topic = '';
+      render(el);
+      return;
+    }
+    view.filters.org = fd.org || '';
+    view.filters.topic = fd.topic || '';
+    // runSearch reads the form back, so the form must hold the foundation's values first.
+    ['org', 'topic'].forEach((k) => { const inp = el.querySelector(`[data-f="${k}"]`); if (inp) inp.value = view.filters[k]; });
+    runSearch(el);
+  }));
 
   el.querySelector('[data-list-file]')?.addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];

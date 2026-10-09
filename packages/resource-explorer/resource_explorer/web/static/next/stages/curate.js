@@ -13,7 +13,7 @@ import { ago, PUBLISHED_EARLIER_SENTENCE, PUBLISHED_EARLIER_WORD } from '/static
 import { stateEntry } from '/static/next/glyphs.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import {
-  getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
+  getComponentFinder, getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
   getComponentTree, getComponentLeaves, postBranchVerdicts,
   getCatalogueDepthOffer, postCatalogueDepthOfferOutcome,
   getComponentBlueprints, postBlueprintVerdict, setRepoProjectContext,
@@ -455,6 +455,7 @@ const curateClock = {
 export function setCurateClock(c) { Object.assign(curateClock, c); }
 
 export async function renderCurate(slug) {
+  finderRows = null;       // a fresh page reads the components again (a survey may have changed them)
   const frame = mountCurateHost();
   // A render token, taken before any band is set up: two renders for the SAME slug can interleave (slug equality
   // cannot tell them apart), and a non-repository render must also retire a repository render still waiting
@@ -946,7 +947,7 @@ function setBranchScopeMode(slug, path, mode) {
 /** How many components a verdict on this branch row reaches, given its mode. */
 export const branchReach = (b, mode) => (mode === 'only' ? 1 : (b.components || 0));
 
-function branchRowHtml(b, selected, mode = 'with') {
+function branchRowHtml(b, selected, mode = 'with', matches = null) {
   // The branch's own type leads; the mix beneath it is the CHILDREN's, so
   // a branch whose only typed component is itself does not say it twice.
   const mix = Object.entries(b.types || {}).map(([t, n]) => [t, t === b.type ? n - 1 : n]).filter(([, n]) => n > 0);
@@ -962,6 +963,7 @@ function branchRowHtml(b, selected, mode = 'with') {
       ${selected ? '<span data-selected-cue class="text-provenance text-ink" title="Ticked: the selection bar acts on every ticked row.">● selected</span>' : ''}
       <button data-branch-open="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 font-mono text-caveat text-ink">${esc(b.name)}/${icon('chevron-right', { size: 12 })}</button>
       <span class="text-provenance text-ink-muted">· <span class="tnum">${b.components}</span> component${b.components === 1 ? '' : 's'}</span>
+      ${matches === null ? '' : `<span data-branch-matches class="text-provenance text-ink">· <span class="tnum">${matches}</span> match</span>`}
       ${b.grouping_only ? `<span class="text-provenance text-ink-muted">· grouping only — a directory that holds components, not a component itself</span>` : b.type ? `<span class="text-provenance text-ink-muted">· ${esc(b.type)}</span>` : ''}
       ${types ? `<span class="text-provenance text-ink-muted">· ${types}</span>` : ''}
       ${b.low_confidence ? `<span class="text-provenance text-state-warn">· ⚠ <span class="tnum">${b.low_confidence}</span> at or below 50%</span>` : ''}
@@ -1010,7 +1012,9 @@ export function leafRowHtml(l) {
       ${promotionHtml(l.promotion)}
       <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
       <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
+      <button data-leaf-blueprints="${esc(l.path)}" title="Which candidate blueprints this component is a member of" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">blueprints${icon('chevron-right', { size: 12 })}</button>
     </div>
+    <div data-leaf-bp-line class="pl-s2 text-provenance"></div>
     ${proposalLines}${agreementLine}${withdrawnLine}
   </div>`;
 }
@@ -1080,6 +1084,68 @@ function selectionBarHtml(selected, shown, total) {
   </div>`;
 }
 
+/* ── Finding a component, and reading it by reading (PI-072) ────────────────
+ * The tree names branches; a search needs every component. `/components/leaves?branch=` with the empty branch
+ * is the whole repository, through the same rows a branch shows, read once per resource and only when a
+ * search or the readings are asked for. A reading is the Perspective a proposal was made in (physical,
+ * deployment, logical, dev); a component with no proposal on record has no reading and says so. */
+let finderRows = null;   // { slug, rows, total, truncated }
+async function readFinder(slug) {
+  if (finderRows && finderRows.slug === slug) return finderRows;
+  const out = await getComponentFinder(slug);
+  finderRows = { slug, rows: out.leaves || [], total: out.total ?? (out.leaves || []).length, truncated: !!out.truncated };
+  return finderRows;
+}
+/** The readings a component was proposed in; '' stands for none recorded. */
+export function readingsOf(row) {
+  if (Array.isArray(row.readings)) return row.readings.length ? row.readings : [''];
+  const ps = [...new Set((row.proposals || []).map((p) => p.perspective || 'physical'))];
+  return ps.length ? ps : [''];
+}
+/** Does a component match the search text (name, path or type) and the reading ('' = every reading)? */
+export function componentMatches(row, search, reading) {
+  const q = String(search || '').trim().toLowerCase();
+  if (q && ![row.name, row.path, row.type].some((v) => String(v || '').toLowerCase().includes(q))) return false;
+  if (reading === '*none*') return readingsOf(row).includes('');
+  if (reading && !readingsOf(row).includes(reading)) return false;
+  return true;
+}
+const NO_READING = '*none*';
+
+function findControlsHtml({ search, readingPick, finder, finderError, filtering, matched, shownBranches, allBranches, total, cut }) {
+  const readingsOpen = !!state.componentReadingsOpen || !!readingPick;
+  let readings;
+  if (!readingsOpen) {
+    readings = `<button type="button" data-tree-readings-open title="Group the components by the reading each was proposed in"
+      class="cursor-pointer bg-transparent p-0 text-accent-ink underline">by reading${icon('chevron-right', { size: 12 })}</button>`;
+  } else if (finder) {
+    const counts = new Map();
+    for (const r of finder) for (const rd of readingsOf(r)) counts.set(rd, (counts.get(rd) || 0) + 1);
+    const chip = (value, label, n) => {
+      const on = (readingPick || '') === value;
+      return `<button type="button" data-tree-reading="${esc(value)}" aria-pressed="${on ? 'true' : 'false'}"
+        class="cursor-pointer bg-transparent p-0 ${on ? 'text-ink' : 'text-accent-ink underline'}">${on ? '● ' : ''}${esc(label)} <span class="tnum">${n}</span></button>`;
+    };
+    readings = `<span data-tree-readings>reading: ${chip('', 'all', total)}${
+      [...counts.keys()].filter(Boolean).sort().map((r) => ` / ${chip(r, r, counts.get(r))}`).join('')}${
+      counts.get('') ? ` / ${chip(NO_READING, 'no reading recorded', counts.get(''))}` : ''}</span>`;
+  } else {
+    readings = `<span data-tree-readings>${stateCue('unknown', 'readings not read', finderError)}</span>`;
+  }
+  let status = '';
+  if (finderError && (filtering || readingsOpen)) {
+    status = `<span data-find-status>${stateCue('unknown', 'search not read', `The components could not be read for the search: ${finderError}. The tree below is not filtered.`)} <span class="text-ink-muted">${esc(finderError)} · the tree below is not filtered</span></span>`;
+  } else if (filtering && matched !== null && finder) {
+    status = `<span data-find-status>${matched === 0 ? `${stateCue('nothing', 'no component matches', 'The search read every component and none matches.')} ` : ''}<span class="tnum">${matched}</span> of <span class="tnum">${total}</span> components match${cut ? ` ${stateCue('partial', `first ${cut.shown} of ${cut.total} searched`, 'The server capped the list the search reads; components past the cap are not searched.')}` : ''} · in <span class="tnum">${shownBranches}</span> of <span class="tnum">${allBranches}</span> branches
+      <button type="button" data-tree-find-clear class="cursor-pointer bg-transparent p-0 text-accent-ink underline">clear</button></span>`;
+  }
+  return `<div data-tree-find class="mb-s1 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] text-provenance">
+    <input type="search" data-tree-search value="${esc(search)}" placeholder="Find a component by name, path or type…" aria-label="Find a component"
+      class="w-[30ch] rounded-sm border border-rule bg-transparent px-2 py-[1px] text-provenance text-ink">
+    ${readings}${status}
+  </div>`;
+}
+
 async function renderComponentTree(slug, prefix = '') {
   const host = $('component-tree');
   if (!host) { markUnloaded(slug, 'tree'); return false; }       // nowhere to draw: not loaded
@@ -1102,7 +1168,31 @@ async function renderComponentTree(slug, prefix = '') {
   }
   const selected = curateSelectionSet(slug);
   const sort = state.componentSort || 'size';
-  const rows = [...tree.branches];
+  let rows = [...tree.branches];
+  // The finder: search text and reading. Read only when one is asked for (or the readings are opened).
+  const search = String(state.componentSearch || '');
+  const readingPick = state.componentReading || '';
+  const filtering = !!(search.trim() || readingPick);
+  let finder = null;            // every component, once read
+  let finderError = '';
+  let cut = null;               // set when the server capped the list the search reads
+  if (filtering || state.componentReadingsOpen) {
+    try { const fr = await readFinder(slug); finder = fr.rows; cut = fr.truncated ? { shown: fr.rows.length, total: fr.total } : null; } catch (err) { finderError = err.message || 'could not be read'; }
+    if (slug !== state.selectedSlug || stale()) return true;
+  }
+  let matchPaths = null;        // the components that pass the filter; null = no filter in force
+  const matchesIn = new Map(); // branch path -> how many of them sit under it
+  if (filtering && finder) {
+    matchPaths = new Set(finder.filter((r) => componentMatches(r, search, readingPick)).map((r) => r.path));
+    for (const b of rows) {
+      let n = 0;
+      for (const p of matchPaths) if (p === b.path || p.startsWith(`${b.path}/`)) n += 1;
+      matchesIn.set(b.path, n);
+    }
+    rows = rows.filter((b) => matchesIn.get(b.path) > 0);
+  }
+  const findHtml = findControlsHtml({ search, readingPick, finder, finderError, filtering, matched: matchPaths ? matchPaths.size : null, shownBranches: rows.length, allBranches: tree.branches.length,
+    total: tree.total_components, cut });
   // A sort, never a filter: the ⚠ count already rides on the branch, so
   // ordering by evidence puts the weakest clusters first without hiding
   // one. By size is the repository's own shape.
@@ -1133,6 +1223,8 @@ async function renderComponentTree(slug, prefix = '') {
   const scrolls = [];
   for (let el = host; el; el = el.parentElement) if (el.scrollTop > 0) scrolls.push([el, el.scrollTop]);
   const winY = typeof window !== 'undefined' ? window.scrollY : 0;
+  const refocus = !!state.componentFocusSearch;
+  state.componentFocusSearch = false;
   host.innerHTML = `
     <div class="mb-s1 text-provenance text-ink-muted"><span class="tnum">${tree.accepted}</span> of <span class="tnum">${tree.total_components}</span> component paths accepted ·
       <span class="tnum">${tree.reviewed}</span> with a verdict of their own · <span class="tnum">${tree.branches.length}</span> branches ·
@@ -1140,13 +1232,29 @@ async function renderComponentTree(slug, prefix = '') {
       ${me ? '' : ' · <span class="text-accent-ink">sign in to record a verdict</span>'}
       · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
       / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by evidence</button></div>
+    ${findHtml}
     ${selectionBarHtml(selected, shown, rows.length)}
-    ${shown.map((b) => branchRowHtml(b, selected.has(b.path), branchScopeMode(slug, b))).join('')}
+    ${shown.map((b) => branchRowHtml(b, selected.has(b.path), branchScopeMode(slug, b), matchPaths ? matchesIn.get(b.path) : null)).join('')}
     ${!state.componentShowAll && rows.length > 8 ? `<div class="py-[5px] text-provenance"><button data-tree-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${rows.length - 8}</span> more branches${icon('chevron-right', { size: 12 })}</button></div>` : ''}
     ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
     ${tree.topology_totals ? `<div class="mt-s2 text-provenance text-ink-muted">${tnum(esc(tree.topology_totals))}</div>` : ''}
     <div id="component-tree-status" class="mt-s1 text-provenance text-ink-muted"></div>
     <div id="component-diagram" class="mt-s3"></div>`;
+  const searchEl = host.querySelector('[data-tree-search]');
+  if (searchEl) {
+    if (refocus) { searchEl.focus(); try { searchEl.setSelectionRange(searchEl.value.length, searchEl.value.length); } catch { /* type=search may refuse */ } }
+    searchEl.addEventListener('input', () => {
+      clearTimeout(host._findTimer);
+      host._findTimer = setTimeout(() => {
+        state.componentSearch = searchEl.value;
+        state.componentFocusSearch = true;
+        renderComponentTree(slug, prefix);
+      }, 150);
+    });
+  }
+  host.querySelector('[data-tree-readings-open]')?.addEventListener('click', () => { state.componentReadingsOpen = true; renderComponentTree(slug, prefix); });
+  host.querySelectorAll('[data-tree-reading]').forEach((b) => b.addEventListener('click', () => { state.componentReading = b.dataset.treeReading; renderComponentTree(slug, prefix); }));
+  host.querySelector('[data-tree-find-clear]')?.addEventListener('click', () => { state.componentSearch = ''; state.componentReading = ''; renderComponentTree(slug, prefix); });
   host.querySelectorAll('[data-tree-sort]').forEach((b) => b.addEventListener('click', () => { state.componentSort = b.dataset.treeSort; renderComponentTree(slug, prefix); }));
   host.querySelector('[data-tree-more]')?.addEventListener('click', () => { state.componentShowAll = true; renderComponentTree(slug, prefix); });
   host.querySelectorAll('[data-ports-open]').forEach((b) => b.addEventListener('click', () => {
@@ -1208,11 +1316,25 @@ async function renderComponentTree(slug, prefix = '') {
       // Grouped by scope-hierarchy cluster when the backend found groups worth having
       // (`group_leaves`'s own MIN_GROUP=2 rule); ungrouped leaves render plainly; a branch with no
       // groups at all falls back to the flat list.
-      const groups = out.groups || [];
-      const ungrouped = out.ungrouped || out.leaves;
+      // A search or a reading in force narrows the rows to the components that pass it; the box says how many
+      // of the branch's components that is, so a narrowed list is never mistaken for the whole branch.
+      const keepRow = (l) => !matchPaths || matchPaths.has(l.path);
+      const verdictOf = (l) => (l.verdict || {}).verdict;
+      const groups = (out.groups || []).map((g) => {
+        if (!matchPaths) return g;
+        const members = g.members.filter(keepRow);
+        return { ...g, members, accepted: members.filter((l) => verdictOf(l) === 'accepted').length,
+          rejected: members.filter((l) => verdictOf(l) === 'rejected').length,
+          undecided: members.filter((l) => !['accepted', 'rejected'].includes(verdictOf(l))).length };
+      }).filter((g) => g.members.length);
+      const ungrouped = (out.ungrouped || out.leaves).filter(keepRow);
       const innerScroll = box.scrollTop;
-      box.innerHTML = (groups.map((g) => leafGroupHtml(g, openByName)).join('') + ungrouped.map(leafRowHtml).join(''))
+      const narrowed = matchPaths ? out.leaves.filter(keepRow).length : null;
+      box.innerHTML = (narrowed === null ? '' : `<div data-leaf-narrowed class="pb-[2px] text-provenance text-ink-muted">${
+        stateCue('partial', 'narrowed', 'A search or reading is in force; the rows below are the components that pass it.')} <span class="tnum">${narrowed}</span> of <span class="tnum">${out.leaves.length}</span> components under this branch</div>`)
+        + (groups.map((g) => leafGroupHtml(g, openByName)).join('') + ungrouped.map(leafRowHtml).join(''))
         || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
+      box.querySelectorAll('[data-leaf-blueprints]').forEach((bb) => bb.addEventListener('click', () => showLeafBlueprints(slug, bb)));
       box.scrollTop = innerScroll;
       box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
         recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 }, undefined, lb)));
@@ -1428,15 +1550,126 @@ function openBlueprintMembersInRail(slug, bp, { standApartOnly = false } = {}) {
     children = children.filter((c) => c.materialized);
   }
   const rows = [...members, ...children];
-  railFrame('Members', slug, `
+  const body = railFrame('Members', slug, `
     <div class="mb-s1 text-caps text-chrome-muted">${esc(bp.cluster_name)} · ${esc(bp.perspective)} reading${standApartOnly ? ' · in Egeria but not confirmed linked to the blueprint' : ''}</div>
-    ${rows.length ? rows.map((m) => `<div class="flex items-baseline gap-s2 border-b border-chrome-line-soft py-[3px] text-caps">
+    ${rows.length ? rows.map((m, k) => `<div data-member-row="${k}" class="flex flex-wrap items-baseline gap-s2 border-b border-chrome-line-soft py-[3px] text-caps">
       <span class="font-mono text-chrome-ink">${esc(m.slug)}</span>
       <span class="text-chrome-muted">${m.kind === 'blueprint' ? 'child blueprint' : 'component'}</span>
       <span class="text-chrome-muted">${m.verdict ? esc(m.verdict.verdict) : 'undecided'}</span>
       <span class="text-chrome-muted">${m.materialized ? 'in Egeria' : 'not in Egeria yet'}</span>
+      ${m.kind === 'blueprint'
+        ? `<button type="button" data-jump-member="${k}" title="Show this blueprint in the list" class="cursor-pointer bg-transparent p-0 text-caps text-accent-on-dark underline">show blueprint${icon('chevron-right', { size: 12 })}</button>`
+        : m.scope_locator
+          ? `<button type="button" data-jump-member="${k}" title="Show this component in the tree" class="cursor-pointer bg-transparent p-0 text-caps text-accent-on-dark underline">show in tree${icon('chevron-right', { size: 12 })}</button>`
+          : ''}
     </div>`).join('') : `<div class="text-caps text-chrome-muted">nothing to show</div>`}`,
     { sub: `${rows.length} of ${(bp.member_status || []).length + (bp.child_status || []).length}` });
+  body?.querySelectorAll('[data-jump-member]').forEach((b) => b.addEventListener('click', () => {
+    const m = rows[Number(b.dataset.jumpMember)];
+    if (!m) return;
+    if (m.kind === 'blueprint') showBlueprintInList(slug, bp.perspective, m.cluster_name, b);
+    else showComponentInTree(slug, m.scope_locator, b);
+  }));
+}
+
+/* ── Jumping between a blueprint and its components, both ways (PI-071) ──────
+ * Both directions read the SAME rows the lists draw from (the blueprints read's `member_status`), and a
+ * target that cannot be found says so next to the control that was pressed. */
+const waitFor = async (find, ms = 3000) => {
+  const t0 = Date.now();
+  for (;;) {
+    const v = find();
+    if (v) return v;
+    if (Date.now() - t0 > ms) return null;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+};
+function flash(el) {
+  el.dataset.jumped = '1';
+  el.classList.add('bg-accent-tint');
+  el.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+  setTimeout(() => { el.classList.remove('bg-accent-tint'); delete el.dataset.jumped; }, 2400);
+}
+function jumpNote(btn, text) {
+  if (!btn || !btn.parentElement) return;
+  btn.parentElement.querySelector('[data-jump-note]')?.remove();
+  btn.insertAdjacentHTML('afterend', btn.closest('#rail-evidence')
+    ? ` <span data-jump-note class="text-state-warn-on-dark">${esc(text)}</span>`
+    : ` <span data-jump-note class="text-state-warn">${esc(text)}</span>`);
+}
+/** Open a Curate section and wait for what it reads. */
+async function openCurateSection(id) {
+  const el = document.getElementById(id);
+  if (!el) return false;
+  if (el.tagName === 'DETAILS' && !el.open) { el.open = true; rememberSection(id, true); }
+  const loading = state.curate && state.curate.loadSection ? state.curate.loadSection(id) : null;
+  if (loading) await loading;
+  return true;
+}
+
+/** Blueprint -> component: open "what it's made of", open the branch that holds the component, show the row. */
+export async function showComponentInTree(slug, path, pressed = null) {
+  if (!(await openCurateSection('curate-sec-made-of'))) { jumpNote(pressed, 'the components section is not on this page'); return false; }
+  const host = $('component-tree');
+  // A filter would hide the row: clear it, and draw the tree again.
+  const filtered = !!(state.componentSearch || state.componentReading);
+  if (filtered) { state.componentSearch = ''; state.componentReading = ''; await renderComponentTree(slug); }
+  const top = String(path).split('/')[0];
+  const findBranch = () => [...(host?.querySelectorAll('[data-branch]') || [])].find((b) => b.dataset.branch === top);
+  let branch = findBranch();
+  if (!branch && !state.componentShowAll) { state.componentShowAll = true; await renderComponentTree(slug); branch = findBranch(); }
+  if (!branch) { jumpNote(pressed, 'not in the component tree: this survey no longer proposes it'); return false; }
+  const findLeaf = () => [...branch.querySelectorAll('[data-leaf-path]')].find((l) => l.dataset.leafPath === path);
+  if (!findLeaf()) {
+    const box = branch.querySelector('[data-branch-leaves]');
+    if (box && box.hidden) branch.querySelector('[data-branch-open]')?.click();
+  }
+  const leaf = await waitFor(findLeaf);
+  if (!leaf) { jumpNote(pressed, 'not under its branch: this survey no longer proposes it'); return false; }
+  const grp = leaf.closest('details[data-leaf-group]');
+  if (grp) grp.open = true;
+  flash(leaf);
+  return true;
+}
+
+/** Blueprint (or a component's blueprint) -> the blueprint row: open "blueprints", switch to its reading, show it. */
+export async function showBlueprintInList(slug, perspective, clusterName, pressed = null) {
+  if (!(await openCurateSection('curate-sec-blueprints'))) { jumpNote(pressed, 'the blueprints section is not on this page'); return false; }
+  const rk = blueprintReadingKey(slug);
+  const key = `${perspective}::${clusterName}`;
+  const find = () => [...document.querySelectorAll('[data-blueprint]')].find((b) => b.dataset.blueprint === key);
+  if (rk.reading !== perspective || !find()) {
+    rk.reading = perspective;
+    state.blueprintShowAll = true;                  // the cluster may sit past the first page
+    await renderBlueprintList(slug);
+  }
+  const row = find();
+  if (!row) { jumpNote(pressed, 'not in this survey\'s clusters'); return false; }
+  flash(row);
+  return true;
+}
+
+/** Component -> blueprints: which candidate blueprints list this component as a member, read from the
+ *  blueprints read the list itself uses. None is a measured answer; a failed read is not "none". */
+async function showLeafBlueprints(slug, btn) {
+  const path = btn.dataset.leafBlueprints;
+  const line = btn.closest('[data-leaf-path]')?.querySelector('[data-leaf-bp-line]');
+  if (!line) return;
+  line.innerHTML = stateCue('running', 'reading blueprints');
+  let data;
+  try { data = await getComponentBlueprints(slug); }
+  catch (err) { line.innerHTML = `${stateCue('unknown', 'blueprints not read', err.message)} <span class="text-ink-muted">${esc(err.message)}</span>`; return; }
+  const mine = (data.blueprints || []).filter((bp) => (bp.member_status || []).some((m) => m.scope_locator === path));
+  if (!mine.length) {
+    line.innerHTML = `${stateCue('nothing', 'in no candidate blueprint', 'The blueprints read lists this component under no cluster.')}`;
+    return;
+  }
+  line.innerHTML = `<span class="text-ink-muted">member of</span> ${mine.map((bp, k) => `<button type="button" data-leaf-bp="${k}"
+    class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(bp.cluster_name)} <span class="text-ink-muted no-underline">(${esc(bp.perspective)} reading)</span>${icon('chevron-right', { size: 12 })}</button>`).join(' · ')}`;
+  line.querySelectorAll('[data-leaf-bp]').forEach((b) => b.addEventListener('click', () => {
+    const bp = mine[Number(b.dataset.leafBp)];
+    showBlueprintInList(slug, bp.perspective, bp.cluster_name, b);
+  }));
 }
 
 function blueprintReadingKey(slug) {

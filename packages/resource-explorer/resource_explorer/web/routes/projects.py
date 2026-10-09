@@ -2385,13 +2385,18 @@ def components_tree(slug: str, prefix: str = "") -> dict:
 
 
 @router.get("/{slug}/components/leaves")
-def components_leaves(slug: str, branch: str) -> dict:
-    from resource_explorer.component_tree import group_leaves, leaves
+def components_leaves(slug: str, branch: str, groups: bool = True, limit: int = 5000) -> dict:
+    from resource_explorer.component_tree import finder_rows, group_leaves, leaves
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     if not registry.get(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    if not groups and not branch:
+        # The component search: slim rows for the whole repository, capped, with the server's own total.
+        return finder_rows(registry, slug, limit)
     rows = leaves(registry, slug, branch)
+    if not branch:
+        return {"branch": branch, "leaves": rows, "groups": [], "ungrouped": rows}   # no grouping over the whole set
     # `groups`/`ungrouped` (2026-09-17): the same flat rows, re-shaped by
     # scope-hierarchy cluster (component_tree.group_leaves) so a curator
     # opening a large branch sees ~10-row groups instead of one long list.

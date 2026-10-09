@@ -81,7 +81,11 @@ class TestRoundTwoSmallItems:
         app = _app()
         body = app[app.index("async function renderComponentTree("):app.index("async function renderComponentDiagram(")]
         assert "data-tree-sort=\"confidence\"" in body and "rows.sort(" in body
-        assert ".filter(" not in body.split("const rows = [...tree.branches];")[1].split("host.innerHTML")[0]
+        # The SORT never drops a branch. (P3 added a search and a reading filter ahead of it: those are
+        # a separate, announced step -- "N of M components match" -- and only act when one is asked for.)
+        sort_step = body.split("if (sort === 'confidence')")[1].split("const shown =")[0]
+        assert ".filter(" not in sort_step
+        assert "const filtering = !!(search.trim() || readingPick);" in body
 
     def test_the_foot_carries_both_ends_and_the_diagram_reads(self):
         app = _app()
