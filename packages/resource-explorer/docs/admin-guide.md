@@ -172,7 +172,9 @@ An admin is a request that presents a matching `X-Admin-Token`, or an `X-Admin-U
 `FEEDBACK_ADMIN_USERS`. The browser sends `X-Admin-Token` from the token you enter once in **Admin → Feedback**
 (held in `sessionStorage` under `re_admin_token`, for that tab only, and shared with the Classic UI and
 `/admin/feedback`). Nothing in the Next UI sends `X-Admin-User`; it exists for a reverse proxy that authenticates a
-user and sets the header.
+user and sets the header. **`X-Admin-User` is trusted as sent**, so it is safe only behind a proxy that strips any copy the client sends; with
+`FEEDBACK_ADMIN_USERS` set and no such proxy, any signed-in user can claim to be an admin, so prefer
+`FEEDBACK_ADMIN_TOKEN`.
 
 Two behaviours, on purpose:
 
@@ -185,6 +187,13 @@ Once either variable is set, the second row enforces admin as well. The Next con
 (`{admin, configured}`) and show **admin only** on a control only when an admin is configured and the caller is not one.
 Resolving a single resource's stale Egeria link (the banner on a repo) is open to any signed-in user either way, and
 **Delete in Egeria** is not an RE admin action at all: it keeps only the ISSUE-117 archive/delete block.
+
+Deletes, for the record:
+
+| Action | RE's rule |
+|---|---|
+| **Delete locally** (Classic's bulk delete, `/linkage/delete-local`) | Signed-in users only. RE records no creator on a resource, so it cannot yet say "only the creator"; a creator rule needs a column (DDL) and is a later change. |
+| **Delete in Egeria** (`/linkage/delete-in-egeria`) | No RE gate: Egeria decides, and the ISSUE-117 block still refuses every archive/delete while it is ON. RE calls Egeria as the **configured service account** today (`config.egeria`), so Egeria's decision is that account's, not the signed-in person's. |
 
 ### Governance zones
 
