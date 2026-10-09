@@ -10,7 +10,7 @@ const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const GUID = 'aaaa-1111';
 
-async function setUp({ published = true, live = [{ guid: GUID, display_name: 'Report A', surveyed_at: '2026-10-01T00:00:00', annotation_count: 2 }] } = {}) {
+async function setUp({ published = true, readFails = false, live = [{ guid: GUID, display_name: 'Report A', surveyed_at: '2026-10-01T00:00:00', annotation_count: 2 }] } = {}) {
   const { document, window } = makeDomEnvironment();
   const calls = [];
   const detail = JSON.stringify({ egeria_report_guid: published ? GUID : '', steps: [{ step: 'S::a', status: 'ok', answered_by: 'local' }] });
@@ -22,7 +22,7 @@ async function setUp({ published = true, live = [{ guid: GUID, display_name: 'Re
     if (u === '/api/activity/r1/declared-vs-received') {
       return ok({ published, recorded: true, egeria_report_guid: published ? GUID : '', summary: { declared: 1, received: 1 }, types: [] });
     }
-    if (u.endsWith('/egeria-surveys')) return ok(live);
+    if (u.endsWith('/egeria-surveys')) return readFails ? { ok: false, status: 502, statusText: 'bad', json: async () => ({ detail: 'platform down' }) } : ok(live);
     if (u.endsWith(`/egeria-surveys/${GUID}/annotations`)) return ok([{ guid: 'an1', annotation_type: 'LanguageAnnotation', summary: 'Python' }]);
     return ok({});
   };
@@ -73,4 +73,14 @@ test('a run that was not published says so instead of offering a report', async 
   const t = await setUp({ published: false });
   assert.equal(t.d.querySelector('[data-run-report-open]'), null);
   assert.match(text(t.d.querySelector('[data-run-report="none"]')), /not published/);
+});
+
+test('an Egeria that cannot be read is not reported as the report being gone', async () => {
+  const t = await setUp({ readFails: true });
+  t.d.querySelector('[data-run-report-open]').click();
+  await tick(200);
+  assert.match(text(t.d.querySelector('[data-reports-error]')), /could not be read/);
+  const status = t.d.querySelector('[data-run-report-status]').textContent;
+  assert.match(status, /could not be read/);
+  assert.doesNotMatch(status, /not in Egeria now/);
 });

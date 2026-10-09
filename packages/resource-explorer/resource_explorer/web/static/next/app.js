@@ -6335,9 +6335,12 @@ export function attachRunReport(holder, entityType, slug, dvr) {
       const { mountEgeriaReports } = await import('/static/next/stages/publish.js');
       const host = wrap.querySelector('[data-run-report-host]');
       const reports = mountEgeriaReports(host, { entityType, slug, inEgeria: true });
+      const read = await reports.ready;
       await reports.expand(guid);
       const there = [...host.querySelectorAll('[data-egeria-report]')].some((n) => n.dataset.egeriaReport === guid);
-      status.textContent = there ? '' : 'this report is not in Egeria now';
+      // "Not in Egeria now" is a statement about a SUCCESSFUL read; a failed read says it could not be read.
+      status.textContent = read === false ? 'Egeria could not be read, so this report was not checked'
+        : (there || read !== true) ? '' : 'this report is not in Egeria now';
     } catch (err) {
       status.textContent = `could not be read: ${err && err.message ? err.message : 'unknown error'}`;
     }
