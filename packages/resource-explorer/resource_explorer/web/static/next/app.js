@@ -195,6 +195,7 @@ import { rememberedCredential, setRemembered } from '/static/next/run-credential
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
 import { installSessionBanner } from '/static/next/session-banner.js';
+import { isFreshnessSkip, offerRunAnyway, UP_TO_DATE_WORD } from '/static/next/run-anyway.js';
 
 /* ════════════════════════════════════════════════════════════════════════
  * State
@@ -5029,7 +5030,16 @@ async function loadEnrichmentAnalysesMapPane() {
     const label = b.textContent;
     b.disabled = true; b.textContent = 'running…';
     try {
-      await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
+      const started = await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
+      if (isFreshnessSkip(started)) {
+        b.disabled = false; b.textContent = UP_TO_DATE_WORD;
+        setTimeout(() => { b.textContent = label; }, 4000);
+        offerRunAnyway(started, { slug, analysisId, onForce: async () => {
+          await runAnalysis(slug, analysisId, apiEntityType(state.resourceType), { force: true });
+          await loadEnrichmentAnalysesMapPane();
+        } });
+        return;
+      }
       await loadEnrichmentAnalysesMapPane();
     } catch (err) {
       b.disabled = false;
@@ -5484,7 +5494,7 @@ async function renderAnalysesIndexSection(slug, stage) {
     subresToggle.textContent = opening ? '🗂 select & catalog ▲' : '🗂 select & catalog';
     if (opening) await mountSubResourcePanel(slug, subresPanel);
   });
-  const startRun = async (b, aid, credential = null) => {
+  const startRun = async (b, aid, credential = null, force = false) => {
     const errEl = host.querySelector(`[data-analysis-run-error="${CSS.escape(aid)}"]`);
     if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
     b.disabled = true;
@@ -5495,7 +5505,15 @@ async function renderAnalysesIndexSection(slug, stage) {
       // request -> the server's in-process run); the plain call is unchanged.
       const started = credential
         ? await runAnalysisWithCredential(slug, aid, credential)
-        : await runAnalysis(slug, aid, apiEntityType(state.resourceType));
+        : await runAnalysis(slug, aid, apiEntityType(state.resourceType), { force });
+      if (isFreshnessSkip(started)) {
+        // The server declined: the last run is still fresh. Say so on the button and offer the forced run.
+        b.disabled = false;
+        b.textContent = UP_TO_DATE_WORD;
+        setTimeout(() => { if (b.textContent === UP_TO_DATE_WORD) b.textContent = original; }, 4000);
+        offerRunAnyway(started, { slug, analysisId: aid, onForce: () => startRun(b, aid, null, true) });
+        return;
+      }
       // Watch it rather than tell the user to reload — pollActivity is the
       // same mechanism the Questions checklist's run button already uses
       // (rerun(), above). A five-minute timeout still redraws the section
@@ -8984,8 +9002,10 @@ async function openNotifyDialog(entry) {
       <span class="text-caveat text-ink-muted">Schedule this analysis:</span>
       <select id="notify-schedule-cadence"
         class="rounded-sm border border-rule bg-paper px-2 py-[2px] text-caveat text-ink">
-        <option value="daily">daily</option>
+        <option value="manual">manual</option>
+        <option value="daily" selected>daily</option>
         <option value="weekly">weekly</option>
+        <option value="monthly">monthly</option>
       </select>
       <button id="notify-schedule-save" type="button"
         class="cursor-pointer rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink">Set</button>
@@ -9039,7 +9059,9 @@ async function openNotifyDialog(entry) {
       await saveSchedule(entityType, slug, analysisId, cadence, true);
       const rows = await getSchedules(entityType, slug);
       const saved = rows.find((r) => r.analysis_id === analysisId);
-      statusEl.textContent = saved?.next_run
+      statusEl.textContent = cadence === 'manual'
+        ? '✓ manual — runs only when pressed; a notification needs daily, weekly or monthly'
+        : saved?.next_run
         ? `✓ ${esc(saved.schedule || cadence)} — next run ${esc(ago(saved.next_run))}`
         : `✓ ${esc(cadence)} scheduled`;
     } catch (err) {
@@ -9256,7 +9278,7 @@ async function checkPrerequisitePlan(entry, i, analysisId, { background }) {
   return false;
 }
 
-async function rerun(entry, i, { background = false, skipPlanCheck = false } = {}) {
+async function rerun(entry, i, { background = false, skipPlanCheck = false, force = false } = {}) {
   const analysisId = (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   const slug = state.selectedSlug;
@@ -9272,7 +9294,14 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false } = {
     // Enqueue and stop watching. The row says it is queued in the worker
     // and how to see the result; nothing here pretends to know when.
     try {
-      await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
+      const queued = await runAnalysis(slug, analysisId, apiEntityType(state.resourceType), { force });
+      if (isFreshnessSkip(queued)) {
+        state.runsInFlight.delete(entry.question);
+        replaceRow(entry, i, state.answers.get(entry.question));
+        offerRunAnyway(queued, { slug, analysisId, onForce: () =>
+          rerun(entry, i, { background: true, skipPlanCheck: true, force: true }) });
+        return;
+      }
       state.runsInFlight.set(entry.question, { analysisId, label: `In background · ${analysisId} · reload to read the result` });
     } catch (err) {
       state.runsInFlight.delete(entry.question);
@@ -9284,7 +9313,14 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false } = {
 
   let finishedRun = null;
   try {
-    const started = await runAnalysis(slug, analysisId, apiEntityType(state.resourceType));
+    const started = await runAnalysis(slug, analysisId, apiEntityType(state.resourceType), { force });
+    if (isFreshnessSkip(started)) {
+      state.runsInFlight.delete(entry.question);
+      replaceRow(entry, i, state.answers.get(entry.question));
+      offerRunAnyway(started, { slug, analysisId, onForce: () =>
+        rerun(entry, i, { skipPlanCheck: true, force: true }) });
+      return;
+    }
     const activityId = started.activity_id;
     state.runsInFlight.set(entry.question, { analysisId, activityId, label: `Running · ${analysisId}` });
     replaceRow(entry, i, state.answers.get(entry.question));

@@ -1453,8 +1453,8 @@ function _runAnalysisPath(entityType, slug, analysisId) {
  *  (including a database/filesystem's own "Run"/"re-run" button on a
  *  Questions-checklist row) posted to the repo-only route regardless of the
  *  resource's real type. */
-export const runAnalysis = (slug, analysisId, entityType) =>
-  post(_runAnalysisPath(requireKind('runAnalysis', entityType), slug, analysisId));
+export const runAnalysis = (slug, analysisId, entityType, { force = false } = {}) =>
+  post(`${_runAnalysisPath(requireKind('runAnalysis', entityType), slug, analysisId)}${force ? '?force=true' : ''}`);
 
 /** ONE database analysis with a credential typed for that run (brief section 8). The password goes in
  *  the body of this call and nowhere else; the server runs it in its own process (not queued, not
@@ -1519,7 +1519,14 @@ export const raiseCapabilityRfa = (entityType, slug, stepKey) =>
 export const getActivityEntry = (entryId) =>
   get(`/api/activity/${encodeURIComponent(entryId)}`);
 
-export const listActivity = (limit = 50) => get(`/api/activity/?limit=${limit}`);
+/** `filters` is the advanced filter, sent to the server so it applies before the page limit:
+ *  {entityType, intent, operation, status, since}. Empty values are left off the query. */
+export const listActivity = (limit = 50, filters = {}) => {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  const map = { entityType: 'entity_type', intent: 'intent', operation: 'operation', status: 'status', since: 'since' };
+  for (const [k, q] of Object.entries(map)) if (filters[k]) qs.set(q, filters[k]);
+  return get(`/api/activity/?${qs}`);
+};
 export const listRfas = () => get('/api/activity/rfas');
 
 /** Record a response action (defer | reassign | complete | reopen — "reopen"
@@ -1765,9 +1772,9 @@ export const deleteSchedule = (entityType, entitySlug, analysisId) =>
  *  action posts to (classic's `saveSchedule()`, index.html) and chat's inline
  *  scheduling form reuses (`_chatSubmitSchedule()`) — one scheduling code
  *  path, not a new one for every place that offers to set a cadence. */
-export const saveSchedule = (entityType, entitySlug, analysisId, schedule, enabled = true) =>
+export const saveSchedule = (entityType, entitySlug, analysisId, schedule, enabled = true, targetKind = 'analysis') =>
   post(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
-       { analysis_id: analysisId, schedule, enabled });
+       { analysis_id: analysisId, schedule, enabled, target_kind: targetKind });
 
 /** Runs THE SCHEDULE, through the same dispatch its timer uses — so what
  *  this does is exactly what the cadence would do, not a separate code
@@ -1943,3 +1950,37 @@ export const getDependencyTable = (slug) =>
 /** A person confirms (or withdraws) proposed runtime rows; the answer is the table re-read. */
 export const confirmRuntimeDependencies = (slug, keys, verdict) =>
   post(`/api/projects/${encodeURIComponent(slug)}/dependencies/confirm`, { keys, verdict });
+
+
+/* ── Parity P1: the shell, Egeria links, the Publish Queue ─────────────────── */
+
+/** Reads only. The /health/ready answer is 200 {status:'ok'} or 503 {status:'error', detail}; a network failure
+ *  throws the ApiError status 0 that `request` raises. */
+export const getHealthReady = () => get('/health/ready');
+
+/** Who this server connects to Egeria as, which view server and platform, and the build it was started from. */
+export const getWhoami = () => get('/api/egeria/whoami');
+
+export const getBootstrapStatus = () => get('/api/bootstrap/status');
+
+/** "Run bootstrap now". `force` is deliberately NOT a parameter: a forced run re-runs every batch and, for a batch
+ *  that is not idempotent, duplicates step links. The banner only ever heals what is missing. */
+export const runBootstrapMissingOnly = () => post('/api/bootstrap/run', { force: false });
+
+export const listStaleLinkages = () => get('/api/egeria/linkage/stale');
+
+/** action: republish | resurvey | discard. Every action clears the unusable link first. */
+export const resolveStaleLinkage = (entityType, slug, action) =>
+  post(`/api/egeria/linkage/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/resolve`, { action });
+
+/** The rows the person SAW, never a server-side "everything stale". `dryRun` defaults to the safe direction. */
+export const resolveAllLinkages = (targets, action, { dryRun = true } = {}) =>
+  post('/api/egeria/linkage/resolve-all', { targets, action, dry_run: dryRun });
+
+export const listOutbox = ({ status = '', limit = 200 } = {}) => {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (status) qs.set('status', status);
+  return get(`/api/outbox/?${qs}`);
+};
+/** Returns one DEAD row to the queue. The server refuses an archive, delete or detach kind (409). */
+export const retryOutboxRow = (rowId) => post(`/api/outbox/${encodeURIComponent(rowId)}/retry`);
