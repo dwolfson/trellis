@@ -221,7 +221,6 @@ function _renderList() {
 
 const rowEl = (rfaId) => [..._drawerEl.querySelectorAll('[data-rfa-row]')].find((n) => n.dataset.rfaRow === rfaId);
 const flash = (msg) => { const f = _drawerEl && _drawerEl.querySelector('#next-rfa-flash'); if (f) f.textContent = msg; };
-const inputCls = 'rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-provenance text-chrome-ink placeholder:text-chrome-muted';
 const formBtn = (attr, label) => `<button type="button" ${attr} class="cursor-pointer rounded-sm border border-chrome-line bg-transparent px-2 py-[1px] text-chip text-chrome-ink disabled:cursor-default disabled:opacity-60">${label}</button>`;
 
 /** The dismiss form: a reason (required) and an optional note, inline under the row. */
@@ -229,9 +228,9 @@ function _openDismissForm(rfaId) {
   const slot = rowEl(rfaId)?.querySelector('[data-rfa-form]');
   if (!slot) return;
   slot.innerHTML = `<div data-rfa-dismiss-form class="flex flex-wrap items-center gap-s2">
-    <select data-rfa-reason class="${inputCls}"><option value="">Why?</option>${
+    <select data-rfa-reason class="rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-provenance text-chrome-ink placeholder:text-chrome-muted"><option value="">Why?</option>${
       DISMISS_REASONS.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select>
-    <input data-rfa-dismiss-note type="text" placeholder="note (optional)" class="min-w-0 flex-1 ${inputCls}">
+    <input data-rfa-dismiss-note type="text" placeholder="note (optional)" class="min-w-0 flex-1 rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-provenance text-chrome-ink placeholder:text-chrome-muted">
     ${formBtn('data-rfa-dismiss-go disabled', 'Dismiss')}${formBtn('data-rfa-form-cancel', 'Cancel')}
     <span data-rfa-form-status class="text-provenance text-chrome-muted"></span></div>`;
   const reason = slot.querySelector('[data-rfa-reason]');
@@ -283,7 +282,7 @@ function _openNoteForm(rfaId) {
   const slot = rowEl(rfaId)?.querySelector('[data-rfa-form]');
   if (!row || !slot) return;
   slot.innerHTML = `<div data-rfa-note-form class="flex flex-col gap-s2">
-    <textarea data-rfa-note-text rows="2" placeholder="note" class="w-full ${inputCls}">${esc(row.notes || '')}</textarea>
+    <textarea data-rfa-note-text rows="2" placeholder="note" class="w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-provenance text-chrome-ink placeholder:text-chrome-muted">${esc(row.notes || '')}</textarea>
     <div class="flex items-center gap-s2">${formBtn('data-rfa-note-save', 'Save note')}${formBtn('data-rfa-form-cancel', 'Cancel')}
       <span data-rfa-form-status class="text-provenance text-chrome-muted"></span></div></div>`;
   slot.querySelector('[data-rfa-form-cancel]').addEventListener('click', () => { slot.innerHTML = ''; });

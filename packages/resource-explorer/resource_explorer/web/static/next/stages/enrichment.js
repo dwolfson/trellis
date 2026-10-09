@@ -126,7 +126,7 @@ function fieldControlHtml(def, field, kind = 'judgement') {
   }
   if (def.multiline) {
     return `<textarea data-field="${def.key}" rows="2" placeholder="${esc(def.placeholder || '')}"
-      class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">${esc(v)}</textarea>`;
+      class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-provenance text-ink placeholder:text-ink-muted">${esc(v)}</textarea>`;
   }
   return `<input data-field="${def.key}" type="text" value="${esc(v)}" placeholder="${esc(def.placeholder || '')}"
     class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">`;
