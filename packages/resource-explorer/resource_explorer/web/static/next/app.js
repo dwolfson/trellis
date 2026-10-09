@@ -6302,7 +6302,46 @@ export async function openRunsList(slug) {
         return;
       }
       holder.innerHTML = declaredVsReceivedHtml(dvr);
+      attachRunReport(holder, apiEntityType(state.resourceType), slug, dvr);
     });
+  });
+}
+
+/** PI-046: link a finished run to the Egeria report it published. The report GUID is the run's own
+ *  (`egeria_report_guid` from declared-vs-received, which reads it off the run record); nothing is
+ *  read from Egeria until the person presses the button, and a report that is no longer in Egeria
+ *  says so instead of showing an empty list. A run with no report says that too. */
+export function attachRunReport(holder, entityType, slug, dvr) {
+  const guid = dvr && dvr.published ? String(dvr.egeria_report_guid || '') : '';
+  if (!guid) {
+    holder.insertAdjacentHTML('beforeend', `<p data-run-report="none" class="mt-s2 text-provenance text-ink-muted">
+      <span class="font-glyph" aria-hidden="true">${stateEntry('unrun').glyph}</span> no Egeria report: this run was not published</p>`);
+    return;
+  }
+  holder.insertAdjacentHTML('beforeend', `<div data-run-report="${esc(guid)}" class="mt-s2">
+    <div class="flex flex-wrap items-baseline gap-s2 text-provenance text-ink-muted">
+      <span>Egeria report</span> <span class="font-mono text-ink" data-run-report-guid>${esc(guid)}</span>
+      <button type="button" data-run-report-open class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Show the report and its annotations</button>
+      <span data-run-report-status aria-live="polite"></span></div>
+    <div data-run-report-host class="mt-s1"></div></div>`);
+  const wrap = holder.lastElementChild;
+  const btn = wrap.querySelector('[data-run-report-open]');
+  const status = wrap.querySelector('[data-run-report-status]');
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    status.textContent = 'reading Egeria…';
+    try {
+      const { mountEgeriaReports } = await import('/static/next/stages/publish.js');
+      const host = wrap.querySelector('[data-run-report-host]');
+      const reports = mountEgeriaReports(host, { entityType, slug, inEgeria: true });
+      await reports.expand(guid);
+      const there = [...host.querySelectorAll('[data-egeria-report]')].some((n) => n.dataset.egeriaReport === guid);
+      status.textContent = there ? '' : 'this report is not in Egeria now';
+    } catch (err) {
+      status.textContent = `could not be read: ${err && err.message ? err.message : 'unknown error'}`;
+    }
+    btn.disabled = false;
   });
 }
 
