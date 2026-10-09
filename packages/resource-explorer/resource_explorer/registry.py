@@ -7837,6 +7837,7 @@ class ProjectRegistry:
         lease_cutoff = (
             datetime.fromisoformat(now) - timedelta(seconds=CLAIM_LEASE_SECONDS)
         ).isoformat()
+        _nd_clause, _nd_params = self._non_destructive_sql()
         sql = (
             "SELECT o.id FROM egeria_outbox o "
             # A correlated EXISTS rather than a LEFT JOIN: Postgres rejects
@@ -7844,13 +7845,13 @@ class ProjectRegistry:
             # SQLite unit tests cannot see that — they were green while this
             # raised FeatureNotSupported against the real backend.
             "WHERE (o.status IN ('pending', 'failed') "
-            "       OR (o.status = 'running' AND o.claimed_at <= ?)) "
+            f"       OR (o.status = 'running' AND o.claimed_at <= ? AND {_nd_clause})) "
             "  AND o.next_attempt_at <= ? "
             "  AND (o.depends_on_id IS NULL OR EXISTS ("
             "        SELECT 1 FROM egeria_outbox dep "
             "        WHERE dep.id = o.depends_on_id AND dep.status = 'done')) "
         )
-        params: list = [lease_cutoff, now]
+        params: list = [lease_cutoff, *_nd_params, now]
         if run_id is not None:
             sql += "  AND o.run_id = ? "
             params.append(run_id)
@@ -7865,6 +7866,7 @@ class ProjectRegistry:
         # claimer skip the locked rows outright instead of blocking on them;
         # SQLite serialises writers itself, so the same transaction suffices.
         with self._conn() as conn:
+            self._kill_lapsed_destructive_claims(conn, lease_cutoff)
             if conn.is_postgres:
                 sql += " FOR UPDATE SKIP LOCKED"
             ids = [r["id"] for r in conn.execute(sql, tuple(params)).fetchall()]
@@ -7882,6 +7884,40 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    @staticmethod
+    def _non_destructive_sql() -> tuple[str, list]:
+        """SQL (and params) that is true for an outbox row whose kind does not archive, delete or detach. A lapsed
+        lease may only be reclaimed for such a row: the first send of a destructive write may have landed."""
+        from resource_explorer.egeria_outbox import DESTRUCTIVE_KIND_WORDS, DESTRUCTIVE_OUTBOX_KINDS
+
+        kinds = sorted(DESTRUCTIVE_OUTBOX_KINDS)
+        clause = f"o.element_kind NOT IN ({','.join('?' * len(kinds))})"
+        params: list = list(kinds)
+        for w in DESTRUCTIVE_KIND_WORDS:
+            # ESCAPE: `_` is a LIKE wildcard ('leave_out' would match 'leaveXout'). Same text on SQLite and Postgres.
+            clause += " AND LOWER(o.element_kind) NOT LIKE ? ESCAPE '\\'"
+            params.append("%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+        return clause, params
+
+    def _kill_lapsed_destructive_claims(self, conn, lease_cutoff: str) -> list[int]:
+        """A destructive row whose claim lapsed is dead, not due again: the drain never re-sends a destructive write
+        (the claimer may have sent it and died before recording it). Returns the ids it killed."""
+        from resource_explorer.egeria_outbox import CLAIM_LAPSED_DESTRUCTIVE
+
+        clause, params = self._non_destructive_sql()
+        rows = conn.execute(
+            "SELECT o.id FROM egeria_outbox o WHERE o.status = 'running' AND o.claimed_at <= ? "
+            f"AND NOT ({clause})", (lease_cutoff, *params)).fetchall()
+        ids = [r["id"] for r in rows]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            conn.execute(
+                f"UPDATE egeria_outbox SET status='dead', claimed_at='', next_attempt_at='', last_error=? "  # noqa: S608
+                # Re-checked at the write: a slow claimer may have marked the row done since the SELECT.
+                f"WHERE id IN ({marks}) AND status='running' AND claimed_at <= ?",
+                (CLAIM_LAPSED_DESTRUCTIVE, *ids, lease_cutoff))
+        return ids
+
     def peek_due_outbox_elements(self, *, limit: int = 200, run_id: str | None = None,
                                  now: str | None = None) -> list[dict]:
         """Which rows a drain WOULD take, without taking them.
@@ -7895,6 +7931,7 @@ class ProjectRegistry:
         lease_cutoff = (
             datetime.fromisoformat(now) - timedelta(seconds=CLAIM_LEASE_SECONDS)
         ).isoformat()
+        _nd_clause, _nd_params = self._non_destructive_sql()
         sql = (
             "SELECT o.* FROM egeria_outbox o "
             # A correlated EXISTS rather than a LEFT JOIN: Postgres rejects
@@ -7902,13 +7939,13 @@ class ProjectRegistry:
             # SQLite unit tests cannot see that — they were green while this
             # raised FeatureNotSupported against the real backend.
             "WHERE (o.status IN ('pending', 'failed') "
-            "       OR (o.status = 'running' AND o.claimed_at <= ?)) "
+            f"       OR (o.status = 'running' AND o.claimed_at <= ? AND {_nd_clause})) "
             "  AND o.next_attempt_at <= ? "
             "  AND (o.depends_on_id IS NULL OR EXISTS ("
             "        SELECT 1 FROM egeria_outbox dep "
             "        WHERE dep.id = o.depends_on_id AND dep.status = 'done')) "
         )
-        params: list = [lease_cutoff, now]
+        params: list = [lease_cutoff, *_nd_params, now]
         if run_id is not None:
             sql += "  AND o.run_id = ? "
             params.append(run_id)
@@ -8218,6 +8255,12 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
+
+    def get_outbox_element(self, row_id: int) -> dict | None:
+        """One outbox row by id, or None. Read-only."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM egeria_outbox WHERE id=?", (row_id,)).fetchone()
+        return dict(row) if row else None
 
     def retry_outbox_element(self, row_id: int) -> bool:
         """Return a dead row to the queue, attempts reset. Returns whether it

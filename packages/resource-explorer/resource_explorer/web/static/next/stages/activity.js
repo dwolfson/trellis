@@ -23,19 +23,24 @@
  * row per operation, an expandable detail (annotations tally, cataloged
  * items, free-text detail), and GUIDs rendered short with click-to-copy.
  * What it deliberately leaves out: RFA rendering (the RFA drawer, `#rfa-
- * drawer`, is /next's OWN separate not-yet-built item — this reads the same
- * `annotations` field but its RequestForAction rows belong to that surface,
- * not this one; this list still SHOWS an rfa-operation row, since rule 16
- * requires it be logged and hiding it would be exactly the "logged but
- * invisible" gap that rule closes), and the classic advanced filter form
- * (entity_type/intent/operation/status/since as separate selects) — this
- * pane offers one text filter (matches slug or summary) plus a status chip
- * row, client-side over the fetched page, which is enough to find "what
- * failed" or "what happened to this repo" without reproducing every control.
+ * drawer`, is /next's OWN separate item — this reads the same `annotations`
+ * field but its RequestForAction rows belong to that surface, not this one;
+ * this list still SHOWS an rfa-operation row, since rule 16 requires it be
+ * logged and hiding it would be exactly the "logged but invisible" gap that
+ * rule closes).
+ *
+ * FILTERS. A text filter (slug or summary) and the status chips, plus the
+ * classic advanced filter (PI-122): resource kind, stage (intent), operation
+ * and "since", under a "filters" disclosure that says how many are set. Those
+ * go to the server (`GET /api/activity/?entity_type=&intent=&operation=&status=&since=`)
+ * so they apply before the page limit, not only to the page already loaded.
+ * The unread badge and the toast that jumps to an entry are in
+ * activity-unread.js; opening the panel marks what it shows as seen.
  */
 import { listActivity } from '/static/re-api.js';
 import { esc, tnum } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
+import { markSeen } from '/static/next/activity-unread.js';
 
 const PANEL_ID = 'activity-panel';
 const FETCH_LIMIT = 300;
@@ -70,7 +75,47 @@ function hiGuid(escapedText) {
 /** Local, per-open state — not persisted, not shared with app.js's `state`.
  *  Filters reset every time the panel opens, same as the classic tab does
  *  not remember a filter across a reload. */
-const panel = { entries: null, error: null, statusFilter: 'all', textFilter: '', order: 'desc' };
+const panel = {
+  entries: null, error: null, statusFilter: 'all', textFilter: '', order: 'desc',
+  // The advanced filter (PI-122): sent to the server, so it applies before the page limit.
+  adv: { entityType: '', intent: '', operation: '', since: '' }, focusId: '',
+};
+
+/** The advanced filter's choices. Operation and entity type reuse the labels the rows already draw. */
+export const INTENTS = ['investigation', 'scouting', 'discovery', 'assessment', 'analysis', 'enrichment',
+  'understanding', 'curate', 'automate'];
+export const SINCE_CHOICES = [
+  ['', 'any time'], ['1h', 'last hour'], ['24h', 'last 24 hours'], ['7d', 'last 7 days'], ['30d', 'last 30 days'],
+];
+const SINCE_MS = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 };
+
+/** The `since` query value for a choice: a timestamp in the log's own shape (no zone suffix), which compares
+ *  correctly as text. Empty for "any time". */
+export function sinceValue(choice, now = Date.now()) {
+  const ms = SINCE_MS[choice];
+  return ms ? new Date(now - ms).toISOString().slice(0, 19) : '';
+}
+
+/** Everything the server is asked to filter on. */
+export function serverFilters() {
+  return {
+    entityType: panel.adv.entityType, intent: panel.adv.intent, operation: panel.adv.operation,
+    status: panel.statusFilter === 'all' ? '' : panel.statusFilter, since: sinceValue(panel.adv.since),
+  };
+}
+
+async function reload() {
+  panel.entries = null;
+  panel.error = null;
+  renderList();
+  try {
+    panel.entries = await listActivity(FETCH_LIMIT, serverFilters());
+  } catch (err) {
+    panel.error = err.message;
+  }
+  if (!document.getElementById(PANEL_ID)) return;
+  renderList();
+}
 
 /** Order by time. 'desc' = latest first (what the page has always shown, and
  *  what the server returns: `ORDER BY ts DESC LIMIT n`). The route has no
@@ -116,12 +161,14 @@ function onPanelKeydown(e) {
 /** Open the panel, freshly fetched every time — activity keeps happening
  *  while the panel is closed, and a stale cached page would misreport a
  *  finished run as still `running`. */
-export async function openActivityPanel() {
+export async function openActivityPanel({ focusId = '' } = {}) {
   closeActivityPanel();
   panel.entries = null;
   panel.error = null;
   panel.statusFilter = 'all';
   panel.textFilter = '';
+  panel.adv = { entityType: '', intent: '', operation: '', since: '' };
+  panel.focusId = focusId;
   panel.order = readOrder();
 
   const el = document.createElement('div');
@@ -162,8 +209,41 @@ export async function openActivityPanel() {
     panel.error = err.message;
   }
   if (!document.getElementById(PANEL_ID)) return; // closed while the fetch was in flight
+  // What the panel showed is now seen: the unread badge clears and the mark moves to the newest entry.
+  if (panel.entries) markSeen(document, panel.entries);
   renderControls();
   renderList();
+  focusEntry();
+}
+
+/** Scroll to the entry a toast pointed at, open its detail and flash it. A missing entry (older than the page, or
+ *  filtered out) is said, never silently ignored. */
+function focusEntry() {
+  const id = panel.focusId;
+  if (!id) return;
+  panel.focusId = '';
+  const row = [...document.querySelectorAll('[data-activity-id]')].find((r) => r.dataset.activityId === id);
+  const host = document.getElementById('activity-panel-body');
+  if (!row) {
+    host?.insertAdjacentHTML('afterbegin', '<p data-activity-focus-missing class="mb-s2 text-caveat text-state-warn">That entry is not in the loaded page.</p>');
+    return;
+  }
+  row.scrollIntoView?.({ block: 'center' });
+  row.setAttribute('data-activity-focused', '');
+  row.classList.add('bg-paper-surface');
+  row.querySelector('[data-activity-toggle]')?.click();
+}
+
+const ADV_LABEL = { entityType: 'resource', intent: 'stage', operation: 'operation', since: 'since' };
+function advCount() { return Object.values(panel.adv).filter(Boolean).length; }
+function advActive() { return advCount() > 0; }
+function advSelect(key, label, options) {
+  return `<label class="flex items-center gap-[4px] text-caveat text-ink-muted">${esc(label)}
+    <select data-activity-adv="${key}" aria-label="${esc(ADV_LABEL[key] || label)}"
+      class="cursor-pointer rounded-sm border px-2 py-[2px] text-caveat
+        ${panel.adv[key] ? 'border-accent text-accent-ink' : 'border-rule text-ink'}">
+      ${options.map(([v, l]) => `<option value="${esc(v)}" ${panel.adv[key] === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+    </select></label>`;
 }
 
 function renderControls() {
@@ -184,6 +264,17 @@ function renderControls() {
       class="cursor-pointer rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat
         ${panel.statusFilter === s ? 'border-accent text-accent-ink' : 'text-ink-muted hover:text-ink'}"
       >${s}</button>`).join('')}</span>
+    <details id="activity-advanced" class="w-full" ${advActive() ? 'open' : ''}>
+      <summary class="cursor-pointer text-caveat ${advActive() ? 'text-accent-ink' : 'text-ink-muted'}">filters${
+        advActive() ? ` · ${advCount()} set` : ''}</summary>
+      <div class="mt-s2 flex flex-wrap items-center gap-s3">
+        ${advSelect('entityType', 'resource', [['', 'any'], ...Object.keys(ENTITY_ICON).map((k) => [k, k])])}
+        ${advSelect('intent', 'stage', [['', 'any'], ...INTENTS.map((k) => [k, k])])}
+        ${advSelect('operation', 'operation', [['', 'any'], ...Object.entries(OPERATION_LABEL).map(([k, v]) => [k, v])])}
+        ${advSelect('since', 'since', SINCE_CHOICES)}
+        ${advActive() ? '<button type="button" data-activity-adv-clear class="cursor-pointer bg-transparent text-caveat text-accent-ink underline">clear filters</button>' : ''}
+      </div>
+    </details>
     ${truncated && panel.order === 'asc'
     ? `<div id="activity-order-note" class="w-full text-provenance text-ink-muted">
         <span class="tnum">${panel.entries.length}</span> most recent entries, oldest first</div>`
@@ -202,8 +293,18 @@ function renderControls() {
   host.querySelectorAll('[data-activity-status]').forEach((b) => b.addEventListener('click', () => {
     panel.statusFilter = b.dataset.activityStatus;
     renderControls();
-    renderList();
+    reload();
   }));
+  host.querySelectorAll('[data-activity-adv]').forEach((sel) => sel.addEventListener('change', () => {
+    panel.adv[sel.dataset.activityAdv] = sel.value;
+    renderControls();
+    reload();
+  }));
+  host.querySelector('[data-activity-adv-clear]')?.addEventListener('click', () => {
+    panel.adv = { entityType: '', intent: '', operation: '', since: '' };
+    renderControls();
+    reload();
+  });
 }
 
 function filteredEntries() {
@@ -294,7 +395,7 @@ function entryRowHtml(op) {
   const hasDetail = !!(annHtml || itemsHtml || detailHtml);
   const detailId = `activity-d-${esc(op.id || '').replace(/[^a-z0-9]/gi, '_').slice(0, 24)}`;
 
-  return `<div class="border-b border-rule py-s2">
+  return `<div class="border-b border-rule py-s2" data-activity-id="${esc(op.id || '')}">
     <div class="flex flex-wrap items-baseline gap-[6px]">
       <span class="shrink-0">${opIcon}</span>
       <span class="font-heading text-answer text-ink">${esc(opLabel)}</span>
@@ -325,6 +426,11 @@ function renderList() {
   }
 
   const rows = filteredEntries();
+  if (!panel.entries.length && (advActive() || panel.statusFilter !== 'all')) {
+    host.innerHTML = `<p data-activity-none-match class="max-w-[60ch] text-answer text-ink">No recorded
+      operation matches these filters.</p>`;
+    return;
+  }
   if (!panel.entries.length) {
     host.innerHTML = `<p class="max-w-[60ch] text-answer text-ink">No operations recorded yet.
       Scouting, running a survey, or publishing to Egeria all write here (rule 16) — this is

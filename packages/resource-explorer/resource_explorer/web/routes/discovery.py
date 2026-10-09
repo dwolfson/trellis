@@ -110,43 +110,6 @@ async def list_foundation_prefilters() -> dict:
     return _load_foundation_prefilters()
 
 
-class GithubBaseUrlSetting(BaseModel):
-    base_url: str
-    is_override: bool  # False = showing config.py's .env-configured default, not a runtime override
-
-
-@router.get("/github-base-url", response_model=GithubBaseUrlSetting)
-async def get_github_base_url() -> GithubBaseUrlSetting:
-    """Backs the minimal inline "GitHub source: <base_url> [edit]" control
-    on the Discover-repos view (D1/D2/D8) — the only runtime setting this
-    plan introduces, so a small dedicated pair of routes rather than a full
-    generic /api/settings/{key} REST surface."""
-    from resource_explorer.config import get_config
-    from resource_explorer.registry import ProjectRegistry
-
-    override = ProjectRegistry().get_setting("github_base_url")
-    return GithubBaseUrlSetting(
-        base_url=override or get_config().github.base_url, is_override=bool(override),
-    )
-
-
-class GithubBaseUrlUpdate(BaseModel):
-    base_url: str  # "" clears the override, reverting to the .env default
-
-
-@router.post("/github-base-url", response_model=GithubBaseUrlSetting)
-async def set_github_base_url(body: GithubBaseUrlUpdate) -> GithubBaseUrlSetting:
-    from resource_explorer.config import get_config
-    from resource_explorer.registry import ProjectRegistry
-
-    registry = ProjectRegistry()
-    registry.set_setting("github_base_url", body.base_url.strip())
-    override = registry.get_setting("github_base_url")
-    return GithubBaseUrlSetting(
-        base_url=override or get_config().github.base_url, is_override=bool(override),
-    )
-
-
 class RepoSearchRequest(BaseModel):
     keyword: str = ""
     min_stars: int = 0

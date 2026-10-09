@@ -182,7 +182,7 @@ class TestRunConfigurationAttachedToTheAnalysisRow:
         start = app.index("async function renderAnalysesIndexSection(")
         end = app.index("\n}", app.index("data-analysis-run", start))
         body = app[start:end]
-        assert "runAnalysis(slug, aid, apiEntityType(state.resourceType))" in body
+        assert "runAnalysis(slug, aid, apiEntityType(state.resourceType), { force })" in body
 
 
 class TestSubResourcePanelPortsClassicsRealBehaviour:

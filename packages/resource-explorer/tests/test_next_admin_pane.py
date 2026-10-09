@@ -26,11 +26,12 @@ from pathlib import Path
 
 NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
 
-DEFERRED_TAB_IDS = [
+#: Egeria Links and Publish Queue were the two named deferrals; both were built under parity P1
+#: (PI-130, PI-131). The deferral machinery in admin/index.js stays for a future one.
+DEFERRED_TAB_IDS: list[str] = []
+BUILT_TAB_IDS = [
     "admin-egeria-links",
     "admin-outbox",
-]
-BUILT_TAB_IDS = [
     "annotations",
     "admin-groups",
     "admin-question-catalog",
@@ -127,6 +128,17 @@ class TestGroupsAndTabsMatchClassic:
         src = _admin_index_src()
         render_count = src.count("render: render")
         assert render_count == len(BUILT_TAB_IDS)
+
+
+class TestEgeriaLinksAndPublishQueueAreBuilt:
+    def test_both_tabs_render_their_own_module_and_carry_no_deferral(self):
+        src = _admin_index_src()
+        for tab_id, renderer in (("admin-egeria-links", "renderEgeriaLinks"), ("admin-outbox", "renderOutbox")):
+            i = src.index(f"id: '{tab_id}'")
+            block = src[i:src.index("},", i) + 2]
+            assert f"render: {renderer}" in block
+            assert "defer:" not in block
+        assert (NEXT / "admin" / "egeria_links.js").exists() and (NEXT / "admin" / "outbox.js").exists()
 
 
 class TestDeferralsAreSpecificNotGeneric:
@@ -550,12 +562,8 @@ class TestDiscoverySourcesPane:
         assert "quickAddHtml" in src
 
     def test_save_github_source_is_not_treated_as_an_add_source_path(self):
-        """Checked against classic's actual code before porting (spec's own
-        §6 lesson): _saveGithubSource posts to /api/discovery/github-base-url
-        (the GitHub API endpoint override), not a discovery source create --
-        it must not appear here as if it were a third source-creation path."""
+        """_saveGithubSource never created a discovery source, and the override it set is gone (PI-084): the module
+        must not name the removed route at all, only say what the old control was."""
         src = _admin_module("discovery_sources.js")
-        # The comment discussing why it's excluded may mention the route by
-        # name; what must never appear is an actual call to it.
-        assert "'/api/discovery/github-base-url'" not in src
+        assert "github-base-url" not in src
         assert "not create a discovery source" in src.lower()

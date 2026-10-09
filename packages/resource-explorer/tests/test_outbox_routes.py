@@ -22,6 +22,9 @@ def client(tmp_path, monkeypatch):
     reg.add(Project(slug="p", display_name="p", github_url="https://github.com/o/p"))
 
     import resource_explorer.web.routes.outbox as outbox_routes
+    # Retry is admin only; these tests are about the queue, so they act as an admin. TestRetryIsAdminOnly turns it off.
+    monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: True)
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda *a, **k: {"sub": "dan"})
     monkeypatch.setattr(outbox_routes, "ProjectRegistry",
                         lambda *a, **k: ProjectRegistry(database_url=db_url))
 
@@ -110,4 +113,43 @@ class TestPurge:
                          ("2020-01-01T00:00:00", done))
 
         assert c.post("/api/outbox/purge?older_than_days=1").json()["removed"] == 1
+        assert reg.outbox_counts() == {"dead": 1}
+
+
+class TestRetryNeverResendsADestructiveWrite:
+    """PI-131: the Publish Queue's Retry must not re-send an archive or delete."""
+
+    @pytest.mark.parametrize("kind", [
+        "catalogue_schema_leave_out", "doc_source_unpublish", "some_future_archive_kind",
+    ])
+    def test_a_dead_destructive_row_is_refused_and_stays_dead(self, client, kind):
+        c, reg = client
+        row = reg.enqueue_outbox_element("repo", "p", kind, "Q::0", {}, run_id="r")
+        reg.mark_outbox_failed(row, "not retried: destructive write", max_attempts=1)
+        assert reg.outbox_counts() == {"dead": 1}
+
+        res = c.post(f"/api/outbox/{row}/retry")
+
+        assert res.status_code == 409
+        assert "destructive" in res.json()["detail"]
+        assert reg.outbox_counts() == {"dead": 1}, "the refused retry must leave the row dead"
+        assert reg.claim_due_outbox_elements() == [], "nothing may be queued for the drain"
+
+    def test_the_listing_marks_destructive_rows_so_no_retry_is_drawn(self, client):
+        c, reg = client
+        reg.enqueue_outbox_element("repo", "p", "annotation", "Q::0", {}, run_id="r")
+        reg.enqueue_outbox_element("repo", "p", "doc_source_unpublish", "Q::1", {}, run_id="r")
+        by_kind = {r["element_kind"]: r["destructive"] for r in c.get("/api/outbox/").json()["rows"]}
+        assert by_kind == {"annotation": False, "doc_source_unpublish": True}
+
+
+class TestRetryIsAdminOnly:
+    def test_a_non_admin_cannot_requeue_and_the_row_stays_dead(self, client, monkeypatch):
+        c, reg = client
+        row = reg.enqueue_outbox_element("repo", "p", "annotation", "Q::0", {}, run_id="r")
+        reg.mark_outbox_failed(row, "x", max_attempts=1)
+        monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: False)
+        monkeypatch.setattr("resource_explorer.web.admin_auth.admin_configured", lambda *a, **k: True)
+        res = c.post(f"/api/outbox/{row}/retry")
+        assert res.status_code == 403
         assert reg.outbox_counts() == {"dead": 1}

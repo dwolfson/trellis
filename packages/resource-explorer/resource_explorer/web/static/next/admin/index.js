@@ -37,12 +37,11 @@
  * append-only add/retire backend (question_catalog_writer.py) alongside its
  * UI — see that spec and ADMIN-REGISTRIES-IMPLEMENTED.md for what changed
  * and why editing a question's own text is refused rather than offered.
- * Two remain DELIBERATE, NAMED deferrals: Egeria Links and Publish Queue are
- * reconciliation/config-mutation surfaces whose classic implementations run
- * 200-1000+ lines each (a divergence-repair flow for Egeria Links; retry
- * semantics tied to outbox internals for Publish Queue) — see each tab's
- * own `defer` block below for the per-pane reason, linking out to classic
- * via the shared `oldUiHref()` helper.
+ * Egeria Links (PI-130) and Publish Queue (PI-131) were the two named
+ * deferrals; both are built now (admin/egeria_links.js, admin/outbox.js). The
+ * Publish Queue never offers a retry on a write that archives, deletes or
+ * detaches, and Egeria Links offers no delete at all. A tab with `defer`
+ * instead of `render` still draws the not-built page below.
  */
 import { $, esc, icon, oldUiHref } from '/static/next/app.js';
 import { renderAnnotationTypes } from '/static/next/admin/annotation_types.js';
@@ -54,6 +53,8 @@ import { renderGroups } from '/static/next/admin/groups.js';
 import { renderResync } from '/static/next/admin/resync.js';
 import { renderRepair } from '/static/next/admin/repair.js';
 import { renderDiscoverySources } from '/static/next/admin/discovery_sources.js';
+import { renderEgeriaLinks } from '/static/next/admin/egeria_links.js';
+import { renderOutbox } from '/static/next/admin/outbox.js';
 
 const PANEL_ID = 'admin-panel';
 
@@ -70,19 +71,8 @@ const GROUPS = [
   ]},
   { name: 'Reconcile', tabs: [
     { id: 'admin-resync', label: '🔄 Egeria Alignment', render: renderResync },
-    { id: 'admin-egeria-links', label: '🔗 Egeria Links', defer: {
-      does: "Reconcile a resource's local record against the Egeria asset(s) it "
-        + 'should be linked to, and repair a missing or wrong link',
-      why: 'same shape as Egeria Alignment above — a reconciliation surface whose '
-        + 'repair actions write to the shared Egeria catalog, not a read-only view',
-    } },
-    { id: 'admin-outbox', label: '📤 Publish Queue', defer: {
-      does: 'Show queued/failed publish attempts to Egeria and retry them',
-      why: "retry semantics are tied to the outbox's own internal state machine "
-        + '(routes/outbox.py) in a way a read-only port would misrepresent — a '
-        + 'queue view that cannot retry is not the pane, and one that can needs '
-        + 'the same live-write caution as the two panes above',
-    } },
+    { id: 'admin-egeria-links', label: '🔗 Egeria Links', render: renderEgeriaLinks },
+    { id: 'admin-outbox', label: '📤 Publish Queue', render: renderOutbox },
     { id: 'admin-repair', label: '🔧 Repair', render: renderRepair },
   ]},
   { name: 'Observe', tabs: [

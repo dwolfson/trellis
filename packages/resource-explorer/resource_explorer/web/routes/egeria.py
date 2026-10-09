@@ -25,6 +25,53 @@ router = APIRouter()
 # deliberately NOT a login mechanism. Real per-user login was raised and
 # explicitly deferred as its own, larger piece of scope — see the Trellis
 # design docs before building an actual auth flow against this.
+@router.get("/admin-status")
+def admin_status(request: Request) -> dict:
+    """`admin`: this request carries a valid admin credential. `configured`: this deployment has any admin at all.
+
+    The Next controls draw "admin only" only when `configured` and not `admin`; with no admin configured any signed-in
+    user may act (admin_auth.require_admin), so a disabled control there would be a lie.
+    """
+    from resource_explorer.config import get_config
+    from resource_explorer.web import admin_auth
+
+    return {"admin": bool(admin_auth.is_admin_request(request, get_config().feedback)),
+            "configured": bool(admin_auth.admin_configured())}
+
+
+_BUILD_SHA: str | None = None
+_BUILD_SHA_READ = False
+
+
+def build_sha() -> str | None:
+    """The git commit this process was started from, or None when it cannot be read.
+
+    `RE_BUILD_SHA` wins when set (an image build that has no .git directory). Otherwise `git rev-parse HEAD` in the
+    package's own directory, read once per process: the serving worktree is detached at the tip it was started
+    from, and a restart is what changes it. None is "not read", never an empty string a caller could print as a sha.
+    """
+    global _BUILD_SHA, _BUILD_SHA_READ
+    if _BUILD_SHA_READ:
+        return _BUILD_SHA
+    import os
+    import subprocess
+    from pathlib import Path
+
+    sha = (os.environ.get("RE_BUILD_SHA") or "").strip()
+    if not sha:
+        try:
+            out = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent,
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            sha = out.stdout.strip()
+        except Exception:  # noqa: BLE001 - no git, no repo, a timeout: all mean "not read"
+            sha = ""
+    _BUILD_SHA = sha or None
+    _BUILD_SHA_READ = True
+    return _BUILD_SHA
+
+
 @router.get("/whoami")
 def whoami() -> dict:
     from resource_explorer.config import get_config
@@ -33,6 +80,7 @@ def whoami() -> dict:
         "user_id": cfg.user_id,
         "view_server": cfg.view_server,
         "platform_url": cfg.platform_url,
+        "build_sha": build_sha(),
     }
 
 
@@ -479,7 +527,7 @@ class BulkResolveRequest(BulkRequest):
 
 
 @router.post("/linkage/resolve-all")
-async def resolve_all_linkages(req: BulkResolveRequest) -> dict:
+async def resolve_all_linkages(req: BulkResolveRequest, request: Request) -> dict:
     """Apply one resolution to many diverged resources.
 
     Republish is the usual choice after an Egeria reset — it re-publishes what RE
@@ -488,7 +536,9 @@ async def resolve_all_linkages(req: BulkResolveRequest) -> dict:
     milliseconds.
     """
     from resource_explorer.bulk_ops import resolve_all
+    from resource_explorer.web import admin_auth
 
+    admin_auth.require_admin(request)     # bulk republish writes to Egeria: admin only (one resource stays open)
     registry = ProjectRegistry()
     targets = [t.model_dump() for t in req.targets]
     try:

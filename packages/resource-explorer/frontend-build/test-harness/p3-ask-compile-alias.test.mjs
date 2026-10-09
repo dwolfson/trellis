@@ -237,7 +237,7 @@ test('PI-118: Schedule saves a cadence and the line is read back from the schedu
   r().querySelector('[data-sched-save]').click();
   await wait();
   const post = posts(server, /\/api\/schedules\/repo\//)[0];
-  assert.deepEqual(post.body, { analysis_id: 'activity_metrics', schedule: 'weekly', enabled: true });
+  assert.deepEqual(post.body, { analysis_id: 'activity_metrics', schedule: 'weekly', enabled: true, target_kind: 'analysis' });
   assert.match(text(r().querySelector('[data-sched-status]')), /scheduled weekly/);
   assert.deepEqual(server.schedules.map((x) => x.schedule), ['weekly']);
 });
