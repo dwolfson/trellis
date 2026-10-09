@@ -279,7 +279,7 @@ test('connection: when the reads fail every value says not read, and the popover
   const anchor = document.createElement('button'); document.body.appendChild(anchor);
   await mod.openConnectionPopover(document, anchor, { me: null, getInfo: async () => { throw new Error('x'); }, getStatus: async () => { throw new Error('y'); } });
   const values = [...document.querySelectorAll('[data-conn]')].map((e) => e.textContent);
-  assert.equal(values.length, 6);
+  assert.equal(values.length, 7);
   assert.ok(values.every((v) => v === 'not read'), values.join('|'));
 });
 
@@ -351,4 +351,52 @@ test('bootstrap: the real run call carries the admin token', async () => {
   btn.click(); btn.click();
   await tick();
   assert.equal(seen[0]['X-Admin-Token'], 'tok-b');
+});
+
+/* ── Brief I: who the last Egeria call ran as, and refusals ─────────────── */
+
+test('connection: "Last Egeria call as" shows the RECORDED value, and says when nothing was recorded', async () => {
+  const { mod } = await load();
+  assert.equal(mod.lastCallWords(null), null, 'whoami not read');
+  assert.equal(mod.lastCallWords({ last_egeria_call: null }), 'not recorded in this process');
+  assert.match(mod.lastCallWords({ last_egeria_call: { as: 'you', purpose: 'publish', at: '2026-10-09T10:00:00Z' } }),
+    /^you · publish · /);
+  assert.match(mod.lastCallWords({ last_egeria_call: { as: 'service account (background)', purpose: 'survey' } }),
+    /^service account \(background\) · survey$/);
+});
+
+test('connection: the popover carries the last-call row from whoami', async () => {
+  const { document, mod } = await load();
+  const anchor = document.createElement('button'); document.body.appendChild(anchor);
+  await mod.openConnectionPopover(document, anchor, {
+    me: { user_id: 'dan' },
+    getInfo: async () => ({ user_id: 'svc', view_server: 'v', platform_url: 'p', build_sha: 'a',
+      last_egeria_call: { as: 'service account (background)', purpose: 'survey' } }),
+    getStatus: async () => STATUS({}),
+  });
+  assert.equal(document.querySelector('[data-conn="Last Egeria call as"]').textContent,
+    'service account (background) · survey');
+});
+
+test('api: an Egeria refusal is a refusal, with the short word first and Egeria\'s sentence', async () => {
+  const { api } = await load();
+  globalThis.fetch = async () => ({ ok: false, status: 403, statusText: 'Forbidden',
+    json: async () => ({ detail: 'OPEN-METADATA-SECURITY-403-007 User dan is not authorized', refused_by: 'egeria' }) });
+  const err = await api.getWhoami().then(() => null, (e) => e);
+  assert.equal(err.refusedBy, 'egeria');
+  assert.equal(err.message, 'refused by Egeria: OPEN-METADATA-SECURITY-403-007 User dan is not authorized');
+  assert.equal(err.sentence, 'OPEN-METADATA-SECURITY-403-007 User dan is not authorized');
+});
+
+test('api: an expired Egeria sign-in is a dead session carrying the server\'s sentence', async () => {
+  const { api, window } = await load();
+  let dead = 0;
+  globalThis.document.addEventListener('re:session-dead', () => { dead += 1; });
+  globalThis.fetch = async () => ({ ok: false, status: 401, statusText: 'Unauthorized',
+    json: async () => ({ detail: 'your Egeria sign-in expired; sign in again', refused_by: 'sign-in' }) });
+  const err = await api.getWhoami().then(() => null, (e) => e);
+  assert.equal(err.loginRequired, true);
+  assert.equal(err.message, 'your Egeria sign-in expired; sign in again');
+  assert.ok(dead <= 1);
+  void window;
 });

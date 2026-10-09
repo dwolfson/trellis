@@ -74,13 +74,21 @@ def build_sha() -> str | None:
 
 @router.get("/whoami")
 def whoami() -> dict:
+    """The configured Egeria connection, plus `last_egeria_call`: what THIS process recorded for
+    the signed-in user's most recent Egeria client — `{"as": "you" | "service account
+    (background)", purpose, at}` — or None when nothing was recorded here (a restart clears it).
+    Recorded by the factory as each client is handed out, never inferred (Brief I)."""
     from resource_explorer.config import get_config
+    from resource_explorer.egeria_clients import last_egeria_identity
+    from resource_explorer.egeria_identity import caller_user_id
+
     cfg = get_config().egeria
     return {
         "user_id": cfg.user_id,
         "view_server": cfg.view_server,
         "platform_url": cfg.platform_url,
         "build_sha": build_sha(),
+        "last_egeria_call": last_egeria_identity(caller_user_id()),
     }
 
 
@@ -291,15 +299,16 @@ async def get_dataclass_rules() -> list[DataClassRule]:
         from pyegeria.omvs.reference_data import ReferenceDataManager
         from pyegeria.omvs.data_designer import DataDesigner
 
+        from resource_explorer.egeria_clients import Caller, egeria_client
+
         view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
-        user_id = os.getenv("EGERIA_USER", "steward")
-        user_pwd = os.getenv("EGERIA_USER_PASSWORD", "steward")
+        # The signed-in reader (Brief I), resolved here in the request, not the env's user.
+        clients = egeria_client(Caller(), purpose="data class rules",
+                                view_server=view_server, platform_url=platform_url)
 
         def _fetch():
-            ref_manager = ReferenceDataManager(view_server, platform_url, user_id, user_pwd)
-            ref_manager.create_egeria_bearer_token(user_id, user_pwd)
-            designer = DataDesigner(view_server, platform_url, user_id, user_pwd)
-            designer.create_egeria_bearer_token(user_id, user_pwd)
+            ref_manager = clients.of(ReferenceDataManager)
+            designer = clients.of(DataDesigner)
 
             rules = []
             for dc in fallback_rules:
@@ -336,6 +345,8 @@ async def get_dataclass_rules() -> list[DataClassRule]:
             return rules
 
         return await asyncio.to_thread(_fetch)
+    except PermissionError:
+        raise      # no caller / expired sign-in: 401, never the local fallback rules
     except Exception:
         return [DataClassRule(**r) for r in fallback_rules]
 

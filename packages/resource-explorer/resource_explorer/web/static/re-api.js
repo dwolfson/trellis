@@ -29,6 +29,9 @@ export class ApiError extends Error {
   }
 }
 
+/** The short word an Egeria security refusal is shown with (Brief I). */
+export const REFUSED_BY_EGERIA_WORD = 'refused by Egeria';
+
 /** The resource kind is never defaulted. A helper that needs `entityType`
  *  (or `resourceType`) throws, naming itself, when a caller omits it -- a
  *  silent 'repo' once resolved database/filesystem slugs as repo Projects
@@ -49,11 +52,34 @@ let lastSessionDead = 0;
 async function apiErrorFrom(res, path) {
   let detail = res.statusText;
   let code = '';
+  let refusedBy = '';
   try {
     const body = await res.json();
     detail = body.detail || body.message || detail;
     code = body.error || '';
+    refusedBy = body.refused_by || '';
   } catch (_) { /* a non-JSON error body is still an error */ }
+  // Brief I: Egeria refused THIS person (its security connector, per person now). A refusal, shown
+  // as one: the short word first, Egeria's own sentence after it. Never retried as anyone else.
+  if (refusedBy === 'egeria') {
+    const refused = new ApiError(res.status, `${REFUSED_BY_EGERIA_WORD}: ${detail}`, path);
+    refused.refusedBy = 'egeria';
+    refused.sentence = String(detail || '');
+    return refused;
+  }
+  // Brief I: no caller, or the caller's Egeria sign-in expired. A dead session like login_required,
+  // but the sentence is the server's ("your Egeria sign-in expired; sign in again").
+  if (res.status === 401 && refusedBy === 'sign-in') {
+    const now = Date.now();
+    if (now - lastSessionDead > 1000) {
+      lastSessionDead = now;
+      try { globalThis.document?.dispatchEvent(new globalThis.CustomEvent('re:session-dead')); } catch { /* no document */ }
+    }
+    const dead = new ApiError(401, String(detail || 'sign-in needed'), path);
+    dead.loginRequired = true;
+    dead.refusedBy = 'sign-in';
+    return dead;
+  }
   if (res.status === 401 && code === 'login_required') {
     const now = Date.now();
     if (now - lastSessionDead > 1000) {

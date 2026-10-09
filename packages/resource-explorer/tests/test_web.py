@@ -1411,7 +1411,12 @@ class TestEgeriaRules:
                 MockRD.return_value.find_valid_value_definitions.return_value = mock_find_response
                 MockDD.return_value.get_guid_for_name.return_value = "dummy-guid"
                 
-                resp = client.get("/api/egeria/rules/dataclasses")
+                from resource_explorer.auth import create_access_token
+
+                # Brief I: the rules are read as the signed-in reader (their Egeria token).
+                token = create_access_token(user_id="dan", egeria_token="tok-dan")
+                resp = client.get("/api/egeria/rules/dataclasses",
+                                  headers={"Authorization": f"Bearer {token}"})
                 assert resp.status_code == 200
                 rules = resp.json()
                 
