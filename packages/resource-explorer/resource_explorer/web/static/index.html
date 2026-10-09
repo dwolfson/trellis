@@ -1636,8 +1636,17 @@ async function _runBootstrapNow() {
   showToast('running', 'Running definition repair…', 4000);
   try {
     const res = await fetch('/api/bootstrap/run', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}),
+      method: 'POST', headers: {'Content-Type': 'application/json', ..._adminAuthHeaders()}, body: JSON.stringify({}),
     });
+    if (!res.ok) {
+      // A refusal is not "everything already present". 409: a heal is already running (this tab, another, or the
+      // automatic loop). 403: an admin is configured and this caller is not one.
+      if (res.status === 409) showToast('info', 'A repair is already running', 5000);
+      else if (res.status === 403) showToast('error', 'Admin only: enter the admin token under Admin → Feedback', 6000);
+      else showToast('error', `Repair refused (HTTP ${res.status})`, 6000);
+      _refreshBootstrapBanner();
+      return;
+    }
     const data = await res.json();
     const healed = Object.entries(data.batches || {}).filter(([, r]) => r.action === 'healed');
     const failed = Object.entries(data.batches || {}).filter(([, r]) => r.action === 'failed');
@@ -16597,7 +16606,7 @@ async function loadAdminOutboxPanel(status, runId) {
 
 async function retryOutboxElement(id) {
   try {
-    const res = await fetch(`/api/outbox/${id}/retry`, { method: 'POST' });
+    const res = await fetch(`/api/outbox/${id}/retry`, { method: 'POST', headers: { ..._adminAuthHeaders() } });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { showToast(body.detail || `HTTP ${res.status}`, 'error'); return; }
     showToast(`Element ${id} re-queued — it will be retried on the next drain.`, 'success');
@@ -17115,7 +17124,7 @@ async function _postEgeriaBulk(kind, targets, dryRun) {
   const body = { targets, dry_run: dryRun };
   if (kind === 'republish') body.action = 'republish';
   const res = await fetch(_EGERIA_BULK_ENDPOINT[kind], {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'application/json', ..._adminAuthHeaders() }, body: JSON.stringify(body),
   });
   const d = await res.json();
   if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
