@@ -14,7 +14,7 @@
  * BULK acts on the rows the person SAW and ticked, never a server-side "everything stale", and previews first
  * (dry run, which the route defaults to) before the real call is offered. */
 import {
-  listStaleLinkages, resolveStaleLinkage, resolveAllLinkages, getAdminStatus,
+  listStaleLinkages, resolveStaleLinkage, resolveAllLinkages, getAdminStatus, adminLocked,
 } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
@@ -33,8 +33,8 @@ const ACTION = Object.fromEntries(ACTIONS.map((a) => [a.id, a]));
 let _host = null;
 let _rows = [];
 let _busy = false;
-/** null = not read. Bulk resolve is admin only (routes/egeria.py); one resource stays open to curators. */
-let _admin = null;
+/** true when an admin is configured and this caller is not one. Bulk resolve is admin-gated; one resource stays open. */
+let _locked = false;
 let _preview = null;   // {action, targets, result}
 
 const keyOf = (r) => `${r.entity_type}|${r.entity_slug}`;
@@ -59,11 +59,11 @@ function picked() {
 }
 
 function toolbarHtml() {
-  const locked = _admin !== true;
+  const locked = _locked;
   return `<div data-link-toolbar class="mb-s3 flex flex-wrap items-center gap-s2 rounded-sm border border-rule p-s2 text-caveat">
     ${locked ? '<span data-admin-only class="text-state-warn" title="Bulk resolve writes to Egeria. It needs the admin credential (Admin → Feedback)">admin only</span>' : ''}
     <span data-link-count class="text-ink-muted">0 selected</span>
-    <select data-link-bulk-action ${_admin !== true ? 'disabled' : ''} class="rounded-sm border border-rule bg-paper px-2 py-[2px] text-caveat text-ink">
+    <select data-link-bulk-action ${_locked ? 'disabled' : ''} class="rounded-sm border border-rule bg-paper px-2 py-[2px] text-caveat text-ink">
       ${ACTIONS.map((a) => `<option value="${a.id}">${esc(a.label)}</option>`).join('')}</select>
     <button type="button" data-link-preview disabled
       class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink disabled:cursor-default disabled:opacity-50">Preview</button>
@@ -99,7 +99,7 @@ function refreshToolbar() {
   const n = picked().length;
   const count = _host.querySelector('[data-link-count]');
   if (count) count.textContent = `${n} selected`;
-  const locked = _admin !== true;
+  const locked = _locked;
   _host.querySelector('[data-link-preview]')?.toggleAttribute('disabled', locked || n === 0 || _busy);
   // Apply is only ever armed by a preview of exactly this selection and action.
   const apply = _host.querySelector('[data-link-apply]');
@@ -208,9 +208,9 @@ export async function renderEgeriaLinks(host) {
   _host = host;
   _busy = false;
   _preview = null;
-  _admin = null;
+  _locked = false;
   host.innerHTML = '<p class="text-answer text-ink-muted">reading…</p>';
-  _admin = await getAdminStatus().then((a) => a.admin === true, () => false);
+  _locked = await getAdminStatus().then(adminLocked, () => false);
   _rows = await listStaleLinkages();
   render();
 }

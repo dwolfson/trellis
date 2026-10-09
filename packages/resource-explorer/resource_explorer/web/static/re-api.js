@@ -1976,8 +1976,13 @@ const adminPost = (path, body) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-/** {admin: bool}: whether this browser's credential is an admin one, so admin-only controls can say "admin only". */
+/** {admin, configured}: whether this browser's credential is an admin one, and whether any admin is configured. */
 export const getAdminStatus = () => request('/api/egeria/admin-status', { headers: adminHeaders() });
+
+/** True only when the control should read "admin only": an admin is configured and this caller is not one. With no
+ *  admin configured any signed-in user may act, and a status that could not be read locks nothing (the server
+ *  still enforces). */
+export const adminLocked = (status) => !!status && status.configured === true && status.admin !== true;
 
 export const getBootstrapStatus = () => get('/api/bootstrap/status');
 

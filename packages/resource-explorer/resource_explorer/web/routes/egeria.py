@@ -27,12 +27,16 @@ router = APIRouter()
 # design docs before building an actual auth flow against this.
 @router.get("/admin-status")
 def admin_status(request: Request) -> dict:
-    """Whether THIS request carries a valid admin credential, so the Admin panes can draw their admin-only controls
-    disabled with "admin only" instead of letting a press end in a 403. Reads nothing else."""
+    """`admin`: this request carries a valid admin credential. `configured`: this deployment has any admin at all.
+
+    The Next controls draw "admin only" only when `configured` and not `admin`; with no admin configured any signed-in
+    user may act (admin_auth.require_admin), so a disabled control there would be a lie.
+    """
     from resource_explorer.config import get_config
     from resource_explorer.web import admin_auth
 
-    return {"admin": bool(admin_auth.is_admin_request(request, get_config().feedback))}
+    return {"admin": bool(admin_auth.is_admin_request(request, get_config().feedback)),
+            "configured": bool(admin_auth.admin_configured())}
 
 
 _BUILD_SHA: str | None = None

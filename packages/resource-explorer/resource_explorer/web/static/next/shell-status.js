@@ -9,7 +9,7 @@
  *
  * Pure builders (`bootstrapAttention`, `lastHeal`, `healthWord`) are exported for the tests. */
 import {
-  getHealthReady, getBootstrapStatus, runBootstrapMissingOnly, getWhoami, getAdminStatus,
+  getHealthReady, getBootstrapStatus, runBootstrapMissingOnly, getWhoami, getAdminStatus, adminLocked,
 } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
@@ -117,7 +117,7 @@ function healLine(status) {
 let runInFlight = false;
 
 /** Draw, update or remove the bootstrap banner for `status` (null = could not be read: no banner, no claim). */
-export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOnly, onDone, admin = true } = {}) {
+export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOnly, onDone, locked = false } = {}) {
   const need = bootstrapAttention(status);
   if (runInFlight && doc.getElementById(BOOTSTRAP_BANNER_ID)) return need;
   if (!need) { removeEl(doc, BOOTSTRAP_BANNER_ID); return null; }
@@ -133,9 +133,9 @@ export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOn
   bar.dataset.bootstrapKind = need.kind;
   bar.innerHTML = `<span class="${need.kind === 'restoring' ? 'text-accent-ink' : 'text-state-warn'}" aria-hidden="true">${need.kind === 'restoring' ? '◔' : '⚠'}</span>
     <span data-bootstrap-word>${esc(need.word)}</span>
-    ${canRun ? `<button type="button" data-bootstrap-run ${admin ? '' : 'disabled data-admin-only'}
-      title="${admin ? 'Heal only what is missing. Nothing already present is re-run.' : 'Admin only: needs the admin credential (Admin → Feedback)'}"
-      class="rounded-sm border border-accent bg-transparent px-3 py-[2px] text-answer text-accent-ink ${admin ? 'cursor-pointer' : 'cursor-default opacity-50'}">Run bootstrap now</button>${admin ? '' : '<span class="text-provenance text-ink-muted"> · admin only</span>'}` : ''}
+    ${canRun ? `<button type="button" data-bootstrap-run ${locked ? 'disabled data-admin-only' : ''}
+      title="${locked ? 'Admin only: needs the admin credential (Admin → Feedback)' : 'Heal only what is missing. Nothing already present is re-run.'}"
+      class="rounded-sm border border-accent bg-transparent px-3 py-[2px] text-answer text-accent-ink ${locked ? 'cursor-default opacity-50' : 'cursor-pointer'}">Run bootstrap now</button>${locked ? '<span class="text-provenance text-ink-muted"> · admin only</span>' : ''}` : ''}
     <span data-bootstrap-state class="text-ink-muted"></span>
     <span data-bootstrap-heal class="text-provenance text-ink-muted">${esc(healLine(status))}</span>`;
   const btn = bar.querySelector('[data-bootstrap-run]');
@@ -179,8 +179,8 @@ function bindRun(btn, bar, { run, onDone }) {
 export async function refreshBootstrapBanner(doc, { getStatus = getBootstrapStatus, run, getAdmin = getAdminStatus } = {}) {
   let status = null;
   try { status = await getStatus(); } catch { return null; }
-  const admin = await getAdmin().then((a) => a.admin === true, () => false);
-  renderBootstrapBanner(doc, status, { run, admin, onDone: () => refreshBootstrapBanner(doc, { getStatus, run, getAdmin }) });
+  const locked = await getAdmin().then(adminLocked, () => false);
+  renderBootstrapBanner(doc, status, { run, locked, onDone: () => refreshBootstrapBanner(doc, { getStatus, run, getAdmin }) });
   return status;
 }
 

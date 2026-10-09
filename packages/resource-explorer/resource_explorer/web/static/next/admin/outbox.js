@@ -8,7 +8,7 @@
  * kind archives, deletes or detaches something in Egeria is not retried from here, because a retry of it is itself a
  * destructive write (row 69822, 2026-10-06). The server marks those rows `destructive`; this pane draws no Retry on
  * them and says why, and the route would refuse it with a 409 anyway. */
-import { listOutbox, retryOutboxRow, getAdminStatus } from '/static/re-api.js';
+import { listOutbox, retryOutboxRow, getAdminStatus, adminLocked } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
 
@@ -22,8 +22,9 @@ const CUE = {
 let _host = null;
 let _filter = '';
 let _data = null;
-/** null = not read; a retry re-queues an Egeria write, so it is admin only. */
-let _admin = null;
+/** true when an admin is configured and this caller is not one: a retry re-queues an Egeria write. */
+let _locked = false;
+let _lockRead = false;
 
 /** A Retry is drawn only for a dead row of a kind that does not archive, delete or detach. Exported for the tests. */
 export function canRetry(row) {
@@ -44,7 +45,7 @@ function whenCell(r) {
 
 function actionCell(r) {
   if (canRetry(r)) {
-    const locked = _admin !== true;
+    const locked = _locked;
     return `<button type="button" data-outbox-retry="${esc(String(r.id))}" ${locked ? 'disabled data-admin-only' : ''}
       title="${locked ? 'Admin only: re-queueing a write to Egeria needs the admin credential (Admin → Feedback)' : 'Return this row to the queue; the drain will try it again'}"
       class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink
@@ -108,7 +109,7 @@ function render() {
 
 async function load() {
   try {
-    if (_admin === null) _admin = await getAdminStatus().then((a) => a.admin === true, () => false);
+    if (!_lockRead) { _locked = await getAdminStatus().then(adminLocked, () => false); _lockRead = true; }
     _data = await listOutbox({ status: _filter });
   } catch (err) {
     _host.innerHTML = `<p class="max-w-[70ch] text-answer text-state-warn">Could not read the Publish Queue: ${esc(err.message)}</p>`;
@@ -143,7 +144,7 @@ function bind() {
 export async function renderOutbox(host) {
   _host = host;
   _filter = '';
-  _admin = null;
+  _lockRead = false;
   host.innerHTML = '<p class="text-answer text-ink-muted">reading…</p>';
   await load();
 }

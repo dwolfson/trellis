@@ -308,7 +308,7 @@ test('connection: values are escaped', async () => {
 
 test('bootstrap: a non-admin sees Run bootstrap now disabled with "admin only"', async () => {
   const { document, mod } = await load();
-  mod.renderBootstrapBanner(document, STATUS({ a: B({ present: false }) }), { admin: false });
+  mod.renderBootstrapBanner(document, STATUS({ a: B({ present: false }) }), { locked: true });
   const btn = document.querySelector('[data-bootstrap-run]');
   assert.equal(btn.disabled, true);
   assert.match(document.getElementById('bootstrap-banner').textContent, /admin only/);
@@ -316,13 +316,17 @@ test('bootstrap: a non-admin sees Run bootstrap now disabled with "admin only"',
   assert.equal(btn.textContent, 'Run bootstrap now', 'a disabled button never arms');
 });
 
-test('bootstrap: refresh reads admin status and a failed read means not admin', async () => {
+test('bootstrap: locked only when an admin is configured and the caller is not one', async () => {
   const { document, mod } = await load();
-  await mod.refreshBootstrapBanner(document, {
-    getStatus: async () => STATUS({ a: B({ present: false }) }),
-    getAdmin: async () => { throw new Error('x'); },
-  });
-  assert.equal(document.querySelector('[data-bootstrap-run]').disabled, true);
+  const draw = async (st) => {
+    document.getElementById('bootstrap-banner')?.remove();
+    await mod.refreshBootstrapBanner(document, { getStatus: async () => STATUS({ a: B({ present: false }) }), getAdmin: async () => st });
+    return document.querySelector('[data-bootstrap-run]').disabled;
+  };
+  assert.equal(await draw({ admin: false, configured: true }), true);
+  assert.equal(await draw({ admin: false, configured: false }), false, 'no admin configured: any signed-in user may act');
+  assert.equal(await draw({ admin: true, configured: true }), false);
+  assert.equal(await draw(null), false, 'a status that could not be read locks nothing; the server still enforces');
 });
 
 test('bootstrap: a 409 from the server is shown as running, and the button comes back', async () => {

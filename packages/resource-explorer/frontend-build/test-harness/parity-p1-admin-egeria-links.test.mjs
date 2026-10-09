@@ -11,7 +11,7 @@ const STALE = [
   { entity_type: 'database', entity_slug: 'adventureworks', stale_guid: '', detected_at: '', detail: '' },
 ];
 
-async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false, admin = true } = {}) {
+async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false, admin = true, configured = true } = {}) {
   const { window, document } = makeDomEnvironment();
   const calls = [];
   let rows = [...stale];
@@ -24,7 +24,7 @@ async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false,
     const u = String(url);
     calls.push({ url: u, method, body });
     const ok = (json) => ({ ok: true, status: 200, json: async () => json });
-    if (u === '/api/egeria/admin-status') return ok({ admin });
+    if (u === '/api/egeria/admin-status') return ok({ admin, configured });
     if (u === '/api/egeria/linkage/stale') return ok(rows);
     let m;
     if ((m = u.match(/^\/api\/egeria\/linkage\/(\w+)\/([^/]+)\/resolve$/))) {
@@ -186,4 +186,13 @@ test('the bulk calls carry the admin token held for this tab', async () => {
   host.querySelector('[data-link-preview]').click();
   await tick();
   assert.equal(seen[0]['X-Admin-Token'], 'tok-123');
+});
+
+test('no admin configured: the bulk toolbar is live for a signed-in non-admin', async () => {
+  const { host } = await setUp({ admin: false, configured: false });
+  assert.equal(host.querySelector('[data-link-toolbar] [data-admin-only]'), null);
+  host.querySelector('[data-link-pick="0"]').checked = true;
+  host.querySelector('[data-link-pick="0"]').dispatchEvent(new globalThis.window.Event('change'));
+  assert.equal(host.querySelector('[data-link-preview]').disabled, false);
+  assert.equal(host.querySelector('[data-link-bulk-action]').disabled, false);
 });

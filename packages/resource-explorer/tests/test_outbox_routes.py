@@ -24,6 +24,7 @@ def client(tmp_path, monkeypatch):
     import resource_explorer.web.routes.outbox as outbox_routes
     # Retry is admin only; these tests are about the queue, so they act as an admin. TestRetryIsAdminOnly turns it off.
     monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: True)
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda *a, **k: {"sub": "dan"})
     monkeypatch.setattr(outbox_routes, "ProjectRegistry",
                         lambda *a, **k: ProjectRegistry(database_url=db_url))
 
@@ -148,6 +149,7 @@ class TestRetryIsAdminOnly:
         row = reg.enqueue_outbox_element("repo", "p", "annotation", "Q::0", {}, run_id="r")
         reg.mark_outbox_failed(row, "x", max_attempts=1)
         monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: False)
+        monkeypatch.setattr("resource_explorer.web.admin_auth.admin_configured", lambda *a, **k: True)
         res = c.post(f"/api/outbox/{row}/retry")
         assert res.status_code == 403
         assert reg.outbox_counts() == {"dead": 1}

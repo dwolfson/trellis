@@ -11,7 +11,7 @@ const R = (id, status, extra = {}) => ({ id, entity_type: 'repo', entity_slug: '
   qualified_name: `Q::${id}`, status, attempts: 2, last_error: '', next_attempt_at: '', completed_at: '',
   created_at: '2026-10-08T01:00:00', destructive: false, ...extra });
 
-async function setUp({ rows, counts, retryStatus = 200, admin = true } = {}) {
+async function setUp({ rows, counts, retryStatus = 200, admin = true, configured = true } = {}) {
   const { document, window } = makeDomEnvironment();
   const calls = [];
   const data = rows || [
@@ -25,7 +25,7 @@ async function setUp({ rows, counts, retryStatus = 200, admin = true } = {}) {
     const method = opts.method || 'GET';
     const u = String(url);
     calls.push({ url: u, method });
-    if (u === '/api/egeria/admin-status') return { ok: true, status: 200, json: async () => ({ admin }) };
+    if (u === '/api/egeria/admin-status') return { ok: true, status: 200, json: async () => ({ admin, configured }) };
     const m = u.match(/^\/api\/outbox\/(\d+)\/retry$/);
     if (m) {
       if (retryStatus !== 200) return { ok: false, status: retryStatus, statusText: 'Conflict', json: async () => ({ detail: 'a destructive write: never retried from here' }) };
@@ -148,4 +148,11 @@ test('an admin Retry sends the admin token header', async () => {
   host.querySelector('[data-outbox-retry="1"]').click();
   await tick();
   assert.equal(seen[0]['X-Admin-Token'], 'tok-9');
+});
+
+test('no admin configured: Retry is enabled for a signed-in non-admin (nothing says admin only)', async () => {
+  const { host } = await setUp({ admin: false, configured: false });
+  const btn = host.querySelector('[data-outbox-retry="1"]');
+  assert.equal(btn.disabled, false);
+  assert.doesNotMatch(btn.parentElement.textContent, /admin only/);
 });

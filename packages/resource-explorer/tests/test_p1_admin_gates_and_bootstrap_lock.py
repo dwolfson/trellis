@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 from resource_explorer.web.app import app
 
 ADMIN = "resource_explorer.web.admin_auth.is_admin_request"
+CONFIGURED = "resource_explorer.web.admin_auth.admin_configured"
+USER = "resource_explorer.auth.get_current_user"
 
 
 @pytest.fixture()
@@ -17,8 +19,12 @@ def client():
     return TestClient(app)
 
 
-def _admin(monkeypatch, value):
+def _admin(monkeypatch, value, configured=True, signed_in=True):
+    """Set the caller: `value` is whether they present a valid admin credential; `configured` whether any admin is
+    configured at all (FEEDBACK_ADMIN_TOKEN / FEEDBACK_ADMIN_USERS); `signed_in` whether the request is signed in."""
     monkeypatch.setattr(ADMIN, lambda *a, **k: value)
+    monkeypatch.setattr(CONFIGURED, lambda *a, **k: configured)
+    monkeypatch.setattr(USER, lambda *a, **k: {"sub": "dan"} if signed_in else None)
 
 
 class TestBootstrapRun:
@@ -103,4 +109,50 @@ class TestAdminStatus:
     @pytest.mark.parametrize("value", [True, False])
     def test_reports_the_request_credential(self, client, monkeypatch, value):
         _admin(monkeypatch, value)
-        assert client.get("/api/egeria/admin-status").json() == {"admin": value}
+        assert client.get("/api/egeria/admin-status").json()["admin"] is value
+
+
+class TestOwnerRulingAdminOnlyWhenConfigured:
+    """Enforce admin only when an admin is configured; until then any signed-in user may act; anonymous never."""
+
+    def test_unconfigured_lets_a_signed_in_non_admin_retry_and_resolve_all(self, client, monkeypatch):
+        _admin(monkeypatch, False, configured=False, signed_in=True)
+        res = client.post("/api/egeria/linkage/resolve-all", json={"targets": [], "action": "republish", "dry_run": True})
+        assert res.status_code == 200
+        with patch("resource_explorer.bootstrap.check_and_heal", return_value={"batches": {}}):
+            assert client.post("/api/bootstrap/run", json={}).status_code == 200
+
+    def test_unconfigured_still_refuses_an_anonymous_caller(self, client, monkeypatch):
+        _admin(monkeypatch, False, configured=False, signed_in=False)
+        with patch("resource_explorer.bootstrap.check_and_heal") as heal:
+            assert client.post("/api/bootstrap/run", json={}).status_code == 403
+        heal.assert_not_called()
+        assert client.post("/api/egeria/linkage/resolve-all", json={"targets": [], "action": "discard"}).status_code == 403
+
+    def test_configured_refuses_a_signed_in_non_admin(self, client, monkeypatch):
+        _admin(monkeypatch, False, configured=True, signed_in=True)
+        assert client.post("/api/egeria/linkage/resolve-all", json={"targets": [], "action": "discard"}).status_code == 403
+
+    def test_configured_allows_the_admin(self, client, monkeypatch):
+        _admin(monkeypatch, True, configured=True, signed_in=True)
+        assert client.post("/api/egeria/linkage/resolve-all", json={"targets": [], "action": "discard", "dry_run": True}).status_code == 200
+
+    def test_admin_configured_reads_both_settings(self, monkeypatch):
+        from types import SimpleNamespace
+        from resource_explorer.web import admin_auth
+        for tok, users, want in (("", [], False), ("t", [], True), ("", ["dan"], True)):
+            cfg = SimpleNamespace(feedback=SimpleNamespace(admin_token=tok, admin_users=users))
+            monkeypatch.setattr("resource_explorer.config.get_config", lambda cfg=cfg: cfg)
+            assert admin_auth.admin_configured() is want
+
+    def test_is_admin_request_is_unchanged_and_stays_fail_closed(self):
+        from types import SimpleNamespace
+        from resource_explorer.web.admin_auth import is_admin_request
+        req = SimpleNamespace(headers={})
+        assert is_admin_request(req, SimpleNamespace(admin_token="", admin_users=[])) is False
+
+    def test_admin_status_reports_configured_and_admin(self, client, monkeypatch):
+        _admin(monkeypatch, False, configured=False)
+        assert client.get("/api/egeria/admin-status").json() == {"admin": False, "configured": False}
+        _admin(monkeypatch, True, configured=True)
+        assert client.get("/api/egeria/admin-status").json() == {"admin": True, "configured": True}
