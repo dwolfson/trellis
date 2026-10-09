@@ -255,13 +255,10 @@ class InvestigationReclassifier:
             from pyegeria import ProjectManager
             from pyegeria.omvs.metadata_expert import MetadataExpert
 
-            from resource_explorer.config import get_config
-            from resource_explorer.egeria_identity import apply_identity, caller_credentials
+            from resource_explorer.egeria_clients import current_principal, egeria_client
 
-            cfg = get_config().egeria
-            identity = caller_credentials()
-            me = MetadataExpert(cfg.view_server, cfg.platform_url,
-                                cfg.user_id, cfg.user_password)
+            clients = egeria_client(current_principal(), purpose="investigation reclassify")
+            me = clients.of(MetadataExpert)
             # A ProjectManager as well, ONLY for the read-back. The two clients
             # return different payload shapes for the same element:
             # `MetadataExpert.get_metadata_element_by_guid` gives the raw form
@@ -271,10 +268,9 @@ class InvestigationReclassifier:
             # was measured against. Reading with the wrong one made the check
             # report "could not tell" on every call — correctly refusing to
             # guess, but checking nothing. Found live 2026-09-08.
-            pm = ProjectManager(cfg.view_server, cfg.platform_url,
-                                cfg.user_id, cfg.user_password)
-            for client in (me, pm):
-                apply_identity(client, identity)
+            pm = clients.of(ProjectManager)
+        except PermissionError:
+            raise      # NoCallerIdentity / CallerTokenExpired: a 401, never "could not reach Egeria"
         except Exception as exc:
             return False, f"could not reach Egeria: {type(exc).__name__}: {exc}"
 

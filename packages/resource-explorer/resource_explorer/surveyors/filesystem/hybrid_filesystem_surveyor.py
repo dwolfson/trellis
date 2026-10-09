@@ -57,12 +57,9 @@ def run_hybrid_filesystem_survey(
         log.info(f"Publishing filesystem survey results for {fs_entity.slug} to Egeria...")
         try:
             from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
-            egeria_surveyor = EgeriaFileSystemSurveyor(
-                platform_url=url,
-                view_server=server,
-                user_id=user,
-                user_password=pwd,
-            )
+            # WHO is the factory's business (Brief I): the stored user/password above only
+            # decide WHETHER this resource is set up for Egeria, never who publishes.
+            egeria_surveyor = EgeriaFileSystemSurveyor(platform_url=url, view_server=server)
             publish_res = egeria_surveyor.catalog_and_survey(fs_entity, survey_data, registry=registry)
             log.info(f"Successfully published filesystem {fs_entity.slug} to Egeria: {publish_res}")
             survey_data["egeria_publish"] = publish_res

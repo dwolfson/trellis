@@ -8,6 +8,9 @@ from resource_explorer.registry import FileSystemEntity, ProjectRegistry, Projec
 from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
 from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
 
+# Brief I: these tests fake the Egeria clients; the code under test runs as a signed-in caller, as on a route.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 def test_local_filesystem_surveyor_walk():
     # Setup temporary directory inside workspace for scanning

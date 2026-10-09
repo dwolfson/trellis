@@ -91,8 +91,11 @@ def client(registry, monkeypatch):
     monkeypatch.setattr(
         "resource_explorer.registry.ProjectRegistry.__init__",
         lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    from resource_explorer.auth import create_access_token
     from resource_explorer.web.app import app
-    return TestClient(app)
+    # Brief I: Publish is a person's own action; it runs as a signed-in user with an Egeria token.
+    token = create_access_token(user_id="dan", egeria_token="tok-dan")
+    return TestClient(app, headers={"Authorization": f"Bearer {token}"})
 
 
 def publish(client, initiate):

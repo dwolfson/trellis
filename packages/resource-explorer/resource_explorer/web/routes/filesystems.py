@@ -552,24 +552,19 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             detail="No local survey results available to publish. Run a survey first."
         )
 
-    url = req.egeria_url or fs_entity.egeria_url or ""
-    server = req.egeria_server or fs_entity.egeria_server or ""
-    user = req.egeria_user or fs_entity.egeria_user or ""
-    pwd = req.egeria_password or fs_entity.egeria_password or ""
-
-    if not (url and server and user and pwd):
-        raise HTTPException(
-            status_code=400,
-            detail="Missing Egeria credentials (url, server, user, password)."
-        )
+    # Which Egeria: the request's or the entity's URL/server, else the configured one. WHO: the
+    # signed-in person (Brief I) — a typed or stored Egeria user/password is no longer used to
+    # authenticate this publish.
+    url = req.egeria_url or fs_entity.egeria_url or None
+    server = req.egeria_server or fs_entity.egeria_server or None
 
     try:
+        from resource_explorer.egeria_clients import Caller
         from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
         egeria_surveyor = EgeriaFileSystemSurveyor(
             platform_url=url,
             view_server=server,
-            user_id=user,
-            user_password=pwd,
+            identity=Caller(),
         )
         publish_res = egeria_surveyor.catalog_and_survey(fs_entity, survey["survey_data"], registry=registry)
         # BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1 — same hook as
@@ -588,7 +583,14 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             "egeria_report_guid": publish_res.get("report_guid", ""),
             "annotation_count": publish_res.get("annotation_count", 0),
         }
+    except PermissionError:
+        raise      # no caller / expired sign-in: the app's 401 handler, never a 500
     except Exception as exc:
+        from resource_explorer.egeria_clients import refusal
+
+        refused = refusal(exc)
+        if refused is not None:
+            raise refused from exc       # "refused by Egeria", with Egeria's sentence
         log.exception(f"Manual filesystem publish failed for {slug}")
         raise HTTPException(
             status_code=500,

@@ -16,6 +16,9 @@ from resource_explorer.surveyors.arch_recovery.materializer import (
     ComponentMaterializer, MaterializationError,
 )
 
+# Brief I: these tests fake the Egeria clients; the code under test runs as a signed-in caller, as on a route.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 @pytest.fixture(autouse=True)
 def _no_live_classification(monkeypatch):

@@ -31,7 +31,6 @@ log = logging.getLogger(__name__)
 _DEFAULT_PLATFORM_URL = "https://localhost:9443"
 _DEFAULT_VIEW_SERVER = "qs-view-server"
 _DEFAULT_USER = "erinoverview"
-_DEFAULT_PASSWORD = "secret"
 
 # ── D2/D3 (docs/survey-question-context-plan.md): short-TTL, module-level
 # caches — SurveyDefinitionReader is constructed fresh per HTTP request
@@ -286,11 +285,15 @@ class SurveyDefinitionReader:
         view_server: str | None = None,
         user_id: str | None = None,
         user_password: str | None = None,
+        *,
+        identity=None,
     ) -> None:
         self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
         self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
-        self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", _DEFAULT_PASSWORD)
+        # Not used to authenticate (Brief I): who acts is `self.principal()`, via the factory.
+        self.user_password = user_password or ""
+        self._identity = identity
         self._governance_officer = None
         self._automated_curation = None
         self._classification_explorer = None
@@ -312,6 +315,23 @@ class SurveyDefinitionReader:
 
     # ── connection ────────────────────────────────────────────────────────────
 
+    def principal(self):
+        """Who this reader acts as: the identity it was given, else `current_principal()`,
+        resolved ONCE in the calling thread — the pooled lookups run on threads that carry no
+        ContextVar, so they read it from here."""
+        if self._identity is None:
+            from resource_explorer.egeria_clients import current_principal
+
+            self._identity = current_principal()
+        return self._identity
+
+    def _clients(self, *, shared: bool = True):
+        from resource_explorer.egeria_clients import egeria_client
+
+        return egeria_client(self.principal(), purpose="survey definitions",
+                             view_server=self.view_server, platform_url=self.platform_url,
+                             shared=shared)
+
     def connect(self) -> None:
         """Establish pyegeria client connections (lazy)."""
         if self._governance_officer is not None:
@@ -325,15 +345,11 @@ class SurveyDefinitionReader:
             from pyegeria import AutomatedCuration
             from pyegeria.omvs.governance_officer import GovernanceOfficer
 
-            self._governance_officer = GovernanceOfficer(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._governance_officer.create_egeria_bearer_token(self.user_id, self.user_password)
-
-            self._automated_curation = AutomatedCuration(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
+            clients = self._clients()
+            self._governance_officer = clients.of(GovernanceOfficer)
+            self._automated_curation = clients.of(AutomatedCuration)
+        except PermissionError:
+            raise
         except ImportError as exc:
             raise SurveyDefinitionReaderError("pyegeria is not installed.") from exc
         except Exception as exc:
@@ -350,9 +366,8 @@ class SurveyDefinitionReader:
         no matter which thread ends up constructing it."""
         from pyegeria.omvs.classification_explorer import ClassificationExplorer
 
-        client = ClassificationExplorer(self.view_server, self.platform_url, self.user_id, self.user_password)
-        client.create_egeria_bearer_token(self.user_id, self.user_password)
-        return client
+        # Its own (unshared) client: one per thread, per pyegeria ISSUE-96.
+        return self._clients(shared=False).of(ClassificationExplorer)
 
     def _connect_classification_explorer(self):
         """Lazy, separate from connect() — only the D2 scoped-query path
@@ -382,11 +397,17 @@ class SurveyDefinitionReader:
         ``_connect_classification_explorer`` — those callers are never
         invoked from the shared pool, so they never hit the cross-loop bug.
         """
-        client = getattr(self._thread_local_explorer, "client", None)
-        if client is not None:
-            return client
+        from resource_explorer.egeria_clients import identity_key
+
+        # Keyed by identity too: a pool thread serves many readers, and one person's client
+        # must never answer for another (Brief I).
+        key = identity_key(self.principal())
+        cached = getattr(self._thread_local_explorer, "client", None)
+        if cached is not None and getattr(self._thread_local_explorer, "key", None) == key:
+            return cached
         client = self._new_classification_explorer()
         self._thread_local_explorer.client = client
+        self._thread_local_explorer.key = key
         return client
 
     def _connect_metadata_expert(self):
@@ -398,8 +419,7 @@ class SurveyDefinitionReader:
             return self._metadata_expert
         from pyegeria.omvs.metadata_expert import MetadataExpert
 
-        client = MetadataExpert(self.view_server, self.platform_url, self.user_id, self.user_password)
-        client.create_egeria_bearer_token(self.user_id, self.user_password)
+        client = self._clients().of(MetadataExpert)
         self._metadata_expert = client
         return client
 
@@ -570,6 +590,10 @@ class SurveyDefinitionReader:
         from concurrent.futures import TimeoutError as _FutureTimeoutError
 
         from resource_explorer.concurrency import run_sync
+
+        # Who, resolved HERE in the caller's thread (the pool thread has no ContextVar), and
+        # outside the swallow below: no caller is a 401, never "no such question".
+        self.principal()
 
         def _call():
             try:
@@ -767,6 +791,7 @@ class SurveyDefinitionReader:
         # pooled task never re-enters the pool. Concurrency is now the shared
         # pool's size (EXPLORER_SYNC_POOL_SIZE, default 8, which is what
         # _GUID_RESOLVE_WORKERS was) rather than a per-call ceiling.
+        self.principal()   # resolved in this thread; the pooled leaves read it from self
         futures = submit_all(self._resolve_one_pooled, rest)
 
         # Bounded overall, not per-future: the pool is shared and its size is

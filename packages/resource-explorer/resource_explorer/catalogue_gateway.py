@@ -461,34 +461,46 @@ class PyegeriaCatalogueGateway:
     """The real gateway, over pyegeria. Built lazily: constructing it opens nothing."""
 
     def __init__(self, db_entity=None, *, view_server: str = "", platform_url: str = "",
-                 user_id: str = "", user_password: str = "", daemon_server: str = ""):
+                 daemon_server: str = "", identity=None):
+        """WHICH Egeria: the arguments, else the entity's stored `egeria_url`/`egeria_server`,
+        else the configured one. WHO: `identity` (the outbox drain passes
+        `StoredOrDaemon(entity, OUTBOX)`), else `current_principal()` — the signed-in Caller on
+        a Curate commit route (Brief I). The entity's stored Egeria user/password are NOT read
+        here any more; only the drain still uses them, pending the owner's decision."""
         from resource_explorer.config import get_config
         cfg = get_config().egeria
         e = db_entity
         self.view_server = view_server or getattr(e, "egeria_server", "") or cfg.view_server
         self.platform_url = platform_url or getattr(e, "egeria_url", "") or cfg.platform_url
-        self.user_id = user_id or getattr(e, "egeria_user", "") or cfg.user_id
-        self.user_password = user_password or getattr(e, "egeria_password", "") or cfg.user_password
         self.daemon_server = daemon_server or cfg.integration_daemon_server
+        self._identity = identity
         self._clients: dict[str, Any] = {}
 
     # -- clients ---------------------------------------------------------
 
+    def principal(self):
+        if self._identity is None:
+            from resource_explorer.egeria_clients import current_principal
+
+            self._identity = current_principal()
+        return self._identity
+
+    def _factory(self):
+        from resource_explorer.egeria_clients import egeria_client
+
+        return egeria_client(self.principal(), purpose="catalog gateway",
+                             view_server=self.view_server, platform_url=self.platform_url)
+
     def _client(self, name: str):
         if name not in self._clients:
             import pyegeria
-            cls = getattr(pyegeria, name)
-            c = cls(self.view_server, self.platform_url, self.user_id, self.user_password)
-            c.create_egeria_bearer_token(self.user_id, self.user_password)
-            self._clients[name] = c
+            self._clients[name] = self._factory().of(getattr(pyegeria, name))
         return self._clients[name]
 
     def _server_ops(self):
         if "ServerOps" not in self._clients:
             from pyegeria import ServerOps
-            c = ServerOps(self.daemon_server, self.platform_url, self.user_id, self.user_password)
-            c.create_egeria_bearer_token(self.user_id, self.user_password)
-            self._clients["ServerOps"] = c
+            self._clients["ServerOps"] = self._factory().of(ServerOps, server=self.daemon_server)
         return self._clients["ServerOps"]
 
     def _surveyor(self):
@@ -496,7 +508,7 @@ class PyegeriaCatalogueGateway:
         if "surveyor" not in self._clients:
             self._clients["surveyor"] = EgeriaDatabaseSurveyor(
                 platform_url=self.platform_url, view_server=self.view_server,
-                user_id=self.user_id, user_password=self.user_password)
+                identity=self.principal())
         return self._clients["surveyor"]
 
     # -- step 1 ----------------------------------------------------------

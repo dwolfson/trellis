@@ -229,7 +229,6 @@ def delete_in_egeria(registry, targets: list[dict], *, dry_run: bool = False,
     This does not touch RE's own data. The local registry row, survey results and
     collections all survive; only the catalog element goes.
     """
-    from resource_explorer.config import get_config
 
     result = BulkResult(action="delete_in_egeria", dry_run=dry_run)
     total = len(targets)
@@ -247,10 +246,11 @@ def delete_in_egeria(registry, targets: list[dict], *, dry_run: bool = False,
     if not dry_run:
         from pyegeria import AssetMaker
 
-        cfg = get_config().egeria
-        asset_maker = AssetMaker(cfg.view_server, cfg.platform_url,
-                                 cfg.user_id, cfg.user_password)
-        asset_maker.create_egeria_bearer_token()
+        from resource_explorer.egeria_clients import Caller, egeria_client
+
+        # The signed-in person, never the service account (Brief I): Egeria authorizes the
+        # delete per person, and a refusal is reported as Egeria's, not retried as anyone else.
+        asset_maker = egeria_client(Caller(), purpose="bulk delete in Egeria").of(AssetMaker)
 
     for t in _each(targets, progress, total):
         entity_type, slug = t.get("entity_type", "repo"), t.get("slug", "")
@@ -275,7 +275,13 @@ def delete_in_egeria(registry, targets: list[dict], *, dry_run: bool = False,
         except Exception as exc:
             log.warning("bulk delete_in_egeria failed for %s/%s (%s): %s",
                         entity_type, slug, guid, exc)
-            result.record(entity_type, slug, "failed", str(exc)[:300])
+            from resource_explorer.egeria_outbox import _refusal_sentence, is_security_refusal
+
+            # Egeria refused THIS person: said as a refusal, with Egeria's sentence, and never
+            # retried as the service account (Brief I).
+            message = (f"refused by Egeria: {_refusal_sentence(exc)}" if is_security_refusal(exc)
+                       else str(exc)[:300])
+            result.record(entity_type, slug, "failed", message)
     return result
 
 

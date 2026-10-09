@@ -20,6 +20,10 @@ from resource_explorer.surveyors.database.egeria_database_surveyor import (
     _secrets_collection_name,
 )
 
+# Brief I: these tests fake the Egeria clients; the code under test runs as a signed-in caller, as on a route.
+import pytest  # noqa: E402
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 class TestSecretsCollectionNaming:
     def test_collection_name_is_keyed_by_slug(self):

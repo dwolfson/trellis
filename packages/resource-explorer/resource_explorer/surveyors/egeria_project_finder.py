@@ -48,7 +48,7 @@ class EgeriaProjectFinder:
         self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
         self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
         self.user_id = user_id or os.getenv("EGERIA_USER_ID", "erinoverview")
-        self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", "secret")
+        self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self._project_manager = None
 
     def connect(self) -> None:
@@ -61,10 +61,13 @@ class EgeriaProjectFinder:
         try:
             from pyegeria import ProjectManager
 
-            self._project_manager = ProjectManager(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._project_manager.create_egeria_bearer_token(self.user_id, self.user_password)
+            from resource_explorer.egeria_clients import current_principal, egeria_client
+
+            self._project_manager = egeria_client(
+                current_principal(), purpose="find projects", view_server=self.view_server,
+                platform_url=self.platform_url).of(ProjectManager)
+        except PermissionError:
+            raise
         except ImportError as exc:
             raise EgeriaProjectFinderError("pyegeria is not installed.") from exc
         except Exception as exc:

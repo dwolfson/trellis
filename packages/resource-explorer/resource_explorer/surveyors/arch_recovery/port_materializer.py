@@ -115,7 +115,9 @@ class PortMaterializer:
         user_password: str | None = None,
         timeout: int | None = None,
         registry: "ProjectRegistry | None" = None,
+        identity=None,
     ) -> None:
+        self._identity = identity
         self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
         self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
@@ -135,19 +137,21 @@ class PortMaterializer:
             from pyegeria import MetadataExpert
             from pyegeria.omvs.solution_architect import SolutionArchitect
 
+            from resource_explorer.egeria_clients import current_principal, egeria_client
+
+            # Who (Brief I): the run's declared identity, else the signed-in Caller. This used
+            # to be the service account always.
+            clients = egeria_client(self._identity or current_principal(), purpose="materialize ports",
+                                    view_server=self.view_server, platform_url=self.platform_url)
+
             # MetadataExpert: the generic create/read route (no dedicated
             # SolutionPort wrapper exists). SolutionArchitect: the real,
             # dedicated link_solution_component_port attach call — that one
             # IS a proper pyegeria method, only creation is missing.
-            self._metadata_expert = MetadataExpert(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._metadata_expert.create_egeria_bearer_token(self.user_id, self.user_password)
-
-            self._solution_architect = SolutionArchitect(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._solution_architect.create_egeria_bearer_token(self.user_id, self.user_password)
+            self._metadata_expert = clients.of(MetadataExpert)
+            self._solution_architect = clients.of(SolutionArchitect)
+        except PermissionError:
+            raise
         except ImportError as exc:
             raise PortMaterializationError(
                 "pyegeria is not installed. Add it to your dependencies."

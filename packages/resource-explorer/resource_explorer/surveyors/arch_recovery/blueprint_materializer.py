@@ -164,9 +164,11 @@ class BlueprintMaterializer:
         """
         if self._identity is not None:
             return self._identity
-        from resource_explorer.egeria_identity import caller_credentials
+        from resource_explorer.egeria_clients import current_principal
 
-        self._identity = caller_credentials()
+        # The declared daemon job (a queued run), else the signed-in Caller; never a silent
+        # service-account fallback (Brief I).
+        self._identity = current_principal()
         return self._identity
 
     def _connect(self) -> None:
@@ -176,33 +178,28 @@ class BlueprintMaterializer:
                 "Add it to your .env file or pass platform_url= to BlueprintMaterializer."
             )
         identity = self.resolve_identity()
-        if identity.is_person:
-            self.user_id = identity.user_id
         try:
             from pyegeria import AutomatedCuration
             from pyegeria.omvs.solution_architect import SolutionArchitect
 
-            from resource_explorer.egeria_identity import apply_identity
+            from resource_explorer.egeria_clients import egeria_client
 
-            self._solution_architect = SolutionArchitect(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._solution_architect, identity)
+            clients = egeria_client(identity, purpose="materialize blueprint",
+                                    view_server=self.view_server, platform_url=self.platform_url)
+            self.user_id = clients.user_id
+            self._solution_architect = clients.of(SolutionArchitect)
 
             # Used only for the qualifiedName idempotency check
             # (get_guid_for_name) — same helper ComponentMaterializer uses,
             # same reason: search before create, never create blind.
-            self._automated_curation = AutomatedCuration(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._automated_curation, identity)
+            self._automated_curation = clients.of(AutomatedCuration)
 
             # The explicit read of a container's SolutionComposition relationships (6.2 leaves the
             # children key off a component that has none, so the element read alone cannot say "none").
             from pyegeria.omvs.metadata_expert import MetadataExpert
-            self._metadata_expert = MetadataExpert(
-                self.view_server, self.platform_url, self.user_id, self.user_password)
-            apply_identity(self._metadata_expert, identity)
+            self._metadata_expert = clients.of(MetadataExpert)
+        except PermissionError:
+            raise
         except ImportError as exc:
             raise BlueprintMaterializationError(
                 "pyegeria is not installed. Add it to your dependencies."

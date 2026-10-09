@@ -2532,15 +2532,17 @@ def _try_build_egeria_client(platform_url: Optional[str], view_server: Optional[
     import os
     url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
     server = view_server or os.getenv("EGERIA_VIEW_SERVER", "")
-    user = os.getenv("EGERIA_USER", "")
-    password = os.getenv("EGERIA_USER_PASSWORD", "")
     if not url:
         return None
     try:
         from pyegeria import ValidMetadataManager
-        client = ValidMetadataManager(server, url, user, password)
-        client.create_egeria_bearer_token(user, password)
-        return client
+
+        from resource_explorer.egeria_clients import current_principal, egeria_client
+
+        # The signed-in CLI user (`resource-explorer login`), never env credentials (Brief I).
+        # No session: no refresh, as before for an unreachable Egeria.
+        return egeria_client(current_principal(), purpose="valid values cache",
+                             view_server=server or None, platform_url=url).of(ValidMetadataManager)
     except Exception:
         return None
 

@@ -114,10 +114,12 @@ def _sync_egeria_read_back(registry: ProjectRegistry, entity_type: str, slug: st
     if not status["is_published"]:
         return
     try:
-        remote = read_back_doc_sources(
-            guid, view_server=entity.egeria_server, platform_url=entity.egeria_url,
-            user_id=entity.egeria_user, user_password=entity.egeria_password,
-        )
+        from resource_explorer.doc_source_egeria import entity_clients
+        from resource_explorer.egeria_clients import Caller
+
+        # The signed-in person (Brief I), never the entity's stored credential or the service
+        # account: a read-back shows what THIS user can see.
+        remote = read_back_doc_sources(guid, clients=entity_clients(entity, Caller()))
     except Exception as exc:
         log.debug("doc sources: read-back skipped for %s/%s: %s", entity_type, slug, exc)
         return

@@ -134,8 +134,12 @@ class TestListAndPublishState:
             lambda *a, **kw: [{"ref_guid": "guid-x", "url": "https://declared-in-egeria.example",
                                 "label": "From Egeria"}],
         )
+        from resource_explorer.auth import create_access_token
 
-        resp = client.get("/api/doc-sources/database/adventureworks")
+        # Brief I: the read-back runs as the signed-in reader (their Egeria token), so sign in.
+        token = create_access_token(user_id="dan", egeria_token="tok-dan")
+        resp = client.get("/api/doc-sources/database/adventureworks",
+                          headers={"Authorization": f"Bearer {token}"})
 
         body = resp.json()
         assert body["published"] is True

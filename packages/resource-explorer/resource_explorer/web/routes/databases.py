@@ -1190,11 +1190,14 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
                 "Store them at registration or supply db_user/db_pwd in the request."
             )
 
+        from resource_explorer.egeria_clients import Caller
+
+        # WHO: the signed-in person (Brief I); a typed or stored Egeria user/password is no
+        # longer used to authenticate. WHICH Egeria: the request's or entity's URL/server.
         surveyor = EgeriaDatabaseSurveyor(
             platform_url=req.egeria_url or database.egeria_url or None,
             view_server=req.egeria_server or database.egeria_server or None,
-            user_id=req.egeria_user or database.egeria_user or None,
-            user_password=req.egeria_password or database.egeria_password or None,
+            identity=Caller(),
         )
 
         latest = measured
@@ -1270,8 +1273,14 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
             server_display_name=server_dn,
             database_display_name=database.database_name,
         )
+    except PermissionError:
+        raise      # no caller / expired sign-in: the app's 401 handler (Brief I)
     except Exception as exc:
-        err_str = str(exc)
+        from resource_explorer.egeria_clients import refusal
+
+        refused = refusal(exc)
+        # Egeria refused this person: said as a refusal with Egeria's sentence (Brief I).
+        err_str = f"refused by Egeria: {refused}" if refused is not None else str(exc)
         try:
             from resource_explorer.activity_logger import log_catalog
             log_catalog(

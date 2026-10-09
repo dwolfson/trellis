@@ -322,7 +322,7 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
     """
     from pyegeria.omvs.metadata_expert import MetadataExpert
 
-    from resource_explorer.config import get_config
+    from resource_explorer.egeria_clients import current_principal, egeria_client
 
     resources = list(_iter_linked_resources(registry, entity_types))
     total = len(resources)
@@ -373,10 +373,10 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
     # throughout — the column `egeria_asset_guid` and the publisher method
     # `_find_or_create_asset` predate the correction and were about a
     # SoftwareCapability, not an Asset. Both names are accurate again now.
-    cfg = get_config().egeria
-    element_client = MetadataExpert(cfg.view_server, cfg.platform_url,
-                                 cfg.user_id, cfg.user_password)
-    element_client.create_egeria_bearer_token()
+    #
+    # Who asks (Brief I): the route and the CLI run as the signed-in person — a GUID this user
+    # cannot see is stale *for them*; a resync pass declares Daemon(RESYNC) at its entry.
+    element_client = egeria_client(current_principal(), purpose="linkage recheck").of(MetadataExpert)
 
     for entity_type, slug, display_name, guid in resources:
         detail = {"entity_type": entity_type, "slug": slug, "guid": guid}

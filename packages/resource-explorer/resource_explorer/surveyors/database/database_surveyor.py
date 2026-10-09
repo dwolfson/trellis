@@ -1963,12 +1963,13 @@ class DatabaseSurveyor:
         if platform_url:
             try:
                 from pyegeria.omvs.reference_data import ReferenceDataManager
-                view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
-                user_id = os.getenv("EGERIA_USER", "steward")
-                user_pwd = os.getenv("EGERIA_USER_PASSWORD", "steward")
+                from resource_explorer.egeria_clients import current_principal, egeria_client
 
-                ref_manager = ReferenceDataManager(view_server, platform_url, user_id, user_pwd)
-                ref_manager.create_egeria_bearer_token(user_id, user_pwd)
+                view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
+                # The survey's own identity (Brief I): Caller on a route, the daemon in a run.
+                ref_manager = egeria_client(current_principal(), purpose="PII keywords",
+                                            view_server=view_server,
+                                            platform_url=platform_url).of(ReferenceDataManager)
 
                 egeria_keywords = []
                 for dc_name in ["EmailAddress", "PhoneNumber", "SocialSecurityNumber", "CreditCardNumber", "Password", "DateOfBirth"]:
