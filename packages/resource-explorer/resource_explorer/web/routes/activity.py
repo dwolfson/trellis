@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from resource_explorer.auth import get_current_user
 from resource_explorer.registry import ProjectRegistry
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,29 @@ class RfaDismissalClearRequest(BaseModel):
 
 def _registry() -> ProjectRegistry:
     return ProjectRegistry()
+
+
+def _split_rfa_id(rfa_id: str) -> tuple[str, int, int | None]:
+    """`{entry_id}::{annotation_index}` or, for one of several requests grouped under an annotation,
+    `{entry_id}::{annotation_index}::{sub}` (`_emit_rfa`). The routes used to `rsplit('::', 1)`, which read
+    the sub-index as the annotation index and the annotation index as part of the entry id: every action on
+    a grouped request (the common SecurityHygieneCheck case) answered 404 or hit the wrong annotation."""
+    parts = rfa_id.split("::")
+    try:
+        if len(parts) == 2:
+            return parts[0], int(parts[1]), None
+        if len(parts) == 3:
+            return parts[0], int(parts[1]), int(parts[2])
+    except ValueError:
+        pass
+    raise HTTPException(status_code=400,
+                        detail="Malformed rfa_id — expected '{entry_id}::{annotation_index}[::{sub}]'")
+
+
+def _acting_user(request: Request, supplied: str = "") -> str:
+    """Who did it: the signed-in user, else what the caller named, else nobody. Never a guess."""
+    user = get_current_user(request) or {}
+    return user.get("user_id") or user.get("sub") or user.get("username") or supplied or ""
 
 
 @router.get("/")
@@ -210,7 +234,7 @@ def list_rfa_dismissals(include_cleared: bool = Query(False)) -> list[dict]:
 
 
 @router.post("/rfas/{rfa_id}/dismiss")
-def dismiss_rfa(rfa_id: str, body: RfaDismissRequest) -> dict:
+def dismiss_rfa(rfa_id: str, body: RfaDismissRequest, request: Request) -> dict:
     """Suppress a finding as not-applicable / won't-do.
 
     Takes an `rfa_id` because that is what the drawer has in hand, but
@@ -218,13 +242,14 @@ def dismiss_rfa(rfa_id: str, body: RfaDismissRequest) -> dict:
     resolved here from the activity entry the id points at. That asymmetry
     is deliberate and is the whole point: the user dismisses the row in
     front of them, and the same finding stays dismissed when the next survey
-    run produces it again under a new id."""
+    run produces it again under a new id.
+
+    The summary is THIS request's own (the sub-indexed member of a grouped
+    annotation), the same one `_emit_rfa` keys the listing on; keying on the
+    group's first summary would dismiss a sibling and leave the dismissed
+    row showing."""
     registry = _registry()
-    try:
-        entry_id, idx_str = rfa_id.rsplit("::", 1)
-        idx = int(idx_str)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Malformed rfa_id — expected '{entry_id}::{annotation_index}'")
+    entry_id, idx, sub = _split_rfa_id(rfa_id)
 
     entry = registry.get_activity(entry_id)
     if entry is None:
@@ -236,16 +261,18 @@ def dismiss_rfa(rfa_id: str, body: RfaDismissRequest) -> dict:
             detail=f"Activity entry {entry_id} has no annotation at index {idx}",
         )
     ann = annotations[idx]
+    members = ann.get("items") or [None]
+    member = members[sub] if sub is not None and sub < len(members) else None
 
     try:
         row = registry.dismiss_rfa(
             entity_type=entry.get("entity_type", ""),
             entity_slug=entry.get("entity_slug", ""),
             analysis_name=ann.get("analysis_name", ""),
-            summary_key=ann.get("summary", ""),
+            summary_key=(member or ann).get("summary", "") or ann.get("summary", ""),
             reason=body.reason,
             note=body.note,
-            created_by=body.dismissed_by,
+            created_by=_acting_user(request, body.dismissed_by),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -253,11 +280,11 @@ def dismiss_rfa(rfa_id: str, body: RfaDismissRequest) -> dict:
 
 
 @router.post("/rfas/dismissals/{dismissal_id}/clear")
-def clear_rfa_dismissal(dismissal_id: str, body: RfaDismissalClearRequest) -> dict:
+def clear_rfa_dismissal(dismissal_id: str, body: RfaDismissalClearRequest, request: Request) -> dict:
     """Reverse a dismissal. The row survives with cleared_at/cleared_by set,
     so "we decided this was not applicable, then changed our mind" stays
     readable — an undelete would lose both halves of that."""
-    row = _registry().clear_rfa_dismissal(dismissal_id, cleared_by=body.cleared_by)
+    row = _registry().clear_rfa_dismissal(dismissal_id, cleared_by=_acting_user(request, body.cleared_by))
     if row is None:
         raise HTTPException(status_code=404, detail=f"No dismissal {dismissal_id}")
     return {"status": "success", "dismissal": row}
@@ -274,11 +301,7 @@ def update_rfa_action(rfa_id: str, body: RfaActionUpdateRequest) -> dict:
     retry."""
     if body.status not in RFA_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {sorted(RFA_STATUSES)}")
-    try:
-        entry_id, idx_str = rfa_id.rsplit("::", 1)
-        annotation_index = int(idx_str)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Malformed rfa_id — expected '{entry_id}::{annotation_index}'")
+    entry_id, annotation_index, _sub = _split_rfa_id(rfa_id)
 
     registry = _registry()
     if registry.get_activity(entry_id) is None:
@@ -317,11 +340,7 @@ def update_rfa_note(rfa_id: str, body: RfaNoteRequest) -> dict:
     "Record answer" button previously never called this (or any) backend
     endpoint — it only wrote to a purely client-side, in-memory log, so
     nothing survived a page reload."""
-    try:
-        entry_id, idx_str = rfa_id.rsplit("::", 1)
-        annotation_index = int(idx_str)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Malformed rfa_id — expected '{entry_id}::{annotation_index}'")
+    entry_id, annotation_index, _sub = _split_rfa_id(rfa_id)
 
     registry = _registry()
     if registry.get_activity(entry_id) is None:
