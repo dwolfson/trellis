@@ -16,7 +16,8 @@
  *     action requested/target — the fields the classic drawer already
  *     reads off the flattened `/api/activity/rfas` row, `activity.py`'s
  *     `_emit_rfa`);
- *   - take the three LOCAL response actions that already exist server-side:
+ *   - take the three response actions that already exist server-side (recorded locally,
+ *     then synced to Egeria best-effort):
  *     defer / reassign / complete (plus reopen, which is the same PATCH
  *     with `status: 'open'` — `RFA_STATUSES` in `web/routes/activity.py`).
  *
@@ -24,15 +25,16 @@
  * with an optional note (`docs/rfa-dismissals.md`), restore a dismissal, and a
  * free-text note on any request. A dismissal is a RECORD: the row stays in the
  * list behind "show suppressed (N)" with its reason, who and when, and a restore
- * keeps the record, marked cleared. Neither writes anything to Egeria.
+ * keeps the record, marked cleared. Dismiss and restore write only to Resource
+ * Explorer's registry. A status change or a note is different: the local write is
+ * authoritative, and `rfa_egeria_sync.py` then makes a best-effort Egeria write
+ * server-side (a ToDo for a status change; an ActivityEntry note on that ToDo for a
+ * note, only once the ToDo exists). A failed sync never fails the local write.
+ * The note form says so when the request already has a ToDo (`egeria_todo_guid`).
  *
- * NOT in scope here, deliberately: any of that is real Egeria ToDo integration.
- * All three response actions stay local-only — `resource_explorer/registry.py`'s `rfa_actions` table
- * docstring and `docs/egeria-integration.md` §11 cover why (a real pyegeria
- * actor-GUID story is the blocker, not a design choice this file makes).
- * `rfa_egeria_sync.py` already attempts a best-effort Egeria ToDo write
- * behind `PATCH /api/activity/rfas/{id}` server-side; this drawer neither
- * knows nor needs to know that happened — its job ends at the local write
+ * NOT in scope here, deliberately: a real actor-GUID story for the ToDo
+ * (`resource_explorer/registry.py`'s `rfa_actions` table docstring and
+ * `docs/egeria-integration.md` §11); this drawer's job ends at the local write
  * succeeding.
  */
 
@@ -283,6 +285,7 @@ function _openNoteForm(rfaId) {
   if (!row || !slot) return;
   slot.innerHTML = `<div data-rfa-note-form class="flex flex-col gap-s2">
     <textarea data-rfa-note-text rows="2" placeholder="note" class="w-full rounded-sm border border-chrome-line bg-transparent px-[6px] py-[2px] text-provenance text-chrome-ink placeholder:text-chrome-muted">${esc(row.notes || '')}</textarea>
+    ${row.egeria_todo_guid ? '<div data-rfa-note-egeria class="text-provenance text-chrome-muted">also sent to Egeria, as a note on this request\'s ToDo</div>' : ''}
     <div class="flex items-center gap-s2">${formBtn('data-rfa-note-save', 'Save note')}${formBtn('data-rfa-form-cancel', 'Cancel')}
       <span data-rfa-form-status class="text-provenance text-chrome-muted"></span></div></div>`;
   slot.querySelector('[data-rfa-form-cancel]').addEventListener('click', () => { slot.innerHTML = ''; });

@@ -1524,7 +1524,7 @@ export const listRfas = () => get('/api/activity/rfas');
 
 /** Record a response action (defer | reassign | complete | reopen — "reopen"
  *  is just `status: 'open'` again, the same endpoint) against one RFA.
- *  `web/routes/activity.py:update_rfa_action` — local-only for now (see
+ *  `web/routes/activity.py:update_rfa_action` — recorded locally first (see
  *  next/rfa.js's own note on why), with a best-effort Egeria ToDo sync
  *  attempted server-side, non-blocking of this call's result. */
 export const updateRfaAction = (rfaId, { status, assignee = '', deferUntil = '', resolutionNote = '' } = {}) =>
@@ -1540,7 +1540,8 @@ export const dismissRfa = (rfaId, { reason, note = '' } = {}) =>
 export const restoreRfaDismissal = (dismissalId) =>
   post(`/api/activity/rfas/dismissals/${encodeURIComponent(dismissalId)}/clear`, {});
 
-/** A free-text note on one RFA, independent of its status. */
+/** A free-text note on one RFA, independent of its status. Saved locally first; when the RFA already has an
+ *  Egeria ToDo the server also creates an ActivityEntry note on it (best-effort, `rfa_egeria_sync.sync_rfa_note`). */
 export const saveRfaNote = (rfaId, notes) =>
   patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}/notes`, { notes });
 

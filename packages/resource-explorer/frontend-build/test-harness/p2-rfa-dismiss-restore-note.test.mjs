@@ -135,3 +135,11 @@ test('the dismiss flow never touches an Egeria route', async () => {
   await tick();
   assert.ok(t.calls.every((c) => c.url.startsWith('/api/activity/')), JSON.stringify(t.calls.map((c) => c.url)));
 });
+
+test('the note form says the note also goes to Egeria only when the request already has a ToDo', async () => {
+  const t = await open({ rows: [base('e1::0::0', 'has a todo', { egeria_todo_guid: 'todo-1' }), base('e1::0::1', 'no todo yet')] });
+  t.rowFor('e1::0::0').querySelector('[data-rfa-note-open]').click();
+  assert.match(text(t.rowFor('e1::0::0').querySelector('[data-rfa-note-egeria]')), /also sent to Egeria/);
+  t.rowFor('e1::0::1').querySelector('[data-rfa-note-open]').click();
+  assert.equal(t.rowFor('e1::0::1').querySelector('[data-rfa-note-egeria]'), null);
+});
