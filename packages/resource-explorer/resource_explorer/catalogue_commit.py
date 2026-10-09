@@ -1683,9 +1683,10 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         # is shared by host:port (and may be someone else's, created outside RE); a database may
         # come from an earlier commit. Read before publishing: what already existed is never
         # re-stamped or re-owned. A read that fails counts as "existed" (the safe direction).
-        existed = {}
-        for which, qn_ in (("server", gw.server_qualified_name(gw.server_name_for(db))),
-                           ("database", gw.database_qualified_name(gw.server_name_for(db), db.database_name))):
+        existed, expected = {}, {
+            "server": gw.server_qualified_name(gw.server_name_for(db)),
+            "database": gw.database_qualified_name(gw.server_name_for(db), db.database_name)}
+        for which, qn_ in expected.items():
             try:
                 existed[which] = gateway.read_element(qn_) is not None
             except GatewayError:
@@ -1705,12 +1706,26 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         behalf = on_behalf_of(current_principal())
         declared = (((registry.get_context("database", slug) or {}).get("enrichment") or {})
                     .get("owner") or {}).get("value") or ""
-        notes = [n for n in (
-            gateway.mark_on_behalf(pub.server_guid, behalf.requester, behalf.owner)
-            if pub.server_guid and not existed["server"] else "",
-            gateway.mark_on_behalf(db_guid, behalf.requester, "" if declared else behalf.owner)
-            if not existed["database"] else "")
-            if n]
+        # Brief I round 6: SURE this commit created it = nothing under this host's name before AND
+        # the returned GUID reads back with exactly that name. The surveyor adopts a database by
+        # bare name (a separate backlog bug), so it can hand back ANOTHER host's element: that one
+        # is never stamped, and the step says so.
+        notes = []
+        for which, guid_, owner_ in (("server", pub.server_guid, behalf.owner),
+                                     ("database", db_guid, "" if declared else behalf.owner)):
+            if not guid_ or existed[which]:
+                continue
+            try:
+                got = gateway.qualified_name_of(guid_)
+            except GatewayError as exc:
+                notes.append(f"{which} not read back ({egeria_first_sentence(str(exc))[0]}); requester not recorded")
+                continue
+            if got != expected[which]:
+                notes.append(f"adopted an element for a different host ({got}); requester not recorded")
+                continue
+            note = gateway.mark_on_behalf(guid_, behalf.requester, owner_)
+            if note:
+                notes.append(note)
         _proof(registry, slug, P_DATABASE, node_kind="database", element_guid=db_guid,
                qualified_name=pub.database_qualified_name, curation_id=curation_id, recorded_by=author,
                detail={"server_guid": pub.server_guid, "server_name": pub.server_name,

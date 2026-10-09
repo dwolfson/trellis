@@ -233,6 +233,7 @@ class CatalogueGateway(Protocol):
     def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome: ...
     def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
+    def qualified_name_of(self, guid: str) -> str: ...
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str: ...
     def mark_on_behalf(self, guid: str, requester: str, owner: str) -> str: ...
@@ -704,6 +705,18 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(f"creating the schema element for {schema} from the template failed: "
                                f"{_short(exc)}") from exc
         return guid if isinstance(guid, str) else _guid_of(guid)
+
+    def qualified_name_of(self, guid: str) -> str:
+        """The qualifiedName Egeria holds for `guid`, read by GUID. Raises GatewayError when it
+        cannot be read (never '' for "could not tell")."""
+        try:
+            el = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
+        except Exception as exc:
+            raise GatewayError(f"could not read {guid[:8]}: {_short(exc)}") from exc
+        qn = _qn_of(el)
+        if not qn:
+            raise GatewayError(f"no qualifiedName on the answer for {guid[:8]}")
+        return qn
 
     def mark_on_behalf(self, guid: str, requester: str, owner: str) -> str:
         """Brief I: a template copy cannot carry `additionalProperties`, so `requestedBy` is merged

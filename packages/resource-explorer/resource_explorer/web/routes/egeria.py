@@ -322,20 +322,42 @@ async def get_dataclass_rules() -> list[DataClassRule]:
             """`get_guid_for_name` is the known hang site: bounded through the shared pool, on a
             client built in the pool thread itself (pyegeria binds a client to its thread's loop)."""
             def _lookup():
-                return egeria_client(reader, purpose="data class rules", view_server=view_server,
-                                     platform_url=platform_url, shared=False).of(DataDesigner).get_guid_for_name(qname)
+                designer = egeria_client(reader, purpose="data class rules", view_server=view_server,
+                                         platform_url=platform_url, shared=False).of(DataDesigner)
+                try:
+                    return designer.get_guid_for_name(qname)
+                finally:                       # its own client, used once: closed after use (round 6)
+                    close = getattr(designer, "close_session", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:  # noqa: BLE001 - closing is tidy-up, never the answer
+                            pass
             return run_sync(_lookup, timeout=_DATACLASS_GUID_TIMEOUT_SECONDS)
 
         def _fetch():
             ref_manager = clients.of(ReferenceDataManager)
 
+            from concurrent.futures import TimeoutError as _LookupTimeout
+
             rules = []
+            timed_out = False
             for dc in fallback_rules:
                 name = dc["name"]
                 qname = f"DataClass::{name}"
                 keywords = []
+                if timed_out:
+                    # Round 6: after the first timed-out lookup, the rest answer the local rules
+                    # rather than each waiting out the bound on a platform that is not answering.
+                    rules.append(DataClassRule(**dc))
+                    continue
                 try:
-                    guid = _guid_for(qname)
+                    try:
+                        guid = _guid_for(qname)
+                    except _LookupTimeout:
+                        timed_out = True
+                        rules.append(DataClassRule(**dc))
+                        continue
                     if guid:
                         results = ref_manager.find_valid_value_definitions(
                             search_string=f"ValidValueDefinition::{name}Keyword::",
