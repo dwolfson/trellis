@@ -39,3 +39,24 @@ def test_a_stats_row_with_zero_stars_is_read(client, registry):
     data = client.get("/api/egeria/myproj/survey-report").json()
     assert data["health_read"] is True
     assert data["health"]["stars"] == 0
+
+
+def test_a_null_figure_is_null_not_zero(client, registry):
+    """An ingestion-only stats row has no GitHub figures; they must reach the page as null."""
+    with registry._conn() as conn:
+        conn.execute("INSERT INTO project_stats (project_slug, fetched_at, ingestion_file_count) VALUES (?, ?, 12)",
+                     ("myproj", "2026-08-01T00:00:00"))
+    h = client.get("/api/egeria/myproj/survey-report").json()["health"]
+    assert h["stars"] is None and h["forks"] is None and h["open_issues"] is None and h["contributors"] is None
+
+
+def test_no_stats_row_gives_null_figures(client):
+    h = client.get("/api/egeria/myproj/survey-report").json()["health"]
+    assert h["stars"] is None and h["contributors"] is None
+
+
+def test_contributors_reads_the_real_column(client, registry):
+    with registry._conn() as conn:
+        conn.execute("INSERT INTO project_stats (project_slug, fetched_at, stars, contributors_count) VALUES (?, ?, 1, 7)",
+                     ("myproj", "2026-08-01T00:00:00"))
+    assert client.get("/api/egeria/myproj/survey-report").json()["health"]["contributors"] == 7

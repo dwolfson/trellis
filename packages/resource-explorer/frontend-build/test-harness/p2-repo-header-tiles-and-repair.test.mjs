@@ -182,3 +182,13 @@ test('a failed repair says so on the banner and leaves the choices usable', asyn
   assert.match(text(t.host.querySelector('[data-link-repair-status]')), /not done: .*republish failed/);
   assert.equal(t.host.querySelector('[data-link-repair="republish"]').disabled, false);
 });
+
+test('size and deployments that the server lists as unread never draw 0 or 0.0 MB', async () => {
+  const t = await setUp();
+  t.app.state.overview = { ...OV, repo_size_kb: 0, deployments_count: 0, stats_unread: ['repo_size_kb', 'deployments_count'] };
+  t.render();
+  for (const k of ['size', 'deployments']) {
+    assert.match(tileText(t.host, k), /not read/, k);
+    assert.doesNotMatch(tileText(t.host, k), /0\.0 MB|\b0\b/, k);
+  }
+});

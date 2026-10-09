@@ -36,7 +36,8 @@ export function repoReportHtml(d) {
   if (!d) return '';
   const h = d.health || {};
   const read = d.health_read === true;
-  const val = (v) => (read ? esc(String(v ?? 0)) : unread());
+  // null is "not read" even when the row exists (an ingestion-only row has no GitHub figures).
+  const val = (v) => (read && v != null ? esc(String(v)) : unread());
   const surveyed = d.local_surveyed_at
     ? `kept survey ran <span class="tnum">${esc(ago(d.local_surveyed_at))}</span>`
     : '<span data-report-never class="text-ink-muted">no survey kept</span>';

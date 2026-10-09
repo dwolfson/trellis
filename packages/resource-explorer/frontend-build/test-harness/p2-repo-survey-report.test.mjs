@@ -84,3 +84,11 @@ test('a failed read says so and draws no report', async () => {
   assert.match(text(document.querySelector('[data-report-error]')), /could not be read/);
   assert.equal(document.querySelector('[data-survey-report]'), null);
 });
+
+test('a NULL figure on a row that exists reads "not read", while a read zero stays 0', async () => {
+  const { document } = await setUp({ ...REPORT, health: { stars: null, forks: 0, open_issues: null, contributors: null, license: 'MIT' }, health_read: true });
+  assert.match(text(document.querySelector('[data-report-card="stars"]')), /not read/);
+  assert.match(text(document.querySelector('[data-report-card="contributors"]')), /not read/);
+  assert.equal(document.querySelector('[data-report-card="forks"] .tnum').textContent, '0');
+  assert.equal(document.querySelector('[data-report-card="forks"] [data-unread]'), null);
+});

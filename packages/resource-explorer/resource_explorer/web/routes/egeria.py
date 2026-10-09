@@ -1057,11 +1057,12 @@ async def get_survey_report(slug: str) -> SurveyReportData:
 
     # Project stats (stars, forks, language, license…)
     stats = registry.get_latest_project_stats(slug) or {}
+    # NULL stays null: "not read" is not 0 (the Next report view draws null as "not read").
     health = {
-        "stars":            stats.get("stars", 0),
-        "forks":            stats.get("forks", 0),
-        "open_issues":      stats.get("open_issues", 0),
-        "contributors":     stats.get("contributors", 0),
+        "stars":            stats.get("stars"),
+        "forks":            stats.get("forks"),
+        "open_issues":      stats.get("open_issues"),
+        "contributors":     stats.get("contributors_count"),  # the column is contributors_count; "contributors" was never a key, so this always read 0
         "last_push":        stats.get("last_push", ""),
         "primary_language": stats.get("primary_language", ""),
         "license":          stats.get("license", ""),

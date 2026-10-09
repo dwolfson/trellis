@@ -30,6 +30,7 @@ function esc(s) {
 }
 
 export const NOT_READ_WORD = 'not read';
+export const ZERO_PROVES_NOTHING_SENTENCE = 'Zero here is also what a repository that was never asked looks like, so it reads as not read. A non-zero value would show.';
 export const NOT_READ_SENTENCE = 'GitHub has not been asked for this yet, or did not answer. Run a scouting scan to read it.';
 
 /** `? not read`, a muted cue; the sentence is on hover. */
@@ -75,11 +76,11 @@ export function scoutingTilesHtml(ov) {
     tile('contributors', 'Contributors', num('contributors', ov.contributors_count)),
     tile('last_pushed', 'Last pushed', unread.has('last_pushed_at') ? notReadCue() : esc(ago(ov.last_pushed_at) || ov.last_pushed_at),
       unread.has('last_pushed_at') ? '' : ov.last_pushed_at),
-    tile('size', 'Size', unread.has('repo_size_kb') ? notReadCue() : `${esc((ov.repo_size_kb / 1024).toFixed(1))} MB`),
+    tile('size', 'Size', unread.has('repo_size_kb') ? notReadCue(ZERO_PROVES_NOTHING_SENTENCE) : `${esc((ov.repo_size_kb / 1024).toFixed(1))} MB`),
     tile('security', 'Security', unread.has('security_and_analysis') || !sec
       ? notReadCue('GitHub shows security settings only to admins of the repository, or they have not been read yet.')
       : `${sec.on}/${sec.total} enabled`, sec ? sec.detail : ''),
-    tile('deployments', 'Deployments', unread.has('deployments_count') ? notReadCue()
+    tile('deployments', 'Deployments', unread.has('deployments_count') ? notReadCue(ZERO_PROVES_NOTHING_SENTENCE)
       : (dep ? `${dep}${ov.latest_deployment_at ? ` · ${esc(ago(ov.latest_deployment_at))}` : ''}` : '0'),
     ov.latest_deployment_environment ? `Latest: ${ov.latest_deployment_environment}${ov.latest_deployment_ref ? ` @ ${ov.latest_deployment_ref}` : ''}` : ''),
   ];

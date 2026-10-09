@@ -437,11 +437,21 @@ _SCOUTING_STAT_FIELDS = (
 )
 
 
+#: Columns migrated in with DEFAULT 0: a row that never fetched them reads 0, exactly as a measured zero does.
+#: Only a non-zero value proves GitHub was asked, so a 0 here is "not read".
+_ZERO_PROVES_NOTHING = ("repo_size_kb", "deployments_count")
+
+
 def _scouting_stats_unread(stats: dict) -> list[str]:
-    """Names of the scouting stats the latest row has no value for. 0 is a value; None, '' and an
-    empty security object are not."""
-    return [name for col, name in _SCOUTING_STAT_FIELDS
-            if stats.get(col) is None or stats.get(col) in ("", "{}")]
+    """Names of the scouting stats the latest row cannot prove it read. None, '' and an empty security
+    object are unread; 0 is a measurement for stars, forks and contributors (the fetch wrote NULL
+    otherwise) but not for the DEFAULT-0 columns above, which nothing distinguishes from never fetched."""
+    out = []
+    for col, name in _SCOUTING_STAT_FIELDS:
+        v = stats.get(col)
+        if v is None or v in ("", "{}") or (col in _ZERO_PROVES_NOTHING and not v):
+            out.append(name)
+    return out
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
