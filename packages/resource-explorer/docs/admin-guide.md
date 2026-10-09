@@ -267,7 +267,7 @@ Repeat searches are worth saving as a **discovery source** (⚙ Admin → Discov
 - **search** — the same structured filters as the ad-hoc form, saved under a name.
 - **list** — a manually-curated set of `github_url`s. Needed for foundations that don't fit the "one org, one search" model — Eclipse spreads 450+ projects across hundreds of distinct GitHub orgs, and LF AI & Data curates a *member list* of projects living in unrelated orgs (Egeria itself is `odpi/egeria`, nothing to do with the `lfai` org's own governance repos). A `list` source is also how you'd register your own enterprise/internal repos the same way. There's no auto-fetching of an external structured list (CNCF's `landscape.yml`, LFX Insights' API, Eclipse's own project index) yet — paste the URLs in by hand.
 
-If you're pointed at an Enterprise GitHub instance rather than public GitHub, set the base URL once via the inline "GitHub source: … [edit]" control on the Discover tab — it's a runtime override on top of `.env`'s `GITHUB_BASE_URL`, stored in the registry, no restart needed.
+If you're pointed at an Enterprise GitHub instance rather than public GitHub, set `GITHUB_BASE_URL` in `.env` (for example `https://ghe.example.com/api/v3`) and restart. It is the single source: discovery, surveys and ingestion all use it, and there is no runtime override.
 
 ### Disposition and working set
 
