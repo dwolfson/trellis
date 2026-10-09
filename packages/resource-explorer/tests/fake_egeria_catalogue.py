@@ -213,7 +213,7 @@ class FakeEgeria:
 
     def mark_on_behalf(self, guid, requester, owner):
         self.calls.append(("mark_on_behalf", guid, requester, owner))
-        return True, "set"
+        return getattr(self, "mark_on_behalf_says", "")
 
     def create_schema_element(self, db_entity, schema, database_guid, *, description=""):
         self.calls.append(("create_schema_element", schema, database_guid))

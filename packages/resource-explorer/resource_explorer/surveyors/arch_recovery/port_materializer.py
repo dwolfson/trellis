@@ -50,6 +50,7 @@ import logging
 import os
 import re
 from typing import TYPE_CHECKING
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
@@ -117,8 +118,8 @@ class PortMaterializer:
         identity=None,
     ) -> None:
         self._identity = identity
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
         self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
@@ -264,22 +265,23 @@ class PortMaterializer:
 
         self._attach_if_needed(component_guid, guid)
 
-        # Whose write this is (Brief I round 3), from the one on-behalf helper: the generic create
-        # body above carries no additionalProperties, so `requestedBy` is merged in after it, and
-        # Ownership names the declared Context owner, else the requester. Both best-effort.
+        # Whose write this is (Brief I), from the one on-behalf helper: the generic create body
+        # above carries no additionalProperties, so `requestedBy` is merged in after it (read, merge,
+        # write), and Ownership = the requester. A stamp that did not land is reported as partial.
         from resource_explorer.egeria_clients import current_principal
-        from resource_explorer.egeria_identity import on_behalf_of, record_requested_by, set_ownership
+        from resource_explorer.egeria_identity import on_behalf_of, stamp_on_behalf
 
         identity = self._identity or current_principal()
-        behalf = on_behalf_of(identity, registry=self._registry, entity_type=entity_type,
-                              entity_slug=entity_slug)
-        record_requested_by(guid, behalf, client=self._metadata_expert)
-        set_ownership(guid, behalf.owner, identity=identity)
+        behalf = on_behalf_of(identity)
+        not_recorded = stamp_on_behalf(guid, behalf, identity=identity, props_client=self._metadata_expert)
 
         if self._registry:
             self._registry.record_materialized_port(
                 entity_type, entity_slug, scope_locator, port_name, qualified_name, guid,
             )
+        if not_recorded:
+            return {"status": "partial", "words": f"partial · {not_recorded}", "guid": guid,
+                    "qualified_name": qualified_name}
         return {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
 
     def _attach_if_needed(self, component_guid: str, port_guid: str) -> None:

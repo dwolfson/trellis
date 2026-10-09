@@ -74,6 +74,16 @@ class FileSystemSurveyRequest(BaseModel):
     egeria_user: str | None = None
     egeria_password: str | None = None
     force_publish: bool = False
+    #: Publish to Egeria (Brief I round 4: an explicit choice). Also chosen by SENDING mode
+    #: "hybrid" or "egeria"; the default mode alone never publishes.
+    publish: bool = False
+
+
+def _publish_chosen(req: "FileSystemSurveyRequest") -> bool:
+    """Whether the caller chose to publish this survey to Egeria: `publish`/`force_publish`, or an
+    explicitly sent mode "hybrid"/"egeria" (not the field's default)."""
+    sent_mode = "mode" in req.model_fields_set and req.mode in ("hybrid", "egeria")
+    return bool(req.publish or req.force_publish or sent_mode)
 
 
 class EgeriaSurveyReportRow(BaseModel):
@@ -416,7 +426,7 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
                 executes_at="egeria-adaptive",
                 egeria_url=req.egeria_url,
                 egeria_server=req.egeria_server,
-                force_egeria_publish=req.force_publish or (req.mode == "egeria"),
+                force_egeria_publish=_publish_chosen(req),
             )
             step_report = (exec_result.get("steps") or [{}])[0]
             # Reconstruct run_hybrid_filesystem_survey's historic flat

@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING
 
 from resource_explorer.egeria_timing import time_egeria_call
 from resource_explorer.surveyors.survey_report import AnnotationType, SurveyResult
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
@@ -144,8 +145,8 @@ class EgeriaPublisher:
         # a route and used further down, and the identity that matters is the
         # one in force at the call, not at construction.
         self._identity = identity
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
         # Not used to authenticate: who acts is the factory's business (Brief I). Kept as an
         # attribute only because callers still pass it; never read from the environment.
@@ -1000,9 +1001,9 @@ class EgeriaPublisher:
         # their own artifact to a service account.
         from resource_explorer.egeria_identity import on_behalf_of
 
-        # The one on-behalf helper (Brief I round 3). A survey report is RE's own evidence, not
-        # the resource, so no declared resource owner is consulted: private owner, else requester.
-        owner = on_behalf_of(identity, private_owner=getattr(self, "_private_owner", "") or "").owner
+        # The one on-behalf helper (Brief I): the requester, never the service account; a private
+        # investigation's owner keeps its own (unchanged private-zone handling).
+        owner = getattr(self, "_private_owner", "") or on_behalf_of(identity).owner
         zones = self.zone_names
         if not produced:
             # A REFERENCED element — the repo's own asset. It is not this
@@ -1011,7 +1012,7 @@ class EgeriaPublisher:
             # deployment's draft zone and the publishing identity.
             from resource_explorer.egeria_identity import draft_zones
 
-            owner = identity.user_id
+            owner = on_behalf_of(identity).owner          # the requester; never the service account
             zones = draft_zones()
         results: dict[str, dict] = {}
         client = None

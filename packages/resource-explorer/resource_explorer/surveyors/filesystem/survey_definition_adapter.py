@@ -173,13 +173,6 @@ def _run_egeria_adaptive(
         run_hybrid_filesystem_survey,
     )
 
-    # "Configured for Egeria" = the resource names which Egeria (URL and view server). Who
-    # publishes is the factory's business; per-resource Egeria credentials are no longer used
-    # (owner's ruling, 2026-10-09).
-    has_creds = bool(
-        (egeria_url or fs_entity.egeria_url) and (egeria_server or fs_entity.egeria_server)
-    )
-
     try:
         survey_data = run_hybrid_filesystem_survey(
             fs_entity.slug, registry=registry, force_egeria_publish=force_egeria_publish,

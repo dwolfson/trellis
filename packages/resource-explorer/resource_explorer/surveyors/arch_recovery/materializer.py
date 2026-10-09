@@ -44,6 +44,7 @@ import re
 from typing import TYPE_CHECKING
 
 from resource_explorer.egeria_timing import time_egeria_call
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
@@ -95,8 +96,8 @@ class ComponentMaterializer:
         # and used in another, and the identity that matters is the one in
         # force when Egeria is actually written to.
         self._identity = identity
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
         self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
@@ -299,12 +300,11 @@ class ComponentMaterializer:
         # dropping that provenance entirely would be a worse default than an
         # untyped string.
         additional = {"recoveredBy": "architecture_recovery"}
-        # Whose write this is (Brief I round 3): `requestedBy` beside the other provenance keys,
-        # and the Ownership owner, from the one on-behalf helper.
+        # Whose write this is (Brief I): `requestedBy` beside the other provenance keys, and the
+        # Ownership owner (= the requester), from the one on-behalf helper.
         from resource_explorer.egeria_identity import on_behalf_of
 
-        behalf = on_behalf_of(self.resolve_identity(), registry=self._registry, entity_type=entity_type,
-                              entity_slug=entity_slug, private_owner=private_owner or "")
+        behalf = on_behalf_of(self.resolve_identity())
         additional.update(behalf.provenance())
         if perspective:
             additional["perspective"] = perspective
@@ -355,7 +355,8 @@ class ComponentMaterializer:
         # investigation is derived from their private work: born in the draft
         # zone with the publishing identity as owner it would be visible to
         # every curator, and owned by whoever happened to run the analysis.
-        owner = behalf.owner
+        # Private-zone handling is unchanged: a private investigation's owner owns its component.
+        owner = private_owner or behalf.owner
         zones = private_zones_for_owner or draft_zones()
 
         governance = stamp_published(guid, owner, identity=identity, zones=zones)
@@ -364,5 +365,8 @@ class ComponentMaterializer:
             self._registry.record_materialized_component(
                 entity_type, entity_slug, scope_locator, qualified_name, guid,
             )
-        return {"status": "materialized", "guid": guid, "qualified_name": qualified_name,
-                "governance": governance}
+        result = {"status": "materialized", "guid": guid, "qualified_name": qualified_name,
+                  "governance": governance}
+        if owner and not governance.get("ownership"):
+            result["requester_not_recorded"] = "requester not recorded (Ownership was not set; see the log)"
+        return result

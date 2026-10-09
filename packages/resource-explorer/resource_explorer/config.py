@@ -714,6 +714,19 @@ class ExplorerConfig(BaseSettings):
 _config: ExplorerConfig | None = None
 
 
+def egeria_platform_url() -> str:
+    """THE Egeria platform URL (Brief I round 4, found live on 8813): `config.egeria.platform_url`
+    — the environment / .env value, else its default. No other module reads EGERIA_PLATFORM_URL
+    from the environment (the ban test enforces it): two sources once disagreed, and a direct read
+    saw '' where the configured default existed."""
+    return get_config().egeria.platform_url
+
+
+def egeria_view_server() -> str:
+    """THE Egeria view server: `config.egeria.view_server` (same reasoning)."""
+    return get_config().egeria.view_server
+
+
 def get_config() -> ExplorerConfig:
     global _config
     if _config is None:

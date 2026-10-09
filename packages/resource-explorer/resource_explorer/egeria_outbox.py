@@ -600,6 +600,31 @@ def _create_doc_source_unpublish(clients: "OutboxClients", payload: dict) -> str
     return ref_guid
 
 
+def _row_requester(row: dict) -> str:
+    """The person a row was enqueued for, when its payload says (`by`, as a catalog attach does)."""
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        return ""
+    by = payload.get("by") or payload.get("requested_by") or "" if isinstance(payload, dict) else ""
+    return by.strip() if isinstance(by, str) else ""
+
+
+def _row_identity(row: dict, drain_identity):
+    """Brief I round 4: in the background loop (a Daemon drain) a row enqueued for a person is
+    applied as `Daemon(OUTBOX, requested_by=<that person>)`, so a retry stamps the original author,
+    never the service account. Without a recorded person the row runs as the plain daemon and the
+    on-behalf helper stamps nothing. An inline drain (a Caller) keeps the person it runs as."""
+    from contextlib import nullcontext
+
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    by = _row_requester(row)
+    if drain_identity is None or getattr(drain_identity, "kind", "") != "daemon" or not by:
+        return nullcontext()
+    return acting_as(Daemon(DaemonReason.OUTBOX, requested_by=by))
+
+
 def _drain_principal(entity):
     """Who a doc-source or catalog row is applied as: `current_principal()` — the signed-in Caller
     for an inline drain inside a person's request, `Daemon(OUTBOX)` in the background loop. An
@@ -804,7 +829,8 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # (annotation/collection_membership/resource_list/annotation_
             # link), the same per-call-name granularity the layer-2
             # catalogue-depth offer needs and nothing before this recorded.
-            with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"):
+            with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"), \
+                    _row_identity(row, identity):
                 guid = apply_element(row, clients, find_element_guid,
                                      resolve_row_guids=registry.get_outbox_guids)
         except OutboxNotReadyError as exc:

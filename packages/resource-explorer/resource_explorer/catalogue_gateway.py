@@ -235,7 +235,7 @@ class CatalogueGateway(Protocol):
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str: ...
-    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> tuple[bool, str]: ...
+    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> str: ...
     def list_catalog_targets(self) -> list[CatalogTarget]: ...
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
@@ -705,16 +705,28 @@ class PyegeriaCatalogueGateway:
                                f"{_short(exc)}") from exc
         return guid if isinstance(guid, str) else _guid_of(guid)
 
-    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> tuple[bool, str]:
-        """Brief I round 3: a template copy cannot carry `additionalProperties`, so `requestedBy` is
-        merged in after the create (UNVERIFIED LIVE), and Ownership names `owner` (`set_owner`).
-        Returns (provenance recorded?, ownership outcome)."""
+    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> str:
+        """Brief I: a template copy cannot carry `additionalProperties`, so `requestedBy` is merged
+        into its CURRENT map after the create (read, merge, write; UNVERIFIED LIVE), and Ownership
+        names `owner` (`set_owner`). '' when both landed (or nobody asked), else
+        "requester not recorded (<reason>)" for the caller to report as partial. Never raises."""
         from resource_explorer.egeria_identity import OnBehalf, record_requested_by
 
-        recorded = record_requested_by(guid, OnBehalf(requester=requester, owner=owner),
-                                       client=self._client("MetadataExpert"))
-        outcome, _detail = self.set_owner(guid, owner) if owner else ("skipped", "")
-        return recorded, outcome
+        if not requester:
+            return ""
+        reasons = []
+        why = record_requested_by(guid, OnBehalf(requester=requester, owner=owner),
+                                  client=self._client("MetadataExpert"))
+        if why:
+            reasons.append(f"requestedBy: {why}")
+        if owner:
+            try:
+                outcome, detail = self.set_owner(guid, owner)
+                if outcome == "refused":
+                    reasons.append(f"Ownership refused: {detail}")
+            except GatewayError as exc:
+                reasons.append(f"Ownership: {_short(exc, 200)}")
+        return f"requester not recorded ({'; '.join(reasons)})" if reasons else ""
 
     def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str:
         """Egeria's own attach: `PostgreSQLGovernance::catalog-postgres-schema` with the schema

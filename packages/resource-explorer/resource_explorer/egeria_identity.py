@@ -272,50 +272,55 @@ def use_identity(identity: Optional[EgeriaIdentity]) -> Iterator[None]:
 
 @dataclass(frozen=True)
 class OnBehalf:
-    """Whose an element is, for ONE write made on a person's behalf (Brief I round 3).
+    """Whose an element is, for ONE write made on a person's behalf (Brief I, rounds 3-4).
 
     `requester` — who asked: a queued run's `requested_by`, or the signed-in person.
-    `owner` — what Ownership is stamped with: a private investigation's owner, else the owner
-    DECLARED on the resource's Context (RULING-OWNER-FACT-VS-OWNERSHIP-CLASSIFICATION), else the
-    requester, else whoever the call runs as.
+    `owner` — what Ownership is stamped with: the requester (owner's ruling, round 4: no declared-
+    owner or investigation branch here — a free-text or team owner gets no UserIdentity). Empty
+    when nobody asked, and NEVER RE's own daemon user: the service account is not an owner.
     """
 
     requester: str
     owner: str
 
     def provenance(self) -> dict:
-        """The `additionalProperties` key every RE-created element carries beside its other
-        provenance keys: `requestedBy`. Empty when nobody asked (the daemon's own work)."""
+        """`additionalProperties.requestedBy`, beside the element's other provenance keys. Empty
+        when nobody asked (the daemon's own work)."""
         return {"requestedBy": self.requester} if self.requester else {}
 
 
-def declared_owner(registry: Any, entity_type: str, entity_slug: str) -> str:
-    """The owner declared on the resource's Context (`enrichment.owner.value`), or ''."""
-    if registry is None or not entity_type or not entity_slug:
-        return ""
-    try:
-        ctx = registry.get_context(entity_type, entity_slug) or {}
-    except Exception as exc:  # noqa: BLE001 - a context that cannot be read declares nothing
-        log.debug("egeria: could not read the declared owner of %s/%s: %s", entity_type, entity_slug, exc)
-        return ""
-    owner = (((ctx.get("enrichment") or {}).get("owner") or {}).get("value") or "") if isinstance(ctx, dict) else ""
-    return owner.strip() if isinstance(owner, str) else ""
-
-
-def on_behalf_of(identity: Optional[EgeriaIdentity] = None, *, registry: Any = None, entity_type: str = "",
-                 entity_slug: str = "", private_owner: str = "") -> OnBehalf:
-    """THE helper every write made on a person's behalf uses (components, blueprints, ports, the
-    publisher, catalog schema elements): who asked, and what Ownership names."""
+def on_behalf_of(identity: Optional[EgeriaIdentity] = None) -> OnBehalf:
+    """THE helper every write made on a person's behalf uses: who asked, and what Ownership names.
+    A daemon with no requester (the drain loop's own retry of an unattributed row) gets nothing:
+    no owner, no requestedBy — never the service account."""
     identity = identity or caller_credentials()
     if identity.kind == "daemon":
-        requester = identity.requested_by
-    elif identity.kind == "caller":
-        requester = identity.user_id
+        requester = (identity.requested_by or "").strip()
+        daemon_user = identity.client_user or ""
+    elif identity.kind == "caller" or identity.is_person:   # a signed-in person (token held)
+        requester, daemon_user = (identity.user_id or "").strip(), ""
     else:
-        requester = ""
-    owner = (private_owner or declared_owner(registry, entity_type, entity_slug)
-             or requester or identity.user_id)
-    return OnBehalf(requester=requester, owner=owner)
+        requester, daemon_user = "", ""
+    if requester and daemon_user and requester == daemon_user:
+        requester = ""                     # the daemon's own user is never recorded as the person
+    return OnBehalf(requester=requester, owner=requester)
+
+
+def _read_additional_properties(element: Any) -> dict:
+    """An element's current `additionalProperties` as {key: string}, from a raw generic read
+    (`elementProperties.propertyValueMap.additionalProperties.mapValues...`) or a formatted one.
+    Raises ValueError when the answer is not an element at all."""
+    if not isinstance(element, dict):
+        raise ValueError(f"the read returned {type(element).__name__}, not an element")
+    vm = ((element.get("elementProperties") or element.get("properties") or {}).get("propertyValueMap")
+          if isinstance(element.get("elementProperties") or element.get("properties"), dict) else None) or {}
+    mp = vm.get("additionalProperties") if isinstance(vm, dict) else None
+    if isinstance(mp, dict):
+        inner = ((mp.get("mapValues") or {}).get("propertyValueMap") or {})
+        return {k: str((v or {}).get("primitiveValue", "")) for k, v in inner.items() if isinstance(v, dict)}
+    props = element.get("properties") or element.get("elementProperties") or {}
+    flat = props.get("additionalProperties") if isinstance(props, dict) else None
+    return {k: str(v) for k, v in flat.items()} if isinstance(flat, dict) else {}
 
 
 def _map_property(values: dict) -> dict:
@@ -326,25 +331,50 @@ def _map_property(values: dict) -> dict:
                 for k, v in values.items()}}}
 
 
-def record_requested_by(element_guid: str, behalf: OnBehalf, *, client: Any) -> bool:
+def record_requested_by(element_guid: str, behalf: OnBehalf, *, client: Any) -> str:
     """For an element whose create body cannot carry `additionalProperties` (a template copy, a
-    generic metadata-element create): merge `requestedBy` into its additionalProperties after the
-    create. Best-effort and reported (False), never raised: the element already exists.
+    generic metadata-element create): READ its current additionalProperties, merge `requestedBy`
+    in, write the merged map. Returns '' when recorded (or nothing to record), else the reason.
+    A failed read writes nothing (an update would replace the map with ours alone). Never raises.
     UNVERIFIED LIVE: the map-typed property shape on `update_metadata_element_properties`."""
-    if not element_guid or not behalf.requester:
-        return False
+    if not behalf.requester:
+        return ""
+    if not element_guid:
+        return "no element GUID"
+    try:
+        current = _read_additional_properties(client.get_metadata_element_by_guid(element_guid))
+    except Exception as exc:  # noqa: BLE001 - reported; nothing is written on a failed read
+        return f"its additionalProperties could not be read ({type(exc).__name__}: {str(exc)[:160]})"
     try:
         client.update_metadata_element_properties(element_guid, {
             "class": "UpdatePropertiesRequestBody",
-            "properties": {"class": "ElementProperties",
-                           "propertyValueMap": {"additionalProperties": _map_property(behalf.provenance())}},
+            "properties": {"class": "ElementProperties", "propertyValueMap": {
+                "additionalProperties": _map_property({**current, **behalf.provenance()})}},
             "replaceProperties": False,
         })
-        return True
+        return ""
     except Exception as exc:  # noqa: BLE001 - reported, the element already exists
         log.warning("egeria: could not record requestedBy=%s on %s — %s: %s",
                     behalf.requester, element_guid, type(exc).__name__, exc)
-        return False
+        return f"{type(exc).__name__}: {str(exc)[:200]}"
+
+
+def stamp_on_behalf(element_guid: str, behalf: OnBehalf, *, identity: Optional[EgeriaIdentity] = None,
+                    props_client: Any = None) -> str:
+    """Ownership = the requester, and (with `props_client`) `requestedBy` merged into the
+    element's additionalProperties. '' when everything landed (or there was nobody to record),
+    else "requester not recorded (<reason>)", which the caller reports as partial."""
+    if not behalf.requester:
+        return ""
+    reasons = []
+    if props_client is not None:
+        why = record_requested_by(element_guid, behalf, client=props_client)
+        if why:
+            reasons.append(f"requestedBy: {why}")
+    ok, why = set_ownership_reason(element_guid, behalf.owner, identity=identity)
+    if not ok:
+        reasons.append(f"Ownership: {why}")
+    return f"requester not recorded ({'; '.join(reasons)})" if reasons else ""
 
 
 def ownership_body(owner: str, owner_type_name: str = _OWNER_TYPE_NAME) -> dict:
@@ -414,19 +444,29 @@ def set_ownership(
     failure is logged and returned as False so a caller that cares (the tests,
     and the publish response's warning field) can say so.
     """
+    return set_ownership_reason(element_guid, owner, identity=identity, client=client,
+                                owner_type_name=owner_type_name)[0]
+
+
+def set_ownership_reason(element_guid: str, owner: str, *, identity: Optional[EgeriaIdentity] = None,
+                         client: Any = None, owner_type_name: str = _OWNER_TYPE_NAME) -> tuple[bool, str]:
+    """`set_ownership`, with the reason when it did not land. Never raises for an Egeria failure;
+    a missing sign-in or a refused platform propagates (a 401/403, not a quiet unowned write)."""
     if not element_guid or not owner:
-        return False
+        return False, "no element or no owner"
     try:
         client = client or classification_client(identity)
         client.add_ownership_to_element(element_guid, ownership_body(owner, owner_type_name))
         log.info("egeria: Ownership(owner=%s) set on %s", owner, element_guid)
-        return True
+        return True, ""
+    except PermissionError:
+        raise
     except Exception as exc:
         log.warning(
             "egeria: could not set Ownership(owner=%s) on %s — %s: %s",
             owner, element_guid, type(exc).__name__, exc,
         )
-        return False
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
 def set_zone_membership(

@@ -14577,8 +14577,9 @@ function showSurveyFsModal(slug) {
   document.getElementById('survey-fs-submit-btn').disabled = false;
   
   const fs = _fsMap[slug] || {};
-  document.getElementById('survey-fs-use-egeria').checked = !!fs.egeria_url;
-  document.getElementById('fs-egeria-options').classList.toggle('hidden', !fs.egeria_url);
+  // Publishing to Egeria is a choice made here, never implied by a URL on the resource (Brief I).
+  document.getElementById('survey-fs-use-egeria').checked = false;
+  document.getElementById('fs-egeria-options').classList.add('hidden');
   document.getElementById('survey-fs-egeria-url').value = fs.egeria_url || '';
   document.getElementById('survey-fs-egeria-server').value = fs.egeria_server || '';
 }

@@ -45,12 +45,9 @@ def run_hybrid_filesystem_survey(
     # 2. Determine Egeria coordinates
     url = egeria_url or fs_entity.egeria_url or ""
     server = egeria_server or fs_entity.egeria_server or ""
-    # Configured for Egeria = it names which Egeria. Per-resource Egeria credentials are no longer
-    # used (owner's ruling, 2026-10-09); who publishes is the factory's business.
-    has_egeria_creds = bool(url and server)
-
-    # 3. Publish to Egeria if coordinates are available or forced
-    if has_egeria_creds or force_egeria_publish:
+    # 3. Publish to Egeria ONLY when someone chose to (Brief I round 4): a URL on the resource
+    # says which Egeria, never that this survey should be published there.
+    if force_egeria_publish:
         log.info(f"Publishing filesystem survey results for {fs_entity.slug} to Egeria...")
         try:
             from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor

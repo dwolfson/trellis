@@ -72,6 +72,7 @@ import logging
 import os
 import re
 from typing import TYPE_CHECKING
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
@@ -143,8 +144,8 @@ class BlueprintMaterializer:
         # and used in another, and the identity that matters is the one in
         # force when Egeria is actually written to.
         self._identity = identity
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
         self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
@@ -701,12 +702,11 @@ class BlueprintMaterializer:
             additional["re_identifier"] = identifier
         if oversized:
             additional["oversized"] = "true"
-        # Whose write this is (Brief I round 3): `requestedBy` beside the provenance above, and the
-        # Ownership owner (declared Context owner, else the requester), from the one helper.
+        # Whose write this is (Brief I): `requestedBy` beside the provenance above, and Ownership =
+        # the requester, from the one helper.
         from resource_explorer.egeria_identity import on_behalf_of
 
-        behalf = on_behalf_of(self.resolve_identity(), registry=self._registry, entity_type=entity_type,
-                              entity_slug=entity_slug)
+        behalf = on_behalf_of(self.resolve_identity())
         additional.update(behalf.provenance())
         properties["additionalProperties"] = additional
 
@@ -756,12 +756,16 @@ class BlueprintMaterializer:
                 f"Egeria returned no usable GUID for the new SolutionBlueprint (got {guid!r})"
             )
 
-        from resource_explorer.egeria_identity import set_ownership
+        from resource_explorer.egeria_identity import stamp_on_behalf
 
-        # Best-effort and reported, as for components: the blueprint already exists.
-        set_ownership(guid, behalf.owner, identity=self.resolve_identity())
+        # Ownership = the requester. Best-effort, and REPORTED: a stamp that did not land makes the
+        # item partial ("requester not recorded (<reason>)"), never a plain "materialized".
+        not_recorded = stamp_on_behalf(guid, behalf, identity=self.resolve_identity())
         self._record(entity_type, entity_slug, perspective, cluster_name, qualified_name, guid)
-        return {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
+        result = {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
+        if not_recorded:
+            result["requester_not_recorded"] = not_recorded
+        return result
 
     # ── the shape writes (DESIGN-BLUEPRINT-BENCHMARK-EGERIA-WORKSPACES.md 6a) ─────────────────────────────
 

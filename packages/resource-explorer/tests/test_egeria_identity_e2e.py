@@ -464,7 +464,7 @@ def test_a_persons_queued_action_with_no_requester_fails_loudly_and_writes_nothi
 
 # ── round 3: a daemon write on a person's behalf names them in Egeria ─────────
 # One rule, one helper (`egeria_identity.on_behalf_of`): `additionalProperties.requestedBy` is the
-# requester, and Ownership is the declared Context owner when one exists, else the requester.
+# requester, and Ownership is the requester (round 4: no declared-owner branch on these writes).
 # Driven through the real materializers / gateway, faking only the pyegeria classes; asserted on
 # what reached them.
 
@@ -529,7 +529,7 @@ def test_a_queued_component_names_the_requester_and_the_owner(stamps, reg, decla
             "repo", "p", "src/a", name="a", component_type="Software Service")
     assert out["guid"] == NEW_GUID
     assert stamps["bodies"][0]["properties"]["additionalProperties"]["requestedBy"] == "dana"
-    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+    assert stamps["owners"][NEW_GUID] == "dana"     # the requester, even with a declared owner (round 4)
 
 
 @pytest.mark.parametrize("declared", ["", "olivia"])
@@ -544,7 +544,7 @@ def test_a_queued_blueprint_names_the_requester_and_the_owner(stamps, reg, decla
     assert out["guid"] == NEW_GUID
     props = stamps["bodies"][0]["properties"]["additionalProperties"]
     assert props["requestedBy"] == "dana" and props["re_slug"] == "p"      # beside the existing provenance
-    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+    assert stamps["owners"][NEW_GUID] == "dana"     # the requester, even with a declared owner (round 4)
 
 
 @pytest.mark.parametrize("declared", ["", "olivia"])
@@ -558,7 +558,7 @@ def test_a_queued_port_names_the_requester_and_the_owner(stamps, reg, declared):
             "repo", "p", "src/a", "http", component_guid="22222222-2222-2222-2222-222222222222")
     assert out["guid"] == NEW_GUID
     assert stamps["requested_by"][NEW_GUID] == "dana"
-    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+    assert stamps["owners"][NEW_GUID] == "dana"     # the requester, even with a declared owner (round 4)
 
 
 @pytest.mark.parametrize("declared", ["", "olivia"])
@@ -582,7 +582,7 @@ def test_a_queued_catalog_schema_element_names_the_requester_and_the_owner(stamp
             apply_attach(reg, gw, {"slug": "db", "schema": "sales",
                                    "database_guid": "33333333-3333-3333-3333-333333333333", "by": "dana"})
     assert stamps["requested_by"][NEW_GUID] == "dana"
-    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+    assert stamps["owners"][NEW_GUID] == "dana"     # the requester, even with a declared owner (round 4)
 
 
 # ── owner's ruling 2026-10-09: per-resource Egeria credentials are ignored on the way in ─────────
