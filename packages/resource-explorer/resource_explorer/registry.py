@@ -8218,6 +8218,12 @@ class ProjectRegistry:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_outbox_element(self, row_id: int) -> dict | None:
+        """One outbox row by id, or None. Read-only."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM egeria_outbox WHERE id=?", (row_id,)).fetchone()
+        return dict(row) if row else None
+
     def retry_outbox_element(self, row_id: int) -> bool:
         """Return a dead row to the queue, attempts reset. Returns whether it
         was actually revived.

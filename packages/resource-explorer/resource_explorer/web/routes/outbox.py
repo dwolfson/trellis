@@ -28,6 +28,24 @@ _VALID_STATUSES = ("pending", "running", "failed", "dead", "done", "superseded")
 #: CLAIM_LEASE_SECONDS is the signature of a drainer that died mid-batch.
 
 
+#: Words that mark a kind as one that archives, deletes or detaches in Egeria, on top of the explicit
+#: `egeria_outbox.DESTRUCTIVE_OUTBOX_KINDS` list. A new destructive kind that someone forgot to list there is still
+#: caught by its name, so the safe direction is the default for this route.
+_DESTRUCTIVE_WORDS = ("archive", "delete", "unpublish", "leave_out", "detach", "remove")
+
+
+def is_destructive_kind(element_kind: str) -> bool:
+    """True for an outbox kind whose write archives, deletes or detaches something in Egeria.
+
+    A retry of one is itself a destructive write (row 69822, 2026-10-06), so the Publish Queue never offers it
+    and this route refuses it; a person re-presses the original control instead.
+    """
+    from resource_explorer.egeria_outbox import DESTRUCTIVE_OUTBOX_KINDS
+
+    kind = (element_kind or "").lower()
+    return kind in DESTRUCTIVE_OUTBOX_KINDS or any(w in kind for w in _DESTRUCTIVE_WORDS)
+
+
 class OutboxListResponse(BaseModel):
     counts: dict[str, int]
     rows: list[dict]
@@ -53,11 +71,15 @@ def list_outbox(
             detail=f"Unknown status {status!r}. Valid: {', '.join(_VALID_STATUSES)}",
         )
     registry = ProjectRegistry()
+    rows = registry.list_outbox_elements(
+        status=status, run_id=run_id, entity_slug=entity_slug, limit=limit,
+    )
+    # `destructive` tells the panel to draw no Retry on this row, so the control is absent rather than refused.
+    for r in rows:
+        r["destructive"] = is_destructive_kind(r.get("element_kind", ""))
     return OutboxListResponse(
         counts=registry.outbox_counts(),
-        rows=registry.list_outbox_elements(
-            status=status, run_id=run_id, entity_slug=entity_slug, limit=limit,
-        ),
+        rows=rows,
         max_attempts=registry.OUTBOX_MAX_ATTEMPTS,
     )
 
@@ -72,6 +94,16 @@ def retry_outbox_element(row_id: int) -> dict:
     succeeded — both worth telling the caller about rather than absorbing.
     """
     registry = ProjectRegistry()
+    existing = registry.get_outbox_element(row_id)
+    if existing is not None and is_destructive_kind(existing.get("element_kind", "")):
+        # Checked BEFORE the state change, never after: the row must stay exactly as it is.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Element {row_id} is a destructive write ({existing['element_kind']}): it archives, deletes or "
+                "detaches in Egeria, so it is never retried from here. Press the original control again."
+            ),
+        )
     if registry.retry_outbox_element(row_id):
         return {"retried": True, "id": row_id}
     rows = registry.list_outbox_elements(limit=1000)
