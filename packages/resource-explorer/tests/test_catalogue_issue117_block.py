@@ -24,6 +24,9 @@ from resource_explorer import catalogue_commit as cc  # noqa: E402
 from resource_explorer import catalogue_gateway as gw  # noqa: E402
 from resource_explorer.catalogue_gateway import GatewayError  # noqa: E402
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 WORDS = ("Egeria archives the whole database tree when any part of it is archived "
          "(ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent")
 

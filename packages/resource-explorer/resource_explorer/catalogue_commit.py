@@ -1466,10 +1466,11 @@ def run_with_loop(fn: Callable[..., Any], *args, **kwargs):
         asyncio.set_event_loop(None)
 
 
-def make_gateway(db_entity) -> CatalogueGateway:
-    """The real gateway. Tests replace this one name."""
+def make_gateway(db_entity, identity=None) -> CatalogueGateway:
+    """The real gateway. Tests replace this one name. `identity` None = `current_principal()`
+    when the gateway first calls Egeria (the signed-in Caller on a Curate route)."""
     from resource_explorer.catalogue_gateway import PyegeriaCatalogueGateway
-    return PyegeriaCatalogueGateway(db_entity)
+    return PyegeriaCatalogueGateway(db_entity, identity=identity)
 
 
 def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
@@ -1483,6 +1484,9 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
     from resource_explorer.curate_plan import Curations
     if not author:
         raise CommitBlocked(401, "Sign in to catalog: the record needs an author.")
+    from resource_explorer.egeria_clients import Caller
+
+    Caller()   # a live sign-in, checked before anything is written (Brief I): 401 otherwise
     db_entity = registry.get_database(slug, allow_unreadable=True)
     if db_entity is None:
         raise CommitBlocked(404, f"Database '{slug}' not found")
@@ -1518,8 +1522,11 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         summary=f"Cataloging {db_entity.display_name}: {len(selection['attach'])} schema targets…")
     rec = Curations(registry).create("database", slug, author=author, selection=selection,
                                      manifest=preview["manifest"], steps=list(STEPS_DB), activity_id=activity_id)
-    run_id = registry.enqueue_run("catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
-                                  result_ref=activity_id, requested_by=author)
+    from resource_explorer.run_queue import enqueue_as_caller
+
+    # The person's own action: it runs AS them, on their token handed over in memory (Brief I).
+    run_id = enqueue_as_caller(registry, "catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
+                               result_ref=activity_id, requested_by=author)
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
 
 

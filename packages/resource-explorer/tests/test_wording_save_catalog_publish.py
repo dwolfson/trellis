@@ -25,6 +25,9 @@ from resource_explorer import catalogue_commit as cc  # noqa: E402
 from resource_explorer.auth import create_access_token  # noqa: E402
 from resource_explorer.registry import Project, ProjectRegistry  # noqa: E402
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 PKG = Path(__file__).resolve().parents[1] / "resource_explorer"
 SALES_QN = "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales"
 

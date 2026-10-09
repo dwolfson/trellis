@@ -394,57 +394,115 @@ class _Heartbeat:
         self._stop.set()
 
 
+# ── who a run acts as (Brief I, owner's scope update 2026-10-09) ────────────
+
+#: A person's direct actions that are queued: they run AS that person. The person's Egeria
+#: bearer token is handed to the run in memory at enqueue (`enqueue_as_caller`) and never
+#: persisted, logged or written to an activity row. Missing (restart, another process) or
+#: expired: the run fails with "your Egeria sign-in expired; sign in again" and is never run as
+#: the daemon. Every other kind (surveys, analyses, scheduled work) runs as
+#: `Daemon(RUN_QUEUE, requested_by)`, Ownership stamped as the requester, as before.
+CALLER_RUN_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit",
+                              "materialize_components"})
+
+
+class _CallerTokenHandoff:
+    """run id -> (user id, Egeria bearer token). Process-local and in memory only."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._by_run: dict[str, tuple[str, str]] = {}
+
+    def put(self, run_id: str, user_id: str, token: str) -> None:
+        with self._lock:
+            self._by_run[run_id] = (user_id, token)
+
+    def take(self, run_id: str) -> "tuple[str, str] | None":
+        with self._lock:
+            return self._by_run.pop(run_id, None)
+
+    def has(self, run_id: str) -> bool:
+        with self._lock:
+            return run_id in self._by_run
+
+    def clear(self) -> None:
+        with self._lock:
+            self._by_run.clear()
+
+    def __repr__(self) -> str:          # never the tokens, even by accident
+        with self._lock:
+            return f"<_CallerTokenHandoff runs={len(self._by_run)}>"
+
+
+_caller_tokens = _CallerTokenHandoff()
+
+
+def enqueue_as_caller(registry, kind: str, target: dict, **kwargs) -> str:
+    """Enqueue a person's own action and hand their Egeria token to it, in memory.
+
+    `Caller()` is read FIRST, so no caller or an expired sign-in is a 401 before anything is
+    queued. `requested_by` defaults to the caller's id."""
+    from resource_explorer.egeria_clients import Caller
+
+    if kind not in CALLER_RUN_KINDS:
+        raise ValueError(f"{kind!r} is not a caller run kind")
+    caller = Caller()
+    kwargs.setdefault("requested_by", caller.user_id)
+    run_id = registry.enqueue_run(kind, target, **kwargs)
+    _caller_tokens.put(run_id, caller.user_id, caller.token)
+    return run_id
+
+
 @contextmanager
 def _run_as_requester(row: dict):
-    """Execute a claimed row attributed to the person who queued it.
+    """Execute a claimed row as the identity its kind calls for.
 
-    **The interim shape, and it is deliberate** (plan §4, and see
-    `egeria_identity`'s module docstring): the row carries `requested_by` and
-    **no token**. An Egeria bearer token lives one hour and dies whenever the
-    platform restarts, while a queued survey may wait longer than that and
-    then run for sixteen minutes — so a token stored with the row would be
-    expired more often than not. Storing it in `runs.target` was rejected
-    outright (a credential in a plaintext JSON column), and an encrypted
-    column with a key to manage is out of scope for this pass.
-
-    So the worker authenticates to Egeria **as itself** and stamps
-    `Ownership` with `requested_by`. Egeria's provenance for such a publish
-    says the worker did it; the `Ownership` classification says whose it is,
-    and that is the attribution curate authorization actually reads. The gap
-    is real and named rather than papered over: closing it needs an
-    encrypted-at-rest credential store or a delegation token from Egeria.
-
-    A row with an empty `requested_by` is the worker's own service-account
-    work and runs with no caller at all, which is the correct attribution for
-    bootstrap heal, resync and the outbox drain.
+    * A caller kind (`CALLER_RUN_KINDS`) runs as the person, on the token handed over at enqueue.
+      The caller of this context manager has already checked the token is there and live.
+    * Any other kind runs as `Daemon(RUN_QUEUE, requested_by)`: the daemon authenticates and
+      `Ownership` is stamped with `requested_by` (the interim shape `egeria_identity`'s module
+      docstring explains: no token survives a long queue). `current_caller` still names the
+      requester (token-less), because the registry's user scoping reads it.
     """
-    from resource_explorer.a2a_auth import current_caller
-    from resource_explorer.egeria_identity import identity_for_user
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as, client_scope
 
-    requester = (row.get("requested_by") or "").strip()
-    if not requester:
-        yield
+    handed = row.get("_caller_token")
+    if handed is not None:
+        user_id, token = handed
+        reset = current_caller.set(CallerIdentity(user_id=user_id, egeria_token=token,
+                                                  auth_source="run-handoff", role="user"))
+        try:
+            with client_scope():
+                yield
+        finally:
+            current_caller.reset(reset)
         return
 
-    identity = identity_for_user(requester)
-    # A service-account identity carries no token, so `use_identity` would
-    # clear the caller rather than publish one — and the caller is exactly
-    # what `Ownership` is read from. Set it directly, with the token left
-    # None so `apply_identity` mints a service-account token as before.
-    from resource_explorer.a2a_auth import CallerIdentity
-
+    requester = (row.get("requested_by") or "").strip()
     reset = current_caller.set(
-        CallerIdentity(
-            user_id=identity.user_id,
-            egeria_token=None,
-            auth_source="queued-run",
-            role="user",
-        )
-    )
+        CallerIdentity(user_id=requester, egeria_token=None, auth_source="queued-run", role="user")
+        if requester else None)
     try:
-        yield
+        with acting_as(Daemon(DaemonReason.RUN_QUEUE, requested_by=requester or None)):
+            yield
     finally:
         current_caller.reset(reset)
+
+
+def _take_caller_token(run_id: str) -> "tuple[str, str] | None":
+    """The handed-over token for a caller run, dropped from memory as it is taken; None when it is
+    missing or already expired (both mean: sign in again)."""
+    handed = _caller_tokens.take(run_id)
+    if handed is None:
+        return None
+    from trellis_auth.auth import egeria_token_expiry
+    import time as _time
+
+    exp = egeria_token_expiry(handed[1])
+    if exp is not None and exp <= _time.time():
+        return None
+    return handed
 
 
 def _first_sentence(text: str, limit: int = 240) -> str:
@@ -541,6 +599,21 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
         _close_activity(registry, result_ref, kind, target, outcome)
         return outcome
 
+    handed = None
+    if kind in CALLER_RUN_KINDS:
+        handed = _take_caller_token(run_id)
+        if handed is None:
+            # Never the daemon for a person's own action (Brief I). The token lived in the
+            # enqueuing process's memory only: a restart, another process, or an hour drops it.
+            from resource_explorer.egeria_clients import EXPIRED_SENTENCE
+
+            log.warning("run %s (%s): no live sign-in handed over — failing, not running as the daemon",
+                        run_id, kind)
+            registry.finish_run(run_id, "failed", error=EXPIRED_SENTENCE)
+            outcome = RunOutcome(state="failed", error=EXPIRED_SENTENCE)
+            _close_activity(registry, result_ref, kind, target, outcome)
+            return outcome
+
     registry.mark_run_running(run_id)
     if result_ref:
         # Stamp THIS process onto the activity entry, now that it is genuinely
@@ -565,7 +638,8 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     try:
         from resource_explorer.observability import acquisition, llm_usage
 
-        with _Heartbeat(registry, run_id), _run_as_requester(row), \
+        with _Heartbeat(registry, run_id), \
+                _run_as_requester({**row, "_caller_token": handed} if handed else row), \
                 llm_usage.usage_scope() as usage, \
                 acquisition.acquisition_scope() as acquired:
             outcome = handler(target, result_ref)

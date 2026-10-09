@@ -17,6 +17,9 @@ from resource_explorer.surveyors.arch_recovery import admission as adm
 from resource_explorer.surveyors.arch_recovery import blueprint_materializer as bm
 from resource_explorer.surveyors.arch_recovery import materializer as cm
 
+# Brief I: Publish runs as the person who pressed it; the run carries their token.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 G = "{:08d}-0000-0000-0000-000000000000".format
 
 

@@ -21,6 +21,9 @@ from resource_explorer import resource_scope
 from resource_explorer.registry import ProjectRegistry, RESOURCE_SCOPE_EVENTS_DDL
 from tests.test_curate import _keep_a_survey, _seed, client, registry  # noqa: F401  (fixtures)
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 def _survey(registry, extra=()):
     """docs (worthy folder), docs/guide.md and docs/api.md (worthy files), src (worthy folder),
