@@ -13,15 +13,53 @@ from resource_explorer.egeria_outbox import CLAIM_LAPSED_DESTRUCTIVE
 from resource_explorer.registry import Project
 
 
+def _clear_outbox(conn):
+    """Empty the outbox of the THROWAWAY schema only. The schema is read back from the connection and must be a
+    `resource_explorer_test*` one, and the DELETE names it: were the search_path option ever ignored, this would
+    otherwise empty the real resource_explorer.egeria_outbox on the shared Postgres."""
+    row = conn.execute("SELECT current_schema() AS s").fetchone()
+    schema = row["s"] if hasattr(row, "keys") else row[0]
+    if not str(schema).startswith("resource_explorer_test"):
+        pytest.fail(f"refusing to DELETE FROM egeria_outbox: current_schema() is {schema!r}, not a test schema")
+    conn.execute(f'DELETE FROM "{schema}".egeria_outbox')
+
+
 @pytest.fixture()
 def db(pg_registry):
     with pg_registry._conn() as conn:
-        conn.execute("DELETE FROM egeria_outbox")
+        _clear_outbox(conn)
     if not pg_registry.get("pgp"):
         pg_registry.add(Project(slug="pgp", display_name="pgp", github_url="https://github.com/o/pgp"))
     yield pg_registry
     with pg_registry._conn() as conn:
-        conn.execute("DELETE FROM egeria_outbox")
+        _clear_outbox(conn)
+
+
+class _FakeConn:
+    def __init__(self, schema):
+        self.schema, self.sql = schema, []
+
+    def execute(self, sql, params=()):
+        self.sql.append(sql)
+
+        class R:
+            def fetchone(_s):
+                return {"s": self.schema}
+        return R()
+
+
+@pytest.mark.parametrize("schema", ["resource_explorer", "public", "egeria_advisor", ""])
+def test_the_guard_refuses_a_non_test_schema_and_deletes_nothing(schema):
+    conn = _FakeConn(schema)
+    with pytest.raises(pytest.fail.Exception, match="refusing to DELETE"):
+        _clear_outbox(conn)
+    assert not any("DELETE" in q for q in conn.sql)
+
+
+def test_the_guard_qualifies_the_delete_with_the_quoted_test_schema():
+    conn = _FakeConn("resource_explorer_test_abc123")
+    _clear_outbox(conn)
+    assert conn.sql[-1] == 'DELETE FROM "resource_explorer_test_abc123".egeria_outbox'
 
 
 def _later():
