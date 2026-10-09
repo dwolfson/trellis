@@ -122,7 +122,8 @@ test('bootstrap: the banner shows the cue, the word, Run bootstrap now, and the 
 test('bootstrap: with no heal on record the banner says that, rather than leaving a blank', async () => {
   const { document, mod } = await load();
   mod.renderBootstrapBanner(document, STATUS({ a: B({ present: false }) }));
-  assert.match(document.querySelector('[data-bootstrap-heal]').textContent, /No heal has run since the server started/);
+  assert.match(document.querySelector('[data-bootstrap-heal]').textContent, /not read in this process/);
+  assert.doesNotMatch(document.querySelector('[data-bootstrap-heal]').textContent, /since (the server )?start/);
 });
 
 test('bootstrap: restoring and unreachable offer no run button', async () => {
@@ -206,7 +207,9 @@ test('bootstrap: a failed run is said on the banner and the button comes back', 
 test('bootstrap: after a run the status is read again and the banner follows it', async () => {
   const { document, mod } = await load();
   let status = STATUS({ a: B({ present: false }) });
-  globalThis.fetch = async (u, o = {}) => (o.method === 'POST'
+  globalThis.fetch = async (u, o = {}) => (String(u).includes('admin-status')
+    ? { ok: true, status: 200, json: async () => ({ admin: true }) }
+    : o.method === 'POST'
     ? { ok: true, status: 200, json: async () => { status = STATUS({ a: B({ present: true, last_healed_at: '2026-10-08T05:00:00Z', last_heal_result: 'ok' }) }); return { batches: {} }; } }
     : { ok: true, status: 200, json: async () => status });
   await mod.refreshBootstrapBanner(document);
@@ -244,7 +247,7 @@ test('connection: connectionRows says "not read" (null) for what could not be re
   assert.equal(ok['Signed in as'], 'dan');
   assert.equal(ok['View server'], 'view-server');
   assert.equal(ok.Build, 'abc1234567890');
-  assert.equal(ok['Last bootstrap heal'], 'none since start');
+  assert.equal(ok['Last bootstrap heal'], 'not read in this process');
 });
 
 test('connection: a server that could not report its build says not read for Build only', async () => {
@@ -301,4 +304,47 @@ test('connection: values are escaped', async () => {
   });
   assert.equal(document.querySelector('img'), null);
   assert.equal(document.querySelector('#pwn'), null);
+});
+
+test('bootstrap: a non-admin sees Run bootstrap now disabled with "admin only"', async () => {
+  const { document, mod } = await load();
+  mod.renderBootstrapBanner(document, STATUS({ a: B({ present: false }) }), { admin: false });
+  const btn = document.querySelector('[data-bootstrap-run]');
+  assert.equal(btn.disabled, true);
+  assert.match(document.getElementById('bootstrap-banner').textContent, /admin only/);
+  btn.click(); btn.click();
+  assert.equal(btn.textContent, 'Run bootstrap now', 'a disabled button never arms');
+});
+
+test('bootstrap: refresh reads admin status and a failed read means not admin', async () => {
+  const { document, mod } = await load();
+  await mod.refreshBootstrapBanner(document, {
+    getStatus: async () => STATUS({ a: B({ present: false }) }),
+    getAdmin: async () => { throw new Error('x'); },
+  });
+  assert.equal(document.querySelector('[data-bootstrap-run]').disabled, true);
+});
+
+test('bootstrap: a 409 from the server is shown as running, and the button comes back', async () => {
+  const { document, mod, api } = await load();
+  mod.renderBootstrapBanner(document, STATUS({ a: B({ present: false }) }), {
+    run: async () => { throw new api.ApiError(409, 'A bootstrap heal is already running', '/api/bootstrap/run'); } });
+  const btn = document.querySelector('[data-bootstrap-run]');
+  btn.click(); btn.click();
+  await tick();
+  assert.match(document.querySelector('[data-bootstrap-state]').textContent, /running/);
+  assert.doesNotMatch(document.querySelector('[data-bootstrap-state]').textContent, /Not run/);
+  assert.equal(btn.disabled, false);
+});
+
+test('bootstrap: the real run call carries the admin token', async () => {
+  const { document, window, mod } = await load();
+  window.sessionStorage.setItem('re_admin_token', 'tok-b');
+  const seen = [];
+  globalThis.fetch = async (u, o = {}) => { seen.push(o.headers); return { ok: true, status: 200, json: async () => ({ batches: {} }) }; };
+  mod.renderBootstrapBanner(document, STATUS({ a: B({ present: false }) }), { onDone: async () => {} });
+  const btn = document.querySelector('[data-bootstrap-run]');
+  btn.click(); btn.click();
+  await tick();
+  assert.equal(seen[0]['X-Admin-Token'], 'tok-b');
 });

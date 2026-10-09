@@ -1961,11 +1961,29 @@ export const getHealthReady = () => get('/health/ready');
 /** Who this server connects to Egeria as, which view server and platform, and the build it was started from. */
 export const getWhoami = () => get('/api/egeria/whoami');
 
+/** The admin credential the Admin → Feedback gate stores (same sessionStorage key), as request headers. Admin-only
+ *  routes (retry, bootstrap run, bulk linkage resolve) are 403 without it. Storage that throws means no header. */
+export function adminHeaders() {
+  try {
+    const t = globalThis.sessionStorage?.getItem('re_admin_token') || '';
+    return t ? { 'X-Admin-Token': t } : {};
+  } catch { return {}; }
+}
+const adminPost = (path, body) =>
+  request(path, {
+    method: 'POST',
+    headers: { ...JSON_HEADERS, ...adminHeaders() },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+/** {admin: bool}: whether this browser's credential is an admin one, so admin-only controls can say "admin only". */
+export const getAdminStatus = () => request('/api/egeria/admin-status', { headers: adminHeaders() });
+
 export const getBootstrapStatus = () => get('/api/bootstrap/status');
 
 /** "Run bootstrap now". `force` is deliberately NOT a parameter: a forced run re-runs every batch and, for a batch
  *  that is not idempotent, duplicates step links. The banner only ever heals what is missing. */
-export const runBootstrapMissingOnly = () => post('/api/bootstrap/run', { force: false });
+export const runBootstrapMissingOnly = () => adminPost('/api/bootstrap/run', { force: false });
 
 export const listStaleLinkages = () => get('/api/egeria/linkage/stale');
 
@@ -1975,7 +1993,7 @@ export const resolveStaleLinkage = (entityType, slug, action) =>
 
 /** The rows the person SAW, never a server-side "everything stale". `dryRun` defaults to the safe direction. */
 export const resolveAllLinkages = (targets, action, { dryRun = true } = {}) =>
-  post('/api/egeria/linkage/resolve-all', { targets, action, dry_run: dryRun });
+  adminPost('/api/egeria/linkage/resolve-all', { targets, action, dry_run: dryRun });
 
 export const listOutbox = ({ status = '', limit = 200 } = {}) => {
   const qs = new URLSearchParams({ limit: String(limit) });
@@ -1983,4 +2001,4 @@ export const listOutbox = ({ status = '', limit = 200 } = {}) => {
   return get(`/api/outbox/?${qs}`);
 };
 /** Returns one DEAD row to the queue. The server refuses an archive, delete or detach kind (409). */
-export const retryOutboxRow = (rowId) => post(`/api/outbox/${encodeURIComponent(rowId)}/retry`);
+export const retryOutboxRow = (rowId) => adminPost(`/api/outbox/${encodeURIComponent(rowId)}/retry`);

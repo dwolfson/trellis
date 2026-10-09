@@ -11,7 +11,7 @@ const R = (id, status, extra = {}) => ({ id, entity_type: 'repo', entity_slug: '
   qualified_name: `Q::${id}`, status, attempts: 2, last_error: '', next_attempt_at: '', completed_at: '',
   created_at: '2026-10-08T01:00:00', destructive: false, ...extra });
 
-async function setUp({ rows, counts, retryStatus = 200 } = {}) {
+async function setUp({ rows, counts, retryStatus = 200, admin = true } = {}) {
   const { document, window } = makeDomEnvironment();
   const calls = [];
   const data = rows || [
@@ -25,6 +25,7 @@ async function setUp({ rows, counts, retryStatus = 200 } = {}) {
     const method = opts.method || 'GET';
     const u = String(url);
     calls.push({ url: u, method });
+    if (u === '/api/egeria/admin-status') return { ok: true, status: 200, json: async () => ({ admin }) };
     const m = u.match(/^\/api\/outbox\/(\d+)\/retry$/);
     if (m) {
       if (retryStatus !== 200) return { ok: false, status: retryStatus, statusText: 'Conflict', json: async () => ({ detail: 'a destructive write: never retried from here' }) };
@@ -125,4 +126,26 @@ test('Egeria error text and element names are escaped', async () => {
   assert.equal(host.querySelector('img'), null);
   assert.equal(host.querySelector('#pwn'), null);
   assert.match(host.querySelector('[data-outbox-error]').textContent, /<img src=x/);
+});
+
+test('a non-admin sees Retry disabled with "admin only" and pressing it sends nothing', async () => {
+  const { host, calls } = await setUp({ admin: false });
+  const btn = host.querySelector('[data-outbox-retry="1"]');
+  assert.equal(btn.disabled, true);
+  assert.ok(btn.hasAttribute('data-admin-only'));
+  assert.match(btn.parentElement.textContent, /admin only/);
+  btn.click();
+  await tick();
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+});
+
+test('an admin Retry sends the admin token header', async () => {
+  const { host, window } = await setUp();
+  window.sessionStorage.setItem('re_admin_token', 'tok-9');
+  const seen = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (u, o = {}) => { if (o.method === 'POST') seen.push(o.headers); return inner(u, o); };
+  host.querySelector('[data-outbox-retry="1"]').click();
+  await tick();
+  assert.equal(seen[0]['X-Admin-Token'], 'tok-9');
 });

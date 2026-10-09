@@ -9,7 +9,7 @@
  *
  * Pure builders (`bootstrapAttention`, `lastHeal`, `healthWord`) are exported for the tests. */
 import {
-  getHealthReady, getBootstrapStatus, runBootstrapMissingOnly, getWhoami,
+  getHealthReady, getBootstrapStatus, runBootstrapMissingOnly, getWhoami, getAdminStatus,
 } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
@@ -110,14 +110,14 @@ function healLine(status) {
   const h = lastHeal(status);
   return h
     ? `Last heal: ${h.batch} · ${h.result || 'no result recorded'} · ${ago(h.at)}`
-    : 'No heal has run since the server started';
+    : 'Heal history: not read in this process';
 }
 
 /** True while a run is in flight: a poll must not rebuild the button under it, or a second run could be started. */
 let runInFlight = false;
 
 /** Draw, update or remove the bootstrap banner for `status` (null = could not be read: no banner, no claim). */
-export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOnly, onDone } = {}) {
+export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOnly, onDone, admin = true } = {}) {
   const need = bootstrapAttention(status);
   if (runInFlight && doc.getElementById(BOOTSTRAP_BANNER_ID)) return need;
   if (!need) { removeEl(doc, BOOTSTRAP_BANNER_ID); return null; }
@@ -133,9 +133,9 @@ export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOn
   bar.dataset.bootstrapKind = need.kind;
   bar.innerHTML = `<span class="${need.kind === 'restoring' ? 'text-accent-ink' : 'text-state-warn'}" aria-hidden="true">${need.kind === 'restoring' ? '◔' : '⚠'}</span>
     <span data-bootstrap-word>${esc(need.word)}</span>
-    ${canRun ? `<button type="button" data-bootstrap-run
-      title="Heal only what is missing. Nothing already present is re-run."
-      class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[2px] text-answer text-accent-ink">Run bootstrap now</button>` : ''}
+    ${canRun ? `<button type="button" data-bootstrap-run ${admin ? '' : 'disabled data-admin-only'}
+      title="${admin ? 'Heal only what is missing. Nothing already present is re-run.' : 'Admin only: needs the admin credential (Admin → Feedback)'}"
+      class="rounded-sm border border-accent bg-transparent px-3 py-[2px] text-answer text-accent-ink ${admin ? 'cursor-pointer' : 'cursor-default opacity-50'}">Run bootstrap now</button>${admin ? '' : '<span class="text-provenance text-ink-muted"> · admin only</span>'}` : ''}
     <span data-bootstrap-state class="text-ink-muted"></span>
     <span data-bootstrap-heal class="text-provenance text-ink-muted">${esc(healLine(status))}</span>`;
   const btn = bar.querySelector('[data-bootstrap-run]');
@@ -169,16 +169,18 @@ function bindRun(btn, bar, { run, onDone }) {
     } catch (err) {
       runInFlight = false;
       btn.disabled = false; btn.textContent = 'Run bootstrap now';
-      state.textContent = `Not run: ${err.message}`;
+      // 409: the server is already healing (this tab's run, another tab, or the automatic loop). Say so as a state.
+      state.textContent = err.status === 409 ? '◔ running' : `Not run: ${err.message}`;
     }
   });
 }
 
 /** Read the status now and draw the banner. A failed read removes nothing it cannot be sure of and claims nothing. */
-export async function refreshBootstrapBanner(doc, { getStatus = getBootstrapStatus, run } = {}) {
+export async function refreshBootstrapBanner(doc, { getStatus = getBootstrapStatus, run, getAdmin = getAdminStatus } = {}) {
   let status = null;
   try { status = await getStatus(); } catch { return null; }
-  renderBootstrapBanner(doc, status, { run, onDone: () => refreshBootstrapBanner(doc, { getStatus, run }) });
+  const admin = await getAdmin().then((a) => a.admin === true, () => false);
+  renderBootstrapBanner(doc, status, { run, admin, onDone: () => refreshBootstrapBanner(doc, { getStatus, run, getAdmin }) });
   return status;
 }
 
@@ -204,7 +206,7 @@ export function connectionRows({ me, whoami, status }) {
     ['View server', whoami?.view_server || null],
     ['Platform', whoami?.platform_url || null],
     ['Build', whoami ? (whoami.build_sha || null) : null],
-    ['Last bootstrap heal', status ? (heal ? `${heal.batch} · ${heal.result || 'no result'} · ${ago(heal.at)}` : 'none since start') : null],
+    ['Last bootstrap heal', status ? (heal ? `${heal.batch} · ${heal.result || 'no result'} · ${ago(heal.at)}` : 'not read in this process') : null],
   ];
 }
 

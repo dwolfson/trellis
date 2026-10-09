@@ -562,12 +562,8 @@ class TestDiscoverySourcesPane:
         assert "quickAddHtml" in src
 
     def test_save_github_source_is_not_treated_as_an_add_source_path(self):
-        """Checked against classic's actual code before porting (spec's own
-        §6 lesson): _saveGithubSource posts to /api/discovery/github-base-url
-        (the GitHub API endpoint override), not a discovery source create --
-        it must not appear here as if it were a third source-creation path."""
+        """_saveGithubSource never created a discovery source, and the override it set is gone (PI-084): the module
+        must not name the removed route at all, only say what the old control was."""
         src = _admin_module("discovery_sources.js")
-        # The comment discussing why it's excluded may mention the route by
-        # name; what must never appear is an actual call to it.
-        assert "'/api/discovery/github-base-url'" not in src
+        assert "github-base-url" not in src
         assert "not create a discovery source" in src.lower()

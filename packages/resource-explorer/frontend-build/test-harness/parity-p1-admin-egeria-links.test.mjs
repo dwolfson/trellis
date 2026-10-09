@@ -11,7 +11,7 @@ const STALE = [
   { entity_type: 'database', entity_slug: 'adventureworks', stale_guid: '', detected_at: '', detail: '' },
 ];
 
-async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false } = {}) {
+async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false, admin = true } = {}) {
   const { window, document } = makeDomEnvironment();
   const calls = [];
   let rows = [...stale];
@@ -24,6 +24,7 @@ async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false 
     const u = String(url);
     calls.push({ url: u, method, body });
     const ok = (json) => ({ ok: true, status: 200, json: async () => json });
+    if (u === '/api/egeria/admin-status') return ok({ admin });
     if (u === '/api/egeria/linkage/stale') return ok(rows);
     let m;
     if ((m = u.match(/^\/api\/egeria\/linkage\/(\w+)\/([^/]+)\/resolve$/))) {
@@ -148,4 +149,41 @@ test('a hostile slug and GUID are escaped', async () => {
   const { host } = await setUp({ stale: [{ entity_type: 'repo', entity_slug: '<img src=x onerror=alert(1)>', stale_guid: '"><b id="pwn">', detected_at: '' }] });
   assert.equal(host.querySelector('img'), null);
   assert.equal(host.querySelector('#pwn'), null);
+});
+
+test('the Discard tooltip says it removes RE\'s local publish records and writes nothing to Egeria', async () => {
+  const { host, mod } = await setUp();
+  const tip = host.querySelector('[data-link-resolve="discard"]').getAttribute('title');
+  assert.match(tip, /Remove RE's local publish records/);
+  assert.match(tip, /Writes nothing to Egeria/);
+  assert.doesNotMatch(tip, /nothing is written.*kept; past publishes/i);
+  assert.equal(mod.ACTIONS.find((a) => a.id === 'discard').writes, false);
+});
+
+test('a non-admin sees the bulk controls disabled with "admin only", can still resolve one row, and nothing is sent in bulk', async () => {
+  const { host, calls } = await setUp({ admin: false });
+  assert.ok(host.querySelector('[data-link-toolbar] [data-admin-only]'));
+  assert.match(host.querySelector('[data-link-toolbar]').textContent, /admin only/);
+  host.querySelector('[data-link-pick="0"]').checked = true;
+  host.querySelector('[data-link-pick="0"]').dispatchEvent(new globalThis.window.Event('change'));
+  assert.equal(host.querySelector('[data-link-preview]').disabled, true);
+  assert.equal(host.querySelector('[data-link-apply]').disabled, true);
+  assert.equal(host.querySelector('[data-link-bulk-action]').disabled, true);
+  host.querySelector('[data-link-resolve="discard"]').click();
+  await tick();
+  assert.ok(calls.some((c) => c.url === '/api/egeria/linkage/repo/egeria_git/resolve'), 'single resolve stays open to curators');
+  assert.equal(calls.filter((c) => c.url.endsWith('resolve-all')).length, 0);
+});
+
+test('the bulk calls carry the admin token held for this tab', async () => {
+  const { window, host } = await setUp();
+  window.sessionStorage.setItem('re_admin_token', 'tok-123');
+  const seen = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (u, o = {}) => { if (String(u).endsWith('resolve-all')) seen.push(o.headers); return inner(u, o); };
+  host.querySelector('[data-link-pick="0"]').checked = true;
+  host.querySelector('[data-link-pick="0"]').dispatchEvent(new globalThis.window.Event('change'));
+  host.querySelector('[data-link-preview]').click();
+  await tick();
+  assert.equal(seen[0]['X-Admin-Token'], 'tok-123');
 });
