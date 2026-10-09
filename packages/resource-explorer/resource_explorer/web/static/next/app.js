@@ -3600,11 +3600,16 @@ export function bindResourceHeader() {
   bindStaleLinkBanner(el, {
     resolve: (action) => resolveEgeriaLink('repo', state.selectedSlug, action),
     confirmWrite: (choice) => window.confirm(`${choice.label}?\n\n${choice.sentence}`),
-    onDone: async () => {
+    onDone: async (_result, error) => {
       const slug = state.selectedSlug;
       try { state.overview = await getScoutingOverview(slug); } catch { state.overview = null; }
       const host = $('resource-header');
       if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
+      if (error && state.selectedSlug === slug && $('resource-action')) {
+        // The repair clears the dead link before it publishes, so a failure leaves the link gone: say what is true now.
+        $('resource-action').innerHTML = `<div data-repair-failed class="text-caveat text-ink">${esc(error.message || 'The repair did not finish')}.
+          The old link is already forgotten, so Publish to Egeria (Curate) can create a fresh one.</div>`;
+      }
     },
   });
 

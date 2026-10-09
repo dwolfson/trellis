@@ -158,29 +158,40 @@ test('each repair posts one action to the one resolve route and never to a delet
   }
 });
 
-test('a choice that writes to Egeria asks first; declining sends nothing; forgetting the link does not ask', async () => {
+test('every choice asks first, including Forget the link; declining sends nothing', async () => {
   const t = await setUp({ confirm: false });
   t.app.state.overview = { ...OV, egeria_link_stale: true };
   t.render();
-  t.host.querySelector('[data-link-repair="republish"]').click();
-  t.host.querySelector('[data-link-repair="resurvey"]').click();
+  for (const a of ['republish', 'resurvey', 'discard']) t.host.querySelector(`[data-link-repair="${a}"]`).click();
   await tick();
-  assert.equal(t.asked.length, 2);
+  assert.equal(t.asked.length, 3);
+  assert.match(t.asked[2], /Forget the link/);
+  assert.match(t.asked[2], /Egeria is not contacted/);
   assert.equal(t.calls.filter((c) => c.method === 'POST').length, 0);
+});
+
+test('confirming Forget the link sends the one discard post', async () => {
+  const t = await setUp();
+  t.app.state.overview = { ...OV, egeria_link_stale: true };
+  t.render();
   t.host.querySelector('[data-link-repair="discard"]').click();
   await tick();
-  assert.equal(t.asked.length, 2, 'discard did not ask');
+  assert.equal(t.asked.length, 1);
   assert.equal(t.calls.filter((c) => c.method === 'POST').length, 1);
 });
 
-test('a failed repair says so on the banner and leaves the choices usable', async () => {
+test('a failed repair re-reads the header, so the banner shows the state that is really there (link already cleared)', async () => {
   const t = await setUp({ resolveFails: true });
   t.app.state.overview = { ...OV, egeria_link_stale: true };
   t.render();
+  const before = t.calls.filter((c) => c.url.includes('/scouting-overview')).length;
   t.host.querySelector('[data-link-repair="republish"]').click();
   await tick();
-  assert.match(text(t.host.querySelector('[data-link-repair-status]')), /not done: .*republish failed/);
-  assert.equal(t.host.querySelector('[data-link-repair="republish"]').disabled, false);
+  assert.equal(t.calls.filter((c) => c.url.includes('/scouting-overview')).length, before + 1, 'overview re-read after the failure');
+  assert.equal(t.host.querySelector('[data-stale-link-banner]'), null, 'no banner offering a second press that would 404');
+  const note = text(t.host.querySelector('[data-repair-failed]'));
+  assert.match(note, /republish failed/);
+  assert.match(note, /already forgotten/);
 });
 
 test('size and deployments that the server lists as unread never draw 0 or 0.0 MB', async () => {

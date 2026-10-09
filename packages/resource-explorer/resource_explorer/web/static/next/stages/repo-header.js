@@ -111,13 +111,13 @@ export function scoutingSignalHtml(sig) {
 export const REPAIR_CHOICES = [
   { action: 'republish', label: 'Publish again',
     sentence: 'Forgets the dead pointer, rebuilds the report from the survey already kept (no re-scan) and publishes a new SurveyReport to Egeria.',
-    writes: true },
+    writes: true, confirm: true },
   { action: 'resurvey', label: 'Re-survey, then publish',
     sentence: 'Forgets the dead pointer, surveys the repository from scratch, then publishes a new SurveyReport to Egeria. Can take minutes.',
-    writes: true },
+    writes: true, confirm: true },
   { action: 'discard', label: 'Forget the link',
     sentence: 'Forgets the dead pointer and the publish history that points at it, in Resource Explorer only. Egeria is not contacted and nothing is written there. Survey results are kept.',
-    writes: false },
+    writes: false, confirm: true },
 ];
 
 /** The banner, or '' when the link is not stale. `ov.published_state === 'published_earlier'` adds the
@@ -138,8 +138,8 @@ export function staleLinkBannerHtml(ov) {
   </div>`;
 }
 
-/** Wire the banner's buttons. `resolve(action)` is the API call; `confirmWrite(choice)` asks before a choice
- *  that writes to Egeria; `onDone()` re-reads the header. All three are injected. */
+/** Wire the banner's buttons. `resolve(action)` is the API call; `confirmWrite(choice)` asks before every choice
+ *  (two write to Egeria, the third deletes RE's own publish-history rows); `onDone(result, error)` re-reads the header (after a failure too, with the error). All three are injected. */
 export function bindStaleLinkBanner(root, { resolve, confirmWrite, onDone }) {
   const host = root.querySelector('[data-stale-link-banner]');
   if (!host) return;
@@ -147,7 +147,8 @@ export function bindStaleLinkBanner(root, { resolve, confirmWrite, onDone }) {
   host.querySelectorAll('[data-link-repair]').forEach((btn) => btn.addEventListener('click', async () => {
     const choice = REPAIR_CHOICES.find((c) => c.action === btn.dataset.linkRepair);
     if (!choice || btn.disabled) return;
-    if (choice.writes && !confirmWrite(choice)) return;
+    // Every choice asks: two write a new report to Egeria, and the third deletes RE's publish history rows.
+    if (choice.confirm && !confirmWrite(choice)) return;
     host.querySelectorAll('[data-link-repair]').forEach((b) => { b.disabled = true; });
     status.textContent = choice.writes ? 'working…' : 'forgetting…';
     try {
@@ -157,6 +158,9 @@ export function bindStaleLinkBanner(root, { resolve, confirmWrite, onDone }) {
     } catch (err) {
       host.querySelectorAll('[data-link-repair]').forEach((b) => { b.disabled = false; });
       status.textContent = `not done: ${err && err.message ? err.message : 'could not reach the server'}`;
+      // Every repair clears the dead pointer BEFORE it publishes, so after a failure the link is already gone and
+      // a second press would answer 404. Re-read, so the header shows the state that is really there.
+      if (onDone) await onDone(null, err);
     }
   }));
 }
