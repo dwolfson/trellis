@@ -28,22 +28,16 @@ _VALID_STATUSES = ("pending", "running", "failed", "dead", "done", "superseded")
 #: CLAIM_LEASE_SECONDS is the signature of a drainer that died mid-batch.
 
 
-#: Words that mark a kind as one that archives, deletes or detaches in Egeria, on top of the explicit
-#: `egeria_outbox.DESTRUCTIVE_OUTBOX_KINDS` list. A new destructive kind that someone forgot to list there is still
-#: caught by its name, so the safe direction is the default for this route.
-_DESTRUCTIVE_WORDS = ("archive", "delete", "unpublish", "leave_out", "detach", "remove")
-
-
 def is_destructive_kind(element_kind: str) -> bool:
     """True for an outbox kind whose write archives, deletes or detaches something in Egeria.
 
     A retry of one is itself a destructive write (row 69822, 2026-10-06), so the Publish Queue never offers it
-    and this route refuses it; a person re-presses the original control instead.
+    and this route refuses it; a person re-presses the original control instead. The rule lives in
+    `egeria_outbox.is_destructive_outbox_kind`, shared with the drain's lease reclaim.
     """
-    from resource_explorer.egeria_outbox import DESTRUCTIVE_OUTBOX_KINDS
+    from resource_explorer.egeria_outbox import is_destructive_outbox_kind
 
-    kind = (element_kind or "").lower()
-    return kind in DESTRUCTIVE_OUTBOX_KINDS or any(w in kind for w in _DESTRUCTIVE_WORDS)
+    return is_destructive_outbox_kind(element_kind)
 
 
 class OutboxListResponse(BaseModel):

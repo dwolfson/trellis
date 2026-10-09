@@ -191,6 +191,17 @@ DESTRUCTIVE_OUTBOX_KINDS = frozenset({
 })
 NOT_RETRIED = "not retried: destructive write"
 
+#: Words that mark a kind as destructive on top of the explicit list, so a new kind someone forgot to list above is
+#: still caught by its name. The safe direction is the default.
+DESTRUCTIVE_KIND_WORDS = ("archive", "delete", "unpublish", "leave_out", "detach", "remove")
+CLAIM_LAPSED_DESTRUCTIVE = "claim lapsed; destructive writes are never re-sent"
+
+
+def is_destructive_outbox_kind(element_kind: str) -> bool:
+    """True for a kind whose write archives, deletes or detaches in Egeria (the explicit list, then the name words)."""
+    kind = (element_kind or "").lower()
+    return kind in DESTRUCTIVE_OUTBOX_KINDS or any(w in kind for w in DESTRUCTIVE_KIND_WORDS)
+
 #: Egeria's security connector refusing an operation: `OPEN-METADATA-SECURITY-403-007 User X is not
 #: authorized to issue operation Attach on SolutionBlueprint anchor element ...`. It is permanent for the
 #: row until someone changes a permission or a zone, so retrying it for eight attempts only delays the
