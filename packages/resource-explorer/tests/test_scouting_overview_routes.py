@@ -467,3 +467,34 @@ class TestRunSingleAnalysisBackground:
         entry = registry.get_activity(activity_id)
         assert entry["status"] == "error"
         assert "clone missing" in entry["summary"]
+
+
+class TestScoutingStatsUnread:
+    """PI-050/051: the tiles say "not read" for a stat GitHub was never asked for, never 0."""
+
+    def test_no_stats_row_lists_every_stat_as_unread(self, client):
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert set(data["stats_unread"]) == {
+            "primary_language", "stars", "forks", "contributors", "last_pushed_at",
+            "repo_size_kb", "security_and_analysis", "deployments_count"}
+
+    def test_a_measured_zero_is_not_unread(self, client, registry):
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_stats (project_slug, fetched_at, stars, forks, "
+                "contributors_count, primary_language, last_pushed_at, repo_size_kb, "
+                "security_and_analysis_json, deployments_count) "
+                "VALUES (?, ?, 0, 0, 1, 'Python', '2026-07-30T00:00:00', 0, ?, 0)",
+                ("myproj", "2026-08-01T00:00:00", '{"secret_scanning": "enabled"}'),
+            )
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["stars"] == 0 and "stars" not in data["stats_unread"]
+        assert data["stats_unread"] == []
+
+    def test_a_null_column_is_unread(self, client, registry):
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_stats (project_slug, fetched_at, stars, primary_language) "
+                "VALUES (?, ?, NULL, 'Go')", ("myproj", "2026-08-01T00:00:00"))
+        unread = client.get("/api/projects/myproj/scouting-overview").json()["stats_unread"]
+        assert "stars" in unread and "primary_language" not in unread

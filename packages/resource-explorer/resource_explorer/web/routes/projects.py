@@ -418,6 +418,30 @@ class ScoutingOverview(BaseModel):
     publish_stale: bool = False
     publish_stale_guid: str = ""
     publish_uncatalogued: bool = False
+    # PI-050/051: the scouting tiles must tell "never read" from "read: zero". The numeric fields
+    # above default to 0/"" when GitHub was never asked, so the names of the stats that have no
+    # value in the latest project_stats row (or the whole set, when there is no row) are listed
+    # here and the tile shows "not read" for them.
+    stats_unread: list[str] = []
+
+
+_SCOUTING_STAT_FIELDS = (
+    ("primary_language", "primary_language"),
+    ("stars", "stars"),
+    ("forks", "forks"),
+    ("contributors_count", "contributors"),
+    ("last_pushed_at", "last_pushed_at"),
+    ("repo_size_kb", "repo_size_kb"),
+    ("security_and_analysis_json", "security_and_analysis"),
+    ("deployments_count", "deployments_count"),
+)
+
+
+def _scouting_stats_unread(stats: dict) -> list[str]:
+    """Names of the scouting stats the latest row has no value for. 0 is a value; None, '' and an
+    empty security object are not."""
+    return [name for col, name in _SCOUTING_STAT_FIELDS
+            if stats.get(col) is None or stats.get(col) in ("", "{}")]
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -490,6 +514,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         latest_deployment_at=stats.get("latest_deployment_at") or "",
         latest_deployment_environment=stats.get("latest_deployment_environment") or "",
         latest_deployment_ref=stats.get("latest_deployment_ref") or "",
+        stats_unread=_scouting_stats_unread(stats),
     )
 
 
