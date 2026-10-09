@@ -57,19 +57,74 @@ def _call_name(func: ast.AST) -> str:
     return ""
 
 
+def _class_aliases(tree: ast.AST, classes: set[str]) -> tuple[set[str], set[str]]:
+    """Per module: local names bound to a pyegeria client class, and names bound to pyegeria
+    modules. Follows `from pyegeria[.x] import C as A`, `import pyegeria as pe`, and plain
+    assignments `A = C` / `A = pe.C` / `A = getattr(pyegeria, ...)` (to a fixed point)."""
+    names: set[str] = set(classes)
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("pyegeria"):
+            for a in node.names:
+                if a.name in classes:
+                    names.add(a.asname or a.name)
+                elif a.name.islower():               # a pyegeria submodule, e.g. `omvs`
+                    modules.add(a.asname or a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.startswith("pyegeria"):
+                    modules.add(a.asname or a.name.split(".")[0])
+    modules.add("pyegeria")
+
+    def refers(v: ast.AST) -> bool:
+        if isinstance(v, ast.Name):
+            return v.id in names
+        if isinstance(v, ast.Attribute):
+            return v.attr in classes
+        if isinstance(v, ast.Call) and _call_name(v.func) == "getattr" and v.args:
+            return isinstance(v.args[0], ast.Name) and v.args[0].id in modules
+        return False
+
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and refers(node.value):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id not in names:
+                        names.add(t.id)
+                        changed = True
+    return names, modules
+
+
 def _hits(source: str, classes: set[str]) -> list[str]:
+    tree = ast.parse(source)
+    names, modules = _class_aliases(tree, classes)
     out = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                bname = base.id if isinstance(base, ast.Name) else (
+                    base.attr if isinstance(base, ast.Attribute) else "")
+                if bname in names or bname in classes:
+                    out.append(f"{node.lineno}: class {node.name} subclasses {bname}")
+            continue
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node.func)
-        if name in classes:
-            out.append(f"{node.lineno}: constructs {name}")
+        if isinstance(node.func, ast.Name) and node.func.id in names:
+            out.append(f"{node.lineno}: constructs {node.func.id}")
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in classes:
+            out.append(f"{node.lineno}: constructs {node.func.attr}")
         elif name in TOKEN_CALLS:
             out.append(f"{node.lineno}: calls {name}")
         elif (isinstance(node.func, ast.Call) and _call_name(node.func.func) == "getattr"
-              and node.func.args and _call_name(node.func.args[0]) == "pyegeria"):
+              and node.func.args and _call_name(node.func.args[0]) in modules):
             out.append(f"{node.lineno}: constructs getattr(pyegeria, ...)")
+        elif name == "partial" and node.args and (
+                (isinstance(node.args[0], ast.Name) and node.args[0].id in names)
+                or (isinstance(node.args[0], ast.Attribute) and node.args[0].attr in classes)):
+            out.append(f"{node.lineno}: partial over a pyegeria client")
     return out
 
 
@@ -107,6 +162,20 @@ b.set_bearer_token("t")
 '''
     hits = _hits(src, classes)
     assert len(hits) == 4, hits
+
+
+@pytest.mark.parametrize("src", [
+    "from pyegeria import AssetMaker as AM\nc = AM('v', 'u', 'me', 'pw')\n",
+    "import pyegeria as pe\nc = pe.MetadataExpert('v', 'u', 'me', 'pw')\n",
+    "from pyegeria import AssetMaker\nK = AssetMaker\nL = K\nc = L('v', 'u', 'me', 'pw')\n",
+    "import pyegeria\nK = getattr(pyegeria, 'AssetMaker')\nc = K('v')\n",
+    "import functools\nfrom pyegeria import AssetMaker\nmk = functools.partial(AssetMaker, 'v')\n",
+    "from functools import partial\nimport pyegeria\nmk = partial(pyegeria.AssetMaker, 'v')\n",
+    "from pyegeria import AssetMaker as Base\nclass Mine(Base):\n    pass\n",
+    "import pyegeria\nclass Mine(pyegeria.EgeriaTech):\n    pass\n",
+])
+def test_the_ban_sees_through_aliases_assignments_partials_and_subclasses(src):
+    assert _hits(src, _pyegeria_client_classes()), src
 
 
 def test_the_allowlist_is_only_the_factory():

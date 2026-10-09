@@ -1019,6 +1019,8 @@ class EgeriaPublisher:
 
                 try:
                     client = classification_client(identity)
+                except PermissionError:
+                    raise   # no caller / expired / platform not allowed: never a silent unowned publish
                 except Exception as exc:
                     log.warning(
                         "Could not build a classification client — Ownership/"
