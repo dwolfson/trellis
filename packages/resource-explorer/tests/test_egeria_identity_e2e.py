@@ -182,7 +182,9 @@ def test_doc_source_read_back_route_reads_as_the_caller(boundary, reg, client, m
 
 
 def test_project_search_route_reads_as_the_caller(boundary, reg, client, monkeypatch):
-    monkeypatch.setenv("EGERIA_PLATFORM_URL", "https://egeria.invalid:9443")
+    from resource_explorer.config import get_config
+
+    monkeypatch.setenv("EGERIA_PLATFORM_URL", get_config().egeria.platform_url)   # the allowed one
     monkeypatch.setattr("pyegeria.ProjectManager", boundary.fake("ProjectManager", find_projects=lambda *a, **k: []))
     r = client.get("/api/project-context/search/candidates?q=x", headers=_token())
     assert r.status_code == 200, r.text
@@ -251,24 +253,51 @@ def test_the_scheduler_tick_runs_rfa_sync_as_the_daemon(boundary, monkeypatch):
         ("MyProfile", DAEMON_USER), ("MetadataExpert", DAEMON_USER)}
 
 
-# ── the outbox drain → Daemon(OUTBOX), at the pyegeria boundary ──────────────
+# ── the outbox: inline drains run as the person; only the background loop is the daemon ─
 
-def test_the_outbox_drain_attaches_members_as_the_daemon_from_a_request_thread(boundary, reg, monkeypatch, signed_in_caller):
-    from resource_explorer.egeria_outbox import drain_outbox
-
+def _drain_fakes(boundary, monkeypatch):
     for cls in ("AssetMaker", "AutomatedCuration", "ExternalReferences"):
         monkeypatch.setattr(f"pyegeria.{cls}", boundary.fake(cls))
     monkeypatch.setattr("pyegeria.CollectionManager", boundary.fake(
         "CollectionManager", add_to_collection=lambda *a, **k: None))
     monkeypatch.setattr("pyegeria.omvs.data_discovery.DataDiscovery", boundary.fake("DataDiscovery"))
     monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", boundary.fake("MetadataExpert"))
+
+
+def test_an_inline_drain_in_a_persons_request_runs_as_that_person(boundary, reg, monkeypatch, signed_in_caller):
+    from resource_explorer.egeria_outbox import drain_outbox
+
+    _drain_fakes(boundary, monkeypatch)
     reg.enqueue_outbox_element("repo", "p", "collection_membership", "CollectionMembership::c::m",
                                {"collection_guid": "c", "member_guid": "m"})
-    summary = drain_outbox(reg)
-    assert summary["done"] == 1, summary
+    assert drain_outbox(reg)["done"] == 1
+    adds = [c for c in boundary.calls if c[1] == "add_to_collection"]
+    assert {(u, t) for _, _, u, t in adds} == {("test-caller", "tok-test-caller")}
+    assert not any(c["minted"] for c in boundary.clients), "never the daemon for a person's act"
+
+
+def test_the_background_drain_loop_runs_as_the_daemon_even_beside_a_person(boundary, reg, monkeypatch, signed_in_caller):
+    from resource_explorer import scheduler
+
+    _drain_fakes(boundary, monkeypatch)
+    reg.enqueue_outbox_element("repo", "p", "collection_membership", "CollectionMembership::c::m",
+                               {"collection_guid": "c", "member_guid": "m"})
+    scheduler._drain_egeria_outbox()
     adds = [c for c in boundary.calls if c[1] == "add_to_collection"]
     assert adds and {(u, t) for _, _, u, t in adds} == {(DAEMON_USER, f"minted-for-{DAEMON_USER}")}
-    assert not any(c["token"] == "tok-test-caller" for c in boundary.clients), "the request's person never leaks in"
+    assert not any(c["token"] == "tok-test-caller" for c in boundary.clients)
+
+
+def test_a_drain_with_no_identity_claims_nothing_and_sends_nothing(boundary, reg, monkeypatch):
+    from resource_explorer.egeria_outbox import drain_outbox
+
+    _drain_fakes(boundary, monkeypatch)
+    rid = reg.enqueue_outbox_element("repo", "p", "collection_membership", "CollectionMembership::c::m",
+                                     {"collection_guid": "c", "member_guid": "m"})
+    out = drain_outbox(reg)
+    assert out["claimed"] == 0 and "sign in" in out["identity_error"]
+    assert boundary.clients == []
+    assert reg.get_outbox_element(rid)["status"] == "pending"
 
 
 # ── the catalogue gateway: Curate route → Caller; drain → stored credential or daemon ─
@@ -290,6 +319,7 @@ def test_the_gateway_on_a_curate_route_acts_as_the_caller_and_ignores_stored_cre
 
 
 def test_the_drain_gateway_keeps_a_stored_credential_and_else_uses_the_daemon(boundary, monkeypatch):
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
     from resource_explorer.egeria_outbox import _catalogue_gateway
 
     monkeypatch.setattr("pyegeria.AssetMaker", boundary.fake("AssetMaker"))
@@ -304,10 +334,65 @@ def test_the_drain_gateway_keeps_a_stored_credential_and_else_uses_the_daemon(bo
             entity = self._entity
             return type("R", (), {"get_database": lambda self, slug, allow_unreadable=True: entity})()
 
-    _catalogue_gateway(Clients(_db_entity(egeria_user="stored-user", egeria_password="stored-pw")),
-                       {"slug": "db"})._client("AssetMaker")
-    _catalogue_gateway(Clients(_db_entity()), {"slug": "db"})._client("AssetMaker")
+    with acting_as(Daemon(DaemonReason.OUTBOX)):                 # the background loop
+        _catalogue_gateway(Clients(_db_entity(egeria_user="stored-user", egeria_password="stored-pw")),
+                           {"slug": "db"})._client("AssetMaker")
+        _catalogue_gateway(Clients(_db_entity()), {"slug": "db"})._client("AssetMaker")
     assert [(c["user"], c["minted"]) for c in boundary.clients] == [("stored-user", True), (DAEMON_USER, True)]
+
+
+def test_an_inline_drain_gateway_runs_as_the_person_not_the_stored_credential(boundary, monkeypatch, signed_in_caller):
+    from resource_explorer.egeria_outbox import _catalogue_gateway
+
+    monkeypatch.setattr("pyegeria.AssetMaker", boundary.fake("AssetMaker"))
+    entity = _db_entity(egeria_user="stored-user", egeria_password="stored-pw")
+    clients = type("C", (), {"catalogue_gateway": None, "require": lambda self, n: type(
+        "R", (), {"get_database": lambda self, slug, allow_unreadable=True: entity})()})()
+    _catalogue_gateway(clients, {"slug": "db"})._client("AssetMaker")
+    assert boundary.users_and_tokens() == {("AssetMaker", "test-caller", "tok-test-caller", False)}
+
+
+# ── item 1: no credential goes to a platform RE is not configured for ────────
+
+def test_an_entity_naming_another_platform_is_refused_and_nothing_is_sent(boundary, monkeypatch, signed_in_caller):
+    from resource_explorer.catalogue_commit import make_gateway
+    from resource_explorer.egeria_clients import PlatformNotAllowed
+
+    monkeypatch.setattr("pyegeria.AssetMaker", boundary.fake("AssetMaker"))
+    gw = make_gateway(_db_entity(egeria_url="https://evil.invalid"))
+    with pytest.raises(PlatformNotAllowed, match="not configured for: https://evil.invalid:443"):
+        gw._client("AssetMaker")
+    assert boundary.clients == [], "no client built, no token sent"
+
+
+def test_a_stored_credential_never_leaves_its_own_entitys_platform(boundary, monkeypatch):
+    from resource_explorer.egeria_clients import (
+        DaemonReason, PlatformNotAllowed, StoredOrDaemon, egeria_client,
+    )
+
+    monkeypatch.setattr("resource_explorer.egeria_clients.allowed_platforms",
+                        lambda: frozenset({"https://a.invalid:443", "https://b.invalid:443"}))
+    ident = StoredOrDaemon(_db_entity(egeria_url="https://a.invalid", egeria_user="s", egeria_password="p"),
+                           DaemonReason.OUTBOX)
+    with pytest.raises(PlatformNotAllowed):
+        egeria_client(ident, purpose="t", platform_url="https://b.invalid").of(boundary.fake("AssetMaker"))
+    egeria_client(ident, purpose="t", platform_url="https://a.invalid").of(boundary.fake("AssetMaker"))
+    assert [c["user"] for c in boundary.clients] == ["s"]
+
+
+def test_a_publish_route_naming_another_platform_is_403_and_sends_nothing(boundary, reg, client, monkeypatch):
+    from resource_explorer.registry import FileSystemEntity
+
+    reg.register_filesystem(FileSystemEntity(slug="fs", display_name="FS", local_mount_point="/tmp",
+                                             egeria_url="https://evil.invalid"))
+    monkeypatch.setattr(reg, "get_latest_filesystem_survey", lambda slug: {"survey_data": {}}, raising=False)
+    for cls in ("AutomatedCuration", "AssetMaker"):
+        monkeypatch.setattr(f"pyegeria.{cls}", boundary.fake(cls))
+    monkeypatch.setattr("pyegeria.omvs.data_discovery.DataDiscovery", boundary.fake("DataDiscovery"))
+    r = client.post("/api/filesystems/fs/publish", json={}, headers=_token())
+    assert r.status_code == 403, r.text
+    assert "not configured for: https://evil.invalid:443" in r.json()["detail"]
+    assert boundary.clients == []
 
 
 # ── the run queue: a survey → Daemon(RUN_QUEUE, requested_by), Ownership = requester ─
@@ -357,7 +442,7 @@ def test_a_publish_runs_as_the_person_on_the_handed_over_token_and_drops_it(boun
     monkeypatch.setitem(rq.HANDLERS, "publish_architecture", _publish_handler(boundary, seen))
     run_id = rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"})
     assert rq._caller_tokens.has(run_id)
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()})
+    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
     # the worker thread has no request context at all — the token comes from the handoff only
     out = {}
     t = threading.Thread(target=lambda: out.setdefault("o", rq.execute_run(row, reg)))
@@ -376,7 +461,7 @@ def test_a_publish_after_a_restart_fails_with_the_sentence_and_never_uses_the_da
     monkeypatch.setitem(rq.HANDLERS, "publish_architecture", _publish_handler(boundary, seen))
     run_id = rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"})
     rq._caller_tokens.clear()                     # the process restarted: memory is gone
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()})
+    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
     outcome = rq.execute_run(row, reg)
     assert outcome.state == "failed" and outcome.error == "your Egeria sign-in expired; sign in again"
     assert seen == [] and boundary.clients == [], "never run, never as the daemon"
@@ -390,7 +475,7 @@ def test_an_expired_handed_over_token_fails_the_run_the_same_way(boundary, reg, 
     monkeypatch.setitem(rq.HANDLERS, "curate_commit", _publish_handler(boundary, seen))
     rq.enqueue_as_caller(reg, "curate_commit", {"slug": "p"})
     monkeypatch.setattr("trellis_auth.auth.egeria_token_expiry", lambda tok: int(time.time()) - 1)
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()})
+    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
     assert rq.execute_run(row, reg).error == "your Egeria sign-in expired; sign in again"
     assert seen == [] and boundary.clients == []
 
@@ -405,7 +490,7 @@ def test_the_handed_over_token_never_reaches_the_runs_table_logs_or_activity(bou
     act = log_survey(reg, entity_type="repo", entity_slug="p", entity_name="P", entity_location="x",
                      intent="curate", status="running", summary="Publishing P…")
     rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"}, result_ref=act)
-    row = reg.claim_next_run("host:1", {"pid": os.getpid()})
+    row = reg.claim_next_run("host:1", {"pid": os.getpid()}, owner=rq.process_marker())
     rq.execute_run(row, reg)
     rq.enqueue_as_caller(reg, "publish_architecture", {"slug": "p"})        # and one left queued
     db = reg.database_url.removeprefix("sqlite:///")

@@ -80,7 +80,12 @@ def cancel_run(run_id: str) -> RunRow:
     row = registry.get_run(run_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    if not registry.cancel_queued_run(run_id):
+    from resource_explorer.run_queue import drop_caller_token
+
+    cancelled = registry.cancel_queued_run(run_id)
+    if cancelled:
+        drop_caller_token(run_id)          # a cancelled caller run's token goes too (Brief I)
+    if not cancelled:
         raise HTTPException(
             status_code=409,
             detail=(
