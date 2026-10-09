@@ -12,10 +12,11 @@ the rows, which outlive the entry and change as retries happen.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.web import admin_auth
 
 router = APIRouter()
 
@@ -79,7 +80,7 @@ def list_outbox(
 
 
 @router.post("/{row_id}/retry")
-def retry_outbox_element(row_id: int) -> dict:
+def retry_outbox_element(row_id: int, request: Request) -> dict:
     """Return one dead row to the queue.
 
     Only dead rows. A 409 rather than a silent no-op when the row is in any
@@ -87,6 +88,7 @@ def retry_outbox_element(row_id: int) -> dict:
     backoff, and on a completed row would re-apply a write that already
     succeeded — both worth telling the caller about rather than absorbing.
     """
+    admin_auth.require_admin(request)     # a retry re-queues an Egeria write: admin only
     registry = ProjectRegistry()
     existing = registry.get_outbox_element(row_id)
     if existing is not None and is_destructive_kind(existing.get("element_kind", "")):

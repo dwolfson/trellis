@@ -8,13 +8,19 @@ degraded Survey tab, and so an admin can trigger a pass without restarting.
 from __future__ import annotations
 
 import asyncio
+import threading
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from resource_explorer import bootstrap as bootstrap_mod
+from resource_explorer.web import admin_auth
 
 router = APIRouter()
+
+#: One heal at a time in this process. `_reinitializing` (set inside check_and_heal) covers the automatic loop, which
+#: this lock does not see; the route checks both.
+_run_lock = threading.Lock()
 
 
 class RunRequest(BaseModel):
@@ -37,14 +43,21 @@ async def bootstrap_status() -> dict:
 
 
 @router.post("/run")
-async def bootstrap_run(body: RunRequest | None = None) -> dict:
-    """Run a check-and-heal pass now.
+async def bootstrap_run(request: Request, body: RunRequest | None = None) -> dict:
+    """Run a check-and-heal pass now. Admin only; one at a time.
 
-    Blocking work (subprocess dr_egeria calls) is pushed to a thread, matching
-    the asyncio.to_thread pattern the other long-running routes use.
+    409 while a heal is already running (a manual one holding the lock, or the automatic loop, which sets
+    `_reinitializing`): two heals at once would race the same batches, and a batch that is not idempotent
+    duplicates its step links. Blocking work (subprocess dr_egeria calls) is pushed to a thread, matching the
+    asyncio.to_thread pattern the other long-running routes use.
     """
+    admin_auth.require_admin(request)
     force = bool(body and body.force)
+    if bootstrap_mod._reinitializing or not _run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A bootstrap heal is already running")
     try:
         return await asyncio.to_thread(bootstrap_mod.check_and_heal, bootstrap_mod.DOCS_DIR, force)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"bootstrap run failed: {exc}")
+    finally:
+        _run_lock.release()

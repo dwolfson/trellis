@@ -22,6 +22,8 @@ def client(tmp_path, monkeypatch):
     reg.add(Project(slug="p", display_name="p", github_url="https://github.com/o/p"))
 
     import resource_explorer.web.routes.outbox as outbox_routes
+    # Retry is admin only; these tests are about the queue, so they act as an admin. TestRetryIsAdminOnly turns it off.
+    monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: True)
     monkeypatch.setattr(outbox_routes, "ProjectRegistry",
                         lambda *a, **k: ProjectRegistry(database_url=db_url))
 
@@ -138,3 +140,14 @@ class TestRetryNeverResendsADestructiveWrite:
         reg.enqueue_outbox_element("repo", "p", "doc_source_unpublish", "Q::1", {}, run_id="r")
         by_kind = {r["element_kind"]: r["destructive"] for r in c.get("/api/outbox/").json()["rows"]}
         assert by_kind == {"annotation": False, "doc_source_unpublish": True}
+
+
+class TestRetryIsAdminOnly:
+    def test_a_non_admin_cannot_requeue_and_the_row_stays_dead(self, client, monkeypatch):
+        c, reg = client
+        row = reg.enqueue_outbox_element("repo", "p", "annotation", "Q::0", {}, run_id="r")
+        reg.mark_outbox_failed(row, "x", max_attempts=1)
+        monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: False)
+        res = c.post(f"/api/outbox/{row}/retry")
+        assert res.status_code == 403
+        assert reg.outbox_counts() == {"dead": 1}

@@ -27,7 +27,7 @@ and would have long outlived the conversation that produced it.
 """
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from resource_explorer.config import FeedbackConfig
 
@@ -51,3 +51,15 @@ def is_admin_request(request: Request, cfg: FeedbackConfig) -> bool:
         return True
 
     return False
+
+
+def require_admin(request: Request) -> None:
+    """403 unless the request presents a valid admin credential (same check, fail closed, as `curate._require_admin`).
+
+    For routes that write to Egeria or re-queue a write on a person's behalf. Looked up through this module's own
+    `is_admin_request` so a test patches one name.
+    """
+    from resource_explorer.config import get_config
+
+    if not is_admin_request(request, get_config().feedback):
+        raise HTTPException(status_code=403, detail="Admin credential required")

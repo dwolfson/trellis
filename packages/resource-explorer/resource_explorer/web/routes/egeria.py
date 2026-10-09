@@ -25,6 +25,16 @@ router = APIRouter()
 # deliberately NOT a login mechanism. Real per-user login was raised and
 # explicitly deferred as its own, larger piece of scope — see the Trellis
 # design docs before building an actual auth flow against this.
+@router.get("/admin-status")
+def admin_status(request: Request) -> dict:
+    """Whether THIS request carries a valid admin credential, so the Admin panes can draw their admin-only controls
+    disabled with "admin only" instead of letting a press end in a 403. Reads nothing else."""
+    from resource_explorer.config import get_config
+    from resource_explorer.web import admin_auth
+
+    return {"admin": bool(admin_auth.is_admin_request(request, get_config().feedback))}
+
+
 _BUILD_SHA: str | None = None
 _BUILD_SHA_READ = False
 
@@ -510,7 +520,7 @@ class BulkResolveRequest(BulkRequest):
 
 
 @router.post("/linkage/resolve-all")
-async def resolve_all_linkages(req: BulkResolveRequest) -> dict:
+async def resolve_all_linkages(req: BulkResolveRequest, request: Request) -> dict:
     """Apply one resolution to many diverged resources.
 
     Republish is the usual choice after an Egeria reset — it re-publishes what RE
@@ -519,7 +529,9 @@ async def resolve_all_linkages(req: BulkResolveRequest) -> dict:
     milliseconds.
     """
     from resource_explorer.bulk_ops import resolve_all
+    from resource_explorer.web import admin_auth
 
+    admin_auth.require_admin(request)     # bulk republish writes to Egeria: admin only (one resource stays open)
     registry = ProjectRegistry()
     targets = [t.model_dump() for t in req.targets]
     try:
