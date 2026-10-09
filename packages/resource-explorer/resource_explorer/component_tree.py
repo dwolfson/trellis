@@ -89,19 +89,27 @@ def _ports_by_component(registry: ProjectRegistry, slug: str) -> tuple[dict[str,
     return ports, n_ports, n_wires
 
 
+#: A verdict row recorded for "this component only" (owner, 2026-10-09: he wanted a parent alone and accepted
+#: two children by accident). It is kept in the row's `retyped_to` (unused by an accepted/rejected verdict; no
+#: new column) and it does not pass down to the components under it.
+ONLY_THIS = "only"
+
+
 def resolve_verdict(path: str, verdicts: dict[str, dict]) -> dict | None:
     """The verdict that applies to `path`: its own row if there is one, else
     the nearest ancestor branch's, longest prefix first. An inherited verdict
-    says so rather than posing as a decision someone made about that file."""
+    says so rather than posing as a decision someone made about that file.
+    An ancestor's "this component only" row (ONLY_THIS) is not inherited."""
     own = verdicts.get(path)
     if own:
-        return {"verdict": own["verdict"], "inherited_from": "", "note": own.get("note", ""),
+        return {"verdict": own["verdict"], "inherited_from": "", "only": own.get("retyped_to") == ONLY_THIS,
+                "note": own.get("note", ""),
                 "decided_by": own.get("user_id") or own.get("decided_by") or "", "at": own.get("created_at", "")}
     parts = path.split("/")
     for i in range(len(parts) - 1, 0, -1):
         anc = "/".join(parts[:i])
         row = verdicts.get(anc) or verdicts.get(anc + "/")
-        if row:
+        if row and row.get("retyped_to") != ONLY_THIS:
             return {"verdict": row["verdict"], "inherited_from": anc, "note": row.get("note", ""),
                     "decided_by": row.get("user_id") or row.get("decided_by") or "", "at": row.get("created_at", "")}
     return None

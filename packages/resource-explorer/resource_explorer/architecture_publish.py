@@ -1,0 +1,287 @@
+"""Publish for a repository's architecture: the one verb that writes accepted components and blueprints to Egeria.
+
+Accept and Reject are decisions only (owner, 2026-10-09: "Publish should be the verb to save to Egeria";
+RULING-PUBLISH-NOT-CATALOG.md). This module answers two questions from RE's own rows, with no Egeria call:
+
+* `publish_plan`  what a press would write: every accepted component with no Egeria element yet, and every
+  accepted blueprint with no element yet or whose compositions are not all confirmed. Shown BEFORE the press
+  and used by the run, so the list and the write cannot drift.
+* `last_results`  what the last press did, per item, from the proof rows the run wrote (`architecture_publish`).
+
+`run_publish` is the write. It re-reads the plan at run time, writes only items still in it, and records one
+proof row per item: done, skipped (already there), failed (with Egeria's sentence) or partial (written, but
+not all of it confirmed). A reject never writes: RE has no delete path, so a rejected item already in Egeria
+is only SAID to be still there.
+
+No DDL: a blueprint verdict's shape and identifier choices ride in the verdict row's `retyped_to` (unused by
+a blueprint verdict) as JSON.
+"""
+from __future__ import annotations
+
+import json
+import logging
+
+log = logging.getLogger(__name__)
+
+P_PUBLISH_ITEM = "architecture_publish"
+NODE_PUBLISH_ITEM = "architecture_publish"
+
+# Composition proof statuses that mean the pair is not confirmed (blueprint_materializer.link_sub_components).
+_UNCONFIRMED = ("unconfirmed", "error", "unread")
+
+DONE, SKIPPED, FAILED, PARTIAL = "done", "skipped", "failed", "partial"
+
+
+# ── the choices a blueprint verdict carries ───────────────────────────────────────────────────────────
+
+def encode_blueprint_choices(shape: str, identifier: str) -> str:
+    """The shape flip and identifier chosen at Accept, kept for Publish. '' when neither was chosen."""
+    choices = {k: v for k, v in (("shape", shape), ("identifier", identifier)) if v}
+    return json.dumps(choices, sort_keys=True) if choices else ""
+
+
+def blueprint_choices(verdict_row: dict | None) -> dict:
+    """{shape, identifier} chosen with the blueprint's verdict; empty values when none were chosen or the
+    stored text is not ours."""
+    raw = (verdict_row or {}).get("retyped_to") or ""
+    try:
+        d = json.loads(raw) if raw else {}
+    except ValueError:
+        d = {}
+    d = d if isinstance(d, dict) else {}
+    return {"shape": str(d.get("shape") or ""), "identifier": str(d.get("identifier") or "")}
+
+
+# ── the plan ──────────────────────────────────────────────────────────────────────────────────────────
+
+def _blueprint_height(by_name: dict[str, dict], name: str, seen: frozenset = frozenset()) -> int:
+    """Children are written before the parent that links them."""
+    bp = by_name.get(name)
+    if not bp or name in seen:
+        return 0
+    kids = [c for c in (bp.get("children") or []) if c in by_name]
+    return 1 + max((_blueprint_height(by_name, c, seen | {name}) for c in kids), default=-1) if kids else 0
+
+
+def _unfinished_compositions(proofs: list[dict], scope_key: str) -> int:
+    """How many of a blueprint's compositions are not confirmed, from the LATEST proof per pair."""
+    latest: dict[str, dict] = {}
+    for p in proofs:
+        if p["proof"] == "composition" and p["table_name"] == scope_key:
+            latest[p["qualified_name"]] = p
+    return sum(1 for p in latest.values() if (p.get("detail") or {}).get("status") in _UNCONFIRMED)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def label_for(n_components: int, n_blueprints: int) -> str:
+    """'Publish 3 components · 1 blueprint': the object and count on the control; only the parts that exist."""
+    parts = []
+    if n_components:
+        parts.append(_plural(n_components, "component"))
+    if n_blueprints:
+        parts.append(_plural(n_blueprints, "blueprint"))
+    return "Publish " + " · ".join(parts) if parts else "Nothing to publish"
+
+
+def publish_plan(registry, slug: str) -> dict:
+    """What a Publish press would write now, from RE's rows only (no Egeria call)."""
+    from resource_explorer.component_tree import _NOT_A_PATH, _component_verdicts, _components, resolve_verdict
+
+    comps = [c for c in _components(registry, slug) if (c.get("path") or "") not in _NOT_A_PATH]
+    verdicts = _component_verdicts(registry, slug)
+    present = registry.get_materialized_components("repo", slug)
+    to_write, in_egeria, rejected_in_egeria = [], 0, 0
+    for c in sorted(comps, key=lambda x: x["path"]):
+        if c.get("structural"):
+            continue
+        v = (resolve_verdict(c["path"], verdicts) or {}).get("verdict")
+        held = bool((present.get(c["path"]) or {}).get("guid"))
+        if v == "accepted":
+            if held:
+                in_egeria += 1
+            else:
+                to_write.append({"path": c["path"], "name": c.get("name") or c["path"], "type": c.get("type") or ""})
+        elif v == "rejected" and held:
+            rejected_in_egeria += 1
+
+    from resource_explorer.blueprint_kinds import blueprint_display_name, repo_label
+    from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
+
+    blueprints = _candidate_blueprints_results(registry, slug)
+    raw_verdicts = {k: v for k, v in registry.get_component_verdicts("repo", slug).items()
+                    if v.get("verdict_target") == "blueprint"}
+    proofs = registry.list_catalogue_commit_proofs(slug)
+    project = registry.get(slug)
+    label = repo_label(slug, getattr(project, "display_name", "") or "")
+    by_name = {b["cluster_name"]: b for b in blueprints}
+    bp_write, bp_present, bp_rejected_in_egeria = [], 0, 0
+    for b in blueprints:
+        key = f"{b['perspective']}::{b['cluster_name']}"
+        verdict = (b.get("verdict") or {}).get("verdict")
+        held = bool((b.get("materialized") or {}).get("guid"))
+        if verdict == "rejected":
+            bp_rejected_in_egeria += 1 if held else 0
+            continue
+        if verdict != "accepted":
+            continue
+        unfinished = _unfinished_compositions(proofs, key) if held else 0
+        if held and not unfinished:
+            bp_present += 1
+            continue
+        sole = (sum(1 for x in blueprints if x["perspective"] == b["perspective"] and not x.get("parent")) == 1
+                and not b.get("parent"))
+        choices = blueprint_choices(raw_verdicts.get(key))
+        bp_write.append({
+            "key": key, "perspective": b["perspective"], "cluster_name": b["cluster_name"],
+            "name": blueprint_display_name(label, b["perspective"], b["cluster_name"], sole_root=sole,
+                                           identifier=choices["identifier"]),
+            "state": "finish" if held else "new", "unconfirmed_compositions": unfinished,
+            "shape": choices["shape"], "identifier": choices["identifier"],
+            "_height": _blueprint_height(by_name, b["cluster_name"]),
+        })
+    bp_write.sort(key=lambda x: (x["_height"], x["key"]))
+    for x in bp_write:
+        x.pop("_height")
+
+    return {
+        "slug": slug,
+        "components": {"to_write": to_write, "in_egeria": in_egeria, "rejected_in_egeria": rejected_in_egeria},
+        "blueprints": {"to_write": bp_write, "in_egeria": bp_present, "rejected_in_egeria": bp_rejected_in_egeria},
+        "label": label_for(len(to_write), len(bp_write)),
+        "nothing": not to_write and not bp_write,
+    }
+
+
+def last_results(registry, slug: str) -> dict:
+    """The newest press's per-item results, from the proof rows its run wrote: {run, at, items:[...]}.
+    Empty when nothing was ever published from here."""
+    rows = [p for p in registry.list_catalogue_commit_proofs(slug)
+            if p["proof"] == P_PUBLISH_ITEM and p["node_kind"] == NODE_PUBLISH_ITEM]
+    if not rows:
+        return {"run": "", "at": "", "items": []}
+    run = rows[-1]["curation_id"]
+    items = [{"key": p["table_name"], **(p.get("detail") or {})} for p in rows if p["curation_id"] == run]
+    return {"run": run, "at": rows[-1]["read_at"], "items": items}
+
+
+# ── the write ─────────────────────────────────────────────────────────────────────────────────────────
+
+def _record(registry, slug: str, run: str, key: str, guid: str, detail: dict) -> None:
+    """One result row per item. A failed proof write is logged; it never undoes the Egeria write."""
+    try:
+        registry.append_catalogue_commit_proof(
+            slug, proof=P_PUBLISH_ITEM, node_kind=NODE_PUBLISH_ITEM, table_name=key, curation_id=run,
+            element_guid=guid, detail=detail)
+    except Exception as exc:
+        log.warning("could not record the publish result for %s: %s", key, exc)
+
+
+def _publish_component(registry, slug: str, path: str) -> tuple[str, str, str]:
+    """(status, words, guid) for one accepted component."""
+    from resource_explorer.secret_redaction import scrub_text
+    from resource_explorer.workflows.curate import (
+        NODE_PROMOTION_COMPONENT,
+        materialize_component_if_accepted,
+        promote_to_publish_zones,
+        record_promotion,
+    )
+    res = materialize_component_if_accepted(registry, "repo", slug, path, "accepted")
+    if not res or res.get("status") == "error":
+        return FAILED, scrub_text(str((res or {}).get("error") or "Egeria gave no answer"))[:300], ""
+    guid = res.get("guid", "")
+    if guid:
+        promotion = promote_to_publish_zones(guid)
+        record_promotion(registry, slug, path, NODE_PROMOTION_COMPONENT, promotion)
+        if promotion.get("status") == "error":
+            return PARTIAL, scrub_text(f"written, but not promoted: {promotion.get('error') or promotion.get('words')}")[:300], guid
+    return DONE, "created in Egeria" if res.get("status") == "materialized" else "in Egeria", guid
+
+
+def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
+    """(status, words, guid) for one accepted blueprint: created or adopted, members attached, compositions linked."""
+    from resource_explorer.secret_redaction import scrub_text
+    from resource_explorer.workflows.curate import (
+        NODE_PROMOTION_BLUEPRINT,
+        materialize_blueprint_if_accepted,
+        promote_to_publish_zones,
+        record_promotion,
+    )
+    res = materialize_blueprint_if_accepted(
+        registry, "repo", slug, item["perspective"], item["cluster_name"], "accepted",
+        **({"shape": item["shape"]} if item.get("shape") else {}),
+        **({"identifier": item["identifier"]} if item.get("identifier") else {}))
+    if not res:
+        return FAILED, "nothing was attempted", ""
+    if res.get("status") == "error":
+        return FAILED, scrub_text(str(res.get("error") or "Egeria gave no answer"))[:300], ""
+    guid = res.get("guid", "")
+    problems = []
+    if guid:
+        promotion = promote_to_publish_zones(guid)
+        record_promotion(registry, slug, item["key"], NODE_PROMOTION_BLUEPRINT, promotion)
+        if promotion.get("status") == "error":
+            problems.append(f"not promoted: {promotion.get('error') or promotion.get('words')}")
+    comps = res.get("compositions") or []
+    bad = [c for c in comps if c.get("status") in _UNCONFIRMED]
+    if bad:
+        problems.append(f"{len(bad)} of {len(comps)} compositions not confirmed")
+    for field, words in (("unmaterialized_members", "components not in Egeria yet"),
+                         ("unmaterialized_children", "child blueprints not linked"),
+                         ("children_gone", "child blueprints no longer in Egeria"),
+                         ("children_unreadable", "child blueprints could not be read")):
+        if res.get(field):
+            problems.append(f"{len(res[field])} {words}")
+    if res.get("adopted_unproven"):
+        problems.append("adopted, but the re-key proof was not written")
+    if problems:
+        return PARTIAL, scrub_text("written, but " + "; ".join(problems))[:400], guid
+    return DONE, "in Egeria · compositions confirmed" if comps else "in Egeria", guid
+
+
+def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
+    """Write what is still in the plan out of what the press listed. Returns the per-item results
+    ({kind, key, name, status, words}); each is also recorded as a proof row under `run`. Never raises for
+    an item: one failing item does not stop the next."""
+    from resource_explorer.secret_redaction import scrub_text
+
+    plan = publish_plan(registry, slug)
+    want_paths = set(target.get("paths") or [])
+    want_bps = set(target.get("blueprints") or [])
+    todo_c = {c["path"]: c for c in plan["components"]["to_write"]}
+    todo_b = {b["key"]: b for b in plan["blueprints"]["to_write"]}
+    results: list[dict] = []
+
+    def add(kind: str, key: str, name: str, status: str, words: str, guid: str = "") -> None:
+        row = {"kind": kind, "key": key, "name": name, "status": status, "words": words}
+        results.append(row)
+        _record(registry, slug, run, key, guid, {k: row[k] for k in ("kind", "name", "status", "words")})
+
+    for path in sorted(want_paths):
+        c = todo_c.get(path)
+        if c is None:                  # present now, or no longer accepted: nothing to write
+            held = bool((registry.get_materialized_component("repo", slug, path) or {}).get("guid"))
+            add("component", path, path.rsplit("/", 1)[-1], SKIPPED,
+                "already in Egeria" if held else "no longer accepted")
+            continue
+        try:
+            status, words, guid = _publish_component(registry, slug, path)
+        except Exception as exc:
+            status, words, guid = FAILED, scrub_text(f"{type(exc).__name__}: {exc}")[:300], ""
+        add("component", path, c["name"], status, words, guid)
+    # Components first: a blueprint attaches only members that are already in Egeria.
+    order = [k for k in (b["key"] for b in plan["blueprints"]["to_write"]) if k in want_bps]
+    order += sorted(want_bps - set(order))
+    for key in order:
+        b = todo_b.get(key)
+        if b is None:
+            add("blueprint", key, key.split("::", 1)[-1], SKIPPED, "already in Egeria · compositions confirmed")
+            continue
+        try:
+            status, words, guid = _publish_blueprint(registry, slug, b)
+        except Exception as exc:
+            status, words, guid = FAILED, scrub_text(f"{type(exc).__name__}: {exc}")[:300], ""
+        add("blueprint", key, b["name"], status, words, guid)
+    return results

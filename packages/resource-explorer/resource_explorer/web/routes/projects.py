@@ -2367,19 +2367,25 @@ class BranchVerdicts(BaseModel):
     scope_locators: list[str]          # branch paths and/or component paths
     verdict: str                       # accepted | rejected
     note: str = ""
+    # Scopes (a subset of scope_locators) whose verdict is for THAT component alone and does not pass down to
+    # the components under it (owner, 2026-10-09). A scope not listed keeps the branch meaning.
+    only_scopes: list[str] = []
 
 
 @router.post("/{slug}/components/verdicts")
 def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     """Accept or reject at the branch. One verdict row per scope given -- a
     branch path is a scope like any other, and every component under it
-    inherits until its own row wins. Materialization of accepted components
-    into Egeria is queued (kind materialize_components) so the pane returns
-    at once; nothing runs until the caller confirmed the preview. No undo,
-    and the word is not offered: a change is a new row and the trail keeps
-    both."""
-    from resource_explorer.activity_logger import log_survey
+    inherits until its own row wins (unless the row is for "this component
+    only"). **A decision and nothing more**: no Egeria call and no run is
+    queued. Publish (`POST /{slug}/architecture/publish`) is the one verb that
+    writes accepted components to Egeria (RULING-PUBLISH-NOT-CATALOG.md, owner
+    2026-10-09). A reject never writes either: RE has no delete path, so a
+    rejected component that is already in Egeria stays there, and the row says
+    so. No undo, and the word is not offered: a change is a new row and the
+    trail keeps both."""
     from resource_explorer.auth import get_current_user
+    from resource_explorer.component_tree import ONLY_THIS
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.web.routes.curate import _authorize_curation
 
@@ -2392,6 +2398,7 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     scopes = [s.strip().rstrip("/") for s in body.scope_locators if s and s.strip().rstrip("/")]
     if not scopes:
         raise HTTPException(status_code=400, detail="no scope given")
+    only = {s.strip().rstrip("/") for s in body.only_scopes if s and s.strip().rstrip("/")}
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
@@ -2399,28 +2406,67 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     rows = []
     for scope in scopes:
         _authorize_curation(registry, "repo", slug, scope)
-        rows.append(registry.record_component_verdict("repo", slug, scope, body.verdict, "", body.note, decided_by=author))
-    out = {"verdicts": rows, "run_id": None, "activity_id": None}
-    if body.verdict == "accepted":
-        from resource_explorer.component_tree import leaves
-        accepted_paths = sorted({l["path"] for scope in scopes for l in leaves(registry, slug, scope)
-                                 if (l.get("verdict") or {}).get("verdict") == "accepted"})
-        activity_id = log_survey(
-            registry, entity_type="repo", entity_slug=slug,
-            entity_name=project.display_name, entity_location=project.github_url,
-            intent="curate", status="running",
-            summary=f"Materialising {len(accepted_paths)} accepted component(s) of {project.display_name}…")
-        try:
-            run_id = registry.enqueue_run("materialize_components", {"slug": slug, "paths": accepted_paths},
-                                          result_ref=activity_id, requested_by=_requested_by())
-        except Exception as exc:
-            # Opened 'running' above; nothing will run to close it.
-            registry.update_activity_status(
-                activity_id, "error",
-                summary=f"Materialising {len(accepted_paths)} accepted component(s) of {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
-            raise
-        out.update({"run_id": run_id, "activity_id": activity_id, "queued": len(accepted_paths)})
-    return out
+        rows.append(registry.record_component_verdict(
+            "repo", slug, scope, body.verdict, ONLY_THIS if scope in only else "", body.note, decided_by=author))
+    return {"verdicts": rows, "run_id": None, "activity_id": None, "queued": 0}
+
+
+@router.get("/{slug}/architecture/publish-plan")
+def architecture_publish_plan(slug: str) -> dict:
+    """What a Publish press would write to Egeria now, and what the last press did per item. Read only: RE's
+    own rows, no Egeria call. The press (`POST .../architecture/publish`) writes exactly this list."""
+    from resource_explorer.architecture_publish import last_results, publish_plan
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    return {**publish_plan(registry, slug), "last": last_results(registry, slug)}
+
+
+@router.post("/{slug}/architecture/publish")
+def architecture_publish(slug: str, request: Request) -> dict:
+    """Publish for the architecture: the one verb that writes accepted components and blueprints to Egeria.
+    Queues ONE run (kind publish_architecture) for the items in the plan, so the pane returns at once. With
+    nothing in the plan, nothing is queued. A second press while one is queued or running is refused (409)."""
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.architecture_publish import publish_plan
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes.curate import _authorize_curation
+
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to publish — it needs someone who made it.")
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    plan = publish_plan(registry, slug)
+    paths = [c["path"] for c in plan["components"]["to_write"]]
+    keys = [b["key"] for b in plan["blueprints"]["to_write"]]
+    if not paths and not keys:
+        return {"run_id": None, "activity_id": None, "queued": 0, "plan": plan}
+    for state in ("queued", "claimed", "running"):
+        if any((r.get("target") and slug == json.loads(r["target"]).get("slug"))
+               for r in registry.list_runs(kind="publish_architecture", state=state, limit=50)):
+            raise HTTPException(status_code=409, detail="a publish is already running for this repository")
+    for scope in [*paths, *keys]:
+        _authorize_curation(registry, "repo", slug, scope)
+    activity_id = log_survey(
+        registry, entity_type="repo", entity_slug=slug,
+        entity_name=project.display_name, entity_location=project.github_url,
+        intent="curate", status="running",
+        summary=f"Publishing {plan['label'].removeprefix('Publish ')} of {project.display_name}…")
+    try:
+        run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys},
+                                      result_ref=activity_id, requested_by=_requested_by())
+    except Exception as exc:
+        # Opened 'running' above; nothing will run to close it.
+        registry.update_activity_status(
+            activity_id, "error", summary=f"Publishing {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
+        raise
+    return {"run_id": run_id, "activity_id": activity_id, "queued": len(paths) + len(keys), "plan": plan}
 
 
 # ── Blueprints (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2) ─────────────────

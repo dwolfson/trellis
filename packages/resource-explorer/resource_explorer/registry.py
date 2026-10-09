@@ -4123,6 +4123,7 @@ class ProjectRegistry:
         "discovery_expand",
         "curate_commit",
         "materialize_components",
+        "publish_architecture",
         "catalogue_commit",
     )
 
