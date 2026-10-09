@@ -182,12 +182,13 @@ class TestLeafGrouping:
 
 
 class TestTheRoute:
-    def test_a_branch_verdict_is_one_row_and_materialisation_is_queued(self, client, seeded):
+    def test_a_branch_verdict_is_one_row_and_nothing_is_queued(self, client, seeded):
         r = client.post("/api/projects/p/components/verdicts", json={"scope_locators": ["pyegeria/"], "verdict": "accepted"})
         assert r.status_code == 200, r.text
         out = r.json()
         assert len(out["verdicts"]) == 1 and out["verdicts"][0]["scope_locator"] == "pyegeria"
-        assert out["queued"] == 4 and out["run_id"] and out["activity_id"]
+        assert out["queued"] == 0 and out["run_id"] is None and out["activity_id"] is None
+        assert seeded.list_runs() == []                 # Accept is a decision; Publish writes
         tree = client.get("/api/projects/p/components/tree").json()
         p = next(b for b in tree["branches"] if b["path"] == "pyegeria")
         assert p["verdict"]["verdict"] == "accepted" and p["accepted"] == 4

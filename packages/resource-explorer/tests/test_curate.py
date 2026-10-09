@@ -89,7 +89,7 @@ class TestThePlan:
         assert all(r["candidate"] for r in plan["what_it_is"])
         assert all(r["source"] and r["evidence"] for r in plan["what_it_is"])
         holds = {r["kind"]: r for r in plan["what_it_holds"]}
-        assert holds["SubResource"]["count"] == 2 and holds["SubResource"]["label"].startswith("2 of 3 sub-resources")
+        assert holds["SubResource"]["count"] == 2 and holds["SubResource"]["label"].startswith("2 of 3 files and folders")
         assert holds["DataFile"]["candidate"] is False        # none profiled: a count of zero is not a thing to confirm
         assert plan["relates"][0]["candidate"] is False        # already-catalogued deps: not looked up, said so
 

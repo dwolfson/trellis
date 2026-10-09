@@ -1700,9 +1700,19 @@ export const getComponentLeaves = (slug, branch) =>
  *  (DESIGN-BLUEPRINT-NODE-ADMISSION.md). `to` is 'built_here' or 'referenced_only'. */
 export const postNodeReclassify = (slug, scopeLocator, to, reason) =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/reclassify`, { scope_locator: scopeLocator, to, reason });
-/** One verdict row per scope; accepted ones queue their materialisation. */
-export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
-  post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });
+/** One verdict row per scope. A decision only: nothing is written to Egeria until Publish. `onlyScopes` are
+ *  the scopes whose verdict is for THAT component alone, not for the components under it. */
+export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '', onlyScopes = []) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`,
+       { scope_locators: scopeLocators, verdict, note, ...(onlyScopes.length ? { only_scopes: onlyScopes } : {}) });
+
+/** What a Publish press for the architecture would write now (and what the last press did, per item). */
+export const getArchitecturePublishPlan = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/architecture/publish-plan`);
+
+/** Publish the architecture: the accepted components, then the accepted blueprints, are written to Egeria. */
+export const postArchitecturePublish = (slug) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/architecture/publish`, {});
 
 /** SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2 — clustering.py's candidate
  *  blueprints, each carrying its own verdict/materialization state and its
@@ -1711,10 +1721,8 @@ export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
 export const getComponentBlueprints = (slug) =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/blueprints`);
 
-/** Accept/reject one cluster. Accepting materialises a real Egeria
- *  SolutionBlueprint (blueprint_materializer.py) and queues its resolvable
- *  members/children for CollectionMembership — the caller does not wait on
- *  that queue, see SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4. */
+/** Accept/reject one cluster. A decision only: nothing is written to Egeria until Publish
+ *  (postArchitecturePublish). The shape and identifier chosen here are kept on the verdict for that press. */
 export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '', shape = '', identifier = '') =>
   post(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`,
        { perspective, cluster_name: clusterName, verdict, note, ...(shape ? { shape } : {}),

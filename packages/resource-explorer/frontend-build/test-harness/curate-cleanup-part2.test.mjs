@@ -17,7 +17,7 @@ const planBase = () => ({
   survey: { exists: true, surveyed_at: '2026-10-07T01:00:00', age_seconds: 7200, annotations: 42, steps: 12, stale_steps: 0, stale: [] },
   project: { status: 'linked', word: 'project', name: 'P' },
 });
-const BRANCH = { path: 'packages/x', name: 'x', components: 3, accepted: 0, rejected: 0, undecided: 3, low_confidence: 0, types: {}, type: 'Service', ports: 0, own_ports: [], verdict: null };
+const BRANCH = { path: 'packages/x', name: 'x', components: 3, children: 2, accepted: 0, rejected: 0, undecided: 3, low_confidence: 0, types: {}, type: 'Service', ports: 0, own_ports: [], verdict: null };
 const leaf = (p, v) => ({ path: p, type: 'Service', confidence: 90, verdict: v ? { verdict: v } : null, proposals: [], ports: [] });
 function leaves(state) {
   const g = ['packages/x/compose/a', 'packages/x/compose/b'].map((p) => leaf(p, state[p]));
@@ -275,6 +275,8 @@ test('two overlapping tree renders, then ONE press of a branch button posts ONE 
 test('the branch buttons are live while the open branches are still refreshing', async () => {
   const { document, server, window } = await setUp();
   await openBranch(document);
+  document.querySelector('[data-branch-scope="with"]').click();      // the branch and its children: the press names 3
+  await wait(60);
   server.leafDelays = [400];
   rerender(document, window);
   await wait(60);

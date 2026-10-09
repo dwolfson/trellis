@@ -106,7 +106,7 @@ class TestAcceptRoundTripsThroughTheNewReader:
             def resolve_member_guids(self, registry, entity_type, slug, member_slugs, slug_to_scope):
                 return {}, list(member_slugs)   # neither member has its own materialized component
 
-            def resolve_child_blueprint_guids(self, registry, entity_type, slug, perspective, child_names):
+            def resolve_child_blueprint_guids(self, registry, entity_type, slug, perspective, child_names, **_):
                 return {}, list(child_names)
 
         monkeypatch.setattr(
@@ -116,7 +116,10 @@ class TestAcceptRoundTripsThroughTheNewReader:
         r = client.post("/api/curate/blueprint-verdicts/repo/p",
                          json={"perspective": "physical", "cluster_name": "core", "verdict": "accepted"})
         assert r.status_code == 200, r.text
-        assert r.json()["materialization"]["status"] in ("materialized", "partial")
+        assert "materialization" not in r.json()            # Accept is a decision; Publish writes
+        from resource_explorer.workflows.curate import materialize_blueprint_if_accepted
+        out = materialize_blueprint_if_accepted(registry, "repo", "p", "physical", "core", "accepted")
+        assert out["status"] in ("materialized", "partial")
 
         out = client.get("/api/projects/p/components/blueprints").json()
         bp = out["blueprints"][0]
@@ -163,18 +166,20 @@ class TestTheShapeRidesTheRoute:
         _seed_cluster(registry, "p", perspective="physical", name="empty")
         assert client.get("/api/projects/p/components/blueprints").json()["blueprints"][0]["shape_plan"] is None
 
-    def test_a_flip_is_passed_to_the_write_and_a_bad_shape_is_refused(self, client, registry, monkeypatch):
+    def test_a_flip_is_kept_for_publish_and_a_bad_shape_is_refused(self, client, registry, monkeypatch):
+        """Accept writes nothing; the chosen shape rides on the verdict row until Publish."""
         self._seed_platform(registry)
-        seen = {}
 
-        def fake(reg, et, slug, perspective, cluster, verdict, **kw):
-            seen.update(kw)
-            return {"status": "materialized", "guid": ""}
-        monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_blueprint_if_accepted", fake)
+        def boom(*a, **k):
+            raise AssertionError("Accept reached the write")
+        monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_blueprint_if_accepted", boom)
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted", boom)
+        from resource_explorer.architecture_publish import blueprint_choices
         body = {"perspective": "deployment", "cluster_name": "OMAG-Server-Platform", "verdict": "accepted"}
-        assert client.post("/api/curate/blueprint-verdicts/repo/p", json={**body, "shape": "contents"}).status_code == 200
-        assert seen == {"shape": "contents"}
-        seen.clear()
-        assert client.post("/api/curate/blueprint-verdicts/repo/p", json=body).status_code == 200
-        assert seen == {}                      # no flip: the default, nothing passed
+        row = client.post("/api/curate/blueprint-verdicts/repo/p", json={**body, "shape": "contents"})
+        assert row.status_code == 200
+        assert blueprint_choices(row.json()) == {"shape": "contents", "identifier": ""}
+        row = client.post("/api/curate/blueprint-verdicts/repo/p", json=body)
+        assert row.status_code == 200
+        assert blueprint_choices(row.json()) == {"shape": "", "identifier": ""}     # no flip: the default
         assert client.post("/api/curate/blueprint-verdicts/repo/p", json={**body, "shape": "both"}).status_code == 400
