@@ -221,7 +221,10 @@ def _warm_survey_definition_cache() -> None:
                 SurveyDefinitionReader,
             )
 
-            SurveyDefinitionReader().warm_question_guid_cache()
+            from resource_explorer.egeria_clients import Daemon, DaemonReason
+
+            # Its own thread, so its identity is declared here (Brief I): the daemon.
+            SurveyDefinitionReader(identity=Daemon(DaemonReason.STARTUP_WARM)).warm_question_guid_cache()
         except Exception as exc:  # never let an optimisation take a process down
             log.debug("survey-definition cache warm skipped: %s", exc)
 

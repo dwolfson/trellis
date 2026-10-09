@@ -141,22 +141,36 @@ def _scheduler_loop(stop: threading.Event | None = None) -> None:
             time.sleep(_CHECK_INTERVAL_SECONDS)
         elif stop.wait(_CHECK_INTERVAL_SECONDS):
             break
-        try:
-            _run_due()
-        except Exception:
-            log.exception("Scheduler iteration failed")
-        try:
-            _reconcile_rfa_actions()
-        except Exception:
-            log.exception("RFA reconciliation iteration failed")
-        try:
-            _drain_egeria_outbox()
-        except Exception:
-            log.exception("Egeria outbox drain iteration failed")
-        try:
-            _sweep_native_surveys()
-        except Exception:
-            log.exception("Native Egeria survey read-back iteration failed")
+        _tick()
+
+
+def _tick() -> None:
+    """One scheduler pass, declared as RE's daemon identity (Brief I): scheduled surveys, RFA
+    reconciliation and the native-survey sweep run as `Daemon(SCHEDULER)`; the outbox drain
+    declares its own `Daemon(OUTBOX)`."""
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    with acting_as(Daemon(DaemonReason.SCHEDULER)):
+        _tick_body()
+
+
+def _tick_body() -> None:
+    try:
+        _run_due()
+    except Exception:
+        log.exception("Scheduler iteration failed")
+    try:
+        _reconcile_rfa_actions()
+    except Exception:
+        log.exception("RFA reconciliation iteration failed")
+    try:
+        _drain_egeria_outbox()
+    except Exception:
+        log.exception("Egeria outbox drain iteration failed")
+    try:
+        _sweep_native_surveys()
+    except Exception:
+        log.exception("Native Egeria survey read-back iteration failed")
 
 
 def _reconcile_rfa_actions() -> None:

@@ -81,7 +81,7 @@ def calls(monkeypatch):
             return ""
 
     monkeypatch.setattr("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", FakePublisher)
-    monkeypatch.setattr("resource_explorer.egeria_identity.service_credentials", lambda: SERVICE)
+    monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("svc-fake", "pw-fake"))
     return seen
 
 
@@ -140,13 +140,13 @@ class TestDrainCallsAsTheServiceIdentity:
 
 class TestABlankIdentityFailsLoudly:
     def test_it_is_a_configuration_error_not_an_egeria_call(self, monkeypatch, calls):
-        monkeypatch.setattr("resource_explorer.egeria_identity.service_credentials", lambda: BLANK)
+        monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         with pytest.raises(OutboxIdentityError, match="EGERIA_USER_ID"):
             outbox._default_clients()
         assert calls.members == [] and calls.publishers == []
 
     def test_rows_stay_pending_unburnt_with_the_sentence_on_each_row(self, db, calls, monkeypatch, caplog):
-        monkeypatch.setattr("resource_explorer.egeria_identity.service_credentials", lambda: BLANK)
+        monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         ids = _enqueue_members(db, 3)
         with caplog.at_level(logging.ERROR):
             summary = drain_outbox(db)
@@ -161,14 +161,14 @@ class TestABlankIdentityFailsLoudly:
             assert "EGERIA_USER_ID" in r["last_error"]
 
     def test_fixing_the_configuration_lets_the_same_rows_through(self, db, calls, monkeypatch):
-        monkeypatch.setattr("resource_explorer.egeria_identity.service_credentials", lambda: BLANK)
+        monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         _enqueue_members(db, 2)
         drain_outbox(db)
-        monkeypatch.setattr("resource_explorer.egeria_identity.service_credentials", lambda: SERVICE)
+        monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("svc-fake", "pw-fake"))
         assert drain_outbox(db)["done"] == 2
 
     def test_a_destructive_row_is_not_attempted_and_not_burnt_either(self, db, calls, monkeypatch):
-        monkeypatch.setattr("resource_explorer.egeria_identity.service_credentials", lambda: BLANK)
+        monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         rid = db.enqueue_outbox_element("repo", "p", "doc_source_unpublish", "Unpub::1", {})
         summary = drain_outbox(db)
         assert summary["config_error"]

@@ -55,8 +55,6 @@ STANDARD_DATA_CLASSES = [
 def bootstrap_data_classes() -> int:
     platform_url = os.getenv("EGERIA_PLATFORM_URL")
     view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
-    user_id = os.getenv("EGERIA_USER", "steward")
-    user_pwd = os.getenv("EGERIA_USER_PASSWORD", "steward")
 
     if not platform_url:
         log.error("EGERIA_PLATFORM_URL environment variable is not set. Cannot connect to Egeria.")
@@ -71,11 +69,14 @@ def bootstrap_data_classes() -> int:
 
     try:
         log.info(f"Connecting to Egeria View Server '{view_server}' at {platform_url}...")
-        designer = DataDesigner(view_server, platform_url, user_id, user_pwd)
-        designer.create_egeria_bearer_token(user_id, user_pwd)
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
 
-        ref_manager = ReferenceDataManager(view_server, platform_url, user_id, user_pwd)
-        ref_manager.create_egeria_bearer_token(user_id, user_pwd)
+        # A one-shot bootstrap of reference data: RE's daemon identity (Brief I), from the one
+        # daemon loader — no longer EGERIA_USER/EGERIA_USER_PASSWORD with a "steward" default.
+        clients = egeria_client(Daemon(DaemonReason.BOOTSTRAP), purpose="bootstrap data classes",
+                                view_server=view_server, platform_url=platform_url)
+        designer = clients.of(DataDesigner)
+        ref_manager = clients.of(ReferenceDataManager)
     except Exception as e:
         log.error(f"Failed to connect to Egeria: {e}")
         return 1

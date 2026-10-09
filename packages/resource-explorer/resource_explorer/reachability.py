@@ -240,14 +240,12 @@ def _get_clients():
     (trigger + poll a single engine action by GUID)."""
     from pyegeria import AutomatedCuration, MetadataExpert
 
-    from resource_explorer.rfa_egeria_sync import _egeria_connection_kwargs
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
 
-    view_server, platform_url, user_id, user_password = _egeria_connection_kwargs()
-    automated_curation = AutomatedCuration(view_server, platform_url, user_id, user_password)
-    automated_curation.create_egeria_bearer_token(user_id, user_password)
-    metadata_expert = MetadataExpert(view_server, platform_url, user_id, user_password)
-    metadata_expert.create_egeria_bearer_token(user_id, user_password)
-    return automated_curation, metadata_expert
+    # Who (Brief I): reachability is a named system job — the CHECK_ASSET probe runs as the
+    # service account whether the page or a pass asked for it.
+    clients = egeria_client(Daemon(DaemonReason.REACHABILITY), purpose="reachability probe")
+    return clients.of(AutomatedCuration), clients.of(MetadataExpert)
 
 
 def _poll_action_status(

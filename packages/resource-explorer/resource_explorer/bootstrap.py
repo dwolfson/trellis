@@ -733,9 +733,12 @@ def get_status(docs_dir: Path = DOCS_DIR) -> dict:
 # ── scheduler ───────────────────────────────────────────────────────────────
 
 def _loop(docs_dir: Path, interval: int, stop: threading.Event) -> None:
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
     while not stop.is_set():
         try:
-            check_and_heal(docs_dir)
+            with acting_as(Daemon(DaemonReason.BOOTSTRAP)):
+                check_and_heal(docs_dir)
         except Exception:
             # Never let a bad pass kill the loop — the next tick should still
             # get a chance to notice and repair a reset.

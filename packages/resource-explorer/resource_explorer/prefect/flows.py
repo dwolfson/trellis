@@ -13,6 +13,14 @@ from resource_explorer.surveyors.survey_definition_executor import get_adapter
 log = logging.getLogger(__name__)
 
 
+def _daemon_entry(fn):
+    """Brief I: a flow run in a Prefect worker process has no caller; it is declared
+    `Daemon(PREFECT_FLOW)` there. In RE's own process the carried identity is kept."""
+    from resource_explorer.egeria_clients import DaemonReason, daemon_entry
+
+    return daemon_entry(DaemonReason.PREFECT_FLOW)(fn)
+
+
 @task(name="Run Surveyor Step")
 def run_surveyor_step_task(
     entity_type: str,
@@ -190,6 +198,7 @@ def run_gx_validation_task(
 
 
 @flow(name="RE Survey Flow", persist_result=True)
+@_daemon_entry
 def re_survey_flow(
     entity_type: str,
     slug: str,
@@ -206,6 +215,7 @@ def re_survey_flow(
 
 
 @flow(name="RE Survey Step (in process)", persist_result=False)
+@_daemon_entry
 def re_survey_step_in_process_flow(
     entity_type: str,
     slug: str,
@@ -393,6 +403,7 @@ def run_planned_step_task(
 
 
 @flow(name="RE Survey Definition Flow")
+@_daemon_entry
 def re_survey_definition_flow(
     entity_type: str,
     slug: str,

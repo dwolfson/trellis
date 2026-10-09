@@ -24,26 +24,8 @@ reliably carry a real Egeria annotation GUID to link against.
 from __future__ import annotations
 
 import logging
-import os
 
 log = logging.getLogger(__name__)
-
-# Same standard pyegeria env vars / defaults egeria_publisher.py uses —
-# kept in sync deliberately (one Egeria connection story across this
-# codebase), not re-derived independently.
-_DEFAULT_PLATFORM_URL = "https://localhost:9443"
-_DEFAULT_VIEW_SERVER = "qs-view-server"
-_DEFAULT_USER = "erinoverview"
-_DEFAULT_PASSWORD = "secret"
-
-
-def _egeria_connection_kwargs() -> tuple[str, str, str, str]:
-    platform_url = os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-    view_server = os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
-    user_id = os.getenv("EGERIA_USER", _DEFAULT_USER)
-    user_password = os.getenv("EGERIA_USER_PASSWORD", _DEFAULT_PASSWORD)
-    return view_server, platform_url, user_id, user_password
-
 
 def _get_clients():
     """Construct (MyProfile, MetadataExpert) clients, bearer-tokened —
@@ -56,12 +38,13 @@ def _get_clients():
     MyProfile since it's a genuinely different, non-Asset-specific surface."""
     from pyegeria import MetadataExpert, MyProfile
 
-    view_server, platform_url, user_id, user_password = _egeria_connection_kwargs()
-    my_profile = MyProfile(view_server, platform_url, user_id, user_password)
-    my_profile.create_egeria_bearer_token(user_id, user_password)
-    metadata_expert = MetadataExpert(view_server, platform_url, user_id, user_password)
-    metadata_expert.create_egeria_bearer_token(user_id, user_password)
-    return my_profile, metadata_expert
+    from resource_explorer.egeria_clients import current_principal, egeria_client
+
+    # Who (Brief I): only scheduler.py's loop drives this, inside acting_as(Daemon(SCHEDULER)).
+    # An rfa_actions row records no requester, so Daemon(..., requested_by) has nobody to name
+    # (adding one is DDL). A route that ever calls it runs as the signed-in Caller.
+    clients = egeria_client(current_principal(), purpose="rfa sync")
+    return clients.of(MyProfile), clients.of(MetadataExpert)
 
 
 def sync_rfa_action(registry, rfa_row: dict) -> None:

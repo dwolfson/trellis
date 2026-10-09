@@ -292,16 +292,13 @@ class PyegeriaRegistrationPort(nsr.PyegeriaSurveyPort):
     gateway's parsers (live-verified shapes); the two writes are `create_server`
     (Egeria's template) and `initiate_process`."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, identity=None) -> None:
+        super().__init__(identity)
         self._gateway = None
 
     def _gw(self) -> PyegeriaCatalogueGateway:
         if self._gateway is None:
-            view_server, platform_url, user_id, user_password = self._connection()
-            self._gateway = PyegeriaCatalogueGateway(
-                view_server=view_server, platform_url=platform_url, user_id=user_id,
-                user_password=user_password)
+            self._gateway = PyegeriaCatalogueGateway(identity=self.principal())
         return self._gateway
 
     @staticmethod

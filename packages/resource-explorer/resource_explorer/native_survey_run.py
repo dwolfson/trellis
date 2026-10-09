@@ -187,11 +187,12 @@ class PyegeriaSurveyPort:
     thread; the routes build one per request and the sweep one per pass.
     Never use a port from a thread that already runs an event loop."""
 
-    def __init__(self) -> None:
+    def __init__(self, identity=None) -> None:
         self._curation = None
         self._expert = None
         self._assets = None
         self._loop = None
+        self._identity = identity
 
     def _enter(self) -> None:
         import asyncio
@@ -208,16 +209,21 @@ class PyegeriaSurveyPort:
             self._loop = None
             asyncio.set_event_loop(None)
 
-    def _connection(self):
-        from resource_explorer.rfa_egeria_sync import _egeria_connection_kwargs
+    def principal(self):
+        """Who this port acts as (Brief I): the identity it was given, else `current_principal()`
+        in the port's own thread — the signed-in Caller on a route, `Daemon(SCHEDULER)` in the
+        sweep. Resolved once; a port belongs to one thread."""
+        if self._identity is None:
+            from resource_explorer.egeria_clients import current_principal
 
-        return _egeria_connection_kwargs()
+            self._identity = current_principal()
+        return self._identity
 
     def _client(self, cls):
-        view_server, platform_url, user_id, user_password = self._connection()
-        client = cls(view_server, platform_url, user_id, user_password)
-        client.create_egeria_bearer_token(user_id, user_password)
-        return client
+        from resource_explorer.egeria_clients import egeria_client
+
+        # Not scope-shared: the port's clients are bound to the port's own event loop.
+        return egeria_client(self.principal(), purpose="native survey", shared=False).of(cls)
 
     def _get_curation(self):
         if self._curation is None:
