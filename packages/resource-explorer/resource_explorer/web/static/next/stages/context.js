@@ -51,6 +51,7 @@ import {
  *  survey source via the catalog's own `fromAnalysis` field (already on
  *  `OBSERVATIONS`, E0-era) rather than a fabricated cross-reference. */
 function fixedFieldFeedsLine(def) {
+  if (def.feeds) return `<div class="text-provenance text-ink-muted">feeds → ${esc(def.feeds)}</div>`;
   const parts = ['Curate (catalog record)'];
   if (def.fromAnalysis) parts.push(`sourced from ${def.fromAnalysis}`);
   return `<div class="text-provenance text-ink-muted">feeds → ${esc(parts.join(' · '))}</div>`;

@@ -53,17 +53,26 @@ import { RETENTION_BASES, resolveRetention } from '/static/next/retention-basis.
  * Nothing here is written to the catalogue until Curate. That sentence is
  * the one misconception worth pre-empting, and it is on the pane.
  */
+/** What a field's "feeds" line says when no publish step reads it yet (said, not left to imply Curate does). */
+export const KEPT_IN_RE = 'kept in Resource Explorer · no publish step reads it yet';
+export const BACKUP_STATUSES = ['yes', 'no', 'partial', 'unknown'];
 export const JUDGEMENTS = [
   { key: 'sensitivity',  label: 'Sensitivity',  options: ['public', 'internal', 'confidential', 'restricted'] },
   { key: 'criticality',  label: 'Criticality',  options: ['low', 'important', 'critical'] },
   { key: 'intended_use', label: 'Intended use', placeholder: 'what is this for, here?' },
   { key: 'actual_use',   label: 'Actual use',   placeholder: 'how is it used today?' },
   { key: 'owner',        label: 'Owner',        placeholder: 'who answers for it?' },
+  // PI-098: the rest of Classic's context form. Kept in RE and mirrored to the flat keys Classic reads
+  // (context.py `_MIRROR`); no publish step reads them yet, and the `feeds` line says so.
+  { key: 'steward',      label: 'Steward',      placeholder: 'who looks after its data quality?', feeds: KEPT_IN_RE },
+  { key: 'notes',        label: 'Notes',        placeholder: 'anything else a reader should know', multiline: true, feeds: KEPT_IN_RE },
 ];
 export const OBSERVATIONS = [
   { key: 'licence',      label: 'License',      fromAnalysis: 'license_classification' },
   { key: 'environment',  label: 'Environment',  options: ['prod', 'dev', 'test', 'research', 'archive'] },
   { key: 'retention',    label: 'Retention',    basis: true, placeholder: 'how long, and under whose retention rule?' },
+  { key: 'location',      label: 'Location',      placeholder: 'where is it held? e.g. us-west-2, EU', feeds: KEPT_IN_RE },
+  { key: 'backup_status', label: 'Backup status', options: BACKUP_STATUSES, feeds: KEPT_IN_RE },
 ];
 // The analyses whose current state is the evidence for a judgement.
 const ENRICHMENT_EVIDENCE = ['interface_surface', 'security_scan', 'chaoss_metrics', 'cve_scan',
@@ -114,6 +123,10 @@ function fieldControlHtml(def, field, kind = 'judgement') {
       <option value="">—</option>
       ${def.options.map((o) => `<option value="${o}" ${o === v ? 'selected' : ''}>${o}</option>`).join('')}
     </select>`;
+  }
+  if (def.multiline) {
+    return `<textarea data-field="${def.key}" rows="2" placeholder="${esc(def.placeholder || '')}"
+      class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">${esc(v)}</textarea>`;
   }
   return `<input data-field="${def.key}" type="text" value="${esc(v)}" placeholder="${esc(def.placeholder || '')}"
     class="w-full rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">`;
