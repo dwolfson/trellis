@@ -53,13 +53,13 @@ test('state is a cue plus a short word, and nothing is said when the server sent
   assert.equal(mod.blueprintSelectorHtml(undefined, ''), '');
 });
 
-test('"write to Egeria" is offered only for a blueprint with an accepted node', async () => {
+test('accepting a blueprint is offered only for a blueprint with an accepted node', async () => {
   const { mod, document } = await curate();
   const box = document.createElement('div');
   const base = { perspective: 'deployment', cluster_name: 'core', members: ['a'], child_status: [], verdict: null };
   box.innerHTML = mod.blueprintRowHtml({ ...base, member_status: [{ slug: 'a', verdict: null }] });
   assert.equal(box.querySelector('[data-blueprint-verdict="accepted"]'), null);
-  assert.match(box.querySelector('[data-blueprint-write-blocked]').textContent, /no accepted component · not written/);
+  assert.match(box.querySelector('[data-blueprint-write-blocked]').textContent, /no accepted component · nothing to publish/);
   assert.ok(box.querySelector('[data-blueprint-verdict="rejected"]'), 'reject is always available');
   box.innerHTML = mod.blueprintRowHtml({ ...base, member_status: [{ slug: 'a', verdict: { verdict: 'accepted' } }] });
   assert.equal(box.querySelector('[data-blueprint-verdict="accepted"]').textContent.trim(), 'accept');

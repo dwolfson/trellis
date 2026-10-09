@@ -238,7 +238,7 @@ function listSentences(body) {
 const LIST_NOUNS = {
   dependency_analysis: 'dependencies', cve_scan: 'advisories', data_file_profiling: 'data files',
   api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
-  sub_resource_survey: 'sub-resources', manifest_parse: 'manifest entries',
+  sub_resource_survey: 'files and folders', manifest_parse: 'manifest entries',
 };
 function listSentenceHtml(l, i) {
   const mapped = LIST_NOUNS[l.key];

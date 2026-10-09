@@ -24,6 +24,7 @@ import {
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand } from '/static/next/stages/publish.js';
+import { ARCHITECTURE_CHANGED } from '/static/next/stages/architecture-publish.js';
 import { repoCommitPanelHtml, commitHeaderHtml, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
 import { createScopeController, scopeListHtml, visibleRows } from '/static/next/stages/resource-scope.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
@@ -198,6 +199,13 @@ function paneError(lead, err, retryKey = '') {
   return `${esc(lead)}${esc(err && err.message)}${retry}`;
 }
 
+/** A section whose read failed (or had nowhere to draw) is NOT loaded: reopening it, or its retry control,
+ *  reads again. Only for the render this repository's loaded-record belongs to. */
+function markUnloaded(slug, key) {
+  const L = state.curate && state.curate.loaded;
+  if (L && L.slug === slug) L[key] = false;
+}
+
 /** Is this commit record the CURRENT state of the pane? Only while it is running or queued, or when it
  *  was pressed in this session. Anything older is history: a failure from 17 days ago is not how the
  *  repository stands now. */
@@ -270,14 +278,14 @@ export function promotionHtml(p) {
 
 /** What the mark at the left of a plan row means. It is NOT "accepted" or "published": the
  *  plan is a local read of the survey (curate_plan.py), so `candidate` only says the survey found
- *  something here that Catalog would create. A word in a bordered chip, not a check, so it cannot
+ *  something here that Publish would create. A word in a bordered chip, not a check, so it cannot
  *  be read as a done-state; the sentence is one hover away. */
 export function rowFoundChip(r) {
   const found = !!r.candidate;
   const word = found ? 'found' : (r.count === 0 ? 'none found' : 'info only');
   const title = found
-    ? 'The survey found this. Pressing Catalog would create it in Egeria; nothing here has been accepted or published yet.'
-    : (r.count === 0 ? 'The survey looked and found none of this.' : 'Shown for information; Catalog creates nothing from this line.');
+    ? 'The survey found this. Pressing Publish would create it in Egeria; nothing here has been accepted or published yet.'
+    : (r.count === 0 ? 'The survey looked and found none of this.' : 'Shown for information; Publish creates nothing from this line.');
   return `<span data-row-found="${found ? 'found' : 'none'}" title="${esc(title)}"
     class="shrink-0 whitespace-nowrap rounded-sm border border-rule-strong px-2 text-provenance ${found ? 'text-ink' : 'text-ink-muted'}">${word}</span>`;
 }
@@ -448,6 +456,12 @@ export function setCurateClock(c) { Object.assign(curateClock, c); }
 
 export async function renderCurate(slug) {
   const frame = mountCurateHost();
+  // A render token, taken before any band is set up: two renders for the SAME slug can interleave (slug equality
+  // cannot tell them apart), and a non-repository render must also retire a repository render still waiting
+  // for its plan. Only the newest may write shared state.
+  state.curate = state.curate || {};
+  const myRender = state.curate.renderToken = (state.curate.renderToken || 0) + 1;
+  const superseded = () => state.curate.renderToken !== myRender;
   const entityType = apiEntityType(state.resourceType);
   // Three bands on every kind (REPLY-DESIGNER-CURATE-AND-UNDERSTANDING-ALL-
   // KINDS.md §1-2): Findable on top, the kind's own work in the middle,
@@ -489,11 +503,6 @@ export async function renderCurate(slug) {
   // The plan request can take tens of seconds on a large repository (25 s on egeria_git). The
   // stage is already drawn and the other bands are loading on their own; this slot says so and
   // counts the seconds, and blocks nothing.
-  state.curate = state.curate || {};
-  // A render token: two renders for the SAME slug (a perspective toggle, re-entering the stage) can
-  // interleave, and slug equality cannot tell them apart. Only the newest may write shared state.
-  const myRender = state.curate.renderToken = (state.curate.renderToken || 0) + 1;
-  const superseded = () => state.curate.renderToken !== myRender;
   if (state.curate.lastSlug !== slug) {                // the "show all" flags are per repository
     state.blueprintShowAll = false;
     state.componentShowAll = false;
@@ -670,7 +679,7 @@ export async function renderCurate(slug) {
       } catch (err) {
         b.disabled = false; b.textContent = counts0Label();
         if (b.nextElementSibling) b.nextElementSibling.textContent = '';
-        const why = err.status === 401 ? 'sign in to catalog' : err.status === 409 ? err.message : `not cataloged: ${err.message}`;
+        const why = err.status === 401 ? 'sign in to publish' : err.status === 409 ? err.message : `not published: ${err.message}`;
         host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
       }
     });
@@ -713,14 +722,19 @@ export async function renderCurate(slug) {
         track(k, Promise.resolve(renderBlueprintList(slug)));
       } else if (k === 'deps') {
         const slot = host.querySelector('[data-dependency-table-host]');
+        if (!slot) { L[k] = false; continue; }                      // nowhere to draw: not loaded
         cueIn(slot, 'loading dependencies');
         // Brief section 3: the same ONE table, where a person confirms the proposed runtime rows.
-        track(k, Promise.resolve(mountDependencyTable(slot, slug, { confirmable: true, me })).then((r) => {
-          if (r === null && slot && slot.isConnected) {
+        // A read that is REJECTED (not merely answered with an error) gets the error slot and a retry, like the tree.
+        track(k, Promise.resolve().then(() => mountDependencyTable(slot, slug, { confirmable: true, me })).then((r) => {
+          if (r === null && slot.isConnected) {
             slot.insertAdjacentHTML('beforeend', ' <button type="button" data-curate-retry="deps" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">retry</button>');
             return false;
           }
           return true;
+        }, (err) => {
+          if (slot.isConnected) slot.innerHTML = `<span data-dependency-error class="text-caveat text-accent-ink">${paneError('The dependencies could not be read: ', err, 'deps')}</span>`;
+          return false;
         }));
       } else if (k === 'depth') {
         startPrefetch(slug, ['depth']);
@@ -734,7 +748,8 @@ export async function renderCurate(slug) {
     const b = ev.target.closest && ev.target.closest('[data-curate-retry]');
     if (!b) return;
     const k = b.dataset.curateRetry;
-    if (state.curate.loaded) state.curate.loaded[k] = false;
+    // A read already in flight is joined, not started a second time: only a settled section is reset.
+    if (state.curate.loaded && !(state.curate.loaded.p && state.curate.loaded.p[k])) state.curate.loaded[k] = false;
     loadSectionData(SECTION_OF[k] || '');
   });
   function setupLazySections() {
@@ -862,12 +877,30 @@ async function renderCatalogueDepthOffer(slug, host) {
  * accept goes through the shared preview dialog (rule 4): nothing runs
  * until confirmed. No undo, and the word is not offered -- a verdict is a
  * new row and the trail keeps both; the word is change. */
-function verdictBadge(v) {
+function verdictBadge(v, inEgeria = null) {
   if (!v) return `<span class="text-ink-muted">undecided</span>`;
   const word = esc(v.verdict);
-  return v.inherited_from
+  const only = v.only ? ` <span class="text-ink-muted">· this component only</span>` : '';
+  return (v.inherited_from
     ? `<span class="text-ink">${word}</span> <span class="text-ink-muted">· with <span class="font-mono">${esc(v.inherited_from)}/</span></span>`
-    : `<span class="text-ink">${word}</span>${v.decided_by ? ` <span class="text-ink-muted">· ${esc(v.decided_by)}</span>` : ''}`;
+    : `<span class="text-ink">${word}</span>${only}${v.decided_by ? ` <span class="text-ink-muted">· ${esc(v.decided_by)}</span>` : ''}`)
+    + egeriaWordHtml(v.verdict, inEgeria);
+}
+
+/** What a decision means for Egeria, as a cue plus a short word, the sentence on hover. `inEgeria` is the
+ *  element's own cache row (true/false), or null when the row cannot say (a branch). Accepting is a decision:
+ *  it reaches Egeria when Publish is pressed. Rejecting never writes: RE cannot remove an element. */
+export function egeriaWordHtml(verdict, inEgeria) {
+  if (inEgeria === null || inEgeria === undefined) return '';
+  if (verdict === 'accepted') {
+    return inEgeria
+      ? ` <span data-in-egeria="yes">· ${stateCue('measured', 'in Egeria')}</span>`
+      : ` <span data-in-egeria="no">· ${stateCue('unrun', 'not in Egeria yet', 'Accepting is a decision. Nothing is written to Egeria until Publish is pressed.')}</span>`;
+  }
+  if (verdict === 'rejected' && inEgeria) {
+    return ` <span data-in-egeria="still">· ${stateCue('partial', 'still in Egeria', 'Rejecting writes nothing: Resource Explorer cannot remove an element from Egeria, so it stays there until a steward removes it.')}</span>`;
+  }
+  return '';
 }
 
 /** The column has two shapes (designer, round two): one or two ports are
@@ -896,15 +929,37 @@ function openPortsInRail(slug, key, ports) {
     </div>`).join('')}`, { sub: `${ports.length} declared` });
 }
 
-function branchRowHtml(b, selected) {
+/** "this component only" or "with its N children" for a branch row (owner, 2026-10-09). The default is the
+ *  component alone when the branch is itself a component, and everything under it when it is only a grouping.
+ *  Kept per repository so a redraw does not lose the choice. */
+export function branchScopeMode(slug, b) {
+  const chosen = state.curate && state.curate.branchScope && state.curate.branchScope.slug === slug
+    ? state.curate.branchScope.modes[b.path] : '';
+  if (b.grouping_only || !b.children) return b.grouping_only ? 'with' : 'only';   // no choice to make
+  return chosen === 'with' || chosen === 'only' ? chosen : 'only';
+}
+function setBranchScopeMode(slug, path, mode) {
+  state.curate = state.curate || {};
+  if (!state.curate.branchScope || state.curate.branchScope.slug !== slug) state.curate.branchScope = { slug, modes: {} };
+  state.curate.branchScope.modes[path] = mode;
+}
+/** How many components a verdict on this branch row reaches, given its mode. */
+export const branchReach = (b, mode) => (mode === 'only' ? 1 : (b.components || 0));
+
+function branchRowHtml(b, selected, mode = 'with') {
   // The branch's own type leads; the mix beneath it is the CHILDREN's, so
   // a branch whose only typed component is itself does not say it twice.
   const mix = Object.entries(b.types || {}).map(([t, n]) => [t, t === b.type ? n - 1 : n]).filter(([, n]) => n > 0);
   const types = mix.map(([t, n]) => `${esc(t)}${n > 1 ? ` <span class="tnum">×${n}</span>` : ''}`).join(', ');
-  return `<div class="border-b border-rule py-[5px]" data-branch="${esc(b.path)}">
+  const choice = !b.grouping_only && b.children > 0;
+  const reach = branchReach(b, mode);
+  const toggle = (m, label) => `<button type="button" data-branch-scope="${m}" data-path="${esc(b.path)}" aria-pressed="${mode === m ? 'true' : 'false'}"
+        class="cursor-pointer bg-transparent p-0 ${mode === m ? 'text-ink' : 'text-accent-ink underline'}">${mode === m ? '● ' : ''}${label}</button>`;
+  return `<div class="${selected ? 'border-b border-l-2 border-rule border-l-accent bg-accent-tint py-[5px] pl-s1' : 'border-b border-rule py-[5px]'}" data-branch="${esc(b.path)}" data-selected="${selected ? '1' : '0'}">
     <div class="flex flex-wrap items-baseline gap-x-s2 gap-y-[2px]">
       <input type="checkbox" data-branch-select="${esc(b.path)}" ${selected ? 'checked' : ''}
         aria-label="select ${esc(b.name)}" class="shrink-0 cursor-pointer">
+      ${selected ? '<span data-selected-cue class="text-provenance text-ink" title="Ticked: the selection bar acts on every ticked row.">● selected</span>' : ''}
       <button data-branch-open="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 font-mono text-caveat text-ink">${esc(b.name)}/${icon('chevron-right', { size: 12 })}</button>
       <span class="text-provenance text-ink-muted">· <span class="tnum">${b.components}</span> component${b.components === 1 ? '' : 's'}</span>
       ${b.grouping_only ? `<span class="text-provenance text-ink-muted">· grouping only — a directory that holds components, not a component itself</span>` : b.type ? `<span class="text-provenance text-ink-muted">· ${esc(b.type)}</span>` : ''}
@@ -915,8 +970,13 @@ function branchRowHtml(b, selected) {
     <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance">
       <span>${verdictBadge(b.verdict)}</span>
       <span class="text-ink-muted"><span class="tnum">${b.accepted}</span> accepted · <span class="tnum">${b.rejected}</span> rejected · <span class="tnum">${b.undecided}</span> undecided</span>
-      <button data-branch-verdict="accepted" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">accept all ${b.components}</button>
-      <button data-branch-verdict="rejected" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject all</button>
+      ${b.accepted ? `<span class="text-ink-muted" data-branch-in-egeria>· <span class="tnum">${b.in_egeria || 0}</span> of them in Egeria${
+        b.rejected_in_egeria ? ` · <span class="tnum">${b.rejected_in_egeria}</span> rejected but still in Egeria` : ''}</span>` : ''}
+      ${choice ? `<span data-branch-scope-choice class="text-ink-muted">· applies to
+        ${toggle('only', 'this component only')} /
+        ${toggle('with', `with its <span class="tnum">${b.children}</span> children`)}</span>` : ''}
+      <button data-branch-verdict="accepted" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${mode === 'only' ? 'accept this component' : `accept all ${reach}`}</button>
+      <button data-branch-verdict="rejected" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">${mode === 'only' ? 'reject this component' : 'reject all'}</button>
     </div>
     <div data-branch-leaves hidden class="mt-s1 pl-s3"></div>
   </div>`;
@@ -946,7 +1006,7 @@ export function leafRowHtml(l) {
       ${!multi && (l.low_confidence ? `<span class="text-state-warn">· ⚠ confidence <span class="tnum">${l.confidence ?? 0}</span>%</span>` : l.confidence != null ? `<span class="text-ink-muted">· confidence <span class="tnum">${l.confidence}</span>%</span>` : '')}
       ${l.ports?.length ? portsWords(0, l.ports, l.path) : ''}
       ${admissionHtml(l)}
-      <span>· ${verdictBadge(l.verdict)}</span>
+      <span>· ${verdictBadge(l.verdict, l.verdict ? !!l.materialized : null)}</span>
       ${promotionHtml(l.promotion)}
       <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
       <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
@@ -1002,13 +1062,15 @@ function selectionBarHtml(selected, shown, total) {
   if (!total) return '';
   const selectedShown = shown.filter((b) => selected.has(b.path)).length;
   const overflow = selected.size > selectedShown ? selected.size - selectedShown : 0;
-  return `<div class="mb-s1 flex flex-wrap items-baseline gap-s3 text-provenance">
+  return `<div data-selection-bar data-sticky="${selected.size ? '1' : '0'}" class="${selected.size
+    ? 'sticky top-0 z-10 mb-s1 flex flex-wrap items-baseline gap-s3 border-b border-rule bg-paper py-s1 text-provenance'
+    : 'mb-s1 flex flex-wrap items-baseline gap-s3 text-provenance'}">
     <label class="flex cursor-pointer items-baseline gap-[5px] text-ink-muted">
       <input type="checkbox" data-select-all-shown ${shown.length && selectedShown === shown.length ? 'checked' : ''}>
       select all shown</label>
     ${total > shown.length ? `<button data-select-all-matching class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
         >select all <span class="tnum">${total}</span> branches${icon('chevron-right', { size: 12 })}</button>` : ''}
-    <span class="text-ink-muted"><span class="tnum">${selectedShown}</span> of <span class="tnum">${shown.length}</span> shown selected${
+    <span class="${selected.size ? 'text-ink' : 'text-ink-muted'}" data-selected-count>${selected.size ? '● ' : ''}<span class="tnum">${selectedShown}</span> of <span class="tnum">${shown.length}</span> shown selected${
       overflow ? ` · <span class="tnum">${selected.size}</span> selected in total` : ''}</span>
     ${selected.size ? `<button data-selection-verdict="accepted" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
         >accept <span class="tnum">${selected.size}</span> selected</button>
@@ -1020,14 +1082,17 @@ function selectionBarHtml(selected, shown, total) {
 
 async function renderComponentTree(slug, prefix = '') {
   const host = $('component-tree');
-  if (!host) return;
+  if (!host) { markUnloaded(slug, 'tree'); return false; }       // nowhere to draw: not loaded
   // Each render takes a token; every continuation after an await bails out if a newer render has begun, so
   // two overlapping renders never both bind handlers or both write the DOM.
   const token = host._renderToken = (host._renderToken || 0) + 1;
   const stale = () => host._renderToken !== token || !host.isConnected;
   let tree;
   try { tree = await ((!prefix && takePrefetched(slug, 'tree')) || getComponentTree(slug, prefix)); }
-  catch (err) { if (!stale()) host.innerHTML = `<span class="text-accent-ink">${paneError('The components could not be read: ', err, 'tree')}</span>`; return false; }
+  catch (err) {
+    if (!stale()) { host.innerHTML = `<span class="text-accent-ink">${paneError('The components could not be read: ', err, 'tree')}</span>`; markUnloaded(slug, 'tree'); }
+    return false;
+  }
   if (slug !== state.selectedSlug || stale()) return true;
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   if (!tree.branches.length) {
@@ -1076,7 +1141,7 @@ async function renderComponentTree(slug, prefix = '') {
       · sort <button data-tree-sort="size" class="cursor-pointer bg-transparent p-0 ${sort === 'size' ? 'text-ink' : 'text-accent-ink underline'}">by size</button>
       / <button data-tree-sort="confidence" class="cursor-pointer bg-transparent p-0 ${sort === 'confidence' ? 'text-ink' : 'text-accent-ink underline'}">by evidence</button></div>
     ${selectionBarHtml(selected, shown, rows.length)}
-    ${shown.map((b) => branchRowHtml(b, selected.has(b.path))).join('')}
+    ${shown.map((b) => branchRowHtml(b, selected.has(b.path), branchScopeMode(slug, b))).join('')}
     ${!state.componentShowAll && rows.length > 8 ? `<div class="py-[5px] text-provenance"><button data-tree-more class="cursor-pointer bg-transparent p-0 text-accent-ink underline">and <span class="tnum">${rows.length - 8}</span> more branches${icon('chevron-right', { size: 12 })}</button></div>` : ''}
     ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
     ${tree.topology_totals ? `<div class="mt-s2 text-provenance text-ink-muted">${tnum(esc(tree.topology_totals))}</div>` : ''}
@@ -1091,6 +1156,10 @@ async function renderComponentTree(slug, prefix = '') {
   if (keptDiagram) $('component-diagram')?.replaceWith(keptDiagram);
   renderComponentDiagram(slug, $('component-diagram'));
 
+  host.querySelectorAll('[data-branch-scope]').forEach((t) => t.addEventListener('click', () => {
+    setBranchScopeMode(slug, t.dataset.path, t.dataset.branchScope);
+    renderComponentTree(slug, prefix);
+  }));
   host.querySelectorAll('[data-branch-select]').forEach((c) => c.addEventListener('change', () => {
     if (c.checked) selected.add(c.dataset.branchSelect); else selected.delete(c.dataset.branchSelect);
     renderComponentTree(slug, prefix);
@@ -1110,14 +1179,19 @@ async function renderComponentTree(slug, prefix = '') {
   host.querySelector('[data-selection-verdict="accepted"]')?.addEventListener('click', () => {
     const paths = [...selected];
     const picked = tree.branches.filter((b) => paths.includes(b.path));
+    const onlyScopes = picked.filter((b) => branchScopeMode(slug, b) === 'only').map((b) => b.path);
     recordVerdicts(slug, paths, 'accepted', {
-      count: picked.reduce((n, b) => n + (b.components || 0), 0),
+      count: picked.reduce((n, b) => n + branchReach(b, branchScopeMode(slug, b)), 0),
       low: picked.reduce((n, b) => n + (b.low_confidence || 0), 0),
       exists: picked.reduce((n, b) => n + (b.accepted || 0), 0),
+      onlyScopes,
     }, () => { selected.clear(); }, host.querySelector('[data-selection-verdict="accepted"]'));
   });
   host.querySelector('[data-selection-verdict="rejected"]')?.addEventListener('click', () => {
-    recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0 }, () => { selected.clear(); }, host.querySelector('[data-selection-verdict="rejected"]'));
+    const picked = tree.branches.filter((b) => selected.has(b.path));
+    recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0,
+      onlyScopes: picked.filter((b) => branchScopeMode(slug, b) === 'only').map((b) => b.path) },
+    () => { selected.clear(); }, host.querySelector('[data-selection-verdict="rejected"]'));
   });
 
   /** Reads a branch's leaves into its box. `refresh` keeps what is on screen (and each group's open state)
@@ -1147,7 +1221,10 @@ async function renderComponentTree(slug, prefix = '') {
       box.querySelectorAll('[data-group-verdict]').forEach((gb) => gb.addEventListener('click', () => {
         // The undecided set is read from the rows on screen at PRESS time (never from a closure over an earlier
         // read), and a batch in flight for this box is not started twice.
-        if (box._groupBusy) return;
+        // One batch per GROUP: a press on a second group of the same branch is not blocked by the first.
+        const busy = box._groupBusy = box._groupBusy || {};
+        const gname = gb.dataset.group;
+        if (busy[gname]) return;
         const group = gb.closest('details[data-leaf-group]');
         const rowsNow = group ? [...group.querySelectorAll('[data-leaf-path]')] : [];
         const todo = rowsNow.filter((r) => r.dataset.leafUndecided === '1').map((r) => r.dataset.leafPath);
@@ -1156,8 +1233,8 @@ async function renderComponentTree(slug, prefix = '') {
         const known = new Map(((groups.find((x) => x.name === gb.dataset.group) || {}).members || []).map((m) => [m.path, m]));
         recordVerdicts(slug, todo, verdict, {
           count: todo.length, low: todo.filter((pth) => (known.get(pth) || {}).low_confidence).length, exists: 0, confirmAlways: true,
-          onStart: () => { box._groupBusy = true; },
-          onSettled: () => { box._groupBusy = false; },
+          onStart: () => { busy[gname] = true; },
+          onSettled: () => { busy[gname] = false; },
           // after a failed batch: how many of the batch now carry the verdict (read fresh from the server)
           countRecorded: async () => {
             const again = await getComponentLeaves(slug, path);
@@ -1190,7 +1267,10 @@ async function renderComponentTree(slug, prefix = '') {
   }));
   host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
     const br = tree.branches.find((x) => x.path === b.dataset.scope);
-    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count: br?.components || 0, low: br?.low_confidence || 0, exists: br?.accepted || 0 }, undefined, b);
+    const mode = br ? branchScopeMode(slug, br) : 'with';
+    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, {
+      count: br ? branchReach(br, mode) : 0, low: mode === 'only' ? 0 : (br?.low_confidence || 0), exists: br?.accepted || 0,
+      onlyScopes: mode === 'only' ? [b.dataset.scope] : [] }, undefined, b);
   }));
   // Put the open branches back as they were, then refresh them in place from a re-read.
   const refreshes = [];
@@ -1279,7 +1359,7 @@ function membershipHonestyLine(bp) {
   const materializedChildren = (bp.child_status || []).filter((c) => c.materialized).length;
   const total = materializedMembers + materializedChildren;
   if (!total) {
-    return `<div class="text-caveat text-ink-muted">its members are not yet linked — none of its proposed members are cataloged as their own Egeria elements yet, so there is nothing to link</div>`;
+    return `<div class="text-caveat text-ink-muted">its members are not yet linked — none of its proposed members are in Egeria as their own elements yet, so there is nothing to link</div>`;
   }
   const parts = [];
   if (materializedMembers) parts.push(`<span class="tnum">${materializedMembers}</span> accepted component${materializedMembers === 1 ? '' : 's'}`);
@@ -1288,14 +1368,14 @@ function membershipHonestyLine(bp) {
     class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${parts.join(' and ')} stand apart${icon('chevron-right', { size: 12 })}</button></div>`;
 }
 
-/** "Write to Egeria" is per blueprint and only for one with accepted nodes (brief section 4): a
- *  blueprint none of whose components or child blueprints has been accepted would be written empty.
+/** Accepting is per blueprint and only for one with accepted nodes (brief section 4): a blueprint none of
+ *  whose components or child blueprints has been accepted would be written empty when it is published.
  *  Without an accepted node the control is replaced by the reason, in a short word. */
 export function blueprintWriteHtml(bp, accepted) {
   const nodes = (bp.member_status || []).filter((m) => (m.verdict || {}).verdict === 'accepted').length
     + (bp.child_status || []).filter((c) => (c.verdict || {}).verdict === 'accepted').length;
   if (!nodes && !accepted) {
-    return `<span data-blueprint-write-blocked class="text-ink-muted" title="A blueprint is written to Egeria only when at least one of its components or child blueprints is accepted.">no accepted component · not written</span>`;
+    return `<span data-blueprint-write-blocked class="text-ink-muted" title="A blueprint is published to Egeria only when at least one of its components or child blueprints is accepted.">no accepted component · nothing to publish</span>`;
   }
   return `<button data-blueprint-verdict="accepted" data-key="${esc(bp.perspective)}::${esc(bp.cluster_name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${accepted ? 'change' : 'accept'}</button>`;
 }
@@ -1323,10 +1403,14 @@ export function blueprintRowHtml(bp) {
     </div>
     ${accepted
       ? (bp.materialized
-          ? `<div class="mt-[2px] text-caveat text-ink">cataloged as a Solution Blueprint · <span class="font-mono">${esc((bp.materialized.guid || '').slice(0, 8))}…</span></div>
+          ? `<div class="mt-[2px] text-caveat text-ink" data-in-egeria="yes">${stateCue('measured', 'in Egeria')} Solution Blueprint · <span class="font-mono">${esc((bp.materialized.guid || '').slice(0, 8))}…</span></div>
              ${membershipHonestyLine(bp)}`
-          : `<div class="mt-[2px] text-caveat text-accent-ink">accepted, but not yet cataloged in Egeria — the write may not have completed; re-accepting will retry</div>`)
-      : rejected ? `<div class="mt-[2px] text-caveat text-ink-muted">rejected · nothing created</div>` : ''}
+          : `<div class="mt-[2px] text-caveat" data-in-egeria="no">${stateCue('unrun', 'accepted · not in Egeria yet', 'Accepting is a decision. Nothing is written to Egeria until Publish is pressed.')}</div>`)
+      : rejected
+        ? (bp.materialized
+          ? `<div class="mt-[2px] text-caveat" data-in-egeria="still">${stateCue('partial', 'rejected · still in Egeria', 'Rejecting writes nothing: Resource Explorer cannot remove an element from Egeria, so the blueprint stays there until a steward removes it.')}</div>`
+          : `<div class="mt-[2px] text-caveat text-ink-muted">rejected · nothing in Egeria</div>`)
+        : ''}
   </div>`;
 }
 
@@ -1345,12 +1429,12 @@ function openBlueprintMembersInRail(slug, bp, { standApartOnly = false } = {}) {
   }
   const rows = [...members, ...children];
   railFrame('Members', slug, `
-    <div class="mb-s1 text-caps text-chrome-muted">${esc(bp.cluster_name)} · ${esc(bp.perspective)} reading${standApartOnly ? ' · cataloged but not confirmed linked to the blueprint' : ''}</div>
+    <div class="mb-s1 text-caps text-chrome-muted">${esc(bp.cluster_name)} · ${esc(bp.perspective)} reading${standApartOnly ? ' · in Egeria but not confirmed linked to the blueprint' : ''}</div>
     ${rows.length ? rows.map((m) => `<div class="flex items-baseline gap-s2 border-b border-chrome-line-soft py-[3px] text-caps">
       <span class="font-mono text-chrome-ink">${esc(m.slug)}</span>
       <span class="text-chrome-muted">${m.kind === 'blueprint' ? 'child blueprint' : 'component'}</span>
       <span class="text-chrome-muted">${m.verdict ? esc(m.verdict.verdict) : 'undecided'}</span>
-      <span class="text-chrome-muted">${m.materialized ? 'cataloged in Egeria' : 'not cataloged'}</span>
+      <span class="text-chrome-muted">${m.materialized ? 'in Egeria' : 'not in Egeria yet'}</span>
     </div>`).join('') : `<div class="text-caps text-chrome-muted">nothing to show</div>`}`,
     { sub: `${rows.length} of ${(bp.member_status || []).length + (bp.child_status || []).length}` });
 }
@@ -1364,11 +1448,17 @@ function blueprintReadingKey(slug) {
 
 async function renderBlueprintList(slug) {
   const host = $('blueprint-list');
-  if (!host) return;
+  if (!host) { markUnloaded(slug, 'blueprints'); return false; }   // nowhere to draw: not loaded
+  // Each render takes a token; an older read finishing after a newer one began must not paint into its slot.
+  const token = host._renderToken = (host._renderToken || 0) + 1;
+  const stale = () => host._renderToken !== token || !host.isConnected;
   let data;
   try { data = await (takePrefetched(slug, 'blueprints') || getComponentBlueprints(slug)); }
-  catch (err) { host.innerHTML = `<span class="text-accent-ink">${paneError('The blueprints could not be read: ', err, 'blueprints')}</span>`; return false; }
-  if (slug !== state.selectedSlug) return true;
+  catch (err) {
+    if (!stale()) { host.innerHTML = `<span class="text-accent-ink">${paneError('The blueprints could not be read: ', err, 'blueprints')}</span>`; markUnloaded(slug, 'blueprints'); }
+    return false;
+  }
+  if (slug !== state.selectedSlug || stale()) return true;
   const { blueprints, perspectives } = data;
   const selectorSlot = $('blueprint-selector');
   // What the commit table counts: blueprint VERDICTS on record (curate_plan.py, `blueprints_accepted`), which
@@ -1442,9 +1532,9 @@ async function renderBlueprintList(slug) {
   }));
 }
 
-/** Same shared-preview-dialog rule as `recordVerdicts` (rule 4): accepting a
- *  cluster materialises a real Egeria SolutionBlueprint, so it names that
- *  before it does it. Rejecting creates nothing, so it records at once. */
+/** Accepting a cluster is a decision: it records that the SolutionBlueprint is wanted, with the shape and
+ *  identifier chosen here, and nothing is written to Egeria until Publish. Rejecting writes nothing either,
+ *  so it records at once. */
 function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
   const status = $('blueprint-status');
   let chosenShape = '';   // a person's flip of the shape; '' takes the default the plan names
@@ -1454,13 +1544,10 @@ function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
     pressPhase(pressedEl, 'pending', verdict === 'accepted' ? 'accepting…' : 'rejecting…');
     if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
-      const res = await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict, '', chosenShape, chosenIdentifier);
+      await postBlueprintVerdict(slug, bp.perspective, bp.cluster_name, verdict, '', chosenShape, chosenIdentifier);
       pressPhase(pressedEl, 'done', verdict === 'accepted' ? 'accepted' : 'rejected');
+      document.dispatchEvent(new CustomEvent(ARCHITECTURE_CHANGED, { detail: { slug } }));   // Publish re-reads its list
       await renderBlueprintList(slug);
-      // Direct memberships left by an earlier run are reported, never removed.
-      const extra = res?.materialization?.extra_members_words;
-      const st = $('blueprint-status');
-      if (extra && st) st.textContent = extra;
     } catch (err) {
       const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
       pressPhase(pressedEl, 'error', 'failed · press to retry', why);
@@ -1473,10 +1560,10 @@ function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
   const body = el.querySelector('#wl-detail-body');
   const memberCount = (bp.members || []).length;
   body.innerHTML = `
-    <p class="text-caveat text-ink">Catalogs <span class="font-mono">${esc(bp.cluster_name)}</span> as a real Egeria <span class="font-mono">SolutionBlueprint</span> —
-      the type is pinned (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §0), unlike an individual component's.</p>
-    <p class="text-caveat text-ink-muted">${memberCount ? `<span class="tnum">${memberCount}</span> proposed member${memberCount === 1 ? '' : 's'}, but this does not accept or materialize them —
-      only members already accepted and cataloged on their own get queued to link, and that queue is not confirmed done by the time this pane reads it back.` : 'This cluster has no proposed members.'}</p>
+    <p class="text-caveat text-ink">Records that <span class="font-mono">${esc(bp.cluster_name)}</span> should be a real Egeria <span class="font-mono">SolutionBlueprint</span> —
+      the type is pinned (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §0), unlike an individual component's. Nothing is written to Egeria until you press Publish.</p>
+    <p class="text-caveat text-ink-muted">${memberCount ? `<span class="tnum">${memberCount}</span> proposed member${memberCount === 1 ? '' : 's'}, but this does not accept or publish them —
+      only members already accepted and in Egeria get linked when the blueprint is published, and that link is confirmed by a read afterwards.` : 'This cluster has no proposed members.'}</p>
     ${shapeManifestHtml(bp.shape_plan)}
     ${identifierBoxHtml(bp.identity)}
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
@@ -1650,7 +1737,7 @@ function pressPhase(el, phase, word, title = '') {
   el.setAttribute('aria-busy', phase === 'pending' ? 'true' : 'false');
   el.innerHTML = stateCue(phase === 'pending' ? 'running' : phase === 'done' ? 'measured' : 'error', word, title);
 }
-function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirmAlways = false, countRecorded = null, onStart = null, onSettled = null }, onDone, pressedEl = null) {
+function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirmAlways = false, countRecorded = null, onStart = null, onSettled = null, onlyScopes = [] }, onDone, pressedEl = null) {
   const status = $('component-tree-status');
   const accepting = verdict === 'accepted';
   const go = async () => {
@@ -1660,13 +1747,15 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirm
     pressPhase(pressedEl, 'pending', accepting ? 'accepting…' : 'rejecting…');
     if (status) status.innerHTML = stateCue('running', 'recording…');
     try {
-      const out = await postBranchVerdicts(slug, scopes, verdict);
+      const out = await postBranchVerdicts(slug, scopes, verdict, '', onlyScopes);
       pressPhase(pressedEl, 'done', accepting ? 'accepted' : 'rejected');
+      // A decision only: the words say so. Nothing reaches Egeria until Publish.
       const settled = accepting
-        ? `<span class="text-state-ok">→ <span class="tnum">${out.verdicts.length}</span> verdict${out.verdicts.length === 1 ? '' : 's'} recorded · <span class="tnum">${out.queued ?? 0}</span> component${out.queued === 1 ? '' : 's'} queued for Egeria — the pane does not wait</span>`
-        : `<span class="text-state-ok">→ rejected · nothing created</span>`;
+        ? `<span class="text-state-ok">→ <span class="tnum">${out.verdicts.length}</span> verdict${out.verdicts.length === 1 ? '' : 's'} recorded · accepted · not in Egeria until Publish</span>`
+        : `<span class="text-state-ok">→ rejected · nothing written to Egeria</span>`;
       if (status) status.innerHTML = settled;
       onDone?.();
+      document.dispatchEvent(new CustomEvent(ARCHITECTURE_CHANGED, { detail: { slug } }));   // Publish re-reads its list
       // The tree redraws from a re-read and replaces its status line, so the settled words are written
       // again on the new line: the result stays on screen after the redraw.
       await renderComponentTree(slug);
@@ -1701,7 +1790,7 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirm
     const rel = openDialog('Reject at the branch', scopeLabel);
     const rbody = rel.querySelector('#wl-detail-body');
     rbody.innerHTML = `
-    <p class="text-caveat text-ink"><span class="tnum">${count}</span> undecided component${count === 1 ? '' : 's'} will be recorded as rejected. Nothing is created in Egeria.</p>
+    <p class="text-caveat text-ink"><span class="tnum">${count}</span> undecided component${count === 1 ? '' : 's'} will be recorded as rejected. Nothing is written to Egeria, and nothing already there is removed.</p>
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
       <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Reject ${count}</button>
@@ -1713,9 +1802,9 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirm
   const el = openDialog('Accept at the branch', scopeLabel);
   const body = el.querySelector('#wl-detail-body');
   body.innerHTML = `
-    <p class="text-caveat text-ink"><span class="tnum">${count}</span> components${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
-      <span class="tnum">${Math.max(0, count - exists)}</span> will be created as software components in Egeria — the exact Egeria type is not yet pinned${exists ? `; <span class="tnum">${exists}</span> already accepted` : '; none exist yet'}.</p>
-    <p class="text-caveat text-ink-muted">Publish time for component creation is not yet measured — the first branch is what fixes it. Queued, so the pane returns at once. Nothing runs until you confirm.</p>
+    <p class="text-caveat text-ink"><span class="tnum">${count}</span> component${count === 1 ? '' : 's'}${low ? `, <span class="tnum">${low}</span> of them at or below 50% confidence` : ''}.
+      <span class="tnum">${Math.max(0, count - exists)}</span> will be recorded as accepted${exists ? `; <span class="tnum">${exists}</span> already accepted` : ''}.</p>
+    <p class="text-caveat text-ink-muted">Accepting is a decision: nothing is written to Egeria until you press Publish, and Publish lists what it will write first.</p>
     <p class="text-caveat text-ink-muted">A verdict is a new row; changing it later is another row, and the trail keeps both.</p>
     <div class="mt-s3 flex gap-s3">
       <button data-act="confirm" class="cursor-pointer rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink">Accept ${count}</button>

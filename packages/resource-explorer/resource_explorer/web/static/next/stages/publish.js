@@ -28,6 +28,7 @@ import {
   getRepoPublishState, publishRepoReport, forgetEgeriaLinks, resurveyRepo,
   getEgeriaReports, getEgeriaReportAnnotations, getFileTypeMeasurements,
 } from '/static/re-api.js';
+import { mountArchitecturePublish } from '/static/next/stages/architecture-publish.js';
 import {
   state, esc, $, ensureRailShowing, copyAsEvidence, openCurrentInvestigationStage,
 } from '/static/next/app.js';
@@ -428,10 +429,13 @@ export async function renderPublishBand(el, slug, entityType) {
         <span class="text-provenance text-ink-muted">· in the survey report</span></summary>
         <div class="mt-s1" data-file-measurements-host></div></details>
       ${controlsHtml(st, signedIn)}
+      <div class="mt-s3" data-architecture-publish-host></div>
       <div class="mt-s3" data-egeria-reports-host></div>`;
     bindCopy(el);
     if (feedback) el.querySelector('[data-publish-feedback]').textContent = feedback;
     wire(st);
+    // The architecture (accepted components and blueprints) is published by its own control, below.
+    mountArchitecturePublish(el.querySelector('[data-architecture-publish-host]'), slug).catch(() => {});
     mountEgeriaReports(el.querySelector('[data-egeria-reports-host]'), { entityType: 'repo', slug, inEgeria: st.in_egeria });
   };
 
