@@ -93,6 +93,7 @@ import { mountSubResourcePanel } from '/static/next/stages/analysis.js';
 import { toggleRfaDrawer } from '/static/next/rfa.js';
 import { openActivityPanel } from '/static/next/stages/activity.js';
 import { startActivityWatch } from '/static/next/activity-unread.js';
+import { installHealthBanner, installBootstrapBanner, openConnectionPopover } from '/static/next/shell-status.js';
 import { renderAutomate } from '/static/next/stages/automate.js';
 // Admin (PLAN-FINISH-REPOS.md item 5) — chrome-level, same pattern as
 // Activity: reachable from the header's own ⚙ Admin button, decoupled from
@@ -835,6 +836,17 @@ export function renderTopBar() {
     : 'Open the Classic UI';
   wireActivityButton();
   wireAdminButton();
+  wireWhoamiButton();
+}
+
+/** The connection-details popover (PI-137): the signed-in user, which Egeria, and which build is serving. */
+let whoamiButtonWired = false;
+function wireWhoamiButton() {
+  if (whoamiButtonWired) return;
+  const btn = $('whoami');
+  if (!btn) return;
+  whoamiButtonWired = true;
+  btn.addEventListener('click', () => openConnectionPopover(document, btn, { me: state.me }));
 }
 
 /** Activity is a persistent header surface, not a STAGES entry (see
@@ -9805,6 +9817,8 @@ async function start() {
   renderSidebar();
   renderRail();
   // The unread badge and the toast that jumps to an entry (PI-124). A failed first read leaves the badge empty.
+  installHealthBanner(document);
+  installBootstrapBanner(document);
   startActivityWatch({
     doc: document,
     first: activity.status === 'fulfilled' && Array.isArray(activity.value) ? activity.value : [],
