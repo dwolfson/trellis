@@ -26,11 +26,12 @@ from pathlib import Path
 
 NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
 
-DEFERRED_TAB_IDS = [
+#: Egeria Links and Publish Queue were the two named deferrals; both were built under parity P1
+#: (PI-130, PI-131). The deferral machinery in admin/index.js stays for a future one.
+DEFERRED_TAB_IDS: list[str] = []
+BUILT_TAB_IDS = [
     "admin-egeria-links",
     "admin-outbox",
-]
-BUILT_TAB_IDS = [
     "annotations",
     "admin-groups",
     "admin-question-catalog",
@@ -127,6 +128,17 @@ class TestGroupsAndTabsMatchClassic:
         src = _admin_index_src()
         render_count = src.count("render: render")
         assert render_count == len(BUILT_TAB_IDS)
+
+
+class TestEgeriaLinksAndPublishQueueAreBuilt:
+    def test_both_tabs_render_their_own_module_and_carry_no_deferral(self):
+        src = _admin_index_src()
+        for tab_id, renderer in (("admin-egeria-links", "renderEgeriaLinks"), ("admin-outbox", "renderOutbox")):
+            i = src.index(f"id: '{tab_id}'")
+            block = src[i:src.index("},", i) + 2]
+            assert f"render: {renderer}" in block
+            assert "defer:" not in block
+        assert (NEXT / "admin" / "egeria_links.js").exists() and (NEXT / "admin" / "outbox.js").exists()
 
 
 class TestDeferralsAreSpecificNotGeneric:
