@@ -63,11 +63,36 @@ def _blueprint_height(by_name: dict[str, dict], name: str, seen: frozenset = fro
     return 1 + max((_blueprint_height(by_name, c, seen | {name}) for c in kids), default=-1) if kids else 0
 
 
-def _unfinished_compositions(proofs: list[dict], scope_key: str) -> int:
-    """How many of a blueprint's compositions are not confirmed, from the LATEST proof per pair."""
+P_ATTACHED = "blueprint_attached"
+
+
+def wanted_attachments(bp: dict) -> list[str]:
+    """The GUIDs the blueprint should hold NOW: its members and child blueprints that are in Egeria, from the
+    reader's cache rows. What a press records, and what a later plan compares against."""
+    guids = {(m.get("materialized") or {}).get("guid") for m in bp.get("member_status") or []}
+    guids |= {(c.get("materialized") or {}).get("guid") for c in bp.get("child_status") or []}
+    return sorted(g for g in guids if g)
+
+
+def _unattached(proofs: list[dict], scope_key: str, wanted: list[str]) -> int:
+    """How many wanted GUIDs the LAST press did not record as handled (a member accepted since, a child
+    blueprint published since, a root that had no GUID then). With no record yet, every wanted GUID counts."""
+    done: set[str] = set()
+    for p in proofs:
+        if p["proof"] == P_ATTACHED and p["table_name"] == scope_key:
+            done = set((p.get("detail") or {}).get("guids") or [])
+    return len(set(wanted) - done)
+
+
+def _unfinished_compositions(proofs: list[dict], scope_key: str, wanted: list[str] | None = None) -> int:
+    """How many of a blueprint's compositions are not confirmed, from the LATEST proof per pair. Only pairs the
+    blueprint still wants count (both ends among `wanted`): a stale row for a pair no longer planned must not
+    keep it in the plan for ever."""
     latest: dict[str, dict] = {}
     for p in proofs:
         if p["proof"] == "composition" and p["table_name"] == scope_key:
+            if wanted is not None and not ({p["element_guid"], p["target_guid"]} <= set(wanted)):
+                continue
             latest[p["qualified_name"]] = p
     return sum(1 for p in latest.values() if (p.get("detail") or {}).get("status") in _UNCONFIRMED)
 
@@ -127,8 +152,10 @@ def publish_plan(registry, slug: str) -> dict:
             continue
         if verdict != "accepted":
             continue
-        unfinished = _unfinished_compositions(proofs, key) if held else 0
-        if held and not unfinished:
+        wanted = wanted_attachments(b)
+        unfinished = _unfinished_compositions(proofs, key, wanted) if held else 0
+        unattached = _unattached(proofs, key, wanted) if held else 0
+        if held and not unfinished and not unattached:
             bp_present += 1
             continue
         sole = (sum(1 for x in blueprints if x["perspective"] == b["perspective"] and not x.get("parent")) == 1
@@ -139,6 +166,7 @@ def publish_plan(registry, slug: str) -> dict:
             "name": blueprint_display_name(label, b["perspective"], b["cluster_name"], sole_root=sole,
                                            identifier=choices["identifier"]),
             "state": "finish" if held else "new", "unconfirmed_compositions": unfinished,
+            "unattached": unattached, "wanted": wanted,
             "shape": choices["shape"], "identifier": choices["identifier"],
             "_height": _blueprint_height(by_name, b["cluster_name"]),
         })
@@ -160,6 +188,14 @@ def last_results(registry, slug: str) -> dict:
     Empty when nothing was ever published from here."""
     rows = [p for p in registry.list_catalogue_commit_proofs(slug)
             if p["proof"] == P_PUBLISH_ITEM and p["node_kind"] == NODE_PUBLISH_ITEM]
+    mine = [r for r in registry.list_runs(kind="publish_architecture", limit=50)
+            if (json.loads(r.get("target") or "{}") or {}).get("slug") == slug]
+    newest = mine[0] if mine else None
+    if newest and newest.get("result_ref") and (not rows or rows[-1]["curation_id"] != newest["result_ref"]) \
+            and newest.get("state") in ("succeeded", "failed", "cancelled"):
+        # The newest press ended without writing any result rows (it crashed first): the rows below belong to
+        # an EARLIER press and must not be shown as current.
+        return {"run": newest["result_ref"], "at": "", "items": [], "missing": True}
     if not rows:
         return {"run": "", "at": "", "items": []}
     run = rows[-1]["curation_id"]
@@ -192,6 +228,9 @@ def _publish_component(registry, slug: str, path: str) -> tuple[str, str, str]:
     if not res or res.get("status") == "error":
         return FAILED, scrub_text(str((res or {}).get("error") or "Egeria gave no answer"))[:300], ""
     guid = res.get("guid", "")
+    if res.get("status") == "skipped" or not guid:
+        # Nothing was written (a private element's zones were not confirmed, say): its own word, never "done".
+        return SKIPPED, scrub_text(str(res.get("reason") or res.get("words") or "Egeria returned no element"))[:300], guid
     if guid:
         promotion = promote_to_publish_zones(guid)
         record_promotion(registry, slug, path, NODE_PROMOTION_COMPONENT, promotion)
@@ -218,8 +257,17 @@ def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
     if res.get("status") == "error":
         return FAILED, scrub_text(str(res.get("error") or "Egeria gave no answer"))[:300], ""
     guid = res.get("guid", "")
+    if res.get("status") == "skipped" or not guid:
+        return SKIPPED, scrub_text(str(res.get("reason") or res.get("words") or "Egeria returned no element"))[:300], guid
     problems = []
     if guid:
+        # What this press handled: a later plan keeps the blueprint only while it wants more than this.
+        try:
+            registry.append_catalogue_commit_proof(
+                slug, proof=P_ATTACHED, node_kind=NODE_PUBLISH_ITEM, table_name=item["key"], element_guid=guid,
+                detail={"guids": sorted(set(item.get("wanted") or []))})
+        except Exception as exc:
+            log.warning("could not record what was attached for %s: %s", item["key"], exc)
         promotion = promote_to_publish_zones(guid)
         record_promotion(registry, slug, item["key"], NODE_PROMOTION_BLUEPRINT, promotion)
         if promotion.get("status") == "error":
@@ -276,8 +324,11 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
     order += sorted(want_bps - set(order))
     for key in order:
         b = todo_b.get(key)
-        if b is None:
-            add("blueprint", key, key.split("::", 1)[-1], SKIPPED, "already in Egeria · compositions confirmed")
+        if b is None:       # present and confirmed now, or no longer accepted: say which, from the cache row
+            persp, _, cluster = key.partition("::")
+            held = bool((registry.get_materialized_blueprint("repo", slug, persp, cluster) or {}).get("guid"))
+            add("blueprint", key, cluster, SKIPPED,
+                "already in Egeria · compositions confirmed" if held else "no longer accepted")
             continue
         try:
             status, words, guid = _publish_blueprint(registry, slug, b)

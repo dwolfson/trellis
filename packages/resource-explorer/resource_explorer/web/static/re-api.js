@@ -1707,10 +1707,8 @@ export const postArchitecturePublish = (slug) =>
 export const getComponentBlueprints = (slug) =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/blueprints`);
 
-/** Accept/reject one cluster. Accepting materialises a real Egeria
- *  SolutionBlueprint (blueprint_materializer.py) and queues its resolvable
- *  members/children for CollectionMembership — the caller does not wait on
- *  that queue, see SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4. */
+/** Accept/reject one cluster. A decision only: nothing is written to Egeria until Publish
+ *  (postArchitecturePublish). The shape and identifier chosen here are kept on the verdict for that press. */
 export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '', shape = '', identifier = '') =>
   post(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`,
        { perspective, cluster_name: clusterName, verdict, note, ...(shape ? { shape } : {}),

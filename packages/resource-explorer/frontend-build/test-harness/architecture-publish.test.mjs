@@ -129,3 +129,10 @@ test('a blueprint row says "accepted · not in Egeria yet" and "rejected · stil
   box.innerHTML = blueprintRowHtml({ ...base, verdict: { verdict: 'accepted' }, materialized: { guid: 'abcdef012345' } });
   assert.match(norm(box.querySelector('[data-in-egeria="yes"]')), /in Egeria/);
 });
+
+test('a last publish that left no results says so instead of showing an earlier press as current', async () => {
+  const { document } = await setUp({ publishPlan: { ...emptyPlan(), last: { run: 'act-new', at: '', items: [], missing: true } } });
+  const host = publishHost(document);
+  assert.match(norm(host.querySelector('[data-architecture-no-results]')), /the last publish left no results/);
+  assert.equal(host.querySelector('[data-architecture-results]'), null);
+});

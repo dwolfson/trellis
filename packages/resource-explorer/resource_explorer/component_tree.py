@@ -92,7 +92,7 @@ def _ports_by_component(registry: ProjectRegistry, slug: str) -> tuple[dict[str,
 #: A verdict row recorded for "this component only" (owner, 2026-10-09: he wanted a parent alone and accepted
 #: two children by accident). It is kept in the row's `retyped_to` (unused by an accepted/rejected verdict; no
 #: new column) and it does not pass down to the components under it.
-ONLY_THIS = "only"
+ONLY_THIS = "__only__"      # no component type can be spelled this, so it is never a real retype
 
 
 def resolve_verdict(path: str, verdicts: dict[str, dict]) -> dict | None:

@@ -55,6 +55,7 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
           b.state === 'finish' ? `already there · ${num(b.unconfirmed_compositions)} composition${b.unconfirmed_compositions === 1 ? '' : 's'} to confirm` : 'new'}</span></div>`).join('')}
     </div>`;
   const last = plan?.last?.items || [];
+  const missing = plan?.last?.missing ? `<div class="mt-s2 text-caveat" data-architecture-no-results>${cue('error', 'the last publish left no results', 'The last publish ended before it wrote its results, so nothing from an earlier publish is shown as current.')}</div>` : '';
   const results = last.length ? `<div class="mt-s2 text-caveat" data-architecture-results>
       <div class="text-provenance text-ink-muted">last publish</div>
       ${last.map((r) => `<div data-result="${esc(r.key)}" data-result-status="${esc(r.status)}" class="py-[1px]">
@@ -71,7 +72,7 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
         class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">${esc(nothing ? label : `${label} →`)}</button>
       <span data-architecture-feedback class="text-provenance text-ink-muted">${pending ? cue('running', 'publishing') : esc(why)}</span>
     </div>
-    ${results}
+    ${results}${missing}
   </div>`;
 }
 

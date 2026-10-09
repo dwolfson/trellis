@@ -36,18 +36,20 @@ class Fake62:
         self.linked.append(child)
 
     def get_related_metadata_elements(self, guid, relationship_type, body, **kw):
-        self.calls.append(("related", guid, relationship_type, kw.get("page_size")))
+        self.calls.append(("related", guid, relationship_type, body.get("pageSize"), body.get("startFrom"), sorted(kw)))
+        self.reverse = getattr(self, "reverse", [])
         if self.related == "raises":
             raise RuntimeError("503 from the view server")
         if self.related == "text":
             return "something else entirely"
         if self.related == "noguid":
-            return {"elementList": [{"element": {}}]}
+            return {"elementList": [{"element": {}, "elementAtEnd1": False}]}
         if self.related == "full":
-            return {"elementList": [{"element": {"elementGUID": f"g{i}"}} for i in range(kw["page_size"])]}
+            return {"elementList": [{"element": {"elementGUID": f"g{i}"}, "elementAtEnd1": False} for i in range(body["pageSize"])]}
         if not self.linked:
             return "No elements found"
-        return {"startingElement": {}, "elementList": [{"element": {"elementGUID": g}} for g in self.linked]}
+        return {"startingElement": {}, "elementList": [{"element": {"elementGUID": g}, "elementAtEnd1": False} for g in self.linked]
+                + [{"element": {"elementGUID": g}, "elementAtEnd1": True} for g in self.reverse]}
 
 
 def _mat(fake):
@@ -69,7 +71,24 @@ class TestCompositionReadOnSixPointTwo:
         assert [r["status"] for r in rows] == ["linked"] * 3
         assert all(r["read_back"] for r in rows)
         assert fake.linked == KIDS
-        assert ("related", PLATFORM, "SolutionComposition", 1000) in fake.calls
+        # pyegeria sends only the body, so the page is asked for IN the body (and no page kwargs are relied on)
+        assert ("related", PLATFORM, "SolutionComposition", 1000, 0, []) in fake.calls
+
+    def test_a_reverse_pair_is_not_read_as_a_child(self):
+        fake = Fake62()
+        fake.linked = []
+        fake.reverse = [KIDS[0]]                 # the container is nested UNDER kid 0, not its parent
+        fake.get_related_metadata_elements = lambda guid, rel, body, **kw: {"elementList": [
+            {"element": {"elementGUID": KIDS[0]}, "elementAtEnd1": True}]}
+        rows = _mat(fake).link_sub_components(PLATFORM, "qn-platform", CHILDREN)
+        assert KIDS[0] in fake.linked            # written as a child, not skipped as "already present"
+        assert rows[0]["status"] == "unconfirmed"  # and the reverse pair is not read back as proof of it
+
+    def test_an_entry_that_does_not_say_its_end_is_could_not_tell(self):
+        fake = Fake62()
+        fake.get_related_metadata_elements = lambda guid, rel, body, **kw: {"elementList": [{"element": {"elementGUID": KIDS[0]}}]}
+        rows = _mat(fake).link_sub_components(PLATFORM, "qn-platform", CHILDREN)
+        assert [r["status"] for r in rows] == ["unconfirmed"] * 3 and fake.linked == []
 
     def test_pairs_the_relationship_read_shows_are_not_rewritten(self):
         fake = Fake62()

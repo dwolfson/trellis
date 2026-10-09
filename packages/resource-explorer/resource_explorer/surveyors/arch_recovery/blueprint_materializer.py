@@ -913,9 +913,8 @@ class BlueprintMaterializer:
         RELATIONSHIP query (6.2: a component with no children comes back from the element read with no
         children key at all, which cannot tell "none" from "the read did not say").
 
-        The read is direction-blind (either end), so a container that is itself nested also lists its
-        parent; the caller only tests membership of the candidate child GUIDs, and a child that is also the
-        container's parent would be a cycle, so this cannot show a pair that is not held.
+        The read returns both ends, so each entry's `elementAtEnd1` is used to keep only the pairs where the
+        container is end 1 (the parent); a reverse pair is never read as a child.
 
         Known ONLY on a typed answer: Egeria's exact "No elements found" (none), or a list of related
         elements whose GUIDs could all be read. A raised error, any other text, a list entry with no GUID,
@@ -925,9 +924,11 @@ class BlueprintMaterializer:
         if self._metadata_expert is None:
             return set(), False
         try:
+            # pyegeria's get_related_metadata_elements sends only the body (its page_size/start_from/
+            # starting_at_end arguments are dropped), so the page is asked for IN the body.
             res = self._metadata_expert.get_related_metadata_elements(
-                container_guid, "SolutionComposition", {"class": "ResultsRequestBody"},
-                page_size=self._COMPOSITION_PAGE)
+                container_guid, "SolutionComposition",
+                {"class": "ResultsRequestBody", "startFrom": 0, "pageSize": self._COMPOSITION_PAGE})
         except Exception as exc:
             log.warning("could not read the composition of %s: %s", container_guid, type(exc).__name__)
             return set(), False
@@ -940,6 +941,14 @@ class BlueprintMaterializer:
         for e in entries:
             if not isinstance(e, dict):
                 return set(), False
+            # Children only: the entries whose related element is NOT at end 1, i.e. the container is end 1
+            # (the parent). A reverse pair (the container nested elsewhere) is not a child. An entry that does
+            # not say which end it is cannot be classified: could not tell.
+            end1 = e.get("elementAtEnd1")
+            if not isinstance(end1, bool):
+                return set(), False
+            if end1:
+                continue
             header = ((e.get("element") or {}).get("elementHeader") or e.get("elementHeader")
                       or (e.get("relatedElement") or {}).get("elementHeader") or {})
             guid = (e.get("element") or {}).get("elementGUID") or e.get("elementGUID") or header.get("guid") or ""

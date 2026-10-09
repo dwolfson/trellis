@@ -123,7 +123,11 @@ class TestThePlan:
         assert ap.label_for(0, 0) == "Nothing to publish"
 
     def test_an_accepted_blueprint_is_planned_new_then_finished_until_its_compositions_are_confirmed(self, client, registry):
-        _seed_cluster(registry, members=["a"])
+        _seed_member(registry, "a", "src/a")
+        _seed_member(registry, "b", "src/b")
+        _held(registry, "src/a")
+        _held(registry, "src/b")
+        _seed_cluster(registry, members=["a", "b"])
         client.post("/api/curate/blueprint-verdicts/repo/p", json={"perspective": "physical", "cluster_name": "core", "verdict": "accepted"})
         plan = client.get("/api/projects/p/architecture/publish-plan").json()
         assert [(b["key"], b["state"]) for b in plan["blueprints"]["to_write"]] == [("physical::core", "new")]
@@ -131,16 +135,16 @@ class TestThePlan:
         for status in ("unconfirmed",):
             registry.append_catalogue_commit_proof(
                 "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
-                element_guid="c", target_guid="k", qualified_name="SolutionComposition::c::k",
+                element_guid="guid-src/a", target_guid="guid-src/b", qualified_name="SolutionComposition::c::k",
                 detail={"status": status, "read_back": False})
         plan = client.get("/api/projects/p/architecture/publish-plan").json()
         assert [(b["state"], b["unconfirmed_compositions"]) for b in plan["blueprints"]["to_write"]] == [("finish", 1)]
         registry.append_catalogue_commit_proof(
             "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
-            element_guid="c", target_guid="k", qualified_name="SolutionComposition::c::k",
+            element_guid="guid-src/a", target_guid="guid-src/b", qualified_name="SolutionComposition::c::k",
             detail={"status": "linked", "read_back": True})
         plan = client.get("/api/projects/p/architecture/publish-plan").json()
-        assert plan["blueprints"]["to_write"] == [] and plan["blueprints"]["in_egeria"] == 1
+        assert [(b["state"], b["unconfirmed_compositions"]) for b in plan["blueprints"]["to_write"]] == [("finish", 0)]  # confirmed; members still unrecorded
 
     def test_children_are_written_before_the_blueprint_that_links_them(self, registry):
         for name, kids in (("root", ["kid"]), ("kid", [])):
@@ -245,7 +249,8 @@ class TestTheRun:
                                           verdict_target="blueprint", decided_by="x")
         seen = {}
         monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted",
-                            lambda reg, et, slug, persp, cluster, verdict, **kw: seen.update(kw) or {"status": "materialized", "guid": ""})
+                            lambda reg, et, slug, persp, cluster, verdict, **kw: seen.update(kw) or {"status": "materialized", "guid": "bp"})
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", lambda g: {"status": "ok"})
         item = ap.publish_plan(registry, "p")["blueprints"]["to_write"][0]
         assert ap._publish_blueprint(registry, "p", item)[0] == ap.DONE
         assert seen == {"shape": "contents", "identifier": "second"}
@@ -271,3 +276,123 @@ class TestTheRun:
             {"kind": "component", "key": "b", "name": "b", "status": "failed", "words": "Egeria said no"}])
         out = run_queue.HANDLERS["publish_architecture"]({"slug": "p", "paths": ["a", "b"], "blueprints": []}, "act-1")
         assert out.state == "failed" and "b: failed · Egeria said no" in out.error
+
+
+# ── gate round 1 ──────────────────────────────────────────────────────────────────────────────────────
+
+def _seed_member(registry, slug, scope):
+    registry.upsert_finding("p", "architecture_recovery", [{
+        "check_name": "component", "label": "x", "detail": {"name": slug, "slug": slug, "type": "Service"}}],
+        surveyed_at="2026-09-03T00:00:00", scope_locator=scope)
+
+
+def _accept_bp(registry, key="physical::core"):
+    registry.record_component_verdict("repo", "p", key, "accepted", "", "", verdict_target="blueprint", decided_by="x")
+
+
+class TestSkippedIsNotDone:
+    def test_a_component_the_materializer_skipped_is_skipped_with_its_reason_and_never_promoted(self, registry, monkeypatch):
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_component_if_accepted",
+                            lambda *a, **k: {"status": "skipped", "reason": "private zone not confirmed", "guid": "g"})
+        def boom(*a, **k):
+            raise AssertionError("promoted a skipped element")
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", boom)
+        assert ap._publish_component(registry, "p", "a") == (ap.SKIPPED, "private zone not confirmed", "g")
+
+    def test_a_result_with_no_guid_is_not_done(self, registry, monkeypatch):
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_component_if_accepted",
+                            lambda *a, **k: {"status": "materialized"})
+        status, words, _ = ap._publish_component(registry, "p", "a")
+        assert status == ap.SKIPPED and "no element" in words
+
+    def test_a_blueprint_skipped_or_without_guid_is_skipped(self, registry, monkeypatch):
+        _seed_cluster(registry, members=["a"])
+        _accept_bp(registry)
+        item = ap.publish_plan(registry, "p")["blueprints"]["to_write"][0]
+        for res in ({"status": "skipped", "reason": "zones not confirmed", "guid": "bp"}, {"status": "materialized", "guid": ""}):
+            monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted", lambda *a, _r=res, **k: _r)
+            assert ap._publish_blueprint(registry, "p", item)[0] == ap.SKIPPED
+
+
+class TestAnExistingBlueprintStaysInThePlanUntilEverythingWantedIsHandled:
+    def _setup(self, registry):
+        for slug in ("a", "x"):
+            _seed_member(registry, slug, f"src/{slug}")
+        _seed_cluster(registry, members=["a", "x"])
+        _accept_bp(registry)
+        registry.record_materialized_blueprint("repo", "p", "physical", "core", "SolutionBlueprint::repo::p::physical", "bp-1")
+        _held(registry, "src/a")
+
+    def _press(self, registry, monkeypatch):
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted",
+                            lambda *a, **k: {"status": "materialized", "guid": "bp-1", "compositions": []})
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", lambda g: {"status": "ok"})
+        item = ap.publish_plan(registry, "p")["blueprints"]["to_write"][0]
+        assert ap._publish_blueprint(registry, "p", item)[0] == ap.DONE
+        return item
+
+    def test_a_member_accepted_after_the_first_publish_brings_the_blueprint_back_and_is_attached(self, registry, monkeypatch):
+        self._setup(registry)
+        first = self._press(registry, monkeypatch)
+        assert first["wanted"] == ["guid-src/a"]
+        assert ap.publish_plan(registry, "p")["blueprints"]["to_write"] == []          # handled: out of the plan
+        _held(registry, "src/x")                                                         # member X accepted + published later
+        plan = ap.publish_plan(registry, "p")["blueprints"]["to_write"]
+        assert [(b["state"], b["unattached"]) for b in plan] == [("finish", 1)]
+        second = self._press(registry, monkeypatch)
+        assert sorted(second["wanted"]) == ["guid-src/a", "guid-src/x"]                 # X is in what the press hands the write
+        assert ap.publish_plan(registry, "p")["blueprints"]["to_write"] == []
+
+    def test_a_blueprint_published_before_this_record_existed_is_finished_once(self, registry):
+        self._setup(registry)
+        assert [b["unattached"] for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"]] == [1]
+
+    def test_a_stale_unconfirmed_pair_no_longer_wanted_does_not_keep_it_in_the_plan(self, registry, monkeypatch):
+        self._setup(registry)
+        self._press(registry, monkeypatch)
+        registry.append_catalogue_commit_proof(
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
+            element_guid="guid-src/a", target_guid="guid-GONE", qualified_name="SolutionComposition::a::gone",
+            detail={"status": "unconfirmed", "read_back": False})
+        assert ap.publish_plan(registry, "p")["blueprints"]["to_write"] == []
+        registry.append_catalogue_commit_proof(          # a pair that IS wanted still counts
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
+            element_guid="guid-src/a", target_guid="guid-src/a", qualified_name="SolutionComposition::a::a",
+            detail={"status": "unconfirmed", "read_back": False})
+        assert [b["unconfirmed_compositions"] for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"]] == [1]
+
+
+class TestADroppedBlueprintIsSaidFromItsCacheRow:
+    def test_present_now_versus_no_longer_accepted(self, registry, monkeypatch):
+        monkeypatch.setattr("resource_explorer.component_tree._components", lambda reg, slug: [])
+        registry.record_materialized_blueprint("repo", "p", "physical", "core", "q", "bp-1")
+        res = ap.run_publish(registry, "p", {"slug": "p", "paths": [], "blueprints": ["physical::core", "physical::gone"]}, "run-9")
+        by = {r["key"]: r for r in res}
+        assert by["physical::core"]["words"] == "already in Egeria · compositions confirmed"
+        assert by["physical::gone"]["words"] == "no longer accepted"
+
+
+class TestLastResultsAreNeverAnEarlierPressesRows:
+    def test_a_run_that_crashed_before_writing_rows_shows_none_and_says_so(self, registry):
+        ap._record(registry, "p", "act-old", "a", "g", {"kind": "component", "name": "a", "status": "done", "words": ""})
+        assert [i["key"] for i in ap.last_results(registry, "p")["items"]] == ["a"]
+        run_id = registry.enqueue_run("publish_architecture", {"slug": "p", "paths": ["a"], "blueprints": []}, result_ref="act-new")
+        with registry._conn() as conn:
+            conn.execute("UPDATE runs SET state='failed' WHERE id=?", (run_id,))
+        last = ap.last_results(registry, "p")
+        assert last["items"] == [] and last["missing"] is True and last["run"] == "act-new"
+
+    def test_a_press_still_running_does_not_blank_the_earlier_results(self, registry):
+        ap._record(registry, "p", "act-old", "a", "g", {"kind": "component", "name": "a", "status": "done", "words": ""})
+        registry.enqueue_run("publish_architecture", {"slug": "p", "paths": ["a"], "blueprints": []}, result_ref="act-new")
+        assert [i["key"] for i in ap.last_results(registry, "p")["items"]] == ["a"]
+
+
+class TestTheParentOnlyMarkIsNotARealType:
+    def test_a_retype_to_the_type_name_only_does_not_stop_inheritance(self):
+        from resource_explorer.component_tree import ONLY_THIS, resolve_verdict
+        assert ONLY_THIS != "only"
+        v = {"a": {"verdict": "accepted", "retyped_to": "only", "created_at": "t", "decided_by": "x"}}
+        assert resolve_verdict("a/b", v)["inherited_from"] == "a"
+        v["a"]["retyped_to"] = ONLY_THIS
+        assert resolve_verdict("a/b", v) is None
