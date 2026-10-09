@@ -40,7 +40,11 @@
  *       cannot join this collection, which is a real boundary, not an
  *       oversight.
  */
-import { ask, askStream, sendFeedback, submitAnswerFeedback } from '/static/re-api.js';
+import {
+  ask, askStream, sendFeedback, submitAnswerFeedback, compileContext, runAnalysis, pollActivity,
+  activityFailure, failureText, getSchedules, saveSchedule, addAlias, listAliases,
+} from '/static/re-api.js';
+import { stateEntry } from '/static/next/glyphs.js';
 import {
   state, esc, icon, tnum, $,
   ensureRailShowing, railFrame, railClaim, openMembers,
@@ -118,10 +122,14 @@ export function renderRail() {
       <button id="ask-submit"
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-[10px] py-[4px]
                text-chip text-accent-on-dark">Ask</button>
+      <button id="ask-compile" type="button"
+        title="Show which stored results would answer this question, and which analyses have not run, without asking it"
+        class="cursor-pointer bg-transparent p-0 text-caps text-accent-on-dark underline">what would answer this?</button>
       <span class="text-caps text-chrome-muted">⌘/Ctrl + Enter</span>
     </div>`;
 
   $('ask-submit').addEventListener('click', submitAsk);
+  $('ask-compile').addEventListener('click', previewCompile);
   $('ask-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitAsk();
   });
@@ -416,39 +424,161 @@ export function turnAsMarkdown(t) {
   return out.join('\n');
 }
 
-/**
- * Render the compile behind an answer — ASSESSMENT-CHAT.md §3(a), "open the
- * compile". `turn.compiled` is the SAME {text, manifest, derivation} shape
- * `POST /api/context/compile` returns (query.py's `_compiled_payload`),
- * kept on the turn in full since 2026-09-17 rather than reduced to just
- * `compileId` — the id told you a compile happened; this is what it
- * actually put in front of the model.
+/** A state cue for this file's two grounds: the glyph from the one glyph table plus a short word, the full
+ *  sentence on hover. The tone class is a literal in each branch (no class interpolation), so the CSS build
+ *  sees every one. `ground` is 'paper' (the pane) or 'chrome' (the dark rail). */
+function cue(stateKey, word, title = '', ground = 'paper') {
+  const e = stateEntry(stateKey);
+  const t = e.tone;
+  const open = ground === 'chrome'
+    ? (t === 'text-state-ok' ? '<span class="text-state-ok-on-dark"' : t === 'text-state-warn' ? '<span class="text-state-warn-on-dark"' : '<span class="text-chrome-muted"')
+    : (t === 'text-state-ok' ? '<span class="text-state-ok"' : t === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"');
+  return `${open} data-cue="${esc(stateKey)}" title="${esc(title || e.word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(word)}</span>`;
+}
+
+/** Run one analysis and say how it ended, from the activity row the run wrote (never from the branch taken
+ *  to get there). Shared by the compile's gap list in the rail and the chat answer's own run buttons, so
+ *  there is one way to run an analysis from chat. */
+async function runAnalysisFlow(slug, entityType, id, onTick = () => {}) {
+  try {
+    const started = await runAnalysis(slug, id, entityType);
+    if (!started || !started.activity_id) {
+      return started && started.status === 'skipped'
+        ? { state: 'skipped', msg: started.detail || 'Already up to date.' }
+        : { state: 'failed', msg: 'The run did not start.' };
+    }
+    const finished = await pollActivity(started.activity_id, { onTick });
+    const failure = activityFailure(finished);
+    return failure ? { state: 'failed', msg: failureText(failure) } : { state: 'ran' };
+  } catch (err) {
+    return { state: 'failed', msg: err.name === 'PollTimeout'
+      ? 'Still running after five minutes: stopped watching here. The run itself has not failed.'
+      : (err.status === 401 ? 'Sign in to run an analysis.' : err.message) };
+  }
+}
+
+/** The analyses a compile says would answer the question and have no stored result. `null` when the compile
+ *  did not report gaps at all, which is not the same as none. */
+function compileGaps(compiled) {
+  const g = compiled && compiled.manifest && compiled.manifest.gaps;
+  return Array.isArray(g) ? g : null;
+}
+
+/** "What would answer this", asked BEFORE asking: the same compile the Ask path runs, for the question in the
+ *  box, shown in the rail with its gaps and a run button per gap. Nothing is asked and no turn is added. */
+async function previewCompile() {
+  const q = ($('ask-input')?.value || '').trim();
+  const slug = state.selectedSlug;
+  ensureRailShowing();
+  railClaim();
+  if (!q) {
+    railFrame('Compile', slug || '—', `<div data-compile-note class="text-chip text-chrome-muted">Type the question first, then ask what would answer it.</div>`, { sub: 'nothing asked' });
+    return;
+  }
+  if (!slug) {
+    railFrame('Compile', '—', `<div data-compile-note class="text-chip text-chrome-muted">Select a resource first: a compile reads one resource's stored results.</div>`, { sub: 'no resource' });
+    return;
+  }
+  const turn = { question: q, slug, entityType: apiEntityType(state.resourceType), compiled: null, pre: true };
+  const view = compileView = { turn, compiled: null, rechecked: false, gapRuns: {} };
+  railFrame('Compile', slug, `<div class="text-chip">${cue('running', 'reading what would answer this', '', 'chrome')}</div>`, { sub: 'not asked' });
+  try {
+    view.compiled = await compileContext({ resourceSlug: slug, question: q, entityType: turn.entityType, perspectives: state.activePerspectives });
+  } catch (err) {
+    if (compileView === view) {
+      railFrame('Compile', slug, `<div data-compile-note class="text-chip">${cue('error', 'could not compile', err.message, 'chrome')} <span class="text-chrome-muted">${esc(err.message)}</span></div>`, { sub: 'not asked' });
+    }
+    return;
+  }
+  if (compileView !== view) return;
+  turn.compiled = view.compiled;
+  drawCompile();
+}
+
+/** Render the compile behind an answer — ASSESSMENT-CHAT.md §3(a), "open the
+ *  compile". `turn.compiled` is the SAME {text, manifest, derivation} shape
+ *  `POST /api/context/compile` returns (query.py's `_compiled_payload`),
+ *  kept on the turn in full since 2026-09-17 rather than reduced to just
+ *  `compileId` — the id told you a compile happened; this is what it
+ *  actually put in front of the model.
  *
- * Opens in the rail's evidence slot, same as `openMembers`/`showEvidence` —
- * one slot, one ticket, per app.js's own rule for that slot.
- */
+ *  Opens in the rail's evidence slot, same as `openMembers`/`showEvidence` —
+ *  one slot, one ticket, per app.js's own rule for that slot. */
 function openCompile(turn) {
   ensureRailShowing();
   railClaim();
-  const forWhat = turn.slug || '—';
-  const compiled = turn.compiled;
-  if (!compiled) {
-    railFrame('Compile', forWhat,
-      `<div class="text-chip text-chrome-muted">This answer carries no compile — it was answered from retrieval, or from a session with no resource in scope.</div>`,
+  compileView = { turn, compiled: turn.compiled || null, rechecked: false, gapRuns: {} };
+  if (!compileView.compiled) {
+    railFrame('Compile', turn.slug || '—',
+      `<div class="text-chip text-chrome-muted">${turn.factLayer
+        ? 'This answer came from the stored results directly, with no compile behind it.'
+        : 'This answer carries no compile — it was answered from retrieval, or from a session with no resource in scope.'}</div>`,
       { sub: 'no compile' });
     return;
   }
+  drawCompile();
+}
+
+let compileView = null;   // { turn, compiled, rechecked, gapRuns: {analysis id: {state, msg}} }
+
+function gapRowHtml(g, k) {
+  const run = compileView.gapRuns[g.key] || { state: 'idle' };
+  const status = run.state === 'running' ? cue('running', 'running', '', 'chrome')
+    : run.state === 'failed' ? `${cue('error', 'failed', run.msg, 'chrome')} <span class="text-chrome-muted">${esc(run.msg)}</span>`
+    : run.state === 'skipped' ? cue('measured', 'already up to date', run.msg, 'chrome')
+    : run.state === 'ran' ? cue('partial', 'ran, still no stored result', 'The run finished and the compile still finds no stored result for it.', 'chrome')
+    : cue('unrun', 'not run', 'No stored result for this analysis.', 'chrome');
+  return `<div data-gap="${esc(g.key)}" class="mb-[3px] flex flex-wrap items-baseline gap-s2">
+    <span class="font-mono text-chrome-ink">${esc(g.key)}</span>${g.reason ? `<span class="text-chrome-muted">· ${esc(g.reason)}</span>` : ''}
+    <span>${status}</span>
+    <button data-gap-run="${k}" ${run.state === 'running' ? 'disabled' : ''}
+      class="cursor-pointer rounded-sm border border-accent bg-transparent px-[6px] py-[1px] text-caps text-accent-on-dark disabled:cursor-default disabled:opacity-60"
+      >${run.state === 'running' ? 'Running…' : run.state === 'failed' ? 'Run again' : 'Run'}</button>
+  </div>`;
+}
+
+function evidenceStateHtml() {
+  const { compiled, gapRuns } = compileView;
+  const m = compiled.manifest && typeof compiled.manifest === 'object' ? compiled.manifest : {};
+  const gaps = compileGaps(compiled);
+  const packed = Array.isArray(m.packed) ? m.packed : null;
+  const storedLine = packed
+    ? `<div data-compile-stored class="mb-s1 text-chip"><span class="tnum">${packed.length}</span> stored result${packed.length === 1 ? '' : 's'} used${
+        packed.length ? `: <span class="font-mono">${packed.map((x) => esc(x.key)).join(', ')}</span>` : ''}</div>`
+    : `<div data-compile-stored class="mb-s1 text-chip">${cue('not_established', 'not reported', 'This compile did not say which stored results it used.', 'chrome')}</div>`;
+  // An analysis that was run from here and now has a stored result: said once, from the fresh compile.
+  const nowStored = Object.entries(gapRuns).filter(([key, r]) => r.state === 'ran' && !(gaps || []).some((g) => g.key === key)).map(([key]) => key);
+  const gapBlock = gaps === null
+    ? `<div data-compile-gaps class="mb-s2 text-chip">${cue('not_established', 'gaps not reported', 'This compile did not say which analyses are missing, which is not the same as none missing.', 'chrome')}</div>`
+    : gaps.length === 0
+      ? `<div data-compile-gaps class="mb-s2 text-chip">${cue('measured', 'nothing missing', 'Every analysis that answers this has a stored result.', 'chrome')} <span class="text-chrome-muted">every analysis that answers this has a stored result</span></div>`
+      : `<div data-compile-gaps class="mb-s2 border border-chrome-line p-s2 text-chip">
+          <div class="mb-s1">${cue('unrun', `${gaps.length} not run`, 'Analyses that would answer this and have no stored result.', 'chrome')} <span class="text-chrome-muted">would answer this, with no stored result</span></div>
+          ${gaps.map(gapRowHtml).join('')}
+        </div>`;
+  const ranLine = nowStored.length
+    ? `<div data-compile-ran class="mb-s2 text-chip">${nowStored.map((k) => `${cue('measured', 'ran', '', 'chrome')} <span class="font-mono">${esc(k)}</span> <span class="text-chrome-muted">now has a stored result</span>`).join(' · ')}</div>`
+    : '';
+  return storedLine + gapBlock + ranLine;
+}
+
+function drawCompile() {
+  const { turn, compiled, rechecked } = compileView;
+  const forWhat = turn.slug || '—';
   const manifest = compiled.manifest && typeof compiled.manifest === 'object' ? compiled.manifest : {};
-  const manifestRows = Object.entries(manifest).filter(([, v]) =>
-    Array.isArray(v) ? v.length : v != null && v !== '');
+  const manifestRows = Object.entries(manifest).filter(([k, v]) => k !== 'gaps' && k !== 'packed' && (
+    Array.isArray(v) ? v.length : v != null && v !== ''));
   const manifestHtml = manifestRows.length
     ? manifestRows.map(([k, v]) => `<div class="mb-[3px]"><span class="font-mono text-accent-on-dark">${esc(k)}</span>
         <span class="text-chrome-muted"> · </span>${esc(Array.isArray(v) ? `${v.length} item(s)` : String(v))}</div>`).join('')
-    : `<div class="text-chip text-chrome-muted">The manifest carried no populated keys.</div>`;
+    : `<div class="text-chip text-chrome-muted">The manifest carried no other populated keys.</div>`;
   const text = String(compiled.text || '');
   const derivation = compiled.derivation;
-  railFrame('Compile', forWhat, `
-    <div class="mb-s2 text-caps text-chrome-muted">What the model was shown to answer “${esc(turn.question)}”.</div>
+  const body = railFrame('Compile', forWhat, `
+    <div class="mb-s2 text-caps text-chrome-muted">${turn.pre
+      ? `What would answer “${esc(turn.question)}”. Nothing has been asked.`
+      : `What the model was shown to answer “${esc(turn.question)}”.`}${rechecked ? ' Re-checked just now.' : ''}</div>
+    ${evidenceStateHtml()}
     <div class="mb-s3">${manifestHtml}</div>
     ${text ? `<details class="mb-s3">
       <summary class="cursor-pointer text-caps text-accent-on-dark">the compiled text · <span class="tnum">${text.length}</span> characters</summary>
@@ -458,7 +588,31 @@ function openCompile(turn) {
       <summary class="cursor-pointer text-caps text-accent-on-dark">derivation</summary>
       <pre class="mt-s2 max-h-[30vh] overflow-auto whitespace-pre-wrap text-chip text-chrome-ink">${esc(JSON.stringify(derivation, null, 2))}</pre>
     </details>` : ''}`,
-    { sub: 'the strongest provenance object in this codebase' });
+    { sub: turn.pre ? 'before asking' : 'the strongest provenance object in this codebase' });
+  const gaps = compileGaps(compiled) || [];
+  body?.querySelectorAll('[data-gap-run]').forEach((b) => b.addEventListener('click', () => runGap(gaps[Number(b.dataset.gapRun)])));
+}
+
+/** Run one missing analysis from the compile's gap list, then compile again and draw THAT: the gap is gone
+ *  only if the new compile no longer finds it missing. */
+async function runGap(gap) {
+  const view = compileView;
+  if (!view || !gap || (view.gapRuns[gap.key] || {}).state === 'running') return;
+  const { turn } = view;
+  view.gapRuns[gap.key] = { state: 'running' };
+  drawCompile();
+  const out = await runAnalysisFlow(turn.slug, turn.entityType, gap.key);
+  if (compileView !== view) return;
+  view.gapRuns[gap.key] = out;
+  if (out.state === 'ran') {
+    try {
+      view.compiled = await compileContext({ resourceSlug: turn.slug, question: turn.question, entityType: turn.entityType, perspectives: state.activePerspectives });
+      view.rechecked = true;
+    } catch (err) {
+      view.gapRuns[gap.key] = { state: 'failed', msg: `ran, but the compile could not be re-read: ${err.message}` };
+    }
+  }
+  if (compileView === view) drawCompile();
 }
 
 /**
@@ -526,12 +680,223 @@ function structuredTableHtml(turn) {
         </div>`).join('')}
       </div></div>`);
   }
-  if (turn.aliasSuggestion) {
-    const a = turn.aliasSuggestion;
-    out.push(`<div class="mb-s3 text-caveat text-ink-muted">No resource named “${esc(a.term)}” was resolved —
-      did you mean <span class="font-mono text-ink">${esc(a.candidate_name)}</span> (<span class="font-mono">${esc(a.candidate_slug)}</span>)?</div>`);
-  }
+  if (turn.aliasSuggestion) out.push(aliasHtml(turn));
   return out.join('');
+}
+
+/* ── an alias suggestion: confirm it (PI-119) ─────────────────────────────
+ * "No resource named X was resolved: did you mean Y?" used to be a sentence. Now it can be answered. The
+ * saved state is read back from the alias list the server holds (not assumed from the POST), and the
+ * server stores the alias normalised, so the read-back compares the normalised form. */
+const normaliseAlias = (t) => String(t).toLowerCase().replace(/ /g, '_').replace(/-/g, '_');
+
+function aliasHtml(turn) {
+  const a = turn.aliasSuggestion;
+  const st = turn.aliasState || { state: 'asking' };
+  const head = `<span data-alias-sentence>No resource named “${esc(a.term)}” was resolved: did you mean
+    <span class="font-mono text-ink">${esc(a.candidate_name)}</span> (<span class="font-mono">${esc(a.candidate_slug)}</span>)?</span>`;
+  let tail;
+  if (st.state === 'saved') {
+    tail = `${cue('measured', 'remembered', 'Saved, and read back from the alias list.')} <span data-alias-saved>“${esc(a.term)}” will resolve to ${esc(a.candidate_slug)} in future questions.</span>`;
+  } else if (st.state === 'conflict') {
+    tail = `${cue('partial', `already used for ${st.other}`, 'This name already points at another resource. Moving it changes what it means in every future question.')}
+      <button type="button" data-alias-move class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink">Move it here</button>
+      <button type="button" data-alias-no class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Leave it</button>`;
+  } else if (st.state === 'declined') {
+    tail = `${cue('optional', 'not remembered', 'You said no. Nothing was saved.')} <span>asked again next time</span>`;
+  } else if (st.state === 'saving') {
+    tail = cue('running', 'saving');
+  } else {
+    tail = `${st.state === 'error' ? `${cue('error', 'not saved', st.msg)} <span class="text-state-warn">${esc(st.msg)}</span> ` : cue('human', 'asks you', 'Remember this name for this resource?')}
+      <button type="button" data-alias-yes class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink">Yes, remember it</button>
+      <button type="button" data-alias-no class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">No</button>`;
+  }
+  return `<div data-alias-box class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caveat text-ink-muted">${head} ${tail}</div>`;
+}
+
+async function confirmAliasSuggestion(turn, { move = false } = {}) {
+  const a = turn.aliasSuggestion;
+  if (!a || (turn.aliasState || {}).state === 'saving') return;
+  turn.aliasState = { state: 'saving' };
+  redrawAlias(turn);
+  try {
+    await addAlias(a.term, a.candidate_slug, { move });
+    const held = await listAliases(a.candidate_slug);
+    const want = normaliseAlias(a.term);
+    const found = (held.aliases || []).some((x) => x.alias === want && x.project_slug === a.candidate_slug);
+    turn.aliasState = found ? { state: 'saved' } : { state: 'error', msg: 'The save went through but the alias is not in the list the server holds.' };
+  } catch (err) {
+    const held = err.status === 409 ? /already used for (.+)$/.exec(err.message) : null;
+    if (held) { turn.aliasState = { state: 'conflict', other: held[1] }; redrawAlias(turn); return; }
+    turn.aliasState = { state: 'error', msg: err.status === 401 ? 'Sign in to save an alias.' : err.message };
+  }
+  redrawAlias(turn);
+}
+
+function redrawAlias(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-alias-box]');
+  if (!box) return;
+  box.outerHTML = aliasHtml(turn);
+  wireAlias(turn);
+}
+
+function wireAlias(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-alias-box]');
+  box?.querySelector('[data-alias-yes]')?.addEventListener('click', () => confirmAliasSuggestion(turn));
+  box?.querySelector('[data-alias-move]')?.addEventListener('click', () => confirmAliasSuggestion(turn, { move: true }));
+  box?.querySelector('[data-alias-no]')?.addEventListener('click', () => { turn.aliasState = { state: 'declined' }; redrawAlias(turn); });
+}
+
+/* ── the analyses behind a chat answer: run one, or schedule it (PI-118) ──
+ * `turn.runnable` is [{id, ran, run: {state, msg}, sched: {state, cadence, enabled}}]. For a question row
+ * it is the analyses that answer that question; for a free-text question it is the gaps in the compile the
+ * answer was composed from. The schedule line is read from the schedules the server holds for the resource,
+ * never assumed from the save. */
+const CADENCES = ['daily', 'weekly', 'monthly'];
+
+function runnableRowHtml(r, k) {
+  const run = r.run || { state: 'idle' };
+  const status = run.state === 'running' ? cue('running', 'running', 'The run is in progress; this reads its activity row.')
+    : run.state === 'failed' ? `${cue('error', 'failed', run.msg)} <span class="text-state-warn">${esc(run.msg)}</span>`
+    : run.state === 'skipped' ? cue('measured', 'already up to date', run.msg)
+    : run.state === 'ran' ? cue('measured', 'ran just now', 'The run finished without an error.')
+    : r.ran ? cue('measured', 'has run', 'This analysis has a recorded run for this resource.')
+    : cue('unrun', 'not run', 'No stored result for this analysis on this resource.');
+  const sc = r.sched || { state: 'unread' };
+  const sched = sc.state === 'set'
+    ? cue('measured', `scheduled ${sc.cadence}${sc.enabled === false ? ' · paused' : ''}`, 'Read from the schedules held for this resource.')
+    : sc.state === 'none' ? cue('optional', 'not scheduled', 'The server holds no schedule for this analysis on this resource.')
+    : sc.state === 'error' ? `${cue(sc.what === 'saved' ? 'error' : 'unknown', sc.what === 'saved' ? 'schedule not saved' : 'schedule not read', sc.msg)} <span class="text-state-warn">${esc(sc.msg)}</span>`
+    : cue('unknown', 'schedule not read yet', 'The schedules for this resource have not been read.');
+  const saving = sc.saving;
+  return `<div data-runnable="${esc(r.id)}" class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat">
+    <span class="font-mono text-ink">${esc(r.id)}</span>
+    <span data-run-status>${status}</span>
+    <button type="button" data-run="${k}" ${run.state === 'running' ? 'disabled' : ''}
+      class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink disabled:cursor-default disabled:opacity-60"
+      >${run.state === 'running' ? 'Running…' : r.ran || run.state === 'ran' ? 'Run again' : 'Run'}</button>
+    <span data-sched-status>${sched}</span>
+    <select data-sched-cadence="${k}" aria-label="schedule for ${esc(r.id)}"
+      class="rounded-sm border border-rule bg-transparent px-1 py-[1px] text-caveat text-ink">${CADENCES.map((c) =>
+        `<option value="${c}" ${sc.cadence === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
+    <button type="button" data-sched-save="${k}" ${saving ? 'disabled' : ''}
+      class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink disabled:cursor-default disabled:opacity-60"
+      >${saving ? 'Saving…' : sc.state === 'set' ? 'Change schedule' : 'Schedule'}</button>
+  </div>`;
+}
+
+function runnableBoxHtml(turn) {
+  const rows = turn.runnable || [];
+  if (!rows.length) return '';
+  return `<div data-runnable-box class="mt-s3 border-t border-rule pt-s2">
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">${turn.factLayer ? 'Analyses behind this answer' : 'Analyses that would answer this and have no stored result'}</div>
+    ${rows.map(runnableRowHtml).join('')}
+    ${turn.rechecked ? `<div data-recheck-note class="mt-s1 text-caveat text-ink-muted">${turn.rechecked}</div>` : ''}
+  </div>`;
+}
+
+function redrawRunnable(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-runnable-box]');
+  if (!box) return;
+  box.outerHTML = runnableBoxHtml(turn);
+  wireRunnable(turn);
+}
+
+function wireRunnable(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-runnable-box]');
+  if (!box) return;
+  box.querySelectorAll('[data-run]').forEach((b) => b.addEventListener('click', () => runRunnable(turn, Number(b.dataset.run))));
+  box.querySelectorAll('[data-sched-save]').forEach((b) => b.addEventListener('click', () => {
+    const k = Number(b.dataset.schedSave);
+    const sel = box.querySelector(`[data-sched-cadence="${k}"]`);
+    scheduleRunnable(turn, k, sel ? sel.value : 'daily');
+  }));
+}
+
+/** Read the schedules the server holds for this resource into every runnable row (once per footer draw). */
+async function loadRunnableSchedules(turn) {
+  if (!turn.slug || !(turn.runnable || []).length) return;
+  let rows = null; let msg = '';
+  try { rows = await getSchedules(turn.entityType, turn.slug); } catch (err) { msg = err.message; }
+  for (const r of turn.runnable) {
+    if (rows === null) { r.sched = { state: 'error', msg }; continue; }
+    const mine = (Array.isArray(rows) ? rows : []).find((x) => x.analysis_id === r.id);
+    r.sched = mine ? { state: 'set', cadence: mine.schedule, enabled: mine.enabled !== false && mine.enabled !== 0 } : { state: 'none' };
+  }
+  if (state.promoted === turn) redrawRunnable(turn);
+}
+
+async function scheduleRunnable(turn, k, cadence) {
+  const r = (turn.runnable || [])[k];
+  if (!r || (r.sched || {}).saving) return;
+  r.sched = { ...(r.sched || {}), saving: true };
+  redrawRunnable(turn);
+  try {
+    await saveSchedule(turn.entityType, turn.slug, r.id, cadence, true);
+  } catch (err) {
+    r.sched = { state: 'error', what: 'saved', msg: err.status === 401 ? 'Sign in to schedule an analysis.' : err.message };
+    redrawRunnable(turn);
+    return;
+  }
+  await loadRunnableSchedules(turn);
+}
+
+async function runRunnable(turn, k) {
+  const r = (turn.runnable || [])[k];
+  if (!r || (r.run || {}).state === 'running') return;
+  r.run = { state: 'running' };
+  redrawRunnable(turn);
+  const out = await runAnalysisFlow(turn.slug, turn.entityType, r.id);
+  r.run = out;
+  if (out.state !== 'ran') { redrawRunnable(turn); return; }
+  await refreshAfterRun(turn, r);
+}
+
+/** After a run: the answer is read again from where it came from. A question row reads its own answer
+ *  endpoint again; a free-text question compiles again and lists what is STILL missing. */
+async function refreshAfterRun(turn, ran) {
+  const keep = new Map((turn.runnable || []).map((x) => [x.id, x]));
+  try {
+    if (turn.refresh) {
+      const next = await turn.refresh();
+      turn.answer = next.answer;
+      turn.source = next.source;
+      turn.runnable = (next.runnable || []).map((x) => ({ ...x, run: (keep.get(x.id) || {}).run || { state: 'idle' }, sched: (keep.get(x.id) || {}).sched || { state: 'unread' } }));
+      turn.rechecked = '';
+      await promoteChatTurn(turn);
+      return;
+    }
+    const fresh = await compileContext({ resourceSlug: turn.slug, question: turn.question, entityType: turn.entityType, perspectives: state.activePerspectives });
+    const gaps = compileGaps(fresh) || [];
+    const stillMissing = gaps.map((g) => ({ id: g.key, ran: false, run: (keep.get(g.key) || {}).run || { state: 'idle' }, sched: (keep.get(g.key) || {}).sched || { state: 'unread' } }));
+    const done = [...keep.values()].filter((x) => x.run && x.run.state === 'ran' && !gaps.some((g) => g.key === x.id));
+    turn.runnable = [...done, ...stillMissing];
+    turn.rechecked = done.length
+      ? `Ran ${done.map((x) => x.id).join(', ')}; it now has a stored result. This answer was written before it ran, so ask again to use it.` : '';
+  } catch (err) {
+    ran.run = { state: 'failed', msg: `ran, but the answer could not be re-read: ${err.message}` };
+  }
+  redrawRunnable(turn);
+}
+
+/** The analyses a compile lists as missing, as run/schedule rows. */
+function gapRunnable(compiled) {
+  return (compileGaps(compiled) || []).map((g) => ({ id: g.key, ran: false, run: { state: 'idle' }, sched: { state: 'unread' } }));
+}
+
+/** "Ask in chat" on a question row (PI-055): a turn whose answer is the row's own answer text, with the analyses
+ *  behind it to run or schedule. `refresh` reads the answer again (the row's own function) after a run. */
+export async function openQuestionTurn({ question, slug, entityType, answer, source, runnable = [], refresh }) {
+  const turn = {
+    question, slug, entityType, pending: false, streaming: false, answer, source, intent: '',
+    factLayer: true, compiled: null, queryHash: '',
+    runnable: runnable.map((r) => ({ ...r, run: { state: 'idle' }, sched: { state: 'unread' } })),
+    refresh,
+  };
+  state.chat.push(turn);
+  ensureRailShowing();
+  renderTurnList();
+  await promoteChatTurn(turn);
 }
 
 function renderPromotedFooter(turn, i) {
@@ -558,12 +923,13 @@ function renderPromotedFooter(turn, i) {
   // was written to stop.
   footer.innerHTML = `
     ${structuredTableHtml(turn)}
+    ${runnableBoxHtml(turn)}
     ${evidenceFooterListsHtml(turn.lists || [], turn.slug || '')}
     ${listButtons ? `<div class="mt-s2 flex flex-wrap gap-s2">${listButtons}</div>` : ''}
     <div class="mt-s3 flex flex-wrap items-baseline gap-s3 text-caveat">
       <button data-act="open-compile"
         class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
-        >the evidence this answer was composed from ›</button>
+        >${turn.factLayer ? 'the evidence behind this answer' : 'the evidence this answer was composed from'} ›</button>
       <button data-act="copy-turn"
         class="cursor-pointer bg-transparent text-caveat text-ink-muted underline"
         >${icon('copy', { size: 13 })} copy as evidence</button>
@@ -577,6 +943,10 @@ function renderPromotedFooter(turn, i) {
     openMembers({ slug, analysisId: b.dataset.listSource, title: b.dataset.listSource.replace(/_/g, ' ') });
   }));
   footer.querySelector('[data-act="open-compile"]')?.addEventListener('click', () => openCompile(turn));
+  wireAlias(turn);
+  wireRunnable(turn);
+  // Read the schedules once per turn (the footer redraws on a vote; the rows keep what they read).
+  if ((turn.runnable || []).some((r) => (r.sched || {}).state === 'unread')) loadRunnableSchedules(turn);
   footer.querySelector('[data-act="copy-turn"]')?.addEventListener('click', (e) =>
     copyAsEvidence(turnAsMarkdown(turn), e.currentTarget));
   footer.querySelectorAll('[data-vote]').forEach((b) => b.addEventListener('click', () => {
@@ -611,6 +981,7 @@ function applyAnswer(turn, body) {
   turn.symbolTable = body.symbol_table || null;
   turn.compareSymbols = body.compare_symbols || null;
   turn.aliasSuggestion = body.alias_suggestion || null;
+  turn.runnable = gapRunnable(turn.compiled);
 }
 
 /** Narrow the sidebar to the resources an answer named.
