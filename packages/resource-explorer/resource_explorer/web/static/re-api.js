@@ -1531,6 +1531,19 @@ export const updateRfaAction = (rfaId, { status, assignee = '', deferUntil = '',
   patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}`,
         { status, assignee, defer_until: deferUntil, resolution_note: resolutionNote });
 
+/** Dismiss one RFA as not_applicable | wont_do. Recorded against the finding's content, so the same finding
+ *  from a later survey stays dismissed; nothing is deleted and nothing is written to Egeria. */
+export const dismissRfa = (rfaId, { reason, note = '' } = {}) =>
+  post(`/api/activity/rfas/${encodeURIComponent(rfaId)}/dismiss`, { reason, note });
+
+/** Restore a dismissed RFA (the dismissal row is kept as history, marked cleared). */
+export const restoreRfaDismissal = (dismissalId) =>
+  post(`/api/activity/rfas/dismissals/${encodeURIComponent(dismissalId)}/clear`, {});
+
+/** A free-text note on one RFA, independent of its status. */
+export const saveRfaNote = (rfaId, notes) =>
+  patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}/notes`, { notes });
+
 /**
  * Poll one activity entry until it stops running.
  *
