@@ -66,6 +66,7 @@ import {
 // (still called from within it, via `context.js`'s shared pieces) even
 // though app.js itself no longer calls `renderEnrichment` directly.
 import { renderContext } from '/static/next/stages/context.js';
+import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
@@ -156,6 +157,8 @@ import {
   saveSchedule,
   getSchedules,
   getScoutingOverview,
+  getSurveySummary,
+  resolveEgeriaLink,
   listActivity,
   listAnalyses,
   listDatabases,
@@ -3330,6 +3333,7 @@ export function resourceHeaderHtml(slug) {
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
     ${credentialBanner}
+    ${state.resourceType === 'repo' ? staleLinkBannerHtml(ov) + scoutingTilesHtml(ov) + scoutingSignalHtml(state.scoutingSignal?.slug === slug ? state.scoutingSignal : null) : ''}
     ${state.resourceType === 'db' ? changeCredentialsLineHtml(p) : ''}
     ${isCredentialUnreadable(p) ? `<div class="mt-s1 text-provenance" data-credential-banner>${credentialMarkHtml(p)} — surveys and runs are disabled until the credential is re-entered.</div>` : ''}
     <div id="resource-action" class="mt-s2"></div>`;
@@ -3589,6 +3593,19 @@ export function bindResourceHeader() {
     writeUrl();
     renderIntentNav();
     loadPane();
+  });
+
+  // PI-052: the stale-link banner's three repairs. Each ends by re-reading the overview so the header
+  // shows what the server now says, not what the click implied.
+  bindStaleLinkBanner(el, {
+    resolve: (action) => resolveEgeriaLink('repo', state.selectedSlug, action),
+    confirmWrite: (choice) => window.confirm(`${choice.label}?\n\n${choice.sentence}`),
+    onDone: async () => {
+      const slug = state.selectedSlug;
+      try { state.overview = await getScoutingOverview(slug); } catch { state.overview = null; }
+      const host = $('resource-header');
+      if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
+    },
   });
 
   el.querySelector('[data-act="change-credentials"]')?.addEventListener('click', () => {
@@ -8054,6 +8071,15 @@ async function loadPane() {
         }
       })
       .catch(() => { /* the header is fine without it */ });
+    // PI-051: the scouting signal chips ride on the same selection; "could not read" is kept distinct from "none yet".
+    state.scoutingSignal = null;
+    getSurveySummary(slug, 'scouting')
+      .then((r) => { state.scoutingSignal = { slug, tiles: r.tiles || [] }; })
+      .catch((err) => { state.scoutingSignal = { slug, error: err && err.message ? err.message : 'unknown error' }; })
+      .finally(() => {
+        const host = $('resource-header');
+        if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
+      });
   }
 
   // The frame first, then per-row skeletons — rows arrive independently, and
