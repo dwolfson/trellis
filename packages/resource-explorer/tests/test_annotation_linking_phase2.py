@@ -39,6 +39,9 @@ from resource_explorer.surveyors.survey_report import (
     SchemaAnalysisAnnotation,
 )
 
+# Brief I: a publish's link drain runs inside the person's request, as them.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 # ── 1. sub-surveyors set evidence_of correctly ──────────────────────────────
 

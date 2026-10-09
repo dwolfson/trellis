@@ -13,8 +13,15 @@ import pytest
 
 from resource_explorer import doc_source_egeria as m
 
-_EGERIA_KW = dict(view_server="view1", platform_url="https://egeria.example",
-                   user_id="u", user_password="p")
+class _FakeClients:
+    """Stands in for `egeria_clients.EgeriaClients` (Brief I): who acts is not this file's
+    subject. `of(cls)` builds the (patched, fake) class the code under test asks for."""
+
+    def of(self, cls, **kw):
+        return cls("view1", "https://egeria.example", "u", "")
+
+
+_EGERIA_KW = dict(clients=_FakeClients())
 
 
 def test_source_type_label_covers_the_full_vocabulary():

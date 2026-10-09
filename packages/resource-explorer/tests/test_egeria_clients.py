@@ -149,15 +149,15 @@ def test_a_stored_resource_credential_is_used_only_when_both_halves_are_there():
     assert ec.StoredOrDaemon(user_only, ec.DaemonReason.OUTBOX).kind == "daemon"
 
 
-def test_daemon_entry_declares_the_daemon_only_where_nobody_is_there():
+def test_daemon_entry_keeps_a_carried_person_even_in_a_worker_marked_process(monkeypatch):
     @ec.daemon_entry(ec.DaemonReason.PREFECT_FLOW)
     def flow():
         return ec.current_principal()
 
-    assert flow().reason == "prefect_flow"           # a bare worker process
+    monkeypatch.setenv(ec.PREFECT_WORKER_MARKER, "flow-run-1")
     reset = _signed_in()
     try:
-        assert flow().kind == "caller"               # RE's own process keeps the person
+        assert flow().kind == "caller"               # never replaces a person who is there
     finally:
         current_caller.reset(reset)
 

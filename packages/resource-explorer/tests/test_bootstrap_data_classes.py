@@ -37,6 +37,9 @@ class _FakeDesigner:
     def create_egeria_bearer_token(self, *_args, **_kwargs):
         return "fake-token"
 
+    def set_bearer_token(self, *_args, **_kwargs):   # the factory shares one token (Brief I)
+        pass
+
     def get_guid_for_name(self, qualified_name):
         if qualified_name in self.existing_names:
             return f"guid-for-{qualified_name}"
@@ -60,6 +63,9 @@ class _FakeReferenceDataManager:
 
     def create_egeria_bearer_token(self, *_args, **_kwargs):
         return "fake-token"
+
+    def set_bearer_token(self, *_args, **_kwargs):   # the factory shares one token (Brief I)
+        pass
 
     def get_guid_for_name(self, qualified_name):
         if qualified_name in self.existing_names:

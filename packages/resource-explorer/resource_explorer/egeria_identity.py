@@ -200,6 +200,8 @@ class EgeriaIdentity:
     #: The Egeria user a client is built for when it differs from `user_id` (Background: the
     #: service account mints the token while `user_id` names the requester for Ownership).
     client_user: str = ""
+    #: A stored credential's own platform origin; the factory sends it nowhere else.
+    bound_platform: str = ""
 
     @property
     def is_person(self) -> bool:

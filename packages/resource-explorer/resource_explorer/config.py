@@ -256,6 +256,9 @@ class EgeriaConfig(BaseSettings):
     integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")
     user_id: str = Field(default="erinoverview", alias="EGERIA_USER_ID")
     user_password: str = Field(default="secret", alias="EGERIA_USER_PASSWORD")
+    #: Further Egeria platforms a credential may be sent to, comma separated (Brief I). The
+    #: configured `platform_url` is always allowed; any other URL is refused before a request.
+    allowed_platform_urls: str = Field(default="", alias="EGERIA_ALLOWED_PLATFORM_URLS")
     kafka_endpoint: str = Field(default="localhost:9092", alias="EGERIA_KAFKA_ENDPOINT")
     # Base URL for Egeria Workspaces' "The Catalog" app (egeria-workspaces-fs
     # PyegeriaWebHandler) — supports deep-linking to a specific element via

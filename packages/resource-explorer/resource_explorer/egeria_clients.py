@@ -55,6 +55,7 @@ __all__ = [
     "EgeriaClients",
     "EgeriaRefused",
     "NoCallerIdentity",
+    "PlatformNotAllowed",
     "StoredOrDaemon",
     "acting_as",
     "client_scope",
@@ -92,6 +93,17 @@ class CallerTokenExpired(PermissionError):
 
     def __init__(self, message: str = EXPIRED_SENTENCE) -> None:
         super().__init__(message)
+
+
+class PlatformNotAllowed(PermissionError):
+    """A credential would go to an Egeria platform RE is not configured for. Nothing is sent.
+    Maps to 403 with the sentence."""
+
+    status_code = 403
+
+    def __init__(self, origin: str) -> None:
+        super().__init__(f"this resource names an Egeria platform RE is not configured for: {origin}")
+        self.origin = origin
 
 
 class EgeriaRefused(PermissionError):
@@ -196,8 +208,56 @@ def StoredOrDaemon(entity: Any, reason: DaemonReason) -> EgeriaIdentity:  # noqa
     password = getattr(entity, "egeria_password", "") or ""
     if not (user and password):
         return Daemon(reason)
+    # A stored credential is bound to its OWN entity's platform (the configured one when the
+    # entity names none); the factory refuses to send it anywhere else, or to a platform that is
+    # not allowed at all.
+    bound = origin_of(getattr(entity, "egeria_url", "") or _configured_platform())
     return EgeriaIdentity(user_id=user, password=password, is_service_account=True,
-                          kind=KIND_STORED, reason=reason.value, client_user=user)
+                          kind=KIND_STORED, reason=reason.value, client_user=user,
+                          bound_platform=bound)
+
+
+# ---------------------------------------------------------------------------
+# Where a credential may go
+# ---------------------------------------------------------------------------
+
+def origin_of(url: str) -> str:
+    """`scheme://host:port`, lower-cased, with the scheme's default port made explicit."""
+    from urllib.parse import urlsplit
+
+    u = urlsplit((url or "").strip())
+    scheme = (u.scheme or "").lower()
+    host = (u.hostname or "").lower()
+    if not scheme or not host:
+        return (url or "").strip().lower()
+    port = u.port or {"https": 443, "http": 80}.get(scheme, 0)
+    return f"{scheme}://{host}:{port}"
+
+
+def _configured_platform() -> str:
+    from resource_explorer.config import get_config
+
+    return get_config().egeria.platform_url
+
+
+def allowed_platforms() -> frozenset[str]:
+    """The origins a Caller, Daemon or stored credential may be sent to: the configured
+    `EGERIA_PLATFORM_URL`, plus any in `EGERIA_ALLOWED_PLATFORM_URLS` (comma separated)."""
+    from resource_explorer.config import get_config
+
+    egeria = get_config().egeria
+    configured = getattr(egeria, "platform_url", "")
+    listed = getattr(egeria, "allowed_platform_urls", "")
+    extra = [u for u in (listed.split(",") if isinstance(listed, str) else []) if u.strip()]
+    return frozenset(origin_of(u) for u in [configured, *extra] if isinstance(u, str) and u.strip())
+
+
+def _check_platform(identity: EgeriaIdentity, platform_url: str) -> None:
+    origin = origin_of(platform_url)
+    if origin not in allowed_platforms():
+        raise PlatformNotAllowed(origin)
+    if identity.kind == KIND_STORED and identity.bound_platform and origin != identity.bound_platform:
+        raise PlatformNotAllowed(origin)
 
 
 def _client_user(identity: EgeriaIdentity) -> str:
@@ -243,19 +303,30 @@ def acting_as(identity: EgeriaIdentity) -> Iterator[EgeriaIdentity]:
         _acting.reset(reset)
 
 
+#: Set in a Prefect WORKER's flow-run process (Prefect's process worker exports it for every
+#: flow run it starts); never set by RE's own in-process flows, which run in RE's context.
+PREFECT_WORKER_MARKER = "PREFECT__FLOW_RUN_ID"
+
+
+def in_prefect_worker_process() -> bool:
+    import os
+
+    return bool((os.environ.get(PREFECT_WORKER_MARKER) or "").strip())
+
+
 def daemon_entry(reason: DaemonReason):
-    """Decorator for an entry point that may run in a process with no identity at all (a Prefect
-    worker). When the call already has one — RE's own process, context carried in — it is kept,
-    so a person's in-process run stays theirs; only a bare process is declared `Daemon(reason)`.
-    A caller whose sign-in expired is NOT replaced by the daemon: that still raises."""
+    """Decorator for a Prefect flow entry point. In a Prefect WORKER process (the explicit marker,
+    `PREFECT__FLOW_RUN_ID`) there is no person, and the flow is declared `Daemon(reason)`.
+    Anywhere else the call keeps whatever identity it carries — and with none, the first Egeria
+    call raises `NoCallerIdentity`. A missing caller is never turned into the daemon."""
     import functools
 
     def wrap(fn):
         @functools.wraps(fn)
         def inner(*args, **kwargs):
-            try:
-                current_principal()
-            except NoCallerIdentity:
+            from resource_explorer.egeria_identity import current_identity
+
+            if in_prefect_worker_process() and _acting.get() is None and current_identity() is None:
                 with acting_as(Daemon(reason)):
                     return fn(*args, **kwargs)
             return fn(*args, **kwargs)
@@ -282,11 +353,20 @@ _last_lock = threading.Lock()
 _last_by_user: dict[str, dict] = {}
 
 
+def _person_in_request() -> str:
+    from resource_explorer.egeria_identity import current_identity
+
+    person = current_identity()
+    return person.user_id if person is not None and person.token else ""
+
+
 def _record(identity: EgeriaIdentity, purpose: str) -> None:
     if identity.kind == KIND_CALLER:
         key, as_words = identity.user_id, "you"
-    elif identity.kind == KIND_DAEMON and identity.requested_by:
-        key, as_words = identity.requested_by, "service account (background)"
+    elif identity.kind == KIND_DAEMON and (identity.requested_by or _person_in_request()):
+        # Queued work for a person, or a daemon call made inside a person's request (e.g.
+        # reachability): theirs to see, labelled as the service account.
+        key, as_words = identity.requested_by or _person_in_request(), "service account (background)"
     elif identity.kind == KIND_STORED:
         key, as_words = "", "stored resource credential"
     else:
@@ -311,6 +391,11 @@ def last_egeria_identity(user_id: str) -> Optional[dict]:
 # The clients
 # ---------------------------------------------------------------------------
 
+def _build(cls: Any, view_server: str, platform_url: str, user_id: str, password: str) -> Any:
+    """The one constructor call. (Tests guard it so no real client can reach a platform.)"""
+    return cls(view_server, platform_url, user_id, password)
+
+
 class EgeriaClients:
     """pyegeria sub-clients for ONE identity, created lazily, sharing one token (EgeriaTech's shape).
 
@@ -328,6 +413,8 @@ class EgeriaClients:
         self.purpose = purpose
         self.view_server = view_server or egeria.view_server
         self.platform_url = platform_url or egeria.platform_url
+        # Before anything is built or sent: a credential goes only to an allowed platform.
+        _check_platform(identity, self.platform_url)
         self.user_id = _client_user(identity)
         self._clients: dict[tuple, Any] = {}
         self._token: Optional[str] = identity.token if identity.is_person else None
@@ -368,7 +455,8 @@ class EgeriaClients:
                     exp = _token_expiry(self._token or "")
                     if exp is not None and exp <= time.time():
                         raise CallerTokenExpired()
-                client = cls(server or self.view_server, self.platform_url, self.user_id, self._password())
+                client = _build(cls, server or self.view_server, self.platform_url, self.user_id,
+                                self._password())
                 self._clients[key] = client
                 if self.identity.is_person:
                     client.set_bearer_token(self._token)
@@ -402,7 +490,11 @@ def _scope_key(identity: EgeriaIdentity, view_server: Optional[str], platform_ur
     import hashlib
 
     token_key = hashlib.sha256(identity.token.encode()).hexdigest() if identity.token else ""
-    return (identity.kind, identity.user_id, identity.reason, token_key, view_server, platform_url)
+    # A stored credential: the password's hash too, so an edited credential is a new client.
+    pw_key = (hashlib.sha256(identity.password.encode()).hexdigest()
+              if identity.kind == KIND_STORED and identity.password else "")
+    return (identity.kind, identity.user_id, identity.reason, token_key, pw_key,
+            identity.bound_platform, view_server, platform_url)
 
 
 def egeria_client(identity: EgeriaIdentity, *, purpose: str,

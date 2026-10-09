@@ -732,3 +732,64 @@ def as_daemon():
 
     with acting_as(Daemon(DaemonReason.SCHEDULER)) as identity:
         yield identity
+
+
+# ── Brief I round 2: no test reaches a real Egeria platform ─────────────────
+_LIVE_MARKERS = ("requires_egeria", "live_egeria", "live_egeria_writes")
+
+
+class RealEgeriaBlocked(RuntimeError):
+    """A test tried to send a request to a real Egeria platform without a live marker."""
+
+
+@pytest.fixture(autouse=True)
+def no_real_egeria(request, monkeypatch):
+    """Every pyegeria client comes from `egeria_clients` (the ban test enforces it), so this
+    guards there: the factory refuses to construct a REAL pyegeria class. Fakes (any class not
+    from pyegeria) pass untouched.
+    A test marked requires_egeria / live_egeria / live_egeria_writes is left alone."""
+    if any(request.node.get_closest_marker(m) for m in _LIVE_MARKERS):
+        yield
+        return
+    from resource_explorer import egeria_clients
+
+    def guarded_build(cls, *args):
+        # A real pyegeria class is refused BEFORE it is constructed: some pyegeria constructors
+        # already call the platform (`/api/about`). Fakes and mocks pass through.
+        if getattr(cls, "__module__", "").startswith("pyegeria"):
+            raise RealEgeriaBlocked(
+                f"a test tried to build a real {cls.__name__} (it would reach a real Egeria "
+                "platform); mark it requires_egeria / live_egeria_writes, or fake the client")
+        return cls(*args)
+
+    monkeypatch.setattr(egeria_clients, "_build", guarded_build)
+    yield
+
+
+#: Platforms existing test fixtures hard-code. Allowed in tests only, so a fixture that names
+#: the old default `https://localhost:9443` keeps working whatever EGERIA_PLATFORM_URL the run
+#: sets; the guard above still refuses to build any REAL client, so nothing is sent anywhere.
+_FIXTURE_PLATFORMS = ("https://localhost:9443", "http://localhost:9443",
+                      "https://host.docker.internal:9443")
+
+
+@pytest.fixture(autouse=True)
+def allow_fixture_platforms(request, monkeypatch):
+    if any(request.node.get_closest_marker(m) for m in _LIVE_MARKERS):
+        return
+    from resource_explorer import egeria_clients
+
+    real = egeria_clients.allowed_platforms
+    monkeypatch.setattr(egeria_clients, "allowed_platforms",
+                        lambda: real() | {egeria_clients.origin_of(u) for u in _FIXTURE_PLATFORMS})
+
+
+@pytest.fixture
+def allow_example_platform(monkeypatch):
+    """For tests whose fake entities name `https://egeria.example`: allow that origin, as a
+    deployment would with EGERIA_ALLOWED_PLATFORM_URLS (Brief I round 2)."""
+    from resource_explorer import egeria_clients
+
+    real = egeria_clients.allowed_platforms
+    monkeypatch.setattr(egeria_clients, "allowed_platforms",
+                        lambda: real() | {egeria_clients.origin_of("https://egeria.example")})
