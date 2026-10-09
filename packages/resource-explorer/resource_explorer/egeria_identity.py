@@ -4,9 +4,9 @@
 
 * **Per-request client.** Every pyegeria client RE builds *on behalf of a
   person* is authenticated with that person's Egeria bearer token, so Egeria's
-  own provenance records the person rather than `erinoverview`.
-  `caller_credentials()` reports which of the two identities is in play, and
-  `apply_identity()` is the single place a client is handed a token.
+  own provenance records the person rather than `erinoverview`. Since Brief I
+  (2026-10-09) every client is built by `egeria_clients.egeria_client`, the one
+  factory; this module keeps the identity record and the governance stamps.
 * **Ownership.** Everything RE publishes gets the `Ownership` classification
   (`0445`) with `owner` = the requesting user's id and
   `ownerTypeName = "UserIdentity"`. Ownership is curation by default: the
@@ -15,14 +15,17 @@
   an element joins `resource-explorer-draft`; on curate-accept it is promoted
   into the deployment's publish zones.
 
-The service account is legitimate in exactly one place
----------------------------------------------------
+The daemon identity is legitimate only where it is named
+--------------------------------------------------------
 The **worker role's own loops** — bootstrap heal, Egeria resync, the outbox
-drain — are the platform's integration identity and *should* be attributed to
-it. `service_credentials()` is that identity, named so a reader can tell a
-deliberate service-account call from one that merely forgot to pass a token.
+drain, scheduled and queued surveys — are RE's daemon identity and *should* be
+attributed to it: `egeria_clients.Daemon(reason)`, with `reason` from a closed
+enum, so a reader can tell a deliberate daemon call from one that merely forgot
+a token. Nothing falls back to it silently.
 
-**Interim, and deliberate: a queued run does not carry a token.** An Egeria
+**Interim, and deliberate: a queued survey does not carry a token.** (A person's
+own queued action — Publish, Curate commit — does: its token is handed over in
+memory at enqueue, see `run_queue.enqueue_as_caller`.) An Egeria
 bearer token lives one hour (measured — `trellis_auth.
 EGERIA_TOKEN_TTL_SECONDS_OBSERVED`) and dies whenever the platform restarts,
 while a queued survey may sit in the queue longer than that and then run for
@@ -42,7 +45,7 @@ import logging
 import os
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator, Optional
 
 log = logging.getLogger(__name__)
@@ -50,7 +53,6 @@ log = logging.getLogger(__name__)
 __all__ = [
     "DRAFT_ZONE",
     "EgeriaIdentity",
-    "apply_identity",
     "caller_credentials",
     "caller_user_id",
     "classification_client",
@@ -64,12 +66,10 @@ __all__ = [
     "private_zone_is_enforced",
     "private_zone_status",
     "private_zones",
-    "identity_for_user",
     "ownership_body",
     "configured_publish_zones",
     "clear_zone_membership",
     "read_zones",
-    "service_credentials",
     "set_ownership",
     "set_zone_membership",
     "stamp_published",
@@ -176,8 +176,8 @@ class EgeriaIdentity:
 
     Exactly one of `token` / `password` is meaningful:
 
-    * `token` set — a signed-in person. `apply_identity` calls
-      `set_bearer_token`, and Egeria's provenance names them.
+    * `token` set — a signed-in person. The factory calls `set_bearer_token`,
+      and Egeria's provenance names them.
     * `password` set, `is_service_account` True — the worker role's own
       identity, which is the right attribution for background loops.
 
@@ -188,8 +188,18 @@ class EgeriaIdentity:
 
     user_id: str
     token: Optional[str] = None
-    password: str = ""
+    password: str = field(default="", repr=False)
     is_service_account: bool = False
+    #: Set by `egeria_clients`: "caller" | "system" | "background". Empty on a bare identity,
+    #: which `egeria_clients.egeria_client` refuses — who a client acts as is always named.
+    kind: str = ""
+    #: A Daemon identity's `DaemonReason` value.
+    reason: str = ""
+    #: A Daemon identity's requester (recorded; `user_id` carries it for Ownership).
+    requested_by: str = ""
+    #: The Egeria user a client is built for when it differs from `user_id` (Background: the
+    #: service account mints the token while `user_id` names the requester for Ownership).
+    client_user: str = ""
 
     @property
     def is_person(self) -> bool:
@@ -218,62 +228,16 @@ def caller_user_id(default: str = "") -> str:
     return identity.user_id if identity is not None else default
 
 
-def service_credentials() -> EgeriaIdentity:
-    """The worker role's own Egeria identity — the one legitimate service account."""
-    from resource_explorer.config import get_config
+def caller_credentials() -> EgeriaIdentity:
+    """Who an Egeria call here acts as: `egeria_clients.current_principal()`.
 
-    egeria = get_config().egeria
-    return EgeriaIdentity(
-        user_id=egeria.user_id, password=egeria.user_password, is_service_account=True
-    )
-
-
-def caller_credentials(*, required: bool = False) -> EgeriaIdentity:
-    """The identity a live Egeria call on this request should use.
-
-    `required=True` raises when nothing is signed in — for a call that must be
-    attributed to a person (a publish, a materialization). `required=False`
-    falls back to the service account, which is correct only for the worker's
-    own loops and for read-only calls; those call sites pass it explicitly so
-    the fallback is never something a reader has to infer.
+    The declared Daemon job, else the signed-in Caller; with neither it raises
+    `NoCallerIdentity`. It no longer falls back to the service account (Brief I, 2026-10-09):
+    a daemon job names itself with `egeria_clients.acting_as(Daemon(reason))`.
     """
-    identity = current_identity()
-    if identity is not None:
-        return identity
-    if required:
-        raise PermissionError(
-            "This operation writes to Egeria on behalf of a person and no user is "
-            "signed in. Sign in (POST /api/auth/login) or run `resource-explorer login`."
-        )
-    return service_credentials()
+    from resource_explorer.egeria_clients import current_principal
 
-
-def identity_for_user(user_id: str) -> EgeriaIdentity:
-    """A service-account identity that *owns* its writes as `user_id`.
-
-    The interim shape for a queued run: no token survives the queue, so the
-    worker authenticates as itself and stamps `Ownership` with the person who
-    asked. See the module docstring.
-    """
-    svc = service_credentials()
-    return EgeriaIdentity(
-        user_id=user_id or svc.user_id,
-        password=svc.password,
-        is_service_account=True,
-    )
-
-
-def apply_identity(client: Any, identity: Optional[EgeriaIdentity] = None) -> None:
-    """Authenticate a freshly-built pyegeria client. The one place this happens.
-
-    A person's token is reused via `set_bearer_token`; a service account mints
-    its own. Delegates to `trellis_auth.apply_token`, so RE and the Portal
-    build clients the same way.
-    """
-    from trellis_auth import apply_token
-
-    identity = identity or caller_credentials()
-    apply_token(client, identity.token if identity.is_person else None)
+    return current_principal()
 
 
 @contextmanager
@@ -352,18 +316,9 @@ def classification_client(identity: Optional[EgeriaIdentity] = None):
     """
     from pyegeria import ClassificationExplorer
 
-    from resource_explorer.config import get_config
+    from resource_explorer.egeria_clients import egeria_client
 
-    egeria = get_config().egeria
-    identity = identity or caller_credentials()
-    client = ClassificationExplorer(
-        egeria.view_server,
-        egeria.platform_url,
-        identity.user_id if identity.is_person else egeria.user_id,
-        identity.password or egeria.user_password,
-    )
-    apply_identity(client, identity)
-    return client
+    return egeria_client(identity or caller_credentials(), purpose="classification").of(ClassificationExplorer)
 
 
 def set_ownership(
@@ -458,18 +413,9 @@ def _metadata_client(identity: Optional[EgeriaIdentity] = None):
     """A `MetadataExpert` authenticated as `identity` (the read side of zone checks)."""
     from pyegeria.omvs.metadata_expert import MetadataExpert
 
-    from resource_explorer.config import get_config
+    from resource_explorer.egeria_clients import egeria_client
 
-    egeria = get_config().egeria
-    identity = identity or caller_credentials()
-    client = MetadataExpert(
-        egeria.view_server,
-        egeria.platform_url,
-        identity.user_id if identity.is_person else egeria.user_id,
-        identity.password or egeria.user_password,
-    )
-    apply_identity(client, identity)
-    return client
+    return egeria_client(identity or caller_credentials(), purpose="zone read").of(MetadataExpert)
 
 
 class ZoneReadError(RuntimeError):
@@ -505,19 +451,7 @@ def current_zones(element_guid: str, identity: Optional[EgeriaIdentity] = None) 
     if not element_guid:
         return []
     try:
-        from pyegeria.omvs.metadata_expert import MetadataExpert
-
-        from resource_explorer.config import get_config
-
-        egeria = get_config().egeria
-        identity = identity or caller_credentials()
-        client = MetadataExpert(
-            egeria.view_server,
-            egeria.platform_url,
-            identity.user_id if identity.is_person else egeria.user_id,
-            identity.password or egeria.user_password,
-        )
-        apply_identity(client, identity)
+        client = _metadata_client(identity)
         element = client.get_metadata_element_by_guid(element_guid)
         if not isinstance(element, dict):
             return []
@@ -621,12 +555,9 @@ def _resolve_platform() -> "tuple[str, Optional[str]]":
         return configured, None
     from pyegeria import EgeriaTech
 
-    from resource_explorer.config import get_config
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
 
-    egeria = get_config().egeria
-    tech = EgeriaTech(egeria.view_server, egeria.platform_url,
-                      egeria.user_id, egeria.user_password)
-    tech.create_egeria_bearer_token()
+    tech = egeria_client(Daemon(DaemonReason.ZONE_SETUP), purpose="resolve platform").of(EgeriaTech)
     entries: list[tuple[str, Optional[str], str]] = []  # (name, guid, urlRoot)
     for el in tech.get_elements("SoftwareServerPlatform", output_format="JSON") or []:
         props = el.get("properties") or {}
@@ -655,7 +586,9 @@ def _resolve_platform() -> "tuple[str, Optional[str]]":
     # holder-probe below it works even before any control has ever been
     # created (which is exactly the situation a first-boot ambiguity like
     # this one is in).
-    configured_url = (egeria.platform_url or "").strip().rstrip("/").lower()
+    from resource_explorer.config import get_config
+
+    configured_url = (get_config().egeria.platform_url or "").strip().rstrip("/").lower()
     url_matches = [e for e in entries if e[2].strip().rstrip("/").lower() == configured_url]
     if configured_url and len(url_matches) == 1:
         name, guid, _ = url_matches[0]
@@ -680,9 +613,8 @@ def _resolve_platform() -> "tuple[str, Optional[str]]":
     try:
         from pyegeria.omvs.security_officer import SecurityOfficer
 
-        probe = SecurityOfficer(egeria.view_server, egeria.platform_url,
-                                egeria.user_id, egeria.user_password)
-        probe.create_egeria_bearer_token()
+        probe = egeria_client(Daemon(DaemonReason.ZONE_SETUP),
+                              purpose="resolve platform").of(SecurityOfficer)
         holders: list[tuple[str, Optional[str]]] = []
         for name, guid, _ in entries:
             try:
@@ -784,13 +716,10 @@ def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dic
     try:
         from pyegeria.omvs.security_officer import SecurityOfficer
 
-        from resource_explorer.config import get_config
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
 
-        egeria = get_config().egeria
-        identity = identity or service_credentials()
-        client = SecurityOfficer(egeria.view_server, egeria.platform_url,
-                                 egeria.user_id, egeria.user_password)
-        apply_identity(client, identity)
+        client = egeria_client(identity or Daemon(DaemonReason.ZONE_SETUP),
+                               purpose="private zone").of(SecurityOfficer)
         platform, platform_guid = _resolve_platform()
         guid_kwargs = {"platform_guid": platform_guid} if platform_guid else {}
 
@@ -949,14 +878,10 @@ def ensure_draft_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dict:
     try:
         from pyegeria.omvs.metadata_expert import MetadataExpert
 
-        from resource_explorer.config import get_config
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
 
-        egeria = get_config().egeria
-        identity = identity or service_credentials()
-        client = MetadataExpert(
-            egeria.view_server, egeria.platform_url, egeria.user_id, egeria.user_password
-        )
-        apply_identity(client, identity)
+        client = egeria_client(identity or Daemon(DaemonReason.ZONE_SETUP),
+                               purpose="draft zone").of(MetadataExpert)
 
         existing = _existing_guid(client, qualified_name)
         if existing:

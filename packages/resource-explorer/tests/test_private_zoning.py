@@ -17,6 +17,9 @@ import pytest
 
 from resource_explorer.registry import Project, ProjectRegistry
 
+# Brief I: these tests fake the Egeria clients; the publish under test is the worker's, a declared daemon job.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 
 @contextmanager
 def _as(user_id: str):
@@ -846,14 +849,15 @@ def test_ensure_private_zone_exists_passes_the_resolved_guid_through(monkeypatch
 
     monkeypatch.setattr(ident, "_resolve_platform",
                         lambda: ("Quickstart OMAG Server Platform", "guid-localhost"))
-    monkeypatch.setattr(ident, "service_credentials", lambda: object())
-    monkeypatch.setattr(ident, "apply_identity", lambda *a, **k: None)
 
     calls = []
 
     class _RecordingOfficer:
         def __init__(self, *a, **k):
             pass
+
+        def create_egeria_bearer_token(self, *a, **k):   # the factory authenticates it (Brief I)
+            return "tok-daemon"
 
         def get_security_access_control(self, platform, zone, **kwargs):
             calls.append(("get", platform, zone, kwargs))

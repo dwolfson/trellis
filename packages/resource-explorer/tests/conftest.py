@@ -705,3 +705,30 @@ def isolate_pgvector_schema(monkeypatch, isolate_database_url_settings, reset_ca
                     cur.execute(f'DROP SCHEMA IF EXISTS "{scratch}" CASCADE')
             finally:
                 conn.close()
+
+
+# ── Brief I: who an Egeria call acts as, for tests that fake the clients ─────
+# Nothing falls back to the service account any more: a code path that builds an Egeria client
+# with no signed-in caller and no declared daemon job raises NoCallerIdentity. Tests whose point
+# is NOT identity opt in to one of these, explicitly, per module or per test.
+
+@pytest.fixture
+def signed_in_caller():
+    """A signed-in person with an Egeria token, as the web middleware would publish them."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    reset = current_caller.set(CallerIdentity(user_id="test-caller", egeria_token="tok-test-caller",
+                                              auth_source="app-jwt"))
+    try:
+        yield "test-caller"
+    finally:
+        current_caller.reset(reset)
+
+
+@pytest.fixture
+def as_daemon():
+    """A declared daemon job (the scheduler's), as a worker loop would declare it."""
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    with acting_as(Daemon(DaemonReason.SCHEDULER)) as identity:
+        yield identity

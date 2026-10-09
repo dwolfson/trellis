@@ -14,6 +14,9 @@ import pytest
 from resource_explorer import egeria_identity as ident
 from resource_explorer.workflows import curate
 
+# Brief I: these tests fake the Egeria clients; the publish under test is the worker's, a declared daemon job.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 CONFIGURED = "re-draft-configured"
 
 
@@ -115,7 +118,7 @@ def test_referenced_asset_stamp_is_unzoned_by_default(spy, monkeypatch):
 def test_ensure_draft_zone_exists_does_nothing_when_unconfigured(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("Egeria must not be contacted when no draft zone is configured")
-    monkeypatch.setattr(ident, "service_credentials", boom)
+    monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", boom)
     assert ident.ensure_draft_zone_exists() == {"status": "none", "zone": None}
 
 
