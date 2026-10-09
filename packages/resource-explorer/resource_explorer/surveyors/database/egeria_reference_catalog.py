@@ -46,6 +46,7 @@ from resource_explorer.surveyors.database.column_matching import (
     KnownValidValueSet,
 )
 from resource_explorer.surveyors.survey_definition_reader import _as_guid
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
 
@@ -783,13 +784,13 @@ def build_reference_clients(
 
     from resource_explorer.egeria_clients import current_principal, egeria_client
 
-    platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
+    platform_url = platform_url or egeria_platform_url()
     if not platform_url:
         raise ReferenceCatalogError(
             "EGERIA_PLATFORM_URL is not set — cannot read the platform's Data "
             "Classes, and an unread platform must not be reported as an empty one."
         )
-    view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
+    view_server = view_server or egeria_view_server()
     clients = egeria_client(identity or current_principal(), purpose="reference catalog",
                             view_server=view_server, platform_url=platform_url)
     return clients.of(DataDesigner), clients.of(ReferenceDataManager)

@@ -25,6 +25,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
 
@@ -288,8 +289,8 @@ class SurveyDefinitionReader:
         *,
         identity=None,
     ) -> None:
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
         # Not used to authenticate (Brief I): who acts is `self.principal()`, via the factory.
         self.user_password = user_password or ""

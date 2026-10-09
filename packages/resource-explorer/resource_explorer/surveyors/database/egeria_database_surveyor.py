@@ -5,6 +5,7 @@ import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import DatabaseEntity
@@ -126,8 +127,8 @@ class EgeriaDatabaseSurveyor:
         *,
         identity=None,
     ) -> None:
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", "erinoverview")
         self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self._identity = identity
@@ -1407,7 +1408,7 @@ def can_use_egeria() -> bool:
     Returns:
         True if EGERIA_PLATFORM_URL is set and pyegeria is installed
     """
-    if not os.getenv("EGERIA_PLATFORM_URL"):
+    if not egeria_platform_url():
         return False
     
     try:

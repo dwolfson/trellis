@@ -230,3 +230,46 @@ def test_the_credential_scan_fires_on_each_shape():
     src = ("x = db.egeria_password\ny = getattr(fs, 'egeria_user', '')\nf(egeria_user=u)\n"
            "'db.egeria_password in a string is not a read'\n")
     assert len(_credential_reads(src)) == 3
+
+
+# ── round 4 (found live on 8813): ONE source for the Egeria platform URL and view server ─────────
+
+ENV_KEYS = {"EGERIA_PLATFORM_URL", "EGERIA_VIEW_SERVER"}
+
+
+def _env_reads(source: str) -> list[str]:
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        key = None
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+            owner = f.value if isinstance(f, ast.Attribute) else None
+            is_env = name == "getenv" or (name == "get" and isinstance(owner, ast.Attribute) and owner.attr == "environ")
+            if is_env:
+                key = node.args[0].value
+        elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute)
+              and node.value.attr == "environ" and isinstance(node.slice, ast.Constant)):
+            key = node.slice.value
+        if key in ENV_KEYS:
+            out.append(f"{node.lineno}: reads {key} from the environment")
+    return out
+
+
+def test_no_module_but_config_reads_the_egeria_platform_or_view_server_from_the_environment():
+    found = {}
+    for path in sorted(PKG.rglob("*.py")):
+        rel = path.relative_to(PKG).as_posix()
+        if rel == "config.py":
+            continue
+        hits = _env_reads(path.read_text(encoding="utf-8"))
+        if hits:
+            found[rel] = hits
+    assert not found, "EGERIA_PLATFORM_URL / EGERIA_VIEW_SERVER read outside config.py:\n" + "\n".join(
+        f"  {f}: {h}" for f, hs in found.items() for h in hs)
+
+
+def test_the_env_scan_fires_on_each_shape():
+    src = ("import os\na = os.getenv('EGERIA_PLATFORM_URL', '')\nb = os.environ.get('EGERIA_VIEW_SERVER')\n"
+           "c = os.environ['EGERIA_PLATFORM_URL']\nd = 'os.getenv(\"EGERIA_PLATFORM_URL\") in a string'\n")
+    assert len(_env_reads(src)) == 3

@@ -1375,11 +1375,18 @@ class TestQuestionCatalogWriteRoutes:
 
 class TestEgeriaRules:
     def test_get_dataclass_rules_fallback(self, client):
+        # Brief I round 4: an unset EGERIA_PLATFORM_URL is NOT "no Egeria" (the configured default
+        # is the platform). The local fallback is what a signed-in reader gets when Egeria cannot
+        # be read — here the test guard refuses to build a real client.
         import os
+
+        from resource_explorer.auth import create_access_token
+
+        token = create_access_token(user_id="dan", egeria_token="tok-dan")
         with patch.dict(os.environ, {}, clear=False):
             if "EGERIA_PLATFORM_URL" in os.environ:
                 del os.environ["EGERIA_PLATFORM_URL"]
-            resp = client.get("/api/egeria/rules/dataclasses")
+            resp = client.get("/api/egeria/rules/dataclasses", headers={"Authorization": f"Bearer {token}"})
             assert resp.status_code == 200
             rules = resp.json()
             assert len(rules) == 6

@@ -13,6 +13,7 @@ from resource_explorer.web.routes._annotation_items import build_annotation_item
 from resource_explorer.auth import get_current_user
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 router = APIRouter()
 
@@ -228,7 +229,7 @@ class CatalogResult(BaseModel):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _platform_url() -> str:
-    return os.getenv("EGERIA_PLATFORM_URL", "https://localhost:9443")
+    return egeria_platform_url()
 
 
 def _get_project_or_404(slug: str):
@@ -291,7 +292,7 @@ async def get_dataclass_rules() -> list[DataClassRule]:
         {"name": "DateOfBirth", "display_name": "Date of Birth", "description": "Individual date or anniversary of birth.", "keywords": ["dob", "dateofbirth", "birth_date", "birthdate"], "source": "Local Fallback"},
     ]
 
-    platform_url = os.getenv("EGERIA_PLATFORM_URL")
+    platform_url = egeria_platform_url()
     if not platform_url:
         return [DataClassRule(**r) for r in fallback_rules]
 
@@ -301,7 +302,7 @@ async def get_dataclass_rules() -> list[DataClassRule]:
 
         from resource_explorer.egeria_clients import Caller, egeria_client
 
-        view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
+        view_server = egeria_view_server()
         # The signed-in reader (Brief I), resolved here in the request, not the env's user.
         clients = egeria_client(Caller(), purpose="data class rules",
                                 view_server=view_server, platform_url=platform_url)

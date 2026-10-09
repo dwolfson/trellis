@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +46,8 @@ class EgeriaProjectFinder:
         user_id: str | None = None,
         user_password: str | None = None,
     ) -> None:
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER_ID", "erinoverview")
         self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self._project_manager = None

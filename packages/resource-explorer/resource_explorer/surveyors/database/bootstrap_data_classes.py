@@ -7,6 +7,7 @@ import sys
 import logging
 
 from resource_explorer.surveyors.survey_definition_reader import _as_guid
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -53,8 +54,8 @@ STANDARD_DATA_CLASSES = [
 
 
 def bootstrap_data_classes() -> int:
-    platform_url = os.getenv("EGERIA_PLATFORM_URL")
-    view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
+    platform_url = egeria_platform_url()
+    view_server = egeria_view_server()
 
     if not platform_url:
         log.error("EGERIA_PLATFORM_URL environment variable is not set. Cannot connect to Egeria.")

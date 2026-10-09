@@ -21,6 +21,7 @@ from rich.console import Console
 # evaluates at import time. a2a_role imports nothing heavier than stdlib at
 # module scope, so this costs the CLI nothing on any other command.
 from resource_explorer.a2a_role import DEFAULT_A2A_PORT
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 app = typer.Typer(
     name="resource-explorer",
@@ -2545,8 +2546,8 @@ def _warn_ignored_egeria_credentials(user: Optional[str], password: Optional[str
 def _try_build_egeria_client(platform_url: Optional[str], view_server: Optional[str]):
     """Attempt to build a pyegeria client for optional cache refresh. Returns None on failure."""
     import os
-    url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
-    server = view_server or os.getenv("EGERIA_VIEW_SERVER", "")
+    url = platform_url or egeria_platform_url()
+    server = view_server or egeria_view_server()
     if not url:
         return None
     try:

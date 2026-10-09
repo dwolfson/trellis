@@ -26,6 +26,7 @@ from resource_explorer.surveyors.survey_report import (
 )
 
 from .connection import EngineCapabilities, NO_CAPABILITIES, database_connection
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 # analysis_catalog.yaml database entry id -> DatabaseSurveyor.survey() steps,
 # for the subset of database analyses that need an open connection to run at
@@ -1959,13 +1960,13 @@ class DatabaseSurveyor:
         pii_keywords = ["email", "phone", "ssn", "socialsec", "creditcard", "password", "dob", "dateofbirth"]
 
         # Dynamically load PII keywords from Egeria Valid Value Sets if platform connection is configured
-        platform_url = os.getenv("EGERIA_PLATFORM_URL")
+        platform_url = egeria_platform_url()
         if platform_url:
             try:
                 from pyegeria.omvs.reference_data import ReferenceDataManager
                 from resource_explorer.egeria_clients import current_principal, egeria_client
 
-                view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
+                view_server = egeria_view_server()
                 # The survey's own identity (Brief I): Caller on a route, the daemon in a run.
                 ref_manager = egeria_client(current_principal(), purpose="PII keywords",
                                             view_server=view_server,
