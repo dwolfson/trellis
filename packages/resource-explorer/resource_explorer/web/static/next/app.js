@@ -5520,10 +5520,10 @@ async function renderAnalysesIndexSection(slug, stage) {
         ? await runAnalysisWithCredential(slug, aid, credential)
         : await runAnalysis(slug, aid, apiEntityType(state.resourceType), { force });
       if (isFreshnessSkip(started)) {
-        // The server declined: the last run is still fresh. Say so on the button and offer the forced run.
+        // The server declined: the last run is still fresh. The button is usable again at once; the dialog says
+        // "Already up to date" and offers the forced run.
         b.disabled = false;
-        b.textContent = UP_TO_DATE_WORD;
-        setTimeout(() => { if (b.textContent === UP_TO_DATE_WORD) b.textContent = original; }, 4000);
+        b.textContent = original;
         offerRunAnyway(started, { slug, analysisId: aid, onForce: () => startRun(b, aid, null, true) });
         return;
       }
