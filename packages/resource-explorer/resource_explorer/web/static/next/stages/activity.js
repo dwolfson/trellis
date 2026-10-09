@@ -46,7 +46,7 @@ const PANEL_ID = 'activity-panel';
 const FETCH_LIMIT = 300;
 
 const OPERATION_LABEL = {
-  survey: 'Survey', catalog: 'Catalog → Egeria', publish: 'Publish → Egeria',
+  survey: 'Survey', catalog: 'Cataloguer → Egeria', publish: 'Publish → Egeria',
   scout: 'Scout', discover: 'Discover', refresh: 'Refresh', rfa: 'RFA',
   analysis_run: 'Analysis run',
 };

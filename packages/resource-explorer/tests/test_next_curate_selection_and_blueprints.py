@@ -93,13 +93,13 @@ class TestTheBlueprintList:
 
     def test_the_screen_says_a_blueprint_verdict_is_reading_scoped(self):
         app = _app()
-        body = app[app.index("async function renderBlueprintList("):app.index("/** Same shared-preview-dialog rule")]
+        body = app[app.index("async function renderBlueprintList("):app.index("/** Accepting a cluster is a decision")]
         assert "applies in this reading only" in body
         assert "switching readings shows a different set, not the same set re-judged" in body
 
     def test_switching_readings_replaces_rather_than_diffs(self):
         app = _app()
-        body = app[app.index("async function renderBlueprintList("):app.index("/** Same shared-preview-dialog rule")]
+        body = app[app.index("async function renderBlueprintList("):app.index("/** Accepting a cluster is a decision")]
         # A fresh innerHTML assignment on every call, no patch/diff step, and
         # a reading switch calls this same function again rather than
         # mutating a subset of the existing rows.
@@ -108,7 +108,7 @@ class TestTheBlueprintList:
 
     def test_the_foot_names_the_current_and_other_readings(self):
         app = _app()
-        body = app[app.index("async function renderBlueprintList("):app.index("/** Same shared-preview-dialog rule")]
+        body = app[app.index("async function renderBlueprintList("):app.index("/** Accepting a cluster is a decision")]
         assert "clusters shown" in body and "· all in the" in body
         assert "the ${esc(o.p)} reading has" in body
 
@@ -149,7 +149,7 @@ class TestMembershipHonesty:
     def test_an_accepted_but_unmaterialized_blueprint_says_so_honestly(self):
         app = _app()
         body = app[app.index("function blueprintRowHtml("):app.index("/** The rail: one cluster")]
-        assert "not yet cataloged in Egeria" in body
+        assert "not in Egeria yet" in body
 
 
 class TestDeferredStylingComesFromOneHelper:

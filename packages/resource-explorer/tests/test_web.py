@@ -787,6 +787,16 @@ class TestCurateBlueprintVerdictsRouter:
                        "target_size": 8, "run_scope": "", "not_a_claim": True},
         }], surveyed_at="2026-08-30T00:00:00")
 
+    def _accept_then_publish(self, client, registry, cluster="core-services"):
+        """Accept is a decision only (no write); what Publish runs for the blueprint is the workflow."""
+        resp = client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
+            "perspective": "physical", "cluster_name": cluster, "verdict": "accepted",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["verdict"] == "accepted" and "materialization" not in resp.json()
+        from resource_explorer.workflows.curate import materialize_blueprint_if_accepted
+        return materialize_blueprint_if_accepted(registry, "repo", "myproj", "physical", cluster, "accepted")
+
     def test_add_and_list_verdict(self, client):
         resp = client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
             "perspective": "physical", "cluster_name": "core-services", "verdict": "accepted",
@@ -828,13 +838,9 @@ class TestCurateBlueprintVerdictsRouter:
         })
         assert "materialization" not in resp.json()
 
-    def test_accepting_with_no_underlying_cluster_reports_a_materialization_error(self, client):
-        resp = client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
-            "perspective": "physical", "cluster_name": "never-clustered", "verdict": "accepted",
-        })
-        assert resp.status_code == 200
-        assert resp.json()["verdict"] == "accepted"
-        assert resp.json()["materialization"]["status"] == "error"
+    def test_publishing_with_no_underlying_cluster_reports_a_materialization_error(self, client, registry):
+        out = self._accept_then_publish(client, registry, cluster="never-clustered")
+        assert out["status"] == "error"
 
     def test_accepting_with_every_member_already_materialized_is_fully_materialized(
         self, client, registry,
@@ -859,12 +865,8 @@ class TestCurateBlueprintVerdictsRouter:
             instance.resolve_member_guids.return_value = ({"web": "guid-web"}, [])
             instance.resolve_child_blueprint_guids.return_value = ({}, [])
 
-            resp = client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
-                "perspective": "physical", "cluster_name": "core-services", "verdict": "accepted",
-            })
+            materialization = self._accept_then_publish(client, registry)
 
-        assert resp.status_code == 200
-        materialization = resp.json()["materialization"]
         assert materialization["status"] == "materialized"
         assert materialization["guid"] == "bp-guid-1"
         assert "unmaterialized_members" not in materialization
@@ -896,11 +898,8 @@ class TestCurateBlueprintVerdictsRouter:
             instance.resolve_member_guids.return_value = ({"web": "guid-web"}, ["db"])
             instance.resolve_child_blueprint_guids.return_value = ({}, [])
 
-            resp = client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
-                "perspective": "physical", "cluster_name": "core-services", "verdict": "accepted",
-            })
+            materialization = self._accept_then_publish(client, registry)
 
-        materialization = resp.json()["materialization"]
         assert materialization["status"] == "partial"
         assert materialization["unmaterialized_members"] == ["db"]
         assert materialization["enqueued_membership_rows"] == 1  # only "web", the ready one
@@ -921,11 +920,9 @@ class TestCurateBlueprintVerdictsRouter:
             instance.resolve_member_guids.return_value = ({}, [])
             instance.resolve_child_blueprint_guids.return_value = ({"core-services-sub": "bp-guid-child"}, [])
 
-            resp = client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
-                "perspective": "physical", "cluster_name": "core-services", "verdict": "accepted",
-            })
+            out = self._accept_then_publish(client, registry)
 
-        assert resp.json()["materialization"]["enqueued_membership_rows"] == 1
+        assert out["enqueued_membership_rows"] == 1
         child_call = instance.resolve_child_blueprint_guids.call_args
         assert child_call.args[-1] == ["core-services-sub"]
 
@@ -941,16 +938,12 @@ class TestCurateBlueprintVerdictsRouter:
             instance.resolve_member_guids.return_value = ({}, ["web"])
             instance.resolve_child_blueprint_guids.return_value = ({}, [])
 
-            client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
-                "perspective": "physical", "cluster_name": "core-services", "verdict": "accepted",
-            })
+            self._accept_then_publish(client, registry)
 
         assert instance.materialize_blueprint_element.call_args.kwargs["oversized"] is True
 
-    def test_egeria_unreachable_still_saves_the_verdict(self, client, registry):
-        """Same non-fatal-but-visible contract as the component route: the
-        verdict is real regardless of whether Egeria could be reached just
-        now."""
+    def test_egeria_unreachable_is_reported_by_the_publish_and_the_verdict_stands(self, client, registry):
+        """The verdict is saved at Accept; the unreachable Egeria is said by the Publish write."""
         self._seed_cluster(registry, members=["web"])
         from resource_explorer.surveyors.arch_recovery.blueprint_materializer import (
             BlueprintMaterializationError,
@@ -959,13 +952,10 @@ class TestCurateBlueprintVerdictsRouter:
                   "BlueprintMaterializer") as MockCls:
             MockCls.return_value.materialize_blueprint_element.side_effect = \
                 BlueprintMaterializationError("Could not connect to Egeria")
-            resp = client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
-                "perspective": "physical", "cluster_name": "core-services", "verdict": "accepted",
-            })
+            out = self._accept_then_publish(client, registry)
 
-        assert resp.status_code == 200
-        assert resp.json()["verdict"] == "accepted"
-        assert "Could not connect to Egeria" in resp.json()["materialization"]["error"]
+        assert "Could not connect to Egeria" in out["error"]
+        assert client.get("/api/curate/blueprint-verdicts/repo/myproj").json()["physical::core-services"]["verdict"] == "accepted"
 
 
 # ── /api/schedules — per-resource + global overview ─────────────────────────────

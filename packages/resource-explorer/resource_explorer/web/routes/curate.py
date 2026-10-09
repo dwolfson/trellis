@@ -493,19 +493,10 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
     registry = _registry()
     scope_locator = f"{body.perspective}::{body.cluster_name}"
     _authorize_curation(registry, entity_type, slug, scope_locator)
-    verdict = registry.record_component_verdict(
-        entity_type, slug, scope_locator, body.verdict, "", body.note,
-        verdict_target="blueprint",
+    # A decision and nothing more: no Egeria call, no promotion. Publish writes the blueprint
+    # (architecture_publish), with the shape and identifier the person chose here.
+    from resource_explorer.architecture_publish import encode_blueprint_choices
+    return registry.record_component_verdict(
+        entity_type, slug, scope_locator, body.verdict, encode_blueprint_choices(body.shape, identifier),
+        body.note, verdict_target="blueprint",
     )
-    materialization = _materialize_blueprint_if_accepted(
-        registry, entity_type, slug, body.perspective, body.cluster_name, body.verdict,
-        **({"shape": body.shape} if body.shape else {}),
-        **({"identifier": identifier} if identifier else {}),
-    )
-    if materialization is not None:
-        verdict["materialization"] = materialization
-        guid = materialization.get("guid", "")
-        if body.verdict == "accepted" and guid:
-            verdict["promotion"] = _promote_to_publish_zones(guid)
-            _record_promotion(registry, slug, scope_locator, NODE_PROMOTION_BLUEPRINT, verdict["promotion"])
-    return verdict

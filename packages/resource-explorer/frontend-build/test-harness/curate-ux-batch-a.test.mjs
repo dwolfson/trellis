@@ -231,7 +231,7 @@ test('Catalog: a failed commit restores the button and says why', async () => {
   await wait(150);
   assert.equal(go.disabled, false);
   assert.equal(norm(go), 'Publish →');
-  assert.match(norm(document.getElementById('curate-host')), /not cataloged: boom/);
+  assert.match(norm(document.getElementById('curate-host')), /not published: boom/);
 });
 
 /* ── items 9 + 10: Publish band ────────────────────────────────────────── */

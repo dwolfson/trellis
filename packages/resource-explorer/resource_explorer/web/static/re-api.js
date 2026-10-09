@@ -1531,12 +1531,26 @@ export const listRfas = () => get('/api/activity/rfas');
 
 /** Record a response action (defer | reassign | complete | reopen — "reopen"
  *  is just `status: 'open'` again, the same endpoint) against one RFA.
- *  `web/routes/activity.py:update_rfa_action` — local-only for now (see
+ *  `web/routes/activity.py:update_rfa_action` — recorded locally first (see
  *  next/rfa.js's own note on why), with a best-effort Egeria ToDo sync
  *  attempted server-side, non-blocking of this call's result. */
 export const updateRfaAction = (rfaId, { status, assignee = '', deferUntil = '', resolutionNote = '' } = {}) =>
   patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}`,
         { status, assignee, defer_until: deferUntil, resolution_note: resolutionNote });
+
+/** Dismiss one RFA as not_applicable | wont_do. Recorded against the finding's content, so the same finding
+ *  from a later survey stays dismissed; nothing is deleted and nothing is written to Egeria. */
+export const dismissRfa = (rfaId, { reason, note = '' } = {}) =>
+  post(`/api/activity/rfas/${encodeURIComponent(rfaId)}/dismiss`, { reason, note });
+
+/** Restore a dismissed RFA (the dismissal row is kept as history, marked cleared). */
+export const restoreRfaDismissal = (dismissalId) =>
+  post(`/api/activity/rfas/dismissals/${encodeURIComponent(dismissalId)}/clear`, {});
+
+/** A free-text note on one RFA, independent of its status. Saved locally first; when the RFA already has an
+ *  Egeria ToDo the server also creates an ActivityEntry note on it (best-effort, `rfa_egeria_sync.sync_rfa_note`). */
+export const saveRfaNote = (rfaId, notes) =>
+  patch(`/api/activity/rfas/${encodeURIComponent(rfaId)}/notes`, { notes });
 
 /**
  * Poll one activity entry until it stops running.
@@ -1693,9 +1707,19 @@ export const getComponentLeaves = (slug, branch) =>
  *  (DESIGN-BLUEPRINT-NODE-ADMISSION.md). `to` is 'built_here' or 'referenced_only'. */
 export const postNodeReclassify = (slug, scopeLocator, to, reason) =>
   post(`/api/projects/${encodeURIComponent(slug)}/components/reclassify`, { scope_locator: scopeLocator, to, reason });
-/** One verdict row per scope; accepted ones queue their materialisation. */
-export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
-  post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`, { scope_locators: scopeLocators, verdict, note });
+/** One verdict row per scope. A decision only: nothing is written to Egeria until Publish. `onlyScopes` are
+ *  the scopes whose verdict is for THAT component alone, not for the components under it. */
+export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '', onlyScopes = []) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/components/verdicts`,
+       { scope_locators: scopeLocators, verdict, note, ...(onlyScopes.length ? { only_scopes: onlyScopes } : {}) });
+
+/** What a Publish press for the architecture would write now (and what the last press did, per item). */
+export const getArchitecturePublishPlan = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/architecture/publish-plan`);
+
+/** Publish the architecture: the accepted components, then the accepted blueprints, are written to Egeria. */
+export const postArchitecturePublish = (slug) =>
+  post(`/api/projects/${encodeURIComponent(slug)}/architecture/publish`, {});
 
 /** SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2 — clustering.py's candidate
  *  blueprints, each carrying its own verdict/materialization state and its
@@ -1704,10 +1728,8 @@ export const postBranchVerdicts = (slug, scopeLocators, verdict, note = '') =>
 export const getComponentBlueprints = (slug) =>
   get(`/api/projects/${encodeURIComponent(slug)}/components/blueprints`);
 
-/** Accept/reject one cluster. Accepting materialises a real Egeria
- *  SolutionBlueprint (blueprint_materializer.py) and queues its resolvable
- *  members/children for CollectionMembership — the caller does not wait on
- *  that queue, see SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §4. */
+/** Accept/reject one cluster. A decision only: nothing is written to Egeria until Publish
+ *  (postArchitecturePublish). The shape and identifier chosen here are kept on the verdict for that press. */
 export const postBlueprintVerdict = (slug, perspective, clusterName, verdict, note = '', shape = '', identifier = '') =>
   post(`/api/curate/blueprint-verdicts/repo/${encodeURIComponent(slug)}`,
        { perspective, cluster_name: clusterName, verdict, note, ...(shape ? { shape } : {}),
@@ -1902,6 +1924,15 @@ export const setRepoProjectContext = (slug, status) =>
  *  steps to run (the stale ones); omitted runs them all. */
 export const resurveyRepo = (slug, { steps = null } = {}) =>
   post(`/api/egeria/${encodeURIComponent(slug)}/resurvey`, steps ? { steps } : {});
+
+/** The kept survey, assembled from the registry (no Egeria call): metrics, file types, data files, dependencies. */
+export const getSurveyReport = (slug) => get(`/api/egeria/${encodeURIComponent(slug)}/survey-report`);
+
+/** Repair a stale Egeria link: action is republish | resurvey | discard. Republish and resurvey WRITE a new
+ *  SurveyReport to Egeria; discard writes nothing there. None archives or deletes in Egeria (the bulk
+ *  delete routes are deliberately not wrapped here). */
+export const resolveEgeriaLink = (entityType, slug, action) =>
+  post(`/api/egeria/linkage/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}/resolve`, { action });
 
 /** Forget RE's cached Egeria GUIDs and survey history for this resource. Egeria is not contacted. */
 export const forgetEgeriaLinks = (slug) => post(`/api/egeria/${encodeURIComponent(slug)}/forget-links`);

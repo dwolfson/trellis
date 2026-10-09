@@ -27,7 +27,7 @@ class TestReviewHappensAtTheBranch:
         # verdictBadge moved to stages/curate.js; bound to recordVerdicts,
         # the last function in that file, rather than app.js's rowKey.
         body = app[app.index("function verdictBadge("):app.index("function recordVerdicts(")]
-        assert "data-branch-open" in body and "accept all ${b.components}" in body
+        assert "data-branch-open" in body and "accept all ${reach}" in body
         assert "· with <span class=\"font-mono\">${esc(v.inherited_from)}/</span>" in body   # inherited says so
         assert "grouping only — a directory that holds components, not a component itself" in body
         assert "⚠ <span class=\"tnum\">${b.low_confidence}</span> at or below 50%" in body   # confidence routes, never hides
@@ -45,14 +45,14 @@ class TestReviewHappensAtTheBranch:
         # next-function marker to bound it, so take the rest of the file.
         body = app[app.index("function recordVerdicts("):]
         assert "openDialog('Accept at the branch'" in body
-        assert "Nothing runs until you confirm." in body
+        assert "Accepting is a decision: nothing is written to Egeria until you press Publish" in body
         # Not "SolutionComponents" -- naming an unverified type in a
         # confirmation dialog before it's pinned is how the SoftwareLibrary
         # mistake happened one round earlier (docs/Backlog.md, "Catalogue in
         # layers"). Plain words until the type is confirmed against a live
         # server, per the designer's own phrasing.
-        assert "will be created as software components in Egeria — the exact Egeria type is not yet pinned" in body
-        assert "not yet measured" in body, "an unmeasured price is said, not invented"
+        assert "will be recorded as accepted" in body, "Accept is a decision; Publish creates the components"
+        assert "will be created as software components" not in body
         assert "if (verdict !== 'accepted' || count <= 1) { go(); return; }" in body   # rejecting creates nothing; one leaf needs no preview
 
     def test_no_undo_and_the_word_is_change(self):

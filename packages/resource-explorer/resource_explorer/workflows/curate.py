@@ -519,8 +519,13 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     else:
         adoption_skipped = {}
     child_guids, unmaterialized_children = materializer.resolve_child_blueprint_guids(
-        registry, entity_type, slug, perspective, cluster.get("children") or [],
+        registry, entity_type, slug, perspective, cluster.get("children") or [], verify=True,
     )
+    # A child whose cached GUID Egeria no longer holds (the wipe) is reported, never linked, never recreated here.
+    children_gone = dict(getattr(materializer, "child_blueprints_gone", None) or {}) \
+        if isinstance(getattr(materializer, "child_blueprints_gone", None), dict) else {}
+    children_unreadable = dict(getattr(materializer, "child_blueprints_unreadable", None) or {}) \
+        if isinstance(getattr(materializer, "child_blueprints_unreadable", None), dict) else {}
 
     # The root may be an element Egeria's content pack already defines: adopt it rather than leave the
     # container unwritten, and let it count as a real component (the one test, 6a).
@@ -614,10 +619,19 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     if composition_error:
         result["composition_error"] = composition_error
     result["enqueued_membership_rows"] = len(row_ids)
+    # What this write actually handed over: the members and linked child blueprints it enqueued (an adopted
+    # content-pack root included) and the children of every composition Egeria shows. A child that was gone or
+    # unreadable is in none of these.
+    result["attached_guids"] = sorted(set(all_member_guids) | {
+        c["child_guid"] for c in composition_results if c.get("status") in ("linked", "already_present")})
     if unmaterialized_members:
         result["unmaterialized_members"] = unmaterialized_members
     if unmaterialized_children:
         result["unmaterialized_children"] = unmaterialized_children
+    if children_gone:
+        result["children_gone"] = children_gone            # {name: the GUID Egeria no longer holds}
+    if children_unreadable:
+        result["children_unreadable"] = children_unreadable
     unfinished = [c for c in composition_results if c["status"] in ("unconfirmed", "error", "unread")]
     unproven = result.get("status") == "adopted_unproven"
     if unmaterialized_members or unmaterialized_children or composition_error or unfinished:

@@ -152,6 +152,7 @@ class BlueprintMaterializer:
         self._registry = registry
         self._solution_architect = None
         self._automated_curation = None
+        self._metadata_expert = None      # only for the explicit SolutionComposition read (see _composition_children)
 
     def resolve_identity(self):
         """The `EgeriaIdentity` this materialization runs as.
@@ -195,6 +196,13 @@ class BlueprintMaterializer:
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
             apply_identity(self._automated_curation, identity)
+
+            # The explicit read of a container's SolutionComposition relationships (6.2 leaves the
+            # children key off a component that has none, so the element read alone cannot say "none").
+            from pyegeria.omvs.metadata_expert import MetadataExpert
+            self._metadata_expert = MetadataExpert(
+                self.view_server, self.platform_url, self.user_id, self.user_password)
+            apply_identity(self._metadata_expert, identity)
         except ImportError as exc:
             raise BlueprintMaterializationError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -897,14 +905,71 @@ class BlueprintMaterializer:
                     out.add(header["guid"])
         return out, bool(keys)
 
+    #: One page of a container's composition read. A full page may be a cut-off list, so it says "could not tell".
+    _COMPOSITION_PAGE = 1000
+
+    def _composition_children(self, container_guid: str) -> tuple[set[str], bool]:
+        """(GUIDs related to the container by `SolutionComposition`, whether the read answered), read as a
+        RELATIONSHIP query (6.2: a component with no children comes back from the element read with no
+        children key at all, which cannot tell "none" from "the read did not say").
+
+        The read returns both ends, so each entry's `elementAtEnd1` is used to keep only the pairs where the
+        container is end 1 (the parent); a reverse pair is never read as a child.
+
+        Known ONLY on a typed answer: Egeria's exact "No elements found" (none), or a list of related
+        elements whose GUIDs could all be read. A raised error, any other text, a list entry with no GUID,
+        a missing client or a full page is "could not tell" -- never "none"."""
+        from resource_explorer.egeria_absence import ABSENT, is_absent
+
+        if self._metadata_expert is None:
+            return set(), False
+        try:
+            # pyegeria's get_related_metadata_elements sends only the body (its page_size/start_from/
+            # starting_at_end arguments are dropped), so the page is asked for IN the body.
+            res = self._metadata_expert.get_related_metadata_elements(
+                container_guid, "SolutionComposition",
+                {"class": "ResultsRequestBody", "startFrom": 0, "pageSize": self._COMPOSITION_PAGE})
+        except Exception as exc:
+            log.warning("could not read the composition of %s: %s", container_guid, type(exc).__name__)
+            return set(), False
+        if isinstance(res, str):
+            return set(), is_absent(res) == ABSENT
+        entries = res.get("elementList") if isinstance(res, dict) else res
+        if not isinstance(entries, list) or len(entries) >= self._COMPOSITION_PAGE:
+            return set(), False
+        out: set[str] = set()
+        for e in entries:
+            if not isinstance(e, dict):
+                return set(), False
+            # Children only: the entries whose related element is NOT at end 1, i.e. the container is end 1
+            # (the parent). A reverse pair (the container nested elsewhere) is not a child. An entry that does
+            # not say which end it is cannot be classified: could not tell.
+            end1 = e.get("elementAtEnd1")
+            if not isinstance(end1, bool):
+                return set(), False
+            if end1:
+                continue
+            header = ((e.get("element") or {}).get("elementHeader") or e.get("elementHeader")
+                      or (e.get("relatedElement") or {}).get("elementHeader") or {})
+            guid = (e.get("element") or {}).get("elementGUID") or e.get("elementGUID") or header.get("guid") or ""
+            if not guid:
+                return set(), False
+            out.add(guid)
+        return out, True
+
     def sub_component_guids(self, container_guid: str) -> tuple[set[str], bool]:
         """(the container's sub-component GUIDs, whether the read said anything about them). Raises when
-        Egeria gives no usable element at all: "could not read" must not look like "has none"."""
+        Egeria gives no usable element at all: "could not read" must not look like "has none". When the
+        element read carries no children key (6.2 omits it for a component with none) the container's
+        SolutionComposition relationships are read explicitly instead."""
         element = self._solution_architect.get_solution_component_by_guid(container_guid)
         if not isinstance(element, dict) or not element:
             raise BlueprintMaterializationError(
                 f"could not read the container {container_guid}: Egeria's answer was not an element")
-        return self._child_guids(element)
+        guids, known = self._child_guids(element)
+        if known:
+            return guids, True
+        return self._composition_children(container_guid)
 
     def blueprint_member_guids(self, blueprint_guid: str) -> set[str] | None:
         """The GUIDs that are direct members of the blueprint, or None when the read does not carry its
@@ -1031,19 +1096,39 @@ class BlueprintMaterializer:
         entity_slug: str,
         perspective: str,
         child_names: list[str],
+        verify: bool = False,
     ) -> tuple[dict[str, str], list[str]]:
         """Same shape as resolve_member_guids, for Decision 1's per-level
         acceptance: a parent blueprint's write attaches only children that
         already have their own materialized SolutionBlueprint — an
         unaccepted/unmaterialized child is reported back, not silently
-        skipped or auto-materialized. Never raises."""
+        skipped or auto-materialized. Never raises.
+
+        `verify=True` reads each cached child by GUID before it is linked: RE's cache can point at nothing
+        (the 2026-10-08 wipe). A child Egeria says is GONE, or one that could not be read, is not linked and
+        is in the unmet list; the two are kept apart in `child_blueprints_gone` / `child_blueprints_unreadable`
+        ({name: guid} / {name: sentence}) for the caller to say. A gone child is never recreated here."""
         resolved: dict[str, str] = {}
         unmet: list[str] = []
+        self.child_blueprints_gone: dict[str, str] = {}
+        self.child_blueprints_unreadable: dict[str, str] = {}
         for child_name in child_names:
             row = registry.get_materialized_blueprint(entity_type, entity_slug, perspective, child_name)
             guid = row.get("guid") if row else ""
-            if guid:
-                resolved[child_name] = guid
-            else:
+            if not guid:
                 unmet.append(child_name)
+                continue
+            if verify:
+                try:
+                    self._ensure_connected()
+                    present = self.blueprint_exists(guid)
+                except Exception as exc:
+                    self.child_blueprints_unreadable[child_name] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                    unmet.append(child_name)
+                    continue
+                if not present:
+                    self.child_blueprints_gone[child_name] = guid
+                    unmet.append(child_name)
+                    continue
+            resolved[child_name] = guid
         return resolved, unmet

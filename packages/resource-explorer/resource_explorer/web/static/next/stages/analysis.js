@@ -156,7 +156,7 @@ function subResCatalogedSectionHtml(slug, s) {
   const locators = Object.keys(s.cataloged).sort();
   if (!locators.length) return '';
   return `
-    <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Cataloged sub-resources ·
+    <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">Chosen files and folders ·
       <span class="tnum">${locators.length}</span></div>
     <p class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">Run a corpus/container/leaf-shaped analysis
       narrowed to just one of these, instead of the whole repo -- only analyses whose scope fits the item's kind
@@ -184,8 +184,8 @@ function renderSubResourcePanel(panel, s) {
   }
   if (!s.findings.length && !view.rows.length) {
     panel.innerHTML = `
-      <p class="max-w-[70ch] text-caveat text-ink-muted">No sub-resource survey results yet -- use the
-        <span class="text-ink">run</span> button above to recommend which folders/files are worth cataloging
+      <p class="max-w-[70ch] text-caveat text-ink-muted">No files-and-folders survey results yet -- use the
+        <span class="text-ink">run</span> button above to recommend which folders/files are worth publishing
         as their own Egeria assets, based on the current file inventory. This panel will show the candidate
         list once it has run.</p>
       ${catalogedHtml}`;

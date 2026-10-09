@@ -233,7 +233,7 @@ logs/
 *.outbox/
 
 # Frontend build (bundled Tailwind CSS for resource-explorer's static UI)
-packages/resource-explorer/frontend-build/node_modules/
+packages/resource-explorer/frontend-build/node_modules
 
 # macOS
 .DS_Store

@@ -319,10 +319,33 @@ def _materialize_components(target: dict) -> RunOutcome:
     return RunOutcome(state="failed", error=" · ".join(parts)[:1500])
 
 
+def _handle_publish_architecture(target: dict, result_ref: str) -> RunOutcome:
+    """Publish for a repository's architecture: the accepted components, then the accepted blueprints, are
+    written to Egeria (architecture_publish.run_publish). Run with an event loop on this thread, like its
+    sibling `_handle_materialize_components`. The run fails when any item failed or was only partly written;
+    the per-item results are the proof rows the run wrote."""
+    from resource_explorer.catalogue_commit import run_with_loop
+
+    return run_with_loop(_publish_architecture, target, result_ref)
+
+
+def _publish_architecture(target: dict, result_ref: str) -> RunOutcome:
+    from resource_explorer.architecture_publish import FAILED, PARTIAL, run_publish
+    from resource_explorer.registry import ProjectRegistry
+
+    results = run_publish(ProjectRegistry(), target["slug"], target, result_ref)
+    bad = [r for r in results if r["status"] in (FAILED, PARTIAL)]
+    if not bad:
+        return RunOutcome(state="succeeded")
+    return RunOutcome(state="failed", error=" · ".join(
+        f"{r['name']}: {r['status']} · {r['words']}" for r in bad)[:1500])
+
+
 HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "curate_commit": _handle_curate_commit,
     "catalogue_commit": _handle_catalogue_commit,
     "materialize_components": _handle_materialize_components,
+    "publish_architecture": _handle_publish_architecture,
     "analysis_run": _handle_analysis_run,
     "database_analysis_run": _handle_database_analysis_run,
     "stage_batch": _handle_stage_batch,
@@ -466,6 +489,11 @@ def _activity_words(registry, kind: str, target: dict, outcome: "RunOutcome") ->
         if ok:
             return status, f"Materialised {n} accepted component(s) of {slug or 'the resource'}."
         return status, f"Materialising {n} accepted component(s) of {slug or 'the resource'} failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."
+    if kind == "publish_architecture":
+        n = (len(target.get("paths") or []) + len(target.get("blueprints") or [])) if isinstance(target, dict) else 0
+        if ok:
+            return status, f"Published {n} accepted item(s) of {slug or 'the resource'}."
+        return status, f"Publishing {n} accepted item(s) of {slug or 'the resource'} failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."
     if ok:
         return status, f"{kind.replace('_', ' ')} finished."
     return status, f"{kind.replace('_', ' ')} failed: {_first_sentence(outcome.error) or 'no reason recorded'}."
