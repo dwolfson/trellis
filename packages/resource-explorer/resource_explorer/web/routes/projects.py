@@ -2379,7 +2379,7 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     inherits until its own row wins (unless the row is for "this component
     only"). **A decision and nothing more**: no Egeria call and no run is
     queued. Publish (`POST /{slug}/architecture/publish`) is the one verb that
-    writes accepted components to Egeria (RULING-PUBLISH-NOT-CATALOG.md, owner
+    writes accepted components to Egeria (the owner's 2026-10-08 ruling that Publish is the one Egeria verb, owner
     2026-10-09). A reject never writes either: RE has no delete path, so a
     rejected component that is already in Egeria stays there, and the row says
     so. No undo, and the word is not offered: a change is a new row and the

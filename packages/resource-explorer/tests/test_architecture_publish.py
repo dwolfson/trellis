@@ -515,3 +515,22 @@ class TestThePlanDerivesWhatItWantsFromThePlanShape:
         registry.append_catalogue_commit_proof("p", proof=ap.P_ATTACHED, node_kind="architecture_publish",
                                                table_name="physical::a", element_guid="bp-1", detail={"guids": ["guid-src/b"]})
         assert ap.publish_plan(registry, "p")["blueprints"]["to_write"] == []
+
+
+class TestARecordFailureIsSaidNotSwallowed:
+    def test_a_failed_attached_record_makes_the_blueprint_partial_with_the_reason(self, registry, monkeypatch):
+        _seed_cluster(registry, members=["a"])
+        _accept_bp(registry)
+        item = ap.publish_plan(registry, "p")["blueprints"]["to_write"][0]
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted",
+                            lambda *a, **k: {"status": "materialized", "guid": "bp", "compositions": [], "attached_guids": []})
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", lambda g: {"status": "ok"})
+        real = registry.append_catalogue_commit_proof
+
+        def boom(slug, **k):
+            if k.get("proof") == ap.P_ATTACHED:
+                raise RuntimeError("registry is read-only")
+            return real(slug, **k)
+        monkeypatch.setattr(registry, "append_catalogue_commit_proof", boom)
+        status, words, _ = ap._publish_blueprint(registry, "p", item)
+        assert status == ap.PARTIAL and "could not be recorded (RuntimeError: registry is read-only)" in words

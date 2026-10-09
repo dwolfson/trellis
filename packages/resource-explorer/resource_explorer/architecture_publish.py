@@ -1,7 +1,7 @@
 """Publish for a repository's architecture: the one verb that writes accepted components and blueprints to Egeria.
 
 Accept and Reject are decisions only (owner, 2026-10-09: "Publish should be the verb to save to Egeria";
-RULING-PUBLISH-NOT-CATALOG.md). This module answers two questions from RE's own rows, with no Egeria call:
+the owner's 2026-10-08 ruling that Publish is the one Egeria verb). This module answers two questions from RE's own rows, with no Egeria call:
 
 * `publish_plan`  what a press would write: every accepted component with no Egeria element yet, and every
   accepted blueprint with no element yet or whose compositions are not all confirmed. Shown BEFORE the press
@@ -298,6 +298,8 @@ def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
                 detail={"guids": list(res.get("attached_guids") or [])})
         except Exception as exc:
             log.warning("could not record what was attached for %s: %s", item["key"], exc)
+            # Said, not swallowed: without the record the plan will offer this blueprint again.
+            problems.append(f"what was attached could not be recorded ({type(exc).__name__}: {scrub_text(str(exc))[:120]})")
         promotion = promote_to_publish_zones(guid)
         record_promotion(registry, slug, item["key"], NODE_PROMOTION_BLUEPRINT, promotion)
         if promotion.get("status") == "error":
