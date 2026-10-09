@@ -182,7 +182,8 @@ function defaultAsk(text) {
  *  `inEgeria`    whether the resource has an Egeria asset: with no asset the reader answers [] and that
  *                must read "not in Egeria", not "no reports"
  *  `onAsk`       optional (text) => boolean, replaces the chat-rail prefill
- *  Returns `{ refresh, expand(guid) }` so another stage can open one report. */
+ *  Returns `{ refresh, ready, expand(guid) }` so another stage can open one report. `refresh()` and `ready`
+ *  resolve true when Egeria was read, false when the read failed, null when superseded. */
 export function mountEgeriaReports(el, { entityType, slug, inEgeria, onAsk = defaultAsk }) {
   if (!entityType) throw new Error('mountEgeriaReports: entityType is required');
   let reports = [];
@@ -247,7 +248,7 @@ export function mountEgeriaReports(el, { entityType, slug, inEgeria, onAsk = def
     if (!el.querySelector('[data-egeria-reports]')) frame();
     const status = el.querySelector('[data-reports-status]');
     const rbtn = el.querySelector('[data-reports-refresh]');
-    if (rbtn.dataset.pending) return;
+    if (rbtn.dataset.pending) return null;
     rbtn.dataset.pending = '1';
     rbtn.disabled = true;
     status.textContent = 'reading Egeria…';
@@ -257,21 +258,23 @@ export function mountEgeriaReports(el, { entityType, slug, inEgeria, onAsk = def
         draw();
         body().innerHTML = `<div class="text-caveat text-ink-muted">Not in Egeria: there is no asset to list reports from.</div>`;
         status.textContent = '';
-        return;
+        return true;
       }
       reports = await getEgeriaReports(entityType, slug);
-      if (stale(el, slug)) return;
+      if (stale(el, slug)) return null;
       draw();
       if (!reports.length) {
         body().innerHTML = `<div class="text-caveat text-ink-muted">Egeria holds no survey reports on this asset.</div>`;
       }
       status.textContent = `read ${new Date().toTimeString().slice(0, 5)} · ${reports.length} report${reports.length === 1 ? '' : 's'}`;
+      return true;
     } catch (err) {
-      if (stale(el, slug)) return;
+      if (stale(el, slug)) return null;
       reports = [];
       draw();
       body().innerHTML = `<div class="text-caveat text-state-warn" data-reports-error>Egeria could not be read: ${esc(err.message)}</div>`;
       status.textContent = '';
+      return false;   // the read failed: callers must not read an empty list as "not in Egeria"
     } finally {
       rbtn.disabled = false;
       delete rbtn.dataset.pending;

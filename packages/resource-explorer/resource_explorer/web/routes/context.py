@@ -121,7 +121,13 @@ def question_key(text: str) -> str:
 # The flat keys `/`'s form reads, mirrored from the enrichment record so the
 # two UIs keep agreeing on the fields they share.
 _MIRROR = {"sensitivity": "sensitivity", "environment": "environment",
-           "owner": "org_owner", "intended_use": "purpose", "notes": "notes"}
+           "owner": "org_owner", "intended_use": "purpose", "notes": "notes",
+           # PI-098: the Next Context tab's steward, location and backup status share Classic's flat keys.
+           "steward": "responsible_steward", "location": "geographic_location",
+           "backup_status": "backup_status"}
+
+#: Classic's backup-status select, enforced here too so a Next write cannot store a value Classic cannot show.
+BACKUP_STATUSES = ("yes", "no", "partial", "unknown")
 
 
 class ContextData(BaseModel):
@@ -349,6 +355,9 @@ def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request)
 
     if key == "retention" and write.value.strip() and write.value.strip() not in retention_basis.ORDINALS:
         raise HTTPException(status_code=422, detail="retention must be one of: " + ", ".join(retention_basis.ORDINALS))
+
+    if key == "backup_status" and write.value.strip() and write.value.strip() not in BACKUP_STATUSES:
+        raise HTTPException(status_code=422, detail="backup_status must be one of: " + ", ".join(BACKUP_STATUSES))
 
     registry = ProjectRegistry()
     context = registry.get_context(entity_type, slug) or {}

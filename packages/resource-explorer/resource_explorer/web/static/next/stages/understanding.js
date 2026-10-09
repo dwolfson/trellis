@@ -19,7 +19,7 @@
  */
 import {
   REPO_CHARTS, getChart, getDbChart, getDatabaseDiff, getDatabaseSurveys, getDatabaseViews,
-  getRepoDiff, renderMermaidSvg,
+  getRepoDiff, renderMermaidSvg, getSurveyReport,
 } from '/static/re-api.js';
 import {
   state, esc, $, paneMessage, bindSubTabs, resourceHeaderHtml, bindResourceHeader,
@@ -27,6 +27,7 @@ import {
   chartLayout, loadScript,
 } from '/static/next/app.js';
 import { provenanceFromResponse, saveChartImage } from '/static/next/chart-export.js';
+import { mountRepoReport } from '/static/next/stages/repo-report.js';
 import { fitFigure, annotateTicks } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
 import {
@@ -634,10 +635,26 @@ export async function loadChartsPane() {
       `<div id="repo-diff-banner">${sinceLastRunBannerHtml('Comparing the last two runs…')}</div>`)}
     ${collapsibleSectionHtml('repo-charts', '<h3 class="m-0 font-heading text-name font-normal">Charts</h3>', '',
       `<div id="chart-index" class="mt-s2 flex flex-wrap gap-s2"></div>
-    <div id="chart-body" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' })}`
+    <div id="chart-body" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' })}
+    ${collapsibleSectionHtml('repo-report', '<h3 class="m-0 font-heading text-name font-normal">Survey report</h3>', '',
+      '<div id="repo-report-body"></div>', { attrs: 'class="mt-s4" data-repo-report' })}`
     : '<div id="understanding-host"></div>'}`;
   bindResourceHeader();
   bindCollapsibles(el);
+  // PI-053: the full survey report, read when its section is open (and the first time it is opened).
+  const reportSection = el.querySelector('details[data-repo-report]');
+  if (reportSection) {
+    let reportRead = false;
+    const readReport = () => {
+      if (reportRead) return;
+      reportRead = true;
+      mountRepoReport($('repo-report-body'), slug, {
+        fetchReport: getSurveyReport, stale: () => slug !== state.selectedSlug || !reportSection.isConnected,
+      });
+    };
+    if (reportSection.open) readReport();
+    else reportSection.addEventListener('toggle', () => { if (reportSection.open) readReport(); });
+  }
 
   // A database has its own six charts (module section above); a file system
   // has none yet and says so. Neither goes through the repo probe.

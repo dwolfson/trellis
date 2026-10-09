@@ -66,6 +66,7 @@ import {
 // (still called from within it, via `context.js`'s shared pieces) even
 // though app.js itself no longer calls `renderEnrichment` directly.
 import { renderContext } from '/static/next/stages/context.js';
+import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
@@ -156,6 +157,8 @@ import {
   saveSchedule,
   getSchedules,
   getScoutingOverview,
+  getSurveySummary,
+  resolveEgeriaLink,
   listActivity,
   listAnalyses,
   listDatabases,
@@ -3330,6 +3333,7 @@ export function resourceHeaderHtml(slug) {
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
     ${credentialBanner}
+    ${state.resourceType === 'repo' ? staleLinkBannerHtml(ov) + scoutingTilesHtml(ov) + scoutingSignalHtml(state.scoutingSignal?.slug === slug ? state.scoutingSignal : null) : ''}
     ${state.resourceType === 'db' ? changeCredentialsLineHtml(p) : ''}
     ${isCredentialUnreadable(p) ? `<div class="mt-s1 text-provenance" data-credential-banner>${credentialMarkHtml(p)} — surveys and runs are disabled until the credential is re-entered.</div>` : ''}
     <div id="resource-action" class="mt-s2"></div>`;
@@ -3589,6 +3593,24 @@ export function bindResourceHeader() {
     writeUrl();
     renderIntentNav();
     loadPane();
+  });
+
+  // PI-052: the stale-link banner's three repairs. Each ends by re-reading the overview so the header
+  // shows what the server now says, not what the click implied.
+  bindStaleLinkBanner(el, {
+    resolve: (action) => resolveEgeriaLink('repo', state.selectedSlug, action),
+    confirmWrite: (choice) => window.confirm(`${choice.label}?\n\n${choice.sentence}`),
+    onDone: async (_result, error) => {
+      const slug = state.selectedSlug;
+      try { state.overview = await getScoutingOverview(slug); } catch { state.overview = null; }
+      const host = $('resource-header');
+      if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
+      if (error && state.selectedSlug === slug && $('resource-action')) {
+        // The repair clears the dead link before it publishes, so a failure leaves the link gone: say what is true now.
+        $('resource-action').innerHTML = `<div data-repair-failed class="text-caveat text-ink">${esc(error.message || 'The repair did not finish')}.
+          The old link is already forgotten, so Publish to Egeria (Curate) can create a fresh one.</div>`;
+      }
+    },
   });
 
   el.querySelector('[data-act="change-credentials"]')?.addEventListener('click', () => {
@@ -6285,7 +6307,49 @@ export async function openRunsList(slug) {
         return;
       }
       holder.innerHTML = declaredVsReceivedHtml(dvr);
+      attachRunReport(holder, apiEntityType(state.resourceType), slug, dvr);
     });
+  });
+}
+
+/** PI-046: link a finished run to the Egeria report it published. The report GUID is the run's own
+ *  (`egeria_report_guid` from declared-vs-received, which reads it off the run record); nothing is
+ *  read from Egeria until the person presses the button, and a report that is no longer in Egeria
+ *  says so instead of showing an empty list. A run with no report says that too. */
+export function attachRunReport(holder, entityType, slug, dvr) {
+  const guid = dvr && dvr.published ? String(dvr.egeria_report_guid || '') : '';
+  if (!guid) {
+    holder.insertAdjacentHTML('beforeend', `<p data-run-report="none" class="mt-s2 text-provenance text-ink-muted">
+      <span class="font-glyph" aria-hidden="true">${stateEntry('unrun').glyph}</span> no Egeria report: this run was not published</p>`);
+    return;
+  }
+  holder.insertAdjacentHTML('beforeend', `<div data-run-report="${esc(guid)}" class="mt-s2">
+    <div class="flex flex-wrap items-baseline gap-s2 text-provenance text-ink-muted">
+      <span>Egeria report</span> <span class="font-mono text-ink" data-run-report-guid>${esc(guid)}</span>
+      <button type="button" data-run-report-open class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Show the report and its annotations</button>
+      <span data-run-report-status aria-live="polite"></span></div>
+    <div data-run-report-host class="mt-s1"></div></div>`);
+  const wrap = holder.lastElementChild;
+  const btn = wrap.querySelector('[data-run-report-open]');
+  const status = wrap.querySelector('[data-run-report-status]');
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    status.textContent = 'reading Egeria…';
+    try {
+      const { mountEgeriaReports } = await import('/static/next/stages/publish.js');
+      const host = wrap.querySelector('[data-run-report-host]');
+      const reports = mountEgeriaReports(host, { entityType, slug, inEgeria: true });
+      const read = await reports.ready;
+      await reports.expand(guid);
+      const there = [...host.querySelectorAll('[data-egeria-report]')].some((n) => n.dataset.egeriaReport === guid);
+      // "Not in Egeria now" is a statement about a SUCCESSFUL read; a failed read says it could not be read.
+      status.textContent = read === false ? 'Egeria could not be read, so this report was not checked'
+        : (there || read !== true) ? '' : 'this report is not in Egeria now';
+    } catch (err) {
+      status.textContent = `could not be read: ${err && err.message ? err.message : 'unknown error'}`;
+    }
+    btn.disabled = false;
   });
 }
 
@@ -8054,6 +8118,15 @@ async function loadPane() {
         }
       })
       .catch(() => { /* the header is fine without it */ });
+    // PI-051: the scouting signal chips ride on the same selection; "could not read" is kept distinct from "none yet".
+    state.scoutingSignal = null;
+    getSurveySummary(slug, 'scouting')
+      .then((r) => { state.scoutingSignal = { slug, tiles: r.tiles || [] }; })
+      .catch((err) => { state.scoutingSignal = { slug, error: err && err.message ? err.message : 'unknown error' }; })
+      .finally(() => {
+        const host = $('resource-header');
+        if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
+      });
   }
 
   // The frame first, then per-row skeletons — rows arrive independently, and
