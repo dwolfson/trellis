@@ -28,7 +28,7 @@ import { ago } from '/static/next/format.js';
 const blankForm = () => ({
   slug: '', display_name: '', db_type: 'postgresql', host: '', port: 5432, database_name: '',
   group_slug: '', description: '', db_user: '', db_password: '',
-  egeria_host: '', egeria_url: '', egeria_server: '', egeria_user: '', egeria_password: '',
+  egeria_host: '', egeria_url: '', egeria_server: '',
 });
 
 const fresh = () => ({
@@ -117,11 +117,7 @@ export function registerOneDatabaseHtml(groups = []) {
       ${st.showEgeria ? `<div class="mt-s2 space-y-s2">
         ${field('Egeria-visible host', input('egeria_host', 'host.docker.internal'))}
         ${field('Egeria platform URL', input('egeria_url', 'https://localhost:9443'))}
-        <div class="grid grid-cols-3 gap-s2">
-          ${field('View server', input('egeria_server', 'view-server'))}
-          ${field('Egeria user', input('egeria_user', 'erinoverview'))}
-          ${field('Egeria password', input('egeria_password', '', 'password'))}
-        </div>
+        ${field('View server', input('egeria_server', 'view-server'))}
       </div>` : ''}
     </div>
     <div class="mt-s3 flex items-center gap-s2">
@@ -143,7 +139,7 @@ function capture(host) {
   host.querySelectorAll('[data-rdb]').forEach((inp) => {
     const key = inp.dataset.rdb;
     if (key === 'port') st.f.port = parseInt(inp.value, 10) || 0;
-    else if (key === 'db_password' || key === 'egeria_password') st.f[key] = inp.value;
+    else if (key === 'db_password') st.f[key] = inp.value;
     else st.f[key] = inp.value.trim();
   });
 }
@@ -161,8 +157,6 @@ function egeriaHostDefault(f) {
 export function bindRegisterOneDatabase(host, ctx) {
   const pw = host.querySelector('[data-rdb="db_password"]');
   if (pw) pw.value = st.f.db_password;
-  const epw = host.querySelector('[data-rdb="egeria_password"]');
-  if (epw) epw.value = st.f.egeria_password;
 
   const refreshCues = () => {
     const tw = testStateWord();
@@ -226,11 +220,9 @@ export function bindRegisterOneDatabase(host, ctx) {
         database_name: f.database_name, description: f.description, group_slug: f.group_slug,
         db_user: f.db_user, db_password: f.db_password,
         egeria_host: egeriaHostDefault(f), egeria_url: f.egeria_url, egeria_server: f.egeria_server,
-        egeria_user: f.egeria_user, egeria_password: f.egeria_password,
       });
       // The password's job is done: drop every in-memory copy before anything else.
       st.f.db_password = '';
-      st.f.egeria_password = '';
       st.test = { phase: 'idle', sentence: '', passedFor: '' };
       // The row says what the RE-READ registration says, not what was clicked.
       let line;
@@ -259,4 +251,4 @@ export function bindRegisterOneDatabase(host, ctx) {
 export function resetRegisterOneDatabase() { st = fresh(); }
 
 /** For the harness: whether any password is still held in memory. */
-export const holdsPassword = () => !!(st.f.db_password || st.f.egeria_password);
+export const holdsPassword = () => !!st.f.db_password;

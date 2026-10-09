@@ -49,6 +49,16 @@ def _pyegeria_client_classes() -> set[str]:
     return names
 
 
+# KNOWN GAPS (accepted, Brief I round 3): shapes this static check does not follow —
+#   getattr(importlib.import_module("pyegeria"), "AssetMaker")(...)
+#   type(existing_client)(...)  /  existing_client.__class__(...)
+#   a class reached through a dict, list or function return  (CLASSES["am"](...))
+#   construction inside eval/exec, or via copy.copy / pickle of a live client
+#   aliases bound across modules (`from resource_explorer.x import AM` where x aliased it)
+# The runtime guard (tests/conftest.py `no_real_egeria`) still refuses any real client built
+# through the factory in a test; a construction outside it is what this file exists to catch.
+
+
 def _call_name(func: ast.AST) -> str:
     if isinstance(func, ast.Name):
         return func.id
@@ -181,3 +191,42 @@ def test_the_ban_sees_through_aliases_assignments_partials_and_subclasses(src):
 def test_the_allowlist_is_only_the_factory():
     assert ALLOWLIST == {"egeria_clients.py"}
     assert (PKG / "egeria_clients.py").exists()
+
+
+# ── owner's ruling 2026-10-09: per-resource Egeria credentials are never read ─────────────────────
+
+CREDENTIAL_FIELDS = {"egeria_user", "egeria_password"}
+#: The registry module owns the columns (its dataclasses and SQL keep them: dropping them is DDL).
+CREDENTIAL_ALLOWLIST = {"registry.py"}
+
+
+def _credential_reads(source: str) -> list[str]:
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute) and node.attr in CREDENTIAL_FIELDS and isinstance(node.ctx, ast.Load):
+            out.append(f"{node.lineno}: reads .{node.attr}")
+        elif (isinstance(node, ast.Call) and _call_name(node.func) == "getattr" and len(node.args) >= 2
+              and isinstance(node.args[1], ast.Constant) and node.args[1].value in CREDENTIAL_FIELDS):
+            out.append(f"{node.lineno}: getattr(..., {node.args[1].value!r})")
+        elif isinstance(node, ast.keyword) and node.arg in CREDENTIAL_FIELDS:
+            out.append(f"{node.lineno}: passes {node.arg}=")
+    return out
+
+
+def test_no_code_reads_or_passes_the_entity_stored_egeria_credentials():
+    found = {}
+    for path in sorted(PKG.rglob("*.py")):
+        rel = path.relative_to(PKG).as_posix()
+        if rel in CREDENTIAL_ALLOWLIST:
+            continue
+        hits = _credential_reads(path.read_text(encoding="utf-8"))
+        if hits:
+            found[rel] = hits
+    assert not found, "entity-stored Egeria credentials read or passed outside registry.py:\n" + "\n".join(
+        f"  {f}: {h}" for f, hs in found.items() for h in hs)
+
+
+def test_the_credential_scan_fires_on_each_shape():
+    src = ("x = db.egeria_password\ny = getattr(fs, 'egeria_user', '')\nf(egeria_user=u)\n"
+           "'db.egeria_password in a string is not a read'\n")
+    assert len(_credential_reads(src)) == 3

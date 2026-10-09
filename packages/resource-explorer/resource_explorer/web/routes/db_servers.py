@@ -21,6 +21,7 @@ class ServerRegistration(BaseModel):
     egeria_host: str = ""
     egeria_url: str = ""
     egeria_server: str = ""
+    #: Ignored (owner, 2026-10-09): accepted only so an older caller is not refused; logged.
     egeria_user: str = ""
     egeria_password: str = ""
     group_slug: str = ""
@@ -37,7 +38,6 @@ class ServerSummary(BaseModel):
     egeria_host: str
     egeria_url: str
     egeria_server: str
-    egeria_user: str
     status: str
     registered_at: str
     group_slug: str = ""
@@ -166,7 +166,6 @@ async def list_servers():
             egeria_host=srv.egeria_host,
             egeria_url=srv.egeria_url,
             egeria_server=srv.egeria_server,
-            egeria_user=srv.egeria_user,
             status=srv.status.value,
             registered_at=srv.registered_at,
             group_slug=srv.group_slug or "",
@@ -190,6 +189,9 @@ async def list_servers():
 @router.post("/register", response_model=ServerSummary)
 async def register_server(req: ServerRegistration):
     from resource_explorer.registry import DatabaseServer, ProjectRegistry
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
+
+    ignore_egeria_credentials(req, where="register database server")
     registry = ProjectRegistry()
     if registry.get_server(req.slug):
         raise HTTPException(400, f"Server '{req.slug}' already exists")
@@ -205,8 +207,6 @@ async def register_server(req: ServerRegistration):
         egeria_host=req.egeria_host,
         egeria_url=req.egeria_url,
         egeria_server=req.egeria_server,
-        egeria_user=req.egeria_user,
-        egeria_password=req.egeria_password,
         group_slug=req.group_slug,
     )
     registry.register_server(server)
@@ -221,7 +221,6 @@ async def register_server(req: ServerRegistration):
         egeria_host=server.egeria_host,
         egeria_url=server.egeria_url,
         egeria_server=server.egeria_server,
-        egeria_user=server.egeria_user,
         status=server.status.value,
         registered_at=server.registered_at,
         group_slug=server.group_slug or "",
@@ -456,7 +455,7 @@ async def get_server(slug: str) -> ServerSummary:
         host=server.host, port=server.port, description=server.description,
         db_user=server.db_user, egeria_host=server.egeria_host,
         egeria_url=server.egeria_url, egeria_server=server.egeria_server,
-        egeria_user=server.egeria_user, status=server.status.value,
+        status=server.status.value,
         registered_at=server.registered_at,
         last_run_at=server.last_run_at,
         last_run_candidate_count=(

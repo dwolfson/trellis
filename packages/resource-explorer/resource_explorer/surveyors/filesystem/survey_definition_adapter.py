@@ -131,7 +131,6 @@ def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
 def _run_egeria_adaptive(
     fs_entity, registry, step, force_egeria_publish: bool = False,
     egeria_url: str | None = None, egeria_server: str | None = None,
-    egeria_user: str | None = None, egeria_password: str | None = None,
     **_,
 ) -> dict:
     """Strategy selector for a step tagged executes_at="egeria-adaptive".
@@ -174,16 +173,17 @@ def _run_egeria_adaptive(
         run_hybrid_filesystem_survey,
     )
 
+    # "Configured for Egeria" = the resource names which Egeria (URL and view server). Who
+    # publishes is the factory's business; per-resource Egeria credentials are no longer used
+    # (owner's ruling, 2026-10-09).
     has_creds = bool(
         (egeria_url or fs_entity.egeria_url) and (egeria_server or fs_entity.egeria_server)
-        and (egeria_user or fs_entity.egeria_user) and (egeria_password or fs_entity.egeria_password)
     )
 
     try:
         survey_data = run_hybrid_filesystem_survey(
             fs_entity.slug, registry=registry, force_egeria_publish=force_egeria_publish,
             egeria_url=egeria_url, egeria_server=egeria_server,
-            egeria_user=egeria_user, egeria_password=egeria_password,
         )
     except Exception as exc:
         log.error("egeria-adaptive: filesystem survey failed for %s: %s", fs_entity.slug, exc)

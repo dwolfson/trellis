@@ -28,7 +28,6 @@ class FileSystemSummary(BaseModel):
     data_file_count: int
     egeria_url: str = ""
     egeria_server: str = ""
-    egeria_user: str = ""
     group_slug: str = ""
     # 'undecided' when nobody has ever decided — see DatabaseSummary's own
     # comment (databases.py) for why this field exists now.
@@ -60,6 +59,7 @@ class FileSystemRegistration(BaseModel):
     description: str = ""
     egeria_url: str = ""
     egeria_server: str = ""
+    #: Ignored (owner, 2026-10-09): accepted only so an older caller is not refused; logged.
     egeria_user: str = ""
     egeria_password: str = ""
     group_slug: str = ""
@@ -70,6 +70,7 @@ class FileSystemSurveyRequest(BaseModel):
     mode: str = "hybrid"  # "local" | "hybrid" | "egeria"
     egeria_url: str | None = None
     egeria_server: str | None = None
+    #: Ignored (owner, 2026-10-09): accepted only so an older caller is not refused; logged.
     egeria_user: str | None = None
     egeria_password: str | None = None
     force_publish: bool = False
@@ -136,7 +137,6 @@ def list_filesystems():
                 data_file_count=fs.data_file_count,
                 egeria_url=fs.egeria_url or "",
                 egeria_server=fs.egeria_server or "",
-                egeria_user=fs.egeria_user or "",
                 group_slug=getattr(fs, "group_slug", "") or "",
                 disposition=disp.get("disposition", "undecided"),
                 is_published=publish_status["is_published"],
@@ -150,9 +150,9 @@ def list_filesystems():
 @router.post("/", response_model=FileSystemSummary)
 def register_filesystem(registration: FileSystemRegistration):
     """Register a new filesystem connection."""
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(registration.egeria_user)
+    ignore_egeria_credentials(registration, where="register filesystem")
 
     registry = ProjectRegistry()
 
@@ -171,8 +171,6 @@ def register_filesystem(registration: FileSystemRegistration):
         description=registration.description,
         egeria_url=registration.egeria_url,
         egeria_server=registration.egeria_server,
-        egeria_user=registration.egeria_user,
-        egeria_password=registration.egeria_password,
         group_slug=registration.group_slug,
     )
     
@@ -198,7 +196,6 @@ def register_filesystem(registration: FileSystemRegistration):
         data_file_count=0,
         egeria_url=fs.egeria_url or "",
         egeria_server=fs.egeria_server or "",
-        egeria_user=fs.egeria_user or "",
     )
 
 
@@ -231,7 +228,6 @@ def get_filesystem(slug: str):
         disposition=disp.get("disposition", "undecided"),
         egeria_url=fs.egeria_url or "",
         egeria_server=fs.egeria_server or "",
-        egeria_user=fs.egeria_user or "",
         is_published=publish_status["is_published"],
         egeria_publish_note=publish_status["note"],
         working_set_hidden=registry.is_working_set_hidden("filesystem", fs.slug),
@@ -342,9 +338,9 @@ def delete_filesystem(slug: str):
 @router.post("/{slug}/survey")
 def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
     """Run a local or hybrid survey on the filesystem, optionally publishing to Egeria."""
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(req.egeria_user or "")
+    ignore_egeria_credentials(req, where="survey filesystem")
 
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)
@@ -420,8 +416,6 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
                 executes_at="egeria-adaptive",
                 egeria_url=req.egeria_url,
                 egeria_server=req.egeria_server,
-                egeria_user=req.egeria_user,
-                egeria_password=req.egeria_password,
                 force_egeria_publish=req.force_publish or (req.mode == "egeria"),
             )
             step_report = (exec_result.get("steps") or [{}])[0]
@@ -533,9 +527,9 @@ def get_filesystem_egeria_annotations(slug: str, report_guid: str) -> list[Egeri
 @router.post("/{slug}/publish")
 def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
     """Manually publish the latest local filesystem survey details to Egeria."""
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(req.egeria_user or "")
+    ignore_egeria_credentials(req, where="publish filesystem")
 
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)

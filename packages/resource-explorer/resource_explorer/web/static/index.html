@@ -859,14 +859,6 @@
               <label class="modal-label">View Server</label>
               <input id="srv-egeria-server" type="text" class="modal-input" placeholder="view-server">
             </div>
-            <div>
-              <label class="modal-label">Egeria User</label>
-              <input id="srv-egeria-user" type="text" class="modal-input" placeholder="erinoverview">
-            </div>
-            <div>
-              <label class="modal-label">Egeria Password</label>
-              <input id="srv-egeria-password" type="password" class="modal-input" placeholder="••••••••">
-            </div>
           </div>
         </div>
       </div>
@@ -1050,14 +1042,6 @@
             <div>
               <label class="modal-label">View Server</label>
               <input id="reg-egeria-server" type="text" class="modal-input" placeholder="view-server">
-            </div>
-            <div>
-              <label class="modal-label">Egeria User</label>
-              <input id="reg-egeria-user" type="text" class="modal-input" placeholder="erinoverview">
-            </div>
-            <div>
-              <label class="modal-label">Egeria Password</label>
-              <input id="reg-egeria-password" type="password" class="modal-input" placeholder="••••••••">
             </div>
           </div>
         </div>
@@ -1259,14 +1243,6 @@
               <label class="modal-label">View Server</label>
               <input id="reg-fs-egeria-server" type="text" class="modal-input" placeholder="qs-view-server">
             </div>
-            <div>
-              <label class="modal-label">User</label>
-              <input id="reg-fs-egeria-user" type="text" class="modal-input" placeholder="erinoverview">
-            </div>
-            <div>
-              <label class="modal-label">Password</label>
-              <input id="reg-fs-egeria-pwd" type="password" class="modal-input" placeholder="••••••••">
-            </div>
           </div>
         </div>
       </div>
@@ -1312,14 +1288,6 @@
             <label class="modal-label">View Server</label>
             <input id="survey-fs-egeria-server" type="text" class="modal-input" placeholder="qs-view-server">
           </div>
-          <div>
-            <label class="modal-label">User</label>
-            <input id="survey-fs-egeria-user" type="text" class="modal-input" placeholder="erinoverview">
-          </div>
-          <div>
-            <label class="modal-label">Password</label>
-            <input id="survey-fs-egeria-pwd" type="password" class="modal-input" placeholder="••••••••">
-          </div>
         </div>
       </div>
 
@@ -1358,14 +1326,6 @@
           <div>
             <label class="modal-label">View Server</label>
             <input id="publish-fs-egeria-server" type="text" class="modal-input" placeholder="qs-view-server">
-          </div>
-          <div>
-            <label class="modal-label">User</label>
-            <input id="publish-fs-egeria-user" type="text" class="modal-input" placeholder="erinoverview">
-          </div>
-          <div>
-            <label class="modal-label">Password</label>
-            <input id="publish-fs-egeria-pwd" type="password" class="modal-input" placeholder="••••••••">
           </div>
         </div>
       </div>
@@ -6205,7 +6165,6 @@ async function loadServerDetail(slug) {
     srv.egeria_url    ? `<div><span class="text-slate-500">Egeria URL</span> <span class="text-slate-200">${_esc(srv.egeria_url)}</span></div>` : '',
     srv.egeria_server ? `<div><span class="text-slate-500">View Server</span> <span class="text-slate-200">${_esc(srv.egeria_server)}</span></div>` : '',
     srv.egeria_host   ? `<div><span class="text-slate-500">Egeria Host</span> <span class="text-slate-200">${_esc(srv.egeria_host)}</span></div>` : '',
-    srv.egeria_user   ? `<div><span class="text-slate-500">Egeria User</span> <span class="text-slate-200">${_esc(srv.egeria_user)}</span></div>` : '',
   ].filter(Boolean).join('');
 
   view.innerHTML = `
@@ -6885,7 +6844,7 @@ function hideRegisterDbModal() {
   document.getElementById('register-db-modal').classList.add('hidden');
   ['reg-slug','reg-name','reg-host','reg-dbname','reg-desc',
    'reg-db-user','reg-db-password',
-   'reg-egeria-host','reg-egeria-url','reg-egeria-server','reg-egeria-user','reg-egeria-password',
+   'reg-egeria-host','reg-egeria-url','reg-egeria-server',
   ].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   document.getElementById('reg-port').value = '5432';
   document.getElementById('reg-type').value = 'postgresql';
@@ -6905,8 +6864,6 @@ async function submitRegisterDb() {
   const egeriaHost  = document.getElementById('reg-egeria-host').value.trim();
   const egeriaUrl   = document.getElementById('reg-egeria-url').value.trim();
   const egeriaServer = document.getElementById('reg-egeria-server').value.trim();
-  const egeriaUser  = document.getElementById('reg-egeria-user').value.trim();
-  const egeriaPwd   = document.getElementById('reg-egeria-password').value;
   const errEl       = document.getElementById('register-db-error');
 
   if (!slug || !name || !host || !dbname) {
@@ -6925,7 +6882,6 @@ async function submitRegisterDb() {
         db_user: dbUser, db_password: dbPassword,
         egeria_host: egeriaHost,
         egeria_url: egeriaUrl, egeria_server: egeriaServer,
-        egeria_user: egeriaUser, egeria_password: egeriaPwd,
       }),
     });
     if (res.ok) {
@@ -6957,7 +6913,7 @@ function hideRegisterServerModal() {
   document.getElementById('register-server-modal').classList.add('hidden');
   ['srv-slug','srv-name','srv-host','srv-desc',
    'srv-db-user','srv-db-password',
-   'srv-egeria-host','srv-egeria-url','srv-egeria-server','srv-egeria-user','srv-egeria-password',
+   'srv-egeria-host','srv-egeria-url','srv-egeria-server',
   ].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   document.getElementById('srv-port').value = '5432';
   document.getElementById('srv-type').value = 'postgresql';
@@ -6988,8 +6944,6 @@ async function submitRegisterServer() {
     egeria_host:     document.getElementById('srv-egeria-host').value.trim(),
     egeria_url:      document.getElementById('srv-egeria-url').value.trim(),
     egeria_server:   document.getElementById('srv-egeria-server').value.trim(),
-    egeria_user:     document.getElementById('srv-egeria-user').value.trim(),
-    egeria_password: document.getElementById('srv-egeria-password').value,
   };
 
   try {
@@ -14565,8 +14519,6 @@ function showRegisterFsModal() {
   document.getElementById('reg-fs-desc').value = '';
   document.getElementById('reg-fs-egeria-url').value = '';
   document.getElementById('reg-fs-egeria-server').value = '';
-  document.getElementById('reg-fs-egeria-user').value = '';
-  document.getElementById('reg-fs-egeria-pwd').value = '';
 }
 
 function hideRegisterFsModal() {
@@ -14582,8 +14534,6 @@ async function submitRegisterFs() {
   const group_slug = document.getElementById('reg-fs-group').value;
   const egeria_url = document.getElementById('reg-fs-egeria-url').value.trim();
   const egeria_server = document.getElementById('reg-fs-egeria-server').value.trim();
-  const egeria_user = document.getElementById('reg-fs-egeria-user').value.trim();
-  const egeria_password = document.getElementById('reg-fs-egeria-pwd').value.trim();
   
   if (!slug || !display_name || !local_mount_point) {
     const err = document.getElementById('reg-fs-error');
@@ -14599,7 +14549,7 @@ async function submitRegisterFs() {
       body: JSON.stringify({
         slug, display_name, local_mount_point, canonical_mount_point, description,
         group_slug,
-        egeria_url, egeria_server, egeria_user, egeria_password
+        egeria_url, egeria_server
       })
     });
     if (res.ok) {
@@ -14631,8 +14581,6 @@ function showSurveyFsModal(slug) {
   document.getElementById('fs-egeria-options').classList.toggle('hidden', !fs.egeria_url);
   document.getElementById('survey-fs-egeria-url').value = fs.egeria_url || '';
   document.getElementById('survey-fs-egeria-server').value = fs.egeria_server || '';
-  document.getElementById('survey-fs-egeria-user').value = fs.egeria_user || '';
-  document.getElementById('survey-fs-egeria-pwd').value = '';
 }
 
 function hideSurveyFsModal() {
@@ -14646,8 +14594,6 @@ async function submitSurveyFs() {
   const useEgeria = document.getElementById('survey-fs-use-egeria').checked;
   const egeria_url = document.getElementById('survey-fs-egeria-url').value.trim();
   const egeria_server = document.getElementById('survey-fs-egeria-server').value.trim();
-  const egeria_user = document.getElementById('survey-fs-egeria-user').value.trim();
-  const egeria_password = document.getElementById('survey-fs-egeria-pwd').value.trim();
   
   const submitBtn = document.getElementById('survey-fs-submit-btn');
   const progress = document.getElementById('survey-fs-progress');
@@ -14664,9 +14610,7 @@ async function submitSurveyFs() {
       body: JSON.stringify({
         mode: useEgeria ? 'hybrid' : 'local',
         egeria_url: useEgeria ? egeria_url : null,
-        egeria_server: useEgeria ? egeria_server : null,
-        egeria_user: useEgeria ? egeria_user : null,
-        egeria_password: useEgeria ? egeria_password : null
+        egeria_server: useEgeria ? egeria_server : null
       })
     });
     
@@ -14701,8 +14645,6 @@ function showPublishFsModal(slug) {
   const fs = _fsMap[slug] || {};
   document.getElementById('publish-fs-egeria-url').value = fs.egeria_url || '';
   document.getElementById('publish-fs-egeria-server').value = fs.egeria_server || '';
-  document.getElementById('publish-fs-egeria-user').value = fs.egeria_user || '';
-  document.getElementById('publish-fs-egeria-pwd').value = '';
 }
 
 function hidePublishFsModal() {
@@ -14715,8 +14657,6 @@ async function submitPublishFs() {
   const slug = _surveyingFsSlug;
   const egeria_url = document.getElementById('publish-fs-egeria-url').value.trim();
   const egeria_server = document.getElementById('publish-fs-egeria-server').value.trim();
-  const egeria_user = document.getElementById('publish-fs-egeria-user').value.trim();
-  const egeria_password = document.getElementById('publish-fs-egeria-pwd').value.trim();
   
   const submitBtn = document.getElementById('publish-fs-submit-btn');
   const progress = document.getElementById('publish-fs-progress');
@@ -14731,7 +14671,7 @@ async function submitPublishFs() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        egeria_url, egeria_server, egeria_user, egeria_password
+        egeria_url, egeria_server
       })
     });
     

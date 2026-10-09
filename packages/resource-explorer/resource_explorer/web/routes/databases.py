@@ -51,7 +51,6 @@ class DatabaseSummary(BaseModel):
     egeria_host: str = ""
     egeria_url: str = ""
     egeria_server: str = ""
-    egeria_user: str = ""
     group_slug: str = ""
     # "ok" | "none" | "unreadable" — a real marker from the registry, never the
     # password. "unreadable" = a credential is stored but cannot be decrypted;
@@ -118,6 +117,7 @@ class DatabaseRegistration(BaseModel):
     # Optional stored Egeria connection details
     egeria_url: str = ""
     egeria_server: str = ""
+    #: Ignored (owner, 2026-10-09): accepted only so an older caller is not refused; logged.
     egeria_user: str = ""
     egeria_password: str = ""
     group_slug: str = ""
@@ -257,7 +257,6 @@ def _to_summary(db) -> DatabaseSummary:
         egeria_host=db.egeria_host or "",
         egeria_url=db.egeria_url or "",
         egeria_server=db.egeria_server or "",
-        egeria_user=db.egeria_user or "",
         group_slug=getattr(db, "group_slug", "") or "",
         credential_status=getattr(db, "credential_status", "none") or "none",
         credential_changed_at=getattr(db, "credential_changed_at", None),
@@ -478,9 +477,9 @@ async def test_database_connection_before_register(req: ConnectionTestRequest) -
 async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     """Register a new database."""
     from resource_explorer.registry import DatabaseEntity, ProjectRegistry, ProjectStatus
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(req.egeria_user)
+    ignore_egeria_credentials(req, where="register database")
 
     registry = ProjectRegistry()
 
@@ -506,8 +505,6 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
         egeria_host=req.egeria_host,
         egeria_url=req.egeria_url,
         egeria_server=req.egeria_server,
-        egeria_user=req.egeria_user,
-        egeria_password=req.egeria_password,
         group_slug=req.group_slug,
     )
     
@@ -1115,6 +1112,7 @@ class PublishRequest(BaseModel):
     """
     egeria_url: str | None = None
     egeria_server: str | None = None
+    #: Ignored (owner, 2026-10-09): accepted only so an older caller is not refused; logged.
     egeria_user: str | None = None
     egeria_password: str | None = None
     db_user: str = ""
@@ -1151,9 +1149,9 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
     It starts an UNSCOPED native survey and catalogues without a declared scope, so it must not
     be offered as the way to publish. Backlog: make it scope-aware, or remove it."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(req.egeria_user or "")
+    ignore_egeria_credentials(req, where="publish database")
 
     registry = ProjectRegistry()
     database = _get_database_for_use(registry, slug)
