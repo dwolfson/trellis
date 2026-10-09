@@ -106,7 +106,8 @@ def resolve_all(registry, targets: list[dict], action: str, *,
             continue
         # Only a link still recorded as stale may be resolved. A resource republished since the list was read has no
         # stale record left, and resolving it would clear a GOOD link and publish a second element to Egeria.
-        if not registry.get_egeria_linkage(entity_type, slug):
+        link = registry.get_egeria_linkage(entity_type, slug)
+        if not link or link.get("status") != "stale":      # an 'uncatalogued' row is not a stale link
             result.record(entity_type, slug, "skipped", NO_LONGER_STALE)
             continue
         if dry_run:

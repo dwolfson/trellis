@@ -61,3 +61,49 @@ def test_the_dead_row_is_not_retried_from_the_queue_either(db):
     db.claim_due_outbox_elements(now=_later())
     assert routes.is_destructive_kind("catalogue_schema_leave_out") is True
     assert db.get_outbox_element(row)["status"] == "dead"
+
+
+def test_a_row_the_claimer_just_finished_is_never_turned_dead(db):
+    """The kill pass selects, then updates; a slow claimer may mark the row done in between."""
+    row = db.enqueue_outbox_element("repo", "p", "doc_source_unpublish", "Q::0", {})
+    db.claim_due_outbox_elements()
+    real = db._non_destructive_sql
+
+    def finish_in_the_gap():
+        db.mark_outbox_done(row, "guid-1")      # the claimer completes after the SELECT would have seen it running
+        return real()
+
+    # Simulate the race at the UPDATE: select sees 'running', then the row completes before the UPDATE runs.
+    with db._conn() as conn:
+        lease_cutoff = _later()
+        orig = conn.execute
+
+        class Wrapper:
+            def __init__(self, c): self.c = c; self.is_postgres = getattr(c, "is_postgres", False)
+            def execute(self, sql, params=()):
+                out = self.c.execute(sql, params)
+                if sql.lstrip().startswith("SELECT o.id FROM egeria_outbox o WHERE o.status = 'running'"):
+                    rows = out.fetchall()
+                    db_done = self.c.execute("UPDATE egeria_outbox SET status='done', claimed_at='' WHERE id=?", (row,))
+                    class R:  # replay the rows the SELECT saw
+                        def fetchall(_s): return rows
+                    return R()
+                return out
+        db._kill_lapsed_destructive_claims(Wrapper(conn), lease_cutoff)
+    assert db.get_outbox_element(row)["status"] == "done"
+
+
+@pytest.mark.parametrize("kind,destructive", [
+    ("annotation_x_y", False), ("my_archive_kind", True), ("archiveXkind", True), ("a%b", False),
+    ("doc_source_unpublish", True), ("catalogue_schema_leave_out", True), ("leaveXout", False), ("leave_out_x", True),
+    ("deleteit", True), ("to_detach", True), ("Remove_thing", True), ("annotation", False),
+])
+def test_the_sql_rule_matches_the_python_rule_exactly(db, kind, destructive):
+    """`_` is a LIKE wildcard: the word 'leave_out' must not match 'leaveXout'. SQL and Python must agree."""
+    from resource_explorer.egeria_outbox import is_destructive_outbox_kind
+    assert is_destructive_outbox_kind(kind) is destructive
+    row = db.enqueue_outbox_element("repo", "p", kind, "Q::0", {})
+    db.claim_due_outbox_elements()
+    db.claim_due_outbox_elements(now=_later())
+    status = db.get_outbox_element(row)["status"]
+    assert (status == "dead") is destructive, (kind, status)

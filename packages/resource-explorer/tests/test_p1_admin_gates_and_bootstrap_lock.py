@@ -43,44 +43,44 @@ class TestBootstrapRun:
         assert res.status_code == 409 and "already running" in res.json()["detail"]
         heal.assert_not_called()
 
-    def test_refused_with_409_while_another_manual_run_holds_the_lock(self, client, monkeypatch):
+    def test_refused_with_409_while_any_pass_holds_the_lock(self, client, monkeypatch):
         _admin(monkeypatch, True)
-        from resource_explorer.web.routes import bootstrap as route
-        assert route._run_lock.acquire(blocking=False)
+        from resource_explorer import bootstrap as route
+        monkeypatch.setattr(route, "discover_batches", lambda d: pytest.fail("a refused run must not look at batches"))
+        assert route._heal_lock.acquire(blocking=False)
         try:
-            with patch("resource_explorer.bootstrap.check_and_heal") as heal:
-                res = client.post("/api/bootstrap/run", json={})
+            res = client.post("/api/bootstrap/run", json={})
             assert res.status_code == 409
-            heal.assert_not_called()
         finally:
-            route._run_lock.release()
+            route._heal_lock.release()
 
     def test_the_lock_is_released_after_a_run_and_after_a_failure(self, client, monkeypatch):
         _admin(monkeypatch, True)
-        from resource_explorer.web.routes import bootstrap as route
+        from resource_explorer import bootstrap as route
         with patch("resource_explorer.bootstrap.check_and_heal", return_value={"batches": {}}):
             assert client.post("/api/bootstrap/run", json={}).status_code == 200
         with patch("resource_explorer.bootstrap.check_and_heal", side_effect=RuntimeError("boom")):
             assert client.post("/api/bootstrap/run", json={}).status_code == 500
-        assert route._run_lock.acquire(blocking=False), "released"
-        route._run_lock.release()
+        assert route._heal_lock.acquire(blocking=False), "released"
+        route._heal_lock.release()
 
     def test_two_concurrent_runs_heal_once(self, client, monkeypatch):
         _admin(monkeypatch, True)
+        from resource_explorer import bootstrap as b
         started, release = threading.Event(), threading.Event()
         calls = []
 
-        def slow(*a, **k):
+        def slow(docs_dir):
             calls.append(1); started.set(); release.wait(5)
-            return {"batches": {}}
+            return []
 
+        monkeypatch.setattr(b, "discover_batches", slow)
         results = []
-        with patch("resource_explorer.bootstrap.check_and_heal", slow):
-            t = threading.Thread(target=lambda: results.append(client.post("/api/bootstrap/run", json={}).status_code))
-            t.start()
-            assert started.wait(5)
-            second = client.post("/api/bootstrap/run", json={}).status_code
-            release.set(); t.join(5)
+        t = threading.Thread(target=lambda: results.append(client.post("/api/bootstrap/run", json={}).status_code))
+        t.start()
+        assert started.wait(5)
+        second = client.post("/api/bootstrap/run", json={}).status_code
+        release.set(); t.join(5)
         assert second == 409 and results == [200] and len(calls) == 1
 
 
@@ -156,3 +156,44 @@ class TestOwnerRulingAdminOnlyWhenConfigured:
         assert client.get("/api/egeria/admin-status").json() == {"admin": False, "configured": False}
         _admin(monkeypatch, True, configured=True)
         assert client.get("/api/egeria/admin-status").json() == {"admin": True, "configured": True}
+
+
+class TestCheckAndHealTakesTheLockItself:
+    """The automatic loop calls check_and_heal directly; the lock must cover it, not only the manual route."""
+
+    def test_a_second_pass_returns_running_without_touching_anything_and_keeps_the_flag(self, monkeypatch, tmp_path):
+        from resource_explorer import bootstrap as b
+        started, release = threading.Event(), threading.Event()
+        calls = []
+
+        def slow_discover(docs_dir):
+            calls.append(1); started.set(); release.wait(5)
+            return []
+
+        monkeypatch.setattr(b, "discover_batches", slow_discover)
+        out = []
+        t = threading.Thread(target=lambda: out.append(b.check_and_heal(tmp_path)))
+        t.start()
+        assert started.wait(5)
+        b._reinitializing = True                  # what the winner sets once it is past discovery
+        second = b.check_and_heal(tmp_path)
+        assert second == {"batches": {}, "running": True}
+        assert b._reinitializing is True, "the losing pass must not clear the winner's flag"
+        assert len(calls) == 1
+        release.set(); t.join(5)
+        assert out == [{"batches": {}}]
+        assert b._reinitializing is False
+
+    def test_the_lock_is_released_when_a_pass_raises(self, monkeypatch, tmp_path):
+        from resource_explorer import bootstrap as b
+        monkeypatch.setattr(b, "discover_batches", lambda d: (_ for _ in ()).throw(RuntimeError("x")))
+        with pytest.raises(RuntimeError):
+            b.check_and_heal(tmp_path)
+        monkeypatch.setattr(b, "discover_batches", lambda d: [])
+        assert b.check_and_heal(tmp_path) == {"batches": {}}
+
+    def test_the_route_turns_a_running_result_into_409(self, client, monkeypatch):
+        _admin(monkeypatch, True)
+        with patch("resource_explorer.bootstrap.check_and_heal", return_value={"batches": {}, "running": True}):
+            res = client.post("/api/bootstrap/run", json={})
+        assert res.status_code == 409

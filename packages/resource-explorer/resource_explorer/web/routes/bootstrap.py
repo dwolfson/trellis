@@ -8,7 +8,6 @@ degraded Survey tab, and so an admin can trigger a pass without restarting.
 from __future__ import annotations
 
 import asyncio
-import threading
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -18,9 +17,6 @@ from resource_explorer.web import admin_auth
 
 router = APIRouter()
 
-#: One heal at a time in this process. `_reinitializing` (set inside check_and_heal) covers the automatic loop, which
-#: this lock does not see; the route checks both.
-_run_lock = threading.Lock()
 
 
 class RunRequest(BaseModel):
@@ -53,11 +49,12 @@ async def bootstrap_run(request: Request, body: RunRequest | None = None) -> dic
     """
     admin_auth.require_admin(request)
     force = bool(body and body.force)
-    if bootstrap_mod._reinitializing or not _run_lock.acquire(blocking=False):
+    if bootstrap_mod._reinitializing:
         raise HTTPException(status_code=409, detail="A bootstrap heal is already running")
     try:
-        return await asyncio.to_thread(bootstrap_mod.check_and_heal, bootstrap_mod.DOCS_DIR, force)
+        out = await asyncio.to_thread(bootstrap_mod.check_and_heal, bootstrap_mod.DOCS_DIR, force)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"bootstrap run failed: {exc}")
-    finally:
-        _run_lock.release()
+    if out.get("running"):       # lost the lock inside check_and_heal: another pass (manual or automatic) holds it
+        raise HTTPException(status_code=409, detail="A bootstrap heal is already running")
+    return out

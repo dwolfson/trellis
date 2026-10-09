@@ -7893,8 +7893,9 @@ class ProjectRegistry:
         clause = f"o.element_kind NOT IN ({','.join('?' * len(kinds))})"
         params: list = list(kinds)
         for w in DESTRUCTIVE_KIND_WORDS:
-            clause += " AND LOWER(o.element_kind) NOT LIKE ?"
-            params.append(f"%{w}%")
+            # ESCAPE: `_` is a LIKE wildcard ('leave_out' would match 'leaveXout'). Same text on SQLite and Postgres.
+            clause += " AND LOWER(o.element_kind) NOT LIKE ? ESCAPE '\\'"
+            params.append("%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
         return clause, params
 
     def _kill_lapsed_destructive_claims(self, conn, lease_cutoff: str) -> list[int]:
@@ -7911,7 +7912,9 @@ class ProjectRegistry:
             marks = ",".join("?" * len(ids))
             conn.execute(
                 f"UPDATE egeria_outbox SET status='dead', claimed_at='', next_attempt_at='', last_error=? "  # noqa: S608
-                f"WHERE id IN ({marks})", (CLAIM_LAPSED_DESTRUCTIVE, *ids))
+                # Re-checked at the write: a slow claimer may have marked the row done since the SELECT.
+                f"WHERE id IN ({marks}) AND status='running' AND claimed_at <= ?",
+                (CLAIM_LAPSED_DESTRUCTIVE, *ids, lease_cutoff))
         return ids
 
     def peek_due_outbox_elements(self, *, limit: int = 200, run_id: str | None = None,

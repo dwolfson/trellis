@@ -208,3 +208,15 @@ class TestIssue117BlockOnDeleteInEgeria:
             assert r.failed == 2 and r.succeeded == 0
             assert all(d["message"] == ISSUE_117_WORDS for d in r.details)
         assert registry.get_egeria_asset_guid("p0") == "guid-0", "the local pointer is untouched"
+
+
+class TestOnlyStatusStaleIsResolved:
+    def test_an_uncatalogued_row_is_not_stale_and_is_skipped(self, registry):
+        registry.mark_egeria_linkage_uncatalogued("repo", "p1", "never published")
+        assert registry.get_egeria_linkage("repo", "p1")["status"] == "uncatalogued"
+        for dry in (True, False):
+            with patch("resource_explorer.bulk_ops._resolve_one") as one:
+                r = resolve_all(registry, _targets("p1"), "republish", dry_run=dry)
+            assert r.skipped == 1 and r.succeeded == 0, dry
+            assert "no longer stale" in r.details[0]["message"]
+            one.assert_not_called()
