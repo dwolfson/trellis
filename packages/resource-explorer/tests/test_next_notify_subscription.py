@@ -220,11 +220,12 @@ class TestNotifyDialogInlineScheduleAction:
     scheduling form (`_chatSubmitSchedule()`, index.html), which reuses
     saveSchedule() rather than inventing a second scheduling code path."""
 
-    def test_the_dialog_offers_daily_and_weekly_inline(self):
+    def test_the_dialog_offers_every_cadence_inline(self):
+        # PI-099: manual and monthly joined daily and weekly.
         body = _notify_dialog_body()
         assert 'id="notify-schedule-cadence"' in body
-        assert '<option value="daily">daily</option>' in body
-        assert '<option value="weekly">weekly</option>' in body
+        for cadence in ("manual", "daily", "weekly", "monthly"):
+            assert f'<option value="{cadence}"' in body
 
     def test_it_calls_the_real_save_schedule_wrapper_with_the_translated_entity_type(self):
         body = _notify_dialog_body()

@@ -27,7 +27,7 @@ and would have long outlived the conversation that produced it.
 """
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from resource_explorer.config import FeedbackConfig
 
@@ -51,3 +51,33 @@ def is_admin_request(request: Request, cfg: FeedbackConfig) -> bool:
         return True
 
     return False
+
+
+def admin_configured() -> bool:
+    """True when this deployment has any admin at all (FEEDBACK_ADMIN_TOKEN or FEEDBACK_ADMIN_USERS set)."""
+    from resource_explorer.config import get_config
+
+    cfg = get_config().feedback
+    return bool(cfg.admin_token or cfg.admin_users)
+
+
+def require_admin(request: Request) -> None:
+    """Owner ruling (2026-10-09): enforce admin only WHEN AN ADMIN IS CONFIGURED.
+
+    - Admin configured: only a valid admin credential passes (403 otherwise).
+    - No admin configured: any SIGNED-IN user passes. Failing closed here would lock every user out of actions
+      (retry, bootstrap run, bulk linkage resolve) on a deployment that never set an admin.
+    - An anonymous caller is always refused.
+
+    This is deliberately NOT how `is_admin_request` behaves: that stays fail-closed, and Curate and Feedback keep
+    using it unchanged. Only the routes that call this function fail open when unconfigured.
+    """
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.config import get_config
+
+    if get_current_user(request) is None:
+        raise HTTPException(status_code=403, detail="Sign in to do this")
+    if is_admin_request(request, get_config().feedback):
+        return
+    if admin_configured():
+        raise HTTPException(status_code=403, detail="Admin credential required")

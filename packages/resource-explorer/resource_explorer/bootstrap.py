@@ -200,6 +200,8 @@ class PrefectPoolStatus:
 _status: dict[str, BatchStatus] = {}
 _status_lock = threading.Lock()
 _reinitializing = False
+#: Held for the whole of a check_and_heal pass (see there).
+_heal_lock = threading.Lock()
 _stop_event: threading.Event | None = None
 _thread: threading.Thread | None = None
 
@@ -579,6 +581,20 @@ def check_and_heal(docs_dir: Path = DOCS_DIR, force: bool = False) -> dict:
     takes the Survey Definition out of service, so callers must opt in
     explicitly and surface a confirmation to the user.
     """
+    global _reinitializing
+
+    # One pass at a time in this process, whoever calls (the route, the automatic loop, the CLI). Non-blocking: a
+    # pass that finds it held does nothing and says so, and must not touch `_reinitializing`, which belongs to the
+    # winner (the loser used to clear it in its finally).
+    if not _heal_lock.acquire(blocking=False):
+        return {"batches": {}, "running": True}
+    try:
+        return _check_and_heal_locked(docs_dir, force)
+    finally:
+        _heal_lock.release()
+
+
+def _check_and_heal_locked(docs_dir: Path, force: bool) -> dict:
     global _reinitializing
 
     batches = discover_batches(docs_dir)

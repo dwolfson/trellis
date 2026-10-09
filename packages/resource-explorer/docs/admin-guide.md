@@ -157,6 +157,44 @@ when the platform restarts (the quickstart leaves `rsa.key-id` empty, so the sig
 per restart). Browsers re-log-in; the CLI caches a session (`resource-explorer login`) and says
 `session expired at HH:MM` when it lapses.
 
+### Admin gating (who may do admin actions)
+
+There is no admin role in the Egeria sign-in. RE has one small, separate admin check, configured in `.env`
+(`FeedbackConfig` in `config.py`):
+
+```bash
+# Either or both. Unset = no admin configured.
+FEEDBACK_ADMIN_TOKEN=<a long random string>   # a shared secret, sent by the browser as the X-Admin-Token header
+FEEDBACK_ADMIN_USERS=alice,bob                # user ids accepted when sent as the X-Admin-User header
+```
+
+An admin is a request that presents a matching `X-Admin-Token`, or an `X-Admin-User` listed in
+`FEEDBACK_ADMIN_USERS`. The browser sends `X-Admin-Token` from the token you enter once in **Admin → Feedback**
+(held in `sessionStorage` under `re_admin_token`, for that tab only, and shared with the Classic UI and
+`/admin/feedback`). Nothing in the Next UI sends `X-Admin-User`; it exists for a reverse proxy that authenticates a
+user and sets the header. **`X-Admin-User` is trusted as sent**, so it is safe only behind a proxy that strips any copy the client sends; with
+`FEEDBACK_ADMIN_USERS` set and no such proxy, any signed-in user can claim to be an admin, so prefer
+`FEEDBACK_ADMIN_TOKEN`.
+
+Two behaviours, on purpose:
+
+| Gate | What it protects | When no admin is configured |
+|---|---|---|
+| `is_admin_request` (fail closed) | Curate's feedback listing, Admin → Feedback | **Denies everyone** |
+| `require_admin` (fail open for signed-in users) | Publish Queue **Retry**, **Run bootstrap now**, **bulk** Egeria Links resolve | **Any signed-in user may act**; an anonymous caller is always refused |
+
+Once either variable is set, the second row enforces admin as well. The Next controls read `GET /api/egeria/admin-status`
+(`{admin, configured}`) and show **admin only** on a control only when an admin is configured and the caller is not one.
+Resolving a single resource's stale Egeria link (the banner on a repo) is open to any signed-in user either way, and
+**Delete in Egeria** is not an RE admin action at all: it keeps only the ISSUE-117 archive/delete block.
+
+Deletes, for the record:
+
+| Action | RE's rule |
+|---|---|
+| **Delete locally** (Classic's bulk delete, `/linkage/delete-local`) | Signed-in users only. RE records no creator on a resource, so it cannot yet say "only the creator"; a creator rule needs a column (DDL) and is a later change. |
+| **Delete in Egeria** (`/linkage/delete-in-egeria`) | No RE gate: Egeria decides, and the ISSUE-117 block still refuses every archive/delete while it is ON. RE calls Egeria as the **configured service account** today (`config.egeria`), so Egeria's decision is that account's, not the signed-in person's. |
+
 ### Governance zones
 
 RE stamps **no zone by default** (owner ruling 2026-10-08: draft is a content status, not a zone). A draft zone exists only if you configure one, and then it is promoted out of on curate-accept:
@@ -267,7 +305,7 @@ Repeat searches are worth saving as a **discovery source** (⚙ Admin → Discov
 - **search** — the same structured filters as the ad-hoc form, saved under a name.
 - **list** — a manually-curated set of `github_url`s. Needed for foundations that don't fit the "one org, one search" model — Eclipse spreads 450+ projects across hundreds of distinct GitHub orgs, and LF AI & Data curates a *member list* of projects living in unrelated orgs (Egeria itself is `odpi/egeria`, nothing to do with the `lfai` org's own governance repos). A `list` source is also how you'd register your own enterprise/internal repos the same way. There's no auto-fetching of an external structured list (CNCF's `landscape.yml`, LFX Insights' API, Eclipse's own project index) yet — paste the URLs in by hand.
 
-If you're pointed at an Enterprise GitHub instance rather than public GitHub, set the base URL once via the inline "GitHub source: … [edit]" control on the Discover tab — it's a runtime override on top of `.env`'s `GITHUB_BASE_URL`, stored in the registry, no restart needed.
+If you're pointed at an Enterprise GitHub instance rather than public GitHub, set `GITHUB_BASE_URL` in `.env` (for example `https://ghe.example.com/api/v3`) and restart. It is the single source: discovery, surveys and ingestion all use it, and there is no runtime override.
 
 ### Disposition and working set
 

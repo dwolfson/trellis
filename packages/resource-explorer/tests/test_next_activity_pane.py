@@ -105,7 +105,7 @@ class TestThePanelReadsTheRealActivityLog:
         # A stale cached page would show a finished run as still "running" --
         # openActivityPanel must reset panel.entries and refetch every call.
         src = _activity_src()
-        body = src[src.index("export async function openActivityPanel()"):src.index("function renderControls()")]
+        body = src[src.index("export async function openActivityPanel("):src.index("function renderControls()")]
         assert "panel.entries = null;" in body
         assert "panel.entries = await listActivity(FETCH_LIMIT);" in body
 

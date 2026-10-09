@@ -188,10 +188,9 @@ class GitHubConfig(BaseSettings):
     requests_per_hour: int = 5000
     clone_timeout_seconds: int = 300
     ssl_verify: bool = True  # set GITHUB__SSL_VERIFY=false in .env to bypass (insecure)
-    # Deployment-wide default (e.g. a GitHub Enterprise install) — a *runtime*
-    # override on top of this lives in the app_settings table via
-    # registry.get_setting("github_base_url"), resolved by callers that want
-    # the per-instance value ("Discover repos to scout" plan, D2).
+    # The single source for the GitHub API base URL (e.g. a GitHub Enterprise
+    # install). There is no runtime override: discovery, surveys and ingestion
+    # all resolve it through GitHubClient().
     base_url: str = Field(default="https://api.github.com", alias="GITHUB_BASE_URL")
 
     model_config = _ENV_FILE_CONFIG

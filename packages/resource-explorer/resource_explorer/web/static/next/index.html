@@ -389,7 +389,8 @@
     <span class="ml-auto flex items-center gap-s4 text-[12px] text-chrome-muted">
       <button id="activity-open-btn" type="button" title="Recent activity — scouting, survey, catalog, publish, RFA"
         class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink">📋 Activity
-        <span id="activity-count" class="tnum text-accent-on-dark">–</span></button>
+        <span id="activity-count" class="tnum text-accent-on-dark">–</span>
+        <span id="activity-unread" class="tnum hidden rounded-sm border border-accent px-[5px] text-accent-on-dark"></span></button>
       <button id="admin-open-btn" type="button" title="System/catalog configuration — annotation types, question catalog, logs, feedback, Prefect, plus links to the rest in the current UI"
         class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink">⚙ Admin</button>
       <span id="investigation-name">No investigation</span>
@@ -406,7 +407,8 @@
            binding step) and is deliberately NOT built here — see
            NAV-GROUPING-IMPLEMENTED.md for why it's deferred. -->
       <span id="investigation-scope" class="text-chrome-muted"></span>
-      <span id="whoami">–</span>
+      <button id="whoami" type="button" aria-haspopup="dialog" title="Connection details: who you are signed in as, which Egeria, which build"
+        class="cursor-pointer border-0 bg-transparent p-0 text-chrome-muted underline decoration-dotted hover:text-chrome-ink">–</button>
       <!-- Make switching one click, and say which UI you are in. Testers
            comparing one repo in both shells in one session is what produces
            usable feedback. -->

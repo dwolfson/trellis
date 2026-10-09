@@ -30,14 +30,14 @@
  * following this spec's own "name what it does NOT touch" rule (classic's
  * "This does not delete your files on disk" line, §0).
  *
- * Classic has three ways to add a source (_saveGithubSource,
+ * Classic had three ways to add a source (_saveGithubSource,
  * _quickAddListSource, _saveCurrentSearchAsSource — index.html's Scouting ->
- * Discover view). Checked against the actual code, not guessed:
- * `_saveGithubSource` does NOT create a discovery source at all — it posts
- * to `/api/discovery/github-base-url`, the GitHub API endpoint override
- * (e.g. for GitHub Enterprise). It is unrelated config that happens to sit
- * on the same panel; porting it here as an "add a source" path would be
- * wrong. The other two are real and both built below:
+ * Discover view). `_saveGithubSource` did not create a discovery source at
+ * all: it set the GitHub API endpoint override (e.g. for GitHub Enterprise),
+ * unrelated config that sat on the same panel. That override is removed
+ * (PI-084): `GITHUB_BASE_URL` in `.env` is the single source, so there is
+ * nothing to port or to add here.
+ * The other two are real and both built below:
  *
  *   - _quickAddListSource -> the "Quick add" tab (one click: create with an
  *     empty URL list + fetch_kind, then refresh-apply to populate it).

@@ -44,6 +44,7 @@ from typing import Any, Callable
 log = logging.getLogger(__name__)
 
 ACTIONS = ("republish", "resurvey", "discard")
+NO_LONGER_STALE = "no longer stale - nothing to resolve"
 
 
 @dataclass
@@ -102,6 +103,12 @@ def resolve_all(registry, targets: list[dict], action: str, *,
         entity_type, slug = t.get("entity_type", "repo"), t.get("slug", "")
         if not slug:
             result.record(entity_type, slug, "skipped", "no slug given")
+            continue
+        # Only a link still recorded as stale may be resolved. A resource republished since the list was read has no
+        # stale record left, and resolving it would clear a GOOD link and publish a second element to Egeria.
+        link = registry.get_egeria_linkage(entity_type, slug)
+        if not link or link.get("status") != "stale":      # an 'uncatalogued' row is not a stale link
+            result.record(entity_type, slug, "skipped", NO_LONGER_STALE)
             continue
         if dry_run:
             result.record(entity_type, slug, "ok", f"would {action}")
@@ -226,6 +233,15 @@ def delete_in_egeria(registry, targets: list[dict], *, dry_run: bool = False,
 
     result = BulkResult(action="delete_in_egeria", dry_run=dry_run)
     total = len(targets)
+
+    # ISSUE-117: a delete in Egeria is an archive/delete write, and while the block is ON none may be sent. Refused
+    # before any client is built, in dry run too, so a preview never promises what apply would refuse.
+    from resource_explorer.catalogue_gateway import ISSUE_117_WORDS, issue_117_blocked
+
+    if issue_117_blocked():
+        for t in targets:
+            result.record(t.get("entity_type", "repo"), t.get("slug", ""), "failed", ISSUE_117_WORDS)
+        return result
 
     asset_maker = None
     if not dry_run:
