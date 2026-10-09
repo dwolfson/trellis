@@ -52,7 +52,10 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
       ${comps.length > SHOWN ? `<div class="py-[1px] text-provenance text-ink-muted">and ${num(comps.length - SHOWN)} more component${comps.length - SHOWN === 1 ? '' : 's'}</div>` : ''}
       ${bps.map((b) => `<div data-will-blueprint="${esc(b.key)}" class="py-[1px]">${cue('unrun', 'blueprint')}
         <span class="text-ink">${esc(b.name || b.key)}</span> <span class="text-provenance text-ink-muted">· ${
-          b.state === 'finish' ? `already there · ${num(b.unconfirmed_compositions)} composition${b.unconfirmed_compositions === 1 ? '' : 's'} to confirm` : 'new'}</span></div>`).join('')}
+          b.state === 'finish' ? `already there${[
+            b.unattached ? `${num(b.unattached)} member${b.unattached === 1 ? '' : 's'} to attach` : '',
+            b.unconfirmed_compositions ? `${num(b.unconfirmed_compositions)} composition${b.unconfirmed_compositions === 1 ? '' : 's'} to confirm` : '',
+          ].filter(Boolean).map((t) => ` · ${t}`).join('')}` : 'new'}</span></div>`).join('')}
     </div>`;
   const last = plan?.last?.items || [];
   const missing = plan?.last?.missing ? `<div class="mt-s2 text-caveat" data-architecture-no-results>${cue('error', 'the last publish left no results', 'The last publish ended before it wrote its results, so nothing from an earlier publish is shown as current.')}</div>` : '';

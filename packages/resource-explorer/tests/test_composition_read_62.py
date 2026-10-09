@@ -214,3 +214,4 @@ class TestChildBlueprintExistenceCheck:
         assert seen == {"verify": True}
         assert out["children_gone"] == {"kid": "g-gone"} and out["unmaterialized_children"] == ["kid"]
         assert out["status"] == "partial"
+        assert "attached_guids" in out and "g-gone" not in out["attached_guids"]   # a gone child was not handed over

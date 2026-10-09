@@ -324,10 +324,11 @@ class TestAnExistingBlueprintStaysInThePlanUntilEverythingWantedIsHandled:
         _held(registry, "src/a")
 
     def _press(self, registry, monkeypatch):
-        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted",
-                            lambda *a, **k: {"status": "materialized", "guid": "bp-1", "compositions": []})
-        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", lambda g: {"status": "ok"})
         item = ap.publish_plan(registry, "p")["blueprints"]["to_write"][0]
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted",
+                            lambda *a, **k: {"status": "materialized", "guid": "bp-1", "compositions": [],
+                                             "attached_guids": list(item["wanted"])})
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", lambda g: {"status": "ok"})
         assert ap._publish_blueprint(registry, "p", item)[0] == ap.DONE
         return item
 
@@ -366,6 +367,7 @@ class TestADroppedBlueprintIsSaidFromItsCacheRow:
     def test_present_now_versus_no_longer_accepted(self, registry, monkeypatch):
         monkeypatch.setattr("resource_explorer.component_tree._components", lambda reg, slug: [])
         registry.record_materialized_blueprint("repo", "p", "physical", "core", "q", "bp-1")
+        _accept_bp(registry)
         res = ap.run_publish(registry, "p", {"slug": "p", "paths": [], "blueprints": ["physical::core", "physical::gone"]}, "run-9")
         by = {r["key"]: r for r in res}
         assert by["physical::core"]["words"] == "already in Egeria · compositions confirmed"
@@ -396,3 +398,66 @@ class TestTheParentOnlyMarkIsNotARealType:
         assert resolve_verdict("a/b", v)["inherited_from"] == "a"
         v["a"]["retyped_to"] = ONLY_THIS
         assert resolve_verdict("a/b", v) is None
+
+
+# ── gate round 2 ──────────────────────────────────────────────────────────────────────────────────────
+
+class TestTheRecordIsWhatTheWriteHandedOver:
+    def _bp(self, registry, key="physical::core", **kw):
+        registry.record_materialized_blueprint("repo", "p", *key.split("::"), f"SolutionBlueprint::{key}", kw.get("guid", "bp-1"))
+
+    def test_components_created_in_the_same_press_do_not_bring_the_blueprint_straight_back(self, registry, monkeypatch):
+        for slug in ("a", "x"):
+            _seed_member(registry, slug, f"src/{slug}")
+        _seed_cluster(registry, members=["a", "x"])
+        _accept_bp(registry)
+        self._bp(registry)
+        _held(registry, "src/a")             # a is in Egeria already; x is created by this same press
+        item = ap.publish_plan(registry, "p")["blueprints"]["to_write"][0]       # planned BEFORE the components exist
+
+        def write(*a, **k):                  # the press creates both components, then writes the blueprint
+            _held(registry, "src/a"); _held(registry, "src/x")
+            return {"status": "materialized", "guid": "bp-1", "compositions": [],
+                    "attached_guids": ["guid-src/a", "guid-src/x"]}
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted", write)
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", lambda g: {"status": "ok"})
+        assert ap._publish_blueprint(registry, "p", item)[0] == ap.DONE
+        assert ap.publish_plan(registry, "p")["blueprints"]["to_write"] == []
+
+    def test_a_child_that_was_gone_or_unreadable_is_never_counted_as_attached(self, registry, monkeypatch):
+        for name, kids in (("root", ["kid"]), ("kid", [])):
+            _seed_cluster(registry, name=name, members=[], children=kids)
+            _accept_bp(registry, f"physical::{name}")
+        self._bp(registry, "physical::kid", guid="bp-kid")
+        self._bp(registry, "physical::root", guid="bp-root")
+        item = next(b for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"] if b["key"] == "physical::root")
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted",
+                            lambda *a, **k: {"status": "partial", "guid": "bp-root", "compositions": [],
+                                             "children_gone": {"kid": "bp-kid"}, "attached_guids": []})
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", lambda g: {"status": "ok"})
+        status, words, _ = ap._publish_blueprint(registry, "p", item)
+        assert status == ap.PARTIAL and "no longer in Egeria" in words
+        again = {b["key"]: b for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"]}
+        assert again["physical::root"]["unattached"] == 1          # still in the plan, not silently attached
+
+    def test_the_adopted_content_pack_root_has_no_cache_row_but_its_pairs_still_count(self, registry):
+        _seed_member(registry, "a", "src/a")
+        _seed_cluster(registry, members=["a"])
+        _accept_bp(registry)
+        self._bp(registry)
+        _held(registry, "src/a")
+        registry.append_catalogue_commit_proof(
+            "p", proof=ap.P_ATTACHED, node_kind="architecture_publish", table_name="physical::core",
+            element_guid="bp-1", detail={"guids": ["guid-src/a"]})
+        registry.append_catalogue_commit_proof(
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
+            element_guid="guid-CPROOT", target_guid="guid-src/a", qualified_name="SolutionComposition::cp::a",
+            detail={"status": "unconfirmed", "read_back": False})
+        assert [b["unconfirmed_compositions"] for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"]] == [1]
+
+    def test_a_blueprint_rejected_between_press_and_run_says_no_longer_accepted_even_with_a_cache_row(self, registry, monkeypatch):
+        monkeypatch.setattr("resource_explorer.component_tree._components", lambda reg, slug: [])
+        self._bp(registry)
+        registry.record_component_verdict("repo", "p", "physical::core", "rejected", "", "", verdict_target="blueprint", decided_by="x")
+        res = ap.run_publish(registry, "p", {"slug": "p", "paths": [], "blueprints": ["physical::core"]}, "run-r")
+        assert res[0]["words"] == "no longer accepted"

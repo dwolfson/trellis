@@ -136,3 +136,11 @@ test('a last publish that left no results says so instead of showing an earlier 
   assert.match(norm(host.querySelector('[data-architecture-no-results]')), /the last publish left no results/);
   assert.equal(host.querySelector('[data-architecture-results]'), null);
 });
+
+test('a blueprint back only for unattached members says how many to attach, not "0 compositions"', async () => {
+  const plan = { ...PLAN(), blueprints: { to_write: [{ key: 'deployment::core', name: 'Egeria Deployment Blueprint', state: 'finish', unconfirmed_compositions: 0, unattached: 2 }], in_egeria: 0, rejected_in_egeria: 0 } };
+  const { document } = await setUp({ publishPlan: plan });
+  const t = norm(publishHost(document).querySelector('[data-will-blueprint]'));
+  assert.match(t, /already there · 2 members to attach/);
+  assert.doesNotMatch(t, /0 compositions/);
+});

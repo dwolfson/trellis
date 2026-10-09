@@ -619,6 +619,11 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     if composition_error:
         result["composition_error"] = composition_error
     result["enqueued_membership_rows"] = len(row_ids)
+    # What this write actually handed over: the members and linked child blueprints it enqueued (an adopted
+    # content-pack root included) and the children of every composition Egeria shows. A child that was gone or
+    # unreadable is in none of these.
+    result["attached_guids"] = sorted(set(all_member_guids) | {
+        c["child_guid"] for c in composition_results if c.get("status") in ("linked", "already_present")})
     if unmaterialized_members:
         result["unmaterialized_members"] = unmaterialized_members
     if unmaterialized_children:

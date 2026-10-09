@@ -74,14 +74,19 @@ def wanted_attachments(bp: dict) -> list[str]:
     return sorted(g for g in guids if g)
 
 
-def _unattached(proofs: list[dict], scope_key: str, wanted: list[str]) -> int:
-    """How many wanted GUIDs the LAST press did not record as handled (a member accepted since, a child
-    blueprint published since, a root that had no GUID then). With no record yet, every wanted GUID counts."""
+def _attached(proofs: list[dict], scope_key: str) -> set[str]:
+    """The GUIDs the LAST press recorded as actually handed to the blueprint."""
     done: set[str] = set()
     for p in proofs:
         if p["proof"] == P_ATTACHED and p["table_name"] == scope_key:
             done = set((p.get("detail") or {}).get("guids") or [])
-    return len(set(wanted) - done)
+    return done
+
+
+def _unattached(proofs: list[dict], scope_key: str, wanted: list[str]) -> int:
+    """How many wanted GUIDs the LAST press did not record as handled (a member accepted since, a child
+    blueprint published since, one that was gone or unreadable). With no record yet, every wanted GUID counts."""
+    return len(set(wanted) - _attached(proofs, scope_key))
 
 
 def _unfinished_compositions(proofs: list[dict], scope_key: str, wanted: list[str] | None = None) -> int:
@@ -153,7 +158,11 @@ def publish_plan(registry, slug: str) -> dict:
         if verdict != "accepted":
             continue
         wanted = wanted_attachments(b)
-        unfinished = _unfinished_compositions(proofs, key, wanted) if held else 0
+        # A pair is still wanted when both ends are known to the blueprint: its cache rows, what a press handed
+        # over, and the container ends of its composition rows (an adopted content-pack root has no cache row).
+        known = set(wanted) | _attached(proofs, key) | {
+            p["element_guid"] for p in proofs if p["proof"] == "composition" and p["table_name"] == key and p["element_guid"]}
+        unfinished = _unfinished_compositions(proofs, key, sorted(known)) if held else 0
         unattached = _unattached(proofs, key, wanted) if held else 0
         if held and not unfinished and not unattached:
             bp_present += 1
@@ -265,7 +274,7 @@ def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
         try:
             registry.append_catalogue_commit_proof(
                 slug, proof=P_ATTACHED, node_kind=NODE_PUBLISH_ITEM, table_name=item["key"], element_guid=guid,
-                detail={"guids": sorted(set(item.get("wanted") or []))})
+                detail={"guids": list(res.get("attached_guids") or [])})
         except Exception as exc:
             log.warning("could not record what was attached for %s: %s", item["key"], exc)
         promotion = promote_to_publish_zones(guid)
@@ -327,8 +336,9 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
         if b is None:       # present and confirmed now, or no longer accepted: say which, from the cache row
             persp, _, cluster = key.partition("::")
             held = bool((registry.get_materialized_blueprint("repo", slug, persp, cluster) or {}).get("guid"))
+            accepted = (registry.get_component_verdicts("repo", slug).get(key) or {}).get("verdict") == "accepted"
             add("blueprint", key, cluster, SKIPPED,
-                "already in Egeria · compositions confirmed" if held else "no longer accepted")
+                "already in Egeria · compositions confirmed" if held and accepted else "no longer accepted")
             continue
         try:
             status, words, guid = _publish_blueprint(registry, slug, b)
