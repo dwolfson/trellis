@@ -449,7 +449,10 @@ class WorkLists:
         # `'tuple' object has no attribute 'require'` at publish time, which
         # is only reachable with a live platform and so is exactly the kind of
         # line a stub test does not exercise.
-        clients, _find_element_guid = _default_clients()
+        from resource_explorer.egeria_clients import current_principal
+
+        # The person who pressed publish (Brief I), not the outbox daemon.
+        clients, _find_element_guid = _default_clients(current_principal())
         cm = clients.require("collection_manager")
 
         guid = (wl.get("egeria_guid") or "").strip()

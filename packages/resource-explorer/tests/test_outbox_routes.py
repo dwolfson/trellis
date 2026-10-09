@@ -11,6 +11,9 @@ from fastapi.testclient import TestClient
 
 from resource_explorer.registry import Project, ProjectRegistry
 
+# Brief I: these tests drive the drain mechanics, as the background loop does: a declared daemon job.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):

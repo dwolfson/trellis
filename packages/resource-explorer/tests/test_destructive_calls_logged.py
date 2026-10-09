@@ -195,7 +195,7 @@ def _drain(registry):
     return drain_outbox(registry, OutboxClients(), lambda qn: "")
 
 
-def test_a_failed_destructive_outbox_row_is_not_rescheduled_and_says_so(registry, monkeypatch):
+def test_a_failed_destructive_outbox_row_is_not_rescheduled_and_says_so(registry, monkeypatch, as_daemon):
     attempts = []
 
     def creator(clients, payload):
@@ -214,7 +214,7 @@ def test_a_failed_destructive_outbox_row_is_not_rescheduled_and_says_so(registry
     assert first["not_retried"] == 1 and first["failed"] == 0 and second["claimed"] == 0
 
 
-def test_a_failed_non_destructive_outbox_row_is_still_retried(registry, monkeypatch):
+def test_a_failed_non_destructive_outbox_row_is_still_retried(registry, monkeypatch, as_daemon):
     attempts = []
 
     def creator(clients, payload):

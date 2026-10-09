@@ -223,8 +223,11 @@ def _drain_egeria_outbox() -> None:
     from resource_explorer.egeria_outbox import drain_outbox
     from resource_explorer.registry import ProjectRegistry
 
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+
     registry = ProjectRegistry()
-    summary = drain_outbox(registry)
+    # The background loop is the one drain that runs as the daemon (Brief I).
+    summary = drain_outbox(registry, identity=Daemon(DaemonReason.OUTBOX))
     if summary.get("claimed"):
         log.info("Egeria outbox drain: %s", summary)
 

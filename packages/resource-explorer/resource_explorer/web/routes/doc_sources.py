@@ -74,9 +74,15 @@ def _attempt_outbox_row_immediately(element_id: int) -> None:
     scheduler drain (`scheduler.py`) would find it and retry it, which is
     the intended fallback, not a bug in this path.
     """
+    import contextvars
+
+    # The person's own act (Brief I): the drain runs as the signed-in Caller. A bare thread
+    # drops ContextVars, so this one carries the request's context explicitly.
+    ctx = contextvars.copy_context()
+
     def _run() -> None:
         try:
-            drain_outbox_row(_registry(), element_id)
+            ctx.run(drain_outbox_row, _registry(), element_id)
         except Exception:
             # Defense in depth only — drain_outbox_row/drain_outbox already
             # catch everything and route failures onto the row itself via

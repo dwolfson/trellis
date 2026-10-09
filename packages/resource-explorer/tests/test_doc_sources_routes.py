@@ -127,7 +127,8 @@ class TestListAndPublishState:
 
         assert resp.json()["published"] is True
 
-    def test_read_back_folds_in_a_source_declared_only_in_egeria(self, client, monkeypatch, registry):
+    def test_read_back_folds_in_a_source_declared_only_in_egeria(self, client, monkeypatch, registry,
+                                                                  allow_example_platform):
         registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
         monkeypatch.setattr(
             "resource_explorer.web.routes.doc_sources.read_back_doc_sources",

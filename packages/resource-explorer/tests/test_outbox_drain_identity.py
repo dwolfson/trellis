@@ -85,6 +85,15 @@ def calls(monkeypatch):
     return seen
 
 
+def _loop():
+    """What the background drain loop passes (Brief I round 2): the daemon, explicitly. An
+    inline drain inside a person's request runs as that person instead (see
+    tests/test_egeria_identity_e2e.py)."""
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+
+    return Daemon(DaemonReason.OUTBOX)
+
+
 def _enqueue_members(db, n=7):
     return [db.enqueue_outbox_element(
         "repo", "egeria_git", "collection_membership", f"CollectionMembership::coll::m{i}",
@@ -111,18 +120,18 @@ def _in_plain_thread(fn):
 class TestDrainCallsAsTheServiceIdentity:
     def test_seven_members_succeed_from_a_background_thread_as_the_service_identity(self, db, calls):
         ids = _enqueue_members(db)
-        summary = _in_plain_thread(lambda: drain_outbox(db))
+        summary = _in_plain_thread(lambda: drain_outbox(db, identity=_loop()))
         assert summary["done"] == 7 and summary["failed"] == 0
         assert {u for u, _, _ in calls.members} == {"svc-fake"}, "no call may carry '' or anyone else"
         assert sorted(m for _, _, m in calls.members) == sorted(f"m{i}" for i in range(7))
         assert db.outbox_counts() == {"done": len(ids)}
 
-    def test_a_signed_in_callers_context_is_not_inherited(self, db, calls):
-        # asyncio.to_thread copies the ContextVar, so a drain started from a request
-        # would otherwise run as that person on a token that expires within the hour.
+    def test_the_loops_daemon_is_not_displaced_by_a_persons_context(self, db, calls):
+        # The background loop names the daemon explicitly, so a person's context in the
+        # same thread cannot turn it into a person's drain.
         _enqueue_members(db, 2)
         with use_identity(PERSON):
-            summary = drain_outbox(db)
+            summary = drain_outbox(db, identity=_loop())
         assert summary["done"] == 2
         assert {u for u, _, _ in calls.members} == {"svc-fake"}
 
@@ -133,7 +142,7 @@ class TestDrainCallsAsTheServiceIdentity:
         with db._conn() as conn:  # the backoff has long passed
             conn.execute("UPDATE egeria_outbox SET next_attempt_at=? WHERE id=?",
                          ((datetime.utcnow() - timedelta(hours=1)).isoformat(), row_id))
-        summary = drain_outbox(db)
+        summary = drain_outbox(db, identity=_loop())
         assert summary["done"] == 1
         assert db.outbox_counts() == {"done": 1}
 
@@ -142,14 +151,14 @@ class TestABlankIdentityFailsLoudly:
     def test_it_is_a_configuration_error_not_an_egeria_call(self, monkeypatch, calls):
         monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         with pytest.raises(OutboxIdentityError, match="EGERIA_USER_ID"):
-            outbox._default_clients()
+            outbox._default_clients(_loop())
         assert calls.members == [] and calls.publishers == []
 
     def test_rows_stay_pending_unburnt_with_the_sentence_on_each_row(self, db, calls, monkeypatch, caplog):
         monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         ids = _enqueue_members(db, 3)
         with caplog.at_level(logging.ERROR):
-            summary = drain_outbox(db)
+            summary = drain_outbox(db, identity=_loop())
         assert summary["config_error"] and "EGERIA_USER_ID" in summary["config_error"]
         assert summary["done"] == 0 and summary["failed"] == 0 and summary["dead"] == 0
         assert calls.members == []
@@ -163,14 +172,14 @@ class TestABlankIdentityFailsLoudly:
     def test_fixing_the_configuration_lets_the_same_rows_through(self, db, calls, monkeypatch):
         monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         _enqueue_members(db, 2)
-        drain_outbox(db)
+        drain_outbox(db, identity=_loop())
         monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("svc-fake", "pw-fake"))
-        assert drain_outbox(db)["done"] == 2
+        assert drain_outbox(db, identity=_loop())["done"] == 2
 
     def test_a_destructive_row_is_not_attempted_and_not_burnt_either(self, db, calls, monkeypatch):
         monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("", "pw-fake"))
         rid = db.enqueue_outbox_element("repo", "p", "doc_source_unpublish", "Unpub::1", {})
-        summary = drain_outbox(db)
+        summary = drain_outbox(db, identity=_loop())
         assert summary["config_error"]
         (row,) = db.peek_due_outbox_elements()
         assert row["id"] == rid and row["attempts"] == 0 and row["status"] == "pending"
@@ -187,7 +196,7 @@ class TestDestructiveKindsStillNeverRetry:
 
         monkeypatch.setitem(outbox._CREATORS, "doc_source_unpublish", refuse)
         db.enqueue_outbox_element("repo", "p", "doc_source_unpublish", "Unpub::1", {})
-        summary = drain_outbox(db, OutboxClients(acting_as="svc-fake"), lambda qn: "")
+        summary = drain_outbox(db, OutboxClients(acting_as="svc-fake"), lambda qn: "", identity=_loop())
         assert summary.get("not_retried") == 1
         (dead,) = db.list_dead_outbox_elements()
         assert dead["last_error"].startswith(NOT_RETRIED)
@@ -207,7 +216,7 @@ class TestAnEgeriaRefusalNamesWhoWasSent:
 
         (rid,) = _enqueue_members(db, 1)
         summary = drain_outbox(db, OutboxClients(collection_manager=Refusing(), acting_as="svc-fake"),
-                               lambda qn: "")
+                               lambda qn: "", identity=_loop())
         assert summary["failed"] == 1
         with db._conn() as conn:
             err = conn.execute("SELECT last_error FROM egeria_outbox WHERE id=?", (rid,)).fetchone()["last_error"]
