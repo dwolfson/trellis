@@ -1112,6 +1112,19 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
                            "verified": "DataSetContent link to the database and ResourceConnection, read by the element's GUID"})
         if not guid:
             raise GatewayError(f"Egeria created no schema element for {schema}")
+        if not create_note:
+            # Freshly created on a person's behalf (Brief I round 3): `requestedBy` in its provenance
+            # and Ownership = the declared Context owner, else the requester — the one helper.
+            from resource_explorer.egeria_clients import current_principal
+            from resource_explorer.egeria_identity import on_behalf_of
+
+            behalf = on_behalf_of(current_principal(), registry=registry, entity_type="database",
+                                  entity_slug=slug)
+            try:
+                gateway.mark_on_behalf(guid, behalf.requester, behalf.owner)
+            except GatewayError as exc:   # the element exists; its Ownership did not land — said, not raised
+                log.warning("catalog: Ownership(%s) not set on schema %s (%s): %s",
+                            behalf.owner, schema, guid, exc)
     else:
         guid = el.guid
     # THE GUARD: read the targets FIRST. A target for this schema (by element or by name) means it is

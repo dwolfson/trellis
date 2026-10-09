@@ -56,7 +56,6 @@ __all__ = [
     "EgeriaRefused",
     "NoCallerIdentity",
     "PlatformNotAllowed",
-    "StoredOrDaemon",
     "acting_as",
     "client_scope",
     "current_principal",
@@ -67,8 +66,7 @@ __all__ = [
 
 KIND_CALLER = "caller"
 KIND_DAEMON = "daemon"
-KIND_STORED = "stored"
-_KINDS = (KIND_CALLER, KIND_DAEMON, KIND_STORED)
+_KINDS = (KIND_CALLER, KIND_DAEMON)
 
 EXPIRED_SENTENCE = "your Egeria sign-in expired; sign in again"
 NO_CALLER_SENTENCE = "no one is signed in, so RE will not call Egeria; sign in again"
@@ -196,31 +194,6 @@ def Daemon(reason: DaemonReason, requested_by: Optional[str] = None) -> EgeriaId
                           requested_by=requester)
 
 
-def StoredOrDaemon(entity: Any, reason: DaemonReason) -> EgeriaIdentity:  # noqa: N802
-    """KEPT, pending the owner's decision (Brief I: "ask before removing"): the Egeria user and
-    password a database server / database / file system row carries (`egeria_user`,
-    `egeria_password`, typed into the registration dialogs; plaintext, unlike `db_password`).
-
-    Used only where those credentials were used before this change AND no person is behind the
-    call: the outbox drain's doc-source and catalogue-schema rows. Interactive routes use
-    `Caller()` and ignore them. An entity without both falls back to `Daemon(reason)` — named,
-    not silent: the drain is a daemon job either way.
-    """
-    if not isinstance(reason, DaemonReason):
-        raise ValueError(f"StoredOrDaemon refused: {reason!r} is not a DaemonReason")
-    user = (getattr(entity, "egeria_user", "") or "").strip()
-    password = getattr(entity, "egeria_password", "") or ""
-    if not (user and password):
-        return Daemon(reason)
-    # A stored credential is bound to its OWN entity's platform (the configured one when the
-    # entity names none); the factory refuses to send it anywhere else, or to a platform that is
-    # not allowed at all.
-    bound = origin_of(getattr(entity, "egeria_url", "") or _configured_platform())
-    return EgeriaIdentity(user_id=user, password=password, is_service_account=True,
-                          kind=KIND_STORED, reason=reason.value, client_user=user,
-                          bound_platform=bound)
-
-
 # ---------------------------------------------------------------------------
 # Where a credential may go
 # ---------------------------------------------------------------------------
@@ -234,7 +207,10 @@ def origin_of(url: str) -> str:
     host = (u.hostname or "").lower()
     if not scheme or not host:
         return (url or "").strip().lower()
-    port = u.port or {"https": 443, "http": 80}.get(scheme, 0)
+    try:
+        port = u.port or {"https": 443, "http": 80}.get(scheme, 0)
+    except ValueError:                 # a bad or out-of-range port: refused like any other origin
+        raise PlatformNotAllowed(f"{scheme}://{host} (unreadable port)") from None
     return f"{scheme}://{host}:{port}"
 
 
@@ -253,14 +229,19 @@ def allowed_platforms() -> frozenset[str]:
     configured = getattr(egeria, "platform_url", "")
     listed = getattr(egeria, "allowed_platform_urls", "")
     extra = [u for u in (listed.split(",") if isinstance(listed, str) else []) if u.strip()]
-    return frozenset(origin_of(u) for u in [configured, *extra] if isinstance(u, str) and u.strip())
+    out = set()
+    for u in [configured, *extra]:
+        if isinstance(u, str) and u.strip():
+            try:
+                out.add(origin_of(u))
+            except PlatformNotAllowed:
+                log.warning("EGERIA allowed platform %r has an unreadable port; ignored", u)
+    return frozenset(out)
 
 
 def _check_platform(identity: EgeriaIdentity, platform_url: str) -> None:
     origin = origin_of(platform_url)
     if origin not in allowed_platforms():
-        raise PlatformNotAllowed(origin)
-    if identity.kind == KIND_STORED and identity.bound_platform and origin != identity.bound_platform:
         raise PlatformNotAllowed(origin)
 
 
@@ -373,8 +354,6 @@ def _record(identity: EgeriaIdentity, purpose: str) -> None:
     elif identity.kind == KIND_DAEMON and _person_in_request():
         # A daemon call made inside a person's request (e.g. reachability): theirs to see.
         key, as_words = _person_in_request(), "service account (background)"
-    elif identity.kind == KIND_STORED:
-        key, as_words = "", "stored resource credential"
     else:
         key, as_words = "", "service account (daemon)"
     entry = {"as": as_words, "kind": identity.kind, "purpose": purpose,
@@ -496,11 +475,7 @@ def _scope_key(identity: EgeriaIdentity, view_server: Optional[str], platform_ur
     import hashlib
 
     token_key = hashlib.sha256(identity.token.encode()).hexdigest() if identity.token else ""
-    # A stored credential: the password's hash too, so an edited credential is a new client.
-    pw_key = (hashlib.sha256(identity.password.encode()).hexdigest()
-              if identity.kind == KIND_STORED and identity.password else "")
-    return (identity.kind, identity.user_id, identity.reason, token_key, pw_key,
-            identity.bound_platform, view_server, platform_url)
+    return (identity.kind, identity.user_id, identity.reason, token_key, view_server, platform_url)
 
 
 def egeria_client(identity: EgeriaIdentity, *, purpose: str,
@@ -514,7 +489,7 @@ def egeria_client(identity: EgeriaIdentity, *, purpose: str,
         raise ValueError("egeria_client needs Caller() or Daemon(reason, requested_by=None)")
     if identity.kind == KIND_CALLER and not identity.token:
         raise NoCallerIdentity()
-    if identity.kind in (KIND_DAEMON, KIND_STORED) and identity.reason not in {r.value for r in DaemonReason}:
+    if identity.kind == KIND_DAEMON and identity.reason not in {r.value for r in DaemonReason}:
         raise ValueError(f"Daemon identity with an unknown reason {identity.reason!r}")
     cache = _scope.get() if shared else None
     if cache is None:

@@ -742,6 +742,26 @@ class RealEgeriaBlocked(RuntimeError):
     """A test tried to send a request to a real Egeria platform without a live marker."""
 
 
+def _is_pyegeria_client(cls) -> bool:
+    """A real pyegeria client class: a subclass of pyegeria's client bases (or the Egeria* facades,
+    which compose clients rather than inherit). By class, not by `__module__` text."""
+    import inspect
+
+    if not inspect.isclass(cls):
+        return False
+    from pyegeria.core._base_platform_client import BasePlatformClient
+    from pyegeria.core._base_server_client import BaseServerClient
+
+    if issubclass(cls, (BasePlatformClient, BaseServerClient)):
+        return True
+    # The REAL facades, from their own modules (a test may have patched `pyegeria.EgeriaTech`).
+    from pyegeria.egeria_cat_client import EgeriaCat
+    from pyegeria.egeria_config_client import EgeriaConfig
+    from pyegeria.egeria_tech_client import EgeriaTech
+
+    return issubclass(cls, (EgeriaTech, EgeriaCat, EgeriaConfig))
+
+
 @pytest.fixture(autouse=True)
 def no_real_egeria(request, monkeypatch):
     """Every pyegeria client comes from `egeria_clients` (the ban test enforces it), so this
@@ -756,7 +776,7 @@ def no_real_egeria(request, monkeypatch):
     def guarded_build(cls, *args):
         # A real pyegeria class is refused BEFORE it is constructed: some pyegeria constructors
         # already call the platform (`/api/about`). Fakes and mocks pass through.
-        if getattr(cls, "__module__", "").startswith("pyegeria"):
+        if _is_pyegeria_client(cls):
             raise RealEgeriaBlocked(
                 f"a test tried to build a real {cls.__name__} (it would reach a real Egeria "
                 "platform); mark it requires_egeria / live_egeria_writes, or fake the client")

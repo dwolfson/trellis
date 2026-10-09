@@ -211,6 +211,10 @@ class FakeEgeria:
         self.last_wire = ("element", self.raw_element(e["guid"]))
         return parse_element_answer(self.last_wire[1])
 
+    def mark_on_behalf(self, guid, requester, owner):
+        self.calls.append(("mark_on_behalf", guid, requester, owner))
+        return True, "set"
+
     def create_schema_element(self, db_entity, schema, database_guid, *, description=""):
         self.calls.append(("create_schema_element", schema, database_guid))
         self._boom("create_schema_element")

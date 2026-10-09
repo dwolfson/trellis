@@ -701,6 +701,13 @@ class BlueprintMaterializer:
             additional["re_identifier"] = identifier
         if oversized:
             additional["oversized"] = "true"
+        # Whose write this is (Brief I round 3): `requestedBy` beside the provenance above, and the
+        # Ownership owner (declared Context owner, else the requester), from the one helper.
+        from resource_explorer.egeria_identity import on_behalf_of
+
+        behalf = on_behalf_of(self.resolve_identity(), registry=self._registry, entity_type=entity_type,
+                              entity_slug=entity_slug)
+        additional.update(behalf.provenance())
         properties["additionalProperties"] = additional
 
         # `class: "NewSolutionElementRequestBody"` + `initialStatus` (this
@@ -749,6 +756,10 @@ class BlueprintMaterializer:
                 f"Egeria returned no usable GUID for the new SolutionBlueprint (got {guid!r})"
             )
 
+        from resource_explorer.egeria_identity import set_ownership
+
+        # Best-effort and reported, as for components: the blueprint already exists.
+        set_ownership(guid, behalf.owner, identity=self.resolve_identity())
         self._record(entity_type, entity_slug, perspective, cluster_name, qualified_name, guid)
         return {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
 

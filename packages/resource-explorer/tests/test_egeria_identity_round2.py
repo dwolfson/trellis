@@ -1,5 +1,5 @@
 """Brief I round 2: daemon_entry's explicit marker, the popover record of a daemon call inside a
-person's request, the stored-credential cache key, and the publisher's Ownership stamp no longer
+person's request, and the publisher's Ownership stamp no longer
 swallowing a missing sign-in. (The queued-run token handoff was removed by the owner's
 Egeria-consistent ruling; queued runs are covered in test_egeria_identity_e2e.) Fake clients
 only; nothing reaches Egeria."""
@@ -24,7 +24,7 @@ def test_daemon_entry_needs_the_prefect_worker_marker(monkeypatch):
     assert flow().reason == "prefect_flow"
 
 
-# ── item 7: popover, stored key, publisher ──────────────────────────────────
+# ── item 7: popover, publisher ──────────────────────────────────
 
 class _Fake:
     def __init__(self, *a):
@@ -43,17 +43,6 @@ def test_a_daemon_call_inside_a_persons_request_is_recorded_under_that_person(mo
     ec.egeria_client(ec.Daemon(ec.DaemonReason.REACHABILITY), purpose="reachability").of(_Fake)
     rec = ec.last_egeria_identity("test-caller")
     assert rec["as"] == "service account (background)" and rec["purpose"] == "reachability"
-
-
-def test_an_edited_stored_password_is_a_new_client(monkeypatch):
-    def entity(pw):
-        return type("E", (), {"egeria_user": "s", "egeria_password": pw, "egeria_url": ""})()
-
-    with ec.client_scope():
-        a = ec.egeria_client(ec.StoredOrDaemon(entity("one"), ec.DaemonReason.OUTBOX), purpose="t")
-        b = ec.egeria_client(ec.StoredOrDaemon(entity("two"), ec.DaemonReason.OUTBOX), purpose="t")
-        c = ec.egeria_client(ec.StoredOrDaemon(entity("one"), ec.DaemonReason.OUTBOX), purpose="t")
-    assert a is not b and a is c
 
 
 def test_the_publishers_ownership_stamp_lets_a_missing_sign_in_through(monkeypatch):

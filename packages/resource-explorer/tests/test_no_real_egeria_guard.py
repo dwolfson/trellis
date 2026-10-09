@@ -45,3 +45,17 @@ def test_a_fake_client_passes_untouched(signed_in_caller):
     assert client.token == "tok-test-caller"
     import asyncio
     assert asyncio.run(client._async_make_request()) == "fake answer"
+
+
+def test_a_subclass_of_a_real_client_defined_outside_pyegeria_is_refused_too(signed_in_caller):
+    """By class, not by `__module__` text (round-3 review): a test-side subclass of a real client
+    still inherits its HTTP layer."""
+    from pyegeria import AssetMaker
+
+    from resource_explorer.egeria_clients import Caller, egeria_client
+
+    class Sneaky(AssetMaker):
+        pass
+
+    with pytest.raises(RealEgeriaBlocked):
+        egeria_client(Caller(), purpose="t").of(Sneaky)

@@ -55,8 +55,7 @@ class RepoEgeriaConnectionView:
     addresses the configured Egeria.
     """
 
-    __slots__ = ("slug", "display_name", "egeria_asset_guid", "egeria_server",
-                 "egeria_url", "egeria_user")
+    __slots__ = ("slug", "display_name", "egeria_asset_guid", "egeria_server", "egeria_url")
 
     def __init__(self, project, asset_guid: str = ""):
         self.slug = project.slug
@@ -64,11 +63,6 @@ class RepoEgeriaConnectionView:
         self.egeria_asset_guid = asset_guid or getattr(project, "egeria_asset_guid", "") or ""
         self.egeria_server = ""
         self.egeria_url = ""
-        self.egeria_user = ""
-
-    @property
-    def egeria_password(self) -> str:
-        return ""
 
     def __repr__(self) -> str:
         return (f"RepoEgeriaConnectionView(slug={self.slug!r}, "
@@ -105,7 +99,8 @@ def resolve_entity_for_doc_source(registry, entity_type: str, entity_slug: str):
 def entity_clients(entity, identity):
     """`EgeriaClients` for `identity`, addressed at the Egeria the entity names (its stored
     `egeria_url`/`egeria_server`, else the configured one). Who acts is `identity`'s business:
-    a route passes `Caller()`, the outbox drain `StoredOrDaemon(entity, OUTBOX)`."""
+    a route passes `Caller()`, the outbox drain `current_principal()` (Caller inline, else the
+    daemon). An entity's stored Egeria user/password are never used (owner, 2026-10-09)."""
     from resource_explorer.egeria_clients import egeria_client
 
     return egeria_client(identity, purpose="doc sources",

@@ -601,16 +601,12 @@ def _create_doc_source_unpublish(clients: "OutboxClients", payload: dict) -> str
 
 
 def _drain_principal(entity):
-    """Who a doc-source or catalog row is applied as. Inside a person's request (an inline
-    drain) the signed-in Caller. In the background loop (`Daemon(OUTBOX)` declared): the
-    entity's stored Egeria credential when it carries both halves — kept pending the owner's
-    decision, see `egeria_clients.StoredOrDaemon` — else the daemon."""
-    from resource_explorer.egeria_clients import DaemonReason, StoredOrDaemon, current_principal
+    """Who a doc-source or catalog row is applied as: `current_principal()` — the signed-in Caller
+    for an inline drain inside a person's request, `Daemon(OUTBOX)` in the background loop. An
+    entity's stored Egeria user/password are never used (owner's ruling, 2026-10-09)."""
+    from resource_explorer.egeria_clients import current_principal
 
-    who = current_principal()
-    if who.kind == "caller":
-        return who
-    return StoredOrDaemon(entity, DaemonReason.OUTBOX)
+    return current_principal()
 
 
 def _doc_source_clients(entity):

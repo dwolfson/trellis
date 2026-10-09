@@ -299,6 +299,13 @@ class ComponentMaterializer:
         # dropping that provenance entirely would be a worse default than an
         # untyped string.
         additional = {"recoveredBy": "architecture_recovery"}
+        # Whose write this is (Brief I round 3): `requestedBy` beside the other provenance keys,
+        # and the Ownership owner, from the one on-behalf helper.
+        from resource_explorer.egeria_identity import on_behalf_of
+
+        behalf = on_behalf_of(self.resolve_identity(), registry=self._registry, entity_type=entity_type,
+                              entity_slug=entity_slug, private_owner=private_owner or "")
+        additional.update(behalf.provenance())
         if perspective:
             additional["perspective"] = perspective
         if confidence:
@@ -348,7 +355,7 @@ class ComponentMaterializer:
         # investigation is derived from their private work: born in the draft
         # zone with the publishing identity as owner it would be visible to
         # every curator, and owned by whoever happened to run the analysis.
-        owner = private_owner or identity.user_id
+        owner = behalf.owner
         zones = private_zones_for_owner or draft_zones()
 
         governance = stamp_published(guid, owner, identity=identity, zones=zones)

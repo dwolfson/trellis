@@ -300,7 +300,7 @@ def test_a_drain_with_no_identity_claims_nothing_and_sends_nothing(boundary, reg
     assert reg.get_outbox_element(rid)["status"] == "pending"
 
 
-# ── the catalogue gateway: Curate route → Caller; drain → stored credential or daemon ─
+# ── the catalog gateway: Curate route → Caller; background drain → daemon; stored creds never ─
 
 def _db_entity(**kw):
     from resource_explorer.registry import DatabaseEntity
@@ -318,7 +318,9 @@ def test_the_gateway_on_a_curate_route_acts_as_the_caller_and_ignores_stored_cre
     assert boundary.users_and_tokens() == {("AssetMaker", "test-caller", "tok-test-caller", False)}
 
 
-def test_the_drain_gateway_keeps_a_stored_credential_and_else_uses_the_daemon(boundary, monkeypatch):
+def test_the_background_drain_gateway_uses_the_daemon_even_when_the_entity_stores_egeria_creds(boundary, monkeypatch):
+    """Owner's ruling (2026-10-09): the outbox drain is the daemon; an entity's stored Egeria
+    user/password are never used."""
     from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
     from resource_explorer.egeria_outbox import _catalogue_gateway
 
@@ -337,8 +339,19 @@ def test_the_drain_gateway_keeps_a_stored_credential_and_else_uses_the_daemon(bo
     with acting_as(Daemon(DaemonReason.OUTBOX)):                 # the background loop
         _catalogue_gateway(Clients(_db_entity(egeria_user="stored-user", egeria_password="stored-pw")),
                            {"slug": "db"})._client("AssetMaker")
-        _catalogue_gateway(Clients(_db_entity()), {"slug": "db"})._client("AssetMaker")
-    assert [(c["user"], c["minted"]) for c in boundary.clients] == [("stored-user", True), (DAEMON_USER, True)]
+    assert [(c["user"], c["minted"]) for c in boundary.clients] == [(DAEMON_USER, True)]
+
+
+def test_a_background_doc_source_drain_uses_the_daemon_not_the_stored_creds(boundary, monkeypatch):
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+    from resource_explorer.egeria_outbox import _doc_source_clients
+
+    monkeypatch.setattr("pyegeria.ExternalReferences", boundary.fake("ExternalReferences"))
+    with acting_as(Daemon(DaemonReason.OUTBOX)):
+        from pyegeria import ExternalReferences
+
+        _doc_source_clients(_db_entity(egeria_user="stored-user", egeria_password="stored-pw")).of(ExternalReferences)
+    assert [(c["user"], c["minted"]) for c in boundary.clients] == [(DAEMON_USER, True)]
 
 
 def test_an_inline_drain_gateway_runs_as_the_person_not_the_stored_credential(boundary, monkeypatch, signed_in_caller):
@@ -363,21 +376,6 @@ def test_an_entity_naming_another_platform_is_refused_and_nothing_is_sent(bounda
     with pytest.raises(PlatformNotAllowed, match="not configured for: https://evil.invalid:443"):
         gw._client("AssetMaker")
     assert boundary.clients == [], "no client built, no token sent"
-
-
-def test_a_stored_credential_never_leaves_its_own_entitys_platform(boundary, monkeypatch):
-    from resource_explorer.egeria_clients import (
-        DaemonReason, PlatformNotAllowed, StoredOrDaemon, egeria_client,
-    )
-
-    monkeypatch.setattr("resource_explorer.egeria_clients.allowed_platforms",
-                        lambda: frozenset({"https://a.invalid:443", "https://b.invalid:443"}))
-    ident = StoredOrDaemon(_db_entity(egeria_url="https://a.invalid", egeria_user="s", egeria_password="p"),
-                           DaemonReason.OUTBOX)
-    with pytest.raises(PlatformNotAllowed):
-        egeria_client(ident, purpose="t", platform_url="https://b.invalid").of(boundary.fake("AssetMaker"))
-    egeria_client(ident, purpose="t", platform_url="https://a.invalid").of(boundary.fake("AssetMaker"))
-    assert [c["user"] for c in boundary.clients] == ["s"]
 
 
 def test_a_publish_route_naming_another_platform_is_403_and_sends_nothing(boundary, reg, client, monkeypatch):
@@ -450,8 +448,7 @@ def test_a_queued_publish_is_committed_by_the_daemon_with_ownership_the_requeste
     assert reg.get_run(run_id)["requested_by"] == "dana"
 
 
-@pytest.mark.parametrize("kind", ["publish_architecture", "curate_commit", "catalogue_commit",
-                                  "materialize_components"])
+@pytest.mark.parametrize("kind", ["publish_architecture", "curate_commit", "catalogue_commit"])
 def test_a_persons_queued_action_with_no_requester_fails_loudly_and_writes_nothing(boundary, reg, monkeypatch, kind):
     from resource_explorer import run_queue as rq
 
@@ -463,3 +460,176 @@ def test_a_persons_queued_action_with_no_requester_fails_loudly_and_writes_nothi
     assert out.state == "failed" and out.error == rq.NO_REQUESTER_SENTENCE
     assert ran == [] and boundary.clients == []
     assert reg.get_run(run_id)["error"] == rq.NO_REQUESTER_SENTENCE
+
+
+# ── round 3: a daemon write on a person's behalf names them in Egeria ─────────
+# One rule, one helper (`egeria_identity.on_behalf_of`): `additionalProperties.requestedBy` is the
+# requester, and Ownership is the declared Context owner when one exists, else the requester.
+# Driven through the real materializers / gateway, faking only the pyegeria classes; asserted on
+# what reached them.
+
+NEW_GUID = "11111111-1111-1111-1111-111111111111"
+
+
+@pytest.fixture
+def stamps(boundary, monkeypatch):
+    seen = {"bodies": [], "owners": {}, "requested_by": {}}
+
+    def create(body):
+        seen["bodies"].append(body)
+        return NEW_GUID
+
+    def own(guid, body):
+        seen["owners"][guid] = body["properties"]["owner"]
+
+    def update(guid, body):
+        m = body["properties"]["propertyValueMap"]["additionalProperties"]["mapValues"]["propertyValueMap"]
+        seen["requested_by"][guid] = m["requestedBy"]["primitiveValue"]
+
+    sa = boundary.fake("SolutionArchitect", create_solution_component=create, create_solution_blueprint=create,
+                       link_solution_component_port=lambda *a, **k: None,
+                       get_solution_blueprint_by_guid=lambda *a, **k: "No elements found")
+    for path in ("pyegeria.SolutionArchitect", "pyegeria.omvs.solution_architect.SolutionArchitect"):
+        monkeypatch.setattr(path, sa)
+    monkeypatch.setattr("pyegeria.AutomatedCuration", boundary.fake(
+        "AutomatedCuration", get_guid_for_name=lambda *a, **k: [],
+        create_elem_from_template=lambda body: NEW_GUID))
+    me = boundary.fake("MetadataExpert", create_metadata_element=create,
+                       get_metadata_guid_by_unique_name=lambda *a, **k: "No elements found",
+                       update_metadata_element_properties=update,
+                       get_metadata_element_by_guid=lambda guid, *a, **k: {"elementHeader": {"guid": guid}})
+    for path in ("pyegeria.MetadataExpert", "pyegeria.omvs.metadata_expert.MetadataExpert"):
+        monkeypatch.setattr(path, me)
+    monkeypatch.setattr("pyegeria.ClassificationExplorer", boundary.fake(
+        "ClassificationExplorer", add_ownership_to_element=own,
+        add_zone_membership=lambda *a, **k: None))
+    return seen
+
+
+def _queued_for(person):
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    return acting_as(Daemon(DaemonReason.RUN_QUEUE, requested_by=person))
+
+
+def _platform():
+    from resource_explorer.config import get_config
+
+    return get_config().egeria.platform_url
+
+
+@pytest.mark.parametrize("declared", ["", "olivia"])
+def test_a_queued_component_names_the_requester_and_the_owner(stamps, reg, declared):
+    from resource_explorer.surveyors.arch_recovery.materializer import ComponentMaterializer
+
+    if declared:
+        reg.save_context("repo", "p", {"enrichment": {"owner": {"value": declared}}})
+    with _queued_for("dana"):
+        out = ComponentMaterializer(platform_url=_platform(), registry=reg).materialize(
+            "repo", "p", "src/a", name="a", component_type="Software Service")
+    assert out["guid"] == NEW_GUID
+    assert stamps["bodies"][0]["properties"]["additionalProperties"]["requestedBy"] == "dana"
+    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+
+
+@pytest.mark.parametrize("declared", ["", "olivia"])
+def test_a_queued_blueprint_names_the_requester_and_the_owner(stamps, reg, declared):
+    from resource_explorer.surveyors.arch_recovery.blueprint_materializer import BlueprintMaterializer
+
+    if declared:
+        reg.save_context("repo", "p", {"enrichment": {"owner": {"value": declared}}})
+    with _queued_for("dana"):
+        out = BlueprintMaterializer(platform_url=_platform(), registry=reg).materialize_blueprint_element(
+            "repo", "p", "deployment", "root", display_name="P Deployment Blueprint")
+    assert out["guid"] == NEW_GUID
+    props = stamps["bodies"][0]["properties"]["additionalProperties"]
+    assert props["requestedBy"] == "dana" and props["re_slug"] == "p"      # beside the existing provenance
+    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+
+
+@pytest.mark.parametrize("declared", ["", "olivia"])
+def test_a_queued_port_names_the_requester_and_the_owner(stamps, reg, declared):
+    from resource_explorer.surveyors.arch_recovery.port_materializer import PortMaterializer
+
+    if declared:
+        reg.save_context("repo", "p", {"enrichment": {"owner": {"value": declared}}})
+    with _queued_for("dana"):
+        out = PortMaterializer(platform_url=_platform(), registry=reg).materialize_port_element(
+            "repo", "p", "src/a", "http", component_guid="22222222-2222-2222-2222-222222222222")
+    assert out["guid"] == NEW_GUID
+    assert stamps["requested_by"][NEW_GUID] == "dana"
+    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+
+
+@pytest.mark.parametrize("declared", ["", "olivia"])
+def test_a_queued_catalog_schema_element_names_the_requester_and_the_owner(stamps, reg, declared, monkeypatch):
+    from resource_explorer.catalogue_commit import apply_attach, make_gateway
+    from resource_explorer.registry import DatabaseEntity
+
+    db = DatabaseEntity(slug="db", display_name="Shop", db_type="postgresql", host="localhost",
+                        port=5442, database_name="shop")
+    reg.register_database(db)
+    if declared:
+        reg.save_context("database", "db", {"enrichment": {"owner": {"value": declared}}})
+    gw = make_gateway(db)
+    monkeypatch.setattr(gw, "read_element", lambda qn, **k: None)
+
+    def stop(*a, **k):
+        raise RuntimeError("stop after the create and its stamps")   # the attach half is not this test's
+    monkeypatch.setattr(gw, "list_catalog_targets", stop)
+    with _queued_for("dana"):
+        with pytest.raises(RuntimeError, match="stop after"):
+            apply_attach(reg, gw, {"slug": "db", "schema": "sales",
+                                   "database_guid": "33333333-3333-3333-3333-333333333333", "by": "dana"})
+    assert stamps["requested_by"][NEW_GUID] == "dana"
+    assert stamps["owners"][NEW_GUID] == (declared or "dana")
+
+
+# ── owner's ruling 2026-10-09: per-resource Egeria credentials are ignored on the way in ─────────
+
+SECRET = "pw-typed-into-an-old-form"
+
+
+def _stored(reg, kind, slug):
+    """The raw stored columns, read the way the registry stores them (no RE reader involved)."""
+    import sqlite3
+
+    table = {"filesystem": "file_systems", "database": "databases", "server": "db_servers"}[kind]
+    with sqlite3.connect(reg.database_url.removeprefix("sqlite:///")) as conn:
+        return conn.execute(f"SELECT egeria_user, egeria_password FROM {table} WHERE slug=?",  # noqa: S608
+                            (slug,)).fetchone()
+
+
+@pytest.mark.parametrize("kind,path,body", [
+    ("filesystem", "/api/filesystems/", {"slug": "fs1", "display_name": "FS", "local_mount_point": "/tmp"}),
+    ("database", "/api/databases/register", {"slug": "db1", "display_name": "DB", "db_type": "postgresql",
+                                              "host": "localhost", "port": 5432, "database_name": "shop"}),
+    ("server", "/api/db-servers/register", {"slug": "srv1", "display_name": "S", "host": "localhost"}),
+])
+def test_registration_ignores_posted_egeria_credentials_and_says_so_without_the_values(
+        reg, client, caplog, kind, path, body):
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    r = client.post(path, json={**body, "egeria_user": "someone", "egeria_password": SECRET}, headers=_token())
+    assert r.status_code == 200, r.text
+    assert tuple(_stored(reg, kind, body["slug"])) == ("", ""), "nothing stored"
+    assert any("egeria_user/egeria_password ignored" in rec.getMessage() for rec in caplog.records)
+    assert SECRET not in caplog.text and "someone" not in caplog.text
+    assert "egeria_user" not in r.json() and SECRET not in r.text
+
+
+def test_publishing_local_doc_sources_runs_as_the_caller(boundary, reg, monkeypatch, signed_in_caller):
+    """Round-1 regression found in round 3: `publish_local_doc_sources` still passed the old
+    credential keywords. It now builds one client for whoever the publish runs as."""
+    from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
+
+    monkeypatch.setattr("pyegeria.ExternalReferences", boundary.fake(
+        "ExternalReferences", create_external_reference=lambda **k: "44444444-4444-4444-4444-444444444444",
+        link_external_reference=lambda *a, **k: "55555555-5555-5555-5555-555555555555"))
+    monkeypatch.setattr("pyegeria.AutomatedCuration", boundary.fake(
+        "AutomatedCuration", get_guid_for_name=lambda *a, **k: []))
+    reg.add_doc_source("repo", "p", "https://docs.example/a", label="a", source_type="other")
+    out = publish_local_doc_sources("repo", "p", "66666666-6666-6666-6666-666666666666", registry=reg)
+    assert out and out[0]["ok"], out
+    assert ("ExternalReferences", "create_external_reference", "test-caller", "tok-test-caller") in boundary.calls

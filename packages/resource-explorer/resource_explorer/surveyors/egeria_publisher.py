@@ -998,7 +998,11 @@ class EgeriaPublisher:
         # survey as owned by `erinoverview` — and `Ownership` is what the
         # curate authorisation reads, so the real owner would lose control of
         # their own artifact to a service account.
-        owner = getattr(self, "_private_owner", "") or identity.user_id
+        from resource_explorer.egeria_identity import on_behalf_of
+
+        # The one on-behalf helper (Brief I round 3). A survey report is RE's own evidence, not
+        # the resource, so no declared resource owner is consulted: private owner, else requester.
+        owner = on_behalf_of(identity, private_owner=getattr(self, "_private_owner", "") or "").owner
         zones = self.zone_names
         if not produced:
             # A REFERENCED element — the repo's own asset. It is not this

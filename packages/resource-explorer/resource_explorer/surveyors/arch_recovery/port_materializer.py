@@ -264,6 +264,18 @@ class PortMaterializer:
 
         self._attach_if_needed(component_guid, guid)
 
+        # Whose write this is (Brief I round 3), from the one on-behalf helper: the generic create
+        # body above carries no additionalProperties, so `requestedBy` is merged in after it, and
+        # Ownership names the declared Context owner, else the requester. Both best-effort.
+        from resource_explorer.egeria_clients import current_principal
+        from resource_explorer.egeria_identity import on_behalf_of, record_requested_by, set_ownership
+
+        identity = self._identity or current_principal()
+        behalf = on_behalf_of(identity, registry=self._registry, entity_type=entity_type,
+                              entity_slug=entity_slug)
+        record_requested_by(guid, behalf, client=self._metadata_expert)
+        set_ownership(guid, behalf.owner, identity=identity)
+
         if self._registry:
             self._registry.record_materialized_port(
                 entity_type, entity_slug, scope_locator, port_name, qualified_name, guid,

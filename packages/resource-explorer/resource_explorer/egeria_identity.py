@@ -201,8 +201,6 @@ class EgeriaIdentity:
     #: The Egeria user a client is built for when it differs from `user_id` (Background: the
     #: service account mints the token while `user_id` names the requester for Ownership).
     client_user: str = ""
-    #: A stored credential's own platform origin; the factory sends it nowhere else.
-    bound_platform: str = ""
 
     @property
     def is_person(self) -> bool:
@@ -271,6 +269,83 @@ def use_identity(identity: Optional[EgeriaIdentity]) -> Iterator[None]:
 # ---------------------------------------------------------------------------
 # Ownership and zones
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class OnBehalf:
+    """Whose an element is, for ONE write made on a person's behalf (Brief I round 3).
+
+    `requester` — who asked: a queued run's `requested_by`, or the signed-in person.
+    `owner` — what Ownership is stamped with: a private investigation's owner, else the owner
+    DECLARED on the resource's Context (RULING-OWNER-FACT-VS-OWNERSHIP-CLASSIFICATION), else the
+    requester, else whoever the call runs as.
+    """
+
+    requester: str
+    owner: str
+
+    def provenance(self) -> dict:
+        """The `additionalProperties` key every RE-created element carries beside its other
+        provenance keys: `requestedBy`. Empty when nobody asked (the daemon's own work)."""
+        return {"requestedBy": self.requester} if self.requester else {}
+
+
+def declared_owner(registry: Any, entity_type: str, entity_slug: str) -> str:
+    """The owner declared on the resource's Context (`enrichment.owner.value`), or ''."""
+    if registry is None or not entity_type or not entity_slug:
+        return ""
+    try:
+        ctx = registry.get_context(entity_type, entity_slug) or {}
+    except Exception as exc:  # noqa: BLE001 - a context that cannot be read declares nothing
+        log.debug("egeria: could not read the declared owner of %s/%s: %s", entity_type, entity_slug, exc)
+        return ""
+    owner = (((ctx.get("enrichment") or {}).get("owner") or {}).get("value") or "") if isinstance(ctx, dict) else ""
+    return owner.strip() if isinstance(owner, str) else ""
+
+
+def on_behalf_of(identity: Optional[EgeriaIdentity] = None, *, registry: Any = None, entity_type: str = "",
+                 entity_slug: str = "", private_owner: str = "") -> OnBehalf:
+    """THE helper every write made on a person's behalf uses (components, blueprints, ports, the
+    publisher, catalog schema elements): who asked, and what Ownership names."""
+    identity = identity or caller_credentials()
+    if identity.kind == "daemon":
+        requester = identity.requested_by
+    elif identity.kind == "caller":
+        requester = identity.user_id
+    else:
+        requester = ""
+    owner = (private_owner or declared_owner(registry, entity_type, entity_slug)
+             or requester or identity.user_id)
+    return OnBehalf(requester=requester, owner=owner)
+
+
+def _map_property(values: dict) -> dict:
+    return {"class": "MapTypePropertyValue", "typeName": "map<string,string>",
+            "mapValues": {"class": "ElementProperties", "propertyValueMap": {
+                k: {"class": "PrimitiveTypePropertyValue", "typeName": "string",
+                    "primitiveTypeCategory": "OM_PRIMITIVE_TYPE_STRING", "primitiveValue": v}
+                for k, v in values.items()}}}
+
+
+def record_requested_by(element_guid: str, behalf: OnBehalf, *, client: Any) -> bool:
+    """For an element whose create body cannot carry `additionalProperties` (a template copy, a
+    generic metadata-element create): merge `requestedBy` into its additionalProperties after the
+    create. Best-effort and reported (False), never raised: the element already exists.
+    UNVERIFIED LIVE: the map-typed property shape on `update_metadata_element_properties`."""
+    if not element_guid or not behalf.requester:
+        return False
+    try:
+        client.update_metadata_element_properties(element_guid, {
+            "class": "UpdatePropertiesRequestBody",
+            "properties": {"class": "ElementProperties",
+                           "propertyValueMap": {"additionalProperties": _map_property(behalf.provenance())}},
+            "replaceProperties": False,
+        })
+        return True
+    except Exception as exc:  # noqa: BLE001 - reported, the element already exists
+        log.warning("egeria: could not record requestedBy=%s on %s — %s: %s",
+                    behalf.requester, element_guid, type(exc).__name__, exc)
+        return False
+
 
 def ownership_body(owner: str, owner_type_name: str = _OWNER_TYPE_NAME) -> dict:
     """The `NewClassificationRequestBody` for `Ownership` (`0445`).

@@ -71,7 +71,7 @@ def test_resolver_returns_connection_view_with_asset_guid(registry, monkeypatch)
     assert view.egeria_asset_guid == "guid-123"
     assert view.display_name == "Amundsen"
     # Brief I: the view carries no credential any more; who acts is the factory's business.
-    assert view.egeria_password == "" and view.egeria_user == ""
+    assert not hasattr(view, "egeria_password") and not hasattr(view, "egeria_user")
     assert resolve_entity_for_doc_source(registry, "repo", "nope") is None
 
 

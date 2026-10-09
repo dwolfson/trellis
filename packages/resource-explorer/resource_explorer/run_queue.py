@@ -400,8 +400,9 @@ class _Heartbeat:
 #: committed under RE's daemon identity; the person's accountability is the recorded
 #: `requested_by` and the Ownership classification stamped with it. So these kinds MUST carry a
 #: requester: queued with none, they fail loudly rather than write anonymously on someone's behalf.
-PERSON_ACTION_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit",
-                                 "materialize_components"})
+#: (`materialize_components` is a run kind with a handler but nothing enqueues it today, so it is
+#: not listed; whoever starts queueing it adds it here.)
+PERSON_ACTION_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit"})
 
 NO_REQUESTER_SENTENCE = ("this action was queued with no requester recorded; RE does not write to "
                          "Egeria on a person's behalf without saying whose")

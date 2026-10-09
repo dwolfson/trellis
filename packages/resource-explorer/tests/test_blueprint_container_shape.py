@@ -14,6 +14,9 @@ from resource_explorer import blueprint_shape as bs
 from resource_explorer.blueprint_shape import CONTAINER, CONTENTS, Node, distinct_name, plan_shape
 from resource_explorer.surveyors.arch_recovery import admission as adm
 
+# Brief I: a blueprint or port is written by a queued publish: RE's daemon on the requester's behalf.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 G = "{:08d}-0000-0000-0000-000000000000".format
 BP_GUID = G(1)
 PLATFORM = G(10)

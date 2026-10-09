@@ -47,8 +47,6 @@ def _signed_in(token="tok-p"):
 def test_a_daemon_reason_outside_the_closed_list_is_refused():
     with pytest.raises(ValueError, match="not a DaemonReason"):
         ec.Daemon("outbox_drain")                      # the right words, but not the enum member
-    with pytest.raises(ValueError, match="not a DaemonReason"):
-        ec.StoredOrDaemon(object(), "scheduler")
     forged = ec.Daemon(ec.DaemonReason.SCHEDULER).__class__(
         user_id="x", password="y", is_service_account=True, kind="daemon", reason="made-up")
     with pytest.raises(ValueError, match="unknown reason"):
@@ -142,13 +140,6 @@ def test_acting_as_takes_only_a_daemon_and_wins_inside_its_block():
         current_caller.reset(reset)
 
 
-def test_a_stored_resource_credential_is_used_only_when_both_halves_are_there():
-    with_both = type("E", (), {"egeria_user": "stored", "egeria_password": "pw"})()
-    user_only = type("E", (), {"egeria_user": "stored", "egeria_password": ""})()
-    assert ec.StoredOrDaemon(with_both, ec.DaemonReason.OUTBOX).kind == "stored"
-    assert ec.StoredOrDaemon(user_only, ec.DaemonReason.OUTBOX).kind == "daemon"
-
-
 def test_daemon_entry_keeps_a_carried_person_even_in_a_worker_marked_process(monkeypatch):
     @ec.daemon_entry(ec.DaemonReason.PREFECT_FLOW)
     def flow():
@@ -189,3 +180,13 @@ def test_whoami_returns_the_recorded_value(monkeypatch):
     ec.egeria_client(ec.Daemon(ec.DaemonReason.RUN_QUEUE, requested_by="p"), purpose="survey").of(FakeClient)
     got = c.get("/api/egeria/whoami", headers=hdr).json()["last_egeria_call"]
     assert got["as"] == "service account (Resource Explorer) on your behalf"
+
+
+@pytest.mark.parametrize("url", ["https://egeria.invalid:99999", "https://egeria.invalid:notaport"])
+def test_an_unreadable_port_is_a_platform_refusal_not_a_crash(url):
+    reset = _signed_in()
+    try:
+        with pytest.raises(ec.PlatformNotAllowed, match="unreadable port"):
+            ec.egeria_client(ec.Caller(), purpose="t", platform_url=url)
+    finally:
+        current_caller.reset(reset)

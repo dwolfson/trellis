@@ -13,7 +13,7 @@ Only `database`, `filesystem` and (E2) `repo` entity types are wired — the bri
 scoping filesystem out for time ("prioritize database first... note
 explicitly... if scoped out") but it turned out to need no extra code
 beyond the entity resolver below, since `FileSystemEntity` carries the same
-`egeria_url`/`egeria_server`/`egeria_user`/`egeria_password`/
+`egeria_url`/`egeria_server`/
 `egeria_asset_guid`/`display_name` shape `DatabaseEntity` does — so both are
 built together in this slice rather than filesystem being deferred.
 Ingest/re-ingest actions (slice 2, `doc_source_ingestion`) are NOT wired
@@ -469,18 +469,20 @@ def publish_local_doc_sources(entity_type: str, slug: str, asset_guid: str, *,
     per source; returns the per-source results so the caller can log/report
     which ones failed without the publish itself failing over it.
     """
+    from resource_explorer.doc_source_egeria import entity_clients
+    from resource_explorer.egeria_clients import current_principal
+
     registry = registry or _registry()
     entity = _resolve_entity(registry, entity_type, slug)
+    # Who: whoever this publish runs as (Brief I) — the signed-in Caller on a route, the daemon on
+    # the requester's behalf in a queued run. Built once, BEFORE the loop: no identity is a 401.
+    clients = entity_clients(entity, current_principal())
     out = []
     for row in registry.list_doc_sources(entity_type, slug):
         if row.get("egeria_external_ref_guid"):
             out.append({"id": row["id"], "ok": True, "skipped": "already published"})
             continue
-        result = publish_doc_source(
-            row, asset_guid, view_server=entity.egeria_server, platform_url=entity.egeria_url,
-            user_id=entity.egeria_user, user_password=entity.egeria_password,
-            display_name=entity.display_name,
-        )
+        result = publish_doc_source(row, asset_guid, clients=clients, display_name=entity.display_name)
         if result["ok"] and result["ref_guid"]:
             registry.set_doc_source_egeria_ref(entity_type, slug, row["id"],
                                                 result["ref_guid"], result.get("link_guid", ""))

@@ -406,7 +406,8 @@ class TestEgeriaPublishStateFix:
 
 
 class TestPublishHook:
-    def test_publish_local_doc_sources_skips_already_published_rows(self, monkeypatch, registry):
+    def test_publish_local_doc_sources_skips_already_published_rows(self, monkeypatch, registry, signed_in_caller,
+                                                                    allow_example_platform):
         from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
 
         registry.add_doc_source("database", "adventureworks", "https://x")

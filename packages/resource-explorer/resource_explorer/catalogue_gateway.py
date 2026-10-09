@@ -235,6 +235,7 @@ class CatalogueGateway(Protocol):
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str: ...
+    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> tuple[bool, str]: ...
     def list_catalog_targets(self) -> list[CatalogTarget]: ...
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
@@ -463,10 +464,10 @@ class PyegeriaCatalogueGateway:
     def __init__(self, db_entity=None, *, view_server: str = "", platform_url: str = "",
                  daemon_server: str = "", identity=None):
         """WHICH Egeria: the arguments, else the entity's stored `egeria_url`/`egeria_server`,
-        else the configured one. WHO: `identity` (the outbox drain passes
-        `StoredOrDaemon(entity, OUTBOX)`), else `current_principal()` — the signed-in Caller on
-        a Curate commit route (Brief I). The entity's stored Egeria user/password are NOT read
-        here any more; only the drain still uses them, pending the owner's decision."""
+        else the configured one (always under the platform allowlist). WHO: `identity`, else
+        `current_principal()` — the signed-in Caller on a route, the daemon in a queued run or the
+        background drain (Brief I). An entity's stored Egeria user/password are never read
+        (owner's ruling, 2026-10-09)."""
         from resource_explorer.config import get_config
         cfg = get_config().egeria
         e = db_entity
@@ -703,6 +704,17 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(f"creating the schema element for {schema} from the template failed: "
                                f"{_short(exc)}") from exc
         return guid if isinstance(guid, str) else _guid_of(guid)
+
+    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> tuple[bool, str]:
+        """Brief I round 3: a template copy cannot carry `additionalProperties`, so `requestedBy` is
+        merged in after the create (UNVERIFIED LIVE), and Ownership names `owner` (`set_owner`).
+        Returns (provenance recorded?, ownership outcome)."""
+        from resource_explorer.egeria_identity import OnBehalf, record_requested_by
+
+        recorded = record_requested_by(guid, OnBehalf(requester=requester, owner=owner),
+                                       client=self._client("MetadataExpert"))
+        outcome, _detail = self.set_owner(guid, owner) if owner else ("skipped", "")
+        return recorded, outcome
 
     def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str:
         """Egeria's own attach: `PostgreSQLGovernance::catalog-postgres-schema` with the schema

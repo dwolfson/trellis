@@ -18,6 +18,9 @@ from tests.test_blueprint_container_shape import (  # noqa: F401  (fixtures and 
 from resource_explorer.surveyors.arch_recovery import admission as adm
 from resource_explorer.surveyors.arch_recovery.blueprint_materializer import BlueprintMaterializer as REAL
 
+# Brief I: a blueprint or port is written by a queued publish: RE's daemon on the requester's behalf.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 
 class TestTheFiveWords:
     def test_a_package_manifest_is_a_code_module(self):
