@@ -1896,6 +1896,9 @@ export const setRepoProjectContext = (slug, status) =>
 export const resurveyRepo = (slug, { steps = null } = {}) =>
   post(`/api/egeria/${encodeURIComponent(slug)}/resurvey`, steps ? { steps } : {});
 
+/** The kept survey, assembled from the registry (no Egeria call): metrics, file types, data files, dependencies. */
+export const getSurveyReport = (slug) => get(`/api/egeria/${encodeURIComponent(slug)}/survey-report`);
+
 /** Repair a stale Egeria link: action is republish | resurvey | discard. Republish and resurvey WRITE a new
  *  SurveyReport to Egeria; discard writes nothing there. None archives or deletes in Egeria (the bulk
  *  delete routes are deliberately not wrapped here). */
