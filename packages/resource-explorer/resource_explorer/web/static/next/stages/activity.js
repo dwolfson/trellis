@@ -115,6 +115,8 @@ async function reload() {
   }
   if (!document.getElementById(PANEL_ID)) return;
   renderList();
+  refreshTicks = 0;
+  scheduleRefresh();
 }
 
 /** Order by time. 'desc' = latest first (what the page has always shown, and
@@ -149,7 +151,47 @@ export function sortByTime(entries, order) {
   });
 }
 
+/** While the open list shows an entry that has not finished, re-read the log on a timer so the row turns finished
+ *  (and new entries appear) without a reload. Bounded: it stops the moment nothing is running, when the panel
+ *  closes, or after maxTicks. The tests shorten intervalMs. */
+export const refreshConfig = { intervalMs: 5000, maxTicks: 120 };
+const RUNNING = new Set(['running', 'queued', 'pending']);
+let refreshTimer = null;
+let refreshTicks = 0;
+
+export function anyRunning(entries) {
+  return (entries || []).some((e) => RUNNING.has(String(e?.status || '').toLowerCase()));
+}
+function stopRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+}
+function scheduleRefresh() {
+  stopRefresh();
+  if (!document.getElementById(PANEL_ID) || !anyRunning(panel.entries)) { refreshTicks = 0; return; }
+  if (refreshTicks >= refreshConfig.maxTicks) return;
+  refreshTimer = setTimeout(async () => {
+    refreshTimer = null;
+    refreshTicks += 1;
+    try {
+      const fresh = await listActivity(FETCH_LIMIT, serverFilters());
+      if (!document.getElementById(PANEL_ID)) return;
+      panel.entries = fresh;
+      panel.error = null;
+      markSeen(document, fresh);
+      // Keep the details the reader has opened open across the redraw.
+      const open = [...document.querySelectorAll('#activity-panel-body [id^="activity-d-"]')]
+        .filter((d) => !d.classList.contains('hidden')).map((d) => d.id);
+      renderList();
+      open.forEach((id) => document.getElementById(id)?.classList.remove('hidden'));
+    } catch { /* keep the last list; the next tick tries again */ }
+    scheduleRefresh();
+  }, refreshConfig.intervalMs);
+}
+
 function closeActivityPanel() {
+  stopRefresh();
+  refreshTicks = 0;
   document.getElementById(PANEL_ID)?.remove();
   document.removeEventListener('keydown', onPanelKeydown);
 }
@@ -214,6 +256,8 @@ export async function openActivityPanel({ focusId = '' } = {}) {
   renderControls();
   renderList();
   focusEntry();
+  refreshTicks = 0;
+  scheduleRefresh();
 }
 
 /** Scroll to the entry a toast pointed at, open its detail and flash it. A missing entry (older than the page, or
