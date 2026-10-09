@@ -497,7 +497,8 @@ def stamps(boundary, monkeypatch):
     me = boundary.fake("MetadataExpert", create_metadata_element=create,
                        get_metadata_guid_by_unique_name=lambda *a, **k: "No elements found",
                        update_metadata_element_properties=update,
-                       get_metadata_element_by_guid=lambda guid, *a, **k: {"elementHeader": {"guid": guid}})
+                       get_metadata_element_by_guid=lambda guid, *a, **k: {
+                           "elementHeader": {"guid": guid}, "elementProperties": {"propertyValueMap": {}}})
     for path in ("pyegeria.MetadataExpert", "pyegeria.omvs.metadata_expert.MetadataExpert"):
         monkeypatch.setattr(path, me)
     monkeypatch.setattr("pyegeria.ClassificationExplorer", boundary.fake(

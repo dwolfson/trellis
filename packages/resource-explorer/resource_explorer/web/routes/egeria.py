@@ -277,6 +277,10 @@ async def private_zone_state() -> dict:
     return status
 
 
+#: Per data class: the same bound the survey-definition reader puts on this pyegeria call.
+_DATACLASS_GUID_TIMEOUT_SECONDS = 15
+
+
 @router.get("/rules/dataclasses", response_model=list[DataClassRule])
 async def get_dataclass_rules() -> list[DataClassRule]:
     """Fetch the active PII Data Classes and their corresponding keyword matching rules.
@@ -300,16 +304,30 @@ async def get_dataclass_rules() -> list[DataClassRule]:
         from pyegeria.omvs.reference_data import ReferenceDataManager
         from pyegeria.omvs.data_designer import DataDesigner
 
-        from resource_explorer.egeria_clients import Caller, egeria_client
+        from resource_explorer.concurrency import run_sync
+        from resource_explorer.egeria_clients import Caller, NoCallerIdentity, egeria_client
 
         view_server = egeria_view_server()
-        # The signed-in reader (Brief I), resolved here in the request, not the env's user.
-        clients = egeria_client(Caller(), purpose="data class rules",
+        # The signed-in reader (Brief I), resolved here in the request, not the env's user. With
+        # nobody signed in this read answers the LOCAL rules, as it always did (round 5): it is a
+        # read with a documented fallback, not an Egeria action someone is refused.
+        try:
+            reader = Caller()
+        except NoCallerIdentity:
+            return [DataClassRule(**r) for r in fallback_rules]
+        clients = egeria_client(reader, purpose="data class rules",
                                 view_server=view_server, platform_url=platform_url)
+
+        def _guid_for(qname: str):
+            """`get_guid_for_name` is the known hang site: bounded through the shared pool, on a
+            client built in the pool thread itself (pyegeria binds a client to its thread's loop)."""
+            def _lookup():
+                return egeria_client(reader, purpose="data class rules", view_server=view_server,
+                                     platform_url=platform_url, shared=False).of(DataDesigner).get_guid_for_name(qname)
+            return run_sync(_lookup, timeout=_DATACLASS_GUID_TIMEOUT_SECONDS)
 
         def _fetch():
             ref_manager = clients.of(ReferenceDataManager)
-            designer = clients.of(DataDesigner)
 
             rules = []
             for dc in fallback_rules:
@@ -317,7 +335,7 @@ async def get_dataclass_rules() -> list[DataClassRule]:
                 qname = f"DataClass::{name}"
                 keywords = []
                 try:
-                    guid = designer.get_guid_for_name(qname)
+                    guid = _guid_for(qname)
                     if guid:
                         results = ref_manager.find_valid_value_definitions(
                             search_string=f"ValidValueDefinition::{name}Keyword::",

@@ -1679,6 +1679,17 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     # 1 ── the server and database elements
     cur.set_step(curation_id, "publish_elements", "running")
     try:
+        # Brief I round 5: only elements THIS commit creates are stamped with the requester. A server
+        # is shared by host:port (and may be someone else's, created outside RE); a database may
+        # come from an earlier commit. Read before publishing: what already existed is never
+        # re-stamped or re-owned. A read that fails counts as "existed" (the safe direction).
+        existed = {}
+        for which, qn_ in (("server", gw.server_qualified_name(gw.server_name_for(db))),
+                           ("database", gw.database_qualified_name(gw.server_name_for(db), db.database_name))):
+            try:
+                existed[which] = gateway.read_element(qn_) is not None
+            except GatewayError:
+                existed[which] = True
         pub = gateway.publish_database(db, db.db_user, db.db_password, registry=registry, submitted_by=author)
         db_guid = pub.database_guid
         if not db_guid:
@@ -1695,8 +1706,10 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         declared = (((registry.get_context("database", slug) or {}).get("enrichment") or {})
                     .get("owner") or {}).get("value") or ""
         notes = [n for n in (
-            gateway.mark_on_behalf(pub.server_guid, behalf.requester, behalf.owner) if pub.server_guid else "",
-            gateway.mark_on_behalf(db_guid, behalf.requester, "" if declared else behalf.owner))
+            gateway.mark_on_behalf(pub.server_guid, behalf.requester, behalf.owner)
+            if pub.server_guid and not existed["server"] else "",
+            gateway.mark_on_behalf(db_guid, behalf.requester, "" if declared else behalf.owner)
+            if not existed["database"] else "")
             if n]
         _proof(registry, slug, P_DATABASE, node_kind="database", element_guid=db_guid,
                qualified_name=pub.database_qualified_name, curation_id=curation_id, recorded_by=author,

@@ -128,8 +128,14 @@ def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
     return {"status": "ok", **result}
 
 
+#: The words a run's outcome carries about Egeria (Brief I round 5): a run that did not publish
+#: must never read like one whose publish failed.
+PUBLISH_NOT_CHOSEN = "local only · publish not chosen"
+PUBLISHED = "published to Egeria"
+
+
 def _run_egeria_adaptive(
-    fs_entity, registry, step, force_egeria_publish: bool = False,
+    fs_entity, registry, step, force_egeria_publish: "bool | None" = None,
     egeria_url: str | None = None, egeria_server: str | None = None,
     **_,
 ) -> dict:
@@ -173,6 +179,12 @@ def _run_egeria_adaptive(
         run_hybrid_filesystem_survey,
     )
 
+    # Who chose to publish (Brief I round 5). A person's route, Classic or the CLI passes True or
+    # False explicitly. A Survey Definition run passes nothing: its step targeting Egeria
+    # (`egeria-adaptive`) IS the choice, so a scheduled or queued definition publishes as before
+    # whenever the file system names which Egeria (URL and view server).
+    if force_egeria_publish is None:
+        force_egeria_publish = bool((egeria_url or fs_entity.egeria_url) and (egeria_server or fs_entity.egeria_server))
     try:
         survey_data = run_hybrid_filesystem_survey(
             fs_entity.slug, registry=registry, force_egeria_publish=force_egeria_publish,
@@ -189,9 +201,13 @@ def _run_egeria_adaptive(
         }
 
     egeria_publish = survey_data.pop("egeria_publish", None)
+    publish_error = survey_data.pop("egeria_publish_error", "")
     source = "egeria-custom" if egeria_publish is not None else "custom"
 
-    outcome = {"source": source, "status": "ok", **survey_data}
+    outcome = {"source": source, "status": "ok", **survey_data,
+               "publish_state": (PUBLISHED if egeria_publish is not None
+                                 else f"publish failed · {publish_error}" if publish_error
+                                 else PUBLISH_NOT_CHOSEN)}
     # Kept out of any top-level key `_publish` below recognizes (it looks
     # for "survey_data", which this handler's local-scan fields are not, so
     # they're actually safe at the top level as-is) — nested under "result"

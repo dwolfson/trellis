@@ -57,6 +57,7 @@ def run_hybrid_filesystem_survey(
             survey_data["egeria_publish"] = publish_res
         except Exception as exc:
             log.exception(f"Failed to publish survey to Egeria for {fs_entity.slug}: {exc}")
+            survey_data["egeria_publish_error"] = f"{type(exc).__name__}: {exc}"[:300]
             # Non-fatal, status updated on registry
             registry.update_filesystem_status(
                 fs_entity.slug,
@@ -64,6 +65,7 @@ def run_hybrid_filesystem_survey(
                 error_message=f"Failed to publish to Egeria: {exc}",
             )
     else:
-        log.info(f"Local-only survey completed for filesystem '{fs_entity.slug}'. No Egeria credentials provided.")
+        log.info("Local-only survey completed for filesystem '%s': publishing to Egeria was not chosen.",
+                 fs_entity.slug)
 
     return survey_data

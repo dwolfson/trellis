@@ -145,6 +145,9 @@ class FakeEgeria:
             self.server_guid = self._guid("s")
             self.db_guid = self._guid("d")
             self.elements[self.db_guid] = {"qn": qn, "type": "RelationalDatabase", "parent": "", "archived": False, "deleted": False}
+            # The server is an element too (shared by host:port), so a later read finds it.
+            self.elements[self.server_guid] = {"qn": f"PostgreSQL Server::{server}", "type": "SoftwareServer",
+                                               "parent": "", "archived": False, "deleted": False}
             self.zones[self.db_guid] = list(self.default_zones)
         return PublishedDatabase(self.server_guid, self.db_guid, server, qn)
 

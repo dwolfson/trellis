@@ -312,6 +312,10 @@ def _read_additional_properties(element: Any) -> dict:
     Raises ValueError when the answer is not an element at all."""
     if not isinstance(element, dict):
         raise ValueError(f"the read returned {type(element).__name__}, not an element")
+    if not isinstance(element.get("elementProperties") or element.get("properties"), dict):
+        # Not a shape we know: reading it as "no additionalProperties" and writing ours would wipe
+        # whatever the element carries. Refuse instead (nothing is written; the caller says why).
+        raise ValueError(f"unrecognised element shape (keys: {sorted(element)[:6]})")
     vm = ((element.get("elementProperties") or element.get("properties") or {}).get("propertyValueMap")
           if isinstance(element.get("elementProperties") or element.get("properties"), dict) else None) or {}
     mp = vm.get("additionalProperties") if isinstance(vm, dict) else None
@@ -450,17 +454,21 @@ def set_ownership(
 
 def set_ownership_reason(element_guid: str, owner: str, *, identity: Optional[EgeriaIdentity] = None,
                          client: Any = None, owner_type_name: str = _OWNER_TYPE_NAME) -> tuple[bool, str]:
-    """`set_ownership`, with the reason when it did not land. Never raises for an Egeria failure;
-    a missing sign-in or a refused platform propagates (a 401/403, not a quiet unowned write)."""
+    """`set_ownership`, with the reason when it did not land. Never raises (round 5): it runs after
+    an element was created, so a client that cannot be built (no sign-in, a refused platform) is a
+    PARTIAL outcome with its reason — raising here would skip the caller's own record of the
+    element it just created."""
     if not element_guid or not owner:
         return False, "no element or no owner"
     try:
         client = client or classification_client(identity)
+    except Exception as exc:  # noqa: BLE001 - reported as partial by the caller
+        log.warning("egeria: no Ownership client for %s — %s: %s", element_guid, type(exc).__name__, exc)
+        return False, f"the Ownership client could not be built ({type(exc).__name__}: {str(exc)[:160]})"
+    try:
         client.add_ownership_to_element(element_guid, ownership_body(owner, owner_type_name))
         log.info("egeria: Ownership(owner=%s) set on %s", owner, element_guid)
         return True, ""
-    except PermissionError:
-        raise
     except Exception as exc:
         log.warning(
             "egeria: could not set Ownership(owner=%s) on %s — %s: %s",
