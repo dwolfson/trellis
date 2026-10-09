@@ -127,20 +127,20 @@ class TestThePlan:
         _seed_member(registry, "b", "src/b")
         _held(registry, "src/a")
         _held(registry, "src/b")
-        _seed_cluster(registry, members=["a", "b"])
-        client.post("/api/curate/blueprint-verdicts/repo/p", json={"perspective": "physical", "cluster_name": "core", "verdict": "accepted"})
+        _seed_cluster(registry, name="a", members=["a", "b"])  # named after a: a is the container
+        client.post("/api/curate/blueprint-verdicts/repo/p", json={"perspective": "physical", "cluster_name": "a", "verdict": "accepted"})
         plan = client.get("/api/projects/p/architecture/publish-plan").json()
-        assert [(b["key"], b["state"]) for b in plan["blueprints"]["to_write"]] == [("physical::core", "new")]
-        registry.record_materialized_blueprint("repo", "p", "physical", "core", "SolutionBlueprint::repo::p::physical", "bp-1")
+        assert [(b["key"], b["state"]) for b in plan["blueprints"]["to_write"]] == [("physical::a", "new")]
+        registry.record_materialized_blueprint("repo", "p", "physical", "a", "SolutionBlueprint::repo::p::physical", "bp-1")
         for status in ("unconfirmed",):
             registry.append_catalogue_commit_proof(
-                "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
+                "p", proof="composition", node_kind="blueprint_shape", table_name="physical::a",
                 element_guid="guid-src/a", target_guid="guid-src/b", qualified_name="SolutionComposition::c::k",
                 detail={"status": status, "read_back": False})
         plan = client.get("/api/projects/p/architecture/publish-plan").json()
         assert [(b["state"], b["unconfirmed_compositions"]) for b in plan["blueprints"]["to_write"]] == [("finish", 1)]
         registry.append_catalogue_commit_proof(
-            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::a",
             element_guid="guid-src/a", target_guid="guid-src/b", qualified_name="SolutionComposition::c::k",
             detail={"status": "linked", "read_back": True})
         plan = client.get("/api/projects/p/architecture/publish-plan").json()
@@ -280,9 +280,10 @@ class TestTheRun:
 
 # ── gate round 1 ──────────────────────────────────────────────────────────────────────────────────────
 
-def _seed_member(registry, slug, scope):
+def _seed_member(registry, slug, scope, admission=None):
     registry.upsert_finding("p", "architecture_recovery", [{
-        "check_name": "component", "label": "x", "detail": {"name": slug, "slug": slug, "type": "Service"}}],
+        "check_name": "component", "label": "x",
+        "detail": {"name": slug, "slug": slug, "type": "Service", **({"admission": admission} if admission else {})}}],
         surveyed_at="2026-09-03T00:00:00", scope_locator=scope)
 
 
@@ -318,9 +319,9 @@ class TestAnExistingBlueprintStaysInThePlanUntilEverythingWantedIsHandled:
     def _setup(self, registry):
         for slug in ("a", "x"):
             _seed_member(registry, slug, f"src/{slug}")
-        _seed_cluster(registry, members=["a", "x"])
-        _accept_bp(registry)
-        registry.record_materialized_blueprint("repo", "p", "physical", "core", "SolutionBlueprint::repo::p::physical", "bp-1")
+        _seed_cluster(registry, name="a", members=["a", "x"])
+        _accept_bp(registry, "physical::a")
+        registry.record_materialized_blueprint("repo", "p", "physical", "a", "SolutionBlueprint::repo::p::physical", "bp-1")
         _held(registry, "src/a")
 
     def _press(self, registry, monkeypatch):
@@ -352,13 +353,14 @@ class TestAnExistingBlueprintStaysInThePlanUntilEverythingWantedIsHandled:
         self._setup(registry)
         self._press(registry, monkeypatch)
         registry.append_catalogue_commit_proof(
-            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::a",
             element_guid="guid-src/a", target_guid="guid-GONE", qualified_name="SolutionComposition::a::gone",
             detail={"status": "unconfirmed", "read_back": False})
         assert ap.publish_plan(registry, "p")["blueprints"]["to_write"] == []
+        _held(registry, "src/x")
         registry.append_catalogue_commit_proof(          # a pair that IS wanted still counts
-            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
-            element_guid="guid-src/a", target_guid="guid-src/a", qualified_name="SolutionComposition::a::a",
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::a",
+            element_guid="guid-src/a", target_guid="guid-src/x", qualified_name="SolutionComposition::a::x",
             detail={"status": "unconfirmed", "read_back": False})
         assert [b["unconfirmed_compositions"] for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"]] == [1]
 
@@ -441,19 +443,25 @@ class TestTheRecordIsWhatTheWriteHandedOver:
         assert again["physical::root"]["unattached"] == 1          # still in the plan, not silently attached
 
     def test_the_adopted_content_pack_root_has_no_cache_row_but_its_pairs_still_count(self, registry):
+        from resource_explorer.surveyors.arch_recovery import admission as adm
+        _seed_member(registry, "cpr", "src/cpr", admission=adm.REFERENCED)    # judged "referenced only" here
         _seed_member(registry, "a", "src/a")
-        _seed_cluster(registry, members=["a"])
-        _accept_bp(registry)
-        self._bp(registry)
+        _seed_cluster(registry, name="cpr", members=["cpr", "a"])
+        _accept_bp(registry, "physical::cpr")
+        self._bp(registry, "physical::cpr")
         _held(registry, "src/a")
+        # the newest press adopted a content-pack element for the root and wrote it as the container
+        registry.append_catalogue_commit_proof("p", proof="shape", node_kind="blueprint_shape", table_name="physical::cpr",
+                                               element_guid="bp-1", detail={"shape": "container"})
         registry.append_catalogue_commit_proof(
-            "p", proof=ap.P_ATTACHED, node_kind="architecture_publish", table_name="physical::core",
-            element_guid="bp-1", detail={"guids": ["guid-src/a"]})
-        registry.append_catalogue_commit_proof(
-            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::core",
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::cpr",
             element_guid="guid-CPROOT", target_guid="guid-src/a", qualified_name="SolutionComposition::cp::a",
             detail={"status": "unconfirmed", "read_back": False})
-        assert [b["unconfirmed_compositions"] for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"]] == [1]
+        registry.append_catalogue_commit_proof(
+            "p", proof=ap.P_ATTACHED, node_kind="architecture_publish", table_name="physical::cpr",
+            element_guid="bp-1", detail={"guids": ["guid-CPROOT"]})
+        plan = ap.publish_plan(registry, "p")["blueprints"]["to_write"]
+        assert [(b["unconfirmed_compositions"], b["unattached"]) for b in plan] == [(1, 0)]   # a composition, counted once
 
     def test_a_blueprint_rejected_between_press_and_run_says_no_longer_accepted_even_with_a_cache_row(self, registry, monkeypatch):
         monkeypatch.setattr("resource_explorer.component_tree._components", lambda reg, slug: [])
@@ -461,3 +469,49 @@ class TestTheRecordIsWhatTheWriteHandedOver:
         registry.record_component_verdict("repo", "p", "physical::core", "rejected", "", "", verdict_target="blueprint", decided_by="x")
         res = ap.run_publish(registry, "p", {"slug": "p", "paths": [], "blueprints": ["physical::core"]}, "run-r")
         assert res[0]["words"] == "no longer accepted"
+
+
+# ── gate round 3 ──────────────────────────────────────────────────────────────────────────────────────
+
+class TestThePlanDerivesWhatItWantsFromThePlanShape:
+    def _container(self, registry):
+        for slug in ("a", "b"):
+            _seed_member(registry, slug, f"src/{slug}")
+            _held(registry, f"src/{slug}")
+        _seed_cluster(registry, name="a", members=["a", "b"])                 # named after a real component: container
+        _accept_bp(registry, "physical::a")
+        registry.record_materialized_blueprint("repo", "p", "physical", "a", "SolutionBlueprint::x", "bp-1")
+        registry.append_catalogue_commit_proof("p", proof=ap.P_ATTACHED, node_kind="architecture_publish",
+                                               table_name="physical::a", element_guid="bp-1",
+                                               detail={"guids": ["guid-src/a"]})
+
+    def _pair(self, registry, container, child, status):
+        registry.append_catalogue_commit_proof(
+            "p", proof="composition", node_kind="blueprint_shape", table_name="physical::a",
+            element_guid=container, target_guid=child, qualified_name=f"SolutionComposition::{container}::{child}",
+            detail={"status": status, "read_back": status == "linked"})
+
+    def test_a_child_with_an_unconfirmed_composition_is_counted_once_as_a_composition(self, registry):
+        self._container(registry)
+        self._pair(registry, "guid-src/a", "guid-src/b", "unconfirmed")
+        item = ap.publish_plan(registry, "p")["blueprints"]["to_write"][0]
+        assert (item["unconfirmed_compositions"], item["unattached"]) == (1, 0)
+
+    def test_a_pair_under_an_old_container_is_not_wanted_now(self, registry):
+        self._container(registry)
+        self._pair(registry, "guid-OLD-ROOT", "guid-src/b", "unconfirmed")        # from a press when the root was another
+        self._pair(registry, "guid-src/a", "guid-src/b", "linked")
+        plan = ap.publish_plan(registry, "p")["blueprints"]["to_write"]
+        assert [(b["unconfirmed_compositions"], b["unattached"]) for b in plan] == [(0, 1)]   # only b is still unrecorded
+
+    def test_in_the_contents_shape_a_cached_root_is_not_a_member_to_attach(self, registry):
+        from resource_explorer.surveyors.arch_recovery import admission as adm
+        _seed_member(registry, "a", "src/a", admission=adm.REFERENCED)
+        _seed_member(registry, "b", "src/b")
+        _held(registry, "src/a"); _held(registry, "src/b")
+        _seed_cluster(registry, name="a", members=["a", "b"])
+        _accept_bp(registry, "physical::a")
+        registry.record_materialized_blueprint("repo", "p", "physical", "a", "SolutionBlueprint::x", "bp-1")
+        registry.append_catalogue_commit_proof("p", proof=ap.P_ATTACHED, node_kind="architecture_publish",
+                                               table_name="physical::a", element_guid="bp-1", detail={"guids": ["guid-src/b"]})
+        assert ap.publish_plan(registry, "p")["blueprints"]["to_write"] == []

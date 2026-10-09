@@ -66,12 +66,38 @@ def _blueprint_height(by_name: dict[str, dict], name: str, seen: frozenset = fro
 P_ATTACHED = "blueprint_attached"
 
 
-def wanted_attachments(bp: dict) -> list[str]:
-    """The GUIDs the blueprint should hold NOW: its members and child blueprints that are in Egeria, from the
-    reader's cache rows. What a press records, and what a later plan compares against."""
-    guids = {(m.get("materialized") or {}).get("guid") for m in bp.get("member_status") or []}
-    guids |= {(c.get("materialized") or {}).get("guid") for c in bp.get("child_status") or []}
-    return sorted(g for g in guids if g)
+def planned_handoff(bp: dict, nodes_by_slug: dict, shape: str, proofs: list[dict], key: str) -> dict:
+    """What the write WILL hand to this blueprint, derived from the same `plan_shape` the write uses (the latest
+    shape choice, the cluster's root, the members that are in Egeria by RE's cache rows). The plan and the write
+    cannot then disagree about the root: in the contents shape the root is NOT a member (even when cached), in the
+    container shape it is the only member and the container of the compositions.
+
+    Returns {wanted, known, container}: `wanted` the GUIDs to be attached, `known` the GUIDs a composition pair may
+    use (the container and its planned children; empty in the contents shape, which has no compositions),
+    `container` the root's GUID."""
+    from dataclasses import replace
+
+    from resource_explorer.blueprint_shape import CONTAINER, Node, plan_shape
+
+    guids = {m["slug"]: (m.get("materialized") or {}).get("guid", "") for m in bp.get("member_status") or []}
+    nodes = [replace(nodes_by_slug.get(s) or Node(slug=s, name=s), guid=g) for s, g in guids.items()]
+    plan = plan_shape(bp["cluster_name"], nodes, requested=shape, composed_into=bp.get("composed_into") or "")
+    kids = {(c.get("materialized") or {}).get("guid") for c in bp.get("child_status") or []} - {None, ""}
+    root = plan.root
+    others = {n.guid for n in nodes if n.guid and (root is None or n.slug != root.slug)}
+    # The newest press's own rows: its shape proof, and the compositions it wrote after it.
+    last_shape = max((i for i, p in enumerate(proofs) if p["proof"] == "shape" and p["table_name"] == key), default=-1)
+    newest = [p for p in proofs[last_shape + 1:] if last_shape >= 0 and p["proof"] == "composition" and p["table_name"] == key]
+    pressed_container = last_shape >= 0 and str((proofs[last_shape].get("detail") or {}).get("shape", "")).startswith(CONTAINER)
+    # A root with no cache GUID is judged "referenced only" here, but the write may have ADOPTED a content-pack
+    # element for it (known only from Egeria): then the newest press's rows say it was written as the container.
+    adopted = plan.shape != CONTAINER and root is not None and not root.guid and pressed_container and bool(newest)
+    if plan.shape != CONTAINER and not adopted:
+        return {"wanted": sorted({n.guid for n in plan.members if n.guid} | kids), "known": [], "container": ""}
+    container = root.guid if root is not None and root.guid else (newest[0]["element_guid"] if newest else "")
+    pair_kids = others if adopted else {c.guid for _, c in plan.compositions if c.guid}
+    return {"wanted": sorted(({root.guid} if root is not None and root.guid else set()) | pair_kids | kids),
+            "known": sorted(({container} - {""}) | pair_kids), "container": container}
 
 
 def _attached(proofs: list[dict], scope_key: str) -> set[str]:
@@ -83,23 +109,18 @@ def _attached(proofs: list[dict], scope_key: str) -> set[str]:
     return done
 
 
-def _unattached(proofs: list[dict], scope_key: str, wanted: list[str]) -> int:
-    """How many wanted GUIDs the LAST press did not record as handled (a member accepted since, a child
-    blueprint published since, one that was gone or unreadable). With no record yet, every wanted GUID counts."""
-    return len(set(wanted) - _attached(proofs, scope_key))
-
-
-def _unfinished_compositions(proofs: list[dict], scope_key: str, wanted: list[str] | None = None) -> int:
-    """How many of a blueprint's compositions are not confirmed, from the LATEST proof per pair. Only pairs the
-    blueprint still wants count (both ends among `wanted`): a stale row for a pair no longer planned must not
-    keep it in the plan for ever."""
+def _composition_state(proofs: list[dict], scope_key: str, known: list[str]) -> tuple[int, set[str]]:
+    """(how many wanted compositions are not confirmed, the child GUIDs of those), from the LATEST proof per
+    pair. Only pairs among `known` count: a stale row for a pair the plan no longer wants must not keep the
+    blueprint in the plan for ever."""
     latest: dict[str, dict] = {}
     for p in proofs:
         if p["proof"] == "composition" and p["table_name"] == scope_key:
-            if wanted is not None and not ({p["element_guid"], p["target_guid"]} <= set(wanted)):
+            if not ({p["element_guid"], p["target_guid"]} <= set(known)):
                 continue
             latest[p["qualified_name"]] = p
-    return sum(1 for p in latest.values() if (p.get("detail") or {}).get("status") in _UNCONFIRMED)
+    bad = [p for p in latest.values() if (p.get("detail") or {}).get("status") in _UNCONFIRMED]
+    return len(bad), {p["target_guid"] for p in bad}
 
 
 def _plural(n: int, word: str) -> str:
@@ -144,6 +165,8 @@ def publish_plan(registry, slug: str) -> dict:
     raw_verdicts = {k: v for k, v in registry.get_component_verdicts("repo", slug).items()
                     if v.get("verdict_target") == "blueprint"}
     proofs = registry.list_catalogue_commit_proofs(slug)
+    from resource_explorer.blueprint_shape import component_nodes
+    nodes_by_slug = component_nodes(registry, slug)
     project = registry.get(slug)
     label = repo_label(slug, getattr(project, "display_name", "") or "")
     by_name = {b["cluster_name"]: b for b in blueprints}
@@ -157,19 +180,17 @@ def publish_plan(registry, slug: str) -> dict:
             continue
         if verdict != "accepted":
             continue
-        wanted = wanted_attachments(b)
-        # A pair is still wanted when both ends are known to the blueprint: its cache rows, what a press handed
-        # over, and the container ends of its composition rows (an adopted content-pack root has no cache row).
-        known = set(wanted) | _attached(proofs, key) | {
-            p["element_guid"] for p in proofs if p["proof"] == "composition" and p["table_name"] == key and p["element_guid"]}
-        unfinished = _unfinished_compositions(proofs, key, sorted(known)) if held else 0
-        unattached = _unattached(proofs, key, wanted) if held else 0
+        choices = blueprint_choices(raw_verdicts.get(key))
+        hand = planned_handoff(b, nodes_by_slug, choices["shape"], proofs, key)
+        wanted = hand["wanted"]
+        unfinished, unconfirmed_kids = _composition_state(proofs, key, hand["known"]) if held else (0, set())
+        # A child whose composition is unconfirmed is counted once, as a composition to confirm.
+        unattached = len(set(wanted) - _attached(proofs, key) - unconfirmed_kids) if held else 0
         if held and not unfinished and not unattached:
             bp_present += 1
             continue
         sole = (sum(1 for x in blueprints if x["perspective"] == b["perspective"] and not x.get("parent")) == 1
                 and not b.get("parent"))
-        choices = blueprint_choices(raw_verdicts.get(key))
         bp_write.append({
             "key": key, "perspective": b["perspective"], "cluster_name": b["cluster_name"],
             "name": blueprint_display_name(label, b["perspective"], b["cluster_name"], sole_root=sole,
