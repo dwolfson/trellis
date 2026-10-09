@@ -30,8 +30,6 @@ function sizeText(bytes) {
   return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
 
-const th = 'px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted';
-const td = 'px-s2 py-[2px] text-caveat text-ink';
 
 /** The report body for one `survey-report` response. */
 export function repoReportHtml(d) {
@@ -61,10 +59,10 @@ export function repoReportHtml(d) {
     fileTypes = '<p data-report-file-types="none" class="mt-s2 text-caveat text-ink-muted">surveyed: no file types recorded</p>';
   } else {
     const total = d.total_files || 0;
-    fileTypes = `<table data-report-file-types="rows" class="mt-s2 w-full"><thead><tr><th class="${th}">Type</th><th class="${th}">Files</th><th class="${th}">Share</th><th class="${th}">Extensions</th></tr></thead><tbody>${
+    fileTypes = `<table data-report-file-types="rows" class="mt-s2 w-full"><thead><tr><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Type</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Files</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Share</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Extensions</th></tr></thead><tbody>${
       d.file_types.map((ft) => {
         const exts = Object.keys(ft.extensions || {}).sort((a, b) => ft.extensions[b] - ft.extensions[a]).slice(0, 5).join(', ');
-        return `<tr data-file-type="${esc(ft.label)}"><td class="${td}">${esc(ft.label)}</td><td class="${td} tnum">${esc(ft.count)}</td><td class="${td} tnum">${total ? Math.round((ft.count / total) * 100) : 0}%</td><td class="${td} text-ink-muted">${esc(exts)}</td></tr>`;
+        return `<tr data-file-type="${esc(ft.label)}"><td class="px-s2 py-[2px] text-caveat text-ink">${esc(ft.label)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${esc(ft.count)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${total ? Math.round((ft.count / total) * 100) : 0}%</td><td class="px-s2 py-[2px] text-caveat text-ink text-ink-muted">${esc(exts)}</td></tr>`;
       }).join('')}</tbody></table>`;
   }
 
@@ -73,17 +71,17 @@ export function repoReportHtml(d) {
   if (!profiles.length) {
     dataFiles = '<p data-report-data-files="none" class="mt-s2 text-caveat text-ink-muted">no data files recorded</p>';
   } else {
-    dataFiles = `<table data-report-data-files="rows" class="mt-s2 w-full"><thead><tr><th class="${th}">File</th><th class="${th}">Format</th><th class="${th}">Rows</th><th class="${th}">Columns</th><th class="${th}">Size</th></tr></thead><tbody>${
-      profiles.map((p) => `<tr data-data-file="${esc(p.file_path)}"><td class="${td} break-all">${esc(p.file_path)}</td><td class="${td}">${esc(p.format)}</td>`
-        + `<td class="${td} tnum">${p.row_count == null ? unread('Not profiled.') : esc(p.row_count)}</td>`
-        + `<td class="${td} tnum">${p.col_count == null ? unread('Not profiled.') : esc(p.col_count)}</td>`
-        + `<td class="${td} tnum">${esc(sizeText(p.file_size_bytes))}</td></tr>`).join('')}</tbody></table>`;
+    dataFiles = `<table data-report-data-files="rows" class="mt-s2 w-full"><thead><tr><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">File</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Format</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Rows</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Columns</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Size</th></tr></thead><tbody>${
+      profiles.map((p) => `<tr data-data-file="${esc(p.file_path)}"><td class="px-s2 py-[2px] text-caveat text-ink break-all">${esc(p.file_path)}</td><td class="px-s2 py-[2px] text-caveat text-ink">${esc(p.format)}</td>`
+        + `<td class="px-s2 py-[2px] text-caveat text-ink tnum">${p.row_count == null ? unread('Not profiled.') : esc(p.row_count)}</td>`
+        + `<td class="px-s2 py-[2px] text-caveat text-ink tnum">${p.col_count == null ? unread('Not profiled.') : esc(p.col_count)}</td>`
+        + `<td class="px-s2 py-[2px] text-caveat text-ink tnum">${esc(sizeText(p.file_size_bytes))}</td></tr>`).join('')}</tbody></table>`;
   }
 
   const deps = d.dependencies || [];
   const dependencies = deps.length
-    ? `<table data-report-dependencies="rows" class="mt-s2 w-full"><thead><tr><th class="${th}">Ecosystem</th><th class="${th}">Dependencies</th><th class="${th}">Direct</th></tr></thead><tbody>${
-      deps.map((e) => `<tr data-ecosystem="${esc(e.ecosystem)}"><td class="${td}">${esc(e.ecosystem)}</td><td class="${td} tnum">${esc(e.count)}</td><td class="${td} tnum">${esc(e.direct)}</td></tr>`).join('')}</tbody></table>`
+    ? `<table data-report-dependencies="rows" class="mt-s2 w-full"><thead><tr><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Ecosystem</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Dependencies</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Direct</th></tr></thead><tbody>${
+      deps.map((e) => `<tr data-ecosystem="${esc(e.ecosystem)}"><td class="px-s2 py-[2px] text-caveat text-ink">${esc(e.ecosystem)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${esc(e.count)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${esc(e.direct)}</td></tr>`).join('')}</tbody></table>`
     : '<p data-report-dependencies="none" class="mt-s2 text-caveat text-ink-muted">no dependencies recorded</p>';
 
   const h4 = (t) => `<h4 class="mb-0 mt-s3 font-heading text-caps uppercase tracking-caps text-ink-muted">${esc(t)}</h4>`;

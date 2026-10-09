@@ -96,8 +96,10 @@ export function scoutingSignalHtml(sig) {
     body = '<span data-signal="none" class="text-ink-muted">no scouting results yet</span>';
   } else {
     body = sig.tiles.map((t) => {
-      const cls = t.status === 'ok' ? 'text-state-ok' : (t.status === 'warn' || t.status === 'gap') ? 'text-state-warn' : 'text-ink';
-      return `<span data-signal-chip="${esc(t.status || '')}" class="${cls}" title="${esc(t.analysis_name || '')}">${esc(t.label)}</span>`;
+      const at = `data-signal-chip="${esc(t.status || '')}" title="${esc(t.analysis_name || '')}"`;
+      if (t.status === 'ok') return `<span ${at} class="text-state-ok">${esc(t.label)}</span>`;
+      if (t.status === 'warn' || t.status === 'gap') return `<span ${at} class="text-state-warn">${esc(t.label)}</span>`;
+      return `<span ${at} class="text-ink">${esc(t.label)}</span>`;
     }).join('<span class="text-ink-muted"> · </span>');
   }
   return `<div data-scouting-signal class="mt-s1 text-provenance"><span class="uppercase text-ink-muted">Scouting signal</span> ${body}</div>`;
