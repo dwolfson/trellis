@@ -162,6 +162,7 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
         b = branches.setdefault(bpath, {"path": bpath, "name": seg, "components": 0, "low_confidence": 0,
                                         "types": Counter(), "ports": 0, "own": None, "children": 0,
                                         "accepted": 0, "rejected": 0, "undecided": 0, "structural": False,
+                                        "in_egeria": 0, "rejected_in_egeria": 0,
                                         "min_confidence": None, "agreement_count": 0})
         if c["path"] == bpath:
             b["own"] = c
@@ -191,8 +192,10 @@ def component_tree(registry: ProjectRegistry, slug: str, prefix: str = "") -> di
             b["undecided"] += 1
         elif v["verdict"] == "accepted":
             b["accepted"] += 1
+            b["in_egeria"] += 1 if c.get("materialized") else 0       # from the element's cache row
         elif v["verdict"] == "rejected":
             b["rejected"] += 1
+            b["rejected_in_egeria"] += 1 if c.get("materialized") else 0      # a reject deletes nothing
         else:
             b["undecided"] += 1
 

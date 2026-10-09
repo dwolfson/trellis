@@ -2014,7 +2014,7 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
         registry, entity_type="repo", entity_slug=slug,
         entity_name=project.display_name, entity_location=project.github_url,
         intent="curate", status="running",
-        summary=f"Cataloging {project.display_name}: {len(body.confirm)} entities, {len(chosen)} sub-resources…",
+        summary=f"Publishing {project.display_name}: {len(body.confirm)} entities, {len(chosen)} files and folders…",
     )
     try:
         rec = Curations(registry).create(
@@ -2026,7 +2026,7 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
         # The row above was opened 'running'; nothing will ever run to close it.
         registry.update_activity_status(
             activity_id, "error",
-            summary=f"Cataloging {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
+            summary=f"Publishing {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
         raise
     log.info("enqueued curate_commit %s for %s (activity %s)", run_id, slug, activity_id)
     return {"curation": rec, "activity_id": activity_id, "run_id": run_id}

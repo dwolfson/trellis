@@ -4381,7 +4381,7 @@ def _sub_resource_survey_headline(registry, slug: str) -> dict | None:
         return None
     worthy = sum(1 for f in findings if f.get("label") == "worthy")
     n = len(findings)
-    return {"label": f"{worthy} of {n} {_plural('sub-resource', n)} worth cataloging",
+    return {"label": f"{worthy} of {n} files and folders worth including",
             "status": "info"}
 
 

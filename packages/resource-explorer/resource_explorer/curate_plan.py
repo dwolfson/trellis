@@ -243,7 +243,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     subs = _findings(srs)
     worthy = [f for f in subs if f.get("label") == "worthy"]
     rejected = [f for f in subs if f.get("label") == "not_worthy"]
-    holds.append(_row("SubResource", f"{len(worthy)} of {len(subs)} sub-resources worth cataloging · {len(rejected)} not",
+    holds.append(_row("SubResource", f"{len(worthy)} of {len(subs)} files and folders worth including · {len(rejected)} not",
                       evidence="each becomes its own asset, related to this one",
                       source="sub_resource_survey", state=srs.get("state", ""), count=len(worthy),
                       members={"analysis_id": "sub_resource_survey"}, candidate=len(worthy) > 0,
