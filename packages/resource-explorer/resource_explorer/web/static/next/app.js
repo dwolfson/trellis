@@ -92,6 +92,7 @@ import { mountSubResourcePanel } from '/static/next/stages/analysis.js';
 // comment for why it lives at this level rather than under stages/.
 import { toggleRfaDrawer } from '/static/next/rfa.js';
 import { openActivityPanel } from '/static/next/stages/activity.js';
+import { startActivityWatch } from '/static/next/activity-unread.js';
 import { renderAutomate } from '/static/next/stages/automate.js';
 // Admin (PLAN-FINISH-REPOS.md item 5) — chrome-level, same pattern as
 // Activity: reachable from the header's own ⚙ Admin button, decoupled from
@@ -9803,6 +9804,13 @@ async function start() {
   renderPerspectiveRow();
   renderSidebar();
   renderRail();
+  // The unread badge and the toast that jumps to an entry (PI-124). A failed first read leaves the badge empty.
+  startActivityWatch({
+    doc: document,
+    first: activity.status === 'fulfilled' && Array.isArray(activity.value) ? activity.value : [],
+    fetchEntries: () => listActivity(50),
+    openPanel: (opts) => openActivityPanel(opts),
+  });
   await loadPane();
 }
 
