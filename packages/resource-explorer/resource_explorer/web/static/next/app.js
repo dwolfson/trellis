@@ -119,7 +119,7 @@ import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 // stage is active rather than one of the eight itself. See next/chat.js's
 // own header comment for the placement rule this follows and why it (unlike
 // rfa.js) imports state/esc/$ back from app.js.
-import { renderRail, renderRailScope } from '/static/next/chat.js';
+import { renderRail, renderRailScope, openQuestionTurn } from '/static/next/chat.js';
 import {
   ApiError,
   VALID_DISPOSITIONS,
@@ -257,6 +257,8 @@ export const state = {
   // read once by `bodyLines` on the next render and deleted, so it reads as
   // what just happened rather than persisting as a stale caveat.
   autoRanNotes: new Map(),
+  // Questions whose "why is this here" disclosure the person opened (kept across a row redraw).
+  whyOpen: new Set(),
   me: null,
   counts: { activity: null, rfas: null },
   chat: [],                    // the transcript: one entry per turn
@@ -8489,11 +8491,54 @@ export function rowInner(entry, i, env) {
       <span class="w-[13px] ${glyphColor} font-glyph text-question"${
         st === 'loading' ? '' : ` title="${esc(glyphWord)}" aria-label="${esc(glyphWord)}"`
       }>${st === 'loading' ? '' : glyph}</span>
-      <span class="font-heading text-question font-semibold text-ink">${esc(entry.question)}</span>
+      <span ${st === 'loading' ? '' : `data-ask-chat="${i}" title="Answer this in the chat panel"`}
+        class="font-heading text-question font-semibold text-ink ${st === 'loading' ? '' : 'cursor-pointer'}">${esc(entry.question)}</span>
+      ${st === 'loading' ? '' : `<button type="button" data-ask-chat="${i}" title="Answer this in the chat panel, from the same answer this row shows"
+        class="cursor-pointer bg-transparent p-0 text-provenance text-accent-ink underline">ask in chat ›</button>`}
       ${tag}
     </div>`;
 
-  return head + bodyLines(entry, i, st, env);
+  return head + (st === 'loading' ? '' : whyHereHtml(entry, i)) + bodyLines(entry, i, st, env);
+}
+
+/** "Why is this question here": the chain Perspective + Purpose -> question -> the analyses that answer it,
+ *  every line read from the catalog entry the row was drawn from (the server computes `derivation` in
+ *  question_catalog_reader.get_questions). A line that the entry does not carry says "not reported", never
+ *  a guess; "no analysis answers this" is a stated catalog fact, not an empty section. */
+export function whyHereHtml(entry, i) {
+  const open = state.whyOpen.has(entry.question);
+  const d = entry.derivation || {};
+  const active = [...state.activePerspectives];
+  const carries = entry.perspectives || [];
+  const matched = carries.filter((p) => state.activePerspectives.has(p));
+  const line = (label, value) => `<div><span class="text-ink-muted">${esc(label)}</span> <span class="text-ink">${value}</span></div>`;
+  const bits = [];
+  if (entry.stage) bits.push(line('Stage:', esc(entry.stage)));
+  if (matched.length) bits.push(line('Shown because of perspective:', matched.map(esc).join(', ')));
+  else if (active.length) bits.push(line('Perspective:', 'none of the chosen perspectives match it, yet it is shown'));
+  else bits.push(line('Perspective:', `no filter is on; it carries ${carries.length ? carries.map(esc).join(', ') : 'none'}`));
+  if (Array.isArray(entry.purposes)) {
+    const mine = entry.purposes;
+    const inv = currentPurposes();
+    bits.push(line('Serves purpose:', mine.length ? mine.map(esc).join(', ') : 'none stated in the catalog'));
+    if (inv.length) {
+      bits.push(line('This investigation:', d.purpose_ranked
+        ? `leads, because it serves ${(d.matched_purposes || []).map(esc).join(', ')}`
+        : `${esc(inv.join(', '))} — it serves none of these, so it follows in catalog order`));
+    }
+  } else {
+    bits.push(line('Serves purpose:', 'not reported'));
+  }
+  const ids = d.analysis_ids || entry.analysis_ids || [];
+  const checks = d.checks || [];
+  bits.push(ids.length
+    ? line('Answered by:', ids.map(esc).join(', '))
+    : `<div class="text-state-warn">No analysis answers this yet${entry.answering_mechanism ? ` — ${esc(entry.answering_mechanism)}` : ''}</div>`);
+  if (checks.length) bits.push(line('Checks:', checks.map(esc).join(', ')));
+  return `<details data-why="${i}" ${open ? 'open' : ''} class="ml-[22px] mt-[4px] text-provenance text-ink-muted">
+    <summary class="cursor-pointer" title="Why this question is on this list, and what answers it">why is this here</summary>
+    <div data-why-body class="mt-[2px] space-y-[1px] border-l border-rule pl-s2">${bits.join('')}</div>
+  </details>`;
 }
 
 function contextRecordedBodyHtml(entry, indent) {
@@ -8891,6 +8936,10 @@ function bindRowActions(el, entry, i) {
     loadAnswer(entry, i, state.selectedSlug);
   });
   el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', (ev) => openRunChoice(entry, i, ev.currentTarget));
+  el.querySelectorAll(`[data-ask-chat="${i}"]`).forEach((b) => b.addEventListener('click', () => askQuestionInChat(entry, i)));
+  el.querySelector(`[data-why="${i}"]`)?.addEventListener('toggle', (ev) => {
+    if (ev.currentTarget.open) state.whyOpen.add(entry.question); else state.whyOpen.delete(entry.question);
+  });
   el.querySelector(`[data-evidence="${i}"]`)?.addEventListener('click', () => showEvidence(entry));
   el.querySelector(`[data-diagram="${i}"]`)?.addEventListener('click', () => showDiagram(entry));
   el.querySelector(`[data-copy="${i}"]`)?.addEventListener('click', (e) =>
@@ -9502,14 +9551,14 @@ export async function copyAsEvidence(markdown, btn) {
   }
 }
 
-/** One question row, as markdown with its provenance. */
-function rowAsMarkdown(entry, i) {
+/** One question row's answer in parts: the sentence(s) it says, its caveat, and the provenance bits. The ONE
+ *  place a row's answer is turned into text: "copy as evidence" and "ask in chat" both read it, so the chat
+ *  answer cannot differ from the row it was asked from. */
+function rowAnswerParts(entry) {
   const env = state.answers.get(entry.question);
   const st = effectiveRowState(entry, env);
   const lines = (env && env !== 'loading' && !env.__error)
     ? readEnvelope(entry, env, esc, tnum) : null;
-
-  const out = [`**${entry.question}**`, ''];
 
   // The answer, as text. `lines.answer` is HTML by the time it reaches a row,
   // so it is rebuilt from the facts here rather than stripped of tags — a
@@ -9520,14 +9569,9 @@ function rowAsMarkdown(entry, i) {
     else if (prose(f)) said.push(f.value?.verdict ? `${cap(String(f.value.verdict))} — ${prose(f)}` : prose(f));
     else if (scalarMeasures(f.value)) said.push(scalarMeasures(f.value));
   }
-  if (said.length) out.push(said.join(' '), '');
-  else out.push(`_${(env && env.blocked_reason) || STATE_SENTENCE[st] || 'No answer recorded.'}_`, '');
-
-  if (lines && lines.caveat) {
-    // The caveat as a blockquote — it is the part a reader most needs to
-    // carry across, and a quote survives being pasted into a thread.
-    out.push(...lines.caveat.split('\n').map((l) => `> ${l}`), '');
-  }
+  const answer = said.length
+    ? said.join(' ')
+    : `${(env && env.__error) || (env && env.blocked_reason) || STATE_SENTENCE[st] || 'No answer recorded.'}`;
 
   const bits = [state.selectedSlug];
   const sources = (lines && lines.sources.length ? lines.sources : entry.analysis_ids) || [];
@@ -9538,9 +9582,60 @@ function rowAsMarkdown(entry, i) {
   bits.push(env && env.answerable
     ? 'answered from survey metadata, no retrieval'
     : `state: ${STATE_LABEL[st] || st}`);
-  out.push(`— ${bits.filter(Boolean).join(' · ')}`);
+  return { st, said: said.length > 0, answer, caveat: lines && lines.caveat ? lines.caveat : '', bits, lines, sources };
+}
 
+/** One question row, as markdown with its provenance. */
+function rowAsMarkdown(entry, i) {
+  const p = rowAnswerParts(entry);
+  const out = [`**${entry.question}**`, ''];
+  out.push(p.said ? p.answer : `_${p.answer}_`, '');
+  if (p.caveat) {
+    // The caveat as a blockquote — it is the part a reader most needs to
+    // carry across, and a quote survives being pasted into a thread.
+    out.push(...p.caveat.split('\n').map((l) => `> ${l}`), '');
+  }
+  out.push(`— ${p.bits.filter(Boolean).join(' · ')}`);
   return out.join('\n');
+}
+
+/** The chat turn for a question row: the row's own answer text, its provenance line, and the analyses behind
+ *  it (what "run" and "schedule" in the chat act on). `ran` is read from the same envelope the row drew. */
+function rowChatTurn(entry) {
+  const p = rowAnswerParts(entry);
+  const ran = !!(p.lines && (p.lines.lastRun || p.lines.runTimeUnrecorded));
+  const text = p.caveat ? `${p.answer}\n\n${p.caveat}` : p.answer;
+  return {
+    answer: text,
+    source: p.bits.filter(Boolean).join(' · '),
+    runnable: (entry.analysis_ids || []).map((id) => ({ id, ran })),
+  };
+}
+
+/** "Ask in chat" on a question row: opens the chat on the SAME answer the row shows (read again if the row
+ *  has not loaded it), with the analyses behind it to run or schedule. Nothing is retyped at a model. */
+async function askQuestionInChat(entry, i) {
+  const slug = state.selectedSlug;
+  if (!slug) return;
+  const entityType = apiEntityType(state.resourceType);
+  const read = async () => {
+    let env = state.answers.get(entry.question);
+    if (!env || env === 'loading' || env.__error) {
+      try { env = await getAnswer(slug, entry.question, entityType); }
+      catch (err) { env = { __error: `The answer could not be loaded: ${err.message}` }; }
+      state.answers.set(entry.question, env);
+    }
+    return rowChatTurn(entry);
+  };
+  const first = await read();
+  await openQuestionTurn({
+    question: entry.question, slug, entityType, ...first,
+    // After a run: read the answer again from the same endpoint and hand back the new text.
+    refresh: async () => {
+      state.answers.delete(entry.question);
+      return read();
+    },
+  });
 }
 
 // `turnAsMarkdown` moved to next/chat.js (item 9) — it was chat-only and

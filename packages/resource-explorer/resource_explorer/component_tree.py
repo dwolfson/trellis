@@ -256,7 +256,10 @@ def topology_sentence(registry: ProjectRegistry, slug: str, n_ports: int, n_wire
 
 def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
     """The components under a branch, each with its resolved verdict and
-    its declared ports -- what expands under a row."""
+    its declared ports -- what expands under a row. The empty branch is the
+    root, as `component_tree(prefix='')` already treats it: every component,
+    so a search can look across the whole repository through the same rows
+    a branch shows."""
     comps = _components(registry, slug)
     verdicts = {k: v for k, v in registry.get_component_verdicts("repo", slug).items()
                 if v.get("verdict_target", "component") == "component"}
@@ -268,7 +271,7 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
     out = []
     for c in sorted(comps, key=lambda x: x.get("path", "")):
         p = c.get("path", "")
-        if not (p == b or p.startswith(b + "/")) or c.get("structural"):
+        if not p or not (not b or p == b or p.startswith(b + "/")) or c.get("structural"):
             continue
         out.append({"path": p, "name": c.get("name") or p, "type": c.get("type") or "",
                     "confidence": c.get("confidence"), "low_confidence": (c.get("confidence") or 0) <= LOW_CONFIDENCE,
