@@ -351,6 +351,14 @@ def run_planned_step_task(
                 "detail": f"upstream step(s) failed: {', '.join(sorted(failed))}"}
 
     info = _step_info_for(entity_type, step_key)
+    # Brief D 7f.1: the steps of one database scan share the run's time, so
+    # they merge into one snapshot (the in-process loop does this in
+    # `SurveyDefinitionExecutor._execute`). Added here, inside the task, so the
+    # flow's persisted parameters stay exactly what they were.
+    step_kwargs = (
+        {**runner_kwargs, "scan_surveyed_at": surveyed_at}
+        if entity_type == "database" and surveyed_at else runner_kwargs
+    )
     try:
         with step_cost_observer.observe(
             step_key, getattr(info, "fetch_cost", ""), getattr(info, "compute_cost", ""),
@@ -358,7 +366,7 @@ def run_planned_step_task(
         ) as observed:
             output = run_surveyor_step_task.fn(
                 entity_type=entity_type, slug=slug, step_name=step_key,
-                runner_kwargs=runner_kwargs,
+                runner_kwargs=step_kwargs,
                 **({"credential_ref": credential_ref} if credential_ref else {}),
             )
     except Exception as exc:

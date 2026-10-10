@@ -6255,10 +6255,32 @@ const ANSWERED_BY = {
 };
 export function stepSourceHtml(s) {
   const word = ANSWERED_BY[s && s.answered_by];
-  if (!word) return '';
+  const publish = stepPublishHtml(s);
+  if (!word) return publish;
   const ranAs = s.ran_as && s.ran_as.user
     ? ` · ran as ${esc(s.ran_as.user)} (${esc(s.ran_as.scope || 'this run')})` : '';
-  return `<span class="text-provenance text-ink-muted" data-step-source>answered by ${esc(word)}${ranAs}</span>`;
+  return `<span class="text-provenance text-ink-muted" data-step-source>answered by ${esc(word)}${ranAs}</span>${publish}`;
+}
+
+/** Brief D 7f.8: what happened to the publish, as a cue plus a short word.
+ *  The step records one `publish_state` sentence in its detail ("published to
+ *  Egeria" / "publish failed · <why>" / "local only · publish not chosen");
+ *  `answered_by` says only which scan answered, so a failed publish and a
+ *  publish nobody chose both read "local scan". The sentence stays on demand
+ *  (title); the screen gets the glyph and one word. A step with no
+ *  `publish_state` (every step but the adaptive one) draws nothing. */
+export function stepPublishHtml(s) {
+  const d = s && s.detail && typeof s.detail === 'object' ? s.detail : {};
+  const state = String((s && s.publish_state) || d.publish_state || '');
+  if (!state) return '';
+  let kind = 'unclassified';
+  let word = 'not published';
+  if (/^published\b/i.test(state)) { kind = 'measured'; word = 'published'; }
+  else if (/^publish failed\b/i.test(state)) { kind = 'error'; word = 'publish failed'; }
+  const g = GLYPH_STATES[kind];
+  return `<span class="text-provenance" data-step-publish="${esc(kind)}" title="${esc(state)}">`
+    + `<span class="${g.tone} font-glyph" aria-hidden="true">${g.glyph}</span> `
+    + `<span class="${kind === 'error' ? 'text-state-warn' : 'text-ink-muted'}">${esc(word)}</span></span>`;
 }
 
 export async function openRunsList(slug) {

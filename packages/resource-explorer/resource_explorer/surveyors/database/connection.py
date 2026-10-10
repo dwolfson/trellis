@@ -1227,6 +1227,31 @@ class PostgreSQLConnection(DatabaseConnection):
         except Exception:
             return ""
 
+    def get_stats_reset_evidence(self) -> str | None:
+        """The reset time as EVIDENCE (Brief D 7f.3): three honest answers.
+
+        * a timestamp string -- Postgres reset this database's counters then;
+        * `STATS_NEVER_RESET` -- the read worked and Postgres said NULL, i.e.
+          the counters have never been reset;
+        * `None` -- the read failed or returned no row: NOT read, which says
+          nothing about whether a reset happened.
+
+        `get_stats_reset()` above folds the last two into "" and keeps doing
+        so for its other callers; this is the one the stored column uses.
+        """
+        from resource_explorer.registry import STATS_NEVER_RESET
+
+        try:
+            rows = self.execute_query(
+                "SELECT stats_reset FROM pg_stat_database WHERE datname = current_database()"
+            )
+        except Exception:
+            return None
+        if not rows:
+            return None
+        value = rows[0].get("stats_reset")
+        return str(value) if value else STATS_NEVER_RESET
+
     def get_index_stats(self) -> list[dict]:
         """Per-index usage from `pg_stat_user_indexes`, joined to `pg_index`
         for uniqueness/primary-key — design §5.1's "index usage and
@@ -1720,6 +1745,9 @@ class PostgreSQLConnection(DatabaseConnection):
             "table_activity": self.get_table_activity(),
             "index_stats": self.get_index_stats(),
             "stats_reset": self.get_stats_reset(),
+            #: Brief D 7f.3: timestamp / "never" / None (not read). Kept beside,
+            #: not instead of, `stats_reset`, whose "" other readers rely on.
+            "stats_reset_evidence": self.get_stats_reset_evidence(),
         }
         return stats
 
@@ -1734,18 +1762,30 @@ class PostgreSQLConnection(DatabaseConnection):
         return result[0] if result else {"size_bytes": 0, "size_pretty": "0 bytes"}
 
     def _get_table_statistics(self) -> list[dict]:
-        """Get statistics for all tables."""
+        """Sizes for EVERY user table (plain, partitioned, materialised view).
+
+        Brief D 7f.2: this used to end in `LIMIT 100`, so a database with 219
+        tables sized 100 of them and left 119 NULL in every snapshot. It is
+        still ordered largest first (callers take the top few), but never
+        truncated. `total_bytes` is `pg_total_relation_size` (table + indexes
+        + TOAST); `relation_bytes` is `pg_relation_size` (the table's own heap
+        alone), so the difference is the index/TOAST share. A size Postgres
+        will not give is NULL, never 0.
+        """
         query = """
-            SELECT 
-                schemaname,
-                tablename,
-                pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename)) as total_bytes,
-                pg_size_pretty(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename))) as total_size
-            FROM pg_tables
-            WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-              AND has_schema_privilege(schemaname, 'USAGE')
-            ORDER BY total_bytes DESC
-            LIMIT 100
+            SELECT
+                n.nspname AS schemaname,
+                c.relname AS tablename,
+                pg_total_relation_size(c.oid) AS total_bytes,
+                pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size,
+                pg_relation_size(c.oid) AS relation_bytes
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r', 'p', 'm')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND left(n.nspname, 8) <> 'pg_toast'
+              AND has_schema_privilege(n.oid, 'USAGE')
+            ORDER BY total_bytes DESC NULLS LAST
         """
         return self.execute_query(query)
 

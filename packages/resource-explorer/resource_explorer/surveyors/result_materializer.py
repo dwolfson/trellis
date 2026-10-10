@@ -681,16 +681,30 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
         if not schema_name:
             continue
         schema_tables = schema.get("tables") or []
+        # Brief D 7f.2: the schema's size is the sum of its tables' sizes, but
+        # only when EVERY table in it was sized. One unread table makes any
+        # sum a confident wrong total, so the whole schema stays NULL then
+        # (the table rows beside it still carry what was read).
+        # A plain view owns no storage, so it is neither summed nor counted
+        # against the total.
+        table_sizes = [
+            _blob_int(t.get("size_bytes")) for t in schema_tables
+            if str(t.get("type") or "").upper().replace("_", " ") != "VIEW"
+        ]
+        schema_size = (
+            sum(table_sizes)
+            if table_sizes and all(s is not None for s in table_sizes) else None
+        )
         schemas.append({
             "schema_name": schema_name,
             "description": schema.get("description") or "",
             "table_count": len(schema_tables),
             "column_count": sum(len(t.get("columns") or []) for t in schema_tables),
             # The local surveyor does not separate views from tables at the
-            # schema level, and does not total schema size. NULL, not 0.
+            # schema level. NULL, not 0.
             "view_count": None,
             "mat_view_count": None,
-            "total_table_size_bytes": None,
+            "total_table_size_bytes": schema_size,
             "state": STATE_MEASURED,
         })
 
@@ -968,14 +982,37 @@ _DATABASE_BLOB_UNMEASURED = {
 }
 
 
+def _section_already_measured(registry, table: str, slug: str, surveyed_at: str,
+                              source: str, section: str) -> bool:
+    """Did an earlier write under this exact key already record `section` as a
+    real attempt (measured or empty), or leave rows in `table`?"""
+    try:
+        if registry.query_detail_rows(table, slug, surveyed_at, source):
+            return True
+        cov = registry.get_section_coverage("database", slug, surveyed_at, source)
+    except Exception:
+        return False
+    entry = cov.get(section)
+    return bool(entry) and entry.get("state") != STATE_NOT_MEASURED
+
+
 def backfill_database_survey(
     registry,
     slug: str,
     surveyed_at: str,
     survey_data: dict,
     source: str = SOURCE_LOCAL,
+    merge: bool = False,
 ) -> dict[str, int]:
-    """Materialise one stored database survey blob into the detail tables."""
+    """Materialise one stored database survey blob into the detail tables.
+
+    `merge=True` (Brief D 7f.1): this key already has a snapshot, because the
+    steps of one scan share a `surveyed_at`. `write_detail_rows` REPLACES per
+    key, so a later step that collected nothing for a section (activity,
+    profiles, grants, settings) must not delete what an earlier step wrote nor
+    overwrite its coverage with a "not measured" marker. The sections the blob
+    carries in full (schemas, tables, columns, views) are rewritten as before.
+    """
     rows = database_rows_from_survey_data(survey_data)
     sections = {
         "database_schemas": SECTION_SCHEMAS,
@@ -991,6 +1028,9 @@ def backfill_database_survey(
     }
     written: dict[str, int] = {}
     for table, table_rows in rows.items():
+        if merge and not table_rows and _section_already_measured(
+                registry, table, slug, surveyed_at, source, sections[table]):
+            continue
         written[table] = registry.write_detail_rows(
             table,
             slug,
@@ -1000,6 +1040,9 @@ def backfill_database_survey(
             coverage_section=sections[table],
         )
     for table, (section, detail) in _DATABASE_BLOB_UNMEASURED.items():
+        if merge and table not in rows and _section_already_measured(
+                registry, table, slug, surveyed_at, source, section):
+            continue
         if table in rows:
             # Actually measured this run (currently only possible for
             # database_grants, when privilege_audit ran) — do not overwrite

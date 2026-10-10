@@ -44,11 +44,14 @@ from resource_explorer.surveyors.repo_survey_definition_adapter import (
 log = logging.getLogger(__name__)
 
 
-def _run_postgres_schema_and_stats(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
+def _run_postgres_schema_and_stats(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    scan_surveyed_at: str | None = None, **_,
+) -> dict:
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
     surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
-    result = surveyor.survey()
+    result = surveyor.survey(surveyed_at=scan_surveyed_at or None)
     return {
         "schema_info": result.get("schema_info", {}),
         "statistics": result.get("statistics", {}),
@@ -60,7 +63,10 @@ def _run_postgres_schema_and_stats(db_entity, registry, db_user: str = "", db_pw
     }
 
 
-def _run_postgres_operations(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
+def _run_postgres_operations(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    scan_surveyed_at: str | None = None, **_,
+) -> dict:
     """postgres_operations (Phase 1 slice 8, design §5.5/§5.7): privilege_audit,
     db_activity_signals, db_resilience, db_external_dependencies. Runs
     DatabaseSurveyor.survey(steps=["operations"]) — "schema" runs alongside
@@ -71,14 +77,17 @@ def _run_postgres_operations(db_entity, registry, db_user: str = "", db_pwd: str
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
     surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
-    result = surveyor.survey(steps=["operations"])
+    result = surveyor.survey(steps=["operations"], surveyed_at=scan_surveyed_at or None)
     return {
         "schema_info": result.get("schema_info", {}),
         "operations": result.get("operations", {}),
     }
 
 
-def _run_credential_capability(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
+def _run_credential_capability(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    scan_surveyed_at: str | None = None, **_,
+) -> dict:
     """credential_capability (design REPLY-DATABASE-CREDENTIAL-CAPABILITY-
     VISIBILITY.md §3/§4, replying to ASK-...-#251, "Piece 1"): read-only
     catalog/privilege introspection of what THIS connection can see and do.
@@ -89,7 +98,8 @@ def _run_credential_capability(db_entity, registry, db_user: str = "", db_pwd: s
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
     surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
-    result = surveyor.survey(steps=["credential_capability"])
+    result = surveyor.survey(
+        steps=["credential_capability"], surveyed_at=scan_surveyed_at or None)
     return {
         "schema_info": result.get("schema_info", {}),
         "credential_capability": result.get("credential_capability", {}),
@@ -120,7 +130,8 @@ def _run_db_derived(db_entity, registry, **_) -> dict:
 
 def _run_postgres_column_profile(
     db_entity, registry, db_user: str = "", db_pwd: str = "",
-    sampling: dict | None = None, read_egeria_catalog: bool = True, **_,
+    sampling: dict | None = None, read_egeria_catalog: bool = True,
+    scan_surveyed_at: str | None = None, **_,
 ) -> dict:
     """postgres_column_profile (Phase 1 slice 10, design §5.4/§5.7/§5.8):
     bounded value sampling, `data_class_match`, `reference_data_match`.
@@ -181,6 +192,7 @@ def _run_postgres_column_profile(
     surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
     result = surveyor.survey(
         steps=["column_profile"], sampling_overrides=sampling, reference_catalog=catalog,
+        surveyed_at=scan_surveyed_at or None,
     )
     return {
         "schema_info": result.get("schema_info", {}),
@@ -194,7 +206,7 @@ def _run_postgres_column_profile(
 
 def _run_postgres_nested_columns(
     db_entity, registry, db_user: str = "", db_pwd: str = "",
-    sampling: dict | None = None, **_,
+    sampling: dict | None = None, scan_surveyed_at: str | None = None, **_,
 ) -> dict:
     """postgres_nested_columns (Phase 1 slice 11, design §5.4/§5.7): bounded
     JSON/JSONB/XML value sampling and nested-schema inference.
@@ -217,18 +229,24 @@ def _run_postgres_nested_columns(
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
     surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
-    result = surveyor.survey(steps=["nested_columns"], sampling_overrides=sampling)
+    result = surveyor.survey(
+        steps=["nested_columns"], sampling_overrides=sampling,
+        surveyed_at=scan_surveyed_at or None,
+    )
     return {
         "schema_info": result.get("schema_info", {}),
         "nested_columns": result.get("nested_columns", {}),
     }
 
 
-def _run_postgres_sql_analysis(db_entity, registry, db_user: str = "", db_pwd: str = "", **_) -> dict:
+def _run_postgres_sql_analysis(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    scan_surveyed_at: str | None = None, **_,
+) -> dict:
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
     surveyor = DatabaseSurveyor(db_entity, {"user": db_user, "password": db_pwd}, registry)
-    result = surveyor.survey()
+    result = surveyor.survey(surveyed_at=scan_surveyed_at or None)
     return {
         "schema_info": result.get("schema_info", {}),
         "statistics": result.get("statistics", {}),

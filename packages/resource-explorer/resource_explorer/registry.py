@@ -1179,6 +1179,14 @@ def _decode_detail_row(row: dict) -> dict:
     return row
 
 
+#: `database_table_activity.stats_reset` words (Brief D 7f.3). The column is a
+#: TEXT with three honest states and no room for a fourth column: a timestamp
+#: is "Postgres reset the counters then"; NULL is "this survey did not read
+#: it" (never "never reset"); and this word is "Postgres said NULL: the
+#: counters have never been reset". Both words are truthy-or-None on purpose:
+#: Change Rates compares them, and `never -> timestamp` IS a reset.
+STATS_NEVER_RESET = "never"
+
 #: A `database_surveys.source` that records a publish, never a measurement.
 #: Rows carrying it were written by publish steps that copied (or, in the
 #: false-zero bug, invented) numbers; the string is never evidence.
@@ -10633,15 +10641,45 @@ class ProjectRegistry:
         """
         slug = self._normalize_slug(slug)
         surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        merged = False
         with self._conn() as conn:
+            # One scan, one snapshot (Brief D 7f.1): the steps of a scan share
+            # a `surveyed_at`, so a second write under the same
+            # (slug, surveyed_at, source) MERGES into the row the scan already
+            # has instead of adding a near-identical one. The caller's blob is
+            # already cumulative (each step folds the prior row's sections in),
+            # so the new blob replaces the old. The row is replaced rather than
+            # UPDATEd so its id moves -- the freshness signature below sees an
+            # in-place merge from any process, which `(max(surveyed_at),
+            # count)` alone could not -- and the publish marks the old row
+            # already carried (published_at, report guid, invalid marks) are
+            # carried forward, never dropped.
+            prior = conn.execute(
+                """SELECT egeria_report_guid, published_at, invalid_at, invalid_reason
+                   FROM database_surveys
+                   WHERE database_slug = ? AND surveyed_at = ? AND source = ?""",
+                (slug, surveyed_at, source),
+            ).fetchall()
+            carried = dict(prior[0]) if prior else {}
+            if prior:
+                merged = True
+                conn.execute(
+                    "DELETE FROM database_surveys "
+                    "WHERE database_slug = ? AND surveyed_at = ? AND source = ?",
+                    (slug, surveyed_at, source),
+                )
             conn.execute(
                 """INSERT INTO database_surveys
                    (database_slug, surveyed_at, egeria_report_guid, schema_count,
-                    table_count, column_count, survey_data, source, surveyed_as)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (slug, surveyed_at, egeria_report_guid, schema_count,
-                 table_count, column_count, json.dumps(survey_data), source,
-                 surveyed_as or ""),
+                    table_count, column_count, survey_data, source, surveyed_as,
+                    published_at, invalid_at, invalid_reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (slug, surveyed_at,
+                 egeria_report_guid or carried.get("egeria_report_guid") or "",
+                 schema_count, table_count, column_count,
+                 json.dumps(survey_data), source, surveyed_as or "",
+                 carried.get("published_at"), carried.get("invalid_at"),
+                 carried.get("invalid_reason") or ""),
             )
             # Keep the databases row in sync so API responses reflect current counts
             conn.execute(
@@ -10651,6 +10689,10 @@ class ProjectRegistry:
                    WHERE slug=?""",
                 (schema_count, table_count, column_count, surveyed_at, slug),
             )
+        if merged:
+            # The signature moves for other processes (the row id changes);
+            # this instance simply drops its own copy too.
+            self._database_surveys_cache.pop(slug, None)
         # No manual cache pop needed here (2026-09-29 hardening) — see
         # `remove_database`'s comment and `get_database_surveys`'s
         # docstring: the freshness-keyed cache detects this insert on its
@@ -10672,7 +10714,8 @@ class ProjectRegistry:
             from resource_explorer.surveyors.result_materializer import (
                 backfill_database_survey,
             )
-            backfill_database_survey(self, slug, surveyed_at, survey_data, source=source)
+            backfill_database_survey(self, slug, surveyed_at, survey_data, source=source,
+                                     merge=merged)
         except Exception as exc:
             log.warning(
                 "Structured detail rows not written for database %s @ %s (%s): %s. "
@@ -10706,11 +10749,13 @@ class ProjectRegistry:
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT max(surveyed_at), count(*) FROM database_surveys "
+                "SELECT max(surveyed_at), count(*), max(id) FROM database_surveys "
                 "WHERE database_slug = ? AND invalid_at IS NULL",
                 (slug,),
             ).fetchone()
-        return (row[0], row[1]) if row else (None, 0)
+        # `max(id)` (Brief D): a scan's later steps merge into its row by
+        # replacing it, which keeps `(max(surveyed_at), count)` identical.
+        return (row[0], row[1], row[2]) if row else (None, 0, None)
 
     def get_database_surveys(self, slug: str, include_invalid: bool = False,
                              with_survey_data: bool = True) -> list[dict]:

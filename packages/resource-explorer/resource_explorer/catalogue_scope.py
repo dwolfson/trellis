@@ -41,6 +41,8 @@ import re
 from datetime import datetime
 from typing import Any
 
+from resource_explorer.registry import STATS_NEVER_RESET
+
 CATALOGUE = "catalogue"
 LEAVE_OUT = "leave_out"
 CHOICES = (CATALOGUE, LEAVE_OUT)
@@ -768,9 +770,17 @@ def activity_for(c: dict | None, *, threshold: int | None = None) -> dict:
     d0, d1 = _parse_day(reset), _parse_day(at)
     days = (d1 - d0).days if d0 and d1 else None
     base.update(writes=writes, reset=reset, window_days=days)
+    # Brief D 7f.3: "never" is Postgres saying the counters were never reset --
+    # a different fact from a reset date that was not read. Its window start is
+    # unknown (the counters run from server start), so it never proves dormancy.
+    never = reset == STATS_NEVER_RESET
     if writes > 0:
-        since = f"since counters reset {md(reset)}" if md(reset) else "(reset date not recorded)"
+        since = (f"since counters reset {md(reset)}" if md(reset)
+                 else "(counters never reset)" if never else "(reset date not recorded)")
         return {**base, "state": "active", "text": f"active · {writes:,} writes {since}"}
+    if never:
+        return {**base, "reason": "counters never reset",
+                "text": "can't tell · counters never reset · window start unknown"}
     if days is None or days < 0:
         return {**base, "reason": "reset date not recorded",
                 "text": "can't tell · reset date not recorded"}
