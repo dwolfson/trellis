@@ -262,7 +262,7 @@ class TestNonFatalHandlersStillRecord:
 
         s = EgeriaDatabaseSurveyor.__new__(EgeriaDatabaseSurveyor)
         with patch.object(EgeriaDatabaseSurveyor, "connect"), \
-             patch.object(EgeriaDatabaseSurveyor, "_find_element_guid", return_value="db-guid"), \
+             patch.object(EgeriaDatabaseSurveyor, "_find_by_qualified_name", return_value="db-guid"), \
              patch.object(EgeriaDatabaseSurveyor, "_initiate_survey", side_effect=_survey):
             out = s._catalog_and_survey(db, "u", "p", registry=registry,
                                         survey_after_catalog=True)
@@ -288,7 +288,7 @@ class TestNonFatalHandlersStillRecord:
                             database_name="mydb", db_type="postgres", egeria_asset_guid="real-guid")
         s = EgeriaDatabaseSurveyor.__new__(EgeriaDatabaseSurveyor)
         with patch.object(EgeriaDatabaseSurveyor, "connect"), \
-             patch.object(EgeriaDatabaseSurveyor, "_find_element_guid", return_value="db-guid"), \
+             patch.object(EgeriaDatabaseSurveyor, "_find_by_qualified_name", return_value="db-guid"), \
              patch.object(EgeriaDatabaseSurveyor, "_initiate_survey",
                           side_effect=Exception("Governance engine is not running")):
             s._catalog_and_survey(db, "u", "p", registry=registry, survey_after_catalog=True)

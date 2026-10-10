@@ -332,7 +332,10 @@ def test_a_repeat_publish_does_not_mistake_the_stored_database_guid_for_the_serv
     s = EgeriaDatabaseSurveyor(platform_url="http://x")
     s._automated_curation = MagicMock()
     s.connect = lambda: None
-    s._find_element_guid = lambda name: "db-guid-0000" if name == "shop" else "server-guid-0000"
+    # Adoption is by full qualifiedName (Brief L, 7f.7).
+    s._find_by_qualified_name = lambda qn: {
+        "PostgreSQL Relational Database::host.docker.internal:5442::shop": "db-guid-0000",
+        "PostgreSQL Server::host.docker.internal:5442": "server-guid-0000"}.get(qn, "")
     s._save_database_secret = lambda *a, **k: ("", "")
     s._warn_if_database_has_no_connection = lambda *a, **k: None
     created = []

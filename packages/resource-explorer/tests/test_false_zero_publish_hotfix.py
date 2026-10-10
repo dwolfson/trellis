@@ -185,7 +185,7 @@ def _publisher_patches():
     from resource_explorer.surveyors.database import egeria_database_surveyor as m
     cls = m.EgeriaDatabaseSurveyor
     return (patch.object(cls, "connect"),
-            patch.object(cls, "_find_element_guid", return_value="db-guid"),
+            patch.object(cls, "_find_by_qualified_name", return_value="db-guid"),
             patch.object(cls, "_create_annotations"),
             patch.object(cls, "_publish_column_lineage"))
 
