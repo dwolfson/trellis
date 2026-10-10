@@ -621,7 +621,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         view_count            INTEGER DEFAULT NULL,
         mat_view_count        INTEGER DEFAULT NULL,
         column_count          INTEGER DEFAULT NULL,
-        total_table_size_bytes INTEGER DEFAULT NULL,
+        total_table_size_bytes BIGINT DEFAULT NULL,
         state                 TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
@@ -640,8 +640,8 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         table_owner          TEXT DEFAULT '',
         description          TEXT DEFAULT '',
         column_count         INTEGER DEFAULT NULL,
-        row_count            INTEGER DEFAULT NULL,
-        size_bytes           INTEGER DEFAULT NULL,
+        row_count            BIGINT DEFAULT NULL,
+        size_bytes           BIGINT DEFAULT NULL,
         -- Brief D: total = table_bytes + index_bytes (+ TOAST). NULL = not read.
         table_bytes          BIGINT DEFAULT NULL,
         index_bytes          BIGINT DEFAULT NULL,
@@ -740,7 +740,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         -- only thing that makes it interpretable. NULL means the total was
         -- not established (the statistics collector had no row for the
         -- table), which is distinct from 0.
-        sample_total_rows         INTEGER DEFAULT NULL,
+        sample_total_rows         BIGINT DEFAULT NULL,
         state                     TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
@@ -754,19 +754,19 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         source            TEXT NOT NULL DEFAULT 'local',
         schema_name       TEXT NOT NULL,
         table_name        TEXT NOT NULL,
-        rows_inserted     INTEGER DEFAULT NULL,
-        rows_updated      INTEGER DEFAULT NULL,
-        rows_deleted      INTEGER DEFAULT NULL,
-        hot_updates       INTEGER DEFAULT NULL,
-        live_tuples       INTEGER DEFAULT NULL,
-        dead_tuples       INTEGER DEFAULT NULL,
-        seq_scan          INTEGER DEFAULT NULL,
-        idx_scan          INTEGER DEFAULT NULL,
+        rows_inserted     BIGINT DEFAULT NULL,
+        rows_updated      BIGINT DEFAULT NULL,
+        rows_deleted      BIGINT DEFAULT NULL,
+        hot_updates       BIGINT DEFAULT NULL,
+        live_tuples       BIGINT DEFAULT NULL,
+        dead_tuples       BIGINT DEFAULT NULL,
+        seq_scan          BIGINT DEFAULT NULL,
+        idx_scan          BIGINT DEFAULT NULL,
         last_vacuum       TEXT DEFAULT '',
         last_autovacuum   TEXT DEFAULT '',
         last_analyze      TEXT DEFAULT '',
         last_autoanalyze  TEXT DEFAULT '',
-        pending_changes   INTEGER DEFAULT NULL,
+        pending_changes   BIGINT DEFAULT NULL,
         -- When Postgres last reset the counters above. Designer review,
         -- 2026-09-20: `pg_stat_user_tables` counters are cumulative since
         -- the last stats reset, and a change *rate* is the difference
@@ -849,7 +849,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         entry_path          TEXT NOT NULL,
         entry_name          TEXT DEFAULT '',
         entry_type          TEXT NOT NULL DEFAULT 'file',
-        size_bytes          INTEGER DEFAULT NULL,
+        size_bytes          BIGINT DEFAULT NULL,
         file_extension      TEXT DEFAULT '',
         file_type           TEXT DEFAULT '',
         asset_type          TEXT DEFAULT '',
@@ -862,7 +862,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         created_at          TEXT DEFAULT '',
         modified_at         TEXT DEFAULT '',
         accessed_at         TEXT DEFAULT '',
-        record_count        INTEGER DEFAULT NULL,
+        record_count        BIGINT DEFAULT NULL,
         state               TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(filesystem_slug, surveyed_at, source, entry_path),
         FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
@@ -876,11 +876,11 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         source          TEXT NOT NULL DEFAULT 'local',
         file_path       TEXT NOT NULL,
         format          TEXT DEFAULT '',
-        row_count       INTEGER DEFAULT NULL,
+        row_count       BIGINT DEFAULT NULL,
         column_count    INTEGER DEFAULT NULL,
         schema_json     TEXT DEFAULT NULL,
         null_summary    TEXT DEFAULT '',
-        file_size_bytes INTEGER DEFAULT NULL,
+        file_size_bytes BIGINT DEFAULT NULL,
         -- Same pair as database_column_profiles, for the same reason. A file
         -- profile is normally computed by RE at survey time
         -- (STATS_SOURCE_RESOURCE_EXPLORER), so stats_computed_at is usually
@@ -1016,6 +1016,32 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_fs_coverage_slug ON filesystem_survey_coverage(filesystem_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_resource_reachability_slug "
     "ON resource_reachability(filesystem_slug, probed_at)",
+)
+
+#: Byte sizes and row/tuple counters that were created as 32-bit INTEGER and
+#: are widened to BIGINT on Postgres at registry start (2026-10-10, owner
+#: approved). A table or schema over ~2 GiB, or over 2.1bn rows/tuples, made
+#: the detail executemany raise "integer out of range". SQLite INTEGER is
+#: already 64-bit, so this is Postgres-only. See `_widen_int4_size_columns`.
+_PG_INT4_TO_BIGINT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("database_schemas", "total_table_size_bytes"),
+    ("database_tables", "row_count"),
+    ("database_tables", "size_bytes"),
+    ("database_column_profiles", "sample_total_rows"),
+    ("database_table_activity", "rows_inserted"),
+    ("database_table_activity", "rows_updated"),
+    ("database_table_activity", "rows_deleted"),
+    ("database_table_activity", "hot_updates"),
+    ("database_table_activity", "live_tuples"),
+    ("database_table_activity", "dead_tuples"),
+    ("database_table_activity", "seq_scan"),
+    ("database_table_activity", "idx_scan"),
+    ("database_table_activity", "pending_changes"),
+    ("filesystem_entries", "size_bytes"),
+    ("filesystem_entries", "record_count"),
+    ("filesystem_data_files", "row_count"),
+    ("filesystem_data_files", "file_size_bytes"),
+    ("filesystem_surveys", "total_size_bytes"),
 )
 
 #: Columns added after the tables above first shipped. Empty at introduction;
@@ -1489,6 +1515,27 @@ class ProjectRegistry:
         for col in ("last_run_at", "last_run_candidates"):
             if col not in existing:
                 conn.execute(f"ALTER TABLE db_servers ADD COLUMN {col} TEXT DEFAULT NULL")
+
+    def _widen_int4_size_columns(self, conn) -> None:
+        """Postgres only: ALTER each `_PG_INT4_TO_BIGINT_COLUMNS` column from
+        INTEGER to BIGINT. Idempotent (a column already bigint is skipped) and
+        runs inside the caller's init transaction, so one failure rolls back
+        the whole init. Each ALTER takes ACCESS EXCLUSIVE on its table and
+        rewrites it (int4 -> int8 changes the on-disk width)."""
+        if not conn.is_postgres:
+            return
+        for _table, _col in _PG_INT4_TO_BIGINT_COLUMNS:
+            row = conn.execute(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = ? AND column_name = ? "
+                "AND table_schema = current_schema()",
+                (_table, _col),
+            ).fetchone()
+            if row is not None and row["data_type"] == "integer":
+                log.info("Widening %s.%s INTEGER -> BIGINT", _table, _col)
+                conn.execute(
+                    f"ALTER TABLE {_table} ALTER COLUMN {_col} TYPE BIGINT"
+                )
 
     def _get_table_columns(self, conn, table_name: str) -> set[str]:
         """Columns currently on table_name, read through the SAME open
@@ -2802,7 +2849,7 @@ class ProjectRegistry:
                     egeria_report_guid TEXT DEFAULT '',
                     file_count INTEGER DEFAULT 0,
                     data_file_count INTEGER DEFAULT 0,
-                    total_size_bytes INTEGER DEFAULT 0,
+                    total_size_bytes BIGINT DEFAULT 0,
                     survey_data TEXT DEFAULT '{}',
                     source TEXT DEFAULT 'local',
                     FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
@@ -2850,6 +2897,7 @@ class ProjectRegistry:
                 for _col, _defn in _cols:
                     if _col not in _existing:
                         conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_defn}")
+            self._widen_int4_size_columns(conn)
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS activity_log (
