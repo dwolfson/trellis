@@ -70,25 +70,35 @@ def test_the_seam_logs_one_info_line_naming_the_source_and_never_a_value(cfg, ca
     assert (first.client_user, first.password) == (NPA, NPA_PW)
 
 
-def test_the_web_app_start_logs_the_source_line(cfg):
+def test_the_web_app_start_logs_the_source_line(cfg, monkeypatch):
+    """The web app's start logs the source line, exactly once. Order-independent: the once-per-
+    process guard is reset here, and a process-wide `logging.disable(INFO)` left by another test
+    module (tests/test_prefect_survey_flow.py does it at import) is lifted for this test only."""
     from resource_explorer.web.app import app
 
+    monkeypatch.setattr(ec, "_source_logged", False)          # explicit, whatever ran before
     # A handler on the module's own logger: the app's start reconfigures logging (Prefect), which
     # takes records away from pytest's root capture.
     seen: list[str] = []
     handler = logging.Handler()
     handler.emit = lambda record: seen.append(record.getMessage())
     logger = logging.getLogger("resource_explorer.egeria_clients")
+    saved = (logger.level, logger.disabled, logging.root.manager.disable)
     logger.addHandler(handler)
-    level = logger.level
     logger.setLevel(logging.INFO)
+    logger.disabled = False
+    logging.disable(logging.NOTSET)
     try:
         with TestClient(app):
             pass
     finally:
         logger.removeHandler(handler)
-        logger.setLevel(level)
-    assert any("daemon identity: 'resourceexplorernpa' from .env" in m for m in seen)
+        logger.setLevel(saved[0])
+        logger.disabled = saved[1]
+        logging.disable(saved[2])
+    lines = [m for m in seen if m.startswith("daemon identity:")]
+    assert lines == ["daemon identity: 'resourceexplorernpa' from .env (EGERIA_USER_ID) — development "
+                     "bootstrap; not for a shipped product"], "logged once, at the web app's start"
 
 
 def test_whoami_names_the_daemon_from_the_seam(cfg):
