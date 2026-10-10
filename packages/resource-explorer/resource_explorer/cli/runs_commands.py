@@ -257,7 +257,7 @@ def curate_materialize(
 
     from resource_explorer.architecture_publish import PublishAlreadyRunning, enqueue_publish, publish_plan
     from resource_explorer.run_queue import requested_by
-    from resource_explorer.workflows.curate import CurationDenied, owner_of, require_curation_rights
+    from resource_explorer.workflows.curate import CurationDenied, publish_item_access
 
     registry = _registry()
     proj = registry.get(project)
@@ -273,14 +273,17 @@ def curate_materialize(
         console.print(f"[yellow]Nothing queued — {target}: {why}[/yellow]")
         raise typer.Exit(code=1)
 
-    def authorize(scope: str) -> None:
-        # The same check the route makes, from the same place.
-        require_curation_rights(owner_of(registry, entity_type, project, scope))
+    def authorize(kind: str, key: str) -> None:
+        # The same check the web press makes (workflows.curate.publish_item_access): every operation the write
+        # performs, and ATTACH on a blueprint's members.
+        d = publish_item_access(registry, project, kind, key)
+        if not d.allowed:
+            raise CurationDenied(d.reason)
 
     try:
         out = enqueue_publish(registry, proj, plan, requested_by=requested_by(), authorize=authorize, only={target})
     except CurationDenied as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]not permitted · {exc}[/red]")
         raise typer.Exit(code=3)
     except PublishAlreadyRunning as exc:
         console.print(f"[yellow]{exc}[/yellow]")
@@ -376,6 +379,12 @@ def runs_enqueue(
     if kind not in ProjectRegistry.RUN_KINDS:
         console.print(f"[red]Unknown kind '{kind}' — expected one of "
                       f"{list(ProjectRegistry.RUN_KINDS)}[/red]")
+        raise typer.Exit(code=1)
+    if kind in run_queue.PERSON_ACTION_KINDS:
+        # Brief Z round 3: a verbatim target and a free --requested-by would let a shell forge what the run
+        # trusts (a Portal role override in the target, another person's grants via the requester).
+        console.print("[red]use Publish (web) or `curate materialize` — person actions need a signed-in "
+                      "requester[/red]")
         raise typer.Exit(code=1)
     try:
         parsed = json.loads(target)

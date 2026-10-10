@@ -268,6 +268,51 @@ RE stamps **no zone by default** (owner ruling 2026-10-08: draft is a content st
 # the cataloguer out of the element): first use on a throwaway database, with TWO commits.
 ```
 
+### Who may curate and publish (zones decide)
+
+**Decision (project owner, 2026-10-10):** "rely on Egeria's security model and emulate it - so if zones are used
+they can control access - if zones aren't being used then it is open". One check
+(`workflows/curate.curation_access`) answers every verdict route (Next branch and blueprint, Classic component and
+blueprint, dependency confirmations, node reclassify), every Publish item, the CLI's `curate materialize` and A2A:
+
+1. **Not signed in:** refused.
+2. **Portal `curator` or `admin` role claim:** allowed. An interim override until Egeria role appointments are
+   read; it skips the zone check.
+3. **Zones not in use:** allowed for any signed-in user. "Not in use" means the element, when it is in Egeria,
+   carries no `ZoneMembership`, and RE configures no draft, publish or private zone for it
+   (`EXPLORER_DRAFT_ZONE`, `EXPLORER_PUBLISH_ZONES` / `egeria.default_catalog_zones`, a private investigation).
+   With nothing configured and the element not yet in Egeria, RE reads nothing from Egeria to decide.
+4. **Zones in use:** RE asks what Egeria's own access connector would answer
+   (`OpenMetadataAccessSecurityConnector.validateZoneAccess`; mirrored in `zone_access.py`, with file and line
+   cited) for **every operation the action performs**: a verdict or a scope decision needs `UPDATE_PROPERTIES`;
+   a Publish item needs `CREATE` (new) or `UPDATE_PROPERTIES` (existing), `CLASSIFY` (Ownership and requestedBy)
+   and `PUBLISH` (the zone change of promotion), and a blueprint also `ATTACH` on itself and on each member
+   component and child blueprint. RE reads the element's zones (or, for an element not in Egeria yet, the zones
+   RE will give it), the caller's user account first (an unknown or disabled account is refused, as Egeria
+   does), and each zone's security access control. A zone named after the caller grants; a zone with no control
+   is ignored; a secured zone grants only through its list (`allUsers`, the account-type group, the account's
+   groups or roles, `instanceOwner`, maintainer groups). Reads run as RE's daemon account (reason
+   `access_check`), which needs the same platform-operator rights the private-zone setup already needs.
+5. **Could not check** (Egeria unreachable, or a zone, control or account read failed): refused, with
+   "could not check access in Egeria (<reason>)". RE never opens by default when zones might apply.
+   This is stricter than the connector, which treats an unreadable control as an unsecured zone.
+
+A verdict's `decided_by` is attribution only: who made the call. It no longer decides who may change the element
+next, so two people's decisions on one plan never lock each other out.
+
+**Publish checks each item, twice.** At the press, an item the presser may not publish is skipped and reported as
+its own result row, "not permitted · <reason>"; the rest of the press is written. The queued run checks again, as
+the requester, immediately before each write and against the element it actually resolved (a component adopted
+from Egeria's content pack, an element found already in Egeria, members adopted mid-write), so a zone secured
+after the press, or an element the press could not see, is refused rather than written. A Portal curator or
+admin role seen at the press is carried to the run.
+
+**Database catalog and publish.** The Catalog commit, every catalog-scope decision (depth, include or leave
+out, confirm, override, clear, redeclare), the database publish and the repository publish use the same check
+on the resource's own element. The schema and table elements a commit writes are not yet checked one by one. Only a press where nothing is permitted is refused
+as a whole (HTTP 403 with the reason). Verdicts are checked before anything is recorded, so a refused branch
+batch records nothing. The reason appears on refused rows only.
+
 ### Observability (optional)
 
 ```bash

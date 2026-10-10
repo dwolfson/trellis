@@ -843,6 +843,9 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     steps are offloaded to a thread pool via asyncio.to_thread().
     """
     project, registry = _get_project_or_404(slug)
+    # Brief Z round 2: the repository's own element, every operation a publish performs.
+    from resource_explorer.web.routes.curate import authorize_resource_write
+    await authorize_resource_write(registry, "repo", slug, publish=True)
 
     # ── Egeria Project context gate (Part 5) ──────────────────────────────────
     # The first real Egeria write for a resource is exactly this route — every

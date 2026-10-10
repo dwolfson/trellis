@@ -54,3 +54,14 @@ def test_the_missing_members_shortcut_accepts_rather_than_claiming_to_publish():
     h = _fn("async function _curatePublishMissingComponents(")
     assert "Published" not in h and "could not be published" not in h
     assert "materialization" not in h
+
+
+def test_brief_z_classic_says_not_permitted_with_the_reason():
+    """Brief Z (2026-10-10): a refused verdict or Publish item reads "not permitted · <reason>"; a refused Publish
+    row has its own word rather than falling back to the raw status."""
+    publish = _fn("function _classicArchPublishHtml(")
+    assert "not_permitted: ['text-amber-400', '⊘ not permitted']" in publish
+    assert "replace(/^not permitted · /, '')" in publish, "the reason is said once after the word"
+    assert "'⊘ not permitted'" in _fn("async function _classicArchPublishPress(")
+    for head in ("async function _archSubmitVerdict(", "async function _archSubmitBlueprintVerdict("):
+        assert "resp.status === 403 ? `not permitted · ${detail}`" in _fn(head), head

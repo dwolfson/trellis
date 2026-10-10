@@ -31,7 +31,10 @@ LIVE_ELEMENT = {
     "elementGUID": DB_GUID,
     "classifications": [
         {"classificationName": "ZoneMembership",
-         "classificationProperties": {"propertiesAsStrings": {"zoneMembership": "egeria-runtime"}}},
+         # The value is a stand-in (the note recorded none); its RENDERING is Egeria's: an array property's
+         # propertiesAsStrings is a Java Map toString, "{0=a, 1=b}" (ArrayTypePropertyValue.valueAsString :78,
+         # PropertyValue.mapValuesAsString :108). Brief Z round 2: any other rendering is unreadable, not "none".
+         "classificationProperties": {"propertiesAsStrings": {"zoneMembership": "{0=egeria-runtime}"}}},
     ],
     "elementProperties": {
         "propertiesAsStrings": {
@@ -117,6 +120,11 @@ def raw_engine_action(guid: str, status: str, *, message: str = "", completion_m
     return el
 
 
+def zone_rendering(zones: list[str]) -> str:
+    """How Egeria renders an array in propertiesAsStrings: a Java Map toString, "{0=a, 1=b}"."""
+    return "{" + ", ".join(f"{i}={z}" for i, z in enumerate(zones)) + "}"
+
+
 def raw_element(guid: str, qn: str, type_name: str, *, archived: bool = False, zones: list[str] | None = None,
                 props: dict | None = None) -> dict:
     """One raw element, exactly the live shape."""
@@ -125,7 +133,7 @@ def raw_element(guid: str, qn: str, type_name: str, *, archived: bool = False, z
         cls.append({"classificationName": "Memento", "classificationProperties": {}})
     if zones:
         cls.append({"classificationName": "ZoneMembership",
-                    "classificationProperties": {"propertiesAsStrings": {"zoneMembership": ",".join(zones)}}})
+                    "classificationProperties": {"propertiesAsStrings": {"zoneMembership": zone_rendering(zones)}}})
     return {"headerVersion": 0, "status": "ACTIVE", "type": {"typeName": type_name}, "origin": {}, "versions": {},
             "elementGUID": guid, "classifications": cls,
             "elementProperties": {"propertiesAsStrings": {"qualifiedName": qn, **(props or {})}}}

@@ -2444,9 +2444,13 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    # Every scope is checked before any is recorded, so a refusal leaves nothing half-recorded (Brief Z).
+    from resource_explorer.zone_access import EgeriaAccessReader
+    reader = EgeriaAccessReader()
+    for scope in scopes:
+        _authorize_curation(registry, "repo", slug, scope, reader=reader)
     rows = []
     for scope in scopes:
-        _authorize_curation(registry, "repo", slug, scope)
         rows.append(registry.record_component_verdict(
             "repo", slug, scope, body.verdict, ONLY_THIS if scope in only else "", body.note, decided_by=author))
     return {"verdicts": rows, "run_id": None, "activity_id": None, "queued": 0}
@@ -2472,7 +2476,6 @@ def architecture_publish(slug: str, request: Request) -> dict:
     from resource_explorer.architecture_publish import PublishAlreadyRunning, enqueue_publish, publish_plan
     from resource_explorer.auth import get_current_user
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.web.routes.curate import _authorize_curation
 
     user = get_current_user(request)
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
@@ -2482,11 +2485,25 @@ def architecture_publish(slug: str, request: Request) -> dict:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    from resource_explorer.workflows.curate import CurationDenied
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    reader = EgeriaAccessReader()      # one press, each zone's control read once
+
+    def authorize(kind: str, key: str) -> None:
+        # Every operation the item's write performs (workflows.curate.publish_item_access), raised as
+        # CurationDenied so Publish skips the one item and goes on with the rest (Brief Z: per item, no
+        # whole-press 403 unless nothing is permitted).
+        from resource_explorer.web.routes.curate import _authorize_publish_item
+        _authorize_publish_item(registry, slug, kind, key, reader=reader)
+
     try:
         return enqueue_publish(registry, project, publish_plan(registry, slug), requested_by=_requested_by(),
-                               authorize=lambda scope: _authorize_curation(registry, "repo", slug, scope))
+                               authorize=authorize)
     except PublishAlreadyRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CurationDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 # ── Blueprints (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2) ─────────────────

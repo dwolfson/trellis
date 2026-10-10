@@ -979,9 +979,9 @@ class EgeriaPublisher:
 
         Plan §4: everything trellis publishes gets `Ownership` set to the
         publishing user's `UserIdentity`, and one draft zone per app until a
-        curator accepts it. Ownership is *curation by default* — the owner is
-        the resource's default curator, with no separate grant, which is what
-        `workflows/curate.may_curate` reads.
+        curator accepts it. Ownership is attribution: who may curate follows
+        Egeria's zones (`workflows/curate.curation_access`, Brief Z), and
+        Egeria's own `isUserAnOwner` reads this classification's `userIds`.
 
         Best-effort, and reported rather than raised: the survey report and its
         annotations are already real by the time this runs, so a classification

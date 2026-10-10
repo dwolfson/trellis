@@ -1812,7 +1812,7 @@ function recordBlueprintVerdict(slug, bp, verdict, pressedEl = null) {
       document.dispatchEvent(new CustomEvent(ARCHITECTURE_CHANGED, { detail: { slug } }));   // Publish re-reads its list
       await renderBlueprintList(slug);
     } catch (err) {
-      const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
+      const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? `not permitted · ${err.message}` : err.message;
       pressPhase(pressedEl, 'error', 'failed · press to retry', why);
       if (pressedEl) pressedEl.disabled = false;
       if (status) status.innerHTML = `<span class="text-accent-ink">not recorded — ${esc(why)}</span>`;
@@ -2025,7 +2025,7 @@ function recordVerdicts(slug, scopes, verdict, { count, low, exists = 0, confirm
       const fresh = $('component-tree-status');
       if (fresh) fresh.innerHTML = settled;
     } catch (err) {
-      const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? 'you may not curate this element' : err.message;
+      const why = err.status === 401 ? 'sign in to record a verdict' : err.status === 403 ? `not permitted · ${err.message}` : err.message;
       pressPhase(pressedEl, 'error', 'failed · press to retry', why);
       if (pressedEl) pressedEl.disabled = false;
       let words = `not recorded — ${esc(why)}`;

@@ -349,6 +349,8 @@ test('a partly applied group batch says how many were recorded and how many fail
   const t = norm(document.getElementById('component-tree-status'));
   assert.match(t, /1 of 2 recorded/);
   assert.match(t, /1 failed/);
+  // Brief Z: a 403 is "not permitted" followed by the server's reason, not a fixed sentence.
+  assert.match(t, /not permitted · you may not curate the second one/);
 });
 
 test('a prefetch left by a failed plan, or by a slug change, is not left to be consumed later', async () => {

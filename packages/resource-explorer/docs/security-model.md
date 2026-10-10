@@ -329,6 +329,19 @@ The one interaction with this document: the *engine host's* user, which is
 an Egeria configuration, is the user whose connection visibility §5's
 operational rule constrains.
 
+**Curation rights follow Egeria's zones (Brief Z, project owner 2026-10-10).**
+Who may record a verdict on, or Publish, an architecture element is decided
+by emulating Egeria's own zone security, not by RE's record of who decided
+it last: with no zone in use it is open to any signed-in user; with zones in
+use RE reads the element's zones, their security access controls and the
+caller's account, and applies `OpenMetadataAccessSecurityConnector
+.validateZoneAccess` for `UPDATE_PROPERTIES` (`resource_explorer/
+zone_access.py`, which cites the connector's source lines). Anything RE cannot
+read denies, with the reason. A Portal `curator` or `admin` role claim is an
+interim override until Egeria role appointments are read. The rule, the
+per-item Publish behaviour and the words on screen are in `admin-guide.md`,
+"Who may curate and publish".
+
 ---
 
 ## 9 · Open items and upstream

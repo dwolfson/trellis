@@ -17,6 +17,7 @@ into its response — the same non-fatal-but-visible shape
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from resource_explorer.registry import ProjectRegistry
 
@@ -34,87 +35,258 @@ class CurationDenied(PermissionError):
     """
 
 
-#: JWT `role` claims that grant curation beyond what one owns.
+#: JWT `role` claims that may curate anything: an interim override until Egeria appointments.
 #:
-#: The plan's model is a `GovernanceRole` with `PersonRoleAppointment`, read
-#: from Egeria. **This is the bridge, not the destination**, and the plan says
-#: so in as many words: "the Portal `role` claim is the bridge until
-#: appointments are read from Egeria". Reading it here rather than inventing a
-#: trellis-side curator table is the point — when appointments land, this
-#: constant is what gets replaced, and nothing else moves.
+#: The plan's model is a `GovernanceRole` with `PersonRoleAppointment`, read from Egeria; "the Portal
+#: `role` claim is the bridge until appointments are read from Egeria". Brief Z (2026-10-10) keeps it as
+#: rule 2, ahead of the zone check: a curator/admin is allowed whatever the zones say.
 CURATOR_ROLES = frozenset({"curator", "admin"})
 
+#: Why `AccessDecision.basis` says what it says (tests and the admin surface read it; the screen reads `reason`).
+BASIS_ANONYMOUS = "anonymous"
+BASIS_PORTAL_ROLE = "portal_role"
+BASIS_NO_ZONES = "no_zones"
+BASIS_ZONES_OPEN = "zones_not_secured"
+BASIS_ZONE_GRANTED = "zone_granted"
+BASIS_ZONE_REFUSED = "zone_not_granted"
+BASIS_UNREADABLE = "unreadable"
 
-def may_curate(owner: str) -> tuple[bool, str]:
-    """`(allowed, why_not)` for the current caller curating an element owned by `owner`.
+#: What a verdict (a decision recorded in RE) needs: an update of the element (connector :1497-1522).
+VERDICT_OPERATIONS = ("UPDATE_PROPERTIES",)
 
-    Three cases, in the order the plan states them:
 
-    1. **The owner.** "Ownership is curation by default" — the person who
-       discovered, surveyed and catalogued a resource may accept, reject,
-       promote and delete it with no separate grant. There is no global
-       curator role for one's own resources.
-    2. **A role appointee.** A `curator` or `admin` role claim curates across
-       resources it does not own.
-    3. **Everyone else** — denied.
+@dataclass(frozen=True)
+class AccessDecision:
+    """May the current caller change this element? `reason` is empty when allowed: the "who may change
+    this" words appear on refused rows only (Brief Z, status words)."""
 
-    An element with **no recorded owner** is treated as belonging to the
-    shared/legacy bucket and is curatable by any signed-in user. That is
-    deliberate and is the migration story: every verdict recorded before this
-    change has no owner, and locking all of them behind a role nobody has been
-    appointed to would make the existing corpus uncurateable overnight.
+    allowed: bool
+    reason: str = ""
+    basis: str = ""
+    zones: tuple[str, ...] = ()
 
-    Not signed in is always denied, whoever owns what.
+
+class _RegistryUnreadable(RuntimeError):
+    """RE could not read its own row for the element: a deny reason, never "not in Egeria"."""
+
+
+def element_guid_for(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str) -> str:
+    """The Egeria element a curation item writes to, from RE's own cache rows; "" when it is not in Egeria.
+
+    For a repo: `perspective::cluster` is a blueprint, "" is the repository itself, anything else a component's
+    scope. A branch scope with no component of its own has no element: its verdict is a decision only, and
+    Publish checks every component it writes on its own. For a database or file system, the scope is the
+    resource itself (its asset element).
     """
+    scope = (scope_locator or "").strip()
+    try:
+        if entity_type == "database":
+            entity = registry.get_database(slug, allow_unreadable=True)
+            return str(getattr(entity, "egeria_asset_guid", "") or "")
+        if entity_type == "filesystem":
+            entity = registry.get_filesystem(slug)
+            return str(getattr(entity, "egeria_asset_guid", "") or "")
+        if "::" in scope:
+            perspective, _, cluster = scope.partition("::")
+            row = registry.get_materialized_blueprint(entity_type, slug, perspective, cluster) or {}
+            return str(row.get("guid") or "")
+        if not scope:
+            project = registry.get(slug) if entity_type == "repo" else None
+            return str(getattr(project, "egeria_asset_guid", "") or "")
+        row = registry.get_materialized_component(entity_type, slug, scope) or {}
+        return str(row.get("guid") or "")
+    except Exception as exc:  # a registry failure is not "not in Egeria": it is unreadable
+        raise _RegistryUnreadable(f"RE could not read its own record of this element ({type(exc).__name__}: {exc})") from exc
+
+
+def configured_zones_for(registry: ProjectRegistry, entity_type: str, slug: str) -> list[str]:
+    """The zones RE itself would put this resource's elements in: the private zones when the resource is in a
+    private investigation, else the configured draft and publish zones. `[]` = RE configures no zones."""
+    from resource_explorer.egeria_identity import configured_publish_zones, draft_zones, private_zones
+
+    owner = ""
+    try:
+        owner = registry.private_owner_for_entity(entity_type, slug) or ""
+    except Exception as exc:
+        raise _RegistryUnreadable(f"RE could not read whether this resource is private ({type(exc).__name__}: {exc})") from exc
+    if isinstance(owner, str) and owner.strip():
+        return private_zones(owner.strip())
+    zones: list[str] = []
+    for z in [*draft_zones(), *configured_publish_zones()]:
+        if z and z not in zones:
+            zones.append(z)
+    return zones
+
+
+def _caller_identity():
     from resource_explorer.a2a_auth import caller
 
-    identity = caller()
-    if identity is None or identity.auth_source == "anonymous":
-        return False, (
-            "Authentication required to curate. Sign in (POST /api/auth/login) "
-            "or run `resource-explorer login`."
-        )
-    if not owner:
-        return True, ""
-    if identity.user_id == owner:
-        return True, ""
-    if (identity.role or "").lower() in CURATOR_ROLES:
-        return True, ""
-    return False, (
-        f"This element is owned by {owner!r}. Curating someone else's element "
-        f"requires a curator or admin role; you are signed in as "
-        f"{identity.user_id!r} with role {identity.role!r}."
+    return caller()
+
+
+def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str, *,
+                    operations=None, reader=None, element_guid: str | None = None) -> AccessDecision:
+    """THE curation-rights decision (Brief Z). Every verdict route, Publish, the database commit and publish,
+    the CLI and A2A call this.
+
+    The project owner, 2026-10-10: "rely on Egeria's security model and emulate it - so if zones are used
+    they can control access - if zones aren't being used then it is open".
+
+    1. Not signed in: denied.
+    2. A Portal `curator`/`admin` role: allowed (interim, until Egeria appointments).
+    3. Zones not in use: allowed for any signed-in user. "Not in use" = the element (when it is in Egeria)
+       carries no `ZoneMembership` AND RE configures no draft, publish or private zone for it. With RE
+       configuring none and the element not in Egeria yet, nothing is read from Egeria at all.
+    4. Zones in use: Egeria's own answer, emulated (`zone_access.zone_grants`, mirroring
+       `OpenMetadataAccessSecurityConnector.validateZoneAccess`) for EVERY operation in `operations`: a verdict
+       needs UPDATE_PROPERTIES (`VERDICT_OPERATIONS`); a Publish item needs what its write performs
+       (`publish_operations`). The zones evaluated are the element's own when it has any (exactly what Egeria
+       checks); otherwise the zones RE will give it (`configured_zones_for`).
+    5. Anything unreadable (Egeria unreachable, a zone, control or account read fails, RE's own row): DENIED,
+       "could not check access in Egeria (<reason>)". Never open by default when zones might apply.
+
+    `element_guid` checks a resolved element instead of the scope's cache row (Publish's run-time re-check of
+    an element the write adopted). `decided_by` on a verdict is attribution only; it is not read here.
+    `reader` is a `zone_access.EgeriaAccessReader` shared across one press so each read happens once.
+    """
+    from resource_explorer.zone_access import (
+        CREATE_OPERATION,
+        OPERATION_WORDS,
+        AccessUnreadable,
+        EgeriaAccessReader,
+        zone_grants,
     )
 
+    ops = tuple(operations or VERDICT_OPERATIONS)
+    identity = _caller_identity()
+    if identity is None or identity.auth_source == "anonymous" or not identity.user_id:
+        return AccessDecision(False, "sign in to curate (POST /api/auth/login or `resource-explorer login`)",
+                              BASIS_ANONYMOUS)
+    if (identity.role or "").lower() in CURATOR_ROLES:
+        return AccessDecision(True, "", BASIS_PORTAL_ROLE)
+    user = identity.user_id
+    reader = reader or EgeriaAccessReader()
+    try:
+        configured = configured_zones_for(registry, entity_type, slug)
+        guid = element_guid if element_guid is not None else element_guid_for(registry, entity_type, slug, scope_locator)
+        owners = maintainers = None
+        element_zones: list[str] = []
+        if guid:
+            element_zones, owners, maintainers = reader.element(guid)
+        zones = element_zones or configured
+        if not zones:
+            return AccessDecision(True, "", BASIS_NO_ZONES)
+        verdict = zone_grants(user, zones, control_for=reader.control, account_for=lambda: reader.account(user),
+                              owners=owners, maintainers=maintainers, operations=ops,
+                              creating=not guid and CREATE_OPERATION in ops)
+    except (AccessUnreadable, _RegistryUnreadable) as exc:
+        return AccessDecision(False, f"could not check access in Egeria ({exc})", BASIS_UNREADABLE)
+    if verdict.allowed:
+        return AccessDecision(True, "", BASIS_ZONE_GRANTED if verdict.granted_by else BASIS_ZONES_OPEN, tuple(zones))
+    if verdict.why:
+        return AccessDecision(False, verdict.why, BASIS_ZONE_REFUSED, tuple(zones))
+    secured = ", ".join(verdict.secured)
+    word = OPERATION_WORDS.get(verdict.operation, verdict.operation.lower())
+    return AccessDecision(
+        False, f"zone {secured} does not grant {user} {word} in Egeria" if len(verdict.secured) == 1
+        else f"zones {secured} do not grant {user} {word} in Egeria",
+        BASIS_ZONE_REFUSED, tuple(zones))
 
-def require_curation_rights(owner: str) -> None:
-    """`may_curate`, raised. The form every call site should use."""
-    allowed, why_not = may_curate(owner)
-    if not allowed:
-        raise CurationDenied(why_not)
+
+def publish_operations(in_egeria: bool, *, attaches: bool = False) -> tuple[str, ...]:
+    """Every operation a Publish write performs on an item (Brief Z round 2): CREATE for a new element or
+    UPDATE_PROPERTIES for an existing one; CLASSIFY for the Ownership / requestedBy stamps; PUBLISH for the
+    zone change of promotion; ATTACH when it links members or compositions (checked on the other ends too)."""
+    from resource_explorer.zone_access import (
+        ATTACH_OPERATION,
+        CLASSIFY_OPERATION,
+        CREATE_OPERATION,
+        PUBLISH_OPERATION,
+        UPDATE_OPERATION,
+    )
+
+    ops = [UPDATE_OPERATION if in_egeria else CREATE_OPERATION, CLASSIFY_OPERATION, PUBLISH_OPERATION]
+    if attaches:
+        ops.append(ATTACH_OPERATION)
+    return tuple(ops)
 
 
-def owner_of(registry: ProjectRegistry, entity_type: str, slug: str,
-             scope_locator: str) -> str:
-    """Who owns the element behind this verdict, as RE recorded it.
+def blueprint_attach_scopes(registry: ProjectRegistry, slug: str, key: str) -> list[str]:
+    """The other ends a blueprint's write attaches: its member components (scope locators) and its child
+    blueprints (`perspective::child`). From RE's own rows (the candidate finding and the slug->scope map)."""
+    perspective, _, cluster = key.partition("::")
+    detail = find_candidate_blueprint(registry, slug, perspective, cluster) or {}
+    scopes_by_slug = slug_to_scope_map(registry, slug) if detail.get("members") else {}
+    out = [scopes_by_slug[m] for m in detail.get("members") or [] if scopes_by_slug.get(m)]
+    out += [f"{perspective}::{c}" for c in detail.get("children") or []]
+    return list(dict.fromkeys(out))
 
-    Read from RE's own verdict/materialization trail rather than from Egeria's
-    `Ownership` classification, deliberately: the authorization decision must
-    be answerable when Egeria is unreachable, and it must be answerable for a
-    proposal that has not been materialized into Egeria at all yet. Egeria's
-    classification is the record of ownership *for the catalogue*; this is the
-    same fact as RE knows it, written at the same moment by the same publish.
 
-    Reads the **latest** verdict's `decided_by`, which is the person who last
-    curated this element — and, because recording a verdict already requires
-    passing this same check, the only ways to become that person are to have
-    been the owner, to hold a curator role, or to have been the first to touch
-    an element nobody owned. The first-toucher case is the plan's own rule
-    working as intended: "the user who discovers, surveys and catalogs a
-    resource is its owner, and ownership carries the right to curate it."
+def publish_item_access(registry: ProjectRegistry, slug: str, kind: str, key: str, *, reader=None,
+                        element_guid: str | None = None) -> AccessDecision:
+    """May the caller publish this item: every operation its write performs, and for a blueprint ATTACH on each
+    member component and child blueprint it links (both ends, as `validateUserForElementAttach` checks).
+    Used at the press AND by the run immediately before each write (`architecture_publish.run_publish`)."""
+    from resource_explorer.zone_access import ATTACH_OPERATION, EgeriaAccessReader
 
-    `""` when nothing recorded an owner — the shared/legacy bucket, see
-    `may_curate`.
+    reader = reader or EgeriaAccessReader()
+    guid = element_guid if element_guid is not None else None
+    in_egeria = bool(guid) if guid is not None else bool(_safe_guid(registry, slug, key))
+    d = curation_access(registry, "repo", slug, key, reader=reader, element_guid=guid,
+                        operations=publish_operations(in_egeria, attaches=kind == "blueprint"))
+    if not d.allowed or kind != "blueprint" or d.basis == BASIS_PORTAL_ROLE:
+        return d
+    for other in blueprint_attach_scopes(registry, slug, key):
+        e = curation_access(registry, "repo", slug, other, reader=reader, operations=(ATTACH_OPERATION,))
+        if not e.allowed:
+            return AccessDecision(False, f"{other.rsplit('/', 1)[-1]}: {e.reason}", e.basis, e.zones)
+    return d
+
+
+def resolved_elements_access(registry: ProjectRegistry, slug: str, key: str, guids: list[str], *,
+                             reader=None) -> AccessDecision:
+    """The run's check on the elements a blueprint write RESOLVED (Brief Z round 2): the blueprint itself
+    (`guids[0]`) for every operation its write performs, and every member, adopted root and child blueprint
+    for ATTACH (the other end of each link)."""
+    from resource_explorer.zone_access import ATTACH_OPERATION, EgeriaAccessReader
+
+    reader = reader or EgeriaAccessReader()
+    for i, guid in enumerate(guids):
+        ops = publish_operations(True, attaches=True) if i == 0 else (ATTACH_OPERATION,)
+        d = curation_access(registry, "repo", slug, key, reader=reader, element_guid=guid, operations=ops)
+        if not d.allowed:
+            return d if i == 0 else AccessDecision(False, f"member {guid[:8]}: {d.reason}", d.basis, d.zones)
+    return AccessDecision(True, "", BASIS_ZONE_GRANTED)
+
+
+def _safe_guid(registry: ProjectRegistry, slug: str, key: str) -> str:
+    try:
+        return element_guid_for(registry, "repo", slug, key)
+    except _RegistryUnreadable:
+        return ""          # curation_access reads it again and denies with the reason
+
+
+def may_curate(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str, *,
+               reader=None, operations=None) -> tuple[bool, str]:
+    """`(allowed, why_not)` from `curation_access`."""
+    d = curation_access(registry, entity_type, slug, scope_locator, reader=reader, operations=operations)
+    return d.allowed, d.reason
+
+
+def require_curation_rights(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str, *,
+                            reader=None, operations=None) -> None:
+    """`curation_access`, raised. The form every call site should use."""
+    d = curation_access(registry, entity_type, slug, scope_locator, reader=reader, operations=operations)
+    if not d.allowed:
+        raise CurationDenied(d.reason)
+
+
+def last_decided_by(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str) -> str:
+    """Who made the latest call on this element (the verdict's `decided_by`), "" when nobody recorded one.
+
+    Attribution only. Until Brief Z (2026-10-10) this was `owner_of` and gated curation; that made an
+    element the property of whoever touched it last, and two people's decisions on one Publish plan
+    deadlocked each other. Access now follows Egeria's zones (`curation_access`).
     """
     try:
         verdicts = registry.get_component_verdicts(entity_type, slug) or {}
@@ -405,7 +577,8 @@ def find_candidate_blueprint(registry: ProjectRegistry, slug: str,
 
 def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: str, slug: str,
                                        perspective: str, cluster_name: str, verdict: str,
-                                       shape: str = "", identifier: str = "") -> dict | None:
+                                       shape: str = "", identifier: str = "",
+                                       check_resolved=None) -> dict | None:
     """Same non-fatal-but-visible shape as materialize_component_if_accepted above —
     the verdict itself is already saved and real regardless of whether this
     succeeds. Only 'accepted' triggers a write; only entity_type='repo' is
@@ -554,6 +727,14 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
             entity_type, slug, node.scope)
 
     scope_key = f"{perspective}::{cluster_name}"
+    if check_resolved is not None:
+        # Brief Z round 2: every element this write resolved (the blueprint, cached or adopted members, an
+        # adopted content-pack root, child blueprints) is checked before the first link or membership is
+        # written. A refusal writes nothing further.
+        resolved = [blueprint_guid, *[n.guid for n in nodes if n.guid], *child_guids.values()]
+        why = check_resolved(list(dict.fromkeys(g for g in resolved if g)))
+        if why:
+            return {"status": "not_permitted", "guid": blueprint_guid, "error": why}
     member_guid_list: list[str] = []
     composition_results: list[dict] = []
     composition_error = ""

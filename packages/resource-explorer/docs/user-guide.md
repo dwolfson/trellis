@@ -50,8 +50,10 @@ session expired at 14:07, run `resource-explorer login`
 Everything you publish to Egeria carries an **owner** — you — and lands in a *draft zone*
 (`resource-explorer-draft`) rather than in the catalogue's normal zones. Two consequences:
 
-- **You can curate what you own.** Accepting, rejecting or materializing your own findings needs
-  no extra permission. Curating *someone else's* needs a curator or admin role.
+- **Egeria's zones decide who may curate** (project owner, 2026-10-10). Where no governance zone is
+  in use, any signed-in person may accept, reject or publish, whoever decided last. Where zones are
+  in use, you may change an element only if Egeria's zone security would let you update it; a
+  Portal curator or admin role may always. A refused row says "not permitted" and why.
 - **Accepting publishes it properly.** When you accept a finding, the element moves out of the
   draft zone into the deployment's normal zones. That move is what "accept" actually does in
   Egeria — it is not just a note in Resource Explorer.

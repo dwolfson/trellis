@@ -236,6 +236,19 @@ class TestParentOnly:
         assert [c["path"] for c in ap.publish_plan(registry, "p")["components"]["to_write"]] == ["pyegeria", "pyegeria/utils"]
 
 
+@pytest.fixture
+def requester_with_no_zones(monkeypatch):
+    """Brief Z round 2: the run re-checks each item as its requester; no zone is in use here."""
+    from tests.zone_fakes import install, signed_in
+    from resource_explorer.a2a_auth import current_caller
+
+    fake = install(monkeypatch)
+    reset = signed_in("x", source="queued-run")
+    yield fake
+    current_caller.reset(reset)
+
+
+@pytest.mark.usefixtures("requester_with_no_zones")
 class TestTheRun:
     def test_per_item_results_are_proof_rows_done_skipped_failed_and_partial(self, registry, monkeypatch):
         for p in ("a", "b", "c", "d"):
@@ -246,7 +259,7 @@ class TestTheRun:
         outcomes = {"a": (ap.DONE, "created in Egeria", "g-a"),
                     "b": (ap.FAILED, "OMAG-400-001 the type is not known", ""),
                     "c": (ap.PARTIAL, "written, but not promoted: x", "g-c")}
-        monkeypatch.setattr(ap, "_publish_component", lambda reg, slug, path: outcomes[path])
+        monkeypatch.setattr(ap, "_publish_component", lambda reg, slug, path, **k: outcomes[path])
         res = ap.run_publish(registry, "p", {"slug": "p", "paths": ["a", "b", "c", "d"], "blueprints": []}, "run-1")
         assert [(r["key"], r["status"]) for r in res] == [
             ("a", "done"), ("b", "failed"), ("c", "partial"), ("d", "skipped")]
@@ -263,8 +276,8 @@ class TestTheRun:
         _seed_cluster(registry, members=["a"])
         registry.record_component_verdict("repo", "p", "physical::core", "accepted", "", "", verdict_target="blueprint", decided_by="x")
         order = []
-        monkeypatch.setattr(ap, "_publish_component", lambda reg, slug, path: order.append(("c", path)) or (_ for _ in ()).throw(RuntimeError("boom")))
-        monkeypatch.setattr(ap, "_publish_blueprint", lambda reg, slug, item: order.append(("b", item["key"])) or (ap.DONE, "in Egeria", "bp"))
+        monkeypatch.setattr(ap, "_publish_component", lambda reg, slug, path, **k: order.append(("c", path)) or (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(ap, "_publish_blueprint", lambda reg, slug, item, **k: order.append(("b", item["key"])) or (ap.DONE, "in Egeria", "bp"))
         res = ap.run_publish(registry, "p", {"slug": "p", "paths": ["a"], "blueprints": ["physical::core"]}, "run-2")
         assert order == [("c", "a"), ("b", "physical::core")]
         assert [r["status"] for r in res] == ["failed", "done"]

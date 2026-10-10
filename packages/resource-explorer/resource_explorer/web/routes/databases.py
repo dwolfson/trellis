@@ -1157,6 +1157,9 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
     database = _get_database_for_use(registry, slug)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+    # Brief Z round 2: the database's element, every operation a publish performs.
+    from resource_explorer.web.routes.curate import authorize_resource_write
+    await authorize_resource_write(registry, "database", slug, publish=True)
 
     # The latest MEASURED row, never merely the latest row (false-zero
     # hotfix, 2026-09-30): a newer empty/egeria-published row must not be
