@@ -257,7 +257,7 @@ def curate_materialize(
 
     from resource_explorer.architecture_publish import PublishAlreadyRunning, enqueue_publish, publish_plan
     from resource_explorer.run_queue import requested_by
-    from resource_explorer.workflows.curate import CurationDenied, require_curation_rights
+    from resource_explorer.workflows.curate import CurationDenied, publish_item_access
 
     registry = _registry()
     proj = registry.get(project)
@@ -273,9 +273,12 @@ def curate_materialize(
         console.print(f"[yellow]Nothing queued — {target}: {why}[/yellow]")
         raise typer.Exit(code=1)
 
-    def authorize(scope: str) -> None:
-        # The same check the routes make, from the same place (workflows.curate.curation_access).
-        require_curation_rights(registry, entity_type, project, scope)
+    def authorize(kind: str, key: str) -> None:
+        # The same check the web press makes (workflows.curate.publish_item_access): every operation the write
+        # performs, and ATTACH on a blueprint's members.
+        d = publish_item_access(registry, project, kind, key)
+        if not d.allowed:
+            raise CurationDenied(d.reason)
 
     try:
         out = enqueue_publish(registry, proj, plan, requested_by=requested_by(), authorize=authorize, only={target})

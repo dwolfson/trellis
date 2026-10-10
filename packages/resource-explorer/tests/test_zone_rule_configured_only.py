@@ -18,6 +18,8 @@ import pytest
 from resource_explorer import egeria_identity as ident
 from resource_explorer.workflows import curate
 
+from tests.live_catalogue_payloads import zone_rendering  # noqa: E402 - Egeria's array rendering
+
 DRAFT = "resource-explorer-draft"
 
 
@@ -25,7 +27,7 @@ def _element(guid: str, zones: list[str] | None) -> dict:
     cls = []
     if zones:
         cls.append({"classificationName": "ZoneMembership",
-                    "classificationProperties": {"propertiesAsStrings": {"zoneMembership": ",".join(zones)}}})
+                    "classificationProperties": {"propertiesAsStrings": {"zoneMembership": zone_rendering(zones)}}})
     return {"elementGUID": guid, "type": {"typeName": "SolutionBlueprint"}, "classifications": cls}
 
 

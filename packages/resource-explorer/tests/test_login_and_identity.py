@@ -735,7 +735,9 @@ class TestCurateRoutes:
         # Zones are configured, so the verdict asks Egeria about them (Brief Z): neither zone has a control.
         monkeypatch.setattr("resource_explorer.zone_access._platform", lambda: ("plat", "g"))
         monkeypatch.setattr("resource_explorer.zone_access._security_officer",
-                            lambda: type("SO", (), {"get_security_access_control": lambda self, *a, **k: None})())
+                            lambda: type("SO", (), {"get_security_access_control": lambda self, *a, **k: None,
+                                                    "get_user_account": lambda self, *a, **k: {
+                                                        "userAccountStatus": "AVAILABLE"}})())
         spy = _ClassificationSpy()
         monkeypatch.setattr("resource_explorer.egeria_identity.classification_client", lambda i=None: spy)
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "egeria-runtime")

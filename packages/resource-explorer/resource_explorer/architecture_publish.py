@@ -294,13 +294,13 @@ def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authori
                     only: set[str] | None = None) -> dict:
     """Queue ONE publish_architecture run for the items in `plan` (all of them, or those whose path/key is in
     `only`), with a 'running' activity row the run closes. Shared by the web press and the CLI, so both write
-    exactly what the plan lists. `authorize(scope)` raises `CurationDenied` for an item the caller may not
-    change (workflows.curate.curation_access): that item is NOT written and is reported as its own result row,
+    exactly what the plan lists. `authorize(kind, key)` raises `CurationDenied` for an item the caller may not
+    publish (workflows.curate.publish_item_access: every operation the write performs): that item is NOT written and is reported as its own result row,
     "not permitted · <reason>", and the rest are queued (Brief Z). Only when nothing is permitted does this
     raise CurationDenied (the whole-press 403). Returns {run_id, activity_id, queued, refused, plan}; queues
     nothing when nothing is selected. Raises PublishAlreadyRunning."""
     from resource_explorer.activity_logger import log_survey
-    from resource_explorer.workflows.curate import CurationDenied
+    from resource_explorer.workflows.curate import CURATOR_ROLES, CurationDenied, _caller_identity
 
     slug = project.slug
     comps = [c for c in plan["components"]["to_write"] if only is None or c["path"] in only]
@@ -315,7 +315,7 @@ def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authori
 
     def permitted(kind: str, key: str, name: str) -> bool:
         try:
-            authorize(key)
+            authorize(kind, key)
             return True
         except CurationDenied as exc:
             refused.append({"kind": kind, "key": key, "name": name, "words": str(exc)})
@@ -326,6 +326,10 @@ def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authori
         reasons = sorted({r["words"] for r in refused})
         raise CurationDenied(reasons[0] if len(reasons) == 1 else "; ".join(reasons))
     label = plan["label"] if only is None and not refused else label_for(len(paths), len(keys))
+    # The run re-checks each item against the element it resolves (Brief Z round 2). It runs as the requester
+    # with no JWT, so a Portal curator/admin override seen HERE is carried to it; nothing else is.
+    ident = _caller_identity()
+    portal_role = bool(ident and (ident.role or "").lower() in CURATOR_ROLES)
     activity_id = log_survey(
         registry, entity_type="repo", entity_slug=slug,
         entity_name=project.display_name, entity_location=project.github_url,
@@ -334,7 +338,8 @@ def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authori
     try:
         # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
         run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys,
-                                                               **({"not_permitted": refused} if refused else {})},
+                                                               **({"not_permitted": refused} if refused else {}),
+                                                               **({"portal_role": True} if portal_role else {})},
                                       result_ref=activity_id, requested_by=requested_by)
     except Exception as exc:
         # Opened 'running' above; nothing will run to close it.
@@ -357,8 +362,10 @@ def _record(registry, slug: str, run: str, key: str, guid: str, detail: dict) ->
         log.warning("could not record the publish result for %s: %s", key, exc)
 
 
-def _publish_component(registry, slug: str, path: str) -> tuple[str, str, str]:
-    """(status, words, guid) for one accepted component."""
+def _publish_component(registry, slug: str, path: str, check=None) -> tuple[str, str, str]:
+    """(status, words, guid) for one accepted component. `check(kind, key, guid)` returns a refusal reason
+    ("" = permitted) for an element the write RESOLVED rather than created (adopted from the content pack, or
+    found already in Egeria): it runs before the first Egeria write to that element (the promotion)."""
     from resource_explorer.secret_redaction import scrub_text
     from resource_explorer.workflows.curate import (
         NODE_PROMOTION_COMPONENT,
@@ -373,6 +380,10 @@ def _publish_component(registry, slug: str, path: str) -> tuple[str, str, str]:
     if res.get("status") == "skipped" or not guid:
         # Nothing was written (a private element's zones were not confirmed, say): its own word, never "done".
         return SKIPPED, scrub_text(str(res.get("reason") or res.get("words") or "Egeria returned no element"))[:300], guid
+    if guid and check is not None and res.get("status") != "materialized":
+        why = check("component", path, guid)
+        if why:
+            return NOT_PERMITTED, scrub_text(f"{NOT_PERMITTED_WORDS} · {why}")[:300], guid
     if guid:
         promotion = promote_to_publish_zones(guid)
         record_promotion(registry, slug, path, NODE_PROMOTION_COMPONENT, promotion)
@@ -383,8 +394,10 @@ def _publish_component(registry, slug: str, path: str) -> tuple[str, str, str]:
     return DONE, "created in Egeria" if res.get("status") == "materialized" else "in Egeria", guid
 
 
-def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
-    """(status, words, guid) for one accepted blueprint: created or adopted, members attached, compositions linked."""
+def _publish_blueprint(registry, slug: str, item: dict, check_resolved=None) -> tuple[str, str, str]:
+    """(status, words, guid) for one accepted blueprint: created or adopted, members attached, compositions linked.
+    `check_resolved(guids)` (the run's access re-check) sees every element the write resolved, adopted ones
+    included, immediately before the first link or membership is written."""
     from resource_explorer.secret_redaction import scrub_text
     from resource_explorer.workflows.curate import (
         NODE_PROMOTION_BLUEPRINT,
@@ -395,11 +408,14 @@ def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
     res = materialize_blueprint_if_accepted(
         registry, "repo", slug, item["perspective"], item["cluster_name"], "accepted",
         **({"shape": item["shape"]} if item.get("shape") else {}),
-        **({"identifier": item["identifier"]} if item.get("identifier") else {}))
+        **({"identifier": item["identifier"]} if item.get("identifier") else {}),
+        **({"check_resolved": check_resolved} if check_resolved is not None else {}))
     if not res:
         return FAILED, "nothing was attempted", ""
     if res.get("status") == "error":
         return FAILED, scrub_text(str(res.get("error") or "Egeria gave no answer"))[:300], ""
+    if res.get("status") == NOT_PERMITTED:
+        return NOT_PERMITTED, scrub_text(f"{NOT_PERMITTED_WORDS} · {res.get('error') or ''}")[:300], res.get("guid", "")
     guid = res.get("guid", "")
     if res.get("status") == "skipped" or not guid:
         return SKIPPED, scrub_text(str(res.get("reason") or res.get("words") or "Egeria returned no element"))[:300], guid
@@ -454,6 +470,33 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
     todo_b = {b["key"]: b for b in plan["blueprints"]["to_write"]}
     held_back = {b["key"]: b for b in plan["blueprints"].get("needs_identifier") or []}
     results: list[dict] = []
+    from resource_explorer.workflows.curate import publish_item_access, resolved_elements_access
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    # Brief Z round 2: the press checked each item, but the write runs later and may resolve elements the press
+    # could not see (a content-pack component, an element found by qualifiedName, members adopted mid-write).
+    # So the run checks again, as the requester (run_queue sets the caller), immediately before each write.
+    # A Portal curator/admin override seen at the press is carried in the target.
+    reader = EgeriaAccessReader()
+    override = bool(target.get("portal_role"))
+
+    def refused(kind: str, key: str, guid: str | None = None) -> str:
+        if override:
+            return ""
+        try:
+            d = publish_item_access(registry, slug, kind, key, reader=reader, element_guid=guid)
+        except Exception as exc:  # an unexpected failure is a refusal with its reason, never a pass
+            return f"could not check access ({type(exc).__name__}: {exc})"
+        return "" if d.allowed else d.reason
+
+    def resolved_refused(key: str, guids: list[str]) -> str:
+        if override:
+            return ""
+        try:
+            d = resolved_elements_access(registry, slug, key, guids, reader=reader)
+        except Exception as exc:
+            return f"could not check access ({type(exc).__name__}: {exc})"
+        return "" if d.allowed else d.reason
 
     def add(kind: str, key: str, name: str, status: str, words: str, guid: str = "") -> None:
         row = {"kind": kind, "key": key, "name": name, "status": status, "words": words}
@@ -471,8 +514,12 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
             add("component", path, path.rsplit("/", 1)[-1], SKIPPED,
                 "already in Egeria" if held else "no longer accepted")
             continue
+        why = refused("component", path)
+        if why:
+            add("component", path, c["name"], NOT_PERMITTED, f"{NOT_PERMITTED_WORDS} · {why}")
+            continue
         try:
-            status, words, guid = _publish_component(registry, slug, path)
+            status, words, guid = _publish_component(registry, slug, path, check=refused)
         except Exception as exc:
             status, words, guid = FAILED, scrub_text(f"{type(exc).__name__}: {exc}")[:300], ""
         add("component", path, c["name"], status, words, guid)
@@ -491,8 +538,13 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
             add("blueprint", key, cluster, SKIPPED,
                 "already in Egeria · compositions confirmed" if held and accepted else "no longer accepted")
             continue
+        why = refused("blueprint", key)
+        if why:
+            add("blueprint", key, b["name"], NOT_PERMITTED, f"{NOT_PERMITTED_WORDS} · {why}")
+            continue
         try:
-            status, words, guid = _publish_blueprint(registry, slug, b)
+            status, words, guid = _publish_blueprint(registry, slug, b,
+                                                     check_resolved=lambda guids, k=key: resolved_refused(k, guids))
         except Exception as exc:
             status, words, guid = FAILED, scrub_text(f"{type(exc).__name__}: {exc}")[:300], ""
         add("blueprint", key, b["name"], status, words, guid)

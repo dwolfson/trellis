@@ -67,6 +67,15 @@ def _zones(monkeypatch):
     monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "zone-a,zone-b")
 
 
+@pytest.fixture(autouse=True)
+def _curation_access_reads(monkeypatch, _zones):
+    """Brief Z round 2: the commit route checks curation access. The configured zones have no security
+    access control in the fake Egeria, so they are not secured and the caller is permitted."""
+    from tests.zone_fakes import install
+
+    return install(monkeypatch, zones=["zone-a", "zone-b"])
+
+
 @pytest.fixture
 def registry(tmp_path):
     db = str(tmp_path / "commit.db")

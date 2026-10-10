@@ -24,56 +24,15 @@ ERIN, PETER = "garygeeke", "peterprofile"
 SECURED = "sales-zone"
 
 
-# ── a fake Egeria at the client boundary ──────────────────────────────────────────────────────────────
+# ── a fake Egeria at the client boundary (tests/zone_fakes.py) ──────────────────────────────────────────
 
-def _element(guid: str, zones=(), owners=None) -> dict:
-    classes = []
-    if zones:
-        classes.append({"classificationName": "ZoneMembership", "classificationProperties": {"propertyValueMap": {
-            "zoneMembership": {"arrayValues": {"propertiesAsStrings": {str(i): z for i, z in enumerate(zones)}}}}}})
-    if owners is not None:
-        classes.append({"classificationName": "Ownership", "classificationProperties": {"propertyValueMap": {
-            "userIds": {"arrayValues": {"propertiesAsStrings": {str(i): o for i, o in enumerate(owners)}}}}}})
-    return {"elementGUID": guid, "classifications": classes}
-
-
-class FakeEgeria:
-    """The two pyegeria clients an access check builds, in one recording fake."""
-
-    def __init__(self):
-        self.elements: dict[str, dict] = {}
-        self.controls: dict[str, dict] = {}
-        self.accounts: dict[str, dict] = {}
-        self.fail_control = ""
-        self.fail_element = ""
-        self.calls: list[tuple] = []
-
-    def get_metadata_element_by_guid(self, guid, **kw):
-        self.calls.append(("element", guid))
-        if guid == self.fail_element:
-            raise ConnectionError("platform unreachable")
-        return self.elements.get(guid) or _element(guid)
-
-    def get_security_access_control(self, platform, zone, **kw):
-        self.calls.append(("control", zone))
-        if zone == self.fail_control:
-            raise ConnectionError("secrets store unreadable")
-        return self.controls.get(zone)
-
-    def get_user_account(self, platform, user_id, **kw):
-        self.calls.append(("account", user_id))
-        return self.accounts.get(user_id)
+from tests.zone_fakes import AVAILABLE, FakeEgeria, install  # noqa: E402,F401
+from tests.zone_fakes import element as _element  # noqa: E402
 
 
 @pytest.fixture
 def egeria(monkeypatch):
-    fake = FakeEgeria()
-    monkeypatch.setattr("resource_explorer.zone_access._metadata_expert", lambda: fake)
-    monkeypatch.setattr("resource_explorer.zone_access._security_officer", lambda: fake)
-    monkeypatch.setattr("resource_explorer.zone_access._platform", lambda: ("Quickstart platform", "plat-guid"))
-    monkeypatch.delenv("EXPLORER_DRAFT_ZONE", raising=False)
-    monkeypatch.setattr("resource_explorer.egeria_identity.configured_publish_zones", lambda: [])
-    return fake
+    return install(monkeypatch)
 
 
 @pytest.fixture
@@ -114,10 +73,11 @@ def as_erin():
 
 class TestZoneGrants:
     @staticmethod
-    def _grants(zones, controls, account=None, owners=None):
+    def _grants(zones, controls, account=AVAILABLE, owners=None, operations=("UPDATE_PROPERTIES",)):
         from resource_explorer.zone_access import zone_grants
 
-        return zone_grants(ERIN, zones, control_for=controls.get, account_for=lambda: account, owners=owners)
+        return zone_grants(ERIN, zones, control_for=controls.get, account_for=lambda: account, owners=owners,
+                           operations=operations)
 
     def test_a_zone_named_after_the_user_grants(self):
         assert self._grants(["resource-explorer-private", ERIN], {}).allowed is True
@@ -127,28 +87,28 @@ class TestZoneGrants:
 
     def test_a_secured_zone_without_the_user_denies_and_names_the_zone(self):
         v = self._grants([SECURED], {SECURED: {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}},
-                         account={"userAccountStatus": "AVAILABLE", "securityGroups": ["hr"]}, owners=[PETER])
+                         account={**AVAILABLE, "securityGroups": ["hr"]}, owners=[PETER])
         assert v.allowed is False and v.secured == [SECURED]
 
     def test_a_group_or_role_on_the_account_grants(self):
         controls = {SECURED: {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}}
-        assert self._grants([SECURED], controls, {"securityGroups": ["salesTeam"]}, owners=[PETER]).allowed
-        assert self._grants([SECURED], controls, {"securityRoles": ["salesTeam"]}, owners=[PETER]).allowed
+        assert self._grants([SECURED], controls, {**AVAILABLE, "securityGroups": ["salesTeam"]}, owners=[PETER]).allowed
+        assert self._grants([SECURED], controls, {**AVAILABLE, "securityRoles": ["salesTeam"]}, owners=[PETER]).allowed
 
     def test_the_operation_key_wins_over_default(self):
         controls = {SECURED: {"associatedSecurityList": {"UPDATE_PROPERTIES": ["editors"], "DEFAULT": ["allUsers"]}}}
-        assert self._grants([SECURED], controls, {"securityGroups": []}, owners=[PETER]).allowed is False
+        assert self._grants([SECURED], controls, owners=[PETER]).allowed is False
 
     def test_all_users_and_account_type_groups_grant(self):
         assert self._grants([SECURED], {SECURED: {"associatedSecurityList": {"DEFAULT": ["allUsers"]}}}).allowed
         assert self._grants([SECURED], {SECURED: {"associatedSecurityList": {"DEFAULT": ["employeeUsers"]}}},
-                            {"userAccountType": "EMPLOYEE"}, owners=[PETER]).allowed
+                            {**AVAILABLE, "userAccountType": "EMPLOYEE"}, owners=[PETER]).allowed
 
     def test_instance_owner_holds_when_there_is_no_ownership_userids(self):
         """isUserAnOwner (:1260-1286) is TRUE when the element carries no Ownership userIds at all."""
         controls = {SECURED: {"associatedSecurityList": {"DEFAULT": ["instanceOwner"]}}}
         assert self._grants([SECURED], controls, owners=None).allowed is True
-        assert self._grants([SECURED], controls, {"securityGroups": []}, owners=[PETER]).allowed is False
+        assert self._grants([SECURED], controls, owners=[PETER]).allowed is False
 
     def test_a_disabled_or_missing_account_denies_a_secured_zone(self):
         controls = {SECURED: {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}}
@@ -196,7 +156,7 @@ class TestCurationAccess:
         registry.record_materialized_component("repo", "p", "src/a", "qn", "g-a")
         egeria.elements["g-a"] = _element("g-a", [SECURED], owners=[PETER])
         egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
-        egeria.accounts[ERIN] = {"userAccountStatus": "AVAILABLE", "securityGroups": ["salesTeam"]}
+        egeria.accounts[ERIN] = {**AVAILABLE, "securityGroups": ["salesTeam"]}
         d = curation_access(registry, "repo", "p", "src/a")
         assert (d.allowed, d.reason, d.basis) == (True, "", BASIS_ZONE_GRANTED)
 
@@ -206,7 +166,7 @@ class TestCurationAccess:
         registry.record_materialized_component("repo", "p", "src/a", "qn", "g-a")
         egeria.elements["g-a"] = _element("g-a", [SECURED], owners=[PETER])
         egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
-        egeria.accounts[ERIN] = {"userAccountStatus": "AVAILABLE", "securityGroups": ["hr"]}
+        egeria.accounts[ERIN] = {**AVAILABLE, "securityGroups": ["hr"]}
         d = curation_access(registry, "repo", "p", "src/a")
         assert (d.allowed, d.basis) == (False, BASIS_ZONE_REFUSED)
         assert d.reason == f"zone {SECURED} does not grant {ERIN} update in Egeria"
@@ -221,16 +181,31 @@ class TestCurationAccess:
         assert (d.allowed, d.basis) == (False, BASIS_UNREADABLE)
         assert d.reason.startswith("could not check access in Egeria (") and "secrets store unreadable" in d.reason
 
-    def test_no_control_is_not_trusted_when_pyegeria_swallows_errors(self, registry, egeria, as_erin, monkeypatch):
-        """With PYEGERIA_ENABLE_LOGGER_CATCH on, a failed control read returns None, which would read as "not
-        secured" and open the element. It denies instead."""
+    def test_no_control_is_not_trusted_when_pyegeria_catch_is_installed(self, registry, egeria, as_erin,
+                                                                        monkeypatch):
+        """Brief Z round 2 (LOW): pyegeria's `dynamic_catch` may install loguru's `logger.catch`, which returns
+        None for a FAILED read: "no control" (= open) and a failure look the same. Decided by asking the
+        function itself (`__wrapped__`), not the setting, so it holds whatever the setting says now."""
+        import functools
+
         from resource_explorer.workflows.curate import BASIS_UNREADABLE, curation_access
 
-        monkeypatch.setattr("resource_explorer.zone_access._pyegeria_swallows_errors", lambda: True)
+        class WrappedSO(FakeEgeria):
+            pass
+
+        def raw(self, platform, zone, **kw):
+            return None
+
+        @functools.wraps(raw)
+        def caught(self, *a, **k):          # what logger.catch looks like: wraps, swallows, returns None
+            return raw(self, *a, **k)
+        WrappedSO.get_security_access_control = caught
+        so = WrappedSO()
+        monkeypatch.setattr("resource_explorer.zone_access._security_officer", lambda: so)
         registry.record_materialized_component("repo", "p", "src/a", "qn", "g-a")
         egeria.elements["g-a"] = _element("g-a", [SECURED])
         d = curation_access(registry, "repo", "p", "src/a")
-        assert (d.allowed, d.basis) == (False, BASIS_UNREADABLE) and "PYEGERIA_ENABLE_LOGGER_CATCH" in d.reason
+        assert (d.allowed, d.basis) == (False, BASIS_UNREADABLE) and "error catch is installed" in d.reason
 
     def test_an_unreadable_element_denies_rather_than_reading_as_no_zones(self, registry, egeria, as_erin):
         from resource_explorer.workflows.curate import BASIS_UNREADABLE, curation_access
@@ -246,7 +221,6 @@ class TestCurationAccess:
 
         monkeypatch.setattr("resource_explorer.egeria_identity.configured_publish_zones", lambda: [SECURED])
         egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
-        egeria.accounts[ERIN] = {"userAccountStatus": "AVAILABLE", "securityGroups": []}
         d = curation_access(registry, "repo", "p", "src/new")
         assert (d.allowed, d.basis) == (False, BASIS_ZONE_REFUSED)
         assert ("element", "src/new") not in egeria.calls
@@ -272,7 +246,6 @@ class TestCurationAccess:
         registry.record_materialized_component("repo", "p", "src/a", "qn", "g-a")
         egeria.elements["g-a"] = _element("g-a", [SECURED, PETER])
         egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["nobody"]}}
-        egeria.accounts[ERIN] = {"securityGroups": []}
         for who, allowed in ((PETER, True), (ERIN, False)):
             reset = _as(who, source="egeria-token")
             try:
@@ -309,7 +282,6 @@ def _zone_the_blueprint(reg, egeria):
     reg.record_materialized_blueprint("repo", "p", "deployment", "a grouping of services", "qn-bp", "g-bp")
     egeria.elements["g-bp"] = _element("g-bp", [SECURED], owners=[PETER])
     egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
-    egeria.accounts[ERIN] = {"securityGroups": []}
     plan = ap.publish_plan(reg, "p")
     assert [c["path"] for c in plan["components"]["to_write"]] == ["src/c"]
     assert [b["key"] for b in plan["blueprints"]["to_write"]] == [BP], "the blueprint still has members to attach"
@@ -393,28 +365,36 @@ class TestRoutes:
 class TestPressToNextRead:
     """Drives enqueue_publish -> run_publish -> publish_plan/last_results with only Egeria's clients faked."""
 
-    def _press_as(self, reg, user):
+    def _press_as(self, reg, user, between=None):
         import json as _json
 
         from resource_explorer.a2a_auth import current_caller
-        from resource_explorer.workflows.curate import require_curation_rights
+        from resource_explorer.workflows.curate import publish_item_access
 
         reset = _as(user)
         try:
             out = ap.enqueue_publish(reg, reg.get("p"), ap.publish_plan(reg, "p"), requested_by=user,
-                                     authorize=lambda s: require_curation_rights(reg, "repo", "p", s))
+                                     authorize=lambda kind, key: _raise_unless(publish_item_access(reg, "p", kind, key)))
         finally:
             current_caller.reset(reset)
+        if between:
+            between()
         target = _json.loads(reg.get_run(out["run_id"])["target"])
-        return out, ap.run_publish(reg, "p", target, out["activity_id"])
+        # The worker runs it as the requester with no token (run_queue._run_as_requester).
+        reset = _as(user, source="queued-run")
+        try:
+            return out, ap.run_publish(reg, "p", target, out["activity_id"])
+        finally:
+            current_caller.reset(reset)
 
-    def test_mixed_decided_by_no_zones_one_press_by_either_settles_the_plan(self, world, no_egeria_reads, as_daemon):
+    def test_mixed_decided_by_no_zones_one_press_by_either_settles_the_plan(self, world, egeria, as_daemon):
         reg, fake, outbox = world
         _seed(reg, decided=(ERIN, PETER, ERIN, PETER))
         out, res = self._press_as(reg, ERIN)
         assert out["refused"] == []
         assert sorted(r["status"] for r in res) == ["done"] * 4
         assert ap.publish_plan(reg, "p")["nothing"] is True
+        assert not [c for c in egeria.calls if c[0] in ("control", "account")], "no zone anywhere: nothing secured"
 
     def test_a_refused_item_is_its_own_result_row_and_the_rest_are_written(self, world, egeria, as_daemon):
         reg, fake, outbox = world
@@ -434,6 +414,13 @@ class TestPressToNextRead:
         assert [b["key"] for b in plan["blueprints"]["to_write"]] == [BP]
 
 
+def _raise_unless(d):
+    from resource_explorer.workflows.curate import CurationDenied
+
+    if not d.allowed:
+        raise CurationDenied(d.reason)
+
+
 # ── 5. the CLI uses the same function ─────────────────────────────────────────────────────────────────
 
 def test_the_cli_publish_asks_curation_access(registry, monkeypatch):
@@ -449,11 +436,209 @@ def test_the_cli_publish_asks_curation_access(registry, monkeypatch):
     asked = []
 
     def spy(reg, entity_type, slug, scope, **kw):
-        asked.append((entity_type, slug, scope))
+        asked.append((entity_type, slug, scope, tuple(kw.get("operations") or ())))
         return wc.AccessDecision(False, f"zone {SECURED} does not grant {ERIN} update in Egeria",
                                  wc.BASIS_ZONE_REFUSED)
     monkeypatch.setattr(wc, "curation_access", spy)
     with pytest.raises(typer.Exit) as exc:
         rc.curate_materialize("p", "src/a", entity_type="repo")
     assert exc.value.exit_code == 3
-    assert asked == [("repo", "p", "src/a")]
+    assert asked == [("repo", "p", "src/a", ("CREATE", "CLASSIFY", "PUBLISH"))]
+
+
+# ── 6. round 2 (2026-10-10): every operation, members, run-time re-check, shapes, accounts, databases ──────
+
+STEWARDS = {"associatedSecurityList": {"UPDATE_PROPERTIES": ["allUsers"], "PUBLISH": ["stewards"]}}
+
+
+class TestRound2:
+    def test_a_verdict_needs_update_but_publish_needs_every_operation_its_write_performs(self, web, registry,
+                                                                                         monkeypatch):
+        """HIGH: a control that lets anyone UPDATE but only stewards PUBLISH lets a non-steward record a
+        verdict and refuses that person's Publish (the daemon does the write, so this is the only check)."""
+        egeria = install(monkeypatch, zones=[SECURED])
+        egeria.controls[SECURED] = STEWARDS
+        client, who = web
+        _seed(registry)
+        r = client.post("/api/projects/p/components/verdicts", json={"scope_locators": ["src/c"], "verdict": "accepted"})
+        assert r.status_code == 200, r.text
+        r = client.post("/api/projects/p/architecture/publish")
+        assert r.status_code == 403
+        assert r.json()["detail"] == f"zone {SECURED} does not grant {ERIN} publish (zone change) in Egeria"
+
+    def test_create_is_its_own_operation(self, registry, egeria, as_erin, monkeypatch):
+        from resource_explorer.workflows.curate import publish_item_access
+
+        monkeypatch.setattr("resource_explorer.egeria_identity.configured_publish_zones", lambda: [SECURED])
+        egeria.controls[SECURED] = {"associatedSecurityList": {"CREATE": ["builders"], "DEFAULT": ["allUsers"]}}
+        _seed(registry)
+        d = publish_item_access(registry, "p", "component", "src/c")
+        assert d.allowed is False and d.reason == f"zone {SECURED} does not grant {ERIN} create in Egeria"
+
+    def test_a_blueprint_member_that_refuses_attach_refuses_the_blueprint(self, registry, egeria, as_erin):
+        """MEDIUM: ATTACH is checked on both ends: the blueprint's members and child blueprints too."""
+        from resource_explorer.workflows.curate import publish_item_access
+
+        _seed(registry)
+        registry.record_materialized_component("repo", "p", "src/b", "qn-b", "g-b")
+        egeria.elements["g-b"] = _element("g-b", [SECURED], owners=[PETER])
+        egeria.controls[SECURED] = {"associatedSecurityList": {"ATTACH": ["salesTeam"], "DEFAULT": ["allUsers"]}}
+        d = publish_item_access(registry, "p", "blueprint", BP)
+        assert d.allowed is False
+        assert d.reason == f"b: zone {SECURED} does not grant {ERIN} attach in Egeria"
+        assert publish_item_access(registry, "p", "component", "src/c").allowed is True
+
+    def test_the_run_rechecks_an_element_the_write_adopted(self, registry, egeria, monkeypatch):
+        """MEDIUM: a content-pack component adopted at write time had no GUID at the press; the run checks the
+        element it actually resolved before the first write to it (the promotion), and writes nothing."""
+        from resource_explorer.a2a_auth import current_caller
+
+        _seed(registry)
+        egeria.elements["g-pack"] = _element("g-pack", [SECURED], owners=["contentpack"])
+        egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["packStewards"]}}
+        monkeypatch.setattr("resource_explorer.workflows.curate.materialize_component_if_accepted",
+                            lambda reg, et, slug, path, verdict: {"status": "adopted_content_pack", "guid": "g-pack"})
+        promoted = []
+        monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones",
+                            lambda guid: promoted.append(guid) or {"status": "promoted"})
+        reset = _as(ERIN, source="queued-run")
+        try:
+            res = ap.run_publish(registry, "p", {"slug": "p", "paths": ["src/c"], "blueprints": []}, "run-x")
+        finally:
+            current_caller.reset(reset)
+        assert [(r["key"], r["status"]) for r in res] == [("src/c", ap.NOT_PERMITTED)]
+        assert res[0]["words"] == f"not permitted · zone {SECURED} does not grant {ERIN} update in Egeria"
+        assert promoted == []
+
+    def test_the_run_rechecks_when_a_zone_changed_after_the_press(self, world, egeria, as_daemon):
+        """A press that was allowed does not license a write after the element was zoned (TOCTOU)."""
+        reg, fake, outbox = world
+        _seed(reg)
+        _zone_the_blueprint(reg, egeria)
+        egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["allUsers"]}}     # open at the press
+
+        def secure():
+            egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
+        out, res = TestPressToNextRead()._press_as(reg, ERIN, between=secure)
+        assert out["refused"] == []
+        by = {r["key"]: r for r in res}
+        assert by[BP]["status"] == ap.NOT_PERMITTED
+        assert outbox == []
+
+    def test_a_portal_curator_press_is_honoured_by_the_run(self, world, egeria, as_daemon):
+        from resource_explorer.a2a_auth import current_caller
+
+        reg, fake, outbox = world
+        _seed(reg)
+        _zone_the_blueprint(reg, egeria)
+        reset = _as(ERIN, role="curator")
+        try:
+            out = ap.enqueue_publish(reg, reg.get("p"), ap.publish_plan(reg, "p"), requested_by=ERIN,
+                                     authorize=lambda kind, key: None)
+        finally:
+            current_caller.reset(reset)
+        import json as _json
+        target = _json.loads(reg.get_run(out["run_id"])["target"])
+        assert target["portal_role"] is True
+        reset = _as(ERIN, source="queued-run")
+        try:
+            res = ap.run_publish(reg, "p", target, out["activity_id"])
+        finally:
+            current_caller.reset(reset)
+        assert {r["key"]: r["status"] for r in res}[BP] != ap.NOT_PERMITTED
+
+    def test_an_unknown_or_disabled_account_is_refused_even_where_a_zone_would_grant(self, registry, egeria,
+                                                                                    as_erin):
+        """MEDIUM: the account is read FIRST for a zoned element (validateZoneAccess :1103)."""
+        from resource_explorer.workflows.curate import curation_access
+
+        registry.record_materialized_component("repo", "p", "src/a", "qn", "g-a")
+        egeria.elements["g-a"] = _element("g-a", [ERIN])               # a zone named after the caller
+        egeria.accounts[ERIN] = {**AVAILABLE, "userAccountStatus": "DISABLED"}
+        d = curation_access(registry, "repo", "p", "src/a")
+        assert d.allowed is False and d.reason == f"the Egeria account of {ERIN} is disabled"
+        egeria.accounts[ERIN] = None
+        d = curation_access(registry, "repo", "p", "src/a")
+        assert d.allowed is False and d.reason == f"Egeria has no account for {ERIN}"
+
+
+class TestZoneMembershipShapes:
+    """MEDIUM: a ZoneMembership RE cannot parse is unreadable (deny), never "no zones" (open)."""
+
+    @staticmethod
+    def _zones(cp, header=False):
+        from resource_explorer.catalogue_gateway import zones_of_element
+
+        c = [{"classificationName": "ZoneMembership", "classificationProperties": cp}]
+        el = {"elementGUID": "g", "elementHeader": {"classifications": c}} if header else {"elementGUID": "g",
+                                                                                          "classifications": c}
+        return zones_of_element(el)
+
+    def test_the_renderings_egeria_produces_are_read(self):
+        assert self._zones({"propertiesAsStrings": {"zoneMembership": "{0=a, 1=b}"}}) == ["a", "b"]
+        assert self._zones({"propertiesAsStrings": {"zoneMembership": "[a, b]"}}) == ["a", "b"]
+        assert self._zones({"propertyValueMap": {"zoneMembership": {"arrayCount": 0}}}) == []
+        assert self._zones({"propertiesAsStrings": {"zoneMembership": "[a]"}}, header=True) == ["a"]
+
+    def test_anything_else_raises(self):
+        from resource_explorer.catalogue_gateway import GatewayError
+
+        for cp in ({}, {"propertiesAsStrings": {"zoneMembership": "a,b"}},
+                   {"propertyValueMap": {"zoneMembership": {"primitiveValue": "a"}}},
+                   {"propertiesAsStrings": {"other": "x"}}):
+            with pytest.raises(GatewayError):
+                self._zones(cp)
+
+    def test_an_unparsed_zone_denies(self, registry, egeria, as_erin):
+        from resource_explorer.workflows.curate import BASIS_UNREADABLE, curation_access
+
+        registry.record_materialized_component("repo", "p", "src/a", "qn", "g-a")
+        egeria.elements["g-a"] = {"elementGUID": "g-a", "classifications": [{
+            "classificationName": "ZoneMembership", "classificationProperties": {"propertiesAsStrings": {
+                "zoneMembership": "sales-zone"}}}]}
+        d = curation_access(registry, "repo", "p", "src/a")
+        assert (d.allowed, d.basis) == (False, BASIS_UNREADABLE)
+
+
+class TestResourceRoutes:
+    """Database commit/publish, the catalog scope decisions and the repository publish use the same check."""
+
+    @pytest.fixture
+    def db(self, web, registry, monkeypatch):
+        from resource_explorer.registry import DatabaseEntity
+        from resource_explorer.web.routes import catalogue_scope as routes
+
+        who = web[1]
+        # The scope routes bind get_current_user at import: patch their own name too.
+        monkeypatch.setattr(routes, "get_current_user",
+                            lambda request: {"user_id": who["user_id"], "egeria_token": f"tok-{who['user_id']}"})
+
+        registry.register_database(DatabaseEntity(slug="d", display_name="d", db_type="postgresql", host="h",
+                                                  port=5432, database_name="d", egeria_asset_guid="g-db"))
+        return web
+
+    def _secure_db(self, egeria):
+        egeria.elements["g-db"] = _element("g-db", [SECURED])
+        egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["dbas"]}}
+
+    def test_the_catalog_commit_and_scope_decisions_are_refused_in_a_secured_zone(self, db, egeria):
+        client, who = db
+        self._secure_db(egeria)
+        r = client.post("/api/catalogue-scope/d/commit", json={})
+        assert r.status_code == 403 and r.json()["detail"] == f"zone {SECURED} does not grant {ERIN} update in Egeria"
+        r = client.put("/api/catalogue-scope/d/depth", json={"depth": "tables"})
+        assert r.status_code == 403
+
+    def test_the_database_publish_is_refused_in_a_secured_zone(self, db, egeria):
+        client, who = db
+        self._secure_db(egeria)
+        r = client.post("/api/databases/d/publish", json={})
+        assert r.status_code == 403 and SECURED in r.json()["detail"]
+
+    def test_the_repository_publish_is_refused_in_a_secured_zone(self, web, registry, egeria):
+        client, who = web
+        registry.set_egeria_asset_guid("p", "g-repo")
+        egeria.elements["g-repo"] = _element("g-repo", [SECURED])
+        egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["owners"]}}
+        r = client.post("/api/egeria/p/publish", json={})
+        assert r.status_code == 403 and SECURED in r.json()["detail"]

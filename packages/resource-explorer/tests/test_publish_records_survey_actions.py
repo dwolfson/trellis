@@ -20,6 +20,14 @@ from resource_explorer import native_survey_run as nsr
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 from resource_explorer.surveyors.database import egeria_database_surveyor as eds
 
+
+@pytest.fixture(autouse=True)
+def _curation_access_open(monkeypatch):
+    """Brief Z round 2: the publish route checks curation access first; here no zone is in use."""
+    from tests.zone_fakes import permit_publish_routes
+
+    return permit_publish_routes(monkeypatch)
+
 SLUG = "coco"
 SERVER_GUID = "11111111-0000-0000-0000-000000000001"
 DB_GUID = "22222222-0000-0000-0000-000000000002"

@@ -102,6 +102,40 @@ def _authorize_curation(registry: ProjectRegistry, entity_type: str, slug: str,
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
+def _authorize_publish_item(registry: ProjectRegistry, slug: str, kind: str, key: str, reader=None) -> None:
+    """Raises `CurationDenied` unless the caller may PUBLISH this item: every operation its write performs
+    (create or update, classify, rezone, and attach on both ends for a blueprint). Brief Z round 2."""
+    from resource_explorer.workflows.curate import publish_item_access
+
+    d = publish_item_access(registry, slug, kind, key, reader=reader)
+    if not d.allowed:
+        raise CurationDenied(d.reason)
+
+
+async def authorize_resource_write(registry: ProjectRegistry, entity_type: str, slug: str, *,
+                                   publish: bool) -> None:
+    """403 unless the caller may change this resource's own element (Brief Z round 2): the database or file
+    system asset, or a repository's asset. `publish=True` is a write to Egeria (create or update, classify,
+    rezone, attach); False is a scope decision recorded in RE (update). Run off the event loop: the check may
+    read Egeria (bounded). The schema/table elements a database commit writes are not checked one by one yet."""
+    import asyncio
+
+    from resource_explorer.workflows.curate import VERDICT_OPERATIONS, curation_access, publish_operations
+    from resource_explorer.workflows.curate import element_guid_for, _RegistryUnreadable
+
+    def decide():
+        try:
+            in_egeria = bool(element_guid_for(registry, entity_type, slug, ""))
+        except _RegistryUnreadable:
+            in_egeria = True          # curation_access reads it again and denies with the reason
+        ops = publish_operations(in_egeria, attaches=True) if publish else VERDICT_OPERATIONS
+        return curation_access(registry, entity_type, slug, "", operations=ops)
+
+    d = await asyncio.to_thread(decide)
+    if not d.allowed:
+        raise HTTPException(status_code=403, detail=d.reason)
+
+
 # ── Tags ─────────────────────────────────────────────────────────────────────
 
 class TagCreate(BaseModel):

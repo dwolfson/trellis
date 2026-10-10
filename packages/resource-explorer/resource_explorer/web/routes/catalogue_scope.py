@@ -33,6 +33,13 @@ def _require_author(request: Request, action: str) -> str:
     return author
 
 
+async def _authorize(registry: ProjectRegistry, slug: str, *, publish: bool = False) -> None:
+    """Brief Z round 2: the same curation check every curate entry point uses, on the database's element."""
+    from resource_explorer.web.routes.curate import authorize_resource_write
+
+    await authorize_resource_write(registry, "database", slug, publish=publish)
+
+
 def _registry_for(slug: str) -> ProjectRegistry:
     registry = ProjectRegistry()
     if not registry.get_database(slug, allow_unreadable=True):
@@ -120,6 +127,7 @@ async def post_commit(slug: str, body: CommitBody, request: Request) -> dict:
     and queues the run. The body carries no scope: the record is the scope."""
     author = _require_author(request, "catalogue")
     registry = _registry_for(slug)
+    await _authorize(registry, slug, publish=True)
     try:
         out = await asyncio.to_thread(commit.run_with_loop, commit.start_commit, registry, slug, author,
                                       refresh_now=body.refresh_now)
@@ -220,6 +228,7 @@ async def read_history(slug: str) -> dict:
 async def put_depth(slug: str, body: DepthBody, request: Request) -> dict:
     author = _require_author(request, "choose a depth")
     registry = _registry_for(slug)
+    await _authorize(registry, slug)
     return await _run(scope.set_depth, registry, slug, author, depth=body.depth)
 
 
@@ -227,6 +236,7 @@ async def put_depth(slug: str, body: DepthBody, request: Request) -> dict:
 async def put_node(slug: str, body: NodeBody, request: Request) -> dict:
     author = _require_author(request, "choose what gets cataloged")
     registry = _registry_for(slug)
+    await _authorize(registry, slug)
     return await _run(scope.set_node_choice, registry, slug, author,
                       schema=body.schema_name, table=body.table_name, choice=body.choice)
 
@@ -235,6 +245,7 @@ async def put_node(slug: str, body: NodeBody, request: Request) -> dict:
 async def post_nodes(slug: str, body: BulkBody, request: Request) -> dict:
     author = _require_author(request, "choose what gets cataloged")
     registry = _registry_for(slug)
+    await _authorize(registry, slug)
     return await _run(scope.set_nodes_choice, registry, slug, author,
                       nodes=[{"schema": n.schema_name, "table": n.table_name} for n in body.nodes],
                       choice=body.choice, all_schemas=body.all_schemas)
@@ -244,6 +255,7 @@ async def post_nodes(slug: str, body: BulkBody, request: Request) -> dict:
 async def post_confirm(slug: str, body: NodeBody, request: Request) -> dict:
     author = _require_author(request, "confirm a proposal")
     registry = _registry_for(slug)
+    await _authorize(registry, slug)
     return await _run(scope.confirm_proposal, registry, slug, author,
                       schema=body.schema_name, table=body.table_name)
 
@@ -252,6 +264,7 @@ async def post_confirm(slug: str, body: NodeBody, request: Request) -> dict:
 async def post_override(slug: str, body: NodeBody, request: Request) -> dict:
     author = _require_author(request, "override a proposal")
     registry = _registry_for(slug)
+    await _authorize(registry, slug)
     return await _run(scope.override_proposal, registry, slug, author,
                       schema=body.schema_name, table=body.table_name)
 
@@ -260,6 +273,7 @@ async def post_override(slug: str, body: NodeBody, request: Request) -> dict:
 async def post_clear(slug: str, body: NodeBody, request: Request) -> dict:
     author = _require_author(request, "clear a choice")
     registry = _registry_for(slug)
+    await _authorize(registry, slug)
     return await _run(scope.clear_node_choice, registry, slug, author,
                       schema=body.schema_name, table=body.table_name)
 
@@ -268,4 +282,5 @@ async def post_clear(slug: str, body: NodeBody, request: Request) -> dict:
 async def post_redeclare(slug: str, request: Request) -> dict:
     author = _require_author(request, "declare the scope")
     registry = _registry_for(slug)
+    await _authorize(registry, slug)
     return await _run(scope.redeclare, registry, slug, author)

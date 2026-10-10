@@ -2476,7 +2476,6 @@ def architecture_publish(slug: str, request: Request) -> dict:
     from resource_explorer.architecture_publish import PublishAlreadyRunning, enqueue_publish, publish_plan
     from resource_explorer.auth import get_current_user
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.web.routes.curate import _authorize_curation
 
     user = get_current_user(request)
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
@@ -2491,15 +2490,12 @@ def architecture_publish(slug: str, request: Request) -> dict:
 
     reader = EgeriaAccessReader()      # one press, each zone's control read once
 
-    def authorize(scope: str) -> None:
-        # The verdict routes' own check (curation_access), raised as CurationDenied so Publish can skip the one
-        # item and go on with the rest (Brief Z: per-item, no whole-press 403 unless nothing is permitted).
-        try:
-            _authorize_curation(registry, "repo", slug, scope, reader=reader)
-        except HTTPException as exc:
-            if exc.status_code == 403:
-                raise CurationDenied(str(exc.detail)) from exc
-            raise
+    def authorize(kind: str, key: str) -> None:
+        # Every operation the item's write performs (workflows.curate.publish_item_access), raised as
+        # CurationDenied so Publish skips the one item and goes on with the rest (Brief Z: per item, no
+        # whole-press 403 unless nothing is permitted).
+        from resource_explorer.web.routes.curate import _authorize_publish_item
+        _authorize_publish_item(registry, slug, kind, key, reader=reader)
 
     try:
         return enqueue_publish(registry, project, publish_plan(registry, slug), requested_by=_requested_by(),

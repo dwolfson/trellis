@@ -78,6 +78,19 @@ class FakeEgeria:
         return {"elementList": [{"element": {"elementGUID": k}, "elementAtEnd1": False} for k in kids]}
 
 
+@pytest.fixture(autouse=True)
+def requester_with_no_zones(monkeypatch):
+    """Brief Z round 2: the run re-checks each item as its requester before writing. Here no zone is in use
+    (the fake Egeria answers every element with no ZoneMembership), so every item is permitted."""
+    from tests.zone_fakes import install, signed_in
+    from resource_explorer.a2a_auth import current_caller
+
+    fake = install(monkeypatch)
+    reset = signed_in("x", source="queued-run")
+    yield fake
+    current_caller.reset(reset)
+
+
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))

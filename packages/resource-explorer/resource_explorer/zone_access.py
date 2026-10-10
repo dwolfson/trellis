@@ -11,7 +11,7 @@ open-metadata-access-security-connector/src/main/java/org/odpi/openmetadata/meta
 OpenMetadataAccessSecurityConnector.java at egeria af400039c2, read 2026-10-10):
 
 * `validateUserForElementDetailUpdate` (:1497-1522) checks `validateZoneAccess` with
-  `AccessOperation.UPDATE_PROPERTIES`; that is the operation RE checks ("update").
+  `AccessOperation.UPDATE_PROPERTIES`: what a verdict needs. Publish needs more (see the constants below).
 * `validateZoneAccess` (:1090-1206) loops the element's `ZoneMembership`:
     - a zone whose name equals the userId grants outright (:1122-1125);
     - a zone with NO associated security list "is not a secured zone and is ignored" (:1130-1134);
@@ -34,10 +34,13 @@ secrets-store failure and returns null (:943-957), i.e. treats the zone as unsec
 and must not open by default when zones might apply (Brief Z rule 5), so any read that fails here raises
 `AccessUnreadable` and the caller denies with "could not check access in Egeria (<reason>)".
 
-**Second departure: the account is read only when needed.** Egeria reads the account first (:1103) and
-refuses an unknown/disabled one for any zoned element. RE reads it only when the userId zone, `allUsers` and
-the instance groups did not already grant: a person with a disabled account cannot sign in to Egeria to
-reach RE in the first place, and every extra read is one more way to deny for "could not check".
+**The account is read first for any zoned element** (round 2), as Egeria does (:1103): an unknown or
+disabled account is refused before any zone is looked at. Only with no zone at all (the owner's "not in use"
+rule) is nothing read.
+
+**Every operation the write performs is checked** (round 2): Publish creates (CREATE), updates
+(UPDATE_PROPERTIES), attaches (ATTACH, both ends), classifies (CLASSIFY) and rezones (PUBLISH). The daemon does
+the write, so RE's check is the only one that sees the person.
 """
 from __future__ import annotations
 
@@ -47,10 +50,30 @@ from typing import Any, Callable, Iterable, Optional
 
 log = logging.getLogger(__name__)
 
-#: `AccessOperation.UPDATE_PROPERTIES.name()` and `DEFAULT.name()` — the keys of a control's
-#: `associatedSecurityList` (`getAssociatedSecurityListForZone` reads `operation.name()`, then DEFAULT).
+#: `AccessOperation` enum NAMES (frameworks/open-connector-framework/.../users/AccessOperation.java): the keys
+#: of a control's `associatedSecurityList` (`getAssociatedSecurityListForZone` reads `operation.name()`, then
+#: DEFAULT). Which validator checks which (OpenMetadataAccessSecurityConnector.java):
+#:   CREATE             validateUserForElementCreate :1306-1330 (zones the NEW element is created in; the
+#:                      creator is passed as its only maintainer)
+#:   UPDATE_PROPERTIES  validateUserForElementDetailUpdate :1497-1522
+#:   ATTACH             validateUserForElementAttach :1582-1620, on BOTH ends
+#:   CLASSIFY           validateUserForElementClassify :1840 (any classification but ZoneMembership)
+#:   PUBLISH            validateUserForElementClassify :1816 / Declassify :1911 (a ZoneMembership change)
+CREATE_OPERATION = "CREATE"
 UPDATE_OPERATION = "UPDATE_PROPERTIES"
+ATTACH_OPERATION = "ATTACH"
+CLASSIFY_OPERATION = "CLASSIFY"
+PUBLISH_OPERATION = "PUBLISH"
 DEFAULT_OPERATION = "DEFAULT"
+
+#: The words a refusal uses for each operation.
+OPERATION_WORDS = {
+    CREATE_OPERATION: "create",
+    UPDATE_OPERATION: "update",
+    ATTACH_OPERATION: "attach",
+    CLASSIFY_OPERATION: "classify",
+    PUBLISH_OPERATION: "publish (zone change)",
+}
 
 #: The access connector's default dynamic group names (OpenMetadataSecurityConfigurationProperty.java).
 ALL_USERS_GROUP = "allUsers"
@@ -102,29 +125,24 @@ def instance_groups(user_id: str, owners: Optional[list[str]], maintainers: Opti
 
 @dataclass
 class ZoneVerdict:
-    """What `zone_grants` found. `secured` names the zones that restrict update (the reason on a refusal)."""
+    """What `zone_grants` found. `secured` names the zones that restrict the refused operation, `operation` is
+    that operation, and `why` says what refused when it was not a zone (an unknown or disabled account)."""
 
     allowed: bool
     secured: list[str] = field(default_factory=list)
     granted_by: str = ""
+    operation: str = ""
+    why: str = ""
 
 
-def zone_grants(user_id: str, zones: Iterable[str], *,
-                control_for: Callable[[str], Optional[dict]],
-                account_for: Callable[[], Optional[dict]],
-                owners: Optional[list[str]] = None,
-                maintainers: Optional[list[str]] = None,
-                operation: str = UPDATE_OPERATION) -> ZoneVerdict:
-    """`validateZoneAccess` (:1090-1206) for `user_id` on an element in `zones`.
-
-    `control_for(zone)` returns the zone's security access control (None: none set up) and RAISES
-    `AccessUnreadable` when it cannot tell; `account_for()` likewise returns the caller's user account.
-    """
-    zones = [z for z in zones if z]
+def _one_operation(user_id: str, zones: list[str], operation: str, account: dict,
+                   control_for: Callable[[str], Optional[dict]],
+                   owners: Optional[list[str]], maintainers: Optional[list[str]]) -> ZoneVerdict:
+    """The zone loop of `validateZoneAccess` (:1117-1198) for one operation; the account is already read."""
     # :1122 — a zone named after the user grants outright. Checked across every zone before any read: any
     # grant returns true in Egeria's loop, so the answer is the same and no control is read for nothing.
     if user_id in zones:
-        return ZoneVerdict(True, granted_by=f"zone {user_id}")
+        return ZoneVerdict(True, granted_by=f"zone {user_id}", operation=operation)
     secured: list[tuple[str, list[str]]] = []
     for zone in zones:
         sl = security_list_for(control_for(zone), operation)
@@ -132,31 +150,62 @@ def zone_grants(user_id: str, zones: Iterable[str], *,
             continue                      # :1130 not a secured zone: ignored, not "everyone"
         secured.append((zone, sl))
     if not secured:
-        return ZoneVerdict(True)          # :1205 no secured zone: access
+        return ZoneVerdict(True, operation=operation)               # :1205 no secured zone: access
     names = [z for z, _ in secured]
-    own = instance_groups(user_id, owners, maintainers)
-    for zone, sl in secured:
-        if ALL_USERS_GROUP in sl:                                   # :1141
-            return ZoneVerdict(True, names, f"zone {zone} · {ALL_USERS_GROUP}")
-        hit = next((g for g in own if g in sl), None)               # :1179-1189
-        if hit:
-            return ZoneVerdict(True, names, f"zone {zone} · {hit}")
-    account = account_for()
-    if not isinstance(account, dict):
-        # getActiveUserAccount (:244-258) throws for an unknown user: Egeria would refuse.
-        return ZoneVerdict(False, names, "")
-    if str(account.get("userAccountStatus") or "AVAILABLE").upper() != "AVAILABLE":
-        return ZoneVerdict(False, names, "")
     type_group = ACCOUNT_TYPE_GROUPS.get(str(account.get("userAccountType") or "").upper())
     groups = [str(g) for g in (account.get("securityGroups") or [])]
     roles = [str(r) for r in (account.get("securityRoles") or [])]
+    own = instance_groups(user_id, owners, maintainers)
     for zone, sl in secured:
+        if ALL_USERS_GROUP in sl:                                   # :1141
+            return ZoneVerdict(True, names, f"zone {zone} · {ALL_USERS_GROUP}", operation)
         if type_group and type_group in sl:                         # :1149-1155
-            return ZoneVerdict(True, names, f"zone {zone} · {type_group}")
-        hit = next((g for g in [*groups, *roles] if g in sl), None)  # :1157-1177
+            return ZoneVerdict(True, names, f"zone {zone} · {type_group}", operation)
+        hit = next((g for g in [*groups, *roles, *own] if g in sl), None)   # :1157-1189
         if hit:
-            return ZoneVerdict(True, names, f"zone {zone} · {hit}")
-    return ZoneVerdict(False, names, "")                           # :1195 secured, nothing granted
+            return ZoneVerdict(True, names, f"zone {zone} · {hit}", operation)
+    return ZoneVerdict(False, names, "", operation)                 # :1195 secured, nothing granted
+
+
+def zone_grants(user_id: str, zones: Iterable[str], *,
+                control_for: Callable[[str], Optional[dict]],
+                account_for: Callable[[], Optional[dict]],
+                owners: Optional[list[str]] = None,
+                maintainers: Optional[list[str]] = None,
+                operations: Iterable[str] = (UPDATE_OPERATION,),
+                creating: bool = False) -> ZoneVerdict:
+    """`validateZoneAccess` (:1090-1206) for `user_id` on an element in `zones`, for EVERY operation in
+    `operations` (all must be granted: a write that performs several is checked for each).
+
+    `control_for(zone)` returns the zone's security access control (None: none set up) and RAISES
+    `AccessUnreadable` when it cannot tell; `account_for()` likewise returns the caller's user account.
+    `creating`: the element does not exist yet, and `validateUserForElementCreate` passes the creator as its
+    only maintainer (:1324), so the maintainer group is `existingMaintainer`.
+
+    With no zone at all nothing is read (the owner's "not in use" rule). With any zone the ACCOUNT IS READ
+    FIRST, as `validateZoneAccess` does (:1103, `getActiveUserAccount` :244-258): an unknown or disabled
+    account is refused whatever the zones would grant. A session minted before the account was disabled, or
+    by another app sharing the JWT secret, must not outlive the account.
+    """
+    zones = [z for z in zones if z]
+    ops = list(dict.fromkeys(operations)) or [UPDATE_OPERATION]
+    if not zones:
+        return ZoneVerdict(True, operation=ops[0])
+    account = account_for()
+    if not isinstance(account, dict):
+        return ZoneVerdict(False, [], "", ops[0], f"Egeria has no account for {user_id}")
+    status = str(account.get("userAccountStatus") or "").upper()
+    if status != "AVAILABLE":
+        return ZoneVerdict(False, [], "", ops[0],
+                           f"the Egeria account of {user_id} is {status.lower() or 'not marked available'}")
+    if creating:
+        maintainers = [user_id]
+    last = ZoneVerdict(True, operation=ops[0])
+    for op in ops:
+        last = _one_operation(user_id, zones, op, account, control_for, owners, maintainers)
+        if not last.allowed:
+            return last
+    return last
 
 
 # ── reading the element, the controls and the account from Egeria ─────────────────────────────────────
@@ -257,16 +306,16 @@ def _bounded(what: str, fn: Callable[[], Any]) -> Any:
         raise AccessUnreadable(f"{what}: {type(exc).__name__}: {exc}"[:300]) from exc
 
 
-def _pyegeria_swallows_errors() -> bool:
-    """pyegeria's `dynamic_catch` wraps `get_security_access_control` in loguru's `logger.catch` when
-    `PYEGERIA_ENABLE_LOGGER_CATCH` is on, and that returns None for a FAILED read: indistinguishable from "no
-    control" (= not secured = open). With it on, a None control cannot be trusted."""
-    try:
-        from pyegeria.core.utils import app_settings
-
-        return bool(getattr(app_settings.Debug, "enable_logger_catch", False))
-    except Exception:  # noqa: BLE001 - cannot tell: treat as swallowing, the safe direction
-        return True
+def _catch_wrapped(client: Any, *names: str) -> bool:
+    """Whether pyegeria's `dynamic_catch` installed loguru's `logger.catch` on any of these methods of THIS
+    client's class. `dynamic_catch` decides at import time (`enable_logger_catch`); the wrapper, when there,
+    carries `__wrapped__` (functools.wraps). So this asks the function itself, not today's setting."""
+    cls = type(client)
+    for name in names:
+        fn = getattr(cls, name, None)
+        if fn is not None and getattr(fn, "__wrapped__", None) is not None:
+            return True
+    return False
 
 
 class EgeriaAccessReader:
@@ -278,6 +327,8 @@ class EgeriaAccessReader:
         self._platform: Optional[tuple[str, Optional[str]]] = None
 
     def element(self, guid: str) -> tuple[list[str], Optional[list[str]], Optional[list[str]]]:
+        # Not cached: a press promotes elements as it goes, so an element's zones can change mid-run and the
+        # next check must see the zones Egeria holds then. Controls and accounts are stable within a press.
         def read():
             client = _metadata_expert()
             try:
@@ -299,13 +350,18 @@ class EgeriaAccessReader:
             def read():
                 client = _security_officer()
                 try:
-                    return client.get_security_access_control(name, zone, **kwargs)
+                    got = client.get_security_access_control(name, zone, **kwargs)
+                    # pyegeria's catch wrapper returns None for a FAILED read: "no control" (= open) and a
+                    # failure look the same. With the wrapper installed, None is unreadable, never open.
+                    if got is None and _catch_wrapped(client, "get_security_access_control",
+                                                      "_async_get_security_access_control"):
+                        raise AccessUnreadable(
+                            f"the access control for zone {zone}: pyegeria's error catch is installed, so "
+                            "'no control' cannot be told from a failed read")
+                    return got
                 finally:
                     _close(client)
             got = _bounded(f"the access control for zone {zone}", read)
-            if got is None and _pyegeria_swallows_errors():
-                raise AccessUnreadable(f"the access control for zone {zone}: pyegeria's logger catch is on "
-                                       "(PYEGERIA_ENABLE_LOGGER_CATCH), so 'no control' cannot be told from a failed read")
             self._controls[zone] = got if isinstance(got, dict) else None
         return self._controls[zone]
 

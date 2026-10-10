@@ -39,6 +39,15 @@ SYSTEM = {"schema": None, "table_count": None, "row_total": None, "bytes_total":
           "is_estimate": False, "reason": "", "classification": "system", "system_count": 3}
 
 
+@pytest.fixture(autouse=True)
+def _curation_access_reads(monkeypatch):
+    """Brief Z round 2: the scope routes check curation access on the database element, which the fake
+    Egeria answers with no ZoneMembership: open."""
+    from tests.zone_fakes import install
+
+    return install(monkeypatch)
+
+
 @pytest.fixture
 def registry(tmp_path):
     db = str(tmp_path / "scope.db")
