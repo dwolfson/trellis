@@ -6278,9 +6278,21 @@ export function stepPublishHtml(s) {
   if (/^published\b/i.test(state)) { kind = 'measured'; word = 'published'; }
   else if (/^publish failed\b/i.test(state)) { kind = 'error'; word = 'publish failed'; }
   const g = GLYPH_STATES[kind];
-  return `<span class="text-provenance" data-step-publish="${esc(kind)}" title="${esc(state)}">`
-    + `<span class="${g.tone} font-glyph" aria-hidden="true">${g.glyph}</span> `
-    + `<span class="${kind === 'error' ? 'text-state-warn' : 'text-ink-muted'}">${esc(word)}</span></span>`;
+  const title = `title="${esc(state)}"`;
+  const glyph = esc(g.glyph);
+  if (kind === 'error') {
+    return `<span class="text-provenance" data-step-publish="error" ${title}>`
+      + `<span class="text-state-warn font-glyph" aria-hidden="true">${glyph}</span> `
+      + `<span class="text-state-warn">${esc(word)}</span></span>`;
+  }
+  if (kind === 'measured') {
+    return `<span class="text-provenance" data-step-publish="measured" ${title}>`
+      + `<span class="text-state-ok font-glyph" aria-hidden="true">${glyph}</span> `
+      + `<span class="text-ink-muted">${esc(word)}</span></span>`;
+  }
+  return `<span class="text-provenance" data-step-publish="unclassified" ${title}>`
+    + `<span class="text-ink-muted font-glyph" aria-hidden="true">${glyph}</span> `
+    + `<span class="text-ink-muted">${esc(word)}</span></span>`;
 }
 
 export async function openRunsList(slug) {
