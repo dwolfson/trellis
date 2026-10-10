@@ -1042,6 +1042,13 @@ _PG_INT4_TO_BIGINT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("filesystem_data_files", "row_count"),
     ("filesystem_data_files", "file_size_bytes"),
     ("filesystem_surveys", "total_size_bytes"),
+    ("project_data_profiles", "row_count"),
+    ("project_data_profiles", "file_size_bytes"),
+    ("project_file_inventory", "file_size_bytes"),
+    # probe_byte_count is the remote document's Content-Length, not a bounded
+    # probe size (doc_source_probe.py), so a large file URL can exceed int4.
+    ("doc_sources", "probe_byte_count"),
+    ("doc_sources", "ingested_bytes"),
 )
 
 #: Columns added after the tables above first shipped. Empty at introduction;
@@ -2198,7 +2205,7 @@ class ProjectRegistry:
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_slug     TEXT NOT NULL,
                     file_path        TEXT NOT NULL,
-                    file_size_bytes  INTEGER DEFAULT 0,
+                    file_size_bytes  BIGINT DEFAULT 0,
                     indexed_at       TEXT NOT NULL,
                     UNIQUE(project_slug, file_path),
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
@@ -2333,11 +2340,11 @@ class ProjectRegistry:
                     file_path        TEXT NOT NULL,
                     profiled_at      TEXT NOT NULL,
                     format           TEXT NOT NULL,
-                    row_count        INTEGER DEFAULT NULL,
+                    row_count        BIGINT DEFAULT NULL,
                     col_count        INTEGER DEFAULT NULL,
                     schema_json      TEXT DEFAULT NULL,
                     null_summary     TEXT DEFAULT '',
-                    file_size_bytes  INTEGER DEFAULT 0,
+                    file_size_bytes  BIGINT DEFAULT 0,
                     UNIQUE(project_slug, file_path),
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
@@ -3130,14 +3137,14 @@ class ProjectRegistry:
                     probe_status_code     INTEGER DEFAULT NULL,
                     probe_ms              INTEGER DEFAULT NULL,
                     probe_title           TEXT DEFAULT '',
-                    probe_byte_count      INTEGER DEFAULT NULL,
+                    probe_byte_count      BIGINT DEFAULT NULL,
                     probe_error           TEXT DEFAULT '',
                     probed_at             TEXT DEFAULT '',
                     egeria_external_ref_guid TEXT DEFAULT '',
                     egeria_link_relationship_guid TEXT DEFAULT '',
                     origin                TEXT NOT NULL DEFAULT 'local',
                     ingested_pages        INTEGER DEFAULT NULL,
-                    ingested_bytes        INTEGER DEFAULT NULL,
+                    ingested_bytes        BIGINT DEFAULT NULL,
                     ingested_at           TEXT DEFAULT ''
                 )
             """)

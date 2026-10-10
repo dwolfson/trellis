@@ -14,7 +14,7 @@ import sqlite3
 import pytest
 
 from resource_explorer.registry import (
-    _PG_INT4_TO_BIGINT_COLUMNS, DatabaseEntity, ProjectRegistry,
+    _PG_INT4_TO_BIGINT_COLUMNS, DatabaseEntity, Project, ProjectRegistry,
 )
 
 BIG = 3_000_000_000
@@ -185,3 +185,34 @@ def test_a_lock_held_by_another_process_fails_init_with_a_clear_message_and_wide
     ProjectRegistry._pg_schema_ready.discard(url)
     _start(url)                                                    # lock gone: succeeds
     assert all(_types(name)[k] == "bigint" for k in _PG_INT4_TO_BIGINT_COLUMNS)
+
+
+def _project_and_doc_round_trip(reg):
+    reg.add(Project(slug="big", display_name="Big", github_url="https://github.com/a/big"))
+    reg.upsert_file_inventory("big", [("a.bin", BIG)])
+    reg.store_data_profiles("big", [{"file_path": "d.parquet", "format": "parquet",
+                                     "row_count": BIG, "col_count": 3, "schema_json": "{}",
+                                     "null_summary": "", "file_size_bytes": SCHEMA_TOTAL}])
+    prof = reg.get_data_profiles("big")[0]
+    assert (prof["row_count"], prof["file_size_bytes"]) == (BIG, SCHEMA_TOTAL)
+    src = reg.add_doc_source("project", "big", "https://example.org/x.pdf")
+    got = reg.record_doc_source_probe("project", "big", src["id"], state="reachable",
+                                      status_code=200, elapsed_ms=5, byte_count=BIG)
+    assert got["probe_byte_count"] == BIG
+    with reg._conn() as conn:
+        conn.execute("UPDATE doc_sources SET ingested_bytes=? WHERE id=?", (SCHEMA_TOTAL, src["id"]))
+        row = conn.execute("SELECT ingested_bytes FROM doc_sources WHERE id=?", (src["id"],)).fetchone()
+        assert row["ingested_bytes"] == SCHEMA_TOTAL
+        inv = conn.execute("SELECT file_size_bytes FROM project_file_inventory "
+                           "WHERE project_slug='big'").fetchone()
+        assert inv["file_size_bytes"] == BIG
+
+
+def test_project_and_doc_columns_hold_values_over_int4_on_sqlite(tmp_path):
+    _project_and_doc_round_trip(ProjectRegistry(db_path=str(tmp_path / "r.db")))
+
+
+@pg
+def test_project_and_doc_columns_hold_values_over_int4_on_postgres(own_schema):
+    _, url, _ = own_schema
+    _project_and_doc_round_trip(_start(url))
