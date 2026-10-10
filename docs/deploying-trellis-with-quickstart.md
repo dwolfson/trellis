@@ -73,6 +73,7 @@ platform tokens last one hour; an app session is the shorter of that and the app
 | Key | Meaning | Source |
 |---|---|---|
 | `TRELLIS_JWT_SECRET` | signs the apps' own session tokens; every RE/EA process on a box must share it | generate once per box: `openssl rand -hex 32` |
+| `RE_DAEMON_USER_ID` / `TRELLIS_SERVICE_ACCOUNTS` | Egeria user ids no human may sign in as (RE's background account; comma-separated list); EA refuses them with 403 because it shares `TRELLIS_JWT_SECRET` with RE | RE's `EGERIA_USER_ID`; unset refuses nobody |
 | `ADVISOR_PORTAL_SECRET` / `TRELLIS_PORTAL_SECRET` | lets the Portal hand a signed-in user to EA and RE | the same value as the QuickStart's `EGERIA_ADVISOR_SSO_SECRET` |
 | `PGVECTOR_PASSWORD` | the `egeria_advisor` Postgres role | `shared-infra/docker-entrypoint-initdb.d/init_egeria.sql` (default `advisor`) |
 | `GITHUB_TOKEN` | RE's GitHub API access for surveys and discovery | a personal token with read scope; without it GitHub's 60 calls/hour are gone in one survey |
