@@ -262,6 +262,15 @@ def _resolve_n_distinct(
     return NDistinctResolution(abs(n_distinct) * reltuples, None)
 
 
+def _quoted_table_key(schema: str, table: str) -> str:
+    """An unambiguous item key for a table: both names quoted as Postgres
+    identifiers (embedded quotes doubled), so no choice of dots in either name
+    can make two different tables share a key."""
+    def q(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+    return f"{q(schema)}.{q(table)}"
+
+
 class DatabaseSurveyor:
     """Custom surveyor for databases when Egeria can't access them directly."""
 
@@ -966,8 +975,13 @@ class DatabaseSurveyor:
         )
 
         if capabilities.tuple_counters:
+            activity_rows = conn.get_table_activity()
             info["activity_signals"] = {
-                "table_activity": conn.get_table_activity(),
+                "table_activity": activity_rows,
+                #: Set only when the read RAISED: an empty list that failed is
+                #: not an empty list that was read.
+                **({"table_activity_error": activity_rows.error}
+                   if getattr(activity_rows, "error", None) else {}),
                 "stats_reset": conn.get_stats_reset(),
                 # The reset time as EVIDENCE (timestamp / "never" / None for
                 # not read) -- `stats_reset` above folds the last two into "".
@@ -1014,7 +1028,9 @@ class DatabaseSurveyor:
         Returns [] when activity was not collected (capability absent): that
         case is already stated by the roll-up's own confidence-0 annotation.
         """
+        from resource_explorer.surveyors.database.db_derived import _is_base_table
         from resource_explorer.surveyors.database.table_statistics_metrics import (
+            TABLE_NAME, TABLE_QNAME, NOT_READ_KEY, read_failed_reason,
             table_statistics_properties,
         )
         from resource_explorer.surveyors.result_materializer import ANN_TABLE_MEASUREMENTS
@@ -1028,17 +1044,24 @@ class DatabaseSurveyor:
             # A stored snapshot that predates the evidence read: a timestamp is
             # still a stated value, "" is "not read" (never "never reset").
             reset = activity.get("stats_reset") or None
+        error = activity.get("table_activity_error")
+        no_row_reason = read_failed_reason(error) if error else None
 
         by_key = {
             (r.get("schemaname", ""), r.get("tablename", "")): r
             for r in (activity.get("table_activity") or [])
         }
+        # Views and other non-base tables get no table-statistics annotation
+        # (the same filter the freshness analysis applies).
+        skip = set()
         keys = list(by_key)
         if schema_info:
             known = set(keys)
             for schema in schema_info.get("schemas", []):
                 for table in schema.get("tables", []):
                     key = (schema.get("name", ""), table.get("name", ""))
+                    if not _is_base_table({"table_type": table.get("type")}):
+                        skip.add(key)
                     if key not in known:
                         keys.append(key)
                         known.add(key)
@@ -1046,18 +1069,23 @@ class DatabaseSurveyor:
         database = getattr(self.db_entity, "database_name", "") or ""
         annotations: list = []
         for schema_name, table_name in keys:
-            props = table_statistics_properties(by_key.get((schema_name, table_name)), reset)
-            read = "metricsNotRead" not in props
+            if (schema_name, table_name) in skip:
+                continue
+            kwargs = {"no_row_reason": no_row_reason} if no_row_reason else {}
+            props = table_statistics_properties(by_key.get((schema_name, table_name)), reset, **kwargs)
+            read = NOT_READ_KEY not in props
             annotations.append(ResourceMeasureAnnotation(
                 summary=f"Table {schema_name}.{table_name} statistics currency",
                 analysis_step="DatabaseOperations",
                 annotation_type_name=ANN_TABLE_MEASUREMENTS,
                 check_name="table_statistics",
-                item_key=f"{schema_name}.{table_name}",
+                #: Both parts quoted, so `a.b`+`c` and `a`+`b.c` cannot collide.
+                item_key=_quoted_table_key(schema_name, table_name),
                 confidence=100 if read else (50 if len(props) > 1 else 0),
                 resource_properties={
-                    "tableName": table_name,
-                    "tableQualifiedName": ".".join(p for p in (database, schema_name, table_name) if p),
+                    TABLE_NAME.display_name: table_name,
+                    TABLE_QNAME.display_name: ".".join(
+                        p for p in (database, schema_name, table_name) if p),
                     **props,
                 },
                 explanation=(
@@ -1065,9 +1093,10 @@ class DatabaseSurveyor:
                     "(analyze) and its dead rows last reclaimed (vacuum), how "
                     "many rows have changed since, and when the database's "
                     "counters were reset, read from pg_stat_user_tables and "
-                    "pg_stat_database. 'never' is Postgres's own NULL -- it "
-                    "has not happened; a metric listed in metricsNotRead was "
-                    "not read, which says nothing about whether it happened."
+                    "pg_stat_database. Keys are Egeria's display names. 'never' "
+                    "is Postgres's own NULL -- it has not happened; a metric "
+                    "listed in metricsNotRead was not read, which says nothing "
+                    "about whether it happened."
                 ),
             ))
         return annotations
@@ -1188,9 +1217,13 @@ class DatabaseSurveyor:
                 # stats not yet accumulated for any table, not zero
                 # activity. Same "run ANALYZE"-shaped distinction slice 7
                 # draws per-column; here it applies database-wide.
+                read_error = activity.get("table_activity_error")
                 annotations.append(
                     ResourceMeasureAnnotation(
                         summary=(
+                            f"pg_stat_user_tables read failed ({read_error}); "
+                            f"{table_count} table(s) in the catalog"
+                            if read_error else
                             f"No pg_stat_user_tables rows despite {table_count} "
                             "table(s) in the catalog — activity not yet accumulated"
                         ),
@@ -1198,6 +1231,9 @@ class DatabaseSurveyor:
                         confidence=0,
                         resource_properties={"table_count": table_count, "rows_found": 0},
                         explanation=(
+                            "The read itself failed, so nothing is known about "
+                            "activity — absence of measurement, not zero activity."
+                            if read_error else
                             "The statistics collector has not produced a row for any "
                             "table yet (recent stats reset, or the collector has not "
                             "run) — this is absence of measurement, not a measurement "
