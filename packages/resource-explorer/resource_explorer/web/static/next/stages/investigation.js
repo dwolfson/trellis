@@ -30,7 +30,7 @@ import {
   listInvestigationMembers, addInvestigationMember, removeInvestigationMember,
   closeInvestigation, suspendInvestigation, reopenInvestigation,
   bindInvestigationEgeriaProject, promoteInvestigation, reclassifyInvestigation,
-  relinkInvestigationMembers, syncInvestigationEgeria,
+  relinkInvestigationMembers, syncInvestigationEgeria, getInvestigationLinkStatus,
   getInvestigationDispositions, setInvestigationDisposition, getInvestigationNextSteps,
   fetchScopeCsv,
 } from '/static/re-api.js';
@@ -321,6 +321,15 @@ async function renderDetail(slug) {
   }
 
   if (stale()) return;
+  // Link status is a read of what relink recorded; a failed read is "unavailable", never a zero.
+  _linkStatus[slug] = null;
+  if (inv.egeria_project_guid) {
+    try {
+      const ls = await getInvestigationLinkStatus(slug);
+      if (ls && ls.counts) _linkStatus[slug] = ls.counts;
+    } catch { /* leaves null: shown as unavailable */ }
+    if (stale()) return;
+  }
   const { classifications } = await investigationVocab();
   if (stale()) return;
   const classLabel = classifications.classifications.find((c) => c.name === inv.project_classification)?.label
@@ -392,16 +401,34 @@ function btnCls() {
     + 'text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60';
 }
 
-// Members the last promote/relink could not attach, per slug -- taken from that write's own result
-// (members_unlinkable), never recomputed here. Unknown (no entry) shows no count rather than "0".
+// Link status per slug: the counts from GET /link-status (read on every detail render), or null when that read
+// failed. `_unlinked` is the fallback from the last promote/relink result. Unknown never shows as "0".
+const _linkStatus = {};
 const _unlinked = {};
+
+function linkStatusHtml(slug) {
+  const c = _linkStatus[slug];
+  const plural = (k) => `${k} member${k === 1 ? '' : 's'}`;
+  if (c) {
+    const parts = [];
+    if (c.not_linked > 0) {
+      parts.push(`<span data-inv-not-linked class="ml-s2 text-state-warn">${plural(c.not_linked)} not linked</span>`);
+    }
+    if (c.could_not_tell > 0) {
+      parts.push(`<span data-inv-link-unknown class="ml-s2 text-ink-muted">could not tell for ${plural(c.could_not_tell)}</span>`);
+    }
+    return { html: parts.join(''), n: c.not_linked };
+  }
+  const n = _unlinked[slug];
+  if (n > 0) {
+    return { html: `<span data-inv-not-linked class="ml-s2 text-state-warn">${plural(n)} not linked</span>`, n };
+  }
+  return { html: `<span data-inv-link-unknown class="ml-s2 text-ink-muted">link status unavailable</span>`, n };
+}
 
 function egeriaSectionHtml(inv) {
   if (inv.egeria_project_guid) {
-    const n = _unlinked[inv.slug];
-    const notLinked = n > 0
-      ? `<span data-inv-not-linked class="ml-s2 text-state-warn">${n} member${n === 1 ? '' : 's'} not linked</span>`
-      : '';
+    const { html: notLinked, n } = linkStatusHtml(inv.slug);
     return `<p class="max-w-[70ch] text-caveat text-ink-muted">
         <span data-inv-bound-cue class="text-state-ok" title="bound to an Egeria Project">● bound</span>
         · <span class="font-mono">${esc(inv.egeria_project_qualified_name || inv.egeria_project_guid)}</span>${notLinked}

@@ -814,6 +814,9 @@ export const reclassifyInvestigation = (slug, projectClassification, hypothesis 
 export const relinkInvestigationMembers = (slug) =>
   post(`/api/investigations/${encodeURIComponent(slug)}/relink-members`);
 
+export const getInvestigationLinkStatus = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/link-status`);
+
 export const syncInvestigationEgeria = (slug) =>
   post(`/api/investigations/${encodeURIComponent(slug)}/sync-egeria`);
 

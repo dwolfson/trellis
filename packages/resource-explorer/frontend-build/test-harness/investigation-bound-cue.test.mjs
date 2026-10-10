@@ -12,9 +12,9 @@ const INDEX_HTML = fs.readFileSync(path.resolve(HERE, '../../resource_explorer/w
 const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
-async function setUp({ promoteResult }) {
+async function setUp({ promoteResult, linkStatus, startBound = false }) {
   const { document, window } = makeDomEnvironment();
-  let bound = false;
+  let bound = startBound;
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
     const u = String(url); const method = (options.method || 'GET').toUpperCase();
@@ -22,6 +22,10 @@ async function setUp({ promoteResult }) {
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
     if (/\/promote$/.test(u)) { bound = true; return ok(promoteResult); }
     if (/\/relink-members$/.test(u)) return ok({ ok: true, members_linked: ['a', 'b'], members_unlinkable: [] });
+    if (/\/link-status$/.test(u)) {
+      if (linkStatus === 'fail') return { ok: false, status: 500, json: async () => ({ detail: 'nope' }), text: async () => 'nope' };
+      return ok(linkStatus || {});
+    }
     if (/\/members$/.test(u)) return ok([{ entity_type: 'repo', entity_slug: 'a' }, { entity_type: 'repo', entity_slug: 'b' }]);
     if (/\/next-steps$/.test(u)) return ok({ steps: [], complete: true });
     if (/\/dispositions$/.test(u)) return ok({});
@@ -79,4 +83,31 @@ test('members the promote could not link are counted, with the existing link act
   assert.ok(t.calls.includes('POST /api/investigations/c360/relink-members'));
   assert.equal(t.document.querySelector('[data-inv-not-linked]'), null);
   assert.equal(text(t.document.querySelector('[data-act="inv-relink"]')), 'Relink members');
+});
+
+test('on page load a bound investigation shows the not-linked count from the read, with the link action', async () => {
+  const t = await setUp({ startBound: true, linkStatus: { bound: true, members: [], counts: { linked: 1, not_linked: 3, could_not_tell: 0 } } });
+  assert.ok(t.calls.includes('GET /api/investigations/c360/link-status'));
+  assert.match(text(t.document.querySelector('[data-inv-not-linked]')), /3 members not linked/);
+  assert.equal(text(t.document.querySelector('[data-act="inv-relink"]')), 'Link members');
+  assert.equal(t.document.querySelector('[data-inv-link-unknown]'), null);
+});
+
+test('could not tell is shown as such and never as zero not linked', async () => {
+  const t = await setUp({ startBound: true, linkStatus: { bound: true, members: [], counts: { linked: 0, not_linked: 0, could_not_tell: 2 } } });
+  assert.equal(t.document.querySelector('[data-inv-not-linked]'), null);
+  assert.match(text(t.document.querySelector('[data-inv-link-unknown]')), /could not tell for 2 members/);
+  assert.doesNotMatch(text(t.document.getElementById('content')), /\b0 members? not linked/);
+});
+
+test('a failed link-status read says unavailable and shows no count', async () => {
+  const t = await setUp({ startBound: true, linkStatus: 'fail' });
+  assert.equal(t.document.querySelector('[data-inv-not-linked]'), null);
+  assert.match(text(t.document.querySelector('[data-inv-link-unknown]')), /link status unavailable/);
+});
+
+test('all linked shows neither a count nor an unknown', async () => {
+  const t = await setUp({ startBound: true, linkStatus: { bound: true, members: [], counts: { linked: 2, not_linked: 0, could_not_tell: 0 } } });
+  assert.equal(t.document.querySelector('[data-inv-not-linked]'), null);
+  assert.equal(t.document.querySelector('[data-inv-link-unknown]'), null);
 });
