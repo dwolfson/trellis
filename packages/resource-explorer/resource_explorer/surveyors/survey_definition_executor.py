@@ -420,6 +420,21 @@ class SurveyDefinitionExecutor:
         """
         adapter = get_adapter(entity_type)
         surveyed_at = datetime.utcnow().isoformat()
+        if entity_type == "database":
+            # Brief D 7f.1: one scan, one snapshot. Every step of this run --
+            # prerequisite auto-runs and batch/Prefect paths included, they
+            # all read `runner_kwargs` -- stamps its rows with the run's own
+            # time, so the scan's steps merge into ONE `database_surveys` row
+            # instead of leaving one per step with the activity on only one.
+            #
+            # The whole-definition Prefect flow is handed the ORIGINAL kwargs
+            # (its parameters are persisted, and are asserted to carry only an
+            # opaque credential reference); it stamps the same `surveyed_at`
+            # itself, in `run_planned_step_task`.
+            prefect_runner_kwargs = runner_kwargs
+            runner_kwargs = {**runner_kwargs, "scan_surveyed_at": surveyed_at}
+        else:
+            prefect_runner_kwargs = runner_kwargs
 
         steps_report: list = []
         step_outputs: list = []
@@ -520,7 +535,8 @@ class SurveyDefinitionExecutor:
                 engine_note = f"Prefect API unreachable at {_detail}: ran locally"
 
         if _attempt_prefect:
-            planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs,
+            planned = self._run_via_prefect(entity_type, entity, survey_def,
+                                            prefect_runner_kwargs,
                                             surveyed_at, credential_scope=credential_scope)
             if planned is not None:
                 steps_report, step_outputs, errors = planned

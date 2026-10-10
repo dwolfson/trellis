@@ -308,8 +308,16 @@ class DatabaseSurveyor:
         sampling_overrides: dict | None = None,
         reference_catalog=None,
         read_egeria_catalog: bool = True,
+        surveyed_at: str | None = None,
     ) -> dict:
         """Run a database survey.
+
+        surveyed_at : the scan time to stamp this run's rows with (Brief D
+            7f.1). A Survey Definition dispatches each step as its own
+            `survey()` call; the executor hands every step of ONE scan the
+            same value so they merge into one snapshot instead of leaving a
+            row per step. `None` (a lone per-card run) keeps the old
+            behaviour: stamp "now", one row for the run.
 
         steps : optional subset of {"schema", "statistics", "views",
             "operations", "column_profile", "nested_columns",
@@ -403,7 +411,7 @@ class DatabaseSurveyor:
 
         results = {
             "database_slug": self.db_entity.slug,
-            "surveyed_at": datetime.utcnow().isoformat(),
+            "surveyed_at": surveyed_at or datetime.utcnow().isoformat(),
             "source": "custom",
             "annotations": [],
             "schema_info": {},
@@ -659,6 +667,14 @@ class DatabaseSurveyor:
         annotations: list = []
 
         stats_reset = stats_info.get("stats_reset") or None
+        #: What the STORED column carries (Brief D 7f.3): a timestamp, the
+        #: `STATS_NEVER_RESET` word, or None for "not read". A stats dict from
+        #: a connection that predates the evidence read falls back to the old
+        #: value (its "" is "not read", never "never reset").
+        stats_reset_stored = (
+            stats_info["stats_reset_evidence"]
+            if "stats_reset_evidence" in stats_info else stats_reset
+        )
 
         column_stats_by_key = {
             (r.get("schemaname", ""), r.get("tablename", ""), r.get("attname", "")): r
@@ -729,7 +745,7 @@ class DatabaseSurveyor:
                             "last_analyze": activity.get("last_analyze", ""),
                             "last_autoanalyze": activity.get("last_autoanalyze", ""),
                             "pending_changes": activity.get("pending_changes"),
-                            "stats_reset": stats_reset,
+                            "stats_reset": stats_reset_stored,
                             "state": STATE_MEASURED,
                         })
                         annotations.append(
@@ -1725,18 +1741,28 @@ class DatabaseSurveyor:
                 key = (schema["name"], table["name"])
                 ts = size_lookup.get(key, {})
                 if ts:
-                    table["size_bytes"] = ts.get("total_bytes", 0) or 0
+                    # Brief D 7f.2: a size Postgres would not give is NULL
+                    # ("not read"), never the 0 an `or 0` used to invent.
+                    table["size_bytes"] = ts.get("total_bytes")
+                    # Brief D: heap and index sizes beside the total; NULL
+                    # when the database did not give them.
+                    table["table_bytes"] = ts.get("relation_bytes")
+                    table["index_bytes"] = ts.get("index_bytes")
                 elif table.get("source") == "catalog_fallback":
                     # Same reasoning as row_count above: pg_tables (the
                     # source of table_stats) is schema-USAGE-filtered, and a
                     # catalog-fallback table has no size measurement to fall
                     # back to at all — leave it unmeasured rather than 0.
                     table["size_bytes"] = None
+                    table["table_bytes"] = None
+                    table["index_bytes"] = None
                 else:
                     # Same stopgap as row_count above -- this run collected
                     # no size data at all, so keep the prior value.
                     prior = prior_by_key.get(key)
                     table["size_bytes"] = prior.get("size_bytes") if prior else None
+                    table["table_bytes"] = prior.get("table_bytes") if prior else None
+                    table["index_bytes"] = prior.get("index_bytes") if prior else None
                 table["size_pretty"] = ts.get("total_size", "")
 
         # `operations`/`credential_capability` preserve-prior, same stopgap

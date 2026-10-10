@@ -2363,6 +2363,15 @@ def derive_change_rates(registry, inputs: DerivedInputs) -> dict:
             if new_rows is not None and old_rows is not None else None
         )
 
+        old_idx = (old_tbl.get(key) or {}).get("index_bytes")
+        new_idx = (new_tbl.get(key) or {}).get("index_bytes")
+        #: Brief D: index size drift shown beside, not folded into, size drift;
+        #: None when either snapshot did not read it.
+        index_delta = (
+            int(new_idx) - int(old_idx)
+            if new_idx is not None and old_idx is not None else None
+        )
+
         entry.update({
             "state": STATE_MEASURED,
             "change": "idle" if total == 0 else "active",
@@ -2370,6 +2379,7 @@ def derive_change_rates(registry, inputs: DerivedInputs) -> dict:
             "per_day": per_day,
             "unmeasured_counters": unmeasured,
             "size_bytes_delta": size_delta,
+            "index_bytes_delta": index_delta,
             "row_count_delta": row_delta,
             "explanation": (
                 f"Measured over {interval_days:.2f} day(s): "
