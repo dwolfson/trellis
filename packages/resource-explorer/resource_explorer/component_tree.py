@@ -268,12 +268,21 @@ def leaves(registry: ProjectRegistry, slug: str, branch: str) -> list[dict]:
     from resource_explorer.workflows.curate import NODE_PROMOTION_COMPONENT, promotion_by_scope
     promos = promotion_by_scope(registry, slug, NODE_PROMOTION_COMPONENT)
     b = branch.rstrip("/")
+    real = sorted((c for c in comps if c.get("path") and not c.get("structural")), key=lambda x: x["path"])
+    accepted_paths = {x["path"] for x in real if ((resolve_verdict(x["path"], verdicts) or {}).get("verdict")) == "accepted"}
     out = []
     for c in sorted(comps, key=lambda x: x.get("path", "")):
         p = c.get("path", "")
         if not p or not (not b or p == b or p.startswith(b + "/")) or c.get("structural"):
             continue
+        # What a verdict on this row reaches with its children (the same counts a branch row carries): a leaf
+        # that is itself a component with components beneath it gets the "this component only / with its N
+        # children" choice, so its own verdict does not silently reach them.
+        reach = [x for x in real if x["path"] == p or x["path"].startswith(p + "/")]
         out.append({"path": p, "name": c.get("name") or p, "type": c.get("type") or "",
+                    "children": len(reach) - 1,
+                    "reach_low": sum(1 for x in reach if (x.get("confidence") or 0) <= LOW_CONFIDENCE),
+                    "reach_accepted": sum(1 for x in reach if x["path"] in accepted_paths),
                     "confidence": c.get("confidence"), "low_confidence": (c.get("confidence") or 0) <= LOW_CONFIDENCE,
                     "proposed_by": c.get("proposed_by") or [], "ports": ports.get(p, []),
                     "verdict": resolve_verdict(p, verdicts), "materialized": bool(c.get("materialized")),

@@ -168,3 +168,237 @@ class TestOnePressSettlesThePlan:
         assert reg.get_materialized_component("repo", "p", "src/a")["guid"] == a    # A is cached ...
         assert outbox[0][1] == [b]                                                    # ... but is not a member
         _settled(reg)                                     # and the plan does not ask for it for ever
+
+
+def _seed_parent_and_child(reg):
+    """Child blueprint C (members a, b) nested under parent blueprint P (member c, child C); all accepted."""
+    for slug in ("a", "b", "c"):
+        reg.upsert_finding("p", "architecture_recovery", [{
+            "check_name": "component", "label": "x",
+            "detail": {"name": slug.upper(), "slug": slug, "type": "Software Service", "admission": adm.BUILT}}],
+            surveyed_at="2026-10-09T00:00:00", scope_locator=f"src/{slug}")
+        reg.record_component_verdict("repo", "p", f"src/{slug}", "accepted", "", "", decided_by="x")
+    reg.upsert_finding("p", "architecture_blueprints", [
+        {"check_name": "candidate_blueprint", "label": "the services",
+         "detail": {"name": "the services", "perspective": "deployment", "members": ["c"], "children": ["the parts"],
+                    "parent": "", "oversized": False, "composed_into": ""}},
+        {"check_name": "candidate_blueprint", "label": "the parts",
+         "detail": {"name": "the parts", "perspective": "deployment", "members": ["a", "b"], "children": [],
+                    "parent": "the services", "oversized": False, "composed_into": ""}},
+    ], surveyed_at="2026-10-09T00:00:00")
+    for cluster in ("the services", "the parts"):
+        reg.record_component_verdict("repo", "p", f"deployment::{cluster}", "accepted", "", "",
+                                     verdict_target="blueprint", decided_by="x")
+
+
+class TestAParentAndItsChildBlueprintInOnePress:
+    """One kind, one plain identity per repository (architect's ruling, 2026-10-08): a nested child blueprint of
+    the same kind needs a person's identifier. Accept is a decision only, so both can be accepted before either is
+    written; the parent (the top of the reading) takes the plain identity, never the child written first."""
+
+    def _press_all(self, reg):
+        plan = ap.publish_plan(reg, "p")
+        target = {"slug": "p", "paths": [c["path"] for c in plan["components"]["to_write"]],
+                  "blueprints": [b["key"] for b in plan["blueprints"]["to_write"]]}
+        return plan, ap.run_publish(reg, "p", target, "run-1")
+
+    def test_with_the_childs_identifier_both_are_written_the_child_linked_and_the_next_plan_is_empty(self, world):
+        reg, fake, outbox = world
+        _seed_parent_and_child(reg)
+        reg.record_component_verdict("repo", "p", "deployment::the parts", "accepted",
+                                     ap.encode_blueprint_choices("", "parts"), "",
+                                     verdict_target="blueprint", decided_by="x")
+        plan, res = self._press_all(reg)
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == [
+            "deployment::the parts", "deployment::the services"], "children before the parent that links them"
+        assert [(r["kind"], r["status"]) for r in res] == [("component", "done")] * 3 + [("blueprint", "done")] * 2, res
+        child = reg.get_materialized_blueprint("repo", "p", "deployment", "the parts")
+        parent = reg.get_materialized_blueprint("repo", "p", "deployment", "the services")
+        assert parent["qualified_name"] == "SolutionBlueprint::repo::p::deployment", "the parent holds the plain identity"
+        assert child["qualified_name"] == "SolutionBlueprint::repo::p::deployment::parts"
+        c = fake.qn_to_guid["SolutionComponent::repo::p::src/c"]
+        handed = {bp: sorted(g) for bp, g in outbox}
+        assert handed[parent["guid"]] == sorted([c, child["guid"]]), "the parent gets its member and its child"
+        _settled(reg)
+
+    def test_without_one_the_child_is_held_back_before_the_press_and_never_takes_the_parents_identity(self, world):
+        reg, fake, outbox = world
+        _seed_parent_and_child(reg)
+        plan, res = self._press_all(reg)
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == ["deployment::the services"]
+        held = plan["blueprints"]["needs_identifier"]
+        assert [h["key"] for h in held] == ["deployment::the parts"]
+        assert "give this one an identifier" in held[0]["words"] and "the services" in held[0]["words"]
+        parent = reg.get_materialized_blueprint("repo", "p", "deployment", "the services")
+        assert parent["qualified_name"] == "SolutionBlueprint::repo::p::deployment"
+        assert not (reg.get_materialized_blueprint("repo", "p", "deployment", "the parts") or {}).get("guid")
+        assert [r["status"] for r in res if r["kind"] == "blueprint"] == ["partial"], res   # its child is not linked
+        after = ap.publish_plan(reg, "p")
+        assert after["blueprints"]["to_write"] == [] and after["nothing"] is True
+        assert [h["key"] for h in after["blueprints"]["needs_identifier"]] == ["deployment::the parts"]
+
+
+    def test_the_accept_pane_asks_the_child_not_the_parent_for_an_identifier(self, world):
+        """Same answer the plan acts on: the identity view the accept pane draws from."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
+        reg, fake, outbox = world
+        _seed_parent_and_child(reg)
+        ident = {b["cluster_name"]: b["identity"] for b in _candidate_blueprints_results(reg, "p")}
+        assert ident["the services"]["needs_identifier"] is False
+        assert ident["the parts"]["needs_identifier"] is True
+        assert "already exists" not in ident["the parts"]["sentence"], "nothing is in Egeria yet: never said"
+
+
+class TestAFlippedShapeBetweenTwoPresses:
+    """The person flips the shape between two presses: the plan converges on the new shape and no pair the old
+    shape wrote keeps the blueprint in the plan for ever."""
+
+    def _flip(self, reg, cluster, shape):
+        reg.record_component_verdict("repo", "p", f"deployment::{cluster}", "accepted",
+                                     ap.encode_blueprint_choices(shape, ""), "",
+                                     verdict_target="blueprint", decided_by="x")
+
+    def test_container_then_contents(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")                                   # default: A is the container of B
+        _press(reg)
+        _settled(reg)
+        self._flip(reg, "A", "contents")
+        plan = ap.publish_plan(reg, "p")
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == ["deployment::A"], (
+            "the flip asks for the blueprint again: B is now a direct member")
+        res = ap.run_publish(reg, "p", {"slug": "p", "paths": [], "blueprints": ["deployment::A"]}, "run-2")
+        assert [r["status"] for r in res] == ["done"], res
+        a, b = (fake.qn_to_guid[f"SolutionComponent::repo::p::src/{s}"] for s in "ab")
+        assert b in outbox[-1][1]
+        _settled(reg)                                     # the A->B pair from press 1 is not a stale pair now
+
+    def test_contents_then_container(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        self._flip(reg, "A", "contents")                  # first press as contents: A and B direct members
+        _press(reg)
+        _settled(reg)
+        self._flip(reg, "A", "container")
+        plan = ap.publish_plan(reg, "p")
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == ["deployment::A"], (
+            "the flip asks for the composition A->B")
+        res = ap.run_publish(reg, "p", {"slug": "p", "paths": [], "blueprints": ["deployment::A"]}, "run-2")
+        assert [r["status"] for r in res] == ["done"], res
+        a, b = (fake.qn_to_guid[f"SolutionComponent::repo::p::src/{s}"] for s in "ab")
+        assert ("link_subcomponent", a, b) in fake.calls
+        _settled(reg)
+
+    def test_flipping_back_and_forth_still_settles(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        _press(reg)
+        for n, shape in enumerate(("contents", "container", "contents"), start=2):
+            self._flip(reg, "A", shape)
+            assert [b["key"] for b in ap.publish_plan(reg, "p")["blueprints"]["to_write"]] == ["deployment::A"], (
+                f"a flip to {shape} has something to hand over")
+            res = ap.run_publish(reg, "p", {"slug": "p", "paths": [], "blueprints": ["deployment::A"]}, f"run-{n}")
+            assert [r["status"] for r in res] == ["done"], (shape, res)
+            _settled(reg)
+
+
+class TestAClientThatSendsNoChoiceKeepsTheStoredOne:
+    """Round 2, item 1: Classic (and the CLI) post a blueprint verdict with no shape and no identifier. The newest
+    verdict wins, so storing "" there reverted a Next contents choice to container and the next press wrote
+    container links over contents members. A choice not sent is carried forward; only an explicit value
+    changes it."""
+
+    def _post(self, monkeypatch, reg, **choice):
+        import resource_explorer.web.routes.curate as routes
+        monkeypatch.setattr(routes, "_registry", lambda: reg)
+        monkeypatch.setattr(routes, "_authorize_curation", lambda *a, **k: None)
+        return routes.add_blueprint_verdict("repo", "p", routes.BlueprintVerdictCreate(
+            perspective="deployment", cluster_name="A", verdict="accepted", **choice))
+
+    def test_a_next_contents_choice_survives_a_classic_re_accept(self, world, monkeypatch):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        self._post(monkeypatch, reg, shape="contents")        # Next: the person flips to contents
+        _press(reg)
+        _settled(reg)
+        before = ap.publish_plan(reg, "p")
+        self._post(monkeypatch, reg)                          # Classic: re-accept, no shape, no identifier
+        assert ap.blueprint_choices(reg.get_component_verdicts("repo", "p")["deployment::A"])["shape"] == "contents"
+        after = ap.publish_plan(reg, "p")
+        assert after == before and after["nothing"] is True, "the plan is unchanged"
+        assert not [c for c in fake.calls if c[0] == "link_subcomponent"], "no container links over contents"
+
+    def test_an_explicit_default_clears_the_choice(self, world, monkeypatch):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        self._post(monkeypatch, reg, shape="contents", identifier="second")
+        for clear in ("", "default"):
+            self._post(monkeypatch, reg, shape="contents")
+            self._post(monkeypatch, reg, shape=clear)
+            got = ap.blueprint_choices(reg.get_component_verdicts("repo", "p")["deployment::A"])
+            assert got == {"shape": "", "identifier": "second"}, (clear, got)
+        self._post(monkeypatch, reg, identifier="")
+        assert ap.blueprint_choices(reg.get_component_verdicts("repo", "p")["deployment::A"]) == {"shape": "", "identifier": ""}
+
+    def test_the_accept_pane_shows_the_stored_shape_not_the_default(self, world, monkeypatch):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        assert _candidate_blueprints_results(reg, "p")[0]["shape_plan"]["shape"] == "container"
+        self._post(monkeypatch, reg, shape="contents")
+        assert _candidate_blueprints_results(reg, "p")[0]["shape_plan"]["shape"] == "contents"
+
+
+class TestAnOlderAttachedRecordStillShowsAFlip:
+    """Round 2, item 3: a record written before members and sub-components were kept apart has only `guids`.
+    Counting them as both hid a flip; they are now split by the shape that same press wrote."""
+
+    def _as_old_record(self, reg, key="deployment::A"):
+        rows = [p for p in reg.list_catalogue_commit_proofs("p") if p["proof"] == ap.P_ATTACHED and p["table_name"] == key]
+        reg.append_catalogue_commit_proof("p", proof=ap.P_ATTACHED, node_kind=ap.NODE_PUBLISH_ITEM, table_name=key,
+                                          element_guid=rows[-1]["element_guid"],
+                                          detail={"guids": rows[-1]["detail"]["guids"]})
+
+    def test_a_container_press_by_older_code_then_a_flip_to_contents_attaches_the_sub_component(self, world, monkeypatch):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        _press(reg)                                          # container: A member, B composed
+        self._as_old_record(reg)
+        _settled(reg)
+        reg.record_component_verdict("repo", "p", "deployment::A", "accepted", ap.encode_blueprint_choices("contents", ""),
+                                     "", verdict_target="blueprint", decided_by="x")
+        plan = ap.publish_plan(reg, "p")
+        assert [(b["key"], b["unattached"]) for b in plan["blueprints"]["to_write"]] == [("deployment::A", 1)], (
+            "B was composed, not a member: the flip must attach it")
+        assert plan["blueprints"]["check_egeria"] == []
+        ap.run_publish(reg, "p", {"slug": "p", "paths": [], "blueprints": ["deployment::A"]}, "run-2")
+        _settled(reg)
+
+    def test_a_contents_press_by_older_code_counts_its_guids_as_members_only(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        reg.record_component_verdict("repo", "p", "deployment::A", "accepted", ap.encode_blueprint_choices("contents", ""),
+                                     "", verdict_target="blueprint", decided_by="x")
+        _press(reg)
+        self._as_old_record(reg)
+        members, composed, unknown = ap._attached(reg.list_catalogue_commit_proofs("p"), "deployment::A")
+        b = fake.qn_to_guid["SolutionComponent::repo::p::src/b"]
+        assert (b in members, composed, unknown) == (True, set(), False)
+
+    def test_with_no_shape_row_both_are_kept_and_the_plan_says_check_egeria(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        _press(reg)
+        key = "deployment::A"
+        bp = reg.get_materialized_blueprint("repo", "p", "deployment", "A")["guid"]
+        # Simulate a blueprint pressed before shape rows existed: only an old-format attached row survives.
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM catalogue_commit_proofs WHERE table_name=? AND proof IN ('shape','composition',?)",
+                         (key, ap.P_ATTACHED))
+        a = fake.qn_to_guid["SolutionComponent::repo::p::src/a"]
+        reg.append_catalogue_commit_proof("p", proof=ap.P_ATTACHED, node_kind=ap.NODE_PUBLISH_ITEM, table_name=key,
+                                          element_guid=bp, detail={"guids": [a]})
+        members, composed, unknown = ap._attached(reg.list_catalogue_commit_proofs("p"), key)
+        assert (members, composed, unknown) == ({a}, {a}, True)
+        check = ap.publish_plan(reg, "p")["blueprints"]["check_egeria"]
+        assert [(c["key"], c["words"]) for c in check] == [(key, ap.EARLIER_SHAPE_UNKNOWN)]

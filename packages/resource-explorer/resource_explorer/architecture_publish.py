@@ -72,9 +72,11 @@ def planned_handoff(bp: dict, nodes_by_slug: dict, shape: str, proofs: list[dict
     cannot then disagree about the root: in the contents shape the root is NOT a member (even when cached), in the
     container shape it is the only member and the container of the compositions.
 
-    Returns {wanted, known, container}: `wanted` the GUIDs to be attached, `known` the GUIDs a composition pair may
-    use (the container and its planned children; empty in the contents shape, which has no compositions),
-    `container` the root's GUID."""
+    Returns {wanted, members, composed, known, container}: `wanted` every GUID to be handed over; `members` the
+    ones handed to the blueprint as DIRECT members (and its child blueprints); `composed` the ones linked as
+    sub-components of the container (never direct members: a later flip to the contents shape must attach them);
+    `known` the GUIDs a composition pair may use (the container and its planned children; empty in the contents
+    shape, which has no compositions); `container` the root's GUID."""
     from dataclasses import replace
 
     from resource_explorer.blueprint_shape import CONTAINER, Node, plan_shape
@@ -93,20 +95,50 @@ def planned_handoff(bp: dict, nodes_by_slug: dict, shape: str, proofs: list[dict
     # element for it (known only from Egeria): then the newest press's rows say it was written as the container.
     adopted = plan.shape != CONTAINER and root is not None and not root.guid and pressed_container and bool(newest)
     if plan.shape != CONTAINER and not adopted:
-        return {"wanted": sorted({n.guid for n in plan.members if n.guid} | kids), "known": [], "container": ""}
+        members = {n.guid for n in plan.members if n.guid} | kids
+        return {"wanted": sorted(members), "members": sorted(members), "composed": [], "known": [], "container": ""}
     container = root.guid if root is not None and root.guid else (newest[0]["element_guid"] if newest else "")
     pair_kids = others if adopted else {c.guid for _, c in plan.compositions if c.guid}
-    return {"wanted": sorted(({root.guid} if root is not None and root.guid else set()) | pair_kids | kids),
+    members = ({root.guid} if root is not None and root.guid else set()) | kids
+    return {"wanted": sorted(members | pair_kids), "members": sorted(members), "composed": sorted(pair_kids),
             "known": sorted(({container} - {""}) | pair_kids), "container": container}
 
 
-def _attached(proofs: list[dict], scope_key: str) -> set[str]:
-    """The GUIDs the LAST press recorded as actually handed to the blueprint."""
-    done: set[str] = set()
-    for p in proofs:
-        if p["proof"] == P_ATTACHED and p["table_name"] == scope_key:
-            done = set((p.get("detail") or {}).get("guids") or [])
-    return done
+EARLIER_SHAPE_UNKNOWN = "shape of the earlier press unknown \u2014 check Egeria"
+
+
+def _attached(proofs: list[dict], scope_key: str) -> tuple[set[str], set[str], bool]:
+    """(direct members, composed sub-components, earlier shape unknown) the LAST press recorded as actually
+    handed over.
+
+    A row written before the two were kept apart has only `guids`. It is split by the shape that same press
+    wrote (its `shape` proof row, the newest one before it): contents means every GUID was a direct member;
+    container means the GUIDs that press linked as sub-components (its `composition` rows) were composed and
+    the rest (the container, child blueprints) were members. With no shape row to read, the GUIDs count as
+    both, as they did then, and the third value says the plan cannot tell, so a flip may attach nothing."""
+    members: set[str] = set()
+    composed: set[str] = set()
+    unknown = False
+    for i, p in enumerate(proofs):
+        if p["proof"] != P_ATTACHED or p["table_name"] != scope_key:
+            continue
+        d = p.get("detail") or {}
+        if "members" in d or "composed" in d:
+            members, composed, unknown = set(d.get("members") or []), set(d.get("composed") or []), False
+            continue
+        guids = set(d.get("guids") or [])
+        last_shape = max((j for j in range(i) if proofs[j]["proof"] == "shape"
+                          and proofs[j]["table_name"] == scope_key), default=-1)
+        shape = str(((proofs[last_shape].get("detail") or {}).get("shape") or "")) if last_shape >= 0 else ""
+        if shape.startswith("contents"):
+            members, composed, unknown = guids, set(), False
+        elif shape.startswith("container"):
+            kids = {q["target_guid"] for q in proofs[last_shape + 1:i]
+                    if q["proof"] == "composition" and q["table_name"] == scope_key}
+            members, composed, unknown = guids - kids, guids & kids, False
+        else:
+            members, composed, unknown = guids, guids, True
+    return members, composed, unknown
 
 
 def _composition_state(proofs: list[dict], scope_key: str, known: list[str]) -> tuple[int, set[str]]:
@@ -170,7 +202,7 @@ def publish_plan(registry, slug: str) -> dict:
     project = registry.get(slug)
     label = repo_label(slug, getattr(project, "display_name", "") or "")
     by_name = {b["cluster_name"]: b for b in blueprints}
-    bp_write, bp_present, bp_rejected_in_egeria = [], 0, 0
+    bp_write, bp_present, bp_rejected_in_egeria, bp_held_back, bp_check = [], 0, 0, [], []
     for b in blueprints:
         key = f"{b['perspective']}::{b['cluster_name']}"
         verdict = (b.get("verdict") or {}).get("verdict")
@@ -181,11 +213,23 @@ def publish_plan(registry, slug: str) -> dict:
         if verdict != "accepted":
             continue
         choices = blueprint_choices(raw_verdicts.get(key))
+        identity = b.get("identity") or {}
+        if not held and identity.get("needs_identifier") and not choices["identifier"]:
+            # Another blueprint of this kind holds (or takes at this press) the repository's plain identity: the
+            # write would be refused, so it is held back and said, never attempted.
+            bp_held_back.append({"key": key, "perspective": b["perspective"], "cluster_name": b["cluster_name"],
+                                 "name": b["cluster_name"], "words": identity.get("sentence") or ""})
+            continue
         hand = planned_handoff(b, nodes_by_slug, choices["shape"], proofs, key)
         wanted = hand["wanted"]
         unfinished, unconfirmed_kids = _composition_state(proofs, key, hand["known"]) if held else (0, set())
-        # A child whose composition is unconfirmed is counted once, as a composition to confirm.
-        unattached = len(set(wanted) - _attached(proofs, key) - unconfirmed_kids) if held else 0
+        # A child whose composition is unconfirmed is counted once, as a composition to confirm. A direct member
+        # and a composed sub-component are different handoffs: one never stands in for the other.
+        att_members, att_composed, shape_unknown = _attached(proofs, key) if held else (set(), set(), False)
+        if shape_unknown:
+            bp_check.append({"key": key, "name": b["cluster_name"], "words": EARLIER_SHAPE_UNKNOWN})
+        unattached = (len(set(hand["members"]) - att_members)
+                      + len(set(hand["composed"]) - att_composed - unconfirmed_kids)) if held else 0
         if held and not unfinished and not unattached:
             bp_present += 1
             continue
@@ -207,7 +251,11 @@ def publish_plan(registry, slug: str) -> dict:
     return {
         "slug": slug,
         "components": {"to_write": to_write, "in_egeria": in_egeria, "rejected_in_egeria": rejected_in_egeria},
-        "blueprints": {"to_write": bp_write, "in_egeria": bp_present, "rejected_in_egeria": bp_rejected_in_egeria},
+        "blueprints": {"to_write": bp_write, "in_egeria": bp_present, "rejected_in_egeria": bp_rejected_in_egeria,
+                       "needs_identifier": bp_held_back,
+                       # Last pressed by code that did not keep members and sub-components apart, with no shape
+                       # row to split them by: the plan cannot tell what a flip still has to attach.
+                       "check_egeria": bp_check},
         "label": label_for(len(to_write), len(bp_write)),
         "nothing": not to_write and not bp_write,
     }
@@ -231,6 +279,49 @@ def last_results(registry, slug: str) -> dict:
     run = rows[-1]["curation_id"]
     items = [{"key": p["table_name"], **(p.get("detail") or {})} for p in rows if p["curation_id"] == run]
     return {"run": run, "at": rows[-1]["read_at"], "items": items}
+
+
+# ── the press ─────────────────────────────────────────────────────────────────────────────────────────
+
+class PublishAlreadyRunning(Exception):
+    """A publish for this repository is queued, claimed or running: a second press is refused."""
+
+
+def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authorize,
+                    only: set[str] | None = None) -> dict:
+    """Queue ONE publish_architecture run for the items in `plan` (all of them, or those whose path/key is in
+    `only`), with a 'running' activity row the run closes. Shared by the web press and the CLI, so both write
+    exactly what the plan lists. `authorize(scope)` raises for an item the caller may not curate. Returns
+    {run_id, activity_id, queued, plan}; queues nothing when nothing is selected. Raises PublishAlreadyRunning."""
+    from resource_explorer.activity_logger import log_survey
+
+    slug = project.slug
+    paths = [c["path"] for c in plan["components"]["to_write"] if only is None or c["path"] in only]
+    keys = [b["key"] for b in plan["blueprints"]["to_write"] if only is None or b["key"] in only]
+    if not paths and not keys:
+        return {"run_id": None, "activity_id": None, "queued": 0, "plan": plan}
+    for state in ("queued", "claimed", "running"):
+        if any((r.get("target") and slug == json.loads(r["target"]).get("slug"))
+               for r in registry.list_runs(kind="publish_architecture", state=state, limit=50)):
+            raise PublishAlreadyRunning("a publish is already running for this repository")
+    for scope in [*paths, *keys]:
+        authorize(scope)
+    label = plan["label"] if only is None else label_for(len(paths), len(keys))
+    activity_id = log_survey(
+        registry, entity_type="repo", entity_slug=slug,
+        entity_name=project.display_name, entity_location=project.github_url,
+        intent="curate", status="running",
+        summary=f"Publishing {label.removeprefix('Publish ')} of {project.display_name}…")
+    try:
+        # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
+        run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys},
+                                      result_ref=activity_id, requested_by=requested_by)
+    except Exception as exc:
+        # Opened 'running' above; nothing will run to close it.
+        registry.update_activity_status(
+            activity_id, "error", summary=f"Publishing {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
+        raise
+    return {"run_id": run_id, "activity_id": activity_id, "queued": len(paths) + len(keys), "plan": plan}
 
 
 # ── the write ─────────────────────────────────────────────────────────────────────────────────────────
@@ -297,7 +388,11 @@ def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
         try:
             registry.append_catalogue_commit_proof(
                 slug, proof=P_ATTACHED, node_kind=NODE_PUBLISH_ITEM, table_name=item["key"], element_guid=guid,
-                detail={"guids": list(res.get("attached_guids") or [])})
+                detail={"guids": list(res.get("attached_guids") or []),
+                        # Kept apart when the write said which was which (workflows.curate does).
+                        **({"members": list(res.get("attached_members") or []),
+                            "composed": list(res.get("attached_composed") or [])}
+                           if "attached_members" in res or "attached_composed" in res else {})})
         except Exception as exc:
             log.warning("could not record what was attached for %s: %s", item["key"], exc)
             # Said, not swallowed: without the record the plan will offer this blueprint again.
@@ -336,6 +431,7 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
     want_bps = set(target.get("blueprints") or [])
     todo_c = {c["path"]: c for c in plan["components"]["to_write"]}
     todo_b = {b["key"]: b for b in plan["blueprints"]["to_write"]}
+    held_back = {b["key"]: b for b in plan["blueprints"].get("needs_identifier") or []}
     results: list[dict] = []
 
     def add(kind: str, key: str, name: str, status: str, words: str, guid: str = "") -> None:
@@ -360,6 +456,9 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
     order += sorted(want_bps - set(order))
     for key in order:
         b = todo_b.get(key)
+        if b is None and key in held_back:      # the write would be refused: said, not attempted
+            add("blueprint", key, held_back[key]["name"], SKIPPED, held_back[key]["words"] or "needs an identifier")
+            continue
         if b is None:       # present and confirmed now, or no longer accepted: say which, from the cache row
             persp, _, cluster = key.partition("::")
             held = bool((registry.get_materialized_blueprint("repo", slug, persp, cluster) or {}).get("guid"))

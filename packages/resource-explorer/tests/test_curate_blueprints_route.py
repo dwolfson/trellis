@@ -172,7 +172,6 @@ class TestTheShapeRidesTheRoute:
 
         def boom(*a, **k):
             raise AssertionError("Accept reached the write")
-        monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_blueprint_if_accepted", boom)
         monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted", boom)
         from resource_explorer.architecture_publish import blueprint_choices
         body = {"perspective": "deployment", "cluster_name": "OMAG-Server-Platform", "verdict": "accepted"}
@@ -181,5 +180,7 @@ class TestTheShapeRidesTheRoute:
         assert blueprint_choices(row.json()) == {"shape": "contents", "identifier": ""}
         row = client.post("/api/curate/blueprint-verdicts/repo/p", json=body)
         assert row.status_code == 200
-        assert blueprint_choices(row.json()) == {"shape": "", "identifier": ""}     # no flip: the default
+        assert blueprint_choices(row.json()) == {"shape": "contents", "identifier": ""}   # not sent: kept
+        row = client.post("/api/curate/blueprint-verdicts/repo/p", json={**body, "shape": ""})
+        assert blueprint_choices(row.json()) == {"shape": "", "identifier": ""}     # sent empty: the default
         assert client.post("/api/curate/blueprint-verdicts/repo/p", json={**body, "shape": "both"}).status_code == 400

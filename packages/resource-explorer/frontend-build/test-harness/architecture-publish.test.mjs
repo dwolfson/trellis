@@ -144,3 +144,26 @@ test('a blueprint back only for unattached members says how many to attach, not 
   assert.match(t, /already there · 2 members to attach/);
   assert.doesNotMatch(t, /0 compositions/);
 });
+
+test('a blueprint that needs an identifier is listed as held back, with its sentence, and is not counted on the control', async () => {
+  const plan = PLAN();
+  plan.blueprints.needs_identifier = [{ key: 'deployment::the parts', name: 'the parts',
+    words: 'the services is accepted as the Deployment Blueprint for egeria_git and takes that name at Publish · give this one an identifier' }];
+  const { document } = await setUp({ publishPlan: plan });
+  const host = publishHost(document);
+  const held = host.querySelector('[data-architecture-held-back] [data-held-blueprint="deployment::the parts"]');
+  assert.ok(held, 'the held-back blueprint is listed');
+  assert.match(norm(held), /needs an identifier/);
+  assert.match(norm(held), /give this one an identifier/);
+  assert.equal(host.querySelector('[data-will-blueprint="deployment::the parts"]'), null, 'it is not in what will be written');
+  assert.equal(norm(host.querySelector('[data-architecture-go]')), 'Publish 3 components · 1 blueprint →');
+});
+
+test('a blueprint whose earlier press left no shape to read says "check Egeria", with the sentence', async () => {
+  const plan = PLAN();
+  plan.blueprints.check_egeria = [{ key: 'deployment::core', name: 'core', words: 'shape of the earlier press unknown — check Egeria' }];
+  const { document } = await setUp({ publishPlan: plan });
+  const row = publishHost(document).querySelector('[data-architecture-check-egeria] [data-check-blueprint="deployment::core"]');
+  assert.ok(row, 'it is said on the band');
+  assert.match(norm(row), /check Egeria.*core.*shape of the earlier press unknown/);
+});

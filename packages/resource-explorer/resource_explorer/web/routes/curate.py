@@ -80,18 +80,12 @@ def _registry() -> ProjectRegistry:
 # in step 2b (plan §3: web-only code sitting above the already-core
 # ComponentMaterializer/BlueprintMaterializer). The routes below are thin: they
 # validate, record the verdict, and merge whatever the workflow reports.
+# Accept and Reject are decisions only (Brief A): no route here materializes or promotes; Publish
+# (architecture_publish, via POST /api/projects/{slug}/architecture/publish) is the one verb that writes.
 from resource_explorer.workflows.curate import (  # noqa: E402
     CurationDenied,
-    find_candidate_blueprint as _find_candidate_blueprint,
-    materialize_blueprint_if_accepted as _materialize_blueprint_if_accepted,
-    materialize_component_if_accepted as _materialize_if_accepted,
     owner_of as _owner_of,
-    NODE_PROMOTION_BLUEPRINT,
-    NODE_PROMOTION_COMPONENT,
-    promote_to_publish_zones as _promote_to_publish_zones,
-    record_promotion as _record_promotion,
     require_curation_rights as _require_curation_rights,
-    slug_to_scope_map as _slug_to_scope_map,
 )
 
 
@@ -374,6 +368,10 @@ class ComponentVerdictCreate(BaseModel):
     verdict: str  # "accepted" | "rejected" | "retyped"
     retyped_to: str = ""  # required (and only meaningful) when verdict="retyped"
     note: str = ""
+    # Classic's rows are one component each: an accept or reject there is about THIS component, not the ones
+    # under its path (the Next tree's "this component only" mark, component_tree.ONLY_THIS). False gives the
+    # branch meaning: the verdict reaches every component under the path until its own row wins.
+    only: bool = True
 
 
 @router.get("/component-verdicts/{entity_type}/{slug}")
@@ -408,21 +406,21 @@ def add_component_verdict(entity_type: str, slug: str, body: ComponentVerdictCre
         raise HTTPException(status_code=400, detail="retyped_to is required when verdict='retyped'")
     registry = _registry()
     _authorize_curation(registry, entity_type, slug, body.scope_locator)
+    from resource_explorer.component_tree import ONLY_THIS
+    retyped_to = body.retyped_to
+    if body.verdict in ("accepted", "rejected") and not retyped_to.strip() and body.only:
+        retyped_to = ONLY_THIS
+    # A decision and nothing more, exactly like the Next branch route (projects.branch_verdicts): no Egeria
+    # call, no materialize run, no promotion. Publish (POST /api/projects/{slug}/architecture/publish) is the one
+    # verb that writes an accepted component to Egeria, and promotes it there. A reject never writes either.
     verdict = registry.record_component_verdict(
-        entity_type, slug, body.scope_locator, body.verdict, body.retyped_to, body.note,
+        entity_type, slug, body.scope_locator, body.verdict, retyped_to, body.note,
     )
-    materialization = _materialize_if_accepted(
-        registry, entity_type, slug, body.scope_locator, body.verdict,
-    )
-    if materialization is not None:
-        verdict["materialization"] = materialization
-        # Accepting is what moves an element out of the draft zone — the
-        # zone transition IS the Egeria-visible effect of curation (plan §4).
-        # Reported alongside the verdict, never gating it.
-        guid = materialization.get("guid", "")
-        if body.verdict == "accepted" and guid:
-            verdict["promotion"] = _promote_to_publish_zones(guid)
-            _record_promotion(registry, slug, body.scope_locator, NODE_PROMOTION_COMPONENT, verdict["promotion"])
+    # Said from the element's cache row, never from this branch: "accepted · not in Egeria yet" until Publish.
+    held = registry.get_materialized_component(entity_type, slug, body.scope_locator) or {}
+    verdict["in_egeria"] = bool(held.get("guid"))
+    verdict["materialized"] = ({"guid": held["guid"], "qualified_name": held.get("qualified_name", "")}
+                               if held.get("guid") else None)
     return verdict
 
 
@@ -455,12 +453,14 @@ class BlueprintVerdictCreate(BaseModel):
     cluster_name: str
     verdict: str  # "accepted" | "rejected"
     note: str = ""
-    # A person's flip of the blueprint's shape before the write ("container" | "contents"); empty takes
-    # the default the plan names (blueprint_shape.py).
-    shape: str = ""
+    # A person's flip of the blueprint's shape before the write ("container" | "contents"). NOT SENT (None) keeps
+    # the choice already stored for this blueprint, so a client that does not offer the flip (Classic, the CLI)
+    # never wipes one made elsewhere; "" or "default" clears it back to the default the plan names
+    # (blueprint_shape.py).
+    shape: str | None = None
     # A person's identifier for a SECOND blueprint of one kind in a repository (never derived from a cluster
-    # name); empty for the first of a kind.
-    identifier: str = ""
+    # name). None keeps the stored one; "" clears it.
+    identifier: str | None = None
 
 
 @router.get("/blueprint-verdicts/{entity_type}/{slug}")
@@ -483,20 +483,25 @@ def add_blueprint_verdict(entity_type: str, slug: str, body: BlueprintVerdictCre
             detail=f"verdict must be one of {sorted(ProjectRegistry.BLUEPRINT_VERDICTS)}, got {body.verdict!r}",
         )
     from resource_explorer.blueprint_shape import SHAPES
-    if body.shape and body.shape not in SHAPES:
+    shape = None if body.shape is None else ("" if body.shape in ("", "default") else body.shape)
+    if shape and shape not in SHAPES:
         raise HTTPException(status_code=400, detail=f"shape must be one of {list(SHAPES)}, got {body.shape!r}")
     from resource_explorer.blueprint_kinds import validate_identifier
     try:
-        identifier = validate_identifier(body.identifier)
+        identifier = None if body.identifier is None else validate_identifier(body.identifier)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     registry = _registry()
     scope_locator = f"{body.perspective}::{body.cluster_name}"
     _authorize_curation(registry, entity_type, slug, scope_locator)
     # A decision and nothing more: no Egeria call, no promotion. Publish writes the blueprint
-    # (architecture_publish), with the shape and identifier the person chose here.
-    from resource_explorer.architecture_publish import encode_blueprint_choices
+    # (architecture_publish), with the shape and identifier the person chose. A choice not sent is carried
+    # forward from the latest verdict row, so only an explicit value changes it.
+    from resource_explorer.architecture_publish import blueprint_choices, encode_blueprint_choices
+    stored = blueprint_choices(registry.get_component_verdicts(entity_type, slug).get(scope_locator))
     return registry.record_component_verdict(
-        entity_type, slug, scope_locator, body.verdict, encode_blueprint_choices(body.shape, identifier),
+        entity_type, slug, scope_locator, body.verdict,
+        encode_blueprint_choices(stored["shape"] if shape is None else shape,
+                                 stored["identifier"] if identifier is None else identifier),
         body.note, verdict_target="blueprint",
     )

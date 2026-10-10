@@ -714,10 +714,7 @@ class TestCurateRoutes:
         import resource_explorer.web.routes.curate as curate_routes
         monkeypatch.setattr(curate_routes, "_registry",
                             lambda: ProjectRegistry(database_url=db_url))
-        # Materialization is a live Egeria write; this test is about the gate
-        # in front of it, so it is stubbed out entirely.
-        monkeypatch.setattr(curate_routes, "_materialize_if_accepted",
-                            lambda *a, **k: None)
+        # The verdict routes are decisions only (Brief A): no Egeria write to stub here.
 
         app = _app_under(monkeypatch, EXPLORER_REQUIRE_LOGIN="true")
         return TestClient(app), ProjectRegistry(database_url=db_url)
@@ -751,46 +748,20 @@ class TestCurateRoutes:
                      headers={"Authorization": f"Bearer {_app_token('erin', role='curator')}"})
         assert r.status_code == 200
 
-    def test_accept_promotes_the_materialized_element_out_of_the_draft_zone(
-        self, client, monkeypatch,
-    ):
+    def test_accept_does_not_promote_anything_publish_does(self, client, monkeypatch):
+        """Accept is a decision only (Brief A follow-up 1): no materialization and no zone change from the
+        verdict route. The promotion now happens in Publish (architecture_publish._publish_component)."""
         api, reg = client
-        monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")   # the configured case
-        import resource_explorer.web.routes.curate as curate_routes
-        monkeypatch.setattr(curate_routes, "_materialize_if_accepted",
-                            lambda *a, **k: {"status": "materialized", "guid": "comp-guid"})
+        monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")
         spy = _ClassificationSpy()
-        monkeypatch.setattr(
-            "resource_explorer.egeria_identity.classification_client", lambda i=None: spy,
-        )
-        monkeypatch.setattr(
-            "resource_explorer.egeria_identity.current_zones",
-            lambda guid, identity=None: ["resource-explorer-draft"],
-        )
+        monkeypatch.setattr("resource_explorer.egeria_identity.classification_client", lambda i=None: spy)
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "egeria-runtime")
-        monkeypatch.setattr("resource_explorer.egeria_identity.read_zones",
-                            lambda guid, identity=None: ["egeria-runtime"])
-
         r = api.post("/api/curate/component-verdicts/repo/p",
                      json={"scope_locator": "src/a", "verdict": "accepted"},
                      headers={"Authorization": f"Bearer {_app_token('dan')}"})
         assert r.status_code == 200
-        promotion = r.json()["promotion"]
-        assert promotion["status"] == "promoted"
-        assert promotion["zones"] == ["egeria-runtime"]
-        assert promotion["words"] == "accepted · zone egeria-runtime"
-        # The transition, both ends of it — "promoted" alone cannot tell a real
-        # move from a no-op.
-        assert promotion["from_zones"] == ["resource-explorer-draft"]
-        # The zone transition IS the Egeria-visible effect of accepting, and
-        # `add_zone_membership` replaces rather than appends, so the element is
-        # never briefly in both zones.
-        assert spy.zones == [
-            ("comp-guid",
-             {"class": "NewClassificationRequestBody",
-              "properties": {"class": "ZoneMembershipProperties",
-                             "zoneMembership": ["egeria-runtime"]}}),
-        ]
+        assert "promotion" not in r.json() and "materialization" not in r.json()
+        assert spy.zones == []
 
     def test_an_already_promoted_element_is_not_promoted_again(self, monkeypatch):
         """A no-op zone change is an ERROR in Egeria, not a nothing.
@@ -838,9 +809,6 @@ class TestCurateRoutes:
 
     def test_reject_does_not_promote_anything(self, client, monkeypatch):
         api, reg = client
-        import resource_explorer.web.routes.curate as curate_routes
-        monkeypatch.setattr(curate_routes, "_materialize_if_accepted",
-                            lambda *a, **k: {"status": "materialized", "guid": "comp-guid"})
         r = api.post("/api/curate/component-verdicts/repo/p",
                      json={"scope_locator": "src/b", "verdict": "rejected"},
                      headers={"Authorization": f"Bearer {_app_token('dan')}"})

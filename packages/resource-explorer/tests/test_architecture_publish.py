@@ -59,8 +59,6 @@ def no_egeria(monkeypatch):
     monkeypatch.setattr("resource_explorer.workflows.curate.materialize_component_if_accepted", boom)
     monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted", boom)
     monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", boom)
-    monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_blueprint_if_accepted", boom)
-    monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_if_accepted", boom)
     monkeypatch.setattr("resource_explorer.surveyors.arch_recovery.materializer.ComponentMaterializer.materialize", boom)
     monkeypatch.setattr("resource_explorer.surveyors.arch_recovery.blueprint_materializer."
                         "BlueprintMaterializer.materialize_blueprint_element", boom)
@@ -86,6 +84,32 @@ class TestAcceptWritesNothing:
         assert r.json()["run_id"] is None and r.json()["queued"] == 0
         assert registry.list_runs() == []
         assert registry.list_activity(entity_slug="p") == []     # not even a 'running' row nobody will close
+
+    def test_a_classic_single_component_accept_makes_no_egeria_call_and_enqueues_no_run(self, client, registry, no_egeria):
+        """Brief A follow-up 1: Classic's POST /api/curate/component-verdicts materialised on Accept."""
+        r = client.post("/api/curate/component-verdicts/repo/p", json={"scope_locator": "pyegeria", "verdict": "accepted"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["verdict"] == "accepted" and "materialization" not in body and "promotion" not in body
+        assert body["in_egeria"] is False                         # the row says "not in Egeria yet"
+        assert registry.list_runs() == [] and registry.list_activity(entity_slug="p") == []
+        assert registry.get_materialized_component("repo", "p", "pyegeria") is None
+        # Classic's row is one component: Publish then lists exactly it, not the components under its path.
+        plan = client.get("/api/projects/p/architecture/publish-plan").json()
+        assert [c["path"] for c in plan["components"]["to_write"]] == ["pyegeria"]
+
+    def test_a_classic_reject_of_something_already_in_egeria_writes_nothing_and_says_so(self, client, registry, no_egeria):
+        _held(registry, "tests")
+        r = client.post("/api/curate/component-verdicts/repo/p", json={"scope_locator": "tests", "verdict": "rejected"})
+        assert r.status_code == 200 and r.json()["in_egeria"] is True and registry.list_runs() == []
+        assert client.get("/api/projects/p/architecture/publish-plan").json()["components"]["rejected_in_egeria"] == 1
+
+    def test_a_classic_accept_with_only_false_keeps_the_branch_meaning(self, client, registry, no_egeria):
+        client.post("/api/curate/component-verdicts/repo/p",
+                    json={"scope_locator": "pyegeria", "verdict": "accepted", "only": False})
+        plan = client.get("/api/projects/p/architecture/publish-plan").json()
+        assert [c["path"] for c in plan["components"]["to_write"]] == [
+            "pyegeria", "pyegeria/commands", "pyegeria/commands/cat", "pyegeria/utils"]
 
     def test_a_blueprint_accept_makes_no_egeria_call_and_does_not_promote(self, client, registry, no_egeria):
         _seed_cluster(registry, members=["a"])
@@ -151,7 +175,9 @@ class TestThePlan:
     def test_children_are_written_before_the_blueprint_that_links_them(self, registry):
         for name, kids in (("root", ["kid"]), ("kid", [])):
             _seed_cluster(registry, name=name, members=["a"], children=kids)
-            registry.record_component_verdict("repo", "p", f"physical::{name}", "accepted", "", "",
+            # The child is a second blueprint of the kind: it carries a person's identifier (or it is held back).
+            registry.record_component_verdict("repo", "p", f"physical::{name}", "accepted",
+                                              ap.encode_blueprint_choices("", "kid") if name == "kid" else "", "",
                                               verdict_target="blueprint", decided_by="x")
         keys = [b["key"] for b in ap.publish_plan(registry, "p")["blueprints"]["to_write"]]
         assert keys == ["physical::kid", "physical::root"]
@@ -536,3 +562,12 @@ class TestARecordFailureIsSaidNotSwallowed:
         monkeypatch.setattr(registry, "append_catalogue_commit_proof", boom)
         status, words, _ = ap._publish_blueprint(registry, "p", item)
         assert status == ap.PARTIAL and "could not be recorded (RuntimeError: registry is read-only)" in words
+
+
+def test_the_verdict_routes_module_holds_no_write_path():
+    """Round 2, item 4: the curate routes are decisions only; the write and promotion names are not imported."""
+    import resource_explorer.web.routes.curate as routes
+    for name in ("_materialize_if_accepted", "_materialize_blueprint_if_accepted", "_promote_to_publish_zones",
+                 "_record_promotion", "NODE_PROMOTION_COMPONENT", "NODE_PROMOTION_BLUEPRINT",
+                 "_find_candidate_blueprint", "_slug_to_scope_map"):
+        assert not hasattr(routes, name), name

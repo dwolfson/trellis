@@ -622,8 +622,12 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     # What this write actually handed over: the members and linked child blueprints it enqueued (an adopted
     # content-pack root included) and the children of every composition Egeria shows. A child that was gone or
     # unreadable is in none of these.
-    result["attached_guids"] = sorted(set(all_member_guids) | {
-        c["child_guid"] for c in composition_results if c.get("status") in ("linked", "already_present")})
+    composed = {c["child_guid"] for c in composition_results if c.get("status") in ("linked", "already_present")}
+    result["attached_guids"] = sorted(set(all_member_guids) | composed)
+    # Kept apart for the Publish plan: a direct member and a composed sub-component are different handoffs, so
+    # a flip from container to contents must still attach the sub-components as members.
+    result["attached_members"] = sorted(set(all_member_guids))
+    result["attached_composed"] = sorted(composed)
     if unmaterialized_members:
         result["unmaterialized_members"] = unmaterialized_members
     if unmaterialized_children:

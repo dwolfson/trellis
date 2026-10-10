@@ -4388,9 +4388,17 @@ function _archVerdictBadgeHtml(rowUid, slug, path, v, materialized) {
     : `✎ Retyped → ${_esc(v.retyped_to || '?')}`;
   const color = v.verdict === 'accepted' ? 'text-emerald-400'
     : v.verdict === 'rejected' ? 'text-red-400' : 'text-cyan-400';
-  const egeriaBadge = (materialized && materialized.guid)
-    ? `<span class="text-[10px] text-cyan-500" title="${_esc(materialized.qualified_name || '')}\n${_esc(materialized.guid)}">⬡ in Egeria</span>`
-    : '';
+  const inEgeria = !!(materialized && materialized.guid);
+  // Accept is a decision only (Brief A): the words come from the element's cache row, never from the click.
+  // Publish is the one verb that writes; a reject writes nothing and RE removes nothing.
+  const egeriaBadge = inEgeria
+    ? (v.verdict === 'rejected'
+      ? `<span class="text-[10px] text-amber-400/80" data-arch-egeria="still" title="Rejecting writes nothing: Resource Explorer cannot remove an element from Egeria, so it stays there until a steward removes it.">· still in Egeria</span>`
+      : `<span class="text-[10px] text-cyan-500" data-arch-egeria="yes" title="${_esc((materialized && materialized.qualified_name) || '')}\n${_esc(materialized.guid)}">⬡ in Egeria</span>`)
+    : (v.verdict === 'accepted'
+      ? `<span class="text-[10px] text-slate-400" data-arch-egeria="no" title="Accepting is a decision. Nothing is written to Egeria until Publish is pressed.">· not in Egeria yet</span>${
+        _archInteractiveMode ? ` <button class="text-[10px] text-cyan-400 hover:text-cyan-300 underline" onclick="_classicArchPublishJump()">Publish ↑</button>` : ''}`
+      : '');
   // "change" re-opens the accept/reject controls — a Curate-only action;
   // Analysis's read-only pass shows the verdict as a fact, not an editor.
   const changeBtn = _archInteractiveMode
@@ -4451,25 +4459,22 @@ async function _archSubmitVerdict(rowUid, verdict, retypedTo) {
     // record_component_verdict's own row shape (registry.py) — `created_at`,
     // not `decided_at`; that rename only happens in _verdict_view's
     // read-back merge, which this direct POST response doesn't go through.
-    // `materialization` is only ever present on an 'accepted' call
-    // (curate.py's _materialize_if_accepted) — {status, guid, qualified_name}
-    // on success, {status:"error", error} if Egeria couldn't be reached or
-    // rejected the write. Either way the verdict above is already saved;
-    // materialization failing is reported, not treated as the call failing.
+    // A decision only (Brief A follow-up 1): nothing is written to Egeria here. `in_egeria` is read from the
+    // element's cache row by the route; Publish (the band at the top of this panel) is what writes it.
     const saved = await resp.json();
-    const m = saved.materialization;
-    el.outerHTML = _archVerdictBadgeHtml(rowUid, slug, path, {
-      verdict: saved.verdict, retyped_to: saved.retyped_to, decided_at: saved.created_at, note: saved.note,
-    }, m && m.status !== 'error' ? m : null);
-    if (m && m.status === 'error') {
-      showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
-    } else if (m && m.status === 'materialized') {
-      showToast('success', `Accepted — created as a real SolutionComponent in Egeria`);
-    } else if (m && m.status === 'already_materialized') {
-      showToast('success', `Accepted — already exists in Egeria`);
-    } else {
-      showToast('success', `Marked ${verdict}${retypedTo ? ` (${retypedTo})` : ''}`);
+    _archInteractiveMode = true;
+    try {
+      el.outerHTML = _archVerdictBadgeHtml(rowUid, slug, path, {
+        verdict: saved.verdict, retyped_to: saved.retyped_to, decided_at: saved.created_at, note: saved.note,
+      }, saved.materialized || null);
+    } finally {
+      _archInteractiveMode = false;
     }
+    showToast('success', verdict === 'accepted'
+      ? (saved.in_egeria ? 'Accepted · already in Egeria' : 'Accepted · not in Egeria yet — Publish writes it')
+      : verdict === 'rejected' ? `Rejected · nothing written to Egeria${saved.in_egeria ? ' (it is still there)' : ''}`
+      : `Marked ${verdict}${retypedTo ? ` (${retypedTo})` : ''}`);
+    _classicArchPublishLoad(slug);
   } catch (e) {
     showToast('error', `Could not save verdict: ${_esc(e.message)}`);
   }
@@ -10120,11 +10125,13 @@ function _curateBlueprintRow(bp, slug, componentsByPath) {
   // nice message"). A member counts ready only once it has a real Egeria
   // GUID (st.materialized.guid) — an 'accepted' verdict alone isn't enough,
   // same distinction memberVerdictBadgeInline's own ⬡ glyph already draws.
+  // Accept is a decision only (Brief A): a member is ready once it is accepted or already in Egeria, since
+  // Publish writes the accepted components before the blueprint that holds them.
   const unmetMembers = (bp.member_status || [])
-    .filter(st => !(st.materialized && st.materialized.guid))
+    .filter(st => !(st.materialized && st.materialized.guid) && !(st.verdict && st.verdict.verdict === 'accepted'))
     .map(st => ({ scope_locator: st.scope_locator, name: (componentsByPath[st.scope_locator] || {}).name || st.slug }));
   const unmetChildCount = (bp.child_status || [])
-    .filter(st => !(st.materialized && st.materialized.guid)).length;
+    .filter(st => !(st.materialized && st.materialized.guid) && !(st.verdict && st.verdict.verdict === 'accepted')).length;
   const verdictArea = bp.verdict
     ? _archBlueprintVerdictBadgeHtml(rowUid, slug, bp.perspective, bp.cluster_name, bp.verdict, bp.materialized)
     : _archBlueprintVerdictControlsHtml(rowUid, slug, bp.perspective, bp.cluster_name, unmetMembers, unmetChildCount);
@@ -10171,11 +10178,11 @@ function _archBlueprintVerdictControlsHtml(rowUid, slug, perspective, clusterNam
     ? `<div class="mb-1.5 rounded border border-amber-700/50 bg-amber-950/20 px-2 py-1.5">
         <div class="text-[11px] text-amber-300">
           ⚠ ${unmetMembers.length ? `${unmetMembers.length} component(s)` : ''}${unmetMembers.length && unmetChildCount ? ' and ' : ''}${unmetChildCount ? `${unmetChildCount} nested blueprint(s)` : ''}
-          not yet published to Egeria — accept can't complete a real blueprint until every member is.
+          not accepted yet — Publish writes a blueprint only with members that are accepted.
         </div>
         ${unmetMembers.length ? `<div class="text-[10px] text-slate-500 mt-0.5 truncate">${unmetMembers.map(m => _esc(m.name)).join(', ')}</div>` : ''}
         ${unmetMembers.length ? `<button class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/70 mt-1"
-            onclick='_curatePublishMissingComponents("${rowUid}")'>📤 Publish missing component(s) &amp; accept</button>` : ''}
+            onclick='_curatePublishMissingComponents("${rowUid}")'>✓ Accept missing component(s) &amp; this blueprint</button>` : ''}
       </div>`
     : '';
   return `<div class="mt-1" data-arch-bp-verdict="${_esc(rowUid)}" data-arch-bp-slug="${_esc(slug)}" data-arch-bp-persp="${_esc(perspective)}" data-arch-bp-name="${_esc(clusterName)}" data-arch-bp-unmet="${_esc(JSON.stringify(unmetMembers))}">
@@ -10184,7 +10191,7 @@ function _archBlueprintVerdictControlsHtml(rowUid, slug, perspective, clusterNam
       class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-1 w-full text-slate-300 mb-1" />
     <div class="flex gap-2 items-center flex-wrap">
       <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70 disabled:opacity-40 disabled:cursor-not-allowed"
-        ${notReady ? 'disabled title="Publish the missing component(s) above first"' : ''}
+        ${notReady ? 'disabled title="Accept the missing component(s) above first"' : ''}
         onclick="_archSubmitBlueprintVerdict('${rowUid}','accepted')">✓ Accept</button>
       <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
         onclick="_archSubmitBlueprintVerdict('${rowUid}','rejected')">✗ Reject</button>
@@ -10208,7 +10215,7 @@ async function _curatePublishMissingComponents(rowUid) {
   if (!unmet.length) return;
 
   const btn = el.querySelector('button[onclick^="_curatePublishMissingComponents"]');
-  if (btn) { btn.disabled = true; btn.textContent = `Publishing ${unmet.length} component(s)…`; }
+  if (btn) { btn.disabled = true; btn.textContent = `Accepting ${unmet.length} component(s)…`; }
 
   const failures = [];
   for (const m of unmet) {
@@ -10219,21 +10226,19 @@ async function _curatePublishMissingComponents(rowUid) {
         body: JSON.stringify({ scope_locator: m.scope_locator, verdict: 'accepted', retyped_to: '', note: '' }),
       });
       const saved = await resp.json();
-      if (!resp.ok || (saved.materialization && saved.materialization.status === 'error')) {
-        failures.push(`${m.name}: ${(saved.materialization && saved.materialization.error) || saved.detail || `HTTP ${resp.status}`}`);
-      }
+      if (!resp.ok) failures.push(`${m.name}: ${saved.detail || `HTTP ${resp.status}`}`);
     } catch (e) {
       failures.push(`${m.name}: ${e.message}`);
     }
   }
 
   if (failures.length) {
-    showToast('error', `${failures.length} of ${unmet.length} component(s) could not be published: ${_esc(failures.join('; '))}`, 10000);
-    if (btn) { btn.disabled = false; btn.textContent = '📤 Publish missing component(s) & accept'; }
+    showToast('error', `${failures.length} of ${unmet.length} component(s) could not be accepted: ${_esc(failures.join('; '))}`, 10000);
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Accept missing component(s) & this blueprint'; }
     return;
   }
 
-  showToast('success', `Published ${unmet.length} component(s) to Egeria — accepting blueprint…`, 4000);
+  showToast('success', `Accepted ${unmet.length} component(s) — accepting the blueprint…`, 4000);
   await _archSubmitBlueprintVerdict(rowUid, 'accepted');
 }
 
@@ -10283,23 +10288,13 @@ async function _archSubmitBlueprintVerdict(rowUid, verdict) {
       try { detail = (await resp.json()).detail || detail; } catch (_) { /* body wasn't JSON */ }
       throw new Error(detail);
     }
+    // A decision only (Brief A): the blueprint route writes nothing; Publish (top of this panel) writes it.
     const saved = await resp.json();
-    const m = saved.materialization;
     el.outerHTML = _archBlueprintVerdictBadgeHtml(rowUid, slug, perspective, clusterName, {
       verdict: saved.verdict, decided_at: saved.created_at, note: saved.note,
-    }, m && m.status !== 'error' ? m : null);
-    if (m && m.status === 'error') {
-      showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
-    } else if (m && (m.status === 'materialized' || m.status === 'partial')) {
-      showToast(m.status === 'partial' ? 'error' : 'success',
-        m.status === 'partial'
-          ? `Accepted — blueprint created, but some members aren't materialized in Egeria yet`
-          : `Accepted — created as a real SolutionBlueprint in Egeria`);
-    } else if (m && m.status === 'already_materialized') {
-      showToast('success', `Accepted — already exists in Egeria`);
-    } else {
-      showToast('success', `Marked ${verdict}`);
-    }
+    }, null);
+    showToast('success', verdict === 'accepted' ? 'Accepted · not in Egeria yet — Publish writes it' : 'Rejected · nothing written to Egeria');
+    _classicArchPublishLoad(slug);
   } catch (e) {
     showToast('error', `Could not save verdict: ${_esc(e.message)}`);
   }
@@ -10370,6 +10365,10 @@ function renderCurateArchitecturePanel(entityType, slug, data) {
     <div class="p-4 space-y-6 max-w-2xl">
       ${_curateSubnavHtml('architecture', entityType)}
 
+      <div id="classic-arch-publish" data-slug="${_esc(slug)}" class="rpt-section text-xs text-slate-300">
+        <span class="text-slate-500">reading what Publish would write…</span>
+      </div>
+
       ${_curateSectionHtml('components',
         `<span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">🧩 Components (${filteredComponents.length}${filteredComponents.length !== allComponents.length ? ` of ${allComponents.length}` : ''})</span>`,
         `<div class="text-xs text-slate-500 mb-2">${decidedCount ? `${decidedCount} of ${allComponents.length} already decided. ` : ''}Accept, reject, or retype what architecture recovery proposed — evidence and candidate-blueprint links shown below each one.</div>
@@ -10384,7 +10383,7 @@ function renderCurateArchitecturePanel(entityType, slug, data) {
 
       ${_curateSectionHtml('blueprints',
         `<span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">🏛 Candidate Blueprints (${filteredBlueprints.length}${filteredBlueprints.length !== allBlueprints.length ? ` of ${allBlueprints.length}` : ''})</span>`,
-        `<div class="text-xs text-slate-500 mb-2">Groups of components proposed by architecture recovery — accepting one materializes it as a real Egeria SolutionBlueprint and attaches its members. Wire diagrams aren't materialized yet (tracked separately).</div>
+        `<div class="text-xs text-slate-500 mb-2">Groups of components proposed by architecture recovery — accepting one records the decision; Publish (above) writes it as a SolutionBlueprint and attaches its members. Wire diagrams aren't written yet (tracked separately).</div>
         ${allPerspectives.length > 1 ? `<div class="flex flex-wrap gap-1.5 mb-2">${_curateFilterChipsHtml(allPerspectives, _curateBlueprintFilter.perspectives, '_curateTogglePerspectiveFilter')}</div>` : ''}
         ${blueprintsHtml}`)}
 
@@ -10393,6 +10392,98 @@ function renderCurateArchitecturePanel(entityType, slug, data) {
         `<div class="text-xs text-slate-500 mb-2">Declared deployment topology — read-only, no verdict to give; see below for what "declared" means. Not the same as an Egeria SolutionPort/SolutionLinkingWire — those aren't materialized yet.</div>
         ${_renderDeploymentInterfaces(interfaces)}`) : ''}
     </div>`;
+  if (entityType === 'repo') _classicArchPublishLoad(slug);
+}
+
+// ── Publish for the architecture (Brief A follow-up 1) ──────────────────────
+// Accept and Reject are decisions only, in Classic as in Next. This band is Classic's view of the SAME
+// Publish: the list comes from GET /api/projects/{slug}/architecture/publish-plan (the plan the run uses),
+// the press is POST .../architecture/publish (one run: components, then blueprints), and the results after
+// it are the plan's `last` items, read from the proof rows the run wrote. Never drawn from the click.
+async function _classicArchPublishLoad(slug, feedback = '') {
+  const host = document.getElementById('classic-arch-publish');
+  if (!host || host.dataset.slug !== slug) return;
+  let plan;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/architecture/publish-plan`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    plan = await res.json();
+  } catch (e) {
+    if (host.isConnected && host.dataset.slug === slug) {
+      host.innerHTML = `<span class="text-amber-400">What Publish would write could not be read: ${_esc(e.message)}</span>
+        <button class="text-cyan-400 underline ml-1" onclick="_classicArchPublishLoad('${_esc(slug)}')">retry</button>`;
+    }
+    return;
+  }
+  if (!host.isConnected || host.dataset.slug !== slug) return;
+  host.innerHTML = _classicArchPublishHtml(slug, plan, feedback);
+}
+
+function _classicArchPublishHtml(slug, plan, feedback = '') {
+  const comps = (plan.components && plan.components.to_write) || [];
+  const bps = (plan.blueprints && plan.blueprints.to_write) || [];
+  const heldBack = (plan.blueprints && plan.blueprints.needs_identifier) || [];
+  const held = ((plan.components && plan.components.in_egeria) || 0) + ((plan.blueprints && plan.blueprints.in_egeria) || 0);
+  const still = ((plan.components && plan.components.rejected_in_egeria) || 0) + ((plan.blueprints && plan.blueprints.rejected_in_egeria) || 0);
+  const nothing = !comps.length && !bps.length;
+  const label = plan.label || (nothing ? 'Nothing to publish' : 'Publish');
+  const RESULT = { done: ['text-emerald-400', '✓ done'], skipped: ['text-slate-400', '○ already there'],
+                   failed: ['text-red-400', '✗ failed'], partial: ['text-amber-400', '◐ partial'] };
+  const last = (plan.last && plan.last.items) || [];
+  return `<div class="flex items-center justify-between gap-2">
+      <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">📤 Publish to Egeria</span>
+      <span class="text-slate-500">${held ? `${held} in Egeria` : 'nothing in Egeria yet'}${still ? ` · ${still} rejected but still in Egeria (RE removes nothing)` : ''}</span>
+    </div>
+    ${nothing ? '' : `<div class="mt-1" data-classic-will-write>
+      <div class="text-slate-500">will be written to Egeria</div>
+      ${comps.map(c => `<div data-classic-will-component="${_esc(c.path)}">🧩 ${_esc(c.name || c.path)}${c.type ? ` <span class="text-slate-500">· ${_esc(c.type)}</span>` : ''}</div>`).join('')}
+      ${bps.map(b => `<div data-classic-will-blueprint="${_esc(b.key)}">🏛 ${_esc(b.name || b.key)} <span class="text-slate-500">· ${b.state === 'finish' ? 'already there, to finish' : 'new'}</span></div>`).join('')}
+    </div>`}
+    ${((plan.blueprints && plan.blueprints.check_egeria) || []).map(c => `<div class="mt-1" data-classic-check-blueprint="${_esc(c.key)}"><span class="text-amber-400">◐ check Egeria</span> 🏛 ${_esc(c.name || c.key)} <span class="text-slate-500">· ${_esc(c.words || '')}</span></div>`).join('')}
+    ${heldBack.length ? `<div class="mt-1" data-classic-held-back>
+      <div class="text-slate-500">held back · not written by this press</div>
+      ${heldBack.map(h => `<div data-classic-held-blueprint="${_esc(h.key)}" title="${_esc(h.words || '')}"><span class="text-amber-400">◐ needs an identifier</span> 🏛 ${_esc(h.name || h.key)}</div>`).join('')}
+    </div>` : ''}
+    <div class="mt-2 flex items-center gap-2 flex-wrap">
+      <button data-classic-arch-publish-go ${nothing ? 'disabled' : ''}
+        class="text-xs px-2 py-1 rounded bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/70 disabled:opacity-40 disabled:cursor-not-allowed"
+        title="Writes what is listed above: the accepted components, then the accepted blueprints. Nothing is written until this is pressed."
+        onclick="_classicArchPublishPress('${_esc(slug)}')">${_esc(nothing ? label : `${label} →`)}</button>
+      <span data-classic-arch-publish-feedback class="text-slate-500">${feedback || (nothing ? 'nothing accepted is waiting' : '')}</span>
+    </div>
+    ${last.length ? `<div class="mt-2" data-classic-arch-results>
+      <div class="text-slate-500">last publish</div>
+      ${last.map(r => { const [cls, word] = RESULT[r.status] || ['text-slate-400', r.status];
+        return `<div data-classic-result="${_esc(r.key)}" data-classic-result-status="${_esc(r.status)}"><span class="${cls}">${word}</span> ${_esc(r.name || r.key)}${r.words && r.status !== 'done' ? ` <span class="text-slate-500">· ${_esc(r.words)}</span>` : ''}</div>`; }).join('')}
+    </div>` : ''}`;
+}
+
+async function _classicArchPublishPress(slug) {
+  const host = document.getElementById('classic-arch-publish');
+  const btn = host && host.querySelector('[data-classic-arch-publish-go]');
+  if (!btn || btn.disabled) return;                       // a second press is ignored
+  btn.disabled = true;
+  btn.textContent = 'publishing…';
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/architecture/publish`, { method: 'POST' });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const why = res.status === 409 ? 'a publish is already running for this repository'
+        : res.status === 401 ? 'sign in to publish — it needs an author' : (out.detail || `HTTP ${res.status}`);
+      await _classicArchPublishLoad(slug, `<span class="text-amber-400">not published · ${_esc(why)}</span>`);
+      return;
+    }
+    if (out.activity_id) await _pollActivityUntilDone(out.activity_id, { intervalMs: 2000 });
+    await _classicArchPublishLoad(slug);
+    if (typeof loadCuratePanel === 'function') loadCuratePanel();
+  } catch (e) {
+    await _classicArchPublishLoad(slug, `<span class="text-red-400">not published · ${_esc(e.message)}</span>`);
+  }
+}
+
+function _classicArchPublishJump() {
+  const el = document.getElementById('classic-arch-publish');
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function saveCurateGroup(entityType, slug) {

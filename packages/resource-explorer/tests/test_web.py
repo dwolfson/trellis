@@ -715,17 +715,14 @@ class TestCurateComponentVerdictsRouter:
         ).json()
         assert [h["verdict"] for h in history] == ["rejected", "accepted"]
 
-    def test_accepting_with_no_underlying_finding_reports_a_materialization_error(self, client):
-        """The verdict itself still saves — a curator's decision is real
-        independent of whether there's anything left to act on — but nothing
-        is silently skipped: the response says materialization was attempted
-        and could not proceed."""
+    def test_accepting_with_no_underlying_finding_still_saves_and_writes_nothing(self, client):
+        """Accept is a decision only (Brief A follow-up 1): the verdict saves, and nothing is attempted."""
         resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
             "scope_locator": "src/never-surveyed", "verdict": "accepted",
         })
         assert resp.status_code == 200
         assert resp.json()["verdict"] == "accepted"
-        assert resp.json()["materialization"]["status"] == "error"
+        assert "materialization" not in resp.json() and resp.json()["in_egeria"] is False
 
     def test_rejected_and_retyped_never_attempt_materialization(self, client, registry):
         registry.upsert_finding("myproj", "architecture_recovery", [{
@@ -742,31 +739,21 @@ class TestCurateComponentVerdictsRouter:
         assert "materialization" not in rejected.json()
         assert "materialization" not in retyped.json()
 
-    def test_accepting_a_real_component_materializes_it(self, client, registry):
+    def test_accepting_a_real_component_does_not_materialize_it(self, client, registry):
+        """Publish writes it (architecture_publish); Accept only records the decision."""
         registry.upsert_finding("myproj", "architecture_recovery", [{
             "check_name": "component", "label": "manifest",
             "detail": {"name": "svc", "type": "Software Service", "perspective": "deployment"},
         }], surveyed_at="2026-08-30T00:00:00", scope_locator="src/foo")
 
         with patch("resource_explorer.surveyors.arch_recovery.materializer.ComponentMaterializer") as MockCls:
-            MockCls.return_value.materialize.return_value = {
-                "status": "materialized", "guid": "guid-1",
-                "qualified_name": "SolutionComponent::repo::myproj::src/foo",
-            }
             resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
                 "scope_locator": "src/foo", "verdict": "accepted",
             })
 
         assert resp.status_code == 200
-        materialize_call = MockCls.return_value.materialize.call_args
-        assert materialize_call.args == ("repo", "myproj", "src/foo")
-        assert materialize_call.kwargs["name"] == "svc"
-        assert materialize_call.kwargs["component_type"] == "Software Service"
-        assert materialize_call.kwargs["perspective"] == "deployment"
-        assert resp.json()["materialization"] == {
-            "status": "materialized", "guid": "guid-1",
-            "qualified_name": "SolutionComponent::repo::myproj::src/foo",
-        }
+        MockCls.return_value.materialize.assert_not_called()
+        assert "materialization" not in resp.json() and "promotion" not in resp.json()
 
 
 @pytest.mark.usefixtures("signed_in_curator", "mock_egeria_client_connections")

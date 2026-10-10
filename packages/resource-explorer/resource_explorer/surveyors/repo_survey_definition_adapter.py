@@ -3635,24 +3635,47 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
 
     from resource_explorer.blueprint_kinds import (
         identifier_needed_sentence,
+        identifier_planned_sentence,
         identity_qualified_name,
+        kind_key,
         kind_word,
     )
     live_by_perspective: dict[str, set[str]] = {}
     for (persp, nm) in by_key:
         live_by_perspective.setdefault(persp, set()).add(nm)
 
+    # Accept is a decision only (Brief A), so two blueprints of one kind can both be accepted before either is
+    # written, and neither then has a cache row to say the kind's plain identity is taken. The one that WILL
+    # take it at the next Publish is named here, so the accept pane asks the other for an identifier and the
+    # Publish plan (architecture_publish.publish_plan, which reads this view) holds the other back. The top
+    # blueprint of a reading takes the plain identity (blueprint_kinds.blueprint_display_name); among several,
+    # the first by name. A child written first never takes it from its parent.
+    from resource_explorer.architecture_publish import blueprint_choices
+    planned_holder: dict[str, str] = {}
+    for (persp, nm), entry in sorted(by_key.items(), key=lambda kv: (bool(kv[1]["detail"].get("parent")), kv[0][1])):
+        v = verdicts.get(f"{persp}::{nm}") or {}
+        if v.get("verdict") == "accepted" and v.get("verdict_target") == "blueprint" \
+                and not blueprint_choices(v)["identifier"] \
+                and not (materialized_blueprints.get(f"{persp}::{nm}") or {}).get("guid"):   # it has its element
+            planned_holder.setdefault(kind_key(persp), nm)
+
     def _identity_view(perspective: str, name: str) -> dict:
         """What the accept pane needs to know about the blueprint's Egeria identity: whether it must ask
-        for an identifier (another LIVE cluster of this kind already holds the repository's identity)."""
+        for an identifier (another LIVE cluster of this kind already holds the repository's identity, or is
+        accepted and will take it at the next Publish)."""
         base = identity_qualified_name("repo", slug, perspective)
         own = registry.get_materialized_blueprint("repo", slug, perspective, name)
+        if own and own.get("guid"):
+            return {"needs_identifier": False, "kind_word": kind_word(perspective), "sentence": ""}
         other = registry.get_materialized_blueprint_by_identity("repo", slug, base)
-        needs = bool(not (own and own.get("guid")) and other
-                     and other.get("cluster_name") != name
-                     and other.get("cluster_name") in live_by_perspective.get(perspective, set()))
-        return {"needs_identifier": needs, "kind_word": kind_word(perspective),
-                "sentence": identifier_needed_sentence(perspective, slug, other["cluster_name"]) if needs else ""}
+        if other and other.get("cluster_name") in live_by_perspective.get(perspective, set()):
+            needs = other.get("cluster_name") != name
+            return {"needs_identifier": needs, "kind_word": kind_word(perspective),
+                    "sentence": identifier_needed_sentence(perspective, slug, other["cluster_name"]) if needs else ""}
+        holder = planned_holder.get(kind_key(perspective), "")
+        needs = bool(holder and holder != name)
+        return {"needs_identifier": needs, "kind_word": kind_word(perspective), "planned_holder": holder if needs else "",
+                "sentence": identifier_planned_sentence(perspective, slug, holder) if needs else ""}
 
     blueprints = []
     for (perspective, name), entry in sorted(by_key.items()):
@@ -3699,7 +3722,9 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
             "promotion": promotions.get(vkey),
             "shape_plan": plan_with_alternatives(
                 name, [shape_nodes[m] for m in (detail.get("members") or []) if m in shape_nodes],
-                composed_into=detail.get("composed_into") or "")
+                composed_into=detail.get("composed_into") or "",
+                # The stored flip (carried forward by the verdict route): the pane shows what Publish will write.
+                requested=blueprint_choices(verdicts.get(vkey))["shape"])
             if (detail.get("members") or []) else None,
         })
     return blueprints
