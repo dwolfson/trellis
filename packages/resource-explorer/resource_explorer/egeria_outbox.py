@@ -728,10 +728,16 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
         try:
             identity = current_principal()
         except PermissionError as exc:                     # no caller / expired: never the daemon
-            log.warning("Outbox drain not attempted: %s", exc)
-            return {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
-                    "publish_run_check_failed": 0, "identity_error": str(exc)}
-    scope = acting_as(identity) if identity.kind == "daemon" else nullcontext()
+            if clients is None or find_element_guid is None:
+                log.warning("Outbox drain not attempted: %s", exc)
+                return {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
+                        "publish_run_check_failed": 0, "identity_error": str(exc)}
+            # Round 7 (CI, PR #579): a drain HANDED its clients (the investigation publisher's own
+            # CollectionManager) needs no ambient identity — those clients already carry who acts,
+            # and nothing here builds one. A row that would build its own (doc-source, catalog)
+            # still refuses per row with NoCallerIdentity. Never the daemon.
+            identity = None
+    scope = acting_as(identity) if identity is not None and identity.kind == "daemon" else nullcontext()
     with scope:
         return _drain_outbox(registry, clients, find_element_guid, limit=limit, run_id=run_id,
                              element_id=element_id, identity=identity)
