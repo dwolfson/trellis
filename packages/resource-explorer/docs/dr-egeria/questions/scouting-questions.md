@@ -5266,6 +5266,75 @@ ___
 User Questions
 
 ### Display Name
+Are this database's planner statistics current?
+
+### Description
+Per table: never analyzed, last analyzed N days ago, and the rows changed since that analyze as a share of live rows against autovacuum's own trigger (50 + 0.1 x rows by default), with a per-schema roll-up. Read from the stored table-activity rows; no new fetch. Never analyzed (Postgres NULL) and not read are kept apart.
+
+### Summary
+Stale or missing planner statistics make the query planner choose slow plans, and they also qualify every other row estimate this survey reports.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Are this database's planner statistics current?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Are this database's planner statistics current?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Are this database's planner statistics current?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+Are this database's planner statistics current?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Are this database's planner statistics current?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
 Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
 
 ### Description

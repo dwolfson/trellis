@@ -104,6 +104,10 @@ DB_DERIVED_ANALYSES: tuple[str, ...] = (
     # table comments, and the read counters — so it opens no connection and
     # belongs to this step rather than a new one.
     "db_hub_tables",
+    # Backlog 7i(b): are the planner statistics current? Per-table analyze age
+    # and changes-since-analyze against autovacuum's own trigger, read from the
+    # stored activity rows -- zero fetch.
+    "db_statistics_freshness",
 )
 
 #: NOTE on the two annotation sites that carry this check's name: they spell
@@ -1311,6 +1315,242 @@ def derive_hub_tables(inputs: DerivedInputs) -> dict:
         "hubs": hubs,
         "provenance": provenance,
         "explanation": explanation,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2c. db_statistics_freshness  (backlog 7i(b))
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: PostgreSQL's own defaults for the two settings autovacuum's ANALYZE trigger
+#: reads. No survey stores this database's actual `pg_settings`, and this
+#: check reads stored rows only (no new collection), so the defaults are used
+#: and SAID to be used (`settings_source`). A server or per-table override is
+#: not reflected.
+AUTOVACUUM_ANALYZE_THRESHOLD = 50
+AUTOVACUUM_ANALYZE_SCALE_FACTOR = 0.1
+FRESHNESS_SETTINGS_SOURCE = (
+    "PostgreSQL defaults (autovacuum_analyze_threshold 50, "
+    "autovacuum_analyze_scale_factor 0.1): this database's own settings are "
+    "not stored by any survey, so a server or per-table override is not "
+    "reflected"
+)
+
+FRESH_CURRENT = "current"
+FRESH_STALE = "stale"                  # more changes than autovacuum waits for
+FRESH_NEVER = "never_analyzed"         # Postgres NULL for both analyze times
+FRESH_NOT_READ = "not_read"            # RE could not read this table's statistics
+FRESHNESS_STATUSES = (FRESH_STALE, FRESH_NEVER, FRESH_NOT_READ, FRESH_CURRENT)
+
+FRESH_REASON_NO_ROWS = "no_schema_rows"
+FRESH_REASON_NO_STATISTICS = "no_pg_stat_user_tables_rows"
+
+#: Annotation size guard: only tables that need attention are listed in full.
+_FRESHNESS_LIST_LIMIT = 100
+
+
+def _parse_stat_time(value) -> datetime | None:
+    """A stored `last_analyze` string as a naive UTC datetime, or None when it
+    is not a parseable timestamp ("never" and "" are both None here -- the
+    caller has already told those apart)."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        from datetime import timezone
+
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _stat_time_sort_key(value) -> datetime:
+    return _parse_stat_time(value) or datetime.min
+
+
+def derive_statistics_freshness(inputs: DerivedInputs) -> dict:
+    """Are this database's planner statistics current? Zero fetch.
+
+    Per base table, from the stored `database_table_activity` row only:
+
+    - ``never_analyzed``: Postgres reports NULL for both `last_analyze` and
+      `last_autoanalyze`. A finding, stated as such.
+    - ``stale``: changes since the last analyze exceed autovacuum's own trigger,
+      ``autovacuum_analyze_threshold + autovacuum_analyze_scale_factor *
+      reltuples`` (defaults 50 and 0.1; see `FRESHNESS_SETTINGS_SOURCE`).
+    - ``current``: analysed, and fewer changes than that.
+    - ``not_read``: no `pg_stat_user_tables` row was read for the table. Says
+      nothing about whether it was ever analysed, and is never counted in any
+      of the other three.
+
+    ``pg_class.reltuples`` is not stored. A never-analysed table's reltuples
+    is unusable and autovacuum treats it as 0 (threshold = 50), which is
+    exact; otherwise the collector's live-row count stands in, and the table
+    says so (`threshold_basis`).
+
+    "Last analyzed N days ago" is relative to the snapshot the activity row
+    came from (`as_of`), never to the moment this is read.
+    """
+    tables = [t for t in inputs.tables if _is_base_table(t)]
+    activity_at = inputs.table_surveyed_at.get("database_table_activity")
+    provenance = {
+        "read_snapshot": inputs.surveyed_at,
+        "table_surveyed_at": dict(inputs.table_surveyed_at),
+    }
+    if not tables:
+        return {
+            "state": STATE_NOT_MEASURED, "reason": FRESH_REASON_NO_ROWS,
+            "table_count": 0, "tables": [], "schemas": [], "provenance": provenance,
+            "settings_source": FRESHNESS_SETTINGS_SOURCE,
+            "explanation": (
+                "No stored table rows for this database, so statistics "
+                "currency cannot be assessed. NOT a finding that they are "
+                "current -- run the schema step."
+            ),
+        }
+
+    from resource_explorer.surveyors.database.table_statistics_metrics import (
+        LAST_ANALYZE, NOT_READ_KEY, NUMBER_OF_ROWS_CHANGED_SINCE_ANALYZE,
+        row_was_read_from_pg_stat, table_statistics_properties,
+    )
+
+    activity_by_table = {_table_key(a): a for a in inputs.activity}
+    reset_values = [a.get("stats_reset") for a in inputs.activity if a.get("stats_reset")]
+    stats_reset = reset_values[0] if reset_values else None
+    as_of = _parse_stat_time(activity_at) or _parse_stat_time(inputs.surveyed_at)
+
+    entries: list[dict] = []
+    for t in tables:
+        key = _table_key(t)
+        row = activity_by_table.get(key)
+        props = table_statistics_properties(row, stats_reset)
+        entry: dict = {
+            "schema": key[0], "table": key[1],
+            "metrics": props,
+        }
+        if not row_was_read_from_pg_stat(row):
+            entry.update(status=FRESH_NOT_READ, last_analyzed=None,
+                         days_since_analyze=None, changes_since_analyze=None,
+                         live_rows=None, threshold=None, above_threshold=None,
+                         changes_share=None, threshold_basis="",
+                         reason=props.get(NOT_READ_KEY, {}).get(
+                             LAST_ANALYZE.property_name, ""))
+            entries.append(entry)
+            continue
+
+        analyzed = [v for v in (row.get("last_analyze"), row.get("last_autoanalyze")) if v]
+        last_analyzed = max(analyzed, key=_stat_time_sort_key) if analyzed else None
+        live = row.get("live_tuples")
+        changes = row.get("pending_changes")
+        if not analyzed:
+            reltuples, basis = 0, "never analyzed: reltuples taken as 0, as autovacuum does"
+        elif live is not None:
+            reltuples, basis = int(live), "live-row count stands in for pg_class.reltuples (not stored)"
+        else:
+            reltuples, basis = None, "no live-row count was read"
+        threshold = (
+            None if reltuples is None else
+            AUTOVACUUM_ANALYZE_THRESHOLD + AUTOVACUUM_ANALYZE_SCALE_FACTOR * reltuples
+        )
+        above = (None if changes is None or threshold is None else int(changes) > threshold)
+        parsed = _parse_stat_time(last_analyzed)
+        days = (
+            round((as_of - parsed).total_seconds() / 86400.0, 1)
+            if parsed and as_of else None
+        )
+        share = (
+            round(int(changes) / int(live), 4)
+            if changes is not None and live else None
+        )
+        if not analyzed:
+            status = FRESH_NEVER
+        elif above:
+            status = FRESH_STALE
+        elif above is None:
+            # Analysed, but the change count was not read: currency cannot be
+            # claimed.
+            status = FRESH_NOT_READ
+        else:
+            status = FRESH_CURRENT
+        entry.update(
+            status=status, last_analyzed=last_analyzed, days_since_analyze=days,
+            changes_since_analyze=changes, live_rows=live,
+            threshold=None if threshold is None else round(threshold, 1),
+            above_threshold=above, changes_share=share, threshold_basis=basis,
+            reason=(props.get(NOT_READ_KEY, {}).get(
+                NUMBER_OF_ROWS_CHANGED_SINCE_ANALYZE.property_name, "") if status == FRESH_NOT_READ else ""),
+        )
+        entries.append(entry)
+
+    if all(e["status"] == FRESH_NOT_READ for e in entries) and not any(
+        row_was_read_from_pg_stat(a) for a in inputs.activity
+    ):
+        return {
+            "state": STATE_NOT_MEASURED, "reason": FRESH_REASON_NO_STATISTICS,
+            "table_count": len(tables), "tables": entries, "schemas": [],
+            "provenance": provenance, "as_of": activity_at,
+            "settings_source": FRESHNESS_SETTINGS_SOURCE,
+            "explanation": (
+                f"{len(tables)} tables are stored but no pg_stat_user_tables "
+                "row was read for any of them, so statistics currency cannot "
+                "be assessed. NOT a finding that the statistics are current "
+                "or that nothing was ever analyzed."
+            ),
+        }
+
+    def _count(rows, status):
+        return sum(1 for e in rows if e["status"] == status)
+
+    by_schema: dict[str, list[dict]] = {}
+    for e in entries:
+        by_schema.setdefault(e["schema"], []).append(e)
+    schemas = []
+    for name in sorted(by_schema):
+        rows = by_schema[name]
+        ages = [e["days_since_analyze"] for e in rows if e["days_since_analyze"] is not None]
+        known_changes = [e["changes_since_analyze"] for e in rows
+                         if e["changes_since_analyze"] is not None]
+        schemas.append({
+            "schema": name, "tables": len(rows),
+            "current": _count(rows, FRESH_CURRENT), "stale": _count(rows, FRESH_STALE),
+            "never_analyzed": _count(rows, FRESH_NEVER),
+            "not_read": _count(rows, FRESH_NOT_READ),
+            # None, not 0, when no table in the schema had an age/change count.
+            "oldest_analyze_days": max(ages) if ages else None,
+            "changes_since_analyze": sum(known_changes) if known_changes else None,
+        })
+
+    n_stale, n_never = _count(entries, FRESH_STALE), _count(entries, FRESH_NEVER)
+    n_current, n_unread = _count(entries, FRESH_CURRENT), _count(entries, FRESH_NOT_READ)
+    parts = [f"{n_never} never analyzed", f"{n_stale} past autovacuum's analyze threshold",
+             f"{n_current} current"]
+    if n_unread:
+        parts.append(f"{n_unread} not read")
+    attention = [e for e in entries if e["status"] != FRESH_CURRENT]
+    attention.sort(key=lambda e: (FRESHNESS_STATUSES.index(e["status"]),
+                                  -(e["changes_since_analyze"] or 0), e["schema"], e["table"]))
+    return {
+        "state": STATE_MEASURED,
+        "table_count": len(tables),
+        "counts": {FRESH_CURRENT: n_current, FRESH_STALE: n_stale,
+                   FRESH_NEVER: n_never, FRESH_NOT_READ: n_unread},
+        "tables": entries,
+        "attention": attention,
+        "schemas": schemas,
+        "as_of": activity_at,
+        "stats_reset": stats_reset,
+        "settings": {"autovacuum_analyze_threshold": AUTOVACUUM_ANALYZE_THRESHOLD,
+                     "autovacuum_analyze_scale_factor": AUTOVACUUM_ANALYZE_SCALE_FACTOR},
+        "settings_source": FRESHNESS_SETTINGS_SOURCE,
+        "provenance": provenance,
+        "explanation": (
+            f"Of {len(tables)} table(s): " + ", ".join(parts) + ". "
+            "'Never analyzed' is Postgres's own NULL, a finding; 'not read' "
+            "means no statistics were read for the table and says nothing "
+            "about it. Settings: " + FRESHNESS_SETTINGS_SOURCE + "."
+        ),
     }
 
 
@@ -4940,6 +5180,7 @@ def run_db_derived(
     classification = classify_database(inputs, fingerprint)
     graph = derive_relationship_graph(inputs)
     hub_tables = derive_hub_tables(inputs)
+    freshness = derive_statistics_freshness(inputs)
     grain = determine_grain(inputs)
     conventions = check_conventions(inputs)
     change_rates = derive_change_rates(registry, inputs)
@@ -4964,6 +5205,7 @@ def run_db_derived(
         "coverage_signals": coverage,
         "preliminary_fit": fit,
         "db_hub_tables": hub_tables,
+        "db_statistics_freshness": freshness,
     }
 
     # REPLY-SCHEMA-AS-SUB-RESOURCE.md shape 1: the four structural checks above
@@ -5006,6 +5248,7 @@ def build_annotations(derived: dict) -> list:
     annotations.extend(_coverage_annotations(derived["coverage_signals"]))
     annotations.extend(_fit_annotations(derived["preliminary_fit"]))
     annotations.extend(_hub_annotations(derived["db_hub_tables"]))
+    annotations.extend(_freshness_annotations(derived["db_statistics_freshness"]))
     return annotations
 
 
@@ -5121,6 +5364,57 @@ def _hub_annotations(result: dict) -> list:
         json_properties={
             "hubs": hubs,
             "signals_not_used": result["signals_not_used"],
+        },
+    )]
+
+
+def _freshness_annotations(result: dict) -> list:
+    """One annotation for `db_statistics_freshness`. Two mutually exclusive
+    branches (the absence branch `return`s immediately): in
+    `tests/test_annotation_check_names.py`'s `KNOWN_EXCLUSIVE`, same as
+    `_hub_annotations`."""
+    if result["state"] != STATE_MEASURED:
+        return [ResourceMeasureAnnotation(
+            summary="Statistics currency not established",
+            analysis_step=ANALYSIS_STEP,
+            annotation_type_name="db_statistics_freshness",
+            check_name="db_statistics_freshness",
+            label="unverified",
+            confidence=0,
+            explanation=result["explanation"],
+            resource_properties={"reason": result.get("reason") or ""},
+        )]
+    counts = result["counts"]
+    attention = result["attention"]
+    return [ResourceMeasureAnnotation(
+        summary=(
+            f"Planner statistics: {counts[FRESH_NEVER]} never analyzed, "
+            f"{counts[FRESH_STALE]} stale, {counts[FRESH_CURRENT]} current"
+            + (f", {counts[FRESH_NOT_READ]} not read" if counts[FRESH_NOT_READ] else "")
+        ),
+        analysis_step=ANALYSIS_STEP,
+        annotation_type_name="db_statistics_freshness",
+        check_name="db_statistics_freshness",
+        label="info" if not (counts[FRESH_NEVER] or counts[FRESH_STALE]) else "gap",
+        # A comparison of stored measurements against a threshold (defaults,
+        # not this server's settings), not a measurement itself.
+        confidence=70,
+        explanation=result["explanation"],
+        resource_properties={
+            "table_count": result["table_count"],
+            **{k: v for k, v in counts.items()},
+            "settings_source": result["settings_source"],
+        },
+        json_properties={
+            "schemas": result["schemas"],
+            "attention_total": len(attention),
+            "attention": [
+                {k: e[k] for k in ("schema", "table", "status", "last_analyzed",
+                                   "days_since_analyze", "changes_since_analyze",
+                                   "live_rows", "threshold", "above_threshold",
+                                   "changes_share", "reason")}
+                for e in attention[:_FRESHNESS_LIST_LIMIT]
+            ],
         },
     )]
 

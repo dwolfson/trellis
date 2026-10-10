@@ -785,6 +785,9 @@ class EgeriaDatabaseSurveyor:
             annotations.extend(local_surveyor._create_views_annotations(views))
         if operations:
             annotations.extend(local_surveyor._create_operations_annotations(operations))
+            annotations.extend(
+                local_surveyor._create_table_statistics_annotations(operations, schema_info)
+            )
         if credential_capability:
             annotations.extend(
                 local_surveyor._create_credential_capability_annotations(credential_capability)

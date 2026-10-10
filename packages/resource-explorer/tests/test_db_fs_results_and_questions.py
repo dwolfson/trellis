@@ -93,7 +93,9 @@ class TestDatabaseResultsMapCoverage:
         # its own fact with its own measured_at).
         # Twenty: `db_hub_tables` (2026-10-02), a `db_derived` check with the
         # same shared reader as the others.
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 20
+        # Twenty-one: `db_statistics_freshness` (2026-10-10, backlog 7i), same
+        # shared reader.
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 21
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
