@@ -77,6 +77,7 @@ platform tokens last one hour; an app session is the shorter of that and the app
 | `PGVECTOR_PASSWORD` | the `egeria_advisor` Postgres role | `shared-infra/docker-entrypoint-initdb.d/init_egeria.sql` (default `advisor`) |
 | `GITHUB_TOKEN` | RE's GitHub API access for surveys and discovery | a personal token with read scope; without it GitHub's 60 calls/hour are gone in one survey |
 | `EGERIA_USER` / `EGERIA_USER_PASSWORD` | the service account above | `erinoverview` / `secret` |
+| `EGERIA_USER_ID` / `EGERIA_USER_PASSWORD` for RE | RE's daemon identity, RE's own account `resourceexplorernpa` (not a person: RE refuses an interactive sign-in as it). Development bootstrap; not for a shipped product | the account's password in Egeria's user directory; see RE's `docs/admin-guide.md`, "RE's daemon account" |
 
 Never commit any of these, and never bake them into an image (the trellis `.dockerignore`
 excludes `.env` files for that reason).

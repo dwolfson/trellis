@@ -78,9 +78,12 @@ def whoami() -> dict:
     """The configured Egeria connection, plus `last_egeria_call`: what THIS process recorded for
     the signed-in user's most recent Egeria client — `{"as": "you" | "service account
     (background)", purpose, at}` — or None when nothing was recorded here (a restart clears it).
-    Recorded by the factory as each client is handed out, never inferred (Brief I)."""
+    Recorded by the factory as each client is handed out, never inferred (Brief I).
+
+    `daemon`: who background and queued work runs as (Brief L) — `{user_id, source}` from the
+    daemon credential seam (`egeria_clients._daemon_credential`), not inferred."""
     from resource_explorer.config import get_config
-    from resource_explorer.egeria_clients import last_egeria_identity
+    from resource_explorer.egeria_clients import daemon_identity_status, last_egeria_identity
     from resource_explorer.egeria_identity import caller_user_id
 
     cfg = get_config().egeria
@@ -90,6 +93,7 @@ def whoami() -> dict:
         "platform_url": cfg.platform_url,
         "build_sha": build_sha(),
         "last_egeria_call": last_egeria_identity(caller_user_id()),
+        "daemon": daemon_identity_status(),
     }
 
 

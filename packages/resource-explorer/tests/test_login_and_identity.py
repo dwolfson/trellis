@@ -262,10 +262,10 @@ class TestAuthRoutes:
 
         portal_token = jwt.encode(
             {
-                "sub": "erinoverview",
+                "sub": "garygeeke",
                 "role": "curator",
-                "display_name": "Erin Overview",
-                "egeria_token": _egeria_token("erinoverview"),
+                "display_name": "Gary Geeke",
+                "egeria_token": _egeria_token("garygeeke"),
                 "exp": 9999999999,
             },
             "test-portal-secret", algorithm="HS256",
@@ -273,9 +273,9 @@ class TestAuthRoutes:
         r = client.post("/api/auth/portal", json={"portal_token": portal_token})
         assert r.status_code == 200
         claims = jwt.decode(r.json()["access_token"], SECRET, algorithms=["HS256"])
-        assert claims["user_id"] == "erinoverview"
+        assert claims["user_id"] == "garygeeke"
         assert claims["role"] == "curator"
-        assert claims["egeria_token"] == _egeria_token("erinoverview")
+        assert claims["egeria_token"] == _egeria_token("garygeeke")
 
     def test_portal_rejects_the_retired_password_contract_by_name(self, client):
         portal_token = jwt.encode(

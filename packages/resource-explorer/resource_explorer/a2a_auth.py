@@ -345,10 +345,18 @@ def authenticate(
                 display_name=str(payload.get("display_name") or ""),
             )
 
-    # 2. A raw Egeria bearer token — validated against the view server, once.
+    # 2. A raw Egeria bearer token — validated against the view server, once. Never RE's own
+    #    daemon account presented as a person (Brief L): refused, logged, read as no credential.
     if validate_egeria_bearer(token, settings, validator=validator):
+        from resource_explorer.egeria_clients import DaemonSignInRefused, refuse_daemon_sign_in
+
+        subject = _subject_of(token)
+        try:
+            refuse_daemon_sign_in(subject)
+        except DaemonSignInRefused:
+            return None
         return CallerIdentity(
-            user_id=_subject_of(token),
+            user_id=subject,
             egeria_token=token,
             auth_source="egeria-token",
         )

@@ -97,9 +97,12 @@ REGISTRY_DATABASE_URL=sqlite:///data/registry.db
 EGERIA_PLATFORM_URL=https://localhost:9443
 EGERIA_VIEW_SERVER=view-server
 EGERIA_ENGINE_HOST=engine-host
-# RE's daemon identity (an Egeria NPA user, e.g. resourceexplorernpa / ITProfile::ResourceExplorer)
+# RE's daemon identity: RE's own Egeria account (see "RE's daemon account" below).
+# Development bootstrap; not for a shipped product.
 EGERIA_USER_ID=resourceexplorernpa
 EGERIA_USER_PASSWORD=…
+# Optional login-form prefill; never the daemon's userId (which is never offered or accepted)
+RE_LOGIN_DEFAULT_USER=
 # Further Egeria platforms RE may send a credential to (comma separated); the platform above is
 # always allowed, any other URL a resource names is refused before a request is made
 EGERIA_ALLOWED_PLATFORM_URLS=
@@ -131,7 +134,7 @@ background work runs as RE's daemon identity, with the requester recorded.
   the call is refused (401), never retried as anyone else. An Egeria security refusal is shown as
   "refused by Egeria" with Egeria's own sentence.
 - **Queued work** (surveys, analyses, a queued Publish, Curate commit or catalog commit): RE's
-  daemon identity (`EGERIA_USER_ID`), with the person recorded as the run's `requested_by`, in the
+  daemon identity (see "RE's daemon account" below), with the person recorded as the run's `requested_by`, in the
   element's `additionalProperties.requestedBy`, and in its Ownership classification (the owner
   declared on the resource's Context when there is one, otherwise the requester). A queued
   person-action with no requester recorded fails rather than writing anonymously.
@@ -143,6 +146,32 @@ background work runs as RE's daemon identity, with the requester recorded.
   fields (never the values). A resource's Egeria URL and view server still choose *which* Egeria,
   under the allowed-platforms rule above. Values stored before 2026-10-09 remain in the registry's
   columns until the owner decides how to clear them.
+
+### RE's daemon account (Brief L)
+
+Background and queued work runs as RE's own Egeria account, `resourceexplorernpa`: a DIGITAL
+account in Egeria's platform user directory, in its `governanceEngine` and `omagServer` lists
+(ITProfile `ITProfile::ResourceExplorer`). Egeria's administrator creates and maintains the
+account; RE holds only the credential it presents.
+
+- **Today: `.env`.** `EGERIA_USER_ID` / `EGERIA_USER_PASSWORD`. **Development bootstrap; not for a
+  shipped product.** RE logs one INFO line at startup naming the source, e.g. `daemon identity:
+  'resourceexplorernpa' from .env (EGERIA_USER_ID) — development bootstrap; not for a shipped
+  product` (never a password).
+- **The product source is an open decision**, pending a discussion with the Egeria lead. The
+  options: an RE-side secret store or file, or an Egeria API path (being researched). Whatever is
+  chosen replaces one function, `egeria_clients._daemon_credential()`, and nothing else.
+- **The password in `.env` and the account's password in Egeria's user directory must be the
+  same.** Egeria 6.2 caches users: editing an EXISTING user (its password or its lists) takes
+  effect only after a platform restart (pyegeria ISSUE-130).
+- **The daemon is a service account, not a person.** An interactive sign-in as its userId (the
+  login form, a Portal token, or a raw Egeria bearer on the agent endpoint) is refused with "this
+  is Resource Explorer's own service account; sign in as yourself", and the public login-form
+  defaults (`GET /api/auth/defaults`) never offer it: they return `RE_LOGIN_DEFAULT_USER` when
+  set, else nothing. Anyone who used to sign in with the old shared persona in `EGERIA_USER_ID`
+  now signs in as themselves.
+- **Where to see it.** The connection popover's "Background work as" row and `GET
+  /api/egeria/whoami` (`daemon: {user_id, source}`).
 
 ### Authentication
 

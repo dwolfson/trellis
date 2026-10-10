@@ -65,6 +65,8 @@ async def _lifespan(app: FastAPI):
     await alog_prefect_reachability_at_startup()
     from resource_explorer.catalogue_gateway import issue_117_state_line
     logging.getLogger(__name__).info("%s", issue_117_state_line())   # on, or off with the clearance text
+    from resource_explorer.egeria_clients import log_daemon_identity_at_startup
+    log_daemon_identity_at_startup()        # INFO: which source the daemon identity came from (Brief L)
 
     # Re-project stored credentials if a redeploy deleted the secrets file.
     # Non-fatal by construction (heal_missing never raises) and no network.
