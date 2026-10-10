@@ -642,3 +642,46 @@ class TestResourceRoutes:
         egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["owners"]}}
         r = client.post("/api/egeria/p/publish", json={})
         assert r.status_code == 403 and SECURED in r.json()["detail"]
+
+
+# ── 7. round 3 (2026-10-10): the CLI cannot forge a person action; an empty ZoneMembership is unzoned ──────
+
+class TestRound3:
+    @pytest.mark.parametrize("kind", ["publish_architecture", "curate_commit", "catalogue_commit"])
+    def test_runs_enqueue_refuses_person_actions(self, registry, monkeypatch, kind):
+        """MEDIUM: a verbatim target with {"portal_role": true} and any --requested-by would skip the run's
+        access re-check or borrow another user's grants. Person actions are refused from `runs enqueue`."""
+        import typer
+
+        from resource_explorer.cli import runs_commands as rc
+
+        monkeypatch.setattr(rc, "_registry", lambda: registry)
+        with pytest.raises(typer.Exit) as exc:
+            rc.runs_enqueue(kind, '{"slug": "p", "paths": ["src/a"], "portal_role": true}', requested_by=PETER)
+        assert exc.value.exit_code == 1
+        assert registry.list_runs(kind=kind, limit=5) == []
+
+    def test_the_only_portal_role_in_a_target_comes_from_the_verified_caller(self):
+        """`portal_role` is written in exactly one place: enqueue_publish, from the caller ContextVar."""
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1] / "resource_explorer"
+        writers = [str(p.relative_to(root)) for p in root.rglob("*.py")
+                   if re.search(r'["\']portal_role["\']\s*:', p.read_text())]
+        assert writers == ["architecture_publish.py"]
+
+    def test_an_empty_or_null_zone_array_is_unzoned_not_unreadable(self):
+        """LOW: Egeria treats a ZoneMembership with a null or empty array as unzoned (only propertiesAsStrings
+        is serialized, and valueAsString of a null array is null)."""
+        from resource_explorer.catalogue_gateway import zones_of_element
+
+        def z(cp):
+            return zones_of_element({"elementGUID": "g", "classifications": [
+                {"classificationName": "ZoneMembership", "classificationProperties": cp}]})
+        assert z({"propertiesAsStrings": {"zoneMembership": None}}) == []
+        assert z({"propertiesAsStrings": {"zoneMembership": "{}"}}) == []
+        assert z({"propertiesAsStrings": {"zoneMembership": "[]"}}) == []
+        assert z({"propertyValueMap": {"zoneMembership": None}}) == []
+        assert z({"propertyValueMap": {"zoneMembership": {"arrayValues": None}}}) == []
+        assert z({"propertyValueMap": {"zoneMembership": {"arrayValues": {"propertiesAsStrings": {}}}}}) == []

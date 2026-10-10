@@ -331,6 +331,8 @@ def _zone_list_from_string(raw: str) -> list[str]:
     """`[a, b]` (a Java list rendering) or `{0=a, 1=b}` (an array's propertiesAsStrings rendering). Anything
     else raises: a ZoneMembership RE cannot parse is never read as "no zones" (Brief Z round 2)."""
     text = str(raw).strip()
+    if text in ("", "[]", "{}"):
+        return []                      # an explicitly empty array: unzoned, as Egeria reads it
     if text.startswith("[") and text.endswith("]"):
         return [p.strip() for p in text[1:-1].split(",") if p.strip()]
     if text.startswith("{") and text.endswith("}"):
@@ -356,18 +358,28 @@ def zones_of_element(element: Any) -> list[str]:
             raise GatewayError("a ZoneMembership with unreadable properties: its zones are unknown")
         pvm = cp.get("propertyValueMap") or {}
         if isinstance(pvm, dict) and "zoneMembership" in pvm:
-            value = pvm.get("zoneMembership") or {}
-            arr = (value.get("arrayValues") or {}).get("propertiesAsStrings") if isinstance(value, dict) else None
+            # Present but null, or an array with no values: Egeria reads the element as unzoned (round 3).
+            value = pvm.get("zoneMembership")
+            if value is None:
+                return []
+            if not isinstance(value, dict):
+                raise GatewayError("a ZoneMembership whose zone list RE cannot read: its zones are unknown")
+            arr_values = value.get("arrayValues")
+            if arr_values is None and ("arrayValues" in value or value.get("arrayCount") == 0):
+                return []
+            arr = arr_values.get("propertiesAsStrings") if isinstance(arr_values, dict) else None
             if isinstance(arr, dict):
                 return [str(arr[k]) for k in sorted(arr, key=lambda x: int(x) if str(x).isdigit() else 0)]
-            if isinstance(value, dict) and value.get("arrayCount") == 0:
+            if value.get("arrayCount") == 0:
                 return []
             raise GatewayError("a ZoneMembership whose zone list RE cannot read: its zones are unknown")
         if isinstance(cp.get("zoneMembership"), list):
             return [str(z) for z in cp["zoneMembership"]]
-        raw = (cp.get("propertiesAsStrings") or {}).get("zoneMembership")
-        if raw is not None:
-            return _zone_list_from_string(raw)
+        strings = cp.get("propertiesAsStrings")
+        if isinstance(strings, dict) and "zoneMembership" in strings:
+            raw = strings["zoneMembership"]
+            # Null: the array was null and valueAsString of a null array is null. Egeria: unzoned.
+            return [] if raw is None else _zone_list_from_string(raw)
         raise GatewayError("a ZoneMembership with no zone list RE can read: its zones are unknown")
     return []
 

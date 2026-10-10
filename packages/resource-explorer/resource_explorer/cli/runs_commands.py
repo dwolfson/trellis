@@ -380,6 +380,12 @@ def runs_enqueue(
         console.print(f"[red]Unknown kind '{kind}' — expected one of "
                       f"{list(ProjectRegistry.RUN_KINDS)}[/red]")
         raise typer.Exit(code=1)
+    if kind in run_queue.PERSON_ACTION_KINDS:
+        # Brief Z round 3: a verbatim target and a free --requested-by would let a shell forge what the run
+        # trusts (a Portal role override in the target, another person's grants via the requester).
+        console.print("[red]use Publish (web) or `curate materialize` — person actions need a signed-in "
+                      "requester[/red]")
+        raise typer.Exit(code=1)
     try:
         parsed = json.loads(target)
     except ValueError as exc:
