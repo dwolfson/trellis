@@ -621,7 +621,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         view_count            INTEGER DEFAULT NULL,
         mat_view_count        INTEGER DEFAULT NULL,
         column_count          INTEGER DEFAULT NULL,
-        total_table_size_bytes INTEGER DEFAULT NULL,
+        total_table_size_bytes BIGINT DEFAULT NULL,
         state                 TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
@@ -640,8 +640,8 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         table_owner          TEXT DEFAULT '',
         description          TEXT DEFAULT '',
         column_count         INTEGER DEFAULT NULL,
-        row_count            INTEGER DEFAULT NULL,
-        size_bytes           INTEGER DEFAULT NULL,
+        row_count            BIGINT DEFAULT NULL,
+        size_bytes           BIGINT DEFAULT NULL,
         -- Brief D: total = table_bytes + index_bytes (+ TOAST). NULL = not read.
         table_bytes          BIGINT DEFAULT NULL,
         index_bytes          BIGINT DEFAULT NULL,
@@ -740,7 +740,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         -- only thing that makes it interpretable. NULL means the total was
         -- not established (the statistics collector had no row for the
         -- table), which is distinct from 0.
-        sample_total_rows         INTEGER DEFAULT NULL,
+        sample_total_rows         BIGINT DEFAULT NULL,
         state                     TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
@@ -754,19 +754,19 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         source            TEXT NOT NULL DEFAULT 'local',
         schema_name       TEXT NOT NULL,
         table_name        TEXT NOT NULL,
-        rows_inserted     INTEGER DEFAULT NULL,
-        rows_updated      INTEGER DEFAULT NULL,
-        rows_deleted      INTEGER DEFAULT NULL,
-        hot_updates       INTEGER DEFAULT NULL,
-        live_tuples       INTEGER DEFAULT NULL,
-        dead_tuples       INTEGER DEFAULT NULL,
-        seq_scan          INTEGER DEFAULT NULL,
-        idx_scan          INTEGER DEFAULT NULL,
+        rows_inserted     BIGINT DEFAULT NULL,
+        rows_updated      BIGINT DEFAULT NULL,
+        rows_deleted      BIGINT DEFAULT NULL,
+        hot_updates       BIGINT DEFAULT NULL,
+        live_tuples       BIGINT DEFAULT NULL,
+        dead_tuples       BIGINT DEFAULT NULL,
+        seq_scan          BIGINT DEFAULT NULL,
+        idx_scan          BIGINT DEFAULT NULL,
         last_vacuum       TEXT DEFAULT '',
         last_autovacuum   TEXT DEFAULT '',
         last_analyze      TEXT DEFAULT '',
         last_autoanalyze  TEXT DEFAULT '',
-        pending_changes   INTEGER DEFAULT NULL,
+        pending_changes   BIGINT DEFAULT NULL,
         -- When Postgres last reset the counters above. Designer review,
         -- 2026-09-20: `pg_stat_user_tables` counters are cumulative since
         -- the last stats reset, and a change *rate* is the difference
@@ -849,7 +849,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         entry_path          TEXT NOT NULL,
         entry_name          TEXT DEFAULT '',
         entry_type          TEXT NOT NULL DEFAULT 'file',
-        size_bytes          INTEGER DEFAULT NULL,
+        size_bytes          BIGINT DEFAULT NULL,
         file_extension      TEXT DEFAULT '',
         file_type           TEXT DEFAULT '',
         asset_type          TEXT DEFAULT '',
@@ -862,7 +862,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         created_at          TEXT DEFAULT '',
         modified_at         TEXT DEFAULT '',
         accessed_at         TEXT DEFAULT '',
-        record_count        INTEGER DEFAULT NULL,
+        record_count        BIGINT DEFAULT NULL,
         state               TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(filesystem_slug, surveyed_at, source, entry_path),
         FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
@@ -876,11 +876,11 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         source          TEXT NOT NULL DEFAULT 'local',
         file_path       TEXT NOT NULL,
         format          TEXT DEFAULT '',
-        row_count       INTEGER DEFAULT NULL,
+        row_count       BIGINT DEFAULT NULL,
         column_count    INTEGER DEFAULT NULL,
         schema_json     TEXT DEFAULT NULL,
         null_summary    TEXT DEFAULT '',
-        file_size_bytes INTEGER DEFAULT NULL,
+        file_size_bytes BIGINT DEFAULT NULL,
         -- Same pair as database_column_profiles, for the same reason. A file
         -- profile is normally computed by RE at survey time
         -- (STATS_SOURCE_RESOURCE_EXPLORER), so stats_computed_at is usually
@@ -1016,6 +1016,39 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_fs_coverage_slug ON filesystem_survey_coverage(filesystem_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_resource_reachability_slug "
     "ON resource_reachability(filesystem_slug, probed_at)",
+)
+
+#: Byte sizes and row/tuple counters that were created as 32-bit INTEGER and
+#: are widened to BIGINT on Postgres at registry start (2026-10-10, owner
+#: approved). A table or schema over ~2 GiB, or over 2.1bn rows/tuples, made
+#: the detail executemany raise "integer out of range". SQLite INTEGER is
+#: already 64-bit, so this is Postgres-only. See `_widen_int4_size_columns`.
+_PG_INT4_TO_BIGINT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("database_schemas", "total_table_size_bytes"),
+    ("database_tables", "row_count"),
+    ("database_tables", "size_bytes"),
+    ("database_column_profiles", "sample_total_rows"),
+    ("database_table_activity", "rows_inserted"),
+    ("database_table_activity", "rows_updated"),
+    ("database_table_activity", "rows_deleted"),
+    ("database_table_activity", "hot_updates"),
+    ("database_table_activity", "live_tuples"),
+    ("database_table_activity", "dead_tuples"),
+    ("database_table_activity", "seq_scan"),
+    ("database_table_activity", "idx_scan"),
+    ("database_table_activity", "pending_changes"),
+    ("filesystem_entries", "size_bytes"),
+    ("filesystem_entries", "record_count"),
+    ("filesystem_data_files", "row_count"),
+    ("filesystem_data_files", "file_size_bytes"),
+    ("filesystem_surveys", "total_size_bytes"),
+    ("project_data_profiles", "row_count"),
+    ("project_data_profiles", "file_size_bytes"),
+    ("project_file_inventory", "file_size_bytes"),
+    # probe_byte_count is the remote document's Content-Length, not a bounded
+    # probe size (doc_source_probe.py), so a large file URL can exceed int4.
+    ("doc_sources", "probe_byte_count"),
+    ("doc_sources", "ingested_bytes"),
 )
 
 #: Columns added after the tables above first shipped. Empty at introduction;
@@ -1489,6 +1522,56 @@ class ProjectRegistry:
         for col in ("last_run_at", "last_run_candidates"):
             if col not in existing:
                 conn.execute(f"ALTER TABLE db_servers ADD COLUMN {col} TEXT DEFAULT NULL")
+
+    def _widen_int4_size_columns(self, conn) -> None:
+        """Postgres only: ALTER each `_PG_INT4_TO_BIGINT_COLUMNS` column from
+        INTEGER to BIGINT. Idempotent (a column already bigint is skipped) and
+        runs inside the caller's init transaction, so one failure rolls back
+        the whole init. Each ALTER takes ACCESS EXCLUSIVE on its table and
+        rewrites it (int4 -> int8 changes the on-disk width)."""
+        if not conn.is_postgres:
+            return
+        # One catalog read for every listed table, by position (a substituted
+        # connection/cursor need not carry column names). Anything unexpected
+        # in what comes back means "skip", never "raise".
+        wanted = set(_PG_INT4_TO_BIGINT_COLUMNS)
+        tables = sorted({t for t, _ in wanted})
+        rows = conn.execute(
+            "SELECT table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name IN ("
+            + ", ".join("?" for _ in tables) + ")",
+            tuple(tables),
+        ).fetchall()
+        found: set[tuple[str, str]] = set()
+        for r in rows or []:
+            try:
+                key, dtype = (r[0], r[1]), r[2]
+            except Exception:
+                continue
+            if key in wanted and isinstance(dtype, str) and dtype == "integer":
+                found.add(key)
+        pending = [k for k in _PG_INT4_TO_BIGINT_COLUMNS if k in found]
+        if not pending:
+            return
+        # Scoped to this init transaction (SET LOCAL), so it cannot leak to
+        # the pool. A table another process holds a lock on fails fast
+        # instead of queueing behind it and blocking every later reader.
+        conn.execute("SET LOCAL lock_timeout = '10s'")
+        for _table, _col in pending:
+            log.info("Widening %s.%s INTEGER -> BIGINT", _table, _col)
+            try:
+                conn.execute(
+                    f"ALTER TABLE {_table} ALTER COLUMN {_col} TYPE BIGINT"
+                )
+            except Exception as exc:
+                if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
+                    raise RuntimeError(
+                        f"Could not widen {_table}.{_col} to BIGINT: another "
+                        f"process holds a lock on {_table}; stop other "
+                        f"Resource Explorer processes and restart."
+                    ) from exc
+                raise
 
     def _get_table_columns(self, conn, table_name: str) -> set[str]:
         """Columns currently on table_name, read through the SAME open
@@ -2133,7 +2216,7 @@ class ProjectRegistry:
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_slug     TEXT NOT NULL,
                     file_path        TEXT NOT NULL,
-                    file_size_bytes  INTEGER DEFAULT 0,
+                    file_size_bytes  BIGINT DEFAULT 0,
                     indexed_at       TEXT NOT NULL,
                     UNIQUE(project_slug, file_path),
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
@@ -2268,11 +2351,11 @@ class ProjectRegistry:
                     file_path        TEXT NOT NULL,
                     profiled_at      TEXT NOT NULL,
                     format           TEXT NOT NULL,
-                    row_count        INTEGER DEFAULT NULL,
+                    row_count        BIGINT DEFAULT NULL,
                     col_count        INTEGER DEFAULT NULL,
                     schema_json      TEXT DEFAULT NULL,
                     null_summary     TEXT DEFAULT '',
-                    file_size_bytes  INTEGER DEFAULT 0,
+                    file_size_bytes  BIGINT DEFAULT 0,
                     UNIQUE(project_slug, file_path),
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
@@ -2802,7 +2885,7 @@ class ProjectRegistry:
                     egeria_report_guid TEXT DEFAULT '',
                     file_count INTEGER DEFAULT 0,
                     data_file_count INTEGER DEFAULT 0,
-                    total_size_bytes INTEGER DEFAULT 0,
+                    total_size_bytes BIGINT DEFAULT 0,
                     survey_data TEXT DEFAULT '{}',
                     source TEXT DEFAULT 'local',
                     FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
@@ -2850,6 +2933,7 @@ class ProjectRegistry:
                 for _col, _defn in _cols:
                     if _col not in _existing:
                         conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_defn}")
+            self._widen_int4_size_columns(conn)
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS activity_log (
@@ -3064,14 +3148,14 @@ class ProjectRegistry:
                     probe_status_code     INTEGER DEFAULT NULL,
                     probe_ms              INTEGER DEFAULT NULL,
                     probe_title           TEXT DEFAULT '',
-                    probe_byte_count      INTEGER DEFAULT NULL,
+                    probe_byte_count      BIGINT DEFAULT NULL,
                     probe_error           TEXT DEFAULT '',
                     probed_at             TEXT DEFAULT '',
                     egeria_external_ref_guid TEXT DEFAULT '',
                     egeria_link_relationship_guid TEXT DEFAULT '',
                     origin                TEXT NOT NULL DEFAULT 'local',
                     ingested_pages        INTEGER DEFAULT NULL,
-                    ingested_bytes        INTEGER DEFAULT NULL,
+                    ingested_bytes        BIGINT DEFAULT NULL,
                     ingested_at           TEXT DEFAULT ''
                 )
             """)
