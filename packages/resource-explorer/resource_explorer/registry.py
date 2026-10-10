@@ -1531,16 +1531,27 @@ class ProjectRegistry:
         rewrites it (int4 -> int8 changes the on-disk width)."""
         if not conn.is_postgres:
             return
-        pending = []
-        for _table, _col in _PG_INT4_TO_BIGINT_COLUMNS:
-            row = conn.execute(
-                "SELECT data_type FROM information_schema.columns "
-                "WHERE table_name = ? AND column_name = ? "
-                "AND table_schema = current_schema()",
-                (_table, _col),
-            ).fetchone()
-            if row is not None and row["data_type"] == "integer":
-                pending.append((_table, _col))
+        # One catalog read for every listed table, by position (a substituted
+        # connection/cursor need not carry column names). Anything unexpected
+        # in what comes back means "skip", never "raise".
+        wanted = set(_PG_INT4_TO_BIGINT_COLUMNS)
+        tables = sorted({t for t, _ in wanted})
+        rows = conn.execute(
+            "SELECT table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name IN ("
+            + ", ".join("?" for _ in tables) + ")",
+            tuple(tables),
+        ).fetchall()
+        found: set[tuple[str, str]] = set()
+        for r in rows or []:
+            try:
+                key, dtype = (r[0], r[1]), r[2]
+            except Exception:
+                continue
+            if key in wanted and isinstance(dtype, str) and dtype == "integer":
+                found.add(key)
+        pending = [k for k in _PG_INT4_TO_BIGINT_COLUMNS if k in found]
         if not pending:
             return
         # Scoped to this init transaction (SET LOCAL), so it cannot leak to
