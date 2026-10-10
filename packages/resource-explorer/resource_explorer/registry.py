@@ -4574,6 +4574,16 @@ class ProjectRegistry:
                    ON CONFLICT(key) DO NOTHING""", (key, holder, now.isoformat()))
             return bool(getattr(cur, "rowcount", 0) == 1)
 
+    def refresh_claim(self, key: str, holder: str) -> bool:
+        """Heartbeat: re-stamp a claim's `updated_at` (its lease clock) ONLY while this holder still holds it.
+        True when the claim is still ours and was renewed; False when it is gone or another holder took it
+        (the caller must then stop writing). The lease rule is unchanged: a claim whose stamp is older than
+        `stale_after_seconds` is reclaimable by `take_claim`; a live holder simply keeps the stamp fresh."""
+        with self._conn() as conn:
+            cur = conn.execute("UPDATE app_settings SET updated_at = ? WHERE key = ? AND value = ?",
+                               (datetime.utcnow().isoformat(), key, holder))
+            return bool(getattr(cur, "rowcount", 0) == 1)
+
     def get_claim(self, key: str) -> tuple[str, str] | None:
         """(holder, taken_at ISO) of a live claim, or None. Read-only."""
         with self._conn() as conn:

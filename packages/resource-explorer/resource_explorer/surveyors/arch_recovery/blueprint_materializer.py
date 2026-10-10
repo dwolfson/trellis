@@ -117,6 +117,9 @@ class BlueprintAmbiguous(BlueprintMaterializationError):
 PROVENANCE_VERSION = "1"
 #: A claim older than this is treated as a crashed holder's (`registry.take_claim`, 900 seconds).
 CLAIM_WINDOW_MINUTES = 15
+#: A live holder re-stamps its claim this often (seconds) while it works, so a run longer than the window is
+#: never mistaken for a crashed one. Well inside the window.
+CLAIM_HEARTBEAT_SECONDS = 60
 
 
 class BlueprintMaterializer:
@@ -485,12 +488,16 @@ class BlueprintMaterializer:
                 if taken is False:           # only a real False refuses (a bare fake registry has no claims)
                     raise BlueprintMaterializationError(self._claim_refusal(claim_key))
                 held = taken is True
+        beat = self._start_claim_heartbeat(claim_key, holder) if held else None
         try:
             return self._materialize_locked(
                 entity_type, entity_slug, perspective, cluster_name, display_name=display_name,
                 oversized=oversized, verify_cached=verify_cached, identifier=identifier,
                 live_clusters=live_clusters, batch=batch)
         finally:
+            if beat is not None:
+                beat[0].set()
+                beat[1].join(timeout=5)
             if held:
                 try:
                     self._registry.release_claim(claim_key, holder)
@@ -500,6 +507,27 @@ class BlueprintMaterializer:
                                    f"could not release the blueprint claim {claim_key} ({type(exc).__name__}: "
                                    f"{exc}); it expires {CLAIM_WINDOW_MINUTES} minutes after it was taken",
                                    status="failed")
+
+    def _start_claim_heartbeat(self, claim_key: str, holder: str):
+        """Renew the claim every CLAIM_HEARTBEAT_SECONDS while the holder works. Returns (stop_event, thread).
+        The renewal is conditional on still holding the claim; once it is lost the heartbeat stops (it never
+        re-takes a claim). A failed renewal is logged and retried; it never fails the work."""
+        import threading
+        stop = threading.Event()
+        registry, interval = self._registry, CLAIM_HEARTBEAT_SECONDS
+
+        def run():
+            while not stop.wait(interval):
+                try:
+                    if registry.refresh_claim(claim_key, holder) is False:
+                        log.warning("blueprint claim %s is no longer held; heartbeat stopped", claim_key)
+                        return
+                except Exception as exc:
+                    log.warning("could not renew the claim %s: %s", claim_key, exc)
+
+        t = threading.Thread(target=run, name="blueprint-claim-heartbeat", daemon=True)
+        t.start()
+        return stop, t
 
     def _claim_refusal(self, claim_key: str) -> str:
         """Why a press was refused, with the claim's age as a fact (not a verdict that its holder is dead)."""
