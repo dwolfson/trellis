@@ -216,6 +216,17 @@ export function daemonWords(whoami) {
   return d.user_id;
 }
 
+/** Pure: RE's own identity in Egeria (7h), from whoami's `identity_in_egeria` — the words the server's
+ *  startup check RECORDED ("present" / "created (…)" / "could not check (reason)"), never inferred.
+ *  A failed person-profile lookup (Ownership fell back to the userId form) is appended. null = not read. */
+export function identityInEgeriaWords(whoami) {
+  if (!whoami) return null;
+  const s = whoami.identity_in_egeria;
+  const base = (s && s.words) ? s.words : 'not reported by this server';
+  const f = whoami.owner_lookup;
+  return f && f.reason ? `${base} · last owner-profile lookup failed (${f.user_id}): ${f.reason}` : base;
+}
+
 /** Pure: the popover's rows from what was read. Each value is a string or null (not read). */
 export function connectionRows({ me, whoami, status }) {
   const who = me && (me.user_id || me.username || me.egeria_user);
@@ -227,6 +238,7 @@ export function connectionRows({ me, whoami, status }) {
     ['Build', whoami ? (whoami.build_sha || null) : null],
     ['Last Egeria call as', lastCallWords(whoami)],
     ['Background work as', daemonWords(whoami)],
+    ['RE identity in Egeria', identityInEgeriaWords(whoami)],
     ['Last bootstrap heal', status ? (heal ? `${heal.batch} · ${heal.result || 'no result'} · ${ago(heal.at)}` : 'not read in this process') : null],
   ];
 }

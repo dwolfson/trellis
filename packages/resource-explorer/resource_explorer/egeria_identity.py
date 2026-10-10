@@ -8,8 +8,10 @@
   (2026-10-09) every client is built by `egeria_clients.egeria_client`, the one
   factory; this module keeps the identity record and the governance stamps.
 * **Ownership.** Everything RE publishes gets the `Ownership` classification
-  (`0445`) with `owner` = the requesting user's id and
-  `ownerTypeName = "UserIdentity"`. Ownership is attribution; who may curate
+  (`0445`) naming the requesting person: their profile (owner = its
+  qualifiedName, ownerTypeName = its type) when Egeria links one to their
+  UserIdentity, else `owner` = their userId and `ownerTypeName = "UserIdentity"`
+  (7h, `egeria_actors.ownership_for_person`). Ownership is attribution; who may curate
   follows Egeria's zones (`workflows/curate.curation_access`, Brief Z).
 * **Draft zone.** One zone per app (owner's decision, 2026-09-04). On publish
   an element joins `resource-explorer-draft`; on curate-accept it is promoted
@@ -68,6 +70,7 @@ __all__ = [
     "private_zone_status",
     "private_zones",
     "ownership_body",
+    "person_ownership_body",
     "configured_publish_zones",
     "clear_zone_membership",
     "read_zones",
@@ -381,7 +384,8 @@ def stamp_on_behalf(element_guid: str, behalf: OnBehalf, *, identity: Optional[E
     return f"requester not recorded ({'; '.join(reasons)})" if reasons else ""
 
 
-def ownership_body(owner: str, owner_type_name: str = _OWNER_TYPE_NAME) -> dict:
+def ownership_body(owner: str, owner_type_name: str = _OWNER_TYPE_NAME,
+                   owner_property_name: str = _OWNER_PROPERTY_NAME) -> dict:
     """The `NewClassificationRequestBody` for `Ownership` (`0445`).
 
     **`OwnershipProperties`, not `OwnerProperties`.** pyegeria's own
@@ -403,9 +407,22 @@ def ownership_body(owner: str, owner_type_name: str = _OWNER_TYPE_NAME) -> dict:
             "class": "OwnershipProperties",
             "owner": owner,
             "ownerTypeName": owner_type_name,
-            "ownerPropertyName": _OWNER_PROPERTY_NAME,
+            "ownerPropertyName": owner_property_name,
         },
     }
+
+
+def person_ownership_body(user_id: str) -> "tuple[dict, Any]":
+    """(the Ownership body, its `egeria_actors.OwnershipShape`) for a PERSON's userId (7h).
+
+    With a profile linked to the person's UserIdentity: owner = the profile's qualifiedName,
+    ownerTypeName = its type, ownerPropertyName "qualifiedName" — Egeria's own shape
+    (`OpenLineageCataloguerIntegrationConnector.addOwnership`). Otherwise the userId form. A
+    failed lookup falls back to the userId form and is reported (`shape.note`); never raises."""
+    from resource_explorer.egeria_actors import ownership_for_person
+
+    shape = ownership_for_person(user_id)
+    return ownership_body(shape.owner, shape.owner_type_name, shape.owner_property_name), shape
 
 
 def zone_membership_body(zones: Iterable[str]) -> dict:
@@ -439,7 +456,7 @@ def set_ownership(
     *,
     identity: Optional[EgeriaIdentity] = None,
     client: Any = None,
-    owner_type_name: str = _OWNER_TYPE_NAME,
+    owner_type_name: Optional[str] = None,
 ) -> bool:
     """Classify `element_guid` as owned by `owner`. True when Egeria accepted it.
 
@@ -453,28 +470,43 @@ def set_ownership(
 
 
 def set_ownership_reason(element_guid: str, owner: str, *, identity: Optional[EgeriaIdentity] = None,
-                         client: Any = None, owner_type_name: str = _OWNER_TYPE_NAME) -> tuple[bool, str]:
+                         client: Any = None, owner_type_name: Optional[str] = None) -> tuple[bool, str]:
     """`set_ownership`, with the reason when it did not land. Never raises (round 5): it runs after
     an element was created, so a client that cannot be built (no sign-in, a refused platform) is a
     PARTIAL outcome with its reason — raising here would skip the caller's own record of the
-    element it just created."""
+    element it just created.
+
+    `owner` is a PERSON's userId unless `owner_type_name` says otherwise: the person's profile is
+    looked up (7h, `person_ownership_body`) and named when Egeria has one."""
+    return _set_ownership(element_guid, owner, identity=identity, client=client,
+                          owner_type_name=owner_type_name)[:2]
+
+
+def _set_ownership(element_guid: str, owner: str, *, identity: Optional[EgeriaIdentity] = None,
+                   client: Any = None, owner_type_name: Optional[str] = None) -> tuple[bool, str, Any]:
+    """(landed, reason, OwnershipShape or None). The one Ownership write."""
     if not element_guid or not owner:
-        return False, "no element or no owner"
+        return False, "no element or no owner", None
     try:
         client = client or classification_client(identity)
     except Exception as exc:  # noqa: BLE001 - reported as partial by the caller
         log.warning("egeria: no Ownership client for %s — %s: %s", element_guid, type(exc).__name__, exc)
-        return False, f"the Ownership client could not be built ({type(exc).__name__}: {str(exc)[:160]})"
+        return False, f"the Ownership client could not be built ({type(exc).__name__}: {str(exc)[:160]})", None
+    if owner_type_name is None:
+        body, shape = person_ownership_body(owner)
+    else:
+        body, shape = ownership_body(owner, owner_type_name), None
     try:
-        client.add_ownership_to_element(element_guid, ownership_body(owner, owner_type_name))
-        log.info("egeria: Ownership(owner=%s) set on %s", owner, element_guid)
-        return True, ""
+        client.add_ownership_to_element(element_guid, body)
+        log.info("egeria: Ownership(owner=%s, %s) set on %s", body["properties"]["owner"],
+                 body["properties"]["ownerTypeName"], element_guid)
+        return True, "", shape
     except Exception as exc:
         log.warning(
             "egeria: could not set Ownership(owner=%s) on %s — %s: %s",
             owner, element_guid, type(exc).__name__, exc,
         )
-        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}", shape
 
 
 def set_zone_membership(
@@ -615,11 +647,16 @@ def stamp_published(
     """
     zones = list(zones) if zones is not None else draft_zones()
     client = client or classification_client(identity)
+    landed, _why, shape = _set_ownership(element_guid, owner, client=client)
     return {
-        "ownership": set_ownership(element_guid, owner, client=client),
+        "ownership": landed,
         "zone_membership": set_zone_membership(element_guid, zones, client=client),
         "owner": owner,
         "zones": zones,
+        # 7h: which Ownership form went out ('profile' | 'userId'), and why the userId form when a
+        # profile lookup failed ('' otherwise). None when no Ownership was attempted.
+        "ownership_form": shape.form if shape is not None else None,
+        "ownership_note": shape.note if shape is not None else "",
     }
 
 

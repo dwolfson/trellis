@@ -298,10 +298,34 @@ def _ensure_draft_zone() -> None:
                     private, private.get("remedy") or "")
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("draft-zone bootstrap failed: %s", exc)
+        try:
+            _bootstrap_re_identity()
         finally:
             lock.release()
 
     threading.Thread(target=_run, name="draft-zone-bootstrap", daemon=True).start()
+
+
+def _bootstrap_re_identity() -> dict:
+    """RE's own place in Egeria's actor graph (7h): ITProfile, UserIdentity, ProfileIdentity.
+    Adopt-or-create, as the daemon; never raises, never blocks start. One log line, the same
+    words the connection popover shows ("RE identity in Egeria: present / created / could not
+    check (reason)"); WARNING when it could not check."""
+    from resource_explorer.egeria_actors import (
+        COULD_NOT_CHECK_WORD, ensure_re_identity_in_egeria, identity_words,
+    )
+
+    try:
+        state = ensure_re_identity_in_egeria()
+    except Exception as exc:  # pragma: no cover - ensure_re_identity_in_egeria never raises
+        state = {"status": COULD_NOT_CHECK_WORD, "reason": f"{type(exc).__name__}: {exc}"}
+    line = "RE identity in Egeria: %s"
+    if state.get("status") == COULD_NOT_CHECK_WORD:
+        log.warning(line, identity_words(state))
+    else:
+        log.info(line + " (ITProfile %s, UserIdentity %s)", identity_words(state),
+                 state.get("it_profile_guid"), state.get("user_identity_guid"))
+    return state
 
 
 # ── the leader-gated supervisor ─────────────────────────────────────────
