@@ -392,14 +392,23 @@ function btnCls() {
     + 'text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60';
 }
 
+// Members the last promote/relink could not attach, per slug -- taken from that write's own result
+// (members_unlinkable), never recomputed here. Unknown (no entry) shows no count rather than "0".
+const _unlinked = {};
+
 function egeriaSectionHtml(inv) {
   if (inv.egeria_project_guid) {
+    const n = _unlinked[inv.slug];
+    const notLinked = n > 0
+      ? `<span data-inv-not-linked class="ml-s2 text-state-warn">${n} member${n === 1 ? '' : 's'} not linked</span>`
+      : '';
     return `<p class="max-w-[70ch] text-caveat text-ink-muted">
-        Bound to <span class="font-mono">${esc(inv.egeria_project_qualified_name || inv.egeria_project_guid)}</span>.
+        <span data-inv-bound-cue class="text-state-ok" title="bound to an Egeria Project">● bound</span>
+        · <span class="font-mono">${esc(inv.egeria_project_qualified_name || inv.egeria_project_guid)}</span>${notLinked}
       </p>
       <div class="flex flex-wrap gap-s2">
         <button data-act="inv-sync" class="${btnCls()}">Publish again</button>
-        <button data-act="inv-relink" class="${btnCls()}">Relink members</button>
+        <button data-act="inv-relink" class="${btnCls()}">${n > 0 ? 'Link members' : 'Relink members'}</button>
         <button data-act="inv-unbind" class="${btnCls()}">Unbind</button>
       </div>`;
   }
@@ -706,12 +715,17 @@ function bindDetail(inv, members) {
         ${result.errors?.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}
         <div class="mt-s2"><button id="inv-promote-reload" class="${btnCls()}">Reload</button></div>
       </div>`;
-      // Left on screen rather than an immediate renderDetail() -- see the
-      // reclassify handler's identical reasoning: a partial promote's
-      // members_unlinkable/errors matter more than snapping back to a
-      // clean view that would otherwise erase them before they're read.
-      host.querySelector('#inv-promote-reload').addEventListener('click', () => renderDetail(inv.slug));
+      // The result stays on screen (a partial promote's members_unlinkable/errors matter more than a clean
+      // view), but the section above is redrawn as bound -- the 'Creating…' button must not outlive the write.
+      const resultHtml = host.innerHTML;
+      _unlinked[inv.slug] = result.members_unlinkable?.length ?? 0;
       await refreshInvestigationsAndSidebar();
+      await renderDetail(inv.slug);
+      const host2 = $('inv-egeria-form');
+      if (host2) {
+        host2.innerHTML = resultHtml;
+        host2.querySelector('#inv-promote-reload')?.addEventListener('click', () => renderDetail(inv.slug));
+      }
     } catch (err) {
       btn.disabled = false;
       btn.textContent = 'Publish to Egeria →';
@@ -739,7 +753,8 @@ function bindDetail(inv, members) {
     btn.disabled = true;
     btn.textContent = 'Relinking…';
     try {
-      await relinkInvestigationMembers(inv.slug);
+      const res = await relinkInvestigationMembers(inv.slug);
+      if (res && Array.isArray(res.members_unlinkable)) _unlinked[inv.slug] = res.members_unlinkable.length;
       renderDetail(inv.slug);
     } catch (err) {
       btn.disabled = false;
