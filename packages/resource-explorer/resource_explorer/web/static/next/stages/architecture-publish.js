@@ -57,6 +57,13 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
             b.unconfirmed_compositions ? `${num(b.unconfirmed_compositions)} composition${b.unconfirmed_compositions === 1 ? '' : 's'} to confirm` : '',
           ].filter(Boolean).map((t) => ` · ${t}`).join('')}` : 'new'}</span></div>`).join('')}
     </div>`;
+  // A second blueprint of a kind with no identifier would be refused at the write: it is held back, and said.
+  const heldBack = plan?.blueprints?.needs_identifier || [];
+  const held_html = heldBack.length ? `<div class="mt-s1 text-caveat" data-architecture-held-back>
+      <div class="text-provenance text-ink-muted">held back · not written by this press</div>
+      ${heldBack.map((h) => `<div data-held-blueprint="${esc(h.key)}" class="py-[1px]">${cue('partial', 'needs an identifier', h.words || '')}
+        <span class="text-ink">${esc(h.name || h.key)}</span>${h.words ? ` <span class="text-provenance text-ink-muted">· ${esc(h.words)}</span>` : ''}</div>`).join('')}
+    </div>` : '';
   const last = plan?.last?.items || [];
   const missing = plan?.last?.missing ? `<div class="mt-s2 text-caveat" data-architecture-no-results>${cue('error', 'the last publish left no results', 'The last publish ended before it wrote its results, so nothing from an earlier publish is shown as current.')}</div>` : '';
   const results = last.length ? `<div class="mt-s2 text-caveat" data-architecture-results>
@@ -68,7 +75,7 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
   return `<div data-architecture-publish>
     <div class="text-caveat text-ink">${held ? `${num(held)} in Egeria` : 'nothing in Egeria yet'}${
       still ? ` <span class="text-provenance text-ink-muted">· ${num(still)} rejected but still in Egeria (RE removes nothing)</span>` : ''}</div>
-    ${list}
+    ${list}${held_html}
     <div class="mt-s2 flex flex-wrap items-baseline gap-s3">
       <button type="button" data-architecture-go ${nothing || !signedIn || pending ? 'disabled' : ''}
         title="Writes what is listed above: the accepted components, then the accepted blueprints. Nothing is written until this is pressed."

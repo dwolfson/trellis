@@ -168,3 +168,135 @@ class TestOnePressSettlesThePlan:
         assert reg.get_materialized_component("repo", "p", "src/a")["guid"] == a    # A is cached ...
         assert outbox[0][1] == [b]                                                    # ... but is not a member
         _settled(reg)                                     # and the plan does not ask for it for ever
+
+
+def _seed_parent_and_child(reg):
+    """Child blueprint C (members a, b) nested under parent blueprint P (member c, child C); all accepted."""
+    for slug in ("a", "b", "c"):
+        reg.upsert_finding("p", "architecture_recovery", [{
+            "check_name": "component", "label": "x",
+            "detail": {"name": slug.upper(), "slug": slug, "type": "Software Service", "admission": adm.BUILT}}],
+            surveyed_at="2026-10-09T00:00:00", scope_locator=f"src/{slug}")
+        reg.record_component_verdict("repo", "p", f"src/{slug}", "accepted", "", "", decided_by="x")
+    reg.upsert_finding("p", "architecture_blueprints", [
+        {"check_name": "candidate_blueprint", "label": "the services",
+         "detail": {"name": "the services", "perspective": "deployment", "members": ["c"], "children": ["the parts"],
+                    "parent": "", "oversized": False, "composed_into": ""}},
+        {"check_name": "candidate_blueprint", "label": "the parts",
+         "detail": {"name": "the parts", "perspective": "deployment", "members": ["a", "b"], "children": [],
+                    "parent": "the services", "oversized": False, "composed_into": ""}},
+    ], surveyed_at="2026-10-09T00:00:00")
+    for cluster in ("the services", "the parts"):
+        reg.record_component_verdict("repo", "p", f"deployment::{cluster}", "accepted", "", "",
+                                     verdict_target="blueprint", decided_by="x")
+
+
+class TestAParentAndItsChildBlueprintInOnePress:
+    """One kind, one plain identity per repository (architect's ruling, 2026-10-08): a nested child blueprint of
+    the same kind needs a person's identifier. Accept is a decision only, so both can be accepted before either is
+    written; the parent (the top of the reading) takes the plain identity, never the child written first."""
+
+    def _press_all(self, reg):
+        plan = ap.publish_plan(reg, "p")
+        target = {"slug": "p", "paths": [c["path"] for c in plan["components"]["to_write"]],
+                  "blueprints": [b["key"] for b in plan["blueprints"]["to_write"]]}
+        return plan, ap.run_publish(reg, "p", target, "run-1")
+
+    def test_with_the_childs_identifier_both_are_written_the_child_linked_and_the_next_plan_is_empty(self, world):
+        reg, fake, outbox = world
+        _seed_parent_and_child(reg)
+        reg.record_component_verdict("repo", "p", "deployment::the parts", "accepted",
+                                     ap.encode_blueprint_choices("", "parts"), "",
+                                     verdict_target="blueprint", decided_by="x")
+        plan, res = self._press_all(reg)
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == [
+            "deployment::the parts", "deployment::the services"], "children before the parent that links them"
+        assert [(r["kind"], r["status"]) for r in res] == [("component", "done")] * 3 + [("blueprint", "done")] * 2, res
+        child = reg.get_materialized_blueprint("repo", "p", "deployment", "the parts")
+        parent = reg.get_materialized_blueprint("repo", "p", "deployment", "the services")
+        assert parent["qualified_name"] == "SolutionBlueprint::repo::p::deployment", "the parent holds the plain identity"
+        assert child["qualified_name"] == "SolutionBlueprint::repo::p::deployment::parts"
+        c = fake.qn_to_guid["SolutionComponent::repo::p::src/c"]
+        handed = {bp: sorted(g) for bp, g in outbox}
+        assert handed[parent["guid"]] == sorted([c, child["guid"]]), "the parent gets its member and its child"
+        _settled(reg)
+
+    def test_without_one_the_child_is_held_back_before_the_press_and_never_takes_the_parents_identity(self, world):
+        reg, fake, outbox = world
+        _seed_parent_and_child(reg)
+        plan, res = self._press_all(reg)
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == ["deployment::the services"]
+        held = plan["blueprints"]["needs_identifier"]
+        assert [h["key"] for h in held] == ["deployment::the parts"]
+        assert "give this one an identifier" in held[0]["words"] and "the services" in held[0]["words"]
+        parent = reg.get_materialized_blueprint("repo", "p", "deployment", "the services")
+        assert parent["qualified_name"] == "SolutionBlueprint::repo::p::deployment"
+        assert not (reg.get_materialized_blueprint("repo", "p", "deployment", "the parts") or {}).get("guid")
+        assert [r["status"] for r in res if r["kind"] == "blueprint"] == ["partial"], res   # its child is not linked
+        after = ap.publish_plan(reg, "p")
+        assert after["blueprints"]["to_write"] == [] and after["nothing"] is True
+        assert [h["key"] for h in after["blueprints"]["needs_identifier"]] == ["deployment::the parts"]
+
+
+    def test_the_accept_pane_asks_the_child_not_the_parent_for_an_identifier(self, world):
+        """Same answer the plan acts on: the identity view the accept pane draws from."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
+        reg, fake, outbox = world
+        _seed_parent_and_child(reg)
+        ident = {b["cluster_name"]: b["identity"] for b in _candidate_blueprints_results(reg, "p")}
+        assert ident["the services"]["needs_identifier"] is False
+        assert ident["the parts"]["needs_identifier"] is True
+        assert "already exists" not in ident["the parts"]["sentence"], "nothing is in Egeria yet: never said"
+
+
+class TestAFlippedShapeBetweenTwoPresses:
+    """The person flips the shape between two presses: the plan converges on the new shape and no pair the old
+    shape wrote keeps the blueprint in the plan for ever."""
+
+    def _flip(self, reg, cluster, shape):
+        reg.record_component_verdict("repo", "p", f"deployment::{cluster}", "accepted",
+                                     ap.encode_blueprint_choices(shape, ""), "",
+                                     verdict_target="blueprint", decided_by="x")
+
+    def test_container_then_contents(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")                                   # default: A is the container of B
+        _press(reg)
+        _settled(reg)
+        self._flip(reg, "A", "contents")
+        plan = ap.publish_plan(reg, "p")
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == ["deployment::A"], (
+            "the flip asks for the blueprint again: B is now a direct member")
+        res = ap.run_publish(reg, "p", {"slug": "p", "paths": [], "blueprints": ["deployment::A"]}, "run-2")
+        assert [r["status"] for r in res] == ["done"], res
+        a, b = (fake.qn_to_guid[f"SolutionComponent::repo::p::src/{s}"] for s in "ab")
+        assert b in outbox[-1][1]
+        _settled(reg)                                     # the A->B pair from press 1 is not a stale pair now
+
+    def test_contents_then_container(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        self._flip(reg, "A", "contents")                  # first press as contents: A and B direct members
+        _press(reg)
+        _settled(reg)
+        self._flip(reg, "A", "container")
+        plan = ap.publish_plan(reg, "p")
+        assert [b["key"] for b in plan["blueprints"]["to_write"]] == ["deployment::A"], (
+            "the flip asks for the composition A->B")
+        res = ap.run_publish(reg, "p", {"slug": "p", "paths": [], "blueprints": ["deployment::A"]}, "run-2")
+        assert [r["status"] for r in res] == ["done"], res
+        a, b = (fake.qn_to_guid[f"SolutionComponent::repo::p::src/{s}"] for s in "ab")
+        assert ("link_subcomponent", a, b) in fake.calls
+        _settled(reg)
+
+    def test_flipping_back_and_forth_still_settles(self, world):
+        reg, fake, outbox = world
+        _seed(reg, "A")
+        _press(reg)
+        for n, shape in enumerate(("contents", "container", "contents"), start=2):
+            self._flip(reg, "A", shape)
+            assert [b["key"] for b in ap.publish_plan(reg, "p")["blueprints"]["to_write"]] == ["deployment::A"], (
+                f"a flip to {shape} has something to hand over")
+            res = ap.run_publish(reg, "p", {"slug": "p", "paths": [], "blueprints": ["deployment::A"]}, f"run-{n}")
+            assert [r["status"] for r in res] == ["done"], (shape, res)
+            _settled(reg)

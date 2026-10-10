@@ -128,6 +128,13 @@ def identifier_needed_sentence(perspective: str, slug: str, holder: str = "") ->
     return f"a {kind_word(perspective)} Blueprint already exists for {slug}{held} \u00b7 give this one an identifier"
 
 
+def identifier_planned_sentence(perspective: str, slug: str, holder: str) -> str:
+    """Said when another blueprint of the kind is accepted and not yet in Egeria: it takes the repository's
+    plain identity at the next Publish, so this one needs a person's identifier. Never says "already exists"."""
+    return (f"{holder} is accepted as the {kind_word(perspective)} Blueprint for {slug} and takes that name at "
+            f"Publish \u00b7 give this one an identifier")
+
+
 def blueprint_kind_rows(*, label: str, blueprints: list[dict], artifact_count: int,
                         build_files: list[str], logical_unconfirmed: int | None,
                         environment_services: int = 0, environment_linked: int = 0) -> list[dict]:
