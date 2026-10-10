@@ -947,15 +947,37 @@ function setBranchScopeMode(slug, path, mode) {
 /** How many components a verdict on this branch row reaches, given its mode. */
 export const branchReach = (b, mode) => (mode === 'only' ? 1 : (b.components || 0));
 
+/** A leaf row read as the branch it is when components sit beneath it: the same fields a branch row carries,
+ *  so the leaf's choice, count and press go through the SAME functions as the branch row's (one source). */
+export const leafAsBranch = (l) => ({ path: l.path, grouping_only: false, children: l.children || 0,
+  components: (l.children || 0) + 1, low_confidence: l.reach_low || 0, accepted: l.reach_accepted || 0 });
+
+/** What a press on a row with the choice sends and counts: its mode, how many it reaches (named before the
+ *  press), the low-confidence and already-accepted counts, and the scope marked "only" when it is the
+ *  component alone. Used by the branch row, the leaf row and the bulk bar. */
+export function scopedVerdictOptions(slug, b) {
+  const mode = branchScopeMode(slug, b);
+  return { mode, count: branchReach(b, mode), low: mode === 'only' ? 0 : (b.low_confidence || 0),
+    exists: mode === 'only' ? 0 : (b.accepted || 0), onlyScopes: mode === 'only' ? [b.path] : [] };
+}
+
+/** "applies to this component only / with its N children" -- the toggle pair, for a branch row (`attr`
+ *  data-branch-scope) or a leaf row (data-leaf-scope). Nothing when there is no choice to make. */
+export function scopeChoiceHtml(b, mode, attr = 'data-branch-scope') {
+  if (b.grouping_only || !(b.children > 0)) return '';
+  const toggle = (m, label) => `<button type="button" ${attr}="${m}" data-path="${esc(b.path)}" aria-pressed="${mode === m ? 'true' : 'false'}"
+        class="cursor-pointer bg-transparent p-0 ${mode === m ? 'text-ink' : 'text-accent-ink underline'}">${mode === m ? '● ' : ''}${label}</button>`;
+  return `<span ${attr}-choice class="text-ink-muted">· applies to
+        ${toggle('only', 'this component only')} /
+        ${toggle('with', `with its <span class="tnum">${b.children}</span> children`)}</span>`;
+}
+
 function branchRowHtml(b, selected, mode = 'with', matches = null) {
   // The branch's own type leads; the mix beneath it is the CHILDREN's, so
   // a branch whose only typed component is itself does not say it twice.
   const mix = Object.entries(b.types || {}).map(([t, n]) => [t, t === b.type ? n - 1 : n]).filter(([, n]) => n > 0);
   const types = mix.map(([t, n]) => `${esc(t)}${n > 1 ? ` <span class="tnum">×${n}</span>` : ''}`).join(', ');
-  const choice = !b.grouping_only && b.children > 0;
   const reach = branchReach(b, mode);
-  const toggle = (m, label) => `<button type="button" data-branch-scope="${m}" data-path="${esc(b.path)}" aria-pressed="${mode === m ? 'true' : 'false'}"
-        class="cursor-pointer bg-transparent p-0 ${mode === m ? 'text-ink' : 'text-accent-ink underline'}">${mode === m ? '● ' : ''}${label}</button>`;
   return `<div class="${selected ? 'border-b border-l-2 border-rule border-l-accent bg-accent-tint py-[5px] pl-s1' : 'border-b border-rule py-[5px]'}" data-branch="${esc(b.path)}" data-selected="${selected ? '1' : '0'}">
     <div class="flex flex-wrap items-baseline gap-x-s2 gap-y-[2px]">
       <input type="checkbox" data-branch-select="${esc(b.path)}" ${selected ? 'checked' : ''}
@@ -974,9 +996,7 @@ function branchRowHtml(b, selected, mode = 'with', matches = null) {
       <span class="text-ink-muted"><span class="tnum">${b.accepted}</span> accepted · <span class="tnum">${b.rejected}</span> rejected · <span class="tnum">${b.undecided}</span> undecided</span>
       ${b.accepted ? `<span class="text-ink-muted" data-branch-in-egeria>· <span class="tnum">${b.in_egeria || 0}</span> of them in Egeria${
         b.rejected_in_egeria ? ` · <span class="tnum">${b.rejected_in_egeria}</span> rejected but still in Egeria` : ''}</span>` : ''}
-      ${choice ? `<span data-branch-scope-choice class="text-ink-muted">· applies to
-        ${toggle('only', 'this component only')} /
-        ${toggle('with', `with its <span class="tnum">${b.children}</span> children`)}</span>` : ''}
+      ${scopeChoiceHtml(b, mode)}
       <button data-branch-verdict="accepted" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${mode === 'only' ? 'accept this component' : `accept all ${reach}`}</button>
       <button data-branch-verdict="rejected" data-scope="${esc(b.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">${mode === 'only' ? 'reject this component' : 'reject all'}</button>
     </div>
@@ -992,7 +1012,11 @@ function branchRowHtml(b, selected, mode = 'with', matches = null) {
  *  ("detect"/"coupling") renders as "found by"; `perspective` (physical/
  *  deployment/logical/dev) renders as "reading" -- two different axes that
  *  used to share one word (§0). */
-export function leafRowHtml(l) {
+export function leafRowHtml(l, mode = 'only') {
+  // A leaf that is itself a component with components beneath it carries the branch row's choice.
+  const lb = leafAsBranch(l);
+  const choice = lb.children > 0;
+  const withKids = choice && mode === 'with';
   const multi = (l.proposals || []).length >= 2;
   const proposalLines = multi ? l.proposals.map((p) => `
     <div class="pl-s2 text-provenance text-ink-muted">found by ${esc(p.run_label)}${p.type ? ` — ${esc(p.type)}` : ''} · ${esc(p.perspective || 'physical')} reading · confidence <span class="tnum">${p.confidence ?? 0}</span>%</div>
@@ -1010,8 +1034,9 @@ export function leafRowHtml(l) {
       ${admissionHtml(l)}
       <span>· ${verdictBadge(l.verdict, l.verdict ? !!l.materialized : null)}</span>
       ${promotionHtml(l.promotion)}
-      <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${(l.verdict || {}).verdict ? 'change' : 'accept'}</button>
-      <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">reject</button>
+      ${choice ? scopeChoiceHtml(lb, mode, 'data-leaf-scope') : ''}
+      <button data-leaf-verdict="accepted" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${withKids ? `accept all ${branchReach(lb, mode)}` : (l.verdict || {}).verdict ? 'change' : 'accept'}</button>
+      <button data-leaf-verdict="rejected" data-scope="${esc(l.path)}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline">${withKids ? 'reject all' : 'reject'}</button>
       <button data-leaf-blueprints="${esc(l.path)}" title="Which candidate blueprints this component is a member of" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">blueprints${icon('chevron-right', { size: 12 })}</button>
     </div>
     <div data-leaf-bp-line class="pl-s2 text-provenance"></div>
@@ -1031,7 +1056,7 @@ export function leafRowHtml(l) {
 /** A leaf with no verdict of its own (an inherited one is the branch's, not a decision about this leaf). */
 export const isUndecidedLeaf = (l) => !l.verdict || !l.verdict.verdict || !!l.verdict.inherited_from;
 
-function leafGroupHtml(g, openByName = null) {
+function leafGroupHtml(g, openByName = null, modeOf = () => 'only') {
   const todo = g.members.filter(isUndecidedLeaf).length;
   // A group the person was already working in keeps the state it had; only a first view uses the default.
   const open = openByName && openByName.has(g.name) ? openByName.get(g.name) : g.undecided > 0;
@@ -1046,7 +1071,7 @@ function leafGroupHtml(g, openByName = null) {
         <button data-group-verdict="accepted" data-group="${esc(g.name)}" ${todo ? '' : 'disabled'} title="${todo ? 'Only the undecided ones are recorded' : 'Every one already has a verdict'}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-default disabled:opacity-60">accept all ${todo}</button>
         <button data-group-verdict="rejected" data-group="${esc(g.name)}" ${todo ? '' : 'disabled'} title="${todo ? 'Only the undecided ones are recorded' : 'Every one already has a verdict'}" class="cursor-pointer bg-transparent p-0 text-ink-muted underline disabled:cursor-default disabled:opacity-60">reject all ${todo}</button>
       </div>
-      ${g.members.map(leafRowHtml).join('')}</div>
+      ${g.members.map((l) => leafRowHtml(l, modeOf(l))).join('')}</div>
   </details>`;
 }
 
@@ -1286,19 +1311,17 @@ async function renderComponentTree(slug, prefix = '') {
   host.querySelector('[data-selection-clear]')?.addEventListener('click', () => { selected.clear(); renderComponentTree(slug, prefix); });
   host.querySelector('[data-selection-verdict="accepted"]')?.addEventListener('click', () => {
     const paths = [...selected];
-    const picked = tree.branches.filter((b) => paths.includes(b.path));
-    const onlyScopes = picked.filter((b) => branchScopeMode(slug, b) === 'only').map((b) => b.path);
+    const opts = tree.branches.filter((b) => paths.includes(b.path)).map((b) => scopedVerdictOptions(slug, b));
     recordVerdicts(slug, paths, 'accepted', {
-      count: picked.reduce((n, b) => n + branchReach(b, branchScopeMode(slug, b)), 0),
-      low: picked.reduce((n, b) => n + (b.low_confidence || 0), 0),
-      exists: picked.reduce((n, b) => n + (b.accepted || 0), 0),
-      onlyScopes,
+      count: opts.reduce((n, o) => n + o.count, 0),
+      low: opts.reduce((n, o) => n + o.low, 0),
+      exists: opts.reduce((n, o) => n + o.exists, 0),
+      onlyScopes: opts.flatMap((o) => o.onlyScopes),
     }, () => { selected.clear(); }, host.querySelector('[data-selection-verdict="accepted"]'));
   });
   host.querySelector('[data-selection-verdict="rejected"]')?.addEventListener('click', () => {
-    const picked = tree.branches.filter((b) => selected.has(b.path));
-    recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0,
-      onlyScopes: picked.filter((b) => branchScopeMode(slug, b) === 'only').map((b) => b.path) },
+    const opts = tree.branches.filter((b) => selected.has(b.path)).map((b) => scopedVerdictOptions(slug, b));
+    recordVerdicts(slug, [...selected], 'rejected', { count: 0, low: 0, onlyScopes: opts.flatMap((o) => o.onlyScopes) },
     () => { selected.clear(); }, host.querySelector('[data-selection-verdict="rejected"]'));
   });
 
@@ -1319,6 +1342,7 @@ async function renderComponentTree(slug, prefix = '') {
       // A search or a reading in force narrows the rows to the components that pass it; the box says how many
       // of the branch's components that is, so a narrowed list is never mistaken for the whole branch.
       const keepRow = (l) => !matchPaths || matchPaths.has(l.path);
+      const leafMode = (l) => branchScopeMode(slug, leafAsBranch(l));
       const verdictOf = (l) => (l.verdict || {}).verdict;
       const groups = (out.groups || []).map((g) => {
         if (!matchPaths) return g;
@@ -1332,12 +1356,20 @@ async function renderComponentTree(slug, prefix = '') {
       const narrowed = matchPaths ? out.leaves.filter(keepRow).length : null;
       box.innerHTML = (narrowed === null ? '' : `<div data-leaf-narrowed class="pb-[2px] text-provenance text-ink-muted">${
         stateCue('partial', 'narrowed', 'A search or reading is in force; the rows below are the components that pass it.')} <span class="tnum">${narrowed}</span> of <span class="tnum">${out.leaves.length}</span> components under this branch</div>`)
-        + (groups.map((g) => leafGroupHtml(g, openByName)).join('') + ungrouped.map(leafRowHtml).join(''))
+        + (groups.map((g) => leafGroupHtml(g, openByName, leafMode)).join('') + ungrouped.map((l) => leafRowHtml(l, leafMode(l))).join(''))
         || `<span class="text-provenance text-ink-muted">nothing under this branch</span>`;
       box.querySelectorAll('[data-leaf-blueprints]').forEach((bb) => bb.addEventListener('click', () => showLeafBlueprints(slug, bb)));
       box.scrollTop = innerScroll;
-      box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () =>
-        recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, { count: 1, low: 0 }, undefined, lb)));
+      box.querySelectorAll('[data-leaf-verdict]').forEach((lb) => lb.addEventListener('click', () => {
+        // A leaf with components beneath it presses like a branch row (its choice, its count); one alone is one.
+        const l = out.leaves.find((x) => x.path === lb.dataset.scope);
+        const opts = l && (l.children || 0) > 0 ? scopedVerdictOptions(slug, leafAsBranch(l)) : { count: 1, low: 0 };
+        recordVerdicts(slug, [lb.dataset.scope], lb.dataset.leafVerdict, opts, undefined, lb);
+      }));
+      box.querySelectorAll('[data-leaf-scope]').forEach((t) => t.addEventListener('click', () => {
+        setBranchScopeMode(slug, t.dataset.path, t.dataset.leafScope);
+        loadLeaves(path, box, { refresh: true });
+      }));
       // Accept all / reject all for a whole group (a scope-hierarchy cluster such as compose-configs/optional-...).
       // Only the members with no verdict of their own are posted; the confirm says exactly that number.
       box.querySelectorAll('[data-group-verdict]').forEach((gb) => gb.addEventListener('click', () => {
@@ -1389,10 +1421,8 @@ async function renderComponentTree(slug, prefix = '') {
   }));
   host.querySelectorAll('[data-branch-verdict]').forEach((b) => b.addEventListener('click', () => {
     const br = tree.branches.find((x) => x.path === b.dataset.scope);
-    const mode = br ? branchScopeMode(slug, br) : 'with';
-    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, {
-      count: br ? branchReach(br, mode) : 0, low: mode === 'only' ? 0 : (br?.low_confidence || 0), exists: br?.accepted || 0,
-      onlyScopes: mode === 'only' ? [b.dataset.scope] : [] }, undefined, b);
+    const { count, low, exists, onlyScopes } = br ? scopedVerdictOptions(slug, br) : { count: 0, low: 0, exists: 0, onlyScopes: [] };
+    recordVerdicts(slug, [b.dataset.scope], b.dataset.branchVerdict, { count, low, exists, onlyScopes }, undefined, b);
   }));
   // Put the open branches back as they were, then refresh them in place from a re-read.
   const refreshes = [];
