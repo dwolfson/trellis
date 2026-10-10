@@ -59,8 +59,6 @@ def no_egeria(monkeypatch):
     monkeypatch.setattr("resource_explorer.workflows.curate.materialize_component_if_accepted", boom)
     monkeypatch.setattr("resource_explorer.workflows.curate.materialize_blueprint_if_accepted", boom)
     monkeypatch.setattr("resource_explorer.workflows.curate.promote_to_publish_zones", boom)
-    monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_blueprint_if_accepted", boom)
-    monkeypatch.setattr("resource_explorer.web.routes.curate._materialize_if_accepted", boom)
     monkeypatch.setattr("resource_explorer.surveyors.arch_recovery.materializer.ComponentMaterializer.materialize", boom)
     monkeypatch.setattr("resource_explorer.surveyors.arch_recovery.blueprint_materializer."
                         "BlueprintMaterializer.materialize_blueprint_element", boom)
@@ -564,3 +562,12 @@ class TestARecordFailureIsSaidNotSwallowed:
         monkeypatch.setattr(registry, "append_catalogue_commit_proof", boom)
         status, words, _ = ap._publish_blueprint(registry, "p", item)
         assert status == ap.PARTIAL and "could not be recorded (RuntimeError: registry is read-only)" in words
+
+
+def test_the_verdict_routes_module_holds_no_write_path():
+    """Round 2, item 4: the curate routes are decisions only; the write and promotion names are not imported."""
+    import resource_explorer.web.routes.curate as routes
+    for name in ("_materialize_if_accepted", "_materialize_blueprint_if_accepted", "_promote_to_publish_zones",
+                 "_record_promotion", "NODE_PROMOTION_COMPONENT", "NODE_PROMOTION_BLUEPRINT",
+                 "_find_candidate_blueprint", "_slug_to_scope_map"):
+        assert not hasattr(routes, name), name

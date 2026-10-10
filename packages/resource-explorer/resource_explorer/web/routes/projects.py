@@ -2469,8 +2469,7 @@ def architecture_publish(slug: str, request: Request) -> dict:
     """Publish for the architecture: the one verb that writes accepted components and blueprints to Egeria.
     Queues ONE run (kind publish_architecture) for the items in the plan, so the pane returns at once. With
     nothing in the plan, nothing is queued. A second press while one is queued or running is refused (409)."""
-    from resource_explorer.activity_logger import log_survey
-    from resource_explorer.architecture_publish import publish_plan
+    from resource_explorer.architecture_publish import PublishAlreadyRunning, enqueue_publish, publish_plan
     from resource_explorer.auth import get_current_user
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.web.routes.curate import _authorize_curation
@@ -2483,32 +2482,11 @@ def architecture_publish(slug: str, request: Request) -> dict:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    plan = publish_plan(registry, slug)
-    paths = [c["path"] for c in plan["components"]["to_write"]]
-    keys = [b["key"] for b in plan["blueprints"]["to_write"]]
-    if not paths and not keys:
-        return {"run_id": None, "activity_id": None, "queued": 0, "plan": plan}
-    for state in ("queued", "claimed", "running"):
-        if any((r.get("target") and slug == json.loads(r["target"]).get("slug"))
-               for r in registry.list_runs(kind="publish_architecture", state=state, limit=50)):
-            raise HTTPException(status_code=409, detail="a publish is already running for this repository")
-    for scope in [*paths, *keys]:
-        _authorize_curation(registry, "repo", slug, scope)
-    activity_id = log_survey(
-        registry, entity_type="repo", entity_slug=slug,
-        entity_name=project.display_name, entity_location=project.github_url,
-        intent="curate", status="running",
-        summary=f"Publishing {plan['label'].removeprefix('Publish ')} of {project.display_name}…")
     try:
-        # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
-        run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys},
-                                      result_ref=activity_id, requested_by=_requested_by())
-    except Exception as exc:
-        # Opened 'running' above; nothing will run to close it.
-        registry.update_activity_status(
-            activity_id, "error", summary=f"Publishing {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
-        raise
-    return {"run_id": run_id, "activity_id": activity_id, "queued": len(paths) + len(keys), "plan": plan}
+        return enqueue_publish(registry, project, publish_plan(registry, slug), requested_by=_requested_by(),
+                               authorize=lambda scope: _authorize_curation(registry, "repo", slug, scope))
+    except PublishAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ── Blueprints (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2) ─────────────────

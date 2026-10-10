@@ -10439,6 +10439,7 @@ function _classicArchPublishHtml(slug, plan, feedback = '') {
       ${comps.map(c => `<div data-classic-will-component="${_esc(c.path)}">🧩 ${_esc(c.name || c.path)}${c.type ? ` <span class="text-slate-500">· ${_esc(c.type)}</span>` : ''}</div>`).join('')}
       ${bps.map(b => `<div data-classic-will-blueprint="${_esc(b.key)}">🏛 ${_esc(b.name || b.key)} <span class="text-slate-500">· ${b.state === 'finish' ? 'already there, to finish' : 'new'}</span></div>`).join('')}
     </div>`}
+    ${((plan.blueprints && plan.blueprints.check_egeria) || []).map(c => `<div class="mt-1" data-classic-check-blueprint="${_esc(c.key)}"><span class="text-amber-400">◐ check Egeria</span> 🏛 ${_esc(c.name || c.key)} <span class="text-slate-500">· ${_esc(c.words || '')}</span></div>`).join('')}
     ${heldBack.length ? `<div class="mt-1" data-classic-held-back>
       <div class="text-slate-500">held back · not written by this press</div>
       ${heldBack.map(h => `<div data-classic-held-blueprint="${_esc(h.key)}" title="${_esc(h.words || '')}"><span class="text-amber-400">◐ needs an identifier</span> 🏛 ${_esc(h.name || h.key)}</div>`).join('')}

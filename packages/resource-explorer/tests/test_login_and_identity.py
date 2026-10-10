@@ -714,10 +714,7 @@ class TestCurateRoutes:
         import resource_explorer.web.routes.curate as curate_routes
         monkeypatch.setattr(curate_routes, "_registry",
                             lambda: ProjectRegistry(database_url=db_url))
-        # Materialization is a live Egeria write; this test is about the gate
-        # in front of it, so it is stubbed out entirely.
-        monkeypatch.setattr(curate_routes, "_materialize_if_accepted",
-                            lambda *a, **k: None)
+        # The verdict routes are decisions only (Brief A): no Egeria write to stub here.
 
         app = _app_under(monkeypatch, EXPLORER_REQUIRE_LOGIN="true")
         return TestClient(app), ProjectRegistry(database_url=db_url)
@@ -812,9 +809,6 @@ class TestCurateRoutes:
 
     def test_reject_does_not_promote_anything(self, client, monkeypatch):
         api, reg = client
-        import resource_explorer.web.routes.curate as curate_routes
-        monkeypatch.setattr(curate_routes, "_materialize_if_accepted",
-                            lambda *a, **k: {"status": "materialized", "guid": "comp-guid"})
         r = api.post("/api/curate/component-verdicts/repo/p",
                      json={"scope_locator": "src/b", "verdict": "rejected"},
                      headers={"Authorization": f"Bearer {_app_token('dan')}"})

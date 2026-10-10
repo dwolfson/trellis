@@ -158,3 +158,12 @@ test('a blueprint that needs an identifier is listed as held back, with its sent
   assert.equal(host.querySelector('[data-will-blueprint="deployment::the parts"]'), null, 'it is not in what will be written');
   assert.equal(norm(host.querySelector('[data-architecture-go]')), 'Publish 3 components · 1 blueprint →');
 });
+
+test('a blueprint whose earlier press left no shape to read says "check Egeria", with the sentence', async () => {
+  const plan = PLAN();
+  plan.blueprints.check_egeria = [{ key: 'deployment::core', name: 'core', words: 'shape of the earlier press unknown — check Egeria' }];
+  const { document } = await setUp({ publishPlan: plan });
+  const row = publishHost(document).querySelector('[data-architecture-check-egeria] [data-check-blueprint="deployment::core"]');
+  assert.ok(row, 'it is said on the band');
+  assert.match(norm(row), /check Egeria.*core.*shape of the earlier press unknown/);
+});

@@ -3722,7 +3722,9 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
             "promotion": promotions.get(vkey),
             "shape_plan": plan_with_alternatives(
                 name, [shape_nodes[m] for m in (detail.get("members") or []) if m in shape_nodes],
-                composed_into=detail.get("composed_into") or "")
+                composed_into=detail.get("composed_into") or "",
+                # The stored flip (carried forward by the verdict route): the pane shows what Publish will write.
+                requested=blueprint_choices(verdicts.get(vkey))["shape"])
             if (detail.get("members") or []) else None,
         })
     return blueprints

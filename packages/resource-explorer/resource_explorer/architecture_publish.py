@@ -104,19 +104,41 @@ def planned_handoff(bp: dict, nodes_by_slug: dict, shape: str, proofs: list[dict
             "known": sorted(({container} - {""}) | pair_kids), "container": container}
 
 
-def _attached(proofs: list[dict], scope_key: str) -> tuple[set[str], set[str]]:
-    """(direct members, composed sub-components) the LAST press recorded as actually handed over. A row written
-    before the two were kept apart has only `guids`: it counts as both, as it did then."""
+EARLIER_SHAPE_UNKNOWN = "shape of the earlier press unknown \u2014 check Egeria"
+
+
+def _attached(proofs: list[dict], scope_key: str) -> tuple[set[str], set[str], bool]:
+    """(direct members, composed sub-components, earlier shape unknown) the LAST press recorded as actually
+    handed over.
+
+    A row written before the two were kept apart has only `guids`. It is split by the shape that same press
+    wrote (its `shape` proof row, the newest one before it): contents means every GUID was a direct member;
+    container means the GUIDs that press linked as sub-components (its `composition` rows) were composed and
+    the rest (the container, child blueprints) were members. With no shape row to read, the GUIDs count as
+    both, as they did then, and the third value says the plan cannot tell, so a flip may attach nothing."""
     members: set[str] = set()
     composed: set[str] = set()
-    for p in proofs:
-        if p["proof"] == P_ATTACHED and p["table_name"] == scope_key:
-            d = p.get("detail") or {}
-            if "members" in d or "composed" in d:
-                members, composed = set(d.get("members") or []), set(d.get("composed") or [])
-            else:
-                members = composed = set(d.get("guids") or [])
-    return members, composed
+    unknown = False
+    for i, p in enumerate(proofs):
+        if p["proof"] != P_ATTACHED or p["table_name"] != scope_key:
+            continue
+        d = p.get("detail") or {}
+        if "members" in d or "composed" in d:
+            members, composed, unknown = set(d.get("members") or []), set(d.get("composed") or []), False
+            continue
+        guids = set(d.get("guids") or [])
+        last_shape = max((j for j in range(i) if proofs[j]["proof"] == "shape"
+                          and proofs[j]["table_name"] == scope_key), default=-1)
+        shape = str(((proofs[last_shape].get("detail") or {}).get("shape") or "")) if last_shape >= 0 else ""
+        if shape.startswith("contents"):
+            members, composed, unknown = guids, set(), False
+        elif shape.startswith("container"):
+            kids = {q["target_guid"] for q in proofs[last_shape + 1:i]
+                    if q["proof"] == "composition" and q["table_name"] == scope_key}
+            members, composed, unknown = guids - kids, guids & kids, False
+        else:
+            members, composed, unknown = guids, guids, True
+    return members, composed, unknown
 
 
 def _composition_state(proofs: list[dict], scope_key: str, known: list[str]) -> tuple[int, set[str]]:
@@ -180,7 +202,7 @@ def publish_plan(registry, slug: str) -> dict:
     project = registry.get(slug)
     label = repo_label(slug, getattr(project, "display_name", "") or "")
     by_name = {b["cluster_name"]: b for b in blueprints}
-    bp_write, bp_present, bp_rejected_in_egeria, bp_held_back = [], 0, 0, []
+    bp_write, bp_present, bp_rejected_in_egeria, bp_held_back, bp_check = [], 0, 0, [], []
     for b in blueprints:
         key = f"{b['perspective']}::{b['cluster_name']}"
         verdict = (b.get("verdict") or {}).get("verdict")
@@ -203,7 +225,9 @@ def publish_plan(registry, slug: str) -> dict:
         unfinished, unconfirmed_kids = _composition_state(proofs, key, hand["known"]) if held else (0, set())
         # A child whose composition is unconfirmed is counted once, as a composition to confirm. A direct member
         # and a composed sub-component are different handoffs: one never stands in for the other.
-        att_members, att_composed = _attached(proofs, key) if held else (set(), set())
+        att_members, att_composed, shape_unknown = _attached(proofs, key) if held else (set(), set(), False)
+        if shape_unknown:
+            bp_check.append({"key": key, "name": b["cluster_name"], "words": EARLIER_SHAPE_UNKNOWN})
         unattached = (len(set(hand["members"]) - att_members)
                       + len(set(hand["composed"]) - att_composed - unconfirmed_kids)) if held else 0
         if held and not unfinished and not unattached:
@@ -228,7 +252,10 @@ def publish_plan(registry, slug: str) -> dict:
         "slug": slug,
         "components": {"to_write": to_write, "in_egeria": in_egeria, "rejected_in_egeria": rejected_in_egeria},
         "blueprints": {"to_write": bp_write, "in_egeria": bp_present, "rejected_in_egeria": bp_rejected_in_egeria,
-                       "needs_identifier": bp_held_back},
+                       "needs_identifier": bp_held_back,
+                       # Last pressed by code that did not keep members and sub-components apart, with no shape
+                       # row to split them by: the plan cannot tell what a flip still has to attach.
+                       "check_egeria": bp_check},
         "label": label_for(len(to_write), len(bp_write)),
         "nothing": not to_write and not bp_write,
     }
@@ -252,6 +279,49 @@ def last_results(registry, slug: str) -> dict:
     run = rows[-1]["curation_id"]
     items = [{"key": p["table_name"], **(p.get("detail") or {})} for p in rows if p["curation_id"] == run]
     return {"run": run, "at": rows[-1]["read_at"], "items": items}
+
+
+# ── the press ─────────────────────────────────────────────────────────────────────────────────────────
+
+class PublishAlreadyRunning(Exception):
+    """A publish for this repository is queued, claimed or running: a second press is refused."""
+
+
+def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authorize,
+                    only: set[str] | None = None) -> dict:
+    """Queue ONE publish_architecture run for the items in `plan` (all of them, or those whose path/key is in
+    `only`), with a 'running' activity row the run closes. Shared by the web press and the CLI, so both write
+    exactly what the plan lists. `authorize(scope)` raises for an item the caller may not curate. Returns
+    {run_id, activity_id, queued, plan}; queues nothing when nothing is selected. Raises PublishAlreadyRunning."""
+    from resource_explorer.activity_logger import log_survey
+
+    slug = project.slug
+    paths = [c["path"] for c in plan["components"]["to_write"] if only is None or c["path"] in only]
+    keys = [b["key"] for b in plan["blueprints"]["to_write"] if only is None or b["key"] in only]
+    if not paths and not keys:
+        return {"run_id": None, "activity_id": None, "queued": 0, "plan": plan}
+    for state in ("queued", "claimed", "running"):
+        if any((r.get("target") and slug == json.loads(r["target"]).get("slug"))
+               for r in registry.list_runs(kind="publish_architecture", state=state, limit=50)):
+            raise PublishAlreadyRunning("a publish is already running for this repository")
+    for scope in [*paths, *keys]:
+        authorize(scope)
+    label = plan["label"] if only is None else label_for(len(paths), len(keys))
+    activity_id = log_survey(
+        registry, entity_type="repo", entity_slug=slug,
+        entity_name=project.display_name, entity_location=project.github_url,
+        intent="curate", status="running",
+        summary=f"Publishing {label.removeprefix('Publish ')} of {project.display_name}…")
+    try:
+        # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
+        run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys},
+                                      result_ref=activity_id, requested_by=requested_by)
+    except Exception as exc:
+        # Opened 'running' above; nothing will run to close it.
+        registry.update_activity_status(
+            activity_id, "error", summary=f"Publishing {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
+        raise
+    return {"run_id": run_id, "activity_id": activity_id, "queued": len(paths) + len(keys), "plan": plan}
 
 
 # ── the write ─────────────────────────────────────────────────────────────────────────────────────────

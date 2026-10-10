@@ -229,11 +229,13 @@ def plan_shape(cluster_name: str, nodes: list[Node], *, requested: str = "",
                      flip_to=(CONTENTS if shape == CONTAINER else CONTAINER))
 
 
-def plan_with_alternatives(cluster_name: str, nodes: list[Node], *, composed_into: str = "") -> dict:
-    """The default plan as a dict, plus what each shape would say (`alternatives`), so a screen can flip
+def plan_with_alternatives(cluster_name: str, nodes: list[Node], *, composed_into: str = "",
+                           requested: str = "") -> dict:
+    """The plan as a dict (the default, or the person's stored flip when `requested` is given: what the next
+    Publish will write), plus what each shape would say (`alternatives`), so a screen can flip
     the manifest line before the write without asking the server again. A shape that cannot be had
     (no root to be the container) shows the default's words and the reason it was refused."""
-    plan = plan_shape(cluster_name, nodes, composed_into=composed_into).to_dict()
+    plan = plan_shape(cluster_name, nodes, requested=requested, composed_into=composed_into).to_dict()
     plan["alternatives"] = {}
     for shape in SHAPES:
         alt = plan_shape(cluster_name, nodes, requested=shape, composed_into=composed_into)

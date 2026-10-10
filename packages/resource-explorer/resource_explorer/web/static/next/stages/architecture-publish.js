@@ -64,6 +64,11 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
       ${heldBack.map((h) => `<div data-held-blueprint="${esc(h.key)}" class="py-[1px]">${cue('partial', 'needs an identifier', h.words || '')}
         <span class="text-ink">${esc(h.name || h.key)}</span>${h.words ? ` <span class="text-provenance text-ink-muted">· ${esc(h.words)}</span>` : ''}</div>`).join('')}
     </div>` : '';
+  const check = plan?.blueprints?.check_egeria || [];
+  const check_html = check.length ? `<div class="mt-s1 text-caveat" data-architecture-check-egeria>
+      ${check.map((c) => `<div data-check-blueprint="${esc(c.key)}" class="py-[1px]">${cue('partial', 'check Egeria', c.words || '')}
+        <span class="text-ink">${esc(c.name || c.key)}</span> <span class="text-provenance text-ink-muted">· ${esc(c.words || '')}</span></div>`).join('')}
+    </div>` : '';
   const last = plan?.last?.items || [];
   const missing = plan?.last?.missing ? `<div class="mt-s2 text-caveat" data-architecture-no-results>${cue('error', 'the last publish left no results', 'The last publish ended before it wrote its results, so nothing from an earlier publish is shown as current.')}</div>` : '';
   const results = last.length ? `<div class="mt-s2 text-caveat" data-architecture-results>
@@ -75,7 +80,7 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
   return `<div data-architecture-publish>
     <div class="text-caveat text-ink">${held ? `${num(held)} in Egeria` : 'nothing in Egeria yet'}${
       still ? ` <span class="text-provenance text-ink-muted">· ${num(still)} rejected but still in Egeria (RE removes nothing)</span>` : ''}</div>
-    ${list}${held_html}
+    ${list}${held_html}${check_html}
     <div class="mt-s2 flex flex-wrap items-baseline gap-s3">
       <button type="button" data-architecture-go ${nothing || !signedIn || pending ? 'disabled' : ''}
         title="Writes what is listed above: the accepted components, then the accepted blueprints. Nothing is written until this is pressed."
