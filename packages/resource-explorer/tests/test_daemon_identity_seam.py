@@ -139,22 +139,110 @@ def test_a_portal_token_for_the_daemon_is_refused(client, monkeypatch):
     assert "access_token" not in r.json()
 
 
-def test_a_raw_egeria_bearer_for_the_daemon_is_not_a_caller(cfg):
+def test_a_raw_egeria_bearer_for_the_daemon_is_refused_before_any_egeria_call(cfg):
     from types import SimpleNamespace
 
     from resource_explorer.a2a_auth import A2AAuthSettings, authenticate, reset_validation_cache
 
     reset_validation_cache()
     settings = A2AAuthSettings(jwt_secret="s", egeria_view_server="v", egeria_platform_url="https://localhost:9443")
-    ok = lambda token, config: True                             # noqa: E731 - Egeria would accept it
+    asked = []
+
+    def ok(token, config):                                      # Egeria would accept it
+        asked.append(token)
+        return True
 
     def request(sub):
         return SimpleNamespace(headers={"Authorization": f"Bearer {_egeria_token(sub)}"})
 
-    assert authenticate(request(NPA), settings, validator=ok) is None
+    with pytest.raises(ec.DaemonSignInRefused):
+        authenticate(request(NPA), settings, validator=ok)
+    assert asked == [], "refused before Egeria is asked to validate"
     person = authenticate(request("garygeeke"), settings, validator=ok)
     assert person is not None and person.user_id == "garygeeke"
     reset_validation_cache()
+
+
+# ── round 2: a session for the daemon minted ELSEWHERE (shared secret) is refused on resolution ─
+
+A2A_SECRET = "a2a-shared-secret"
+
+
+def _shared_secret_session(secret, user=NPA):
+    """What EA's login (or a pre-merge RE login) mints for the daemon under the shared secret."""
+    return jwt.encode({"sub": user, "user_id": user, "role": "user", "egeria_token": _egeria_token(user),
+                       "exp": time.time() + 600}, secret, algorithm="HS256")
+
+
+def test_a_shared_secret_session_for_the_daemon_is_refused_on_the_web(client):
+    from resource_explorer.auth import create_access_token
+
+    token = create_access_token(user_id=NPA, egeria_token=_egeria_token(NPA))   # RE's own secret = the shared one
+    r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 403 and r.json()["detail"] == REFUSAL
+    person = create_access_token(user_id="peterprofile", egeria_token=_egeria_token("peterprofile"))
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {person}"}).json()["user_id"] == "peterprofile"
+
+
+@pytest.mark.parametrize("anonymous", [False, True])
+def test_a_shared_secret_session_for_the_daemon_is_403_on_a2a_even_when_anonymous_is_allowed(cfg, anonymous):
+    from resource_explorer.a2a_auth import A2AAuthSettings, reset_validation_cache
+    from resource_explorer.a2a_role import DEFAULT_A2A_PORT, build_app
+
+    reset_validation_cache()
+    settings = A2AAuthSettings(jwt_secret=A2A_SECRET, egeria_view_server="v",
+                               egeria_platform_url="https://localhost:9443", allow_anonymous=anonymous)
+    a2a = TestClient(build_app(host="127.0.0.1", port=DEFAULT_A2A_PORT, settings=settings))
+    r = a2a.get("/whoami", headers={"Authorization": f"Bearer {_shared_secret_session(A2A_SECRET)}"})
+    assert r.status_code == 403 and r.json()["detail"] == REFUSAL
+    ok = a2a.get("/whoami", headers={"Authorization": f"Bearer {_shared_secret_session(A2A_SECRET, 'peterprofile')}"})
+    assert ok.status_code == 200 and ok.json()["user_id"] == "peterprofile"
+
+
+def test_a_raw_daemon_bearer_is_403_on_a2a_even_when_anonymous_is_allowed(cfg):
+    from unittest.mock import patch
+
+    from resource_explorer.a2a_auth import A2AAuthSettings, reset_validation_cache
+    from resource_explorer.a2a_role import DEFAULT_A2A_PORT, build_app
+
+    reset_validation_cache()
+    settings = A2AAuthSettings(jwt_secret=A2A_SECRET, egeria_view_server="v",
+                               egeria_platform_url="https://localhost:9443", allow_anonymous=True)
+    a2a = TestClient(build_app(host="127.0.0.1", port=DEFAULT_A2A_PORT, settings=settings))
+    with patch("trellis_auth.validate_egeria_token", return_value=True) as v:
+        r = a2a.get("/whoami", headers={"Authorization": f"Bearer {_egeria_token(NPA)}"})
+    assert r.status_code == 403 and v.call_count == 0
+
+
+def test_a_cached_cli_session_for_the_daemon_is_refused(cfg, monkeypatch, tmp_path):
+    from rich.console import Console
+
+    from resource_explorer.cli import session as cli_session
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cli_session.save_login(NPA, _egeria_token(NPA))           # a pre-merge login, still on disk
+    assert cli_session.resolve_identity() == (None, None)
+    console = Console(record=True, width=200)
+    with pytest.raises(SystemExit) as exit_:
+        cli_session.require_identity(console)
+    assert exit_.value.code == cli_session.EXIT_NOT_SIGNED_IN
+    assert REFUSAL in console.export_text()
+
+
+# ── round 2: the source label ──────────────────────────────────────────────
+
+def test_an_unset_egeria_user_id_is_labelled_the_code_default_and_warned(cfg, monkeypatch, caplog):
+    from resource_explorer.config import EgeriaConfig
+
+    monkeypatch.delenv("EGERIA_USER_ID", raising=False)
+    cfg.egeria = EgeriaConfig(_env_file=None)                   # nothing set: config.py's default
+    with caplog.at_level(logging.INFO, logger="resource_explorer.egeria_clients"):
+        ec.log_daemon_identity_at_startup()
+    lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "resource_explorer.egeria_clients"]
+    assert lines == [(logging.WARNING, f"daemon identity: {cfg.egeria.user_id!r} from the code default "
+                                       "(EGERIA_USER_ID unset) — a person's persona as RE's daemon; set "
+                                       "EGERIA_USER_ID to RE's own account")]
+    assert ec.daemon_identity_status()["source"] == "default"
 
 
 def test_the_cli_login_refuses_the_daemon_and_never_prefills_it(cfg, monkeypatch, tmp_path):

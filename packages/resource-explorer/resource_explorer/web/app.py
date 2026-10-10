@@ -205,6 +205,18 @@ async def _identity_middleware(request, call_next):
     claims = get_current_user(request)
     identity = identity_from_claims(claims) if claims is not None else None
 
+    # A session for RE's daemon account is refused wherever it was minted (EA shares the JWT
+    # secret; a pre-merge session may name it) — Brief L round 2, at identity RESOLUTION.
+    from resource_explorer.egeria_clients import DaemonSignInRefused, refuse_daemon_sign_in
+
+    if identity is not None:
+        try:
+            refuse_daemon_sign_in(identity.user_id)
+        except DaemonSignInRefused as exc:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(status_code=403, content={"detail": str(exc)})
+
     from resource_explorer.egeria_clients import client_scope
 
     reset = current_caller.set(identity)

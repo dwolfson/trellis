@@ -107,3 +107,33 @@ def test_a_failed_qualified_name_lookup_raises_and_creates_nothing(surveyor):
     with pytest.raises(EgeriaDatabaseSurveyorError, match="cannot tell whether it exists"):
         surveyor._catalog_and_survey(_host_b_sales(), db_user="u", db_pwd="p", survey_after_catalog=False)
     surveyor._automated_curation.create_elem_from_template.assert_not_called()
+
+
+# ── round 2: a host change ────────────────────────────────────────────────
+
+def _moved_host_a_sales():
+    """Host A's sales, registered earlier (RE stored the DATABASE guid), now with egeria_host changed."""
+    return DatabaseEntity(slug="host_a_sales", display_name="sales", db_type="postgresql",
+                          host="host-a", egeria_host="host-a.internal", port=5432,
+                          database_name="sales", egeria_asset_guid=A_DB)
+
+
+def test_a_stored_database_guid_is_never_reused_as_the_server_when_the_database_lookup_misses(surveyor, egeria):
+    result = surveyor._catalog_and_survey(_moved_host_a_sales(), db_user="u", db_pwd="p",
+                                          survey_after_catalog=False)
+    assert result["server_guid"] != A_DB, "the database's guid is never the server"
+    assert result["server_guid"] == B_SERVER          # no server under host-a.internal: created
+    assert ("PostgreSQL Server::host-a.internal:5432", ("qualifiedName",)) in egeria.lookups
+
+
+def test_a_host_change_says_which_host_egeria_holds_and_how_to_fix_it(surveyor):
+    surveyor._asset_maker.get_asset_by_guid.return_value = {
+        "elementHeader": {"guid": A_DB, "type": {"typeName": "Database"}},
+        "properties": {"qualifiedName": "PostgreSQL Relational Database::host-a:5432::sales"}}
+    with pytest.raises(EgeriaDatabaseSurveyorError) as err:
+        surveyor.publish_step_annotations(_moved_host_a_sales(), schema_info={}, statistics=None,
+                                          surveyed_at="2026-10-09T00:00:00")
+    assert str(err.value) == (
+        f"The database element in Egeria ({A_DB}) is named for host host-a:5432; this registration "
+        "says host host-a.internal:5432. Re-catalog the database, or correct the host (Egeria host) "
+        "on the registration.")

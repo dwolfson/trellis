@@ -211,7 +211,9 @@ export function daemonWords(whoami) {
   if (!whoami) return null;
   const d = whoami.daemon;
   if (!d || !d.user_id) return 'not reported by this server';
-  return d.source === 'env' ? `${d.user_id} · from .env (development bootstrap)` : d.user_id;
+  if (d.source === 'env') return `${d.user_id} · from .env (development bootstrap)`;
+  if (d.source === 'default') return `${d.user_id} · code default (EGERIA_USER_ID unset)`;
+  return d.user_id;
 }
 
 /** Pure: the popover's rows from what was read. Each value is a string or null (not read). */

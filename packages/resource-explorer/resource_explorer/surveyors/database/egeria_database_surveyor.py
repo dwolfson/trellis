@@ -505,18 +505,17 @@ class EgeriaDatabaseSurveyor:
         # `sales` matched host A's database when host B's `sales` was registered, and host B adopted it.
         # The names are the catalogue gateway's (one definition): `PostgreSQL Server::<host:port>` and
         # `PostgreSQL Relational Database::<host:port>::<db>`.
-        # The database element is compared against the server: `egeria_asset_guid` is the DATABASE's guid in every
-        # current flow (`set_database_egeria_guid`), so on a repeat commit "reuse the stored guid as the
-        # server" printed the database as the server (rehearsal 2, D-E). A stored guid is reused as the
-        # server only when it is not the database element. NOTE a server element is SHARED by host:port:
-        # a commit attaches to whatever server already carries that qualifiedName.
-        server_guid = db_entity.egeria_asset_guid
+        # The server is ALWAYS found by its own qualifiedName. `egeria_asset_guid` is the DATABASE's guid in
+        # every current flow (`set_database_egeria_guid`), so reusing it as the server printed the database
+        # as the server (rehearsal 2, D-E) — and when the database lookup misses (e.g. `egeria_host`
+        # changed) no comparison can tell, so the stored guid is never a server candidate at all (Brief L
+        # round 2). NOTE a server element is SHARED by host:port: a commit attaches to whatever server
+        # already carries that qualifiedName.
         db_guid_lookup = self._find_by_qualified_name(
             database_qualified_name(server_name, db_entity.database_name))
-        if not server_guid or server_guid == db_guid_lookup:
-            server_guid = self._find_by_qualified_name(server_qualified_name(server_name))
-            if server_guid and server_guid == db_guid_lookup:
-                server_guid = ""
+        server_guid = self._find_by_qualified_name(server_qualified_name(server_name))
+        if server_guid and server_guid == db_guid_lookup:
+            server_guid = ""
 
         # Whether a secrets write is needed at all: reusing both existing elements by name is
         # the common re-survey path, and a reused element's deepCopy already
@@ -769,14 +768,10 @@ class EgeriaDatabaseSurveyor:
         from resource_explorer.catalogue_gateway import database_qualified_name, server_name_for
 
         self.connect()
-        db_guid = self._find_by_qualified_name(
-            database_qualified_name(server_name_for(db_entity), db_entity.database_name))
+        expected_qn = database_qualified_name(server_name_for(db_entity), db_entity.database_name)
+        db_guid = self._find_by_qualified_name(expected_qn)
         if not db_guid:
-            raise EgeriaDatabaseSurveyorError(
-                f"Database '{db_entity.database_name}' is not yet cataloged in Egeria — "
-                "cannot publish a Survey Definition step's results without an existing "
-                "asset to attach the SurveyReport to."
-            )
+            raise EgeriaDatabaseSurveyorError(self._not_catalogued_sentence(db_entity, expected_qn))
 
         from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
@@ -929,6 +924,36 @@ class EgeriaDatabaseSurveyor:
                 f"{' '.join(str(exc).split())[:300] or type(exc).__name__}"
             )
         return ""
+
+    def _not_catalogued_sentence(self, db_entity, expected_qn: str) -> str:
+        """Why an exact-qualifiedName lookup missed, in words a person can act on. When RE holds a
+        guid for this database from an earlier catalogue, that element's own qualifiedName is read:
+        a different host string there is a host change, and the sentence names both hosts and the
+        fix. Adoption stays exact-match (7f.7); this only explains the miss."""
+        from resource_explorer.catalogue_gateway import parse_element_answer, server_name_for
+
+        base = (f"Database '{db_entity.database_name}' is not yet cataloged in Egeria under "
+                f"{expected_qn!r} — cannot publish a Survey Definition step's results without an "
+                "existing asset to attach the SurveyReport to.")
+        stored = (db_entity.egeria_asset_guid or "").strip()
+        if not stored:
+            return base
+        try:
+            found = parse_element_answer(self._asset_maker.get_asset_by_guid(stored, output_format="JSON"))
+        except Exception as exc:
+            raise EgeriaDatabaseSurveyorError(
+                f"{base} RE's stored element {stored} could not be read to say why: "
+                f"{' '.join(str(exc).split())[:200] or type(exc).__name__}") from exc
+        prefix = "PostgreSQL Relational Database::"
+        qn = found.qualified_name if found is not None else ""
+        if qn.startswith(prefix) and qn.endswith(f"::{db_entity.database_name}"):
+            held = qn[len(prefix):-(len(db_entity.database_name) + 2)]
+            ours = server_name_for(db_entity)
+            if held != ours:
+                return (f"The database element in Egeria ({stored}) is named for host {held}; this "
+                        f"registration says host {ours}. Re-catalog the database, or correct the "
+                        "host (Egeria host) on the registration.")
+        return base
 
     def _guid_from_lookup(self, result) -> str:
         if isinstance(result, list) and result:

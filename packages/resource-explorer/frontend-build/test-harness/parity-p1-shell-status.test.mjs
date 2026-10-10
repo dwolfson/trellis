@@ -414,6 +414,8 @@ test('connection: "Background work as" shows the daemon userId the server loaded
     'the daemon id is never shown as "Egeria user"');
   assert.equal(row({ daemon: { user_id: 'resourceexplorernpa', source: 'env' } }),
     'resourceexplorernpa · from .env (development bootstrap)');
+  assert.equal(row({ daemon: { user_id: 'erinoverview', source: 'default' } }),
+    'erinoverview · code default (EGERIA_USER_ID unset)', 'never labelled .env when it is not');
 });
 
 test('connection: the popover renders the Background work as row', async () => {
