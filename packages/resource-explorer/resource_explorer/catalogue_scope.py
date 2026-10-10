@@ -395,7 +395,11 @@ def _native_node_set(registry, slug: str, before: str = "") -> dict | None:
     Schemas are named by schema annotations and also by table annotations, so a
     schema whose own annotation is missing still lists; a table lists whenever
     its name is readable, with any unreadable fact left None ("not established")."""
-    from resource_explorer.surveyors.result_materializer import _split_qualified
+    from resource_explorer.surveyors.result_materializer import (
+        M_DB_COLUMN_COUNT, M_DB_TABLE_COUNT, M_LAST_STATS_RESET, M_ROWS_DELETED,
+        M_ROWS_INSERTED, M_ROWS_UPDATED, M_SCHEMA_NAME, M_SCHEMA_TOTAL_TABLE_SIZE,
+        M_TABLE_NAME, M_TABLE_QNAME, M_TABLE_SIZE, M_TABLE_TYPE, _split_qualified, native_props,
+    )
     found = _newest_complete_native_run(registry, slug, before)
     if not found:
         return None
@@ -413,20 +417,21 @@ def _native_node_set(registry, slug: str, before: str = "") -> dict | None:
         if not ok:
             unreadable += 1
             continue
+        props = native_props(props)
         if kind == ANN_DATABASE:
-            stats_reset = stats_reset or str(props.get("lastStatisticsReset") or "")
+            stats_reset = stats_reset or str(props.get(M_LAST_STATS_RESET) or "")
         elif kind == ANN_SCHEMA:
-            name = str(props.get("schemaName") or "")
+            name = str(props.get(M_SCHEMA_NAME) or "")
             if name:
                 schemas[name] = props
         else:
-            tname = str(props.get("tableName") or "")
+            tname = str(props.get(M_TABLE_NAME) or "")
             if not tname:
                 unreadable += 1
                 continue
-            qn = str(props.get("tableQualifiedName") or props.get("qualifiedTableName") or "")
+            qn = str(props.get(M_TABLE_QNAME) or props.get("qualifiedTableName") or "")
             parts = _split_qualified(qn, tname, 2)
-            sname = str(props.get("schemaName") or (parts[0] if len(parts) == 2 else ""))
+            sname = str(props.get(M_SCHEMA_NAME) or (parts[0] if len(parts) == 2 else ""))
             if not sname:
                 unreadable += 1
                 continue
@@ -443,18 +448,18 @@ def _native_node_set(registry, slug: str, before: str = "") -> dict | None:
         for tname in sorted(tps):
             p = tps[tname]
             t_nodes.append({
-                "name": tname, "table_type": str(p.get("tableType") or ""),
-                "row_count": None, "row_count_state": "", "size_bytes": _int(p.get("tableSize")),
-                "column_count": _int(p.get("columnCount")), "columns": [], "source": src,
-                "facts_from": {"size": src} if _int(p.get("tableSize")) is not None else {},
+                "name": tname, "table_type": str(p.get(M_TABLE_TYPE) or ""),
+                "row_count": None, "row_count_state": "", "size_bytes": _int(p.get(M_TABLE_SIZE)),
+                "column_count": _int(p.get(M_DB_COLUMN_COUNT)), "columns": [], "source": src,
+                "facts_from": {"size": src} if _int(p.get(M_TABLE_SIZE)) is not None else {},
                 "counters": {k: _int(p.get(c)) for k, c in (
-                    ("inserted", "numberOfRowsInserted"), ("updated", "numberOfRowsUpdated"),
-                    ("deleted", "numberOfRowsDeleted"))},
+                    ("inserted", M_ROWS_INSERTED), ("updated", M_ROWS_UPDATED),
+                    ("deleted", M_ROWS_DELETED))},
                 "counters_at": as_of,
             })
-        count = len(t_nodes) if t_nodes else _int(sp.get("tableCount"))
+        count = len(t_nodes) if t_nodes else _int(sp.get(M_DB_TABLE_COUNT))
         cls = "staging" if any(m in name.lower() for m in _STAGING_MARKERS) else "measured"
-        bytes_total = _int(sp.get("totalTableSize"))
+        bytes_total = _int(sp.get(M_SCHEMA_TOTAL_TABLE_SIZE))
         out_schemas.append({
             "schema": name, "classification": cls, "reason": "", "table_count": count,
             "row_total": None, "bytes_total": bytes_total, "is_estimate": False,

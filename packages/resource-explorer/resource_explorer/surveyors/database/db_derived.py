@@ -1436,7 +1436,7 @@ def derive_statistics_freshness(inputs: DerivedInputs) -> dict:
                          live_rows=None, threshold=None, above_threshold=None,
                          changes_share=None, threshold_basis="",
                          reason=props.get(NOT_READ_KEY, {}).get(
-                             LAST_ANALYZE.property_name, ""))
+                             LAST_ANALYZE.display_name, ""))
             entries.append(entry)
             continue
 
@@ -1480,7 +1480,7 @@ def derive_statistics_freshness(inputs: DerivedInputs) -> dict:
             threshold=None if threshold is None else round(threshold, 1),
             above_threshold=above, changes_share=share, threshold_basis=basis,
             reason=(props.get(NOT_READ_KEY, {}).get(
-                NUMBER_OF_ROWS_CHANGED_SINCE_ANALYZE.property_name, "") if status == FRESH_NOT_READ else ""),
+                NUMBER_OF_ROWS_CHANGED_SINCE_ANALYZE.display_name, "") if status == FRESH_NOT_READ else ""),
         )
         entries.append(entry)
 

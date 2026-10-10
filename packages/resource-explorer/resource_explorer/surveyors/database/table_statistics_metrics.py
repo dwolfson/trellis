@@ -20,6 +20,14 @@ PROPOSED FOR UPSTREAM (`in_egeria=False`): lastAnalyze, lastAutoAnalyze,
 lastVacuum, lastAutoVacuum, numberOfRowsChangedSinceAnalyze, numberOfLiveRows,
 numberOfDeadRows.
 
+Published keys are DISPLAY NAMES
+--------------------------------
+Egeria keys a survey annotation's `resourceProperties` by `getDisplayName()`
+("Number Of Rows Inserted", "Last statistics reset"; live-confirmed in
+PROBES-2026-09-21.md), so RE publishes under the display names and the keys of
+`metricsNotRead` are display names too. `property_name` stays here for the
+upstream proposal and for RE-internal code.
+
 Never versus not read -- the point of the helper below
 ------------------------------------------------------
 Postgres reports NULL for `last_analyze` when a table has never been analysed.
@@ -56,6 +64,10 @@ REASON_NO_COUNTERS = (
     "the stored row for this table carries no pg_stat_user_tables counters "
     "(it was back-filled from a survey blob that did not read them)"
 )
+def read_failed_reason(error: str) -> str:
+    return f"read failed ({error})"
+
+
 REASON_RESET_NOT_READ = (
     "this survey did not read pg_stat_database.stats_reset"
 )
@@ -64,7 +76,7 @@ REASON_RESET_NOT_READ = (
 @dataclass(frozen=True)
 class TableMetric:
     """One table metric, in the shape of Egeria's `RelationalTableMetric`."""
-    property_name: str   # key on the annotation's resourceProperties
+    property_name: str   # Egeria-style propertyName (upstream proposal); the PUBLISHED key is display_name
     data_type: str       # Egeria DataType display name
     display_name: str
     description: str
@@ -95,6 +107,12 @@ LAST_STATISTICS_RESET = TableMetric(
     "lastStatisticsReset", _DATE, "Last statistics reset",
     "Last time that the statistics were reset in the database.",
     "", True)
+
+TABLE_NAME = TableMetric(
+    "tableName", "string", "Table Name", "Name of table.", "", True)
+TABLE_QNAME = TableMetric(
+    "tableQualifiedName", "string", "Table Qualified Name",
+    "Qualified name of table showing the database name and schema name.", "", True)
 
 # ── PROPOSED FOR UPSTREAM: same style, not yet in Egeria ─────────────────────
 LAST_ANALYZE = TableMetric(
@@ -150,17 +168,23 @@ def row_was_read_from_pg_stat(row: dict | None) -> bool:
     """Did this stored/fetched activity row come from a real
     `pg_stat_user_tables` read?
 
-    A real read always carries counters (`n_live_tup` is never NULL there). A
-    row back-filled from an old survey blob carries timestamps at most, and its
-    empty `last_autoanalyze` means "that blob did not say", not "never".
+    `n_live_tup` is never NULL on a real read, so `live_tuples` is the proof.
+    The native Egeria materializer writes inserted/updated/deleted counters
+    too (`source='egeria'`) but never `live_tuples`, so counters alone are NOT
+    proof, and a row from source 'egeria' never counts: a native row must not
+    turn "not read" into "never". A row back-filled from an old survey blob
+    carries timestamps at most.
     """
     if not row:
         return False
-    return any(row.get(f) is not None for f in _COUNTER_FIELDS)
+    if (row.get("source") or "") == "egeria":
+        return False
+    return row.get("live_tuples") is not None
 
 
 def table_statistics_properties(
     row: dict | None, stats_reset: str | None,
+    no_row_reason: str = REASON_NO_STATS_ROW,
 ) -> dict:
     """The `resourceProperties` for one table's statistics-currency metrics.
 
@@ -169,8 +193,8 @@ def table_statistics_properties(
     `stats_reset` is the database's reset EVIDENCE: a timestamp string,
     `NEVER`, or `None` for "not read" (see `registry.STATS_NEVER_RESET`).
 
-    Returns `{propertyName: value}` for every metric with a stated value, plus
-    `metricsNotRead` ({propertyName: reason}) for the rest. Values are ints or
+    Returns `{display name: value}` for every metric with a stated value, plus
+    `metricsNotRead` ({display name: reason}) for the rest. Values are ints or
     strings; a counter that is a true zero stays `0`, and a NULL never becomes
     one.
     """
@@ -181,27 +205,27 @@ def table_statistics_properties(
     for metric in _TIMESTAMP_METRICS:
         value = (row or {}).get(metric.column)
         if value:
-            props[metric.property_name] = str(value)
+            props[metric.display_name] = str(value)
         elif from_pg_stat:
-            props[metric.property_name] = NEVER      # Postgres said NULL
+            props[metric.display_name] = NEVER      # Postgres said NULL
         else:
-            not_read[metric.property_name] = (
-                REASON_NO_STATS_ROW if row is None else REASON_NO_COUNTERS)
+            not_read[metric.display_name] = (
+                no_row_reason if row is None else REASON_NO_COUNTERS)
 
     for metric in (NUMBER_OF_ROWS_CHANGED_SINCE_ANALYZE, NUMBER_OF_LIVE_ROWS,
                    NUMBER_OF_DEAD_ROWS, NUMBER_OF_ROWS_INSERTED,
                    NUMBER_OF_ROWS_UPDATED, NUMBER_OF_ROWS_DELETED):
         value = (row or {}).get(metric.column)
         if value is None:
-            not_read[metric.property_name] = (
-                REASON_NO_STATS_ROW if row is None else REASON_NO_COUNTERS)
+            not_read[metric.display_name] = (
+                no_row_reason if row is None else REASON_NO_COUNTERS)
         else:
-            props[metric.property_name] = int(value)
+            props[metric.display_name] = int(value)
 
     if stats_reset:
-        props[LAST_STATISTICS_RESET.property_name] = str(stats_reset)
+        props[LAST_STATISTICS_RESET.display_name] = str(stats_reset)
     else:
-        not_read[LAST_STATISTICS_RESET.property_name] = REASON_RESET_NOT_READ
+        not_read[LAST_STATISTICS_RESET.display_name] = REASON_RESET_NOT_READ
 
     if not_read:
         props[NOT_READ_KEY] = not_read

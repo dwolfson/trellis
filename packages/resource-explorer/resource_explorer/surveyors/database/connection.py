@@ -9,6 +9,18 @@ from typing import Any
 from resource_explorer.registry import DatabaseEntity
 
 
+class TableActivityReadFailed(list):
+    """An EMPTY list standing for a `pg_stat_user_tables` read that raised.
+
+    Falsy and iterable like `[]`, so callers that only iterate are unchanged;
+    `.error` is the failure text for those that must not call it "no row".
+    """
+
+    def __init__(self, error):
+        super().__init__()
+        self.error = f"{type(error).__name__}: {error}"[:300]
+
+
 @dataclass(frozen=True)
 class EngineCapabilities:
     """What this connection's engine can report, declared per capability
@@ -1187,8 +1199,11 @@ class PostgreSQLConnection(DatabaseConnection):
         """
         try:
             rows = self.execute_query(query)
-        except Exception:
-            return []
+        except Exception as exc:
+            # A failed read is NOT "no rows": return an empty list that carries
+            # the error, so existing `or []` callers behave as before while the
+            # publish path can say "read failed (...)".
+            return TableActivityReadFailed(exc)
         result = []
         for r in rows:
             result.append({
