@@ -95,8 +95,9 @@ _UNSENT_CANCEL_NOTE = "superseded by a later change in RE before it was sent"
 
 
 def tag_qualified_name(tag: str) -> str:
-    """The qualifiedName RE creates a public InformalTag with. Name-based so every RE user converges on one."""
-    return f"InformalTag::{tag}"
+    """The qualifiedName RE creates a public InformalTag with: name-based and lower-case, so every RE user (and
+    every spelling of the same word) converges on one. The displayName keeps the case it was typed in."""
+    return f"InformalTag::{tag.lower()}"
 
 
 def folio_qualified_name(group_slug: str) -> str:
@@ -292,28 +293,26 @@ def run_id_for(entity_type: str, slug: str) -> str:
     return f"Curation::{entity_type}::{slug}"
 
 
-def _requester(registry, entity_type: str, slug: str, item: CurationItem, by: str) -> str:
-    """Who asked: the person pressing, else (a publish hook with nobody signed in) who last decided it in RE."""
-    if by:
-        return by
-    try:
-        if item.kind == "tag":
-            for t in registry.list_resource_tags_with_authors(entity_type, slug):
-                if t.get("tag") == item.name:
-                    return str(t.get("author") or "")
-        changes = registry.list_group_changes(entity_type, slug)
-        return str(changes[-1].get("author") or "") if changes else ""
-    except Exception:
+def requester_of(identity) -> str:
+    """Who asked, for a write made on a publish's behalf: the signed-in person, or the person a Daemon job was
+    queued for (`requested_by`); "" when neither, and then the row runs as the plain daemon and nothing is stamped.
+    Round 2: never another decision's author (a tag unlink once took the last group change's author)."""
+    if identity is None:
         return ""
+    if getattr(identity, "kind", "") == "daemon":
+        return (getattr(identity, "requested_by", "") or "").strip()
+    return (getattr(identity, "user_id", "") or "").strip()
 
 
 def _enqueue(registry, entity_type: str, slug: str, item: CurationItem, action: str, guid: str, by: str,
              display: dict) -> int:
+    """Queue one row. `by` is THIS row's requester, recorded at queue time and never inferred later."""
     kind = item.kind
     element_kind = _LINK_OF[kind] if action == "link" else _DETACH_OF[kind]
     payload = {"entity_type": entity_type, "entity_slug": slug, "element_guid": guid, "by": by}
     if kind == "tag":
         payload["tag"] = item.name
+        payload["display_name"] = display.get("display_name") or item.name
         if action == "unlink" and item.egeria_guid:
             payload["tag_guid"] = item.egeria_guid
     else:
@@ -357,36 +356,57 @@ def plan_operations(plan: dict) -> tuple[str, ...]:
 
 
 def sync_curation(registry, entity_type: str, slug: str, *, by: str = "", asset_guid: str | None = None,
-                  check_access: bool = True, drain: bool = True, identity=None) -> dict:
+                  check_access: bool = True, drain: bool = True, identity=None,
+                  display_names: dict | None = None) -> dict:
     """Queue what `curation_plan` says is not yet in Egeria (links and unlinks), retire unsent rows it supersedes,
     then drain this resource's curation rows inline. Returns the plan as re-read afterwards, with `refused` when
     curation access said no (nothing is queued then) and `drain` (the drain summary).
 
     Never raises for an Egeria failure: the rows carry it. `check_access` is the Brief Z decision for the
     operations the queued actions perform; a publish hook passes False (the tags were checked when they were
-    added, and the inline drain acts as the person who pressed Publish, so Egeria checks them itself)."""
+    added, and the inline drain acts as the person who pressed Publish, so Egeria checks them itself).
+
+    `display_names` maps a tag (RE's lower-case key) to the spelling the person typed, for the InformalTag's
+    displayName. Round 2: a cancel that loses to a drain's claim means the plan was stale, so the plan is read
+    again and decides afresh (a fresh link behind a landing unlink, or an unlink behind a landing link)."""
     by = by or _caller_user()
+    display_names = display_names or {}
     plan = curation_plan(registry, entity_type, slug, asset_guid=asset_guid)
     result: dict = {"refused": "", "queued": [], "cancelled": [], "drain": {}}
-    actionable = [i for i in plan["items"] if i.action or i.cancel_ids]
-    if not actionable:
+    if not any(i.action or i.cancel_ids for i in plan["items"]):
         return {**plan_as_dict(plan), **result}
-    if check_access and any(i.action for i in actionable):
+    checked: set[str] = set()
+
+    def refused(p: dict) -> str:
+        ops = tuple(op for op in plan_operations(p) if op not in checked)
+        if not check_access or not ops:
+            return ""
         from resource_explorer.workflows.curate import curation_access
 
-        d = curation_access(registry, entity_type, slug, "", operations=plan_operations(plan))
-        if not d.allowed:
-            result["refused"] = d.reason
-            return {**plan_as_dict(plan), **result}
-    guid = plan["element_guid"]
-    for item in actionable:
-        for cid in item.cancel_ids:
+        d = curation_access(registry, entity_type, slug, "", operations=tuple(checked) + ops)
+        checked.update(ops)
+        return "" if d.allowed else d.reason
+
+    if (why := refused(plan)):
+        result["refused"] = why
+        return {**plan_as_dict(plan), **result}
+    for _ in range(4):                       # each pass retires what the plan supersedes, then reads it again
+        cancel_ids = [cid for i in plan["items"] for cid in i.cancel_ids]
+        if not cancel_ids:
+            break
+        for cid in cancel_ids:
             if registry.cancel_outbox_row(cid, _UNSENT_CANCEL_NOTE):
                 result["cancelled"].append(cid)
-        if item.action:
-            display = _group_display(registry, item.name) if item.kind == "group" else {}
-            result["queued"].append(_enqueue(registry, entity_type, slug, item, item.action, guid,
-                                             _requester(registry, entity_type, slug, item, by), display))
+        plan = curation_plan(registry, entity_type, slug, asset_guid=asset_guid)
+    if (why := refused(plan)):
+        result["refused"] = why
+        return {**plan_as_dict(plan), **result}
+    guid = plan["element_guid"]
+    for item in plan["items"]:
+        if item.action and not item.cancel_ids:
+            display = (_group_display(registry, item.name) if item.kind == "group"
+                       else {"display_name": display_names.get(item.name, "")})
+            result["queued"].append(_enqueue(registry, entity_type, slug, item, item.action, guid, by, display))
     if drain and result["queued"]:
         result["drain"] = _drain(registry, entity_type, slug, len(result["queued"]), identity)
     after = curation_plan(registry, entity_type, slug, asset_guid=asset_guid)
@@ -424,23 +444,73 @@ def retry_item(registry, entity_type: str, slug: str, kind: str, name: str, *, b
         d = curation_access(registry, entity_type, slug, "", operations=operations_for(kind, item.retry_action))
         if not d.allowed:
             raise CurationDenied(d.reason)
-    display = _group_display(registry, name) if kind == "group" else {}
+    display = _group_display(registry, name) if kind == "group" else {"display_name": ""}
     row_id = _enqueue(registry, entity_type, slug, item, item.retry_action, plan["element_guid"], by, display)
     summary = _drain(registry, entity_type, slug, 1, identity)
     return {**plan_as_dict(curation_plan(registry, entity_type, slug)), "queued": [row_id], "drain": summary,
             "refused": "", "cancelled": []}
 
 
-def publish_pending_curation(registry, entity_type: str, slug: str, asset_guid: str) -> dict:
+def publish_pending_curation(registry, entity_type: str, slug: str, asset_guid: str, *,
+                             by: str | None = None) -> dict:
     """The publish hook: a resource that has just been published (its asset GUID is `asset_guid`) sends the
-    tags and group it kept while it was not in Egeria. Best-effort; never raises."""
+    tags and group it kept while it was not in Egeria. The rows record the publish's requester (`by`, else the
+    current principal's person, else none). Best-effort; never raises."""
     if not asset_guid:
         return {}
+    if by is None:
+        try:
+            from resource_explorer.egeria_clients import current_principal
+
+            by = requester_of(current_principal())
+        except Exception:
+            by = ""
     try:
-        return sync_curation(registry, entity_type, slug, asset_guid=asset_guid, check_access=False)
+        return sync_curation(registry, entity_type, slug, asset_guid=asset_guid, check_access=False,
+                             by=by or "", identity=None)
     except Exception as exc:
         log.warning("Could not send tags/group for %s %s to Egeria: %s", entity_type, slug, exc)
         return {"error": str(exc)}
+
+
+def group_change_refusal(registry, entity_type: str, slug: str, new_group: str) -> str:
+    """Brief Z's answer for moving one resource from its current group to `new_group` ("" = ungrouped): "" when
+    allowed (or nothing changes), else the reason. UPDATE_PROPERTIES, plus ATTACH to join a Folio and DETACH to
+    leave one. The web route, the CLI and the batch import all ask this one function."""
+    from resource_explorer.workflows.curate import curation_access
+
+    new_group = registry._normalize_slug(new_group) if new_group else ""
+    before = current_group(registry, entity_type, slug)
+    ops: list[str] = []
+    if new_group and new_group != before:
+        ops += list(operations_for("group", "link"))
+    if before and before != new_group:
+        ops += [op for op in operations_for("group", "unlink") if op not in ops]
+    if not ops:
+        return ""
+    d = curation_access(registry, entity_type, slug, "", operations=tuple(ops))
+    return "" if d.allowed else d.reason
+
+
+def group_members(registry, group_slug: str) -> list[tuple[str, str]]:
+    return ([("repo", p.slug) for p in registry.list_projects_in_group(group_slug)]
+            + [("database", d.slug) for d in registry.list_databases_in_group(group_slug)]
+            + [("filesystem", f.slug) for f in registry.list_filesystems_in_group(group_slug)])
+
+
+def group_delete_refusals(registry, group_slug: str) -> list[dict]:
+    """A group delete removes every member from the Folio: DETACH (with UPDATE_PROPERTIES) on each member,
+    checked BEFORE anything changes. Returns the refused members with their reasons ([] = allowed)."""
+    out = []
+    for entity_type, member in group_members(registry, group_slug):
+        why = group_change_refusal(registry, entity_type, member, "")
+        if why:
+            out.append({"entity_type": entity_type, "slug": member, "reason": why})
+    return out
+
+
+def refusal_words(refused: list[dict]) -> str:
+    return "not permitted · " + "; ".join(f"{r['entity_type']} {r['slug']}: {r['reason']}" for r in refused)
 
 
 def group_deleted_report(group_slug: str) -> dict:
@@ -467,10 +537,12 @@ def _props(el: dict) -> dict:
 
 
 def find_informal_tag(fb, tag: str) -> str:
-    """The GUID of the InformalTag named `tag`, or "". `get_tags_by_name` is an exact match on displayName
-    (InformalTagHandler.getTagsByName :208-228). When several carry the name, RE's own qualifiedName wins, then the
-    lowest GUID, so every caller picks the same one."""
-    hits = [e for e in _elements(fb.get_tags_by_name(tag))
+    """The GUID of the InformalTag whose displayName is `tag` IGNORING CASE, or "" (round 2).
+
+    `find_tags` with starts_with and ends_with set is an exact-string search, and `ignore_case` widens it to any
+    case; the answer is then compared with `lower()` here, so a looser server match cannot pick another word.
+    When several match, RE's own qualifiedName wins, then the lowest GUID, so every caller picks the same one."""
+    hits = [e for e in _elements(fb.find_tags(search_string=tag, starts_with=True, ends_with=True, ignore_case=True))
             if str(_props(e).get("displayName") or _props(e).get("name") or "").strip().lower() == tag.lower()
             and _guid(e)]
     if not hits:
@@ -479,23 +551,50 @@ def find_informal_tag(fb, tag: str) -> str:
     return _guid(sorted(ours or hits, key=_guid)[0])
 
 
-def ensure_informal_tag(fb, tag: str) -> str:
-    """Find the public tag by name; create it only when absent; never a second one."""
+def find_informal_tag_by_qualified_name(fb, qualified_name: str) -> str:
+    """The InformalTag holding this exact qualifiedName, whatever its displayName, or ""."""
+    hits = [e for e in _elements(fb.find_tags(search_string=qualified_name, starts_with=True, ends_with=True,
+                                              ignore_case=False))
+            if _props(e).get("qualifiedName") == qualified_name and _guid(e)]
+    return _guid(sorted(hits, key=_guid)[0]) if hits else ""
+
+
+def ensure_informal_tag(fb, tag: str, display_name: str = "") -> str:
+    """Find the public tag by name (any case); create it only when absent, with the displayName as typed; never
+    a second one. A qualifiedName already taken under another displayName is adopted, not a dead row."""
     from resource_explorer.egeria_outbox import OutboxApplyError, _guid_of, _is_duplicate_qualified_name
 
     found = find_informal_tag(fb, tag)
     if found:
         return found
+    shown = display_name or tag
     try:
-        guid = _guid_of(fb.create_informal_tag(display_name=tag, qualified_name=tag_qualified_name(tag),
-                                               description=f"Tag “{tag}” from Resource Explorer."))
+        guid = _guid_of(fb.create_informal_tag(display_name=shown, qualified_name=tag_qualified_name(tag),
+                                               description=f"Tag “{shown}” from Resource Explorer."))
     except Exception as exc:
         if not _is_duplicate_qualified_name(exc):
             raise
-        guid = find_informal_tag(fb, tag)
+        guid = find_informal_tag_by_qualified_name(fb, tag_qualified_name(tag)) or find_informal_tag(fb, tag)
     if not guid:
         raise OutboxApplyError(f"InformalTag {tag!r} was neither found nor created")
     return guid
+
+
+def _wait_for_earlier_opposite(clients, payload: dict, opposite_kind: str) -> None:
+    """Round 2: a link and an unlink of the same tag (or membership) on the same asset apply in the order they
+    were queued. While an EARLIER row of the opposite kind for the same key is still pending, being sent or
+    backing off, this row is not attempted: `OutboxNotReadyError` hands it back to pending with no attempt burned
+    (so a destructive unlink is deferred, never sent and never re-sent). An earlier row that is done, dead or
+    retired does not hold it. So "unlinked" can never be shown while the tag is still on the asset."""
+    from resource_explorer.egeria_outbox import OutboxNotReadyError
+
+    registry, row_id, key = getattr(clients, "registry", None), payload.get("_outbox_id"), payload.get("_key")
+    if registry is None or row_id is None or not key:
+        return
+    for r in registry.list_outbox_rows_for_kinds(payload.get("entity_type", ""), payload.get("entity_slug", ""),
+                                                 (opposite_kind,)):
+        if r["qualified_name"] == key and int(r["id"]) < int(row_id) and r["status"] in ("pending", "running", "failed"):
+            raise OutboxNotReadyError(f"waiting for earlier {opposite_kind} row {r['id']} ({r['status']}) on {key}")
 
 
 def find_group_folio(cm, qualified_name: str) -> str:
@@ -531,16 +630,19 @@ def create_tag_link(clients, payload: dict) -> str:
 
     AttachedTag is declared without `setMultiLink(true)` (OpenMetadataTypesArchive1_2.java:3908-3946), so it is a
     uni-link relationship and a repeated add converges on one link (read from source; not measured live)."""
+    _wait_for_earlier_opposite(clients, payload, TAG_DETACH)
     fb = clients.require("feedback")
-    tag_guid = ensure_informal_tag(fb, payload["tag"])
+    tag_guid = ensure_informal_tag(fb, payload["tag"], payload.get("display_name") or "")
     fb.add_tag_to_element(payload["element_guid"], tag_guid, is_public=True)
     return tag_guid
 
 
 def create_tag_detach(clients, payload: dict) -> str:
     """Remove the tag's link from the asset. NEVER deletes the InformalTag itself (ISSUE-117: the owner deletes
-    elements by hand). `removeTagFromElement` removes the AttachedTag relationship(s) between the two ends
-    (InformalTagHandler.java:334-358). No tag of that name means no link to remove."""
+    elements by hand). `removeTagFromElement` removes EVERY AttachedTag relationship between the two ends
+    (InformalTagHandler.java:334-358), including one somebody added directly in Egeria. No tag of that name
+    means no link to remove."""
+    _wait_for_earlier_opposite(clients, payload, TAG_LINK)
     fb = clients.require("feedback")
     tag_guid = payload.get("tag_guid") or find_informal_tag(fb, payload["tag"])
     if not tag_guid:
@@ -552,6 +654,7 @@ def create_tag_detach(clients, payload: dict) -> str:
 def create_group_membership(clients, payload: dict) -> str:
     """Make the asset a member of the group's Folio (found by qualifiedName or created); returns the Folio GUID.
     CollectionMembership is uni-link (measured 2026-08-25), so a repeat converges on one member."""
+    _wait_for_earlier_opposite(clients, payload, GROUP_DETACH)
     cm = clients.require("collection_manager")
     folio_guid = ensure_group_folio(cm, payload)
     cm.add_to_collection(folio_guid, payload["element_guid"])
@@ -560,6 +663,7 @@ def create_group_membership(clients, payload: dict) -> str:
 
 def create_group_membership_detach(clients, payload: dict) -> str:
     """Remove the asset from the group's Folio. NEVER deletes the Folio (ISSUE-117: by hand)."""
+    _wait_for_earlier_opposite(clients, payload, GROUP_LINK)
     cm = clients.require("collection_manager")
     folio_guid = payload.get("folio_guid") or find_group_folio(
         cm, payload.get("folio_qualified_name") or folio_qualified_name(payload["group_slug"]))

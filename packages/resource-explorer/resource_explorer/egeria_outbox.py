@@ -322,6 +322,11 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         # The proof rows name the outbox row that produced them. Only these kinds
         # take the extra key: the annotation creators pass the payload on as a body.
         payload = dict(payload, _outbox_id=row.get("id"))
+    elif kind in ("informal_tag_link", "informal_tag_detach", "group_folio_membership",
+                  "group_folio_membership_detach"):
+        # Brief T round 2: a link and an unlink of one key apply in queue order (curation_egeria
+        # `_wait_for_earlier_opposite`), which needs the row's id and key.
+        payload = dict(payload, _outbox_id=row.get("id"), _key=row.get("qualified_name"))
     creator = _CREATORS.get(kind)
     if creator is None:
         raise OutboxApplyError(

@@ -321,24 +321,36 @@ Egeria". `resource_explorer/curation_egeria.py` owns the mapping; every write go
 | In RE | In Egeria | Outbox kind | Destructive |
 |---|---|---|---|
 | a tag on a resource in Egeria | a public `InformalTag` (found by display name first; created with qualifiedName `InformalTag::<tag>` only when absent) linked by `AttachedTag` | `informal_tag_link` | no |
-| removing the tag | the `AttachedTag` link removed (`remove_tag_from_element`) | `informal_tag_detach` | yes |
+| removing the tag | the tag removed from the element (`remove_tag_from_element`): Egeria's `removeTagFromElement` deletes EVERY `AttachedTag` between the two ends, including copies added directly in Egeria | `informal_tag_detach` | yes |
 | the resource's group | a `Folio`, qualifiedName `Folio::RE::group::<slug>` (found first, created when absent), the asset a member by `CollectionMembership` | `group_folio_membership` | no |
 | leaving or changing the group, or deleting it | the membership removed (`remove_from_collection`) | `group_folio_membership_detach` | yes |
 
 - **RE never deletes an InformalTag or a Folio.** Those are element deletes under the ISSUE-117 block; the owner
   deletes them by hand. A group delete answers with the Folio's qualifiedName and "left in Egeria".
+- **Tag spelling:** the InformalTag's displayName keeps the case the person typed; the qualifiedName is the
+  lower-case `InformalTag::<tag>`; an existing tag is found ignoring case. A qualifiedName already taken under
+  another displayName is adopted rather than failing the row.
+- **Order:** a link and an unlink of the same tag (or membership) on the same asset apply in the order queued: a
+  row waits (pending, no attempt counted) while an earlier opposite row is pending, being sent or retrying, so
+  "unlinked" never shows while the tag is still on the asset. A change that loses a race with the drain re-reads
+  the plan instead of trusting it.
 - **Unlinks follow the destructive-kind rules**: a failed or lapsed unlink is dead at once
   ("not retried: destructive write · …"), the drain never re-sends it, a later sync never re-queues it, and Admin
   → Publish Queue shows no Retry on it. The person presses **retry** on the Findable band, which queues a new row.
 - **Who writes:** a change in a person's request is sent inline as that person (the Caller); a left-over row is
-  drained in the background as `Daemon(OUTBOX, requested_by=<the row's by>)`.
+  drained in the background as `Daemon(OUTBOX, requested_by=<the row's by>)`. Each row records its own requester
+  when it is queued: a publish records its own requester, or none (then nothing is stamped); it is never borrowed
+  from another decision's author.
 - **Access:** the curation check (above) for each change: `UPDATE_PROPERTIES` on the resource's element plus the
   operation Egeria checks: `ADD_FEEDBACK` to tag and `DELETE_FEEDBACK` to untag
   (`validateUserForElementAddFeedback`/`DeleteFeedback`), `ATTACH` to join a group's Folio and `DETACH` to leave
-  one. A refusal records nothing in RE.
+  one. A refusal records nothing in RE. A group delete checks DETACH on every member first and is refused as a
+  whole (403, naming the members) if any is refused; it needs a signed-in person.
 - **Not yet in Egeria:** tags and the group stay in RE and are sent by the next repository, database or file
-  system publish. Changes made from the CLI or a batch import are sent at the resource's next sync (a change on
-  the Findable band, a publish, or "send to Egeria").
+  system publish. Group changes made from the CLI (`group assign` / `unassign` / `remove`) or a CSV import take
+  the same access check (the CLI refuses without a signed-in session; an import row fails with "not permitted ·
+  …") and reach Egeria at the resource's next sync (a change on the Findable band, a publish, or "send to
+  Egeria").
 - **Public:** Egeria 6's InformalTag has no public/private flag; "private" is only a filter on the creator. RE's
   tags are public because RE reuses a tag by name instead of creating one per person.
 

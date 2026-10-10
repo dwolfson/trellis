@@ -185,13 +185,14 @@ def authorize_curation_change(registry: ProjectRegistry, entity_type: str, slug:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def sync_to_egeria(registry: ProjectRegistry, entity_type: str, slug: str, author: str) -> dict:
+def sync_to_egeria(registry: ProjectRegistry, entity_type: str, slug: str, author: str,
+                   display_names: dict | None = None) -> dict:
     """Send this resource's tags and group to Egeria now, as the signed-in person (Brief T), and answer the plan
     as re-read after the drain. Never fails the RE write that came before it: an error is in the answer."""
     from resource_explorer.curation_egeria import sync_curation
 
     try:
-        return sync_curation(registry, entity_type, slug, by=author)
+        return sync_curation(registry, entity_type, slug, by=author, display_names=display_names)
     except Exception as exc:  # the RE change is recorded; the band re-reads the state from the rows
         import logging
 
@@ -204,14 +205,15 @@ def sync_to_egeria(registry: ProjectRegistry, entity_type: str, slug: str, autho
 def add_tag(entity_type: str, slug: str, body: TagCreate, request: Request) -> dict:
     """Add a tag in RE, then (Brief T) link it as a public InformalTag when the resource is in Egeria."""
     author = _require_author(request, "add a tag")
-    tag = body.tag.strip().lower()
+    typed = body.tag.strip()
+    tag = typed.lower()          # RE's key; Egeria's displayName keeps the case it was typed in (round 2)
     if not tag:
         raise HTTPException(status_code=400, detail="tag must not be empty")
     reg = _registry()
     authorize_curation_change(reg, entity_type, slug, "tag", "link")
     reg.add_resource_tag(entity_type, slug, tag, author=author)
     return {"status": "success", "tag": tag, "author": author,
-            "egeria": sync_to_egeria(reg, entity_type, slug, author)}
+            "egeria": sync_to_egeria(reg, entity_type, slug, author, display_names={tag: typed})}
 
 
 @router.delete("/tags/{entity_type}/{slug}/{tag}")

@@ -1100,7 +1100,8 @@ def apply_import(registry, plan: ImportPlan, *, lines: set[int] | None = None,
     when an investigation is named, added to its scope. Already-registered rows
     are only added to the investigation's scope: nothing about them changes
     unless a (line, field) pair is in `accept_changes`. Nothing here writes to
-    Egeria or reads anything back from it.
+    Egeria. A group change is checked first (Brief T round 2, `_check_group_change`): that check may read the
+    resource's zones from Egeria, and without a signed-in caller the change is refused per row.
     """
     accept_changes = accept_changes or set()
     if group and not registry.get_group(group):
@@ -1163,6 +1164,7 @@ def apply_import(registry, plan: ImportPlan, *, lines: set[int] | None = None,
         g = row.group or group
         if g:
             try:
+                _check_group_change(registry, "database", stored, g)
                 registry.set_database_group(stored, g)
             except Exception as exc:        # noqa: BLE001
                 result["failures"].append({"line": row.line, "message": f"registered, but the group was not set: {exc}"})
@@ -1188,6 +1190,7 @@ def apply_import(registry, plan: ImportPlan, *, lines: set[int] | None = None,
             if ch.field == "group":
                 setter = {"repo": registry.set_project_group, "database": registry.set_database_group,
                           "filesystem": registry.set_filesystem_group}[ch.resource_type]
+                _check_group_change(registry, ch.resource_type, ch.slug, ch.proposed)
                 setter(ch.slug, ch.proposed)
             elif ch.field == "disposition":
                 info = existing.get(ch.key) or {}
@@ -1205,6 +1208,17 @@ def apply_import(registry, plan: ImportPlan, *, lines: set[int] | None = None,
         except Exception as exc:            # noqa: BLE001
             result["failures"].append({"line": ch.line, "message": f"{ch.field} not changed: {exc}"})
     return result
+
+
+def _check_group_change(registry, resource_type: str, slug: str, group_slug: str) -> None:
+    """Brief T round 2: a group is a Folio in Egeria, so an import's group change takes the same curation check as
+    the web and the CLI. Raises with "not permitted · <reason>" (the row's failure) when refused; with nobody
+    signed in the reason says to sign in. The Folio follows at the resource's next sync."""
+    from resource_explorer.curation_egeria import group_change_refusal
+
+    why = group_change_refusal(registry, resource_type, slug, group_slug)
+    if why:
+        raise PermissionError(f"not permitted · {why}")
 
 
 def write_csv(rows: list[dict[str, Any]], path: str | Path) -> int:

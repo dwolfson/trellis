@@ -305,23 +305,26 @@ async def delete_group(slug: str, request: Request) -> dict:
     answer reports it and the owner deletes it by hand."""
     import asyncio
 
-    from resource_explorer.curation_egeria import group_deleted_report, sync_curation
+    from resource_explorer.curation_egeria import (
+        group_deleted_report, group_delete_refusals, group_members, refusal_words, sync_curation)
     from resource_explorer.registry import ProjectRegistry
+    author = _require_group_author(request, "delete a group")
     registry = ProjectRegistry()
     if not registry.get_group(slug):
         raise HTTPException(status_code=404, detail=f"Group '{slug}' not found")
-    members = ([("repo", p.slug) for p in registry.list_projects_in_group(slug)]
-               + [("database", d.slug) for d in registry.list_databases_in_group(slug)]
-               + [("filesystem", f.slug) for f in registry.list_filesystems_in_group(slug)])
+    # Round 2: a delete detaches every member's Folio membership, so each member is checked (DETACH) BEFORE
+    # anything changes; one refusal refuses the whole delete and names who.
+    refused = await asyncio.to_thread(group_delete_refusals, registry, slug)
+    if refused:
+        raise HTTPException(status_code=403, detail=refusal_words(refused))
+    members = group_members(registry, slug)
     unassigned = registry.delete_group(slug)
-    user = get_current_user(request)
-    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
 
     def unlink_members() -> list[dict]:
         out = []
         for entity_type, member in members:
             try:
-                r = sync_curation(registry, entity_type, member, by=author, check_access=False)
+                r = sync_curation(registry, entity_type, member, by=author)
                 out.append({"entity_type": entity_type, "slug": member, "queued": len(r.get("queued") or [])})
             except Exception as exc:  # the RE delete stands; the member's band re-reads the rows
                 out.append({"entity_type": entity_type, "slug": member, "error": str(exc)})
@@ -329,6 +332,15 @@ async def delete_group(slug: str, request: Request) -> dict:
 
     egeria = {**group_deleted_report(slug), "members": await asyncio.to_thread(unlink_members)}
     return {"removed": slug, "resources_unassigned": unassigned, "egeria": egeria}
+
+
+def _require_group_author(request: Request, action: str) -> str:
+    """The signed-in user id, or 401 (a group change needs an author, and a Folio change needs a caller)."""
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail=f"Sign in to {action} — a change needs an author.")
+    return author
 
 
 @router.post("/{slug}/group")
@@ -365,22 +377,9 @@ async def assign_group(slug: str, body: GroupAssign, request: Request) -> dict:
     # the resource's element, ATTACH to join a group's Folio, DETACH to leave one.
     import asyncio
 
-    from resource_explorer.curation_egeria import current_group, operations_for, sync_curation
-    from resource_explorer.workflows.curate import curation_access
+    from resource_explorer.curation_egeria import group_change_refusal, sync_curation
 
-    def check() -> str:
-        before = current_group(registry, body.resource_type, slug)
-        ops: list[str] = []
-        if body.group_slug and body.group_slug != before:
-            ops += list(operations_for("group", "link"))
-        if before and before != body.group_slug:
-            ops += [op for op in operations_for("group", "unlink") if op not in ops]
-        if not ops:
-            return ""
-        d = curation_access(registry, body.resource_type, slug, "", operations=tuple(ops))
-        return "" if d.allowed else d.reason
-
-    refused = await asyncio.to_thread(check)
+    refused = await asyncio.to_thread(group_change_refusal, registry, body.resource_type, slug, body.group_slug)
     if refused:
         raise HTTPException(status_code=403, detail=refused)
     setter(slug, body.group_slug)

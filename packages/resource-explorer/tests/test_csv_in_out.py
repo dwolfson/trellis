@@ -57,6 +57,21 @@ def _registry_is_sqlite_under_tmp_path(tmp_path, monkeypatch):
     # (the per-test `registry` fixture asserts its own path; see below)
 
 
+@pytest.fixture(autouse=True)
+def _a_signed_in_importer_with_no_zones(monkeypatch):
+    """Brief T round 2: an import's group change takes the curation check (a group is a Folio in Egeria), which
+    needs a signed-in caller. These tests are about the import, so a person is signed in and no zone is in use
+    (the zone reads are faked at the client boundary: tests/zone_fakes.py). The refusal itself is pinned in
+    tests/test_tags_groups_to_egeria.py."""
+    from resource_explorer.a2a_auth import current_caller
+    from tests.zone_fakes import install, signed_in
+
+    install(monkeypatch)
+    token = signed_in("importer")
+    yield
+    current_caller.reset(token)
+
+
 @pytest.fixture
 def registry(tmp_path):
     reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))

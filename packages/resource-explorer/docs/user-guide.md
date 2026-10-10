@@ -163,10 +163,12 @@ Ongoing curatorial work distinct from Enrichment's one-time/periodic context for
 
 - A tag on a resource that is in Egeria becomes a **public InformalTag** linked to the resource's asset. RE looks for a tag of that name first and uses it, so everyone's "sales" is one tag in Egeria, not one per person.
 - The resource's **RE group** becomes a **Folio** named `Folio::RE::group::<group>`, with the resource as a member. Changing the group moves the membership; choosing "Ungrouped" removes it.
-- **Removing a tag removes its link** to the asset in Egeria. The tag itself stays in Egeria, and so does a Folio when you leave or delete a group: RE never deletes either. The owner deletes those elements by hand.
+- **Removing a tag removes that tag from the resource in Egeria**, including the same tag added to it directly in Egeria by anyone: Egeria removes every link between the tag and the resource. The tag itself stays in Egeria, and so does a Folio when you leave or delete a group: RE never deletes either. The owner deletes those elements by hand.
+- A tag keeps the capitals you typed in Egeria ("Sales EMEA"); RE matches existing tags without regard to case, so "sales" and "SALES" are one tag.
 - A resource not yet in Egeria keeps its tags and group in RE, and they are sent when the resource is next published.
 - Each tag chip and the group line show where it stands, as a mark and a short word: **in Egeria**, **not yet (resource not in Egeria)**, **pending**, **pending · retrying**, **failed · <reason>** (with **retry**), or **unlinked**. A removed tag Egeria still has is listed under "removed". **send to Egeria** appears when something has not been sent.
-- A failed removal is never sent again on its own: press **retry** on it. Changing a tag or the group needs the same curation rights as other Curate decisions (see the admin guide, "Who may curate and publish").
+- A failed removal is never sent again on its own: press **retry** on it. Changing a tag or the group needs the same curation rights as other Curate decisions (see the admin guide, "Who may curate and publish"); so does deleting a group, which is refused as a whole, naming who, if any member may not leave its Folio.
+- Group changes from the CLI (`group assign`, `group unassign`, `group remove`) and from a CSV import need you signed in and take the same check; Egeria's Folio follows at the resource's next sync.
 
 ### Automate
 *Goal: get notified when an analysis's results change on a future run*

@@ -1077,8 +1077,10 @@ class EgeriaPublisher:
         if not (self._registry and asset_guid):
             return
         try:
-            from resource_explorer.curation_egeria import publish_pending_curation
-            publish_pending_curation(self._registry, "repo", slug, asset_guid)
+            from resource_explorer.curation_egeria import publish_pending_curation, requester_of
+            # The rows record THIS publish's requester (round 2): the person, or a queued job's requested_by.
+            publish_pending_curation(self._registry, "repo", slug, asset_guid,
+                                     by=requester_of(self.resolve_identity()))
         except Exception as exc:
             log.warning("Could not send tags/group for %s to Egeria: %s", slug, exc)
 

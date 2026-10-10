@@ -51,6 +51,13 @@ class FakeEgeria:
             raise self.fail[name]
 
     # feedback-manager (pyegeria ServerClient methods; signatures checked against pyegeria)
+    def find_tags(self, search_string="*", starts_with=True, ends_with=False, ignore_case=True, **kw):
+        self.calls.append(("find_tags", search_string))
+        norm = (lambda x: x.lower()) if ignore_case else (lambda x: x)
+        hits = [{"elementHeader": {"guid": g}, "properties": {"displayName": t["name"], "qualifiedName": t["qn"]}}
+                for g, t in self.tags.items() if norm(search_string) in (norm(t["name"]), norm(t["qn"]))]
+        return hits or "No elements found"
+
     def get_tags_by_name(self, name="*", **kw):
         self.calls.append(("get_tags_by_name", name))
         hits = [{"elementHeader": {"guid": g}, "properties": {"displayName": t["name"], "qualifiedName": t["qn"]}}
@@ -176,7 +183,7 @@ def test_adding_a_tag_creates_the_public_tag_once_and_links_it_and_the_next_read
     r = client.post("/api/curate/tags/repo/p", json={"tag": "Sales"}, headers=as_user())
     assert r.status_code == 200, r.text
     tag_guid = next(iter(egeria.tags))
-    assert egeria.tags[tag_guid] == {"name": "sales", "qn": "InformalTag::sales"}
+    assert egeria.tags[tag_guid] == {"name": "Sales", "qn": "InformalTag::sales"}, "typed case kept (round 2)"
     assert (ASSET, tag_guid) in egeria.tag_links
     i = item(state(client), "tag", "sales")
     assert i["state"] == "in_egeria" and i["word"] == "in Egeria" and i["action"] == "" and i["egeria_guid"] == tag_guid
@@ -264,8 +271,8 @@ def test_a_resource_not_in_egeria_keeps_the_tag_local_then_links_it_on_the_next_
     assert item(st, "group", "sales")["state"] == "in_egeria"
     folio = next(iter(egeria.folios))
     assert (folio, ASSET) in egeria.members
-    # the requester recorded for the daemon drain is who decided it in RE
-    assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == "peterprofile"
+    # round 2: the row records the triggering publish's requester; this daemon job has none, so none
+    assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == ""
 
 
 def test_the_repo_publisher_calls_the_curation_hook_with_the_new_asset(monkeypatch):
@@ -475,3 +482,232 @@ def test_the_default_drain_builds_the_feedback_client_from_the_factory_only_on_f
     assert built == [], "a drain with no tag rows builds no feedback client"
     assert clients.require("feedback") == "client:ClassificationExplorer"
     assert clients.require("feedback") == "client:ClassificationExplorer" and built == ["ClassificationExplorer"]
+
+
+# ══ round 2 (review of e637cc09) ═══════════════════════════════════════════════════════════════════════════
+
+def _daemon(requested_by=None):
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    return acting_as(Daemon(DaemonReason.OUTBOX, requested_by=requested_by))
+
+
+def _row(registry, row_id):
+    return next(r for r in rows(registry) if r["id"] == row_id)
+
+
+def _claim(registry, row_id):
+    """What a concurrent drainer's claim does to a row: running, with a fresh claim."""
+    from datetime import datetime
+    with registry._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET status='running', claimed_at=? WHERE id=?",
+                     (datetime.utcnow().isoformat(), row_id))
+
+
+# R2-1: a group delete is a detach of every member: author required, DETACH checked per member first ────────
+
+def test_r2_a_signed_out_group_delete_is_401_and_changes_nothing(client, registry, egeria):
+    client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    r = client.delete("/api/projects/groups/sales")
+    assert r.status_code == 401
+    assert registry.get_group("sales") is not None and registry.get("p").group_slug == "sales"
+
+
+def test_r2_a_group_delete_is_refused_whole_when_a_member_may_not_be_detached(client, registry, egeria, monkeypatch):
+    client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    client.post("/api/projects/q/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    n_rows = len(registry.list_outbox_rows_for_kinds("repo", "q", ce.KINDS))
+    fake = install_zones(monkeypatch)
+    fake.elements[OTHER_ASSET] = zoned_element(OTHER_ASSET, zones=["sales-zone"], owners=["someone-else"])
+    fake.controls["sales-zone"] = {"associatedSecurityList": {"DETACH": ["salesTeam"], "DEFAULT": ["allUsers"]}}
+    r = client.delete("/api/projects/groups/sales", headers=as_user())
+    assert r.status_code == 403
+    assert "q" in r.json()["detail"] and "sales-zone" in r.json()["detail"]
+    assert registry.get_group("sales") is not None
+    assert registry.get("p").group_slug == "sales" and registry.get("q").group_slug == "sales"
+    assert len(registry.list_outbox_rows_for_kinds("repo", "q", ce.KINDS)) == n_rows
+    assert not [c for c in egeria.calls if c[0] == "remove_from_collection"]
+
+
+def test_r2_the_group_delete_route_no_longer_skips_the_access_check():
+    import inspect
+
+    from resource_explorer.web.routes import projects
+    src = inspect.getsource(projects.delete_group)
+    assert "check_access=False" not in src and "_require_group_author" in src
+
+
+# R2-2: a cancel that loses to a drain's claim re-plans instead of trusting the stale plan ──────────────────
+
+def test_r2_a_re_add_whose_old_unlink_was_claimed_first_still_ends_linked(registry, egeria, monkeypatch):
+    with _daemon("peterprofile"):
+        registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+        ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False)
+        registry.remove_resource_tag("repo", "p", "sales")
+        ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False, drain=False)
+        detach = rows(registry, ce.TAG_DETACH)[0]["id"]
+        real_cancel = registry.cancel_outbox_row
+
+        def claimed_first(row_id, reason):
+            _claim(registry, row_id)                   # the drain took it a moment before the cancel
+            return real_cancel(row_id, reason)
+        monkeypatch.setattr(registry, "cancel_outbox_row", claimed_first)
+        registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+        out = ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False, drain=False)
+        assert out["cancelled"] == [] and len(out["queued"]) == 1, "a fresh link is queued behind the landing unlink"
+        # the claimed unlink lands, then the link
+        tag_guid = next(iter(egeria.tags))
+        egeria.tag_links.discard((ASSET, tag_guid))
+        registry.mark_outbox_done(detach, tag_guid)
+        ob.drain_outbox(registry)
+    assert (ASSET, tag_guid) in egeria.tag_links
+    assert item(ce.plan_as_dict(ce.curation_plan(registry, "repo", "p")), "tag", "sales")["state"] == "in_egeria"
+
+
+def test_r2_a_removal_whose_unsent_link_was_claimed_first_unlinks_after_it_lands(registry, egeria, monkeypatch):
+    with _daemon("peterprofile"):
+        registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+        ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False, drain=False)
+        link = rows(registry, ce.TAG_LINK)[0]["id"]
+        real_cancel = registry.cancel_outbox_row
+
+        def claimed_first(row_id, reason):
+            _claim(registry, row_id)
+            return real_cancel(row_id, reason)
+        monkeypatch.setattr(registry, "cancel_outbox_row", claimed_first)
+        registry.remove_resource_tag("repo", "p", "sales")
+        out = ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False, drain=False)
+        assert out["cancelled"] == [] and len(out["queued"]) == 1, "an unlink is queued behind the landing link"
+        # the claimed link lands in Egeria
+        egeria.tags["tag-x"] = {"name": "sales", "qn": "InformalTag::sales"}
+        egeria.tag_links.add((ASSET, "tag-x"))
+        registry.mark_outbox_done(link, "tag-x")
+        ob.drain_outbox(registry)
+    assert (ASSET, "tag-x") not in egeria.tag_links
+    assert item(ce.plan_as_dict(ce.curation_plan(registry, "repo", "p")), "tag", "sales")["state"] == "unlinked"
+
+
+# R2-3: an unlink never overtakes a link still being sent ───────────────────────────────────────────────────
+
+def test_r2_an_unlink_waits_while_its_link_is_running_and_never_shows_unlinked_early(registry, egeria):
+    with _daemon("peterprofile"):
+        registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+        ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False, drain=False)
+        link = rows(registry, ce.TAG_LINK)[0]["id"]
+        _claim(registry, link)                          # another drainer is sending the link right now
+        registry.remove_resource_tag("repo", "p", "sales")
+        ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False)
+        detach = rows(registry, ce.TAG_DETACH)[0]
+        assert detach["status"] == "pending" and detach["attempts"] == 0, "deferred, not attempted"
+        assert "remove_tag_from_element" not in egeria.names()
+        st = item(ce.plan_as_dict(ce.curation_plan(registry, "repo", "p")), "tag", "sales")
+        assert st["state"] == "pending" and st["state"] != "unlinked"
+        # the link lands; the unlink then goes
+        egeria.tags["tag-x"] = {"name": "sales", "qn": "InformalTag::sales"}
+        egeria.tag_links.add((ASSET, "tag-x"))
+        registry.mark_outbox_done(link, "tag-x")
+        ob.drain_outbox(registry)
+    assert (ASSET, "tag-x") not in egeria.tag_links
+    assert _row(registry, detach["id"])["status"] == "done"
+
+
+# R2-4: each row records its own requester; never another decision's author ───────────────────────────────
+
+def test_r2_a_tag_unlink_from_a_publish_with_nobody_asking_records_no_requester(registry, egeria):
+    with _daemon("peterprofile"):
+        registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+        ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False)
+    registry.record_group_change("repo", "p", "", "erinoverview")
+    registry.remove_resource_tag("repo", "p", "sales")
+    with _daemon(None):
+        ce.publish_pending_curation(registry, "repo", "p", ASSET)
+    by = json.loads(rows(registry, ce.TAG_DETACH)[0]["payload_json"])["by"]
+    assert by == "", "not the last group change's author"
+
+
+def test_r2_a_publish_hook_records_the_publish_requester(registry, egeria):
+    registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+    with _daemon("garygeeke"):
+        ce.publish_pending_curation(registry, "repo", "p", ASSET)
+    assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == "garygeeke"
+
+
+# R2-5: the tag keeps the case it was typed in; matching ignores case; a taken qualifiedName is adopted ──────
+
+def test_r2_a_tag_keeps_the_typed_case_in_egeria_with_a_lower_case_key(client, registry, egeria):
+    client.post("/api/curate/tags/repo/p", json={"tag": "Sales EMEA"}, headers=as_user())
+    (t,) = egeria.tags.values()
+    assert t == {"name": "Sales EMEA", "qn": "InformalTag::sales emea"}
+    assert registry.list_resource_tags("repo", "p") == ["sales emea"]
+
+
+def test_r2_an_existing_tag_in_another_case_is_found_not_duplicated(client, registry, egeria):
+    egeria.tags["tag-up"] = {"name": "SALES", "qn": "InformalTag::::peter::SALES::1760000000"}
+    client.post("/api/curate/tags/repo/p", json={"tag": "Sales"}, headers=as_user())
+    assert "create_informal_tag" not in egeria.names()
+    assert (ASSET, "tag-up") in egeria.tag_links
+
+
+def test_r2_a_qualified_name_taken_under_another_display_name_is_adopted_not_dead(client, registry, egeria):
+    egeria.tags["tag-qn"] = {"name": "Sales team", "qn": "InformalTag::sales"}
+    egeria.fail["create_informal_tag"] = RuntimeError(
+        "SERVER_ERROR_500 OMAG-COMMON-409-001 the qualifiedName InformalTag::sales is not available for use")
+    client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    assert (ASSET, "tag-qn") in egeria.tag_links
+    assert rows(registry, ce.TAG_LINK)[0]["status"] == "done"
+
+
+# R2-6: CLI and batch group changes go through the same access check ───────────────────────────────────────
+
+@pytest.fixture
+def cli_caller_reset():
+    """The CLI's `activate` sets the caller ContextVar set-and-forget (one command = one process); a test must
+    not leak it into the next test."""
+    from resource_explorer.a2a_auth import current_caller
+
+    token = current_caller.set(None)
+    yield
+    current_caller.reset(token)
+
+
+def test_r2_the_cli_refuses_a_group_change_without_a_signed_in_caller(registry, monkeypatch, cli_caller_reset):
+    from typer.testing import CliRunner
+
+    from resource_explorer.cli import session as cli_session
+    from resource_explorer.cli.main import app
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None, **kw: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr(cli_session, "load_session", lambda: None)
+    for args in (["group", "assign", "repo", "p", "sales"], ["group", "unassign", "repo", "p"],
+                 ["group", "remove", "sales", "--yes"]):
+        r = CliRunner().invoke(app, args)
+        assert r.exit_code == cli_session.EXIT_NOT_SIGNED_IN, (args, r.output)
+    assert registry.get("p").group_slug == "" and registry.get_group("sales") is not None
+
+
+def test_r2_the_cli_refuses_a_group_change_curation_access_denies(registry, monkeypatch, cli_caller_reset):
+    from typer.testing import CliRunner
+
+    from resource_explorer.cli import session as cli_session
+    from resource_explorer.cli.main import app
+    from resource_explorer.egeria_identity import EgeriaIdentity
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None, **kw: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr(cli_session, "require_identity", lambda console=None: EgeriaIdentity(
+        user_id="peterprofile", token="t", kind="caller"))
+    fake = install_zones(monkeypatch)
+    fake.elements[ASSET] = zoned_element(ASSET, zones=["sales-zone"], owners=["someone-else"])
+    fake.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
+    r = CliRunner().invoke(app, ["group", "assign", "repo", "p", "sales"])
+    assert r.exit_code == 1 and "sales-zone" in r.output
+    assert registry.get("p").group_slug == ""
+
+
+def test_r2_a_batch_import_group_change_is_refused_without_a_caller(registry, cli_caller_reset):
+    from resource_explorer.batch_io import import_file
+
+    registry.add(Project(slug="r", display_name="r", github_url="https://github.com/x/r", description=""))
+    text = "resource_type,address,group\nrepo,https://github.com/x/r,sales\n"
+    res = import_file(registry, text, accept_changes=[{"line": 2, "field": "group"}])
+    assert registry.get("r").group_slug == ""
+    assert any("not permitted" in f["message"] for f in res["failures"]), res
