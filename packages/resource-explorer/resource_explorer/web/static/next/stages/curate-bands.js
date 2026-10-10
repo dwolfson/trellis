@@ -4,7 +4,11 @@
  * wireframes/CurateAndUnderstanding.dc.html (page 16): Curate is "make it
  * findable and reusable", so every kind gets
  *   1. Findable  -- group (with its change control inline) and tags (chips,
- *                   autocomplete from GET /api/curate/tags). Local, not in Egeria.
+ *                   autocomplete from GET /api/curate/tags). Brief T (2026-10-10):
+ *                   tags are public InformalTags and the group is a Folio in
+ *                   Egeria; each chip and the group line carry a state cue read
+ *                   from GET /api/curate/egeria-state (the server's plan, from
+ *                   the outbox rows) -- never from the click.
  *   2. the kind's own work -- repo: the existing plan view (curate.js);
  *                   database: "What gets catalogued" (the scope tree,
  *                   curate-scope.js) first, then two sections that wait on
@@ -21,11 +25,14 @@
  *    signed in (the routes answer 401 then);
  *  - an author label is always shown. The server supplies `author_label`;
  *    this file falls back to the same words rather than ever drawing blank;
- *  - nothing here reads back from Egeria, and nothing publishes to it.
+ *  - nothing here reads back from Egeria; the only writes to it are the tag
+ *    and group changes, which the server sends (Brief T).
  */
 import { ago, savedLine } from '/static/next/format.js';
+import { stateEntry } from '/static/next/glyphs.js';
 import {
   getCurateTagsDetail, getCurateAllTags, addCurateTag, removeCurateTag,
+  getCurateEgeriaState, syncCurateEgeria,
   getCurateFeedback, addCurateFeedback, getCurateNotes, deleteCurateNote,
   assignGroup, listGroups, getDataClassRules,
 } from '/static/re-api.js';
@@ -151,15 +158,47 @@ function currentGroupSlug(slug) {
 const groupName = (gslug) =>
   gslug ? ((state.groups || []).find((g) => g.slug === gslug)?.display_name || gslug) : 'Ungrouped';
 
+/* Brief T: each tag and the group carry their state in Egeria as a glyph plus a short word (the owner's rule:
+ * a cue on the element, the sentence on demand in `title`). The state key comes from the server's plan. */
+export const EGERIA_CUE = {
+  in_egeria: 'catalogued', not_yet: 'optional', not_sent: 'unrun', pending: 'queued', retrying: 'queued',
+  failed: 'catalogue_failed', unlinked: 'gone', unread: 'unknown',
+};
+/** The words beside a cue: the server's word, with the reason after "failed ·" (cut short; full in title). */
+export function egeriaWord(item) {
+  if (!item) return 'could not read';
+  if (item.state === 'failed') {
+    const r = String(item.reason || '').replace(/\s+/g, ' ').trim();
+    return r ? `failed · ${r.length > 80 ? `${r.slice(0, 79)}…` : r}` : 'failed';
+  }
+  if (item.state === 'pending' && item.reason === 'unlink') return 'pending · unlink';
+  return item.word || item.state;
+}
+/** One cue. The tone class is a literal in each branch (no class interpolation): ok, warn, or muted. */
+export function egeriaCue(item, attr) {
+  const key = item ? (EGERIA_CUE[item.state] || 'unknown') : 'unknown';
+  const e = stateEntry(key);
+  const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
+    : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
+  const title = item && item.reason && item.state !== 'pending' ? item.reason : egeriaWord(item);
+  return `${open} ${attr} data-cue="${esc(key)}" data-egeria-state="${esc(item ? item.state : 'unread')}" title="${esc(title)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(egeriaWord(item))}</span>`;
+}
+const retryButton = (item) => (item && item.retry
+  ? ` <button type="button" data-curate-egeria-retry="${esc(item.kind)}" data-name="${esc(item.name)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">retry</button>`
+  : '');
+
 export async function renderFindableBand(el, slug, entityType, status = '') {
   if (!el) throw new Error('Findable band host missing');
   if (status === '') el.innerHTML = `<div class="text-caveat text-ink-muted">Reading tags…</div>`;
   let tags;
   let allTags = [];
+  let egeria = null;
+  let egeriaErr = '';
   try {
-    [tags, allTags] = await Promise.all([
+    [tags, allTags, egeria] = await Promise.all([
       getCurateTagsDetail(entityType, slug),
       getCurateAllTags().catch(() => []),
+      getCurateEgeriaState(entityType, slug).catch((err) => { egeriaErr = err.message || 'unreadable'; return null; }),
     ]);
     if (!(state.groups || []).length) {
       try { state.groups = (await listGroups()) || []; } catch { /* the select says there are none */ }
@@ -179,25 +218,54 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
   if (gslug && !groups.some((g) => g.slug === gslug)) {
     options.push(`<option value="${esc(gslug)}" selected>${esc(gslug)}</option>`);
   }
+  const items = (egeria && egeria.items) || [];
+  const itemOf = (kind, name) => items.find((i) => i.kind === kind && i.name === name) || null;
+  // When the state could not be read, every cue says so rather than drawing nothing (absence is not "not in Egeria").
+  const cueFor = (kind, name, attr) => (egeria ? egeriaCue(itemOf(kind, name), attr) : egeriaCue(null, attr));
   const chips = tags.length
     ? tags.map((t) => `<span data-curate-tag="${esc(t.tag)}" title="added by ${esc(label(t))}"
         class="inline-flex items-baseline gap-[4px] rounded-sm border border-rule-strong px-[6px] py-[1px] text-caveat text-ink">${esc(t.tag)}
         <button type="button" data-curate-tag-remove="${esc(t.tag)}" aria-label="remove tag ${esc(t.tag)}"
           ${me ? '' : `disabled title="${esc(signInReason('remove a tag'))}"`}
-          class="${me ? 'cursor-pointer' : 'opacity-60'} bg-transparent p-0 text-ink-muted">×</button></span>`).join(' ')
+          class="${me ? 'cursor-pointer' : 'opacity-60'} bg-transparent p-0 text-ink-muted">×</button></span>
+        <span class="text-provenance">${cueFor('tag', t.tag, `data-curate-tag-state="${esc(t.tag)}"`)}${retryButton(itemOf('tag', t.tag))}</span>`).join(' ')
     : `<span class="text-caveat text-ink-muted">No tags yet.</span>`;
+  // Tags removed in RE that Egeria still has, or had: the unlink's own state (pending, failed with retry, unlinked).
+  const removed = items.filter((i) => i.kind === 'tag' && !i.desired);
+  const removedLine = removed.length
+    ? `<div data-curate-tags-removed class="mb-s1 flex flex-wrap items-baseline gap-s2 text-provenance">
+        <span class="text-ink-muted">removed</span>
+        ${removed.slice(0, 8).map((i) => `<span data-curate-removed-tag="${esc(i.name)}"><span class="line-through text-ink-muted">${esc(i.name)}</span> ${egeriaCue(i, `data-curate-tag-state="${esc(i.name)}"`)}${retryButton(i)}</span>`).join(' ')}
+      </div>`
+    : '';
+  const leftGroups = items.filter((i) => i.kind === 'group' && !i.desired);
+  const groupCue = gslug ? `<span class="text-provenance">${cueFor('group', gslug, 'data-curate-group-state')}${retryButton(itemOf('group', gslug))}</span>` : '';
+  const leftLine = leftGroups.length
+    ? `<div data-curate-groups-left class="mb-s1 flex flex-wrap items-baseline gap-s2 text-provenance">
+        <span class="text-ink-muted">left</span>
+        ${leftGroups.slice(0, 4).map((i) => `<span data-curate-left-group="${esc(i.name)}"><span class="text-ink-muted">${esc(i.label || i.name)}</span> ${egeriaCue(i, `data-curate-group-left-state="${esc(i.name)}"`)}${retryButton(i)}</span>`).join(' ')}
+      </div>`
+    : '';
+  const toSend = egeria ? Number(egeria.to_send || 0) : 0;
+  const egeriaLine = egeriaErr
+    ? `<div data-curate-egeria-unread class="mb-s1 text-provenance text-state-warn">Egeria state could not be read: ${esc(egeriaErr)}</div>`
+    : toSend && me
+      ? `<div class="mb-s1 text-provenance"><button type="button" data-curate-egeria-send class="cursor-pointer bg-transparent p-0 text-accent-ink underline">send to Egeria</button> <span class="text-ink-muted">· ${esc(String(toSend))} not sent yet</span></div>`
+      : '';
 
-  el.innerHTML = `${bandHead('Findable', `<span class="normal-case tracking-normal">· kept in RE (not published)</span>`)}
+  el.innerHTML = `${bandHead('Findable', `<span class="normal-case tracking-normal">· tags are public in Egeria · the group is a Folio</span>`)}
     <div class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat">
       <span class="text-ink-muted">RE group</span>
-      <span data-curate-group-now class="text-ink">${esc(groupName(gslug))}</span>
+      <span data-curate-group-now class="text-ink">${esc(groupName(gslug))}</span>${groupCue}
       <select data-curate-group-select aria-label="group" class="rounded-sm border border-rule-strong bg-transparent px-1 text-caveat text-ink">${options.join('')}</select>
       <button type="button" data-curate-group-save class="cursor-pointer bg-transparent p-0 text-accent-ink underline">change</button>
       <span class="text-provenance text-ink-muted">${groups.length ? 'Admin keeps the full group manager' : 'no groups defined yet — Admin has the group manager'}</span>
     </div>
+    ${leftLine}
     <div class="mb-s1 flex flex-wrap items-baseline gap-s2">
       <span class="text-caveat text-ink-muted">tags</span>${chips}
     </div>
+    ${removedLine}${egeriaLine}
     <div class="flex flex-wrap items-baseline gap-s2 text-caveat">
       <input data-curate-tag-input list="curate-tag-datalist" type="text" placeholder="＋ tag" aria-label="add a tag"
         ${me ? '' : 'disabled'}
@@ -219,9 +287,16 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
   // The words after a write come from the re-read rows, not from the click.
   const reload = async (verify) => {
     let rows;
-    try { rows = await getCurateTagsDetail(entityType, slug); }
-    catch (err) { say(`written, but the list could not be re-read: ${err.message}`, true); return; }
-    await renderFindableBand(el, slug, entityType, verify(rows));
+    let st = null;
+    try {
+      [rows, st] = await Promise.all([getCurateTagsDetail(entityType, slug),
+        getCurateEgeriaState(entityType, slug).catch(() => null)]);
+    } catch (err) { say(`written, but the list could not be re-read: ${err.message}`, true); return; }
+    await renderFindableBand(el, slug, entityType, verify(rows, st));
+  };
+  const egeriaSaid = (st, kind, name) => {
+    const it = st && (st.items || []).find((i) => i.kind === kind && i.name === name);
+    return st ? (it ? ` · Egeria: ${egeriaWord(it)}` : '') : ' · Egeria state could not be re-read';
   };
 
   const addTag = async () => {
@@ -230,9 +305,9 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
     if (!tag) { input.focus(); return; }
     try { await addCurateTag(entityType, slug, tag); }
     catch (err) { say(failure(err, 'add the tag'), true); return; }
-    await reload((rows) => {
+    await reload((rows, st) => {
       const mine = rows.find((r) => r.tag === tag.toLowerCase());
-      return mine ? `${savedLine(mine.author_label || mine.author, mine.created_at)} · tag “${tag.toLowerCase()}” is on the list`
+      return mine ? `${savedLine(mine.author_label || mine.author, mine.created_at)} · tag “${tag.toLowerCase()}” is on the list${egeriaSaid(st, 'tag', tag.toLowerCase())}`
         : `the write returned, but “${tag.toLowerCase()}” is not in the re-read list`;
     });
   };
@@ -244,10 +319,23 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
     const tag = b.dataset.curateTagRemove;
     try { await removeCurateTag(entityType, slug, tag); }
     catch (err) { say(failure(err, 'remove the tag'), true); return; }
-    await reload((rows) => (rows.some((r) => r.tag === tag)
+    await reload((rows, st) => (rows.some((r) => r.tag === tag)
       ? `“${tag}” is still on the list after the removal`
-      : `tag “${tag}” is off the list`));
+      : `tag “${tag}” is off the list${egeriaSaid(st, 'tag', tag)}`));
   }));
+
+  // Send what is not yet in Egeria, or retry ONE failed link/unlink (a new write; the server refuses anything else).
+  const egeriaAct = async (button, retry) => {
+    button.disabled = true;
+    try { await syncCurateEgeria(entityType, slug, retry); }
+    catch (err) { button.disabled = false; say(failure(err, retry ? 'retry' : 'send to Egeria'), true); return; }
+    await reload((rows, st) => (retry ? `retried ${retry.kind} “${retry.name}”${egeriaSaid(st, retry.kind, retry.name)}`
+      : st ? `sent · ${Number(st.to_send || 0)} not sent yet` : 'sent · Egeria state could not be re-read'));
+  };
+  el.querySelectorAll('[data-curate-egeria-retry]').forEach((b) => b.addEventListener('click', () =>
+    egeriaAct(b, { kind: b.dataset.curateEgeriaRetry, name: b.dataset.name })));
+  const sendBtn = el.querySelector('[data-curate-egeria-send]');
+  if (sendBtn) sendBtn.addEventListener('click', () => egeriaAct(sendBtn, null));
 
   el.querySelector('[data-curate-group-save]').addEventListener('click', async () => {
     const want = el.querySelector('[data-curate-group-select]').value;

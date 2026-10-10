@@ -299,13 +299,36 @@ async def create_group(body: GroupCreate) -> GroupSummary:
 
 
 @router.delete("/groups/{slug}")
-async def delete_group(slug: str) -> dict:
+async def delete_group(slug: str, request: Request) -> dict:
+    """Delete an RE group. Its members are ungrouped, and (Brief T) each member's membership of the group's Folio
+    is removed in Egeria. The Folio itself is NEVER deleted: that is a delete under the ISSUE-117 block, so the
+    answer reports it and the owner deletes it by hand."""
+    import asyncio
+
+    from resource_explorer.curation_egeria import group_deleted_report, sync_curation
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     if not registry.get_group(slug):
         raise HTTPException(status_code=404, detail=f"Group '{slug}' not found")
+    members = ([("repo", p.slug) for p in registry.list_projects_in_group(slug)]
+               + [("database", d.slug) for d in registry.list_databases_in_group(slug)]
+               + [("filesystem", f.slug) for f in registry.list_filesystems_in_group(slug)])
     unassigned = registry.delete_group(slug)
-    return {"removed": slug, "resources_unassigned": unassigned}
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+
+    def unlink_members() -> list[dict]:
+        out = []
+        for entity_type, member in members:
+            try:
+                r = sync_curation(registry, entity_type, member, by=author, check_access=False)
+                out.append({"entity_type": entity_type, "slug": member, "queued": len(r.get("queued") or [])})
+            except Exception as exc:  # the RE delete stands; the member's band re-reads the rows
+                out.append({"entity_type": entity_type, "slug": member, "error": str(exc)})
+        return out
+
+    egeria = {**group_deleted_report(slug), "members": await asyncio.to_thread(unlink_members)}
+    return {"removed": slug, "resources_unassigned": unassigned, "egeria": egeria}
 
 
 @router.post("/{slug}/group")
@@ -322,25 +345,56 @@ async def assign_group(slug: str, body: GroupAssign, request: Request) -> dict:
 
     if body.group_slug and not registry.get_group(body.group_slug):
         raise HTTPException(status_code=404, detail=f"Group '{body.group_slug}' not found")
-        
+
     if body.resource_type == "repo":
         if not registry.get(slug):
             raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
-        registry.set_project_group(slug, body.group_slug)
+        setter = registry.set_project_group
     elif body.resource_type == "database":
         if not registry.get_database(slug, allow_unreadable=True):
             raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
-        registry.set_database_group(slug, body.group_slug)
+        setter = registry.set_database_group
     elif body.resource_type == "filesystem":
         if not registry.get_filesystem(slug):
             raise HTTPException(status_code=404, detail=f"Filesystem '{slug}' not found")
-        registry.set_filesystem_group(slug, body.group_slug)
+        setter = registry.set_filesystem_group
     else:
         raise HTTPException(status_code=400, detail=f"Invalid resource type '{body.resource_type}'")
 
+    # Brief T: the group is a Folio in Egeria, so a change is checked (Brief Z) before RE records it: UPDATE on
+    # the resource's element, ATTACH to join a group's Folio, DETACH to leave one.
+    import asyncio
+
+    from resource_explorer.curation_egeria import current_group, operations_for, sync_curation
+    from resource_explorer.workflows.curate import curation_access
+
+    def check() -> str:
+        before = current_group(registry, body.resource_type, slug)
+        ops: list[str] = []
+        if body.group_slug and body.group_slug != before:
+            ops += list(operations_for("group", "link"))
+        if before and before != body.group_slug:
+            ops += [op for op in operations_for("group", "unlink") if op not in ops]
+        if not ops:
+            return ""
+        d = curation_access(registry, body.resource_type, slug, "", operations=tuple(ops))
+        return "" if d.allowed else d.reason
+
+    refused = await asyncio.to_thread(check)
+    if refused:
+        raise HTTPException(status_code=403, detail=refused)
+    setter(slug, body.group_slug)
     saved_at = registry.record_group_change(body.resource_type, slug, body.group_slug, author)
+
+    def send() -> dict:
+        try:
+            return sync_curation(registry, body.resource_type, slug, by=author)
+        except Exception as exc:  # the RE change is recorded; the band re-reads the state from the rows
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    egeria = await asyncio.to_thread(send)
     return {"slug": slug, "resource_type": body.resource_type, "group_slug": body.group_slug,
-            "saved_by": author, "saved_at": saved_at}
+            "saved_by": author, "saved_at": saved_at, "egeria": egeria}
 
 
 @router.get("/{slug}", response_model=ProjectSummary)

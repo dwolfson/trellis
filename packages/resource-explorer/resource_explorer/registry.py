@@ -8358,6 +8358,35 @@ class ProjectRegistry:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
 
+    def list_outbox_rows_for_kinds(self, entity_type: str, entity_slug: str,
+                                   kinds: "tuple[str, ...] | list[str]") -> list[dict]:
+        """Every outbox row of these kinds for one resource, newest first (Brief T: the tag and group states are
+        read from these rows). Read-only; no limit, since one resource's curation rows are few."""
+        kinds = list(kinds or [])
+        if not kinds:
+            return []
+        marks = ",".join("?" * len(kinds))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM egeria_outbox WHERE entity_type = ? AND entity_slug = ? "  # noqa: S608
+                f"AND element_kind IN ({marks}) ORDER BY id DESC",
+                (entity_type, entity_slug, *kinds),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def cancel_outbox_row(self, row_id: int, reason: str) -> bool:
+        """Retire ONE row that was never applied (pending, or failed and backing off) because a later decision in
+        RE supersedes it. `running`, `done` and `dead` rows are never changed: a running row may be landing now,
+        a done one already landed, and a dead one is for a person. Returns whether it changed the row."""
+        note = f"cancelled: {reason}" if reason else "cancelled"
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET status = 'cancelled', claimed_at = '', last_error = ?, completed_at = ? "
+                "WHERE id = ? AND status IN ('pending', 'failed')",
+                (note[:2000], datetime.now(timezone.utc).isoformat(), int(row_id)),
+            )
+        return (cur.rowcount or 0) > 0
+
     def get_outbox_element(self, row_id: int) -> dict | None:
         """One outbox row by id, or None. Read-only."""
         with self._conn() as conn:

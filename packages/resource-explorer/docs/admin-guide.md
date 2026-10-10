@@ -313,6 +313,35 @@ on the resource's own element. The schema and table elements a commit writes are
 as a whole (HTTP 403 with the reason). Verdicts are checked before anything is recorded, so a refused branch
 batch records nothing. The reason appears on refused rows only.
 
+### Tags and groups in Egeria (Brief T)
+
+**Decision (project owner, 2026-10-10):** "tags should be public", "Use Folio", "Yes, removing a tag removes it in
+Egeria". `resource_explorer/curation_egeria.py` owns the mapping; every write goes through the outbox.
+
+| In RE | In Egeria | Outbox kind | Destructive |
+|---|---|---|---|
+| a tag on a resource in Egeria | a public `InformalTag` (found by display name first; created with qualifiedName `InformalTag::<tag>` only when absent) linked by `AttachedTag` | `informal_tag_link` | no |
+| removing the tag | the `AttachedTag` link removed (`remove_tag_from_element`) | `informal_tag_detach` | yes |
+| the resource's group | a `Folio`, qualifiedName `Folio::RE::group::<slug>` (found first, created when absent), the asset a member by `CollectionMembership` | `group_folio_membership` | no |
+| leaving or changing the group, or deleting it | the membership removed (`remove_from_collection`) | `group_folio_membership_detach` | yes |
+
+- **RE never deletes an InformalTag or a Folio.** Those are element deletes under the ISSUE-117 block; the owner
+  deletes them by hand. A group delete answers with the Folio's qualifiedName and "left in Egeria".
+- **Unlinks follow the destructive-kind rules**: a failed or lapsed unlink is dead at once
+  ("not retried: destructive write · …"), the drain never re-sends it, a later sync never re-queues it, and Admin
+  → Publish Queue shows no Retry on it. The person presses **retry** on the Findable band, which queues a new row.
+- **Who writes:** a change in a person's request is sent inline as that person (the Caller); a left-over row is
+  drained in the background as `Daemon(OUTBOX, requested_by=<the row's by>)`.
+- **Access:** the curation check (above) for each change: `UPDATE_PROPERTIES` on the resource's element plus the
+  operation Egeria checks: `ADD_FEEDBACK` to tag and `DELETE_FEEDBACK` to untag
+  (`validateUserForElementAddFeedback`/`DeleteFeedback`), `ATTACH` to join a group's Folio and `DETACH` to leave
+  one. A refusal records nothing in RE.
+- **Not yet in Egeria:** tags and the group stay in RE and are sent by the next repository, database or file
+  system publish. Changes made from the CLI or a batch import are sent at the resource's next sync (a change on
+  the Findable band, a publish, or "send to Egeria").
+- **Public:** Egeria 6's InformalTag has no public/private flag; "private" is only a filter on the creator. RE's
+  tags are public because RE reuses a tag by name instead of creating one per person.
+
 ### Observability (optional)
 
 ```bash

@@ -65,12 +65,20 @@ class OutboxClients:
     #: build their own from the row's database when the drain was not given them.
     catalogue_gateway: object | None = None
     registry: object | None = None
+    #: Any pyegeria client carrying the feedback-manager methods (`get_tags_by_name`, `create_informal_tag`,
+    #: `add_tag_to_element`, `remove_tag_from_element`): Brief T's tag kinds. `_default_clients` gives a
+    #: ClassificationExplorer from the same factory, built on first use (`feedback_factory`) so a drain with no
+    #: tag rows builds no extra client.
+    feedback: object | None = None
+    feedback_factory: "Callable[[], object] | None" = None
     #: The user id these clients were built for, so a refusal can say who was refused.
     #: pyegeria's own 401 text names no user for an Egeria-wrapped response.
     acting_as: str = ""
 
     def require(self, name: str):
         client = getattr(self, name, None)
+        if client is None and name == "feedback" and self.feedback_factory is not None:
+            client = self.feedback = self.feedback_factory()
         if client is None:
             raise OutboxApplyError(
                 f"This element needs the {name!r} client, which the drain was not given"
@@ -177,7 +185,10 @@ def _resolve_link_referents(payload: dict, resolve_row_guids) -> dict:
 #: asset — a silent gap the generic annotation/membership/link kinds don't
 #: have, because a bare create is everything their own creators do too.
 _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
-                         "catalogue_schema_attach", "catalogue_schema_leave_out"}
+                         "catalogue_schema_attach", "catalogue_schema_leave_out",
+                         # Brief T: a synthetic relationship key; each creator finds its tag / Folio itself.
+                         "informal_tag_link", "informal_tag_detach",
+                         "group_folio_membership", "group_folio_membership_detach"}
 
 
 #: Outbox kinds whose write ARCHIVES, DELETES or DETACHES something in Egeria. A retry of a destructive write is itself
@@ -188,6 +199,10 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
 DESTRUCTIVE_OUTBOX_KINDS = frozenset({
     "catalogue_schema_leave_out",   # detach the cataloguer target, archive / soft-delete the schema's elements
     "doc_source_unpublish",         # detach and delete the removed source's ExternalReference
+    # Brief T: removing a tag's AttachedTag link, and an asset's membership of its group's Folio. Detaches only:
+    # neither ever deletes the InformalTag or the Folio (curation_egeria's module docstring).
+    "informal_tag_detach",
+    "group_folio_membership_detach",
 })
 NOT_RETRIED = "not retried: destructive write"
 
@@ -681,6 +696,30 @@ def _create_catalogue_schema_leave_out(clients: "OutboxClients", payload: dict) 
         raise OutboxApplyError(str(exc)) from exc
 
 
+def _create_informal_tag_link(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_tag_link
+
+    return create_tag_link(clients, payload)
+
+
+def _create_informal_tag_detach(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_tag_detach
+
+    return create_tag_detach(clients, payload)
+
+
+def _create_group_folio_membership(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_group_membership
+
+    return create_group_membership(clients, payload)
+
+
+def _create_group_folio_membership_detach(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_group_membership_detach
+
+    return create_group_membership_detach(clients, payload)
+
+
 def _guid_of(result) -> str:
     """pyegeria create_* calls variously return a GUID string, a dict, or
     nothing useful. An empty string is not an error here — the row is still
@@ -709,6 +748,10 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "doc_source_unpublish": _create_doc_source_unpublish,
     "catalogue_schema_attach": _create_catalogue_schema_attach,
     "catalogue_schema_leave_out": _create_catalogue_schema_leave_out,
+    "informal_tag_link": _create_informal_tag_link,
+    "informal_tag_detach": _create_informal_tag_detach,
+    "group_folio_membership": _create_group_folio_membership,
+    "group_folio_membership_detach": _create_group_folio_membership_detach,
 }
 
 
@@ -851,7 +894,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             continue
         except Exception as exc:
             exc_text = _describe_refusal(exc, clients)
-            if row.get("element_kind") in DESTRUCTIVE_OUTBOX_KINDS:
+            if is_destructive_outbox_kind(row.get("element_kind") or ""):
                 # max_attempts=1: this failure is the last attempt. 'dead' is the existing terminal state.
                 status = registry.mark_outbox_failed(row["id"], f"{NOT_RETRIED} · {exc_text}", max_attempts=1)
                 summary["not_retried"] = summary.get("not_retried", 0) + 1
@@ -964,9 +1007,18 @@ def _default_clients(identity=None):
     identity = drain_identity(identity)
     publisher = EgeriaPublisher(identity=identity)
     publisher._connect()
+    factory = getattr(publisher, "_clients", None)     # the publisher's EgeriaClients (one token per identity)
+
+    def feedback_client():
+        from pyegeria import ClassificationExplorer
+
+        return factory.of(ClassificationExplorer)
+
     return (
         OutboxClients(discovery=publisher._discovery, metadata_expert=publisher._metadata_expert,
                       collection_manager=publisher._collection_manager,
+                      # Brief T's tag kinds: the feedback-manager calls, from the same factory and token.
+                      feedback_factory=feedback_client if factory is not None else None,
                       acting_as=identity.client_user or identity.user_id),
         publisher._find_element_guid,
     )

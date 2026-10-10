@@ -73,6 +73,11 @@ OPERATION_WORDS = {
     ATTACH_OPERATION: "attach",
     CLASSIFY_OPERATION: "classify",
     PUBLISH_OPERATION: "publish (zone change)",
+    # Brief T: a tag link / unlink is feedback (validateUserForElementAddFeedback :1696-1730 and
+    # validateUserForElementDeleteFeedback :1748-1770); a membership removal is a DETACH.
+    "ADD_FEEDBACK": "tag",
+    "DELETE_FEEDBACK": "untag",
+    "DETACH": "detach",
 }
 
 #: The access connector's default dynamic group names (OpenMetadataSecurityConfigurationProperty.java).

@@ -581,6 +581,9 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
                 publish_local_doc_sources("filesystem", slug, fs_asset_guid, registry=registry)
             except Exception:
                 log.warning("Could not publish documentation sources for %s", slug, exc_info=True)
+            # Brief T: tags and the group kept in RE while the file system was not in Egeria. Best-effort.
+            from resource_explorer.curation_egeria import publish_pending_curation
+            publish_pending_curation(registry, "filesystem", slug, fs_asset_guid)
         return {
             "status": "ok",
             "egeria_asset_guid": publish_res.get("filesystem_guid", ""),
