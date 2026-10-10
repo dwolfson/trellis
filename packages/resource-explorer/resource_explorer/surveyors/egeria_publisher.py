@@ -996,9 +996,9 @@ class EgeriaPublisher:
         # For a private resource the owner is the INVESTIGATION's creator, not
         # whoever ran the publish. The worker publishes as the service account,
         # so taking the publishing identity here would stamp a queued private
-        # survey as owned by `erinoverview` — and `Ownership` is what the
-        # curate authorisation reads, so the real owner would lose control of
-        # their own artifact to a service account.
+        # survey as owned by `erinoverview`. `Ownership` is attribution: since
+        # Brief Z (2026-10-10) who may curate follows Egeria's zones
+        # (`workflows/curate.curation_access`), not Ownership.
         from resource_explorer.egeria_identity import on_behalf_of
 
         # The one on-behalf helper (Brief I): the requester, never the service account; a private

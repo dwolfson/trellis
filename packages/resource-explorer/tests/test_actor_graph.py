@@ -32,6 +32,9 @@ class FakeEgeria:
         self.built: list[dict] = []
         self.fail: dict[str, BaseException] = {}
         self.ownership: list[tuple[str, dict]] = []
+        self.searches: list[dict] = []               # what each by-name search sent
+        self.override: dict[str, object] = {}        # method -> canned answer
+        self.delay = 0.0
         self._n = 0
 
     def add(self, type_name, guid=None, **props):
@@ -85,13 +88,23 @@ class FakeEgeria:
         class ActorManager(_Base):
             name = "ActorManager"
 
-            def get_actor_profiles_by_name(self, name, **kw):
-                self._call("get_actor_profiles_by_name")
-                return eg.by_name(name, {"ITProfile", "Person", "ActorProfile", "Team"})
+            def _search(self, method, name, kw, kinds):
+                self._call(method)
+                body = kw.get("body") or {}
+                eg.searches.append({"method": method, "kwargs": sorted(kw), "body": body})
+                if eg.delay:
+                    import time as _t
+                    _t.sleep(eg.delay)
+                if method in eg.override:
+                    return eg.override[method]
+                return eg.by_name(name if name is not None else body.get("filter"), kinds)
 
-            def get_user_identities_by_name(self, name, **kw):
-                self._call("get_user_identities_by_name")
-                return eg.by_name(name, {"UserIdentity"})
+            def get_actor_profiles_by_name(self, name=None, **kw):
+                return self._search("get_actor_profiles_by_name", name, kw,
+                                    {"ITProfile", "Person", "ActorProfile", "Team"})
+
+            def get_user_identities_by_name(self, name=None, **kw):
+                return self._search("get_user_identities_by_name", name, kw, {"UserIdentity"})
 
             def get_user_identity_by_guid(self, guid, **kw):
                 self._call("get_user_identity_by_guid")
@@ -396,10 +409,10 @@ def test_a_failed_lookup_falls_back_reports_and_never_blocks_the_write(egeria, c
     assert actor_lookup_status()["user_id"] == "dana"
     assert routes.whoami()["owner_lookup"]["reason"] == "UserIdentity search: ConnectionError: refused"
     assert any("Ownership uses the userId form" in r.getMessage() for r in caplog.records)
-    # Failures are not cached: the next write asks again and gets the profile.
+    # Round 2: a failure is remembered briefly (one wait per press, not one per element).
     egeria.fail.clear()
     again = _stamp("dana")
-    assert again["ownership_form"] == "profile" and egeria.ownership[-1][1]["owner"] == "Person::dana"
+    assert again["ownership_form"] == "userId" and again["ownership_note"] == result["ownership_note"]
 
 
 def test_an_ambiguous_userid_falls_back_rather_than_picking_one(egeria):
@@ -447,3 +460,96 @@ def test_the_catalogue_gateway_names_the_requesters_profile_but_not_a_declared_o
         ("db-2", {"class": "OwnershipProperties", "owner": "Data Team",
                   "ownerTypeName": "UserIdentity", "ownerPropertyName": "userId"}),
     ]
+
+
+# ── round 2 ──────────────────────────────────────────────────────────────
+
+def test_round2_200_stamps_with_a_failing_lookup_make_one_call(egeria):
+    egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
+    for i in range(200):
+        _stamp("dana")
+    searches = [c for c in egeria.calls if c[1] == "get_user_identities_by_name"]
+    assert len(searches) == 1
+    assert len(egeria.ownership) == 200 and {o[1]["owner"] for o in egeria.ownership} == {"dana"}
+
+
+def test_round2_a_failure_is_asked_again_after_its_short_ttl(egeria, monkeypatch):
+    from resource_explorer import egeria_actors
+
+    egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
+    _stamp("dana")
+    _person(egeria)
+    egeria.fail.clear()
+    for user, (exp, shape) in list(egeria_actors._cache.items()):
+        egeria_actors._cache[user] = (0.0, shape)         # the 60s negative entry expired
+    assert _stamp("dana")["ownership_form"] == "profile"
+
+
+def test_round2_one_person_costs_one_lookup_per_press(egeria):
+    from resource_explorer import egeria_actors
+    from resource_explorer.egeria_clients import client_scope
+
+    _person(egeria)
+    with client_scope():
+        for _ in range(5):
+            _stamp("dana")
+            egeria_actors._cache.clear()                  # whatever the process cache says
+    assert len([c for c in egeria.calls if c[1] == "get_user_identities_by_name"]) == 1
+
+
+def test_round2_the_lookup_is_bounded_even_from_a_shared_pool_thread(egeria, monkeypatch):
+    import time as _t
+
+    from resource_explorer import egeria_actors
+    from resource_explorer.concurrency import run_sync
+
+    _person(egeria)
+    egeria.delay = 2.0
+    monkeypatch.setattr(egeria_actors, "ACTOR_LOOKUP_TIMEOUT_SECONDS", 0.2)
+    t0 = _t.time()
+    shape = run_sync(egeria_actors.ownership_for_person, "dana", timeout=30)
+    assert _t.time() - t0 < 1.5
+    assert shape.form == "userId" and shape.note == "profile lookup failed: no answer within 0.2s"
+
+
+def test_round2_searches_send_the_type_filter_egeria_reads(egeria):
+    from resource_explorer.egeria_actors import ensure_re_identity_in_egeria
+
+    _hand_made(egeria)
+    _person(egeria)
+    ensure_re_identity_in_egeria()
+    _stamp("dana")
+    assert egeria.searches
+    for sent in egeria.searches:
+        assert "metadata_element_type" not in sent["kwargs"]
+        want = "ITProfile" if sent["method"] == "get_actor_profiles_by_name" else "UserIdentity"
+        assert sent["body"].get("metadataElementTypeName") == want, sent
+
+
+@pytest.mark.parametrize("answer", [[{"weird": 1}], [{"elementHeader": {"guid": "g1"}}]])
+def test_round2_unparseable_elements_are_could_not_check_never_absent(egeria, answer):
+    from resource_explorer.egeria_actors import ensure_re_identity_in_egeria
+
+    egeria.override["get_actor_profiles_by_name"] = answer
+    state = ensure_re_identity_in_egeria()
+    assert state["status"] == "could not check"
+    assert "RE cannot parse" in state["reason"], state["reason"]
+    assert egeria.writes() == []
+
+    egeria.override = {"get_user_identities_by_name": answer}
+    result = _stamp("dana")
+    assert result["ownership_form"] == "userId"
+    assert "RE cannot parse" in result["ownership_note"]
+
+
+def test_round2_whoami_failure_clears_on_the_next_successful_lookup(egeria):
+    from resource_explorer import egeria_actors
+    from resource_explorer.web.routes import egeria as routes
+
+    egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
+    _stamp("dana")
+    assert routes.whoami()["owner_lookup"]["user_id"] == "dana"
+    egeria.fail.clear()
+    _person(egeria, user="erin")
+    _stamp("erin")
+    assert routes.whoami()["owner_lookup"] is None

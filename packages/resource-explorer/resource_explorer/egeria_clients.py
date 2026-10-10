@@ -346,6 +346,13 @@ def client_scope() -> Iterator[None]:
         _scope.reset(reset)
 
 
+def current_scope() -> Optional[dict]:
+    """The current `client_scope()`'s dict (one request, one job pass), or None outside one.
+    Other modules may memoize per-scope answers in it under a key of their own (a tuple whose
+    first item names the module), never a client key."""
+    return _scope.get()
+
+
 @contextmanager
 def acting_as(identity: EgeriaIdentity) -> Iterator[EgeriaIdentity]:
     """Declare who the code in this block acts as — a system job's or a queued run's entry point.
