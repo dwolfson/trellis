@@ -266,6 +266,8 @@ def _publish_component(registry, slug: str, path: str) -> tuple[str, str, str]:
         record_promotion(registry, slug, path, NODE_PROMOTION_COMPONENT, promotion)
         if promotion.get("status") == "error":
             return PARTIAL, scrub_text(f"written, but not promoted: {promotion.get('error') or promotion.get('words')}")[:300], guid
+    if res.get("requester_not_recorded"):
+        return PARTIAL, scrub_text(f"partial · {res['requester_not_recorded']}")[:300], guid
     return DONE, "created in Egeria" if res.get("status") == "materialized" else "in Egeria", guid
 
 
@@ -316,6 +318,8 @@ def _publish_blueprint(registry, slug: str, item: dict) -> tuple[str, str, str]:
             problems.append(f"{len(res[field])} {words}")
     if res.get("adopted_unproven"):
         problems.append("adopted, but the re-key proof was not written")
+    if res.get("requester_not_recorded"):
+        problems.append(res["requester_not_recorded"])
     if problems:
         return PARTIAL, scrub_text("written, but " + "; ".join(problems))[:400], guid
     return DONE, "in Egeria · compositions confirmed" if comps else "in Egeria", guid

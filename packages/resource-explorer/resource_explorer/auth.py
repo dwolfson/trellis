@@ -44,7 +44,6 @@ from starlette.requests import Request
 
 from resource_explorer.config import _ENV_FILE_CONFIG
 from trellis_auth import AuthConfig
-from trellis_auth import apply_token  # re-exported for live call sites
 from trellis_auth import create_access_token as _create_access_token
 from trellis_auth import decode_token as _decode_token
 from trellis_auth import exchange_portal_token as _exchange_portal_token
@@ -59,7 +58,6 @@ __all__ = [
     "APP_NAME",
     "POLICY_ENV_PREFIX",
     "RE_PUBLIC_PATHS",
-    "apply_token",
     "auth_config",
     "create_access_token",
     "decode_token",

@@ -5,6 +5,7 @@ import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import DatabaseEntity
@@ -123,15 +124,33 @@ class EgeriaDatabaseSurveyor:
         view_server: str | None = None,
         user_id: str | None = None,
         user_password: str | None = None,
+        *,
+        identity=None,
     ) -> None:
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", "erinoverview")
-        self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", "secret")
+        self.user_password = user_password or ""   # not used to authenticate (Brief I)
+        self._identity = identity
         self._automated_curation = None
         self._asset_maker = None
         self._discovery = None
         self._secrets_store_guid = ""
+
+    def principal(self):
+        """Who this surveyor acts as: the identity it was given, else `current_principal()` (the
+        signed-in Caller on a route, the declared daemon job otherwise), resolved once."""
+        if self._identity is None:
+            from resource_explorer.egeria_clients import current_principal
+
+            self._identity = current_principal()
+        return self._identity
+
+    def _clients(self):
+        from resource_explorer.egeria_clients import egeria_client
+
+        return egeria_client(self.principal(), purpose="database survey",
+                             view_server=self.view_server, platform_url=self.platform_url)
 
     def connect(self) -> None:
         """Establish pyegeria client connections."""
@@ -148,24 +167,15 @@ class EgeriaDatabaseSurveyor:
             from pyegeria import AutomatedCuration, AssetMaker
             from pyegeria.omvs.data_discovery import DataDiscovery
 
+            clients = self._clients()
             # AutomatedCuration for triggering surveys
-            self._automated_curation = AutomatedCuration(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
-
+            self._automated_curation = clients.of(AutomatedCuration)
             # AssetMaker for finding survey reports
-            self._asset_maker = AssetMaker(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._asset_maker.create_egeria_bearer_token(self.user_id, self.user_password)
-
+            self._asset_maker = clients.of(AssetMaker)
             # DataDiscovery for retrieving annotations
-            self._discovery = DataDiscovery(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._discovery.create_egeria_bearer_token(self.user_id, self.user_password)
-
+            self._discovery = clients.of(DataDiscovery)
+        except PermissionError:
+            raise
         except ImportError as exc:
             raise EgeriaDatabaseSurveyorError("pyegeria is not installed.") from exc
         except Exception as exc:
@@ -291,8 +301,7 @@ class EgeriaDatabaseSurveyor:
 
         from pyegeria import ConnectionMaker
 
-        maker = ConnectionMaker(self.view_server, self.platform_url, self.user_id, self.user_password)
-        maker.create_egeria_bearer_token(self.user_id, self.user_password)
+        maker = self._clients().of(ConnectionMaker)
         relationship_body = {"class": "NewRelationshipRequestBody"}
 
         # Find-or-create each sub-element individually, not just the final
@@ -720,7 +729,7 @@ class EgeriaDatabaseSurveyor:
 
         self.connect()
         reader = SurveyDefinitionReader(
-            self.platform_url, self.view_server, self.user_id, self.user_password
+            self.platform_url, self.view_server, identity=self.principal()
         )
         reader._automated_curation = self._automated_curation
         candidates = reader.find_candidate_process_guids(tech_type)
@@ -1278,8 +1287,7 @@ class EgeriaDatabaseSurveyor:
             return
 
         from pyegeria.omvs.lineage_linker import LineageLinker
-        linker = LineageLinker(self.view_server, self.platform_url, self.user_id, self.user_password)
-        linker.create_egeria_bearer_token(self.user_id, self.user_password)
+        linker = self._clients().of(LineageLinker)
 
         db_name = db_entity.database_name
 
@@ -1400,7 +1408,7 @@ def can_use_egeria() -> bool:
     Returns:
         True if EGERIA_PLATFORM_URL is set and pyegeria is installed
     """
-    if not os.getenv("EGERIA_PLATFORM_URL"):
+    if not egeria_platform_url():
         return False
     
     try:

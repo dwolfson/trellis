@@ -233,8 +233,10 @@ class CatalogueGateway(Protocol):
     def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome: ...
     def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
+    def qualified_name_of(self, guid: str) -> str: ...
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str: ...
+    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> str: ...
     def list_catalog_targets(self) -> list[CatalogTarget]: ...
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
@@ -461,34 +463,46 @@ class PyegeriaCatalogueGateway:
     """The real gateway, over pyegeria. Built lazily: constructing it opens nothing."""
 
     def __init__(self, db_entity=None, *, view_server: str = "", platform_url: str = "",
-                 user_id: str = "", user_password: str = "", daemon_server: str = ""):
+                 daemon_server: str = "", identity=None):
+        """WHICH Egeria: the arguments, else the entity's stored `egeria_url`/`egeria_server`,
+        else the configured one (always under the platform allowlist). WHO: `identity`, else
+        `current_principal()` — the signed-in Caller on a route, the daemon in a queued run or the
+        background drain (Brief I). An entity's stored Egeria user/password are never read
+        (owner's ruling, 2026-10-09)."""
         from resource_explorer.config import get_config
         cfg = get_config().egeria
         e = db_entity
         self.view_server = view_server or getattr(e, "egeria_server", "") or cfg.view_server
         self.platform_url = platform_url or getattr(e, "egeria_url", "") or cfg.platform_url
-        self.user_id = user_id or getattr(e, "egeria_user", "") or cfg.user_id
-        self.user_password = user_password or getattr(e, "egeria_password", "") or cfg.user_password
         self.daemon_server = daemon_server or cfg.integration_daemon_server
+        self._identity = identity
         self._clients: dict[str, Any] = {}
 
     # -- clients ---------------------------------------------------------
 
+    def principal(self):
+        if self._identity is None:
+            from resource_explorer.egeria_clients import current_principal
+
+            self._identity = current_principal()
+        return self._identity
+
+    def _factory(self):
+        from resource_explorer.egeria_clients import egeria_client
+
+        return egeria_client(self.principal(), purpose="catalog gateway",
+                             view_server=self.view_server, platform_url=self.platform_url)
+
     def _client(self, name: str):
         if name not in self._clients:
             import pyegeria
-            cls = getattr(pyegeria, name)
-            c = cls(self.view_server, self.platform_url, self.user_id, self.user_password)
-            c.create_egeria_bearer_token(self.user_id, self.user_password)
-            self._clients[name] = c
+            self._clients[name] = self._factory().of(getattr(pyegeria, name))
         return self._clients[name]
 
     def _server_ops(self):
         if "ServerOps" not in self._clients:
             from pyegeria import ServerOps
-            c = ServerOps(self.daemon_server, self.platform_url, self.user_id, self.user_password)
-            c.create_egeria_bearer_token(self.user_id, self.user_password)
-            self._clients["ServerOps"] = c
+            self._clients["ServerOps"] = self._factory().of(ServerOps, server=self.daemon_server)
         return self._clients["ServerOps"]
 
     def _surveyor(self):
@@ -496,7 +510,7 @@ class PyegeriaCatalogueGateway:
         if "surveyor" not in self._clients:
             self._clients["surveyor"] = EgeriaDatabaseSurveyor(
                 platform_url=self.platform_url, view_server=self.view_server,
-                user_id=self.user_id, user_password=self.user_password)
+                identity=self.principal())
         return self._clients["surveyor"]
 
     # -- step 1 ----------------------------------------------------------
@@ -691,6 +705,41 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(f"creating the schema element for {schema} from the template failed: "
                                f"{_short(exc)}") from exc
         return guid if isinstance(guid, str) else _guid_of(guid)
+
+    def qualified_name_of(self, guid: str) -> str:
+        """The qualifiedName Egeria holds for `guid`, read by GUID. Raises GatewayError when it
+        cannot be read (never '' for "could not tell")."""
+        try:
+            el = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
+        except Exception as exc:
+            raise GatewayError(f"could not read {guid[:8]}: {_short(exc)}") from exc
+        qn = _qn_of(el)
+        if not qn:
+            raise GatewayError(f"no qualifiedName on the answer for {guid[:8]}")
+        return qn
+
+    def mark_on_behalf(self, guid: str, requester: str, owner: str) -> str:
+        """Brief I: a template copy cannot carry `additionalProperties`, so `requestedBy` is merged
+        into its CURRENT map after the create (read, merge, write; UNVERIFIED LIVE), and Ownership
+        names `owner` (`set_owner`). '' when both landed (or nobody asked), else
+        "requester not recorded (<reason>)" for the caller to report as partial. Never raises."""
+        from resource_explorer.egeria_identity import OnBehalf, record_requested_by
+
+        if not requester:
+            return ""
+        reasons = []
+        why = record_requested_by(guid, OnBehalf(requester=requester, owner=owner),
+                                  client=self._client("MetadataExpert"))
+        if why:
+            reasons.append(f"requestedBy: {why}")
+        if owner:
+            try:
+                outcome, detail = self.set_owner(guid, owner)
+                if outcome == "refused":
+                    reasons.append(f"Ownership refused: {detail}")
+            except GatewayError as exc:
+                reasons.append(f"Ownership: {_short(exc, 200)}")
+        return f"requester not recorded ({'; '.join(reasons)})" if reasons else ""
 
     def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str:
         """Egeria's own attach: `PostgreSQLGovernance::catalog-postgres-schema` with the schema

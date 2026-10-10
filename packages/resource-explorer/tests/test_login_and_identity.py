@@ -424,7 +424,8 @@ class _FakeClient:
 class TestPerRequestClient:
     def test_a_signed_in_caller_reuses_their_own_token(self):
         from resource_explorer.a2a_auth import CallerIdentity, current_caller
-        from resource_explorer.egeria_identity import apply_identity, caller_credentials
+        from resource_explorer.egeria_clients import egeria_client
+        from resource_explorer.egeria_identity import caller_credentials
 
         reset = current_caller.set(
             CallerIdentity(user_id="dan", egeria_token="dan-token", auth_source="app-jwt")
@@ -432,8 +433,7 @@ class TestPerRequestClient:
         try:
             identity = caller_credentials()
             assert identity.user_id == "dan"
-            client = _FakeClient()
-            apply_identity(client, identity)
+            client = egeria_client(identity, purpose="test").of(_FakeClient)
             # The whole change in one assertion: Egeria sees Dan's credential,
             # so Egeria's own provenance records Dan.
             assert client.bearer == "dan-token"
@@ -442,31 +442,31 @@ class TestPerRequestClient:
             current_caller.reset(reset)
 
     def test_the_worker_role_still_mints_its_own_service_account_token(self):
-        from resource_explorer.egeria_identity import apply_identity, service_credentials
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
 
-        client = _FakeClient()
-        apply_identity(client, service_credentials())
+        client = egeria_client(Daemon(DaemonReason.SCHEDULER), purpose="test").of(_FakeClient)
         assert client.bearer is None
         assert client.minted is True
 
-    def test_a_required_call_refuses_to_fall_back_to_the_service_account(self):
+    def test_no_caller_refuses_rather_than_falling_back_to_the_service_account(self):
+        """Brief I: nothing falls back. With no caller and no declared daemon job, it is a 401."""
+        from resource_explorer.egeria_clients import NoCallerIdentity
         from resource_explorer.egeria_identity import caller_credentials
 
-        with pytest.raises(PermissionError) as exc:
-            caller_credentials(required=True)
-        assert "resource-explorer login" in str(exc.value)
+        with pytest.raises(NoCallerIdentity) as exc:
+            caller_credentials()
+        assert "sign in" in str(exc.value)
 
     def test_a_queued_run_owns_as_the_requester_but_authenticates_as_the_worker(self):
         """The documented interim shape. A token does not survive the queue
-        (one-hour lifetime, dies on platform restart), so the worker
+        (one-hour lifetime, dies on platform restart), so the daemon
         authenticates as itself and `Ownership` carries the requester."""
-        from resource_explorer.egeria_identity import apply_identity, identity_for_user
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
 
-        identity = identity_for_user("dan")
+        identity = Daemon(DaemonReason.RUN_QUEUE, requested_by="dan")
         assert identity.user_id == "dan"          # what Ownership will say
         assert identity.is_person is False        # how the call authenticates
-        client = _FakeClient()
-        apply_identity(client, identity)
+        client = egeria_client(identity, purpose="test").of(_FakeClient)
         assert client.minted is True
 
     def test_the_publisher_builds_its_clients_from_the_caller(self, monkeypatch):
@@ -1046,7 +1046,7 @@ class TestDraftZoneBootstrap:
 
         monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")   # configured: it tries
         monkeypatch.setattr(
-            egeria_identity, "service_credentials",
+            "resource_explorer.egeria_clients._daemon_credential",
             lambda: (_ for _ in ()).throw(RuntimeError("no platform")),
         )
         out = egeria_identity.ensure_draft_zone_exists()

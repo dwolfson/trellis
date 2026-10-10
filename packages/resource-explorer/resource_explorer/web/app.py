@@ -103,6 +103,39 @@ app = FastAPI(
 )
 
 
+def _egeria_identity_refused(request, exc):
+    """Brief I: no caller, or an expired caller token, is a 401 with the sentence — never the
+    service account. `refused_by` lets the page show it as a sign-in cue rather than an error."""
+    return JSONResponse(status_code=401, content={"detail": str(exc), "refused_by": "sign-in"})
+
+
+def _egeria_refused(request, exc):
+    """Brief I: Egeria's security refused the signed-in person. Shown as a refusal (403, Egeria's
+    own sentence, `refused_by: egeria`), never retried as the service account. Raised by a route
+    as `egeria_clients.EgeriaRefused` — pyegeria's own exception types are not registered here,
+    because importing pyegeria at app load breaks the uvloop boot."""
+    return JSONResponse(status_code=403, content={"detail": str(exc), "refused_by": "egeria"})
+
+
+def _platform_not_allowed(request, exc):
+    """Brief I: a resource names an Egeria platform RE is not configured for; nothing was sent."""
+    return JSONResponse(status_code=403, content={"detail": str(exc), "refused_by": "platform"})
+
+
+def _install_egeria_identity_handlers() -> None:
+    from resource_explorer.egeria_clients import (
+        CallerTokenExpired, EgeriaRefused, NoCallerIdentity, PlatformNotAllowed,
+    )
+
+    app.add_exception_handler(NoCallerIdentity, _egeria_identity_refused)
+    app.add_exception_handler(CallerTokenExpired, _egeria_identity_refused)
+    app.add_exception_handler(EgeriaRefused, _egeria_refused)
+    app.add_exception_handler(PlatformNotAllowed, _platform_not_allowed)
+
+
+_install_egeria_identity_handlers()
+
+
 @app.middleware("http")
 async def _phase_timing_middleware(request, call_next):
     """Per-request total wall time, logged at INFO as `phase_timing`.
@@ -170,9 +203,13 @@ async def _identity_middleware(request, call_next):
     claims = get_current_user(request)
     identity = identity_from_claims(claims) if claims is not None else None
 
+    from resource_explorer.egeria_clients import client_scope
+
     reset = current_caller.set(identity)
     try:
-        return await call_next(request)
+        # One Egeria client per identity for this request (Brief I): sub-clients share one token.
+        with client_scope():
+            return await call_next(request)
     finally:
         current_caller.reset(reset)
 

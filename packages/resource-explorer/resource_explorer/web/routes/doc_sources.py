@@ -13,7 +13,7 @@ Only `database`, `filesystem` and (E2) `repo` entity types are wired — the bri
 scoping filesystem out for time ("prioritize database first... note
 explicitly... if scoped out") but it turned out to need no extra code
 beyond the entity resolver below, since `FileSystemEntity` carries the same
-`egeria_url`/`egeria_server`/`egeria_user`/`egeria_password`/
+`egeria_url`/`egeria_server`/
 `egeria_asset_guid`/`display_name` shape `DatabaseEntity` does — so both are
 built together in this slice rather than filesystem being deferred.
 Ingest/re-ingest actions (slice 2, `doc_source_ingestion`) are NOT wired
@@ -74,9 +74,15 @@ def _attempt_outbox_row_immediately(element_id: int) -> None:
     scheduler drain (`scheduler.py`) would find it and retry it, which is
     the intended fallback, not a bug in this path.
     """
+    import contextvars
+
+    # The person's own act (Brief I): the drain runs as the signed-in Caller. A bare thread
+    # drops ContextVars, so this one carries the request's context explicitly.
+    ctx = contextvars.copy_context()
+
     def _run() -> None:
         try:
-            drain_outbox_row(_registry(), element_id)
+            ctx.run(drain_outbox_row, _registry(), element_id)
         except Exception:
             # Defense in depth only — drain_outbox_row/drain_outbox already
             # catch everything and route failures onto the row itself via
@@ -114,10 +120,12 @@ def _sync_egeria_read_back(registry: ProjectRegistry, entity_type: str, slug: st
     if not status["is_published"]:
         return
     try:
-        remote = read_back_doc_sources(
-            guid, view_server=entity.egeria_server, platform_url=entity.egeria_url,
-            user_id=entity.egeria_user, user_password=entity.egeria_password,
-        )
+        from resource_explorer.doc_source_egeria import entity_clients
+        from resource_explorer.egeria_clients import Caller
+
+        # The signed-in person (Brief I), never the entity's stored credential or the service
+        # account: a read-back shows what THIS user can see.
+        remote = read_back_doc_sources(guid, clients=entity_clients(entity, Caller()))
     except Exception as exc:
         log.debug("doc sources: read-back skipped for %s/%s: %s", entity_type, slug, exc)
         return
@@ -461,18 +469,20 @@ def publish_local_doc_sources(entity_type: str, slug: str, asset_guid: str, *,
     per source; returns the per-source results so the caller can log/report
     which ones failed without the publish itself failing over it.
     """
+    from resource_explorer.doc_source_egeria import entity_clients
+    from resource_explorer.egeria_clients import current_principal
+
     registry = registry or _registry()
     entity = _resolve_entity(registry, entity_type, slug)
+    # Who: whoever this publish runs as (Brief I) — the signed-in Caller on a route, the daemon on
+    # the requester's behalf in a queued run. Built once, BEFORE the loop: no identity is a 401.
+    clients = entity_clients(entity, current_principal())
     out = []
     for row in registry.list_doc_sources(entity_type, slug):
         if row.get("egeria_external_ref_guid"):
             out.append({"id": row["id"], "ok": True, "skipped": "already published"})
             continue
-        result = publish_doc_source(
-            row, asset_guid, view_server=entity.egeria_server, platform_url=entity.egeria_url,
-            user_id=entity.egeria_user, user_password=entity.egeria_password,
-            display_name=entity.display_name,
-        )
+        result = publish_doc_source(row, asset_guid, clients=clients, display_name=entity.display_name)
         if result["ok"] and result["ref_guid"]:
             registry.set_doc_source_egeria_ref(entity_type, slug, row["id"],
                                                 result["ref_guid"], result.get("link_guid", ""))

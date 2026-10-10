@@ -16,6 +16,9 @@ from resource_explorer import catalogue_commit as cc  # noqa: E402
 from resource_explorer import catalogue_gateway as gw  # noqa: E402
 from resource_explorer.curate_plan import Curations  # noqa: E402
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 @pytest.fixture
 def no_zone_config(monkeypatch):

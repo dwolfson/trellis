@@ -18,6 +18,9 @@ from test_catalogue_commit import (  # noqa: E402,F401
 from resource_explorer import catalogue_commit as cc  # noqa: E402
 from resource_explorer.curate_plan import Curations  # noqa: E402
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 def _iso(hours_ago: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).replace(tzinfo=None).isoformat(timespec="seconds")

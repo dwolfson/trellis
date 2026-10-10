@@ -39,7 +39,9 @@ def client(registry, monkeypatch):
     monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
                         lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
     monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
-    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: {"user_id": "peterprofile"})
+    # Brief I: Publish runs as the person, so the signed-in user carries an Egeria token.
+    monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                        lambda request: {"user_id": "peterprofile", "egeria_token": "tok-peterprofile"})
     monkeypatch.setattr("resource_explorer.web.routes.curate._authorize_curation", lambda *a, **k: None)
     monkeypatch.setattr(
         "resource_explorer.component_tree._components",

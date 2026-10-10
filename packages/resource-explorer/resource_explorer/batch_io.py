@@ -1070,8 +1070,7 @@ def build_database_entity(server, database_name: str, display_name: str = ""):
         egeria_host=server.egeria_host,
         egeria_url=server.egeria_url,
         egeria_server=server.egeria_server,
-        egeria_user=server.egeria_user,
-        egeria_password=server.egeria_password,
+        # per-resource Egeria credentials are no longer copied or used (owner, 2026-10-09)
     )
 
 

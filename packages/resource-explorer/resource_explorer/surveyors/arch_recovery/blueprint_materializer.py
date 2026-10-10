@@ -72,6 +72,7 @@ import logging
 import os
 import re
 from typing import TYPE_CHECKING
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
@@ -84,7 +85,6 @@ log = logging.getLogger(__name__)
 _DEFAULT_PLATFORM_URL = "https://localhost:9443"
 _DEFAULT_VIEW_SERVER = "qs-view-server"
 _DEFAULT_USER = "erinoverview"
-_DEFAULT_PASSWORD = "secret"
 _DEFAULT_TIMEOUT = 30
 
 #: qualifiedName prefix of the SolutionComponents Egeria's content packs already define.
@@ -144,10 +144,10 @@ class BlueprintMaterializer:
         # and used in another, and the identity that matters is the one in
         # force when Egeria is actually written to.
         self._identity = identity
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
-        self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", _DEFAULT_PASSWORD)
+        self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
         self._registry = registry
         self._solution_architect = None
@@ -164,9 +164,11 @@ class BlueprintMaterializer:
         """
         if self._identity is not None:
             return self._identity
-        from resource_explorer.egeria_identity import caller_credentials
+        from resource_explorer.egeria_clients import current_principal
 
-        self._identity = caller_credentials()
+        # The declared daemon job (a queued run), else the signed-in Caller; never a silent
+        # service-account fallback (Brief I).
+        self._identity = current_principal()
         return self._identity
 
     def _connect(self) -> None:
@@ -176,33 +178,28 @@ class BlueprintMaterializer:
                 "Add it to your .env file or pass platform_url= to BlueprintMaterializer."
             )
         identity = self.resolve_identity()
-        if identity.is_person:
-            self.user_id = identity.user_id
         try:
             from pyegeria import AutomatedCuration
             from pyegeria.omvs.solution_architect import SolutionArchitect
 
-            from resource_explorer.egeria_identity import apply_identity
+            from resource_explorer.egeria_clients import egeria_client
 
-            self._solution_architect = SolutionArchitect(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._solution_architect, identity)
+            clients = egeria_client(identity, purpose="materialize blueprint",
+                                    view_server=self.view_server, platform_url=self.platform_url)
+            self.user_id = clients.user_id
+            self._solution_architect = clients.of(SolutionArchitect)
 
             # Used only for the qualifiedName idempotency check
             # (get_guid_for_name) — same helper ComponentMaterializer uses,
             # same reason: search before create, never create blind.
-            self._automated_curation = AutomatedCuration(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._automated_curation, identity)
+            self._automated_curation = clients.of(AutomatedCuration)
 
             # The explicit read of a container's SolutionComposition relationships (6.2 leaves the
             # children key off a component that has none, so the element read alone cannot say "none").
             from pyegeria.omvs.metadata_expert import MetadataExpert
-            self._metadata_expert = MetadataExpert(
-                self.view_server, self.platform_url, self.user_id, self.user_password)
-            apply_identity(self._metadata_expert, identity)
+            self._metadata_expert = clients.of(MetadataExpert)
+        except PermissionError:
+            raise
         except ImportError as exc:
             raise BlueprintMaterializationError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -705,6 +702,12 @@ class BlueprintMaterializer:
             additional["re_identifier"] = identifier
         if oversized:
             additional["oversized"] = "true"
+        # Whose write this is (Brief I): `requestedBy` beside the provenance above, and Ownership =
+        # the requester, from the one helper.
+        from resource_explorer.egeria_identity import on_behalf_of
+
+        behalf = on_behalf_of(self.resolve_identity())
+        additional.update(behalf.provenance())
         properties["additionalProperties"] = additional
 
         # `class: "NewSolutionElementRequestBody"` + `initialStatus` (this
@@ -753,8 +756,16 @@ class BlueprintMaterializer:
                 f"Egeria returned no usable GUID for the new SolutionBlueprint (got {guid!r})"
             )
 
+        from resource_explorer.egeria_identity import stamp_on_behalf
+
+        # Ownership = the requester. Best-effort, and REPORTED: a stamp that did not land makes the
+        # item partial ("requester not recorded (<reason>)"), never a plain "materialized".
+        not_recorded = stamp_on_behalf(guid, behalf, identity=self.resolve_identity())
         self._record(entity_type, entity_slug, perspective, cluster_name, qualified_name, guid)
-        return {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
+        result = {"status": "materialized", "guid": guid, "qualified_name": qualified_name}
+        if not_recorded:
+            result["requester_not_recorded"] = not_recorded
+        return result
 
     # ── the shape writes (DESIGN-BLUEPRINT-BENCHMARK-EGERIA-WORKSPACES.md 6a) ─────────────────────────────
 

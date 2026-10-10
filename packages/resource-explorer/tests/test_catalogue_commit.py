@@ -28,6 +28,9 @@ from resource_explorer import catalogue_gateway as gw  # noqa: E402
 from resource_explorer import catalogue_scope as cs  # noqa: E402
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry  # noqa: E402
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 SURVEY_AT = "2026-10-02T09:00:00"
 ME = "dwolfson"
 

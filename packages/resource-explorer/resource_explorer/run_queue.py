@@ -394,55 +394,37 @@ class _Heartbeat:
         self._stop.set()
 
 
+# ── who a run acts as (Brief I, owner's Egeria-consistent ruling 2026-10-09) ──
+
+#: A person's own actions that are queued. Like Egeria's engine hosts, a queued write is
+#: committed under RE's daemon identity; the person's accountability is the recorded
+#: `requested_by` and the Ownership classification stamped with it. So these kinds MUST carry a
+#: requester: queued with none, they fail loudly rather than write anonymously on someone's behalf.
+#: (`materialize_components` is a run kind with a handler but nothing enqueues it today, so it is
+#: not listed; whoever starts queueing it adds it here.)
+PERSON_ACTION_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit"})
+
+NO_REQUESTER_SENTENCE = ("this action was queued with no requester recorded; RE does not write to "
+                         "Egeria on a person's behalf without saying whose")
+
+
 @contextmanager
 def _run_as_requester(row: dict):
-    """Execute a claimed row attributed to the person who queued it.
-
-    **The interim shape, and it is deliberate** (plan §4, and see
-    `egeria_identity`'s module docstring): the row carries `requested_by` and
-    **no token**. An Egeria bearer token lives one hour and dies whenever the
-    platform restarts, while a queued survey may wait longer than that and
-    then run for sixteen minutes — so a token stored with the row would be
-    expired more often than not. Storing it in `runs.target` was rejected
-    outright (a credential in a plaintext JSON column), and an encrypted
-    column with a key to manage is out of scope for this pass.
-
-    So the worker authenticates to Egeria **as itself** and stamps
-    `Ownership` with `requested_by`. Egeria's provenance for such a publish
-    says the worker did it; the `Ownership` classification says whose it is,
-    and that is the attribution curate authorization actually reads. The gap
-    is real and named rather than papered over: closing it needs an
-    encrypted-at-rest credential store or a delegation token from Egeria.
-
-    A row with an empty `requested_by` is the worker's own service-account
-    work and runs with no caller at all, which is the correct attribution for
-    bootstrap heal, resync and the outbox drain.
-    """
-    from resource_explorer.a2a_auth import current_caller
-    from resource_explorer.egeria_identity import identity_for_user
+    """Execute a claimed row as `Daemon(RUN_QUEUE, requested_by)`: the daemon authenticates and
+    `Ownership` is stamped with `requested_by` (no token survives a queue; this is also how
+    Egeria's own engine hosts commit queued work). `current_caller` names the requester
+    (token-less), because the registry's user scoping reads it. A row with no requester is the
+    worker's own work: `Daemon(RUN_QUEUE)` with nobody recorded."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
     requester = (row.get("requested_by") or "").strip()
-    if not requester:
-        yield
-        return
-
-    identity = identity_for_user(requester)
-    # A service-account identity carries no token, so `use_identity` would
-    # clear the caller rather than publish one — and the caller is exactly
-    # what `Ownership` is read from. Set it directly, with the token left
-    # None so `apply_identity` mints a service-account token as before.
-    from resource_explorer.a2a_auth import CallerIdentity
-
     reset = current_caller.set(
-        CallerIdentity(
-            user_id=identity.user_id,
-            egeria_token=None,
-            auth_source="queued-run",
-            role="user",
-        )
-    )
+        CallerIdentity(user_id=requester, egeria_token=None, auth_source="queued-run", role="user")
+        if requester else None)
     try:
-        yield
+        with acting_as(Daemon(DaemonReason.RUN_QUEUE, requested_by=requester or None)):
+            yield
     finally:
         current_caller.reset(reset)
 
@@ -541,6 +523,14 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
         _close_activity(registry, result_ref, kind, target, outcome)
         return outcome
 
+    if kind in PERSON_ACTION_KINDS and not (row.get("requested_by") or "").strip():
+        # A person's action with nobody recorded: never an anonymous daemon write (Brief I).
+        log.error("run %s (%s): %s", run_id, kind, NO_REQUESTER_SENTENCE)
+        registry.finish_run(run_id, "failed", error=NO_REQUESTER_SENTENCE)
+        outcome = RunOutcome(state="failed", error=NO_REQUESTER_SENTENCE)
+        _close_activity(registry, result_ref, kind, target, outcome)
+        return outcome
+
     registry.mark_run_running(run_id)
     if result_ref:
         # Stamp THIS process onto the activity entry, now that it is genuinely
@@ -565,7 +555,8 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     try:
         from resource_explorer.observability import acquisition, llm_usage
 
-        with _Heartbeat(registry, run_id), _run_as_requester(row), \
+        with _Heartbeat(registry, run_id), \
+                _run_as_requester(row), \
                 llm_usage.usage_scope() as usage, \
                 acquisition.acquisition_scope() as acquired:
             outcome = handler(target, result_ref)

@@ -79,7 +79,7 @@ def test_an_archive_of_three_elements_logs_before_and_after_each_and_writes_thre
     assert cc.P_DELETE_CALL not in cc.STATE_PROOFS
 
 
-def test_a_leave_out_through_the_commit_writes_one_delete_call_row_per_element_it_sent(world, fake):
+def test_a_leave_out_through_the_commit_writes_one_delete_call_row_per_element_it_sent(world, fake, signed_in_caller):
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     press(world, fake)
@@ -195,7 +195,7 @@ def _drain(registry):
     return drain_outbox(registry, OutboxClients(), lambda qn: "")
 
 
-def test_a_failed_destructive_outbox_row_is_not_rescheduled_and_says_so(registry, monkeypatch):
+def test_a_failed_destructive_outbox_row_is_not_rescheduled_and_says_so(registry, monkeypatch, as_daemon):
     attempts = []
 
     def creator(clients, payload):
@@ -214,7 +214,7 @@ def test_a_failed_destructive_outbox_row_is_not_rescheduled_and_says_so(registry
     assert first["not_retried"] == 1 and first["failed"] == 0 and second["claimed"] == 0
 
 
-def test_a_failed_non_destructive_outbox_row_is_still_retried(registry, monkeypatch):
+def test_a_failed_non_destructive_outbox_row_is_still_retried(registry, monkeypatch, as_daemon):
     attempts = []
 
     def creator(clients, payload):

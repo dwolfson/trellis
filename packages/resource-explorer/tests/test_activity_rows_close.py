@@ -26,7 +26,8 @@ def _open_activity(reg, summary="working…"):
 
 
 def _run(reg, monkeypatch, kind, target, handler, activity_id):
-    reg.enqueue_run(kind, target, result_ref=activity_id)
+    # Brief I: a person's queued action must record whose it is.
+    reg.enqueue_run(kind, target, result_ref=activity_id, requested_by="a")
     row = reg.claim_next_run("host:1", {"pid": os.getpid()})
     monkeypatch.setitem(rq.HANDLERS, kind, handler)
     return rq.execute_run(row, reg)

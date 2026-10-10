@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING
 
 from resource_explorer.egeria_timing import time_egeria_call
 from resource_explorer.surveyors.survey_report import AnnotationType, SurveyResult
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
@@ -60,7 +61,6 @@ log = logging.getLogger(__name__)
 _DEFAULT_PLATFORM_URL = "https://localhost:9443"
 _DEFAULT_VIEW_SERVER = "qs-view-server"
 _DEFAULT_USER = "erinoverview"
-_DEFAULT_PASSWORD = "secret"
 _DEFAULT_TIMEOUT = 30
 
 
@@ -145,10 +145,12 @@ class EgeriaPublisher:
         # a route and used further down, and the identity that matters is the
         # one in force at the call, not at construction.
         self._identity = identity
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", _DEFAULT_PLATFORM_URL)
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", _DEFAULT_VIEW_SERVER)
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER", _DEFAULT_USER)
-        self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", _DEFAULT_PASSWORD)
+        # Not used to authenticate: who acts is the factory's business (Brief I). Kept as an
+        # attribute only because callers still pass it; never read from the environment.
+        self.user_password = user_password or ""
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
         self._registry = registry
         #: What `_stamp_governance` last managed to set, per element GUID.
@@ -609,7 +611,7 @@ class EgeriaPublisher:
 
         self._connect()
         reader = SurveyDefinitionReader(
-            self.platform_url, self.view_server, self.user_id, self.user_password
+            self.platform_url, self.view_server, identity=self.resolve_identity()
         )
         reader._automated_curation = self._automated_curation
         candidates = reader.find_candidate_process_guids(tech_type)
@@ -624,22 +626,16 @@ class EgeriaPublisher:
     def resolve_identity(self):
         """The `EgeriaIdentity` this publish runs as. Resolved once, at connect.
 
-        Precedence: an identity handed to the constructor (the worker, which
-        knows whose run it is executing), then the signed-in caller from RE's
-        one identity ContextVar, then the service account.
-
-        The service-account fallback is deliberate and narrow. A publish
-        reached from a route or the CLI always has a caller by the time it gets
-        here, because both are gated. What still lands here with none is the
-        worker's own background work (the outbox drain re-publishing a queued
-        annotation), and attributing *that* to the platform's integration
-        identity is correct, not a hole.
+        An identity handed to the constructor (the outbox drain's `Daemon(OUTBOX)`), else
+        `egeria_clients.current_principal()`: the declared daemon job (scheduler, resync, a queued
+        run's `Daemon(RUN_QUEUE, requested_by)`), else the signed-in Caller. With none of those it
+        raises `NoCallerIdentity` — no silent service-account fallback (Brief I).
         """
         if self._identity is not None:
             return self._identity
-        from resource_explorer.egeria_identity import caller_credentials
+        from resource_explorer.egeria_clients import current_principal
 
-        self._identity = caller_credentials()
+        self._identity = current_principal()
         return self._identity
 
     def _connect(self) -> None:
@@ -649,77 +645,37 @@ class EgeriaPublisher:
                 "Add it to your .env file or pass platform_url= to EgeriaPublisher."
             )
         identity = self.resolve_identity()
-        # A signed-in person's clients are built with THEIR id and
-        # authenticated with THEIR bearer token, so Egeria's own provenance
-        # records the person rather than `erinoverview` (plan §4,
-        # "Attribution: Egeria already records who did it"). A service-account
-        # identity keeps the previous behaviour exactly — same user id, same
-        # password, same `create_egeria_bearer_token` — which is what
-        # `apply_identity` does when the identity has no token.
-        if identity.is_person:
-            self.user_id = identity.user_id
         try:
             from pyegeria import AssetMaker, AutomatedCuration, CollectionManager, ExternalReferences
             from pyegeria.omvs.data_discovery import DataDiscovery
             from pyegeria.omvs.metadata_expert import MetadataExpert
 
-            from resource_explorer.egeria_identity import apply_identity
+            from resource_explorer.egeria_clients import egeria_client
 
-            self._asset_maker = AssetMaker(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._asset_maker, identity)
-
-            self._discovery = DataDiscovery(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._discovery, identity)
-
+            # Every sub-client from the one factory, sharing one token: a person's clients carry
+            # THEIR bearer token, so Egeria's provenance records them; a daemon's mint once.
+            clients = egeria_client(identity, purpose="publish", view_server=self.view_server,
+                                    platform_url=self.platform_url)
+            self._clients = clients
+            self.user_id = clients.user_id
+            self._asset_maker = clients.of(AssetMaker)
+            self._discovery = clients.of(DataDiscovery)
             # Used only by _catalog_sub_resources() (D6) — template-based
             # FileFolder/DataFile creation for worthy sub-resources.
-            self._automated_curation = AutomatedCuration(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._automated_curation, identity)
-
-            # Used only by _publish_homepage_reference() — catalogs the
-            # project's external website and links it to the library element.
-            self._external_references = ExternalReferences(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._external_references, identity)
-
-            # Used only by the annotation-linking-plan Phase 2 second pass in
-            # _create_annotations() — the only client that can create a bare
-            # relationship (AnnotationExtension) between two already-existing
-            # GUIDs. DataDiscovery has no create/attach endpoint for it (see
-            # docs/annotation-linking-plan.md, discovery finding #2).
-            self._metadata_expert = MetadataExpert(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._metadata_expert, identity)
-
-            # 2026-09-04, real bug: egeria_outbox.py's _create_collection_
-            # membership() (used to enqueue+attach blueprint members and
-            # other collection-membership relationships) requires a
-            # 'collection_manager' client — but _default_clients() below
-            # (the one the SCHEDULED outbox drain actually uses) never
-            # constructed one, so every collection_membership row it drains
-            # fails with "This element needs the 'collection_manager'
-            # client" — confirmed live in the server log, the same 3 rows
-            # failing on every 15-minute drain cycle, never once succeeding.
-            # egeria_investigation_publisher.py already had the right
-            # recipe (CollectionManager + create_egeria_bearer_token) for
-            # its own, different call site — this gives EgeriaPublisher
-            # (and therefore the scheduled drain) the same client.
-            self._collection_manager = CollectionManager(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            apply_identity(self._collection_manager, identity)
+            self._automated_curation = clients.of(AutomatedCuration)
+            # Used only by _publish_homepage_reference().
+            self._external_references = clients.of(ExternalReferences)
+            # The only client that can create a bare relationship (AnnotationExtension) between
+            # two existing GUIDs (docs/annotation-linking-plan.md, discovery finding #2).
+            self._metadata_expert = clients.of(MetadataExpert)
+            # egeria_outbox's collection_membership rows need it (2026-09-04 fix).
+            self._collection_manager = clients.of(CollectionManager)
         except ImportError as exc:
             raise EgeriaConnectionError(
                 "pyegeria is not installed. Add it to your dependencies."
             ) from exc
+        except PermissionError:
+            raise          # NoCallerIdentity / CallerTokenExpired: a 401, not a connection error
         except Exception as exc:
             raise EgeriaConnectionError(
                 f"Could not connect to Egeria at {self.platform_url}: {exc}"
@@ -1043,7 +999,11 @@ class EgeriaPublisher:
         # survey as owned by `erinoverview` — and `Ownership` is what the
         # curate authorisation reads, so the real owner would lose control of
         # their own artifact to a service account.
-        owner = getattr(self, "_private_owner", "") or identity.user_id
+        from resource_explorer.egeria_identity import on_behalf_of
+
+        # The one on-behalf helper (Brief I): the requester, never the service account; a private
+        # investigation's owner keeps its own (unchanged private-zone handling).
+        owner = getattr(self, "_private_owner", "") or on_behalf_of(identity).owner
         zones = self.zone_names
         if not produced:
             # A REFERENCED element — the repo's own asset. It is not this
@@ -1052,7 +1012,7 @@ class EgeriaPublisher:
             # deployment's draft zone and the publishing identity.
             from resource_explorer.egeria_identity import draft_zones
 
-            owner = identity.user_id
+            owner = on_behalf_of(identity).owner          # the requester; never the service account
             zones = draft_zones()
         results: dict[str, dict] = {}
         client = None
@@ -1064,6 +1024,8 @@ class EgeriaPublisher:
 
                 try:
                     client = classification_client(identity)
+                except PermissionError:
+                    raise   # no caller / expired / platform not allowed: never a silent unowned publish
                 except Exception as exc:
                     log.warning(
                         "Could not build a classification client — Ownership/"

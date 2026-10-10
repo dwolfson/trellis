@@ -2055,6 +2055,7 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
         rec = Curations(registry).create(
             "repo", slug, author=author, selection={**body.model_dump(), "sub_resources": chosen}, manifest=manifest,
             steps=list(STEPS), activity_id=activity_id)
+        # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
         run_id = registry.enqueue_run("curate_commit", {"slug": slug, "curation_id": rec["id"]},
                                       result_ref=activity_id, requested_by=_requested_by())
     except Exception as exc:
@@ -2499,6 +2500,7 @@ def architecture_publish(slug: str, request: Request) -> dict:
         intent="curate", status="running",
         summary=f"Publishing {plan['label'].removeprefix('Publish ')} of {project.display_name}…")
     try:
+        # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
         run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys},
                                       result_ref=activity_id, requested_by=_requested_by())
     except Exception as exc:

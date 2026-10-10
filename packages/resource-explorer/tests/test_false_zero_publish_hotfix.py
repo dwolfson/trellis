@@ -341,7 +341,12 @@ def test_publish_route_pushes_the_measured_counts_not_the_newest_empty_row(regis
                "EgeriaDatabaseSurveyor.publish_local_survey", fake), patch(
             "resource_explorer.surveyors.database.egeria_database_surveyor."
             "EgeriaDatabaseSurveyor.__init__", lambda self, **k: None):
-        r = TestClient(app).post(f"/api/databases/{SLUG}/publish", json={})
+        from resource_explorer.auth import create_access_token
+
+        # Brief I: Publish runs as a signed-in user with an Egeria token.
+        token = create_access_token(user_id="dan", egeria_token="tok-dan")
+        r = TestClient(app, headers={"Authorization": f"Bearer {token}"}).post(
+            f"/api/databases/{SLUG}/publish", json={})
     assert r.status_code == 200, r.text
     assert (got["schema_count"], got["table_count"], got["column_count"]) == (8, 61, 479)
     assert got["surveyed_at"] == "2026-09-28T03:00:00"

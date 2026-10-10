@@ -182,7 +182,8 @@ test('a saved server shows its Egeria fields and each database\'s surveyed state
   const egeria = text(row.querySelector('[data-server-egeria]'));
   assert.match(egeria, /https:\/\/localhost:9443/);
   assert.match(egeria, /view server view-server/);
-  assert.match(egeria, /user erinoverview/);
+  // Per-resource Egeria credentials are no longer shown or used (owner, 2026-10-09).
+  assert.doesNotMatch(egeria, /user erinoverview/);
   assert.match(egeria, /host host\.docker\.internal/);
   assert.doesNotMatch(egeria, /password/i, 'there is no Egeria password anywhere in the view');
   const dbs = [...row.querySelectorAll('[data-server-db]')];

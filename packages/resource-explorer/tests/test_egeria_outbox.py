@@ -22,6 +22,9 @@ from resource_explorer.egeria_outbox import (
 )
 from resource_explorer.registry import Project, ProjectRegistry
 
+# Brief I: these tests drive the drain mechanics, as the background loop does: a declared daemon job.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 
 @pytest.fixture()
 def db(tmp_path):
@@ -1174,6 +1177,7 @@ class TestCompletePublishRunIfDone:
         assert db.get_last_published_analyses(project) == {}
 
 
+@pytest.mark.usefixtures("allow_example_platform")   # the fake entities name egeria.example
 class TestDocSourceOutbox:
     """Egeria publish-state fix (2026-09-29,
     DOC-SOURCES-DECLARE-AND-PROBE-IMPLEMENTED.md).

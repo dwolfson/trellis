@@ -20,6 +20,9 @@ from resource_explorer.surveyors.arch_recovery.blueprint_materializer import (
     BlueprintMaterializer,
 )
 
+# Brief I: a blueprint or port is written by a queued publish: RE's daemon on the requester's behalf.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 NEW = "11111111-1111-1111-1111-111111111111"
 OLD = "22222222-2222-2222-2222-222222222222"
 G_WEB = "44444444-4444-4444-4444-444444444444"

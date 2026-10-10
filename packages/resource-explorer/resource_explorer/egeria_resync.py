@@ -196,20 +196,20 @@ class EgeriaResync:
         try:
             from pyegeria import AssetMaker, ClassificationExplorer, CollectionManager, ProjectManager
 
-            from resource_explorer.config import get_config
+            from resource_explorer.egeria_clients import current_principal, egeria_client
 
-            cfg = get_config().egeria
-            am = AssetMaker(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-            pm = ProjectManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-            cm = CollectionManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
+            # Who (Brief I): the scheduled pass runs inside acting_as(Daemon(RESYNC)) (`_loop`);
+            # the admin's Scan/Apply routes run as the signed-in admin.
+            clients = egeria_client(current_principal(), purpose="egeria resync")
+            am = clients.of(AssetMaker)
+            pm = clients.of(ProjectManager)
+            cm = clients.of(CollectionManager)
             # ClassificationExplorer, not MetadataExpert —
             # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §1:
             # MetadataExpert is for special situations with a differently-
             # shaped response; ClassificationExplorer.get_element_by_guid is
             # the plain existence check.
-            ce = ClassificationExplorer(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-            for c in (am, pm, cm, ce):
-                c.create_egeria_bearer_token()
+            ce = clients.of(ClassificationExplorer)
             self._clients = {"asset": am, "project": pm, "collection": cm, "classification": ce}
             return True, ""
         except Exception as exc:
@@ -1597,7 +1597,10 @@ def _loop(interval: int, stop: threading.Event) -> None:
 
         heal_missing()
         try:
-            result = scan_and_clear()
+            from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+            with acting_as(Daemon(DaemonReason.RESYNC)):
+                result = scan_and_clear()
             with _status_lock:
                 _status["last_run_at"] = _now()
                 _status["last_reachable"] = result.get("reachable", True)

@@ -1093,7 +1093,7 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     if seen is not None and seen.archived:
         raise SchemaRefused(f"{schema}: {S19_SENTENCE}")
     el = gateway.read_element(qn)
-    create_note = ""
+    create_note, requester_note = "", ""
     if el is None:
         try:
             guid = gateway.create_schema_element(e, schema, payload.get("database_guid", ""))
@@ -1112,8 +1112,21 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
                            "verified": "DataSetContent link to the database and ResourceConnection, read by the element's GUID"})
         if not guid:
             raise GatewayError(f"Egeria created no schema element for {schema}")
+        if not create_note:
+            # Freshly created on a person's behalf (Brief I): `requestedBy` in its provenance and
+            # Ownership = the requester, from the one helper. A drain-loop retry runs as
+            # Daemon(OUTBOX, requested_by=<the payload's author>), so it stamps the author too;
+            # a row with no author stamps nothing (never the service account).
+            from resource_explorer.egeria_clients import current_principal
+            from resource_explorer.egeria_identity import on_behalf_of
+
+            behalf = on_behalf_of(current_principal())
+            requester_note = gateway.mark_on_behalf(guid, behalf.requester, behalf.owner)
+            if requester_note:
+                log.warning("catalog: schema %s (%s): %s", schema, guid, requester_note)
     else:
         guid = el.guid
+        requester_note = ""
     # THE GUARD: read the targets FIRST. A target for this schema (by element or by name) means it is
     # attached: no initiation, no add_catalog_target. Egeria creates ANOTHER CatalogTarget on every
     # initiation (9 targets for 3 schemas in rehearsal 2), so nothing below runs when one is there.
@@ -1184,7 +1197,9 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
                    "action_type": CATALOG_SCHEMA_ACTION_TYPE if action_guid else "",
                    "engine_action": action_guid, "fallback_reason": fallback, "create_error_adopted": create_note,
                    "connector_last_refresh": status.last_refresh_time if status else "",
-                   "connector_note": "the connector's last refresh, not this target's"})
+                   "connector_note": "the connector's last refresh, not this target's",
+                   # Brief I: '' = the requester is on the element (or nobody asked); else partial.
+                   "requester": f"partial · {requester_note}" if requester_note else ""})
     return guid
 
 
@@ -1466,10 +1481,11 @@ def run_with_loop(fn: Callable[..., Any], *args, **kwargs):
         asyncio.set_event_loop(None)
 
 
-def make_gateway(db_entity) -> CatalogueGateway:
-    """The real gateway. Tests replace this one name."""
+def make_gateway(db_entity, identity=None) -> CatalogueGateway:
+    """The real gateway. Tests replace this one name. `identity` None = `current_principal()`
+    when the gateway first calls Egeria (the signed-in Caller on a Curate route)."""
     from resource_explorer.catalogue_gateway import PyegeriaCatalogueGateway
-    return PyegeriaCatalogueGateway(db_entity)
+    return PyegeriaCatalogueGateway(db_entity, identity=identity)
 
 
 def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
@@ -1483,6 +1499,9 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
     from resource_explorer.curate_plan import Curations
     if not author:
         raise CommitBlocked(401, "Sign in to catalog: the record needs an author.")
+    from resource_explorer.egeria_clients import Caller
+
+    Caller()   # a live sign-in, checked before anything is written (Brief I): 401 otherwise
     db_entity = registry.get_database(slug, allow_unreadable=True)
     if db_entity is None:
         raise CommitBlocked(404, f"Database '{slug}' not found")
@@ -1518,6 +1537,7 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         summary=f"Cataloging {db_entity.display_name}: {len(selection['attach'])} schema targets…")
     rec = Curations(registry).create("database", slug, author=author, selection=selection,
                                      manifest=preview["manifest"], steps=list(STEPS_DB), activity_id=activity_id)
+    # Queued: committed by RE's daemon on the author's behalf, Ownership = the author (Brief I).
     run_id = registry.enqueue_run("catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
                                   result_ref=activity_id, requested_by=author)
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
@@ -1659,16 +1679,60 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     # 1 ── the server and database elements
     cur.set_step(curation_id, "publish_elements", "running")
     try:
+        # Brief I round 5: only elements THIS commit creates are stamped with the requester. A server
+        # is shared by host:port (and may be someone else's, created outside RE); a database may
+        # come from an earlier commit. Read before publishing: what already existed is never
+        # re-stamped or re-owned. A read that fails counts as "existed" (the safe direction).
+        existed, expected = {}, {
+            "server": gw.server_qualified_name(gw.server_name_for(db)),
+            "database": gw.database_qualified_name(gw.server_name_for(db), db.database_name)}
+        for which, qn_ in expected.items():
+            try:
+                existed[which] = gateway.read_element(qn_) is not None
+            except GatewayError:
+                existed[which] = True
         pub = gateway.publish_database(db, db.db_user, db.db_password, registry=registry, submitted_by=author)
         db_guid = pub.database_guid
         if not db_guid:
             raise GatewayError("Egeria returned no database element")
         registry.set_database_egeria_guid(slug, db_guid)
+        # Brief I: the server and database elements carry the requester like everything else a
+        # queued person-action creates: `requestedBy` merged into their provenance, Ownership = the
+        # requester. The database's Ownership is left to the owner step below when the Context
+        # DECLARES an owner (that owner fact has its own ruling); otherwise it is the requester.
+        from resource_explorer.egeria_clients import current_principal
+        from resource_explorer.egeria_identity import on_behalf_of
+
+        behalf = on_behalf_of(current_principal())
+        declared = (((registry.get_context("database", slug) or {}).get("enrichment") or {})
+                    .get("owner") or {}).get("value") or ""
+        # Brief I round 6: SURE this commit created it = nothing under this host's name before AND
+        # the returned GUID reads back with exactly that name. The surveyor adopts a database by
+        # bare name (a separate backlog bug), so it can hand back ANOTHER host's element: that one
+        # is never stamped, and the step says so.
+        notes = []
+        for which, guid_, owner_ in (("server", pub.server_guid, behalf.owner),
+                                     ("database", db_guid, "" if declared else behalf.owner)):
+            if not guid_ or existed[which]:
+                continue
+            try:
+                got = gateway.qualified_name_of(guid_)
+            except GatewayError as exc:
+                notes.append(f"{which} not read back ({egeria_first_sentence(str(exc))[0]}); requester not recorded")
+                continue
+            if got != expected[which]:
+                notes.append(f"adopted an element for a different host ({got}); requester not recorded")
+                continue
+            note = gateway.mark_on_behalf(guid_, behalf.requester, owner_)
+            if note:
+                notes.append(note)
         _proof(registry, slug, P_DATABASE, node_kind="database", element_guid=db_guid,
                qualified_name=pub.database_qualified_name, curation_id=curation_id, recorded_by=author,
-               detail={"server_guid": pub.server_guid, "server_name": pub.server_name})
+               detail={"server_guid": pub.server_guid, "server_name": pub.server_name,
+                       "requester": ("partial · " + "; ".join(notes)) if notes else ""})
+        done = f"server {pub.server_guid[:8]} · database {db_guid[:8]} · descriptions and versions supplied"
         cur.set_step(curation_id, "publish_elements", "done",
-                     f"server {pub.server_guid[:8]} · database {db_guid[:8]} · descriptions and versions supplied")
+                     done + (" · partial · " + "; ".join(notes) if notes else ""))
     except Exception as exc:
         _fail_step(cur, curation_id, "publish_elements", exc)
 

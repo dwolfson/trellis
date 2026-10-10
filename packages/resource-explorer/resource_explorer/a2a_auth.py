@@ -46,9 +46,11 @@ What the caller's identity is *for*
 `current_caller` is a ContextVar, set by the middleware for the duration of the
 request and inherited by every task and thread the request spawns — the same
 shape the Portal uses (``egeria_auth.py``'s contextvar middleware) so both
-sides look alike. `apply_caller_token(client)` is the downstream half: build a
-pyegeria client, hand it the caller's token, and the Egeria write is attributed
-to the person rather than to `erinoverview`.
+sides look alike. The downstream half is `egeria_clients.egeria_client(Caller())`
+(Brief I, 2026-10-09): the one factory reads this ContextVar, hands every
+sub-client the caller's token, and the Egeria write is attributed to the person
+rather than to the service account. With no caller it refuses (401); it never
+falls back.
 
 **Scope note.** This module makes the caller's token *available* to agent code.
 It does not rewrite RE's existing pyegeria client construction sites, which
@@ -199,19 +201,6 @@ except ImportError:  # pragma: no cover
 def caller() -> CallerIdentity | None:
     """The identity behind the call currently being served, if any."""
     return current_caller.get()
-
-
-def apply_caller_token(client: Any) -> None:
-    """Give a freshly-built pyegeria client the caller's Egeria bearer token.
-
-    Falls through to `trellis_auth.apply_token`'s own behaviour when there is
-    no caller token (the client mints one from its own configured credentials),
-    which is what the legitimately service-account-backed paths already do.
-    """
-    from trellis_auth import apply_token
-
-    identity = current_caller.get()
-    apply_token(client, identity.egeria_token if identity else None)
 
 
 # ── the Egeria-token validation cache ───────────────────────────────────

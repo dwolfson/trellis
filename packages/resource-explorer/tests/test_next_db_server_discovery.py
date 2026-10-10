@@ -146,9 +146,12 @@ class TestServerListAndRegistration:
         for field in (
             "slug", "display_name", "db_type", "host", "port", "description",
             "db_user", "db_password", "egeria_host", "egeria_url",
-            "egeria_server", "egeria_user", "egeria_password", "group_slug",
+            "egeria_server", "group_slug",
         ):
             assert f"{field}:" in src
+        # Per-resource Egeria credentials are no longer offered (owner, 2026-10-09).
+        for field in ("egeria_user", "egeria_password"):
+            assert f"{field}:" not in src
 
     def test_egeria_section_is_collapsed_by_default(self):
         src = _db_discovery_src()

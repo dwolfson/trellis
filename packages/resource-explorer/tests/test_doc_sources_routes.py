@@ -127,15 +127,20 @@ class TestListAndPublishState:
 
         assert resp.json()["published"] is True
 
-    def test_read_back_folds_in_a_source_declared_only_in_egeria(self, client, monkeypatch, registry):
+    def test_read_back_folds_in_a_source_declared_only_in_egeria(self, client, monkeypatch, registry,
+                                                                  allow_example_platform):
         registry.set_database_egeria_guid("adventureworks", "asset-guid-1")
         monkeypatch.setattr(
             "resource_explorer.web.routes.doc_sources.read_back_doc_sources",
             lambda *a, **kw: [{"ref_guid": "guid-x", "url": "https://declared-in-egeria.example",
                                 "label": "From Egeria"}],
         )
+        from resource_explorer.auth import create_access_token
 
-        resp = client.get("/api/doc-sources/database/adventureworks")
+        # Brief I: the read-back runs as the signed-in reader (their Egeria token), so sign in.
+        token = create_access_token(user_id="dan", egeria_token="tok-dan")
+        resp = client.get("/api/doc-sources/database/adventureworks",
+                          headers={"Authorization": f"Bearer {token}"})
 
         body = resp.json()
         assert body["published"] is True
@@ -401,7 +406,8 @@ class TestEgeriaPublishStateFix:
 
 
 class TestPublishHook:
-    def test_publish_local_doc_sources_skips_already_published_rows(self, monkeypatch, registry):
+    def test_publish_local_doc_sources_skips_already_published_rows(self, monkeypatch, registry, signed_in_caller,
+                                                                    allow_example_platform):
         from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
 
         registry.add_doc_source("database", "adventureworks", "https://x")

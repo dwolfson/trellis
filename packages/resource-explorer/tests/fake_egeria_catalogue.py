@@ -145,6 +145,9 @@ class FakeEgeria:
             self.server_guid = self._guid("s")
             self.db_guid = self._guid("d")
             self.elements[self.db_guid] = {"qn": qn, "type": "RelationalDatabase", "parent": "", "archived": False, "deleted": False}
+            # The server is an element too (shared by host:port), so a later read finds it.
+            self.elements[self.server_guid] = {"qn": f"PostgreSQL Server::{server}", "type": "SoftwareServer",
+                                               "parent": "", "archived": False, "deleted": False}
             self.zones[self.db_guid] = list(self.default_zones)
         return PublishedDatabase(self.server_guid, self.db_guid, server, qn)
 
@@ -210,6 +213,14 @@ class FakeEgeria:
             return parse_element_answer("No elements found")
         self.last_wire = ("element", self.raw_element(e["guid"]))
         return parse_element_answer(self.last_wire[1])
+
+    def qualified_name_of(self, guid):
+        self.calls.append(("qualified_name_of", guid))
+        return self.elements[guid]["qn"]
+
+    def mark_on_behalf(self, guid, requester, owner):
+        self.calls.append(("mark_on_behalf", guid, requester, owner))
+        return getattr(self, "mark_on_behalf_says", "")
 
     def create_schema_element(self, db_entity, schema, database_guid, *, description=""):
         self.calls.append(("create_schema_element", schema, database_guid))

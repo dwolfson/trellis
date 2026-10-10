@@ -46,6 +46,7 @@ from resource_explorer.surveyors.database.column_matching import (
     KnownValidValueSet,
 )
 from resource_explorer.surveyors.survey_definition_reader import _as_guid
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
 
@@ -774,36 +775,25 @@ def build_reference_clients(
     metadata properties rather than business reference data, and not
     `DataDesigner`, which owns data classes only.
 
-    Authenticated through `apply_identity` so a signed-in person's token is
-    reused and the write carries their provenance, falling back to
-    `create_egeria_bearer_token` only where that machinery is unavailable —
-    `bootstrap_data_classes.py`'s direct-token pattern loses the caller.
+    Built by the one factory (Brief I) as `identity`, else `current_principal()` — the
+    signed-in person's token on a route, the declared daemon job in a run. `user_id` and
+    `user_password` are accepted for old callers and ignored: they no longer authenticate.
     """
     from pyegeria.omvs.data_designer import DataDesigner
     from pyegeria.omvs.reference_data import ReferenceDataManager
 
-    platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
+    from resource_explorer.egeria_clients import current_principal, egeria_client
+
+    platform_url = platform_url or egeria_platform_url()
     if not platform_url:
         raise ReferenceCatalogError(
             "EGERIA_PLATFORM_URL is not set — cannot read the platform's Data "
             "Classes, and an unread platform must not be reported as an empty one."
         )
-    view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
-    user_id = user_id or os.getenv("EGERIA_USER", "erinoverview")
-    user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", "secret")
-
-    clients = []
-    for cls in (DataDesigner, ReferenceDataManager):
-        client = cls(view_server, platform_url, user_id, user_password)
-        try:
-            from resource_explorer.egeria_identity import apply_identity
-
-            apply_identity(client, identity)
-        except Exception as exc:
-            log.debug("apply_identity unavailable (%s) — minting a token directly", exc)
-            client.create_egeria_bearer_token(user_id, user_password)
-        clients.append(client)
-    return clients[0], clients[1]
+    view_server = view_server or egeria_view_server()
+    clients = egeria_client(identity or current_principal(), purpose="reference catalog",
+                            view_server=view_server, platform_url=platform_url)
+    return clients.of(DataDesigner), clients.of(ReferenceDataManager)
 
 
 def matches_needing_proposals(matches: Sequence[ColumnMatch]) -> list[ColumnMatch]:

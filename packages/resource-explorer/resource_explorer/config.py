@@ -256,6 +256,9 @@ class EgeriaConfig(BaseSettings):
     integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")
     user_id: str = Field(default="erinoverview", alias="EGERIA_USER_ID")
     user_password: str = Field(default="secret", alias="EGERIA_USER_PASSWORD")
+    #: Further Egeria platforms a credential may be sent to, comma separated (Brief I). The
+    #: configured `platform_url` is always allowed; any other URL is refused before a request.
+    allowed_platform_urls: str = Field(default="", alias="EGERIA_ALLOWED_PLATFORM_URLS")
     kafka_endpoint: str = Field(default="localhost:9092", alias="EGERIA_KAFKA_ENDPOINT")
     # Base URL for Egeria Workspaces' "The Catalog" app (egeria-workspaces-fs
     # PyegeriaWebHandler) — supports deep-linking to a specific element via
@@ -709,6 +712,19 @@ class ExplorerConfig(BaseSettings):
 
 
 _config: ExplorerConfig | None = None
+
+
+def egeria_platform_url() -> str:
+    """THE Egeria platform URL (Brief I round 4, found live on 8813): `config.egeria.platform_url`
+    — the environment / .env value, else its default. No other module reads EGERIA_PLATFORM_URL
+    from the environment (the ban test enforces it): two sources once disagreed, and a direct read
+    saw '' where the configured default existed."""
+    return get_config().egeria.platform_url
+
+
+def egeria_view_server() -> str:
+    """THE Egeria view server: `config.egeria.view_server` (same reasoning)."""
+    return get_config().egeria.view_server
 
 
 def get_config() -> ExplorerConfig:

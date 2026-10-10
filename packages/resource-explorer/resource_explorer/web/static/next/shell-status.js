@@ -196,6 +196,15 @@ export function closeConnectionPopover(doc = document) { removeEl(doc, POPOVER_I
 
 const NOT_READ = '<span class="text-ink-muted">not read</span>';
 
+/** Pure: who the last Egeria call ran as, from the value the server RECORDED (Brief I), never inferred.
+ *  null = whoami not read; a recorded-nothing answer says so in words. */
+export function lastCallWords(whoami) {
+  if (!whoami) return null;
+  const last = whoami.last_egeria_call;
+  if (!last || !last.as) return 'not recorded in this process';
+  return [last.as, last.purpose, last.at ? ago(last.at) : ''].filter(Boolean).join(' · ');
+}
+
 /** Pure: the popover's rows from what was read. Each value is a string or null (not read). */
 export function connectionRows({ me, whoami, status }) {
   const who = me && (me.user_id || me.username || me.egeria_user);
@@ -206,6 +215,7 @@ export function connectionRows({ me, whoami, status }) {
     ['View server', whoami?.view_server || null],
     ['Platform', whoami?.platform_url || null],
     ['Build', whoami ? (whoami.build_sha || null) : null],
+    ['Last Egeria call as', lastCallWords(whoami)],
     ['Last bootstrap heal', status ? (heal ? `${heal.batch} · ${heal.result || 'no result'} · ${ago(heal.at)}` : 'not read in this process') : null],
   ];
 }
@@ -240,6 +250,6 @@ export async function openConnectionPopover(doc, anchor, { me, getInfo = getWhoa
       <dt class="text-ink-muted">${esc(k)}</dt>
       <dd data-conn="${esc(k)}" class="m-0 break-all font-mono text-provenance"${k === 'Build' && v ? ` title="${esc(v)}"` : ''}>${
         v ? esc(k === 'Build' ? String(v).slice(0, 10) : v) : NOT_READ}</dd>`).join('')}</dl>
-    <p class="mt-s2 text-provenance text-ink-muted">Every Egeria read and write this session makes runs as the signed-in user.</p>`;
+    <p class="mt-s2 text-provenance text-ink-muted">Your own actions run as you; surveys and scheduled work run as the service account, recorded as yours.</p>`;
   return pop;
 }

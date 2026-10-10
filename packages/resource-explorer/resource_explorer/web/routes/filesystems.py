@@ -28,7 +28,6 @@ class FileSystemSummary(BaseModel):
     data_file_count: int
     egeria_url: str = ""
     egeria_server: str = ""
-    egeria_user: str = ""
     group_slug: str = ""
     # 'undecided' when nobody has ever decided — see DatabaseSummary's own
     # comment (databases.py) for why this field exists now.
@@ -60,6 +59,7 @@ class FileSystemRegistration(BaseModel):
     description: str = ""
     egeria_url: str = ""
     egeria_server: str = ""
+    #: Ignored (owner, 2026-10-09): accepted only so an older caller is not refused; logged.
     egeria_user: str = ""
     egeria_password: str = ""
     group_slug: str = ""
@@ -70,9 +70,20 @@ class FileSystemSurveyRequest(BaseModel):
     mode: str = "hybrid"  # "local" | "hybrid" | "egeria"
     egeria_url: str | None = None
     egeria_server: str | None = None
+    #: Ignored (owner, 2026-10-09): accepted only so an older caller is not refused; logged.
     egeria_user: str | None = None
     egeria_password: str | None = None
     force_publish: bool = False
+    #: Publish to Egeria (Brief I round 4: an explicit choice). Also chosen by SENDING mode
+    #: "hybrid" or "egeria"; the default mode alone never publishes.
+    publish: bool = False
+
+
+def _publish_chosen(req: "FileSystemSurveyRequest") -> bool:
+    """Whether the caller chose to publish this survey to Egeria: `publish`/`force_publish`, or an
+    explicitly sent mode "hybrid"/"egeria" (not the field's default)."""
+    sent_mode = "mode" in req.model_fields_set and req.mode in ("hybrid", "egeria")
+    return bool(req.publish or req.force_publish or sent_mode)
 
 
 class EgeriaSurveyReportRow(BaseModel):
@@ -136,7 +147,6 @@ def list_filesystems():
                 data_file_count=fs.data_file_count,
                 egeria_url=fs.egeria_url or "",
                 egeria_server=fs.egeria_server or "",
-                egeria_user=fs.egeria_user or "",
                 group_slug=getattr(fs, "group_slug", "") or "",
                 disposition=disp.get("disposition", "undecided"),
                 is_published=publish_status["is_published"],
@@ -150,9 +160,9 @@ def list_filesystems():
 @router.post("/", response_model=FileSystemSummary)
 def register_filesystem(registration: FileSystemRegistration):
     """Register a new filesystem connection."""
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(registration.egeria_user)
+    ignore_egeria_credentials(registration, where="register filesystem")
 
     registry = ProjectRegistry()
 
@@ -171,8 +181,6 @@ def register_filesystem(registration: FileSystemRegistration):
         description=registration.description,
         egeria_url=registration.egeria_url,
         egeria_server=registration.egeria_server,
-        egeria_user=registration.egeria_user,
-        egeria_password=registration.egeria_password,
         group_slug=registration.group_slug,
     )
     
@@ -198,7 +206,6 @@ def register_filesystem(registration: FileSystemRegistration):
         data_file_count=0,
         egeria_url=fs.egeria_url or "",
         egeria_server=fs.egeria_server or "",
-        egeria_user=fs.egeria_user or "",
     )
 
 
@@ -231,7 +238,6 @@ def get_filesystem(slug: str):
         disposition=disp.get("disposition", "undecided"),
         egeria_url=fs.egeria_url or "",
         egeria_server=fs.egeria_server or "",
-        egeria_user=fs.egeria_user or "",
         is_published=publish_status["is_published"],
         egeria_publish_note=publish_status["note"],
         working_set_hidden=registry.is_working_set_hidden("filesystem", fs.slug),
@@ -342,9 +348,9 @@ def delete_filesystem(slug: str):
 @router.post("/{slug}/survey")
 def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
     """Run a local or hybrid survey on the filesystem, optionally publishing to Egeria."""
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(req.egeria_user or "")
+    ignore_egeria_credentials(req, where="survey filesystem")
 
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)
@@ -420,9 +426,7 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
                 executes_at="egeria-adaptive",
                 egeria_url=req.egeria_url,
                 egeria_server=req.egeria_server,
-                egeria_user=req.egeria_user,
-                egeria_password=req.egeria_password,
-                force_egeria_publish=req.force_publish or (req.mode == "egeria"),
+                force_egeria_publish=_publish_chosen(req),
             )
             step_report = (exec_result.get("steps") or [{}])[0]
             # Reconstruct run_hybrid_filesystem_survey's historic flat
@@ -533,9 +537,9 @@ def get_filesystem_egeria_annotations(slug: str, report_guid: str) -> list[Egeri
 @router.post("/{slug}/publish")
 def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
     """Manually publish the latest local filesystem survey details to Egeria."""
-    from resource_explorer.web.routes._validation import validate_egeria_user
+    from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
-    validate_egeria_user(req.egeria_user or "")
+    ignore_egeria_credentials(req, where="publish filesystem")
 
     registry = ProjectRegistry()
     fs_entity = registry.get_filesystem(slug)
@@ -552,24 +556,19 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             detail="No local survey results available to publish. Run a survey first."
         )
 
-    url = req.egeria_url or fs_entity.egeria_url or ""
-    server = req.egeria_server or fs_entity.egeria_server or ""
-    user = req.egeria_user or fs_entity.egeria_user or ""
-    pwd = req.egeria_password or fs_entity.egeria_password or ""
-
-    if not (url and server and user and pwd):
-        raise HTTPException(
-            status_code=400,
-            detail="Missing Egeria credentials (url, server, user, password)."
-        )
+    # Which Egeria: the request's or the entity's URL/server, else the configured one. WHO: the
+    # signed-in person (Brief I) — a typed or stored Egeria user/password is no longer used to
+    # authenticate this publish.
+    url = req.egeria_url or fs_entity.egeria_url or None
+    server = req.egeria_server or fs_entity.egeria_server or None
 
     try:
+        from resource_explorer.egeria_clients import Caller
         from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
         egeria_surveyor = EgeriaFileSystemSurveyor(
             platform_url=url,
             view_server=server,
-            user_id=user,
-            user_password=pwd,
+            identity=Caller(),
         )
         publish_res = egeria_surveyor.catalog_and_survey(fs_entity, survey["survey_data"], registry=registry)
         # BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1 — same hook as
@@ -588,7 +587,14 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             "egeria_report_guid": publish_res.get("report_guid", ""),
             "annotation_count": publish_res.get("annotation_count", 0),
         }
+    except PermissionError:
+        raise      # no caller / expired sign-in: the app's 401 handler, never a 500
     except Exception as exc:
+        from resource_explorer.egeria_clients import refusal
+
+        refused = refusal(exc)
+        if refused is not None:
+            raise refused from exc       # "refused by Egeria", with Egeria's sentence
         log.exception(f"Manual filesystem publish failed for {slug}")
         raise HTTPException(
             status_code=500,

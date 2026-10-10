@@ -22,6 +22,9 @@ from test_catalogue_commit import (  # noqa: E402,F401  (fixtures and helpers ar
 from resource_explorer import catalogue_commit as cc  # noqa: E402
 from resource_explorer.catalogue_gateway import GatewayError  # noqa: E402
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 def _measured(world, schemas=8):
     world["registry"].record_database_survey("db", schemas, 61, 90, {"schema_info": {"sales": {}}}, source="local",

@@ -70,7 +70,8 @@ def test_resolver_returns_connection_view_with_asset_guid(registry, monkeypatch)
     assert isinstance(view, RepoEgeriaConnectionView)
     assert view.egeria_asset_guid == "guid-123"
     assert view.display_name == "Amundsen"
-    assert view.egeria_password == "hunter2-secret"  # callers still get it
+    # Brief I: the view carries no credential any more; who acts is the factory's business.
+    assert not hasattr(view, "egeria_password") and not hasattr(view, "egeria_user")
     assert resolve_entity_for_doc_source(registry, "repo", "nope") is None
 
 

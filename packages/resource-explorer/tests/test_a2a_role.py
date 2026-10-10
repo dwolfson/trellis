@@ -340,34 +340,38 @@ class TestServeCommand:
 
 
 class TestCallerPropagation:
-    def test_apply_caller_token_uses_the_callers_token(self):
-        """The downstream half of §4: whatever pyegeria client agent code
-        builds gets the *caller's* token, not the service account's."""
-        from unittest.mock import MagicMock
+    def test_the_factory_uses_the_a2a_callers_token(self):
+        """The downstream half of §4, through Brief I's one factory: a client built for the
+        A2A caller carries the *caller's* token, not the service account's."""
+        from resource_explorer.a2a_auth import CallerIdentity, current_caller
+        from resource_explorer.egeria_clients import Caller, egeria_client
 
-        from resource_explorer.a2a_auth import (
-            CallerIdentity,
-            apply_caller_token,
-            current_caller,
-        )
+        class FakeClient:
+            def __init__(self, *a):
+                self.user = a[2]
+                self.tokens = []
+                self.minted = 0
 
-        client = MagicMock()
+            def set_bearer_token(self, t):
+                self.tokens.append(t)
+
+            def create_egeria_bearer_token(self, *a):
+                self.minted += 1
+
         reset = current_caller.set(
             CallerIdentity(user_id="peterprofile", egeria_token="tok-123",
                            auth_source="app-jwt")
         )
         try:
-            apply_caller_token(client)
+            client = egeria_client(Caller(), purpose="test").of(FakeClient)
         finally:
             current_caller.reset(reset)
-        client.set_bearer_token.assert_called_once_with("tok-123")
-        client.create_egeria_bearer_token.assert_not_called()
+        assert (client.user, client.tokens, client.minted) == ("peterprofile", ["tok-123"], 0)
 
-    def test_with_no_caller_the_client_falls_back_to_its_own_credentials(self):
-        from unittest.mock import MagicMock
+    def test_with_no_caller_the_factory_refuses_rather_than_using_the_service_account(self):
+        import pytest
 
-        from resource_explorer.a2a_auth import apply_caller_token
+        from resource_explorer.egeria_clients import Caller, NoCallerIdentity
 
-        client = MagicMock()
-        apply_caller_token(client)
-        client.create_egeria_bearer_token.assert_called_once()
+        with pytest.raises(NoCallerIdentity):
+            Caller()

@@ -11,6 +11,9 @@ from resource_explorer.activity_logger import log_survey
 from resource_explorer.curate_plan import Curations
 from resource_explorer.registry import Project, ProjectRegistry
 
+# Brief I: these tests drive the drain mechanics, as the background loop does: a declared daemon job.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 
 @pytest.fixture
 def reg(tmp_path):

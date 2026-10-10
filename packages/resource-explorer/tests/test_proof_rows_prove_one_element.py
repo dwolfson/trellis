@@ -19,6 +19,9 @@ from resource_explorer import catalogue_commit as cc  # noqa: E402
 from resource_explorer import catalogue_gateway as gw  # noqa: E402
 from resource_explorer.catalogue_gateway import GatewayError, Relationship  # noqa: E402
 
+# Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 SALES_QN = "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales"
 EGERIA_SENTENCE = ("OMAG-REPOSITORY-HANDLER-500-001 Egeria could not link the new schema to its parent database "
                    "because the parent relationship was rejected by the repository.")

@@ -197,13 +197,9 @@ def _apply_investigation_marker(pm, project_guid: str) -> tuple[bool, str]:
     try:
         from pyegeria.omvs.metadata_expert import MetadataExpert
 
-        from resource_explorer.config import get_config
-        from resource_explorer.egeria_identity import apply_identity, caller_credentials
+        from resource_explorer.egeria_clients import current_principal, egeria_client
 
-        cfg = get_config().egeria
-        me = MetadataExpert(cfg.view_server, cfg.platform_url,
-                            cfg.user_id, cfg.user_password)
-        apply_identity(me, caller_credentials())
+        me = egeria_client(current_principal(), purpose="investigation marker").of(MetadataExpert)
         me.classify_metadata_element(project_guid, INVESTIGATION_MARKER, {
             "class": "NewClassificationRequestBody",
             "properties": {"class": "ClassificationProperties",
@@ -299,14 +295,13 @@ class EgeriaInvestigationPublisher:
     def _managers(self):
         if self._pm is not None and self._cm is not None:
             return self._pm, self._cm
-        from resource_explorer.config import get_config
         from pyegeria import CollectionManager, ProjectManager
 
-        cfg = get_config().egeria
-        pm = ProjectManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-        cm = CollectionManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-        for mgr in (pm, cm):
-            mgr.create_egeria_bearer_token()
+        from resource_explorer.egeria_clients import current_principal, egeria_client
+
+        # Who (Brief I): the person who pressed promote (it used to be the service account).
+        clients = egeria_client(current_principal(), purpose="investigation promote")
+        pm, cm = clients.of(ProjectManager), clients.of(CollectionManager)
         self._pm, self._cm = pm, cm
         return pm, cm
 

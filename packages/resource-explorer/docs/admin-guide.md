@@ -97,8 +97,12 @@ REGISTRY_DATABASE_URL=sqlite:///data/registry.db
 EGERIA_PLATFORM_URL=https://localhost:9443
 EGERIA_VIEW_SERVER=view-server
 EGERIA_ENGINE_HOST=engine-host
-EGERIA_USER_ID=garygeeke
-EGERIA_USER_PASSWORD=secret
+# RE's daemon identity (an Egeria NPA user, e.g. resourceexplorernpa / ITProfile::ResourceExplorer)
+EGERIA_USER_ID=resourceexplorernpa
+EGERIA_USER_PASSWORD=…
+# Further Egeria platforms RE may send a credential to (comma separated); the platform above is
+# always allowed, any other URL a resource names is refused before a request is made
+EGERIA_ALLOWED_PLATFORM_URLS=
 EGERIA_KAFKA_ENDPOINT=localhost:9092
 
 # Default governance zones assigned to new assets when cataloging (JSON list)
@@ -116,6 +120,29 @@ Zone names can also be specified per-operation via the Egeria publish panel in t
 - Egeria-native database survey
 - RFA lifecycle management
 - Reading Egeria annotation results back into the survey report
+
+### Who RE calls Egeria as
+
+**Decision (project owner, 2026-10-09):** a person's direct actions run as that person; queued and
+background work runs as RE's daemon identity, with the requester recorded.
+
+- **Inside a browser request** (bulk operations, link repairs, reads, publishes, inline outbox
+  drains): the signed-in person, on their Egeria bearer token. With no sign-in, or an expired one,
+  the call is refused (401), never retried as anyone else. An Egeria security refusal is shown as
+  "refused by Egeria" with Egeria's own sentence.
+- **Queued work** (surveys, analyses, a queued Publish, Curate commit or catalog commit): RE's
+  daemon identity (`EGERIA_USER_ID`), with the person recorded as the run's `requested_by`, in the
+  element's `additionalProperties.requestedBy`, and in its Ownership classification (the owner
+  declared on the resource's Context when there is one, otherwise the requester). A queued
+  person-action with no requester recorded fails rather than writing anonymously.
+- **Background loops** (scheduler, the outbox drain loop, bootstrap, resync, reachability): RE's
+  daemon identity. The **outbox drain loop runs as the daemon**.
+- **Per-resource Egeria credentials are no longer used.** The Egeria user/password once typed into
+  the database-server, database and file-system registration dialogs are neither accepted, stored
+  nor read; a request that still sends them has them ignored, with a log warning that names the
+  fields (never the values). A resource's Egeria URL and view server still choose *which* Egeria,
+  under the allowed-platforms rule above. Values stored before 2026-10-09 remain in the registry's
+  columns until the owner decides how to clear them.
 
 ### Authentication
 
@@ -193,7 +220,7 @@ Deletes, for the record:
 | Action | RE's rule |
 |---|---|
 | **Delete locally** (Classic's bulk delete, `/linkage/delete-local`) | Signed-in users only. RE records no creator on a resource, so it cannot yet say "only the creator"; a creator rule needs a column (DDL) and is a later change. |
-| **Delete in Egeria** (`/linkage/delete-in-egeria`) | No RE gate: Egeria decides, and the ISSUE-117 block still refuses every archive/delete while it is ON. RE calls Egeria as the **configured service account** today (`config.egeria`), so Egeria's decision is that account's, not the signed-in person's. |
+| **Delete in Egeria** (`/linkage/delete-in-egeria`) | No RE gate: Egeria decides, and the ISSUE-117 block still refuses every archive/delete while it is ON. RE calls Egeria as the **signed-in person**, so Egeria's decision is theirs; a refusal is shown as "refused by Egeria" and never retried as the service account. |
 
 ### Governance zones
 

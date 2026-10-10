@@ -28,6 +28,9 @@ from resource_explorer.bulk_ops import (
 )
 from resource_explorer.registry import Project, ProjectRegistry
 
+# Brief I: these tests fake the Egeria clients; the code under test runs as a signed-in caller, as on a route.
+pytestmark = pytest.mark.usefixtures("signed_in_caller")
+
 
 @pytest.fixture(autouse=True)
 def _block_cleared_for_the_older_delete_tests(monkeypatch):

@@ -21,6 +21,7 @@ from rich.console import Console
 # evaluates at import time. a2a_role imports nothing heavier than stdlib at
 # module scope, so this costs the CLI nothing on any other command.
 from resource_explorer.a2a_role import DEFAULT_A2A_PORT
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 app = typer.Typer(
     name="resource-explorer",
@@ -2232,8 +2233,10 @@ def filesystem_register(
     description: str = typer.Option("", "--description", help="Filesystem description"),
     egeria_url: Optional[str] = typer.Option(None, "--egeria-url", help="Egeria platform URL"),
     egeria_server: Optional[str] = typer.Option(None, "--egeria-server", help="Egeria view server name"),
-    egeria_user: Optional[str] = typer.Option(None, "--egeria-user", help="Egeria user id"),
-    egeria_password: Optional[str] = typer.Option(None, "--egeria-password", help="Egeria user password", hide_input=True),
+    egeria_user: Optional[str] = typer.Option(None, "--egeria-user", hidden=True,
+                                              help="Ignored: per-resource Egeria credentials are no longer used"),
+    egeria_password: Optional[str] = typer.Option(None, "--egeria-password", hidden=True, hide_input=True,
+                                                  help="Ignored: per-resource Egeria credentials are no longer used"),
     group: Optional[str] = typer.Option(None, "--group", help="Assign this filesystem to a project group"),
 ):
     """Register a local filesystem directory in the registry.
@@ -2246,7 +2249,8 @@ def filesystem_register(
             --group egeria
     """
     from resource_explorer.registry import FileSystemEntity, ProjectRegistry
-    
+
+    _warn_ignored_egeria_credentials(egeria_user, egeria_password)
     registry = ProjectRegistry()
     
     # Check if already exists
@@ -2267,8 +2271,6 @@ def filesystem_register(
         description=description,
         egeria_url=egeria_url or "",
         egeria_server=egeria_server or "",
-        egeria_user=egeria_user or "",
-        egeria_password=egeria_password or "",
         group_slug=group or "",
     )
     
@@ -2313,8 +2315,10 @@ def filesystem_survey(
     use_egeria: bool = typer.Option(False, "--egeria", help="Publish survey results to Egeria (hybrid approach)"),
     egeria_url: Optional[str] = typer.Option(None, "--egeria-url", help="Egeria platform URL override"),
     egeria_server: Optional[str] = typer.Option(None, "--egeria-server", help="Egeria view server name override"),
-    egeria_user: Optional[str] = typer.Option(None, "--egeria-user", help="Egeria user id override"),
-    egeria_password: Optional[str] = typer.Option(None, "--egeria-password", help="Egeria user password override", hide_input=True),
+    egeria_user: Optional[str] = typer.Option(None, "--egeria-user", hidden=True,
+                                              help="Ignored: per-resource Egeria credentials are no longer used"),
+    egeria_password: Optional[str] = typer.Option(None, "--egeria-password", hidden=True, hide_input=True,
+                                                  help="Ignored: per-resource Egeria credentials are no longer used"),
 ):
     """Run a local survey on the filesystem, walking files and profiling schemas.
     
@@ -2331,6 +2335,7 @@ def filesystem_survey(
         console.print(f"[red]FileSystem '{slug}' not found. Register it first with 'filesystem register'.[/red]")
         raise typer.Exit(1)
         
+    _warn_ignored_egeria_credentials(egeria_user, egeria_password)
     console.print(f"[cyan]Surveying filesystem '{slug}'...[/cyan]")
     registry.update_filesystem_status(slug, ProjectStatus.ACTIVE)
     
@@ -2353,8 +2358,6 @@ def filesystem_survey(
                 executes_at="egeria-adaptive",
                 egeria_url=egeria_url,
                 egeria_server=egeria_server,
-                egeria_user=egeria_user,
-                egeria_password=egeria_password,
                 force_egeria_publish=True,
             )
             step_report = (exec_result.get("steps") or [{}])[0]
@@ -2527,20 +2530,35 @@ def filesystem_remove(
 
 
 
+def _warn_ignored_egeria_credentials(user: Optional[str], password: Optional[str]) -> None:
+    """Per-resource Egeria credentials are no longer accepted (owner, 2026-10-09): say so, once,
+    naming the options only — never their values."""
+    sent = [n for n, v in (("--egeria-user", user), ("--egeria-password", password)) if v]
+    if sent:
+        console.print(f"[yellow]{'/'.join(sent)} ignored: RE no longer uses per-resource Egeria "
+                      "credentials; it calls Egeria as you (resource-explorer login) or as its daemon.[/yellow]")
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "CLI: %s ignored (per-resource Egeria credentials are no longer used)", "/".join(sent))
+
+
 def _try_build_egeria_client(platform_url: Optional[str], view_server: Optional[str]):
     """Attempt to build a pyegeria client for optional cache refresh. Returns None on failure."""
     import os
-    url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
-    server = view_server or os.getenv("EGERIA_VIEW_SERVER", "")
-    user = os.getenv("EGERIA_USER", "")
-    password = os.getenv("EGERIA_USER_PASSWORD", "")
+    url = platform_url or egeria_platform_url()
+    server = view_server or egeria_view_server()
     if not url:
         return None
     try:
         from pyegeria import ValidMetadataManager
-        client = ValidMetadataManager(server, url, user, password)
-        client.create_egeria_bearer_token(user, password)
-        return client
+
+        from resource_explorer.egeria_clients import current_principal, egeria_client
+
+        # The signed-in CLI user (`resource-explorer login`), never env credentials (Brief I).
+        # No session: no refresh, as before for an unreachable Egeria.
+        return egeria_client(current_principal(), purpose="valid values cache",
+                             view_server=server or None, platform_url=url).of(ValidMetadataManager)
     except Exception:
         return None
 

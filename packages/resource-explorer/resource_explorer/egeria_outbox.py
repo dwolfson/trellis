@@ -513,10 +513,10 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
             f"{entity_type} {entity_slug!r} no longer resolves — cannot publish doc source "
             f"{source_id} (no Egeria credentials to use)"
         )
+    clients = _doc_source_clients(entity)
     result = publish_doc_source(
         source, entity.egeria_asset_guid or "",
-        view_server=entity.egeria_server, platform_url=entity.egeria_url,
-        user_id=entity.egeria_user, user_password=entity.egeria_password,
+        clients=clients,
         display_name=entity.display_name,
         known_ref_guid=source.get("egeria_external_ref_guid") or "",
         # Adoption-race guard (2026-09-29) — refuse to reuse (or keep) an
@@ -553,9 +553,7 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
     # to reuse -- rather than trusting our own just-returned result blindly.
     # Closes the live incident by construction: a stale/deleted ref guid can
     # no longer be written back as "done" from this path either.
-    if not ref_guid_exists(ref_guid, view_server=entity.egeria_server,
-                            platform_url=entity.egeria_url, user_id=entity.egeria_user,
-                            user_password=entity.egeria_password):
+    if not ref_guid_exists(ref_guid, clients=clients):
         raise OutboxApplyError(
             f"publish_doc_source reported ref {ref_guid} and link {link_guid}, but "
             f"{ref_guid} does not resolve in Egeria right now -- not marking done on "
@@ -595,13 +593,51 @@ def _create_doc_source_unpublish(clients: "OutboxClients", payload: dict) -> str
             f"credentials to remove ExternalReference {ref_guid}"
         )
     result = unpublish_doc_source(
-        ref_guid, entity.egeria_asset_guid or "",
-        view_server=entity.egeria_server, platform_url=entity.egeria_url,
-        user_id=entity.egeria_user, user_password=entity.egeria_password,
+        ref_guid, entity.egeria_asset_guid or "", clients=_doc_source_clients(entity),
     )
     if not result["ok"]:
         raise OutboxApplyError(result["error"] or "unpublish_doc_source failed")
     return ref_guid
+
+
+def _row_requester(row: dict) -> str:
+    """The person a row was enqueued for, when its payload says (`by`, as a catalog attach does)."""
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        return ""
+    by = payload.get("by") or payload.get("requested_by") or "" if isinstance(payload, dict) else ""
+    return by.strip() if isinstance(by, str) else ""
+
+
+def _row_identity(row: dict, drain_identity):
+    """Brief I round 4: in the background loop (a Daemon drain) a row enqueued for a person is
+    applied as `Daemon(OUTBOX, requested_by=<that person>)`, so a retry stamps the original author,
+    never the service account. Without a recorded person the row runs as the plain daemon and the
+    on-behalf helper stamps nothing. An inline drain (a Caller) keeps the person it runs as."""
+    from contextlib import nullcontext
+
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    by = _row_requester(row)
+    if drain_identity is None or getattr(drain_identity, "kind", "") != "daemon" or not by:
+        return nullcontext()
+    return acting_as(Daemon(DaemonReason.OUTBOX, requested_by=by))
+
+
+def _drain_principal(entity):
+    """Who a doc-source or catalog row is applied as: `current_principal()` — the signed-in Caller
+    for an inline drain inside a person's request, `Daemon(OUTBOX)` in the background loop. An
+    entity's stored Egeria user/password are never used (owner's ruling, 2026-10-09)."""
+    from resource_explorer.egeria_clients import current_principal
+
+    return current_principal()
+
+
+def _doc_source_clients(entity):
+    from resource_explorer.doc_source_egeria import entity_clients
+
+    return entity_clients(entity, _drain_principal(entity))
 
 
 def _catalogue_gateway(clients: "OutboxClients", payload: dict):
@@ -613,7 +649,7 @@ def _catalogue_gateway(clients: "OutboxClients", payload: dict):
     entity = registry.get_database(payload["slug"], allow_unreadable=True)
     if entity is None:
         raise OutboxApplyError(f"database {payload['slug']!r} no longer resolves")
-    return make_gateway(entity)
+    return make_gateway(entity, identity=_drain_principal(entity))
 
 
 def _create_catalogue_schema_attach(clients: "OutboxClients", payload: dict) -> str:
@@ -678,7 +714,38 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
 
 def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
                  limit: int = DRAIN_BATCH, run_id: str | None = None,
-                 element_id: int | None = None) -> dict:
+                 element_id: int | None = None, identity=None) -> dict:
+    """One drain pass, as `identity` (Brief I, owner's rule: a person's direct acts are made as
+    that person). The background loop passes `Daemon(OUTBOX)`; an inline drain inside a
+    person's request (a doc-source add/remove, a publish's link drain, a catalog commit) runs
+    as the signed-in Caller, `current_principal()`. With neither, nothing is claimed and nothing
+    is sent: the summary says so (`identity_error`). See `_drain_outbox`."""
+    from contextlib import nullcontext
+
+    from resource_explorer.egeria_clients import acting_as, current_principal
+
+    if identity is None:
+        try:
+            identity = current_principal()
+        except PermissionError as exc:                     # no caller / expired: never the daemon
+            if clients is None or find_element_guid is None:
+                log.warning("Outbox drain not attempted: %s", exc)
+                return {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
+                        "publish_run_check_failed": 0, "identity_error": str(exc)}
+            # Round 7 (CI, PR #579): a drain HANDED its clients (the investigation publisher's own
+            # CollectionManager) needs no ambient identity — those clients already carry who acts,
+            # and nothing here builds one. A row that would build its own (doc-source, catalog)
+            # still refuses per row with NoCallerIdentity. Never the daemon.
+            identity = None
+    scope = acting_as(identity) if identity is not None and identity.kind == "daemon" else nullcontext()
+    with scope:
+        return _drain_outbox(registry, clients, find_element_guid, limit=limit, run_id=run_id,
+                             element_id=element_id, identity=identity)
+
+
+def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
+                  limit: int = DRAIN_BATCH, run_id: str | None = None,
+                  element_id: int | None = None, identity=None) -> dict:
     """One drain pass. Returns a summary dict; never raises.
 
     Called from `scheduler.py`'s existing loop, once per iteration — the same
@@ -719,7 +786,7 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
 
     if clients is None or find_element_guid is None:
         try:
-            clients, find_element_guid = _default_clients()
+            clients, find_element_guid = _default_clients(identity)
         except OutboxIdentityError as exc:
             # A configuration error, not an outage: say so on every row and in the log, and
             # make no Egeria call at all. Pending, attempts untouched, so the first drain after
@@ -768,7 +835,8 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
             # (annotation/collection_membership/resource_list/annotation_
             # link), the same per-call-name granularity the layer-2
             # catalogue-depth offer needs and nothing before this recorded.
-            with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"):
+            with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"), \
+                    _row_identity(row, identity):
                 guid = apply_element(row, clients, find_element_guid,
                                      resolve_row_guids=registry.get_outbox_guids)
         except OutboxNotReadyError as exc:
@@ -835,7 +903,7 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
 
 
 def drain_outbox_row(registry, element_id: int, clients: "OutboxClients | None" = None,
-                      find_element_guid=None) -> dict:
+                      find_element_guid=None, *, identity=None) -> dict:
     """Attempt exactly one outbox row right now. A thin, named convenience
     over `drain_outbox(..., element_id=...)` — same function, same apply/
     retry/dead-letter logic, nothing duplicated — for callers (`doc_sources.
@@ -845,22 +913,19 @@ def drain_outbox_row(registry, element_id: int, clients: "OutboxClients | None" 
     `mark_outbox_failed` leaves any row, so it falls back to the normal
     15-minute scheduler drain like every other outbox row.
     """
-    return drain_outbox(registry, clients, find_element_guid, element_id=element_id)
+    return drain_outbox(registry, clients, find_element_guid, element_id=element_id,
+                        identity=identity)
 
 
-def drain_identity():
-    """The identity the drain calls Egeria as: RE's configured service account, always.
-
-    The drain is the worker role's own loop (egeria_identity's module docstring names it
-    the one legitimate service-account caller). It must not inherit whatever the ContextVar
-    holds: a drain started from a request thread would run as that person on a bearer token
-    that dies within the hour. Rows record no requesting user, so there is no one else to
-    use. A blank user id raises `OutboxIdentityError` rather than reaching Egeria.
+def drain_identity(identity=None):
+    """The identity a drain calls Egeria as: the one it was given (the background loop's
+    `Daemon(OUTBOX)`, or the signed-in Caller for an inline drain), else `Daemon(OUTBOX)`.
+    A blank daemon user id raises `OutboxIdentityError` rather than reaching Egeria.
     """
-    from resource_explorer import egeria_identity
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
 
-    identity = egeria_identity.service_credentials()
-    if not (identity.user_id or "").strip():
+    identity = identity or Daemon(DaemonReason.OUTBOX)
+    if identity.kind == "daemon" and not (identity.client_user or identity.user_id or "").strip():
         raise OutboxIdentityError(
             "The Egeria service identity has no user id, so the outbox cannot write to Egeria. "
             "Set EGERIA_USER_ID (and EGERIA_USER_PASSWORD) for the worker."
@@ -883,7 +948,7 @@ def _describe_refusal(exc: Exception, clients: "OutboxClients") -> str:
             "empty user for this response shape even when one was sent]")
 
 
-def _default_clients():
+def _default_clients(identity=None):
     """The repo publisher's own connected clients — one client path, not a
     second one to keep in step with it.
 
@@ -896,14 +961,13 @@ def _default_clients():
     kind); their members never actually got attached."""
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
-    identity = drain_identity()
-    publisher = EgeriaPublisher(user_id=identity.user_id, user_password=identity.password,
-                                identity=identity)
+    identity = drain_identity(identity)
+    publisher = EgeriaPublisher(identity=identity)
     publisher._connect()
     return (
         OutboxClients(discovery=publisher._discovery, metadata_expert=publisher._metadata_expert,
                       collection_manager=publisher._collection_manager,
-                      acting_as=identity.user_id),
+                      acting_as=identity.client_user or identity.user_id),
         publisher._find_element_guid,
     )
 

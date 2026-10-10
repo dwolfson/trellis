@@ -59,7 +59,7 @@ import {
 const emptyRegisterForm = () => ({
   slug: '', display_name: '', db_type: 'postgresql', host: '', port: 5432,
   description: '', group_slug: '', db_user: '', db_password: '',
-  egeria_host: '', egeria_url: '', egeria_server: '', egeria_user: '', egeria_password: '',
+  egeria_host: '', egeria_url: '', egeria_server: '',
 });
 
 const emptyOneOff = () => ({
@@ -336,7 +336,6 @@ function serverEgeriaHtml(s) {
   const parts = [];
   if (s.egeria_url) parts.push(esc(s.egeria_url));
   if (s.egeria_server) parts.push(`view server ${esc(s.egeria_server)}`);
-  if (s.egeria_user) parts.push(`user ${esc(s.egeria_user)}`);
   if (s.egeria_host) parts.push(`host ${esc(s.egeria_host)}`);
   return `<div data-server-egeria class="mt-[2px] text-provenance text-ink-muted">${
     parts.length ? `Egeria · ${parts.join(' · ')}` : 'no Egeria connection recorded'}</div>`;
@@ -449,11 +448,8 @@ function registerFormHtml() {
       ${view.showEgeria ? `<div class="mt-s2 space-y-s2">
         ${field('Egeria-visible Host (e.g. host.docker.internal)', input('egeria_host', 'host.docker.internal'))}
         ${field('Egeria Platform URL', input('egeria_url', 'https://localhost:9443'))}
-        <div class="grid grid-cols-3 gap-s2">
-          ${field('View Server', input('egeria_server', 'view-server'))}
-          ${field('Egeria User', input('egeria_user', 'erinoverview'))}
-          ${field('Egeria Password', input('egeria_password', '••••••••', 'password'))}
-        </div>
+        ${field('View Server', input('egeria_server', 'view-server'))}
+        <p class="text-provenance text-ink-muted">Egeria calls run as you, or as Resource Explorer's service account for queued work.</p>
       </div>` : ''}
     </div>
     ${view.registerError ? `<p class="mt-s2 text-caveat text-state-warn">${esc(view.registerError)}</p>` : ''}

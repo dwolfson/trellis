@@ -12,6 +12,9 @@ import pytest
 from resource_explorer.egeria_outbox import CLAIM_LAPSED_DESTRUCTIVE
 from resource_explorer.registry import Project
 
+# Brief I: these tests drive the drain mechanics, as the background loop does: a declared daemon job.
+pytestmark = pytest.mark.usefixtures("as_daemon")
+
 
 def _clear_outbox(conn):
     """Empty the outbox of the THROWAWAY schema only. The schema is read back from the connection and must be a

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
 
@@ -33,16 +34,27 @@ class EgeriaTechTypeCatalog:
         user_id: str | None = None,
         user_password: str | None = None,
     ) -> None:
-        self.platform_url = platform_url or os.getenv("EGERIA_PLATFORM_URL", "")
-        self.view_server = view_server or os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
+        self.platform_url = platform_url or egeria_platform_url()
+        self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER_ID", "erinoverview")
-        self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", "secret")
+        self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self._automated_curation = None
+        #: Whose client `_automated_curation` is (`egeria_clients.identity_key`); None = a client
+        #: handed in from outside (tests), which is kept as is.
+        self._client_key = None
         self._all_types_cache: list[dict] | None = None
         self._detail_cache: dict[str, dict] = {}
 
     def connect(self) -> None:
-        if self._automated_curation is not None:
+        """(Re)bind the client to whoever is asking NOW. A catalog instance can be module-level
+        (`web/routes/survey_definitions.py`), so the client is never pinned to the first caller:
+        the factory's per-request scope makes this one lookup, not one token, per call (Brief I)."""
+        from resource_explorer.egeria_clients import current_principal, identity_key
+
+        if self._automated_curation is not None and self._client_key is None:
+            return                     # handed in from outside: not ours to rebind
+        principal = current_principal()
+        if self._automated_curation is not None and self._client_key == identity_key(principal):
             return
         if not self.platform_url:
             raise EgeriaTechTypeCatalogError(
@@ -51,10 +63,14 @@ class EgeriaTechTypeCatalog:
         try:
             from pyegeria import AutomatedCuration
 
-            self._automated_curation = AutomatedCuration(
-                self.view_server, self.platform_url, self.user_id, self.user_password
-            )
-            self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
+            from resource_explorer.egeria_clients import egeria_client
+
+            self._automated_curation = egeria_client(
+                principal, purpose="technology types", view_server=self.view_server,
+                platform_url=self.platform_url).of(AutomatedCuration)
+            self._client_key = identity_key(principal)
+        except PermissionError:
+            raise
         except ImportError as exc:
             raise EgeriaTechTypeCatalogError("pyegeria is not installed.") from exc
         except Exception as exc:

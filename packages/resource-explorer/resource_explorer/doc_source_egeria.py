@@ -44,40 +44,28 @@ _SOURCE_TYPE_LABEL = {
 class RepoEgeriaConnectionView:
     """The Egeria connection a repo publishes doc sources through.
 
-    E2 (2026-09-29). `Project` (a repo) carries no per-entity Egeria
-    credentials the way `DatabaseEntity`/`FileSystemEntity` do — repo Egeria
-    code (`web/routes/egeria.py`) reads them from the environment
-    (`EGERIA_VIEW_SERVER`, `EGERIA_USER`, `EGERIA_USER_PASSWORD`,
-    `EGERIA_PLATFORM_URL`). This is a read-only VIEW of that connection plus
-    the repo's own asset GUID and display name, exposing the attribute names
-    every doc-source call site already reads, so those sites need no repo
-    special case. It is not a Project and does not pretend to be one.
+    E2 (2026-09-29). `Project` (a repo) carries no per-entity Egeria credentials the way
+    `DatabaseEntity`/`FileSystemEntity` do. This is a read-only VIEW exposing the attribute
+    names every doc-source call site reads, so those sites need no repo special case.
 
-    The password is never included in `repr()`/`str()`, so an accidental
-    `log.info("%s", entity)` cannot leak it.
+    **Carries no credential** (Brief I, 2026-10-09). It used to read `EGERIA_USER` /
+    `EGERIA_USER_PASSWORD` from the environment (defaulting to a literal password); who acts is
+    now the factory's business (`egeria_clients`): the signed-in Caller on a route, the outbox
+    drain's daemon identity otherwise. `egeria_url`/`egeria_server` are empty, so the factory
+    addresses the configured Egeria.
     """
 
-    __slots__ = ("slug", "display_name", "egeria_asset_guid", "egeria_server",
-                 "egeria_url", "egeria_user", "_egeria_password")
+    __slots__ = ("slug", "display_name", "egeria_asset_guid", "egeria_server", "egeria_url")
 
     def __init__(self, project, asset_guid: str = ""):
-        import os
-
         self.slug = project.slug
         self.display_name = project.display_name
         self.egeria_asset_guid = asset_guid or getattr(project, "egeria_asset_guid", "") or ""
-        self.egeria_server = os.getenv("EGERIA_VIEW_SERVER", "qs-view-server")
-        self.egeria_url = os.getenv("EGERIA_PLATFORM_URL", "https://localhost:9443")
-        self.egeria_user = os.getenv("EGERIA_USER", "erinoverview")
-        self._egeria_password = os.getenv("EGERIA_USER_PASSWORD", "secret")
-
-    @property
-    def egeria_password(self) -> str:
-        return self._egeria_password
+        self.egeria_server = ""
+        self.egeria_url = ""
 
     def __repr__(self) -> str:
-        return (f"RepoEgeriaConnectionView(slug={self.slug!r}, server={self.egeria_server!r}, "
-                f"url={self.egeria_url!r}, user={self.egeria_user!r}, "
+        return (f"RepoEgeriaConnectionView(slug={self.slug!r}, "
                 f"asset_guid={self.egeria_asset_guid!r})")
 
     __str__ = __repr__
@@ -108,12 +96,22 @@ def resolve_entity_for_doc_source(registry, entity_type: str, entity_slug: str):
     return None
 
 
-def _client(view_server: str, platform_url: str, user_id: str, user_password: str):
+def entity_clients(entity, identity):
+    """`EgeriaClients` for `identity`, addressed at the Egeria the entity names (its stored
+    `egeria_url`/`egeria_server`, else the configured one). Who acts is `identity`'s business:
+    a route passes `Caller()`, the outbox drain `current_principal()` (Caller inline, else the
+    daemon). An entity's stored Egeria user/password are never used (owner, 2026-10-09)."""
+    from resource_explorer.egeria_clients import egeria_client
+
+    return egeria_client(identity, purpose="doc sources",
+                         view_server=getattr(entity, "egeria_server", "") or None,
+                         platform_url=getattr(entity, "egeria_url", "") or None)
+
+
+def _client(clients):
     from pyegeria import ExternalReferences
 
-    client = ExternalReferences(view_server, platform_url, user_id, user_password)
-    client.create_egeria_bearer_token()
-    return client
+    return clients.of(ExternalReferences)
 
 
 def _qualified_name(url: str) -> str:
@@ -123,8 +121,7 @@ def _qualified_name(url: str) -> str:
     return f"ExternalReference::{url}"
 
 
-def ref_guid_exists(ref_guid: str, *, view_server: str, platform_url: str, user_id: str,
-                     user_password: str) -> bool:
+def ref_guid_exists(ref_guid: str, *, clients) -> bool:
     """True when `ref_guid` still resolves to a real element in Egeria.
 
     Round 5 fix (2026-09-29): a stuck-row bug found live (b9925119…, database
@@ -165,9 +162,7 @@ def ref_guid_exists(ref_guid: str, *, view_server: str, platform_url: str, user_
     from resource_explorer.egeria_linkage import is_unknown_guid_error
 
     try:
-        client = MetadataExpert(view_server, platform_url, user_id, user_password)
-        client.create_egeria_bearer_token()
-        element = client.get_metadata_element_by_guid(ref_guid)
+        element = clients.of(MetadataExpert).get_metadata_element_by_guid(ref_guid)
     except Exception as exc:
         if is_unknown_guid_error(exc):
             log.info("doc source: ref %r no longer resolves in Egeria (confirmed not found)",
@@ -186,7 +181,7 @@ def ref_guid_exists(ref_guid: str, *, view_server: str, platform_url: str, user_
     return True
 
 
-def _find_ref_guid(client, qualified_name: str) -> str:
+def _find_ref_guid(clients, qualified_name: str) -> str:
     """Existing ExternalReference by qualified name, or '' — mirrors
     `EgeriaPublisher._find_element_guid`, duplicated rather than imported
     because that one lives on a class built around a repo survey's own
@@ -217,10 +212,7 @@ def _find_ref_guid(client, qualified_name: str) -> str:
     )
 
     def _lookup():
-        curation = AutomatedCuration(client.view_server, client.platform_url,
-                                      client.user_id, client.user_pwd)
-        curation.create_egeria_bearer_token()
-        return curation.get_guid_for_name(qualified_name)
+        return clients.of(AutomatedCuration).get_guid_for_name(qualified_name)
 
     try:
         result = run_sync(_lookup, timeout=15.0)
@@ -235,8 +227,7 @@ def _find_ref_guid(client, qualified_name: str) -> str:
     return ""
 
 
-def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platform_url: str,
-                        user_id: str, user_password: str, display_name: str = "",
+def publish_doc_source(source: dict, asset_guid: str, *, clients, display_name: str = "",
                         is_ref_unpublishing=None, known_ref_guid: str = "") -> dict:
     """Create (or reuse) an `ExternalReference` for one declared source and
     link it to `asset_guid`. Returns `{"ok": bool, "ref_guid": str,
@@ -278,16 +269,13 @@ def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platf
     source_type = source.get("source_type") or "other"
     type_label = _SOURCE_TYPE_LABEL.get(source_type, "documentation")
     try:
-        client = _client(view_server, platform_url, user_id, user_password)
+        client = _client(clients)
         ref_guid = (known_ref_guid or "").strip()
         if ref_guid and is_ref_unpublishing is not None and is_ref_unpublishing(ref_guid):
             log.info("doc source: known ref %r for %s has a pending/running unpublish — "
                       "abandoning it, looking up/creating fresh", ref_guid, qualified_name)
             ref_guid = ""
-        if ref_guid and not ref_guid_exists(
-            ref_guid, view_server=view_server, platform_url=platform_url,
-            user_id=user_id, user_password=user_password,
-        ):
+        if ref_guid and not ref_guid_exists(ref_guid, clients=clients):
             # Round 5 fix (2026-09-29): the row's own stored ref guid may
             # have been genuinely deleted from Egeria by something else
             # entirely (the b9925119… incident — an unrelated unpublish beat
@@ -297,7 +285,7 @@ def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platf
                       "clearing it, looking up/creating fresh", ref_guid, qualified_name)
             ref_guid = ""
         if not ref_guid:
-            ref_guid = _find_ref_guid(client, qualified_name)
+            ref_guid = _find_ref_guid(clients, qualified_name)
         if ref_guid and is_ref_unpublishing is not None and is_ref_unpublishing(ref_guid):
             # This reference exists but is concurrently being torn down by a
             # pending/running unpublish — not safe to adopt (it may vanish
@@ -309,10 +297,7 @@ def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platf
             log.info("doc source: found %r (%s) but it has a pending/running unpublish — "
                       "creating a new reference instead of adopting it", qualified_name, ref_guid)
             ref_guid = ""
-        if ref_guid and not ref_guid_exists(
-            ref_guid, view_server=view_server, platform_url=platform_url,
-            user_id=user_id, user_password=user_password,
-        ):
+        if ref_guid and not ref_guid_exists(ref_guid, clients=clients):
             # Same guard as above, applied to whatever _find_ref_guid just
             # found by qualifiedName — that lookup can also return a guid
             # that no longer resolves (e.g. deleted between the lookup index
@@ -362,8 +347,7 @@ def publish_doc_source(source: dict, asset_guid: str, *, view_server: str, platf
         return {"ok": False, "ref_guid": "", "link_guid": "", "error": str(exc)[:500]}
 
 
-def unpublish_doc_source(ref_guid: str, asset_guid: str, *, view_server: str, platform_url: str,
-                          user_id: str, user_password: str, delete: bool = True) -> dict:
+def unpublish_doc_source(ref_guid: str, asset_guid: str, *, clients, delete: bool = True) -> dict:
     """Detach (and, by default, delete) the `ExternalReference` a removed
     doc source created. **Only this one reference** — `web/routes/
     doc_sources.py`'s DELETE handler calls this for exactly the GUID the
@@ -375,7 +359,7 @@ def unpublish_doc_source(ref_guid: str, asset_guid: str, *, view_server: str, pl
         return {"ok": True, "error": ""}
     detach_error = ""
     try:
-        client = _client(view_server, platform_url, user_id, user_password)
+        client = _client(clients)
         if asset_guid:
             try:
                 client.detach_external_reference(asset_guid, ref_guid)
@@ -396,8 +380,7 @@ def unpublish_doc_source(ref_guid: str, asset_guid: str, *, view_server: str, pl
         return {"ok": False, "error": str(exc)[:500]}
 
 
-def read_back_doc_sources(asset_guid: str, *, view_server: str, platform_url: str,
-                           user_id: str, user_password: str) -> list[dict]:
+def read_back_doc_sources(asset_guid: str, *, clients) -> list[dict]:
     """Every `ExternalReference` currently linked to `asset_guid` in Egeria
     — including one declared there by someone/something else, which is the
     read-back the brief asks for ("a source declared in Egeria by someone
@@ -411,9 +394,7 @@ def read_back_doc_sources(asset_guid: str, *, view_server: str, platform_url: st
     try:
         from pyegeria.omvs.metadata_expert import MetadataExpert
 
-        client = MetadataExpert(view_server, platform_url, user_id, user_password)
-        client.create_egeria_bearer_token()
-        result = client.get_related_metadata_elements(
+        result = clients.of(MetadataExpert).get_related_metadata_elements(
             asset_guid, "ExternalReferenceLink", {"class": "ResultsRequestBody"},
         )
     except Exception as exc:

@@ -13,6 +13,7 @@ from resource_explorer.web.routes._annotation_items import build_annotation_item
 from resource_explorer.auth import get_current_user
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 router = APIRouter()
 
@@ -74,13 +75,21 @@ def build_sha() -> str | None:
 
 @router.get("/whoami")
 def whoami() -> dict:
+    """The configured Egeria connection, plus `last_egeria_call`: what THIS process recorded for
+    the signed-in user's most recent Egeria client — `{"as": "you" | "service account
+    (background)", purpose, at}` — or None when nothing was recorded here (a restart clears it).
+    Recorded by the factory as each client is handed out, never inferred (Brief I)."""
     from resource_explorer.config import get_config
+    from resource_explorer.egeria_clients import last_egeria_identity
+    from resource_explorer.egeria_identity import caller_user_id
+
     cfg = get_config().egeria
     return {
         "user_id": cfg.user_id,
         "view_server": cfg.view_server,
         "platform_url": cfg.platform_url,
         "build_sha": build_sha(),
+        "last_egeria_call": last_egeria_identity(caller_user_id()),
     }
 
 
@@ -220,7 +229,7 @@ class CatalogResult(BaseModel):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _platform_url() -> str:
-    return os.getenv("EGERIA_PLATFORM_URL", "https://localhost:9443")
+    return egeria_platform_url()
 
 
 def _get_project_or_404(slug: str):
@@ -268,6 +277,10 @@ async def private_zone_state() -> dict:
     return status
 
 
+#: Per data class: the same bound the survey-definition reader puts on this pyegeria call.
+_DATACLASS_GUID_TIMEOUT_SECONDS = 15
+
+
 @router.get("/rules/dataclasses", response_model=list[DataClassRule])
 async def get_dataclass_rules() -> list[DataClassRule]:
     """Fetch the active PII Data Classes and their corresponding keyword matching rules.
@@ -283,7 +296,7 @@ async def get_dataclass_rules() -> list[DataClassRule]:
         {"name": "DateOfBirth", "display_name": "Date of Birth", "description": "Individual date or anniversary of birth.", "keywords": ["dob", "dateofbirth", "birth_date", "birthdate"], "source": "Local Fallback"},
     ]
 
-    platform_url = os.getenv("EGERIA_PLATFORM_URL")
+    platform_url = egeria_platform_url()
     if not platform_url:
         return [DataClassRule(**r) for r in fallback_rules]
 
@@ -291,23 +304,60 @@ async def get_dataclass_rules() -> list[DataClassRule]:
         from pyegeria.omvs.reference_data import ReferenceDataManager
         from pyegeria.omvs.data_designer import DataDesigner
 
-        view_server = os.getenv("EGERIA_VIEW_SERVER", "view-server")
-        user_id = os.getenv("EGERIA_USER", "steward")
-        user_pwd = os.getenv("EGERIA_USER_PASSWORD", "steward")
+        from resource_explorer.concurrency import run_sync
+        from resource_explorer.egeria_clients import Caller, NoCallerIdentity, egeria_client
+
+        view_server = egeria_view_server()
+        # The signed-in reader (Brief I), resolved here in the request, not the env's user. With
+        # nobody signed in this read answers the LOCAL rules, as it always did (round 5): it is a
+        # read with a documented fallback, not an Egeria action someone is refused.
+        try:
+            reader = Caller()
+        except NoCallerIdentity:
+            return [DataClassRule(**r) for r in fallback_rules]
+        clients = egeria_client(reader, purpose="data class rules",
+                                view_server=view_server, platform_url=platform_url)
+
+        def _guid_for(qname: str):
+            """`get_guid_for_name` is the known hang site: bounded through the shared pool, on a
+            client built in the pool thread itself (pyegeria binds a client to its thread's loop)."""
+            def _lookup():
+                designer = egeria_client(reader, purpose="data class rules", view_server=view_server,
+                                         platform_url=platform_url, shared=False).of(DataDesigner)
+                try:
+                    return designer.get_guid_for_name(qname)
+                finally:                       # its own client, used once: closed after use (round 6)
+                    close = getattr(designer, "close_session", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:  # noqa: BLE001 - closing is tidy-up, never the answer
+                            pass
+            return run_sync(_lookup, timeout=_DATACLASS_GUID_TIMEOUT_SECONDS)
 
         def _fetch():
-            ref_manager = ReferenceDataManager(view_server, platform_url, user_id, user_pwd)
-            ref_manager.create_egeria_bearer_token(user_id, user_pwd)
-            designer = DataDesigner(view_server, platform_url, user_id, user_pwd)
-            designer.create_egeria_bearer_token(user_id, user_pwd)
+            ref_manager = clients.of(ReferenceDataManager)
+
+            from concurrent.futures import TimeoutError as _LookupTimeout
 
             rules = []
+            timed_out = False
             for dc in fallback_rules:
                 name = dc["name"]
                 qname = f"DataClass::{name}"
                 keywords = []
+                if timed_out:
+                    # Round 6: after the first timed-out lookup, the rest answer the local rules
+                    # rather than each waiting out the bound on a platform that is not answering.
+                    rules.append(DataClassRule(**dc))
+                    continue
                 try:
-                    guid = designer.get_guid_for_name(qname)
+                    try:
+                        guid = _guid_for(qname)
+                    except _LookupTimeout:
+                        timed_out = True
+                        rules.append(DataClassRule(**dc))
+                        continue
                     if guid:
                         results = ref_manager.find_valid_value_definitions(
                             search_string=f"ValidValueDefinition::{name}Keyword::",
@@ -336,6 +386,8 @@ async def get_dataclass_rules() -> list[DataClassRule]:
             return rules
 
         return await asyncio.to_thread(_fetch)
+    except PermissionError:
+        raise      # no caller / expired sign-in: 401, never the local fallback rules
     except Exception:
         return [DataClassRule(**r) for r in fallback_rules]
 
