@@ -45,6 +45,7 @@ the write, so RE's check is the only one that sees the person.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
@@ -318,24 +319,117 @@ def _catch_wrapped(client: Any, *names: str) -> bool:
     return False
 
 
-class EgeriaAccessReader:
-    """The three Egeria reads a zone decision needs, cached for one batch of decisions (one press)."""
+#: How many element reads one batch runs at once (each on its own client, built and closed in its thread).
+ACCESS_READ_CONCURRENCY = 4
 
-    def __init__(self) -> None:
+
+def _read_elements_on_one_client(guids: list[str]) -> dict[str, Any]:
+    """Read `guids` one after another on ONE client built, driven and closed in this thread (pyegeria ISSUE-96
+    binds a client to the thread that first drives it). {guid: (zones, owners, maintainers) | AccessUnreadable}:
+    a failed read is that element's answer, never the batch's, and never "no zones"."""
+    out: dict[str, Any] = {}
+    client = _metadata_expert()
+    try:
+        for guid in guids:
+            try:
+                out[guid] = element_facts(client.get_metadata_element_by_guid(guid))
+            except AccessUnreadable as exc:
+                out[guid] = AccessUnreadable(f"the element {guid[:8]}: {exc}"[:300])
+            except Exception as exc:  # noqa: BLE001 - every failure is the one named error
+                out[guid] = AccessUnreadable(f"the element {guid[:8]}: {type(exc).__name__}: {exc}"[:300])
+    finally:
+        _close(client)
+    return out
+
+
+def read_elements(guids: Iterable[str]) -> dict[str, Any]:
+    """Read several elements' (zones, owners, maintainers) at once: up to `ACCESS_READ_CONCURRENCY` clients on
+    the shared pool, each reading its share in turn, so a blueprint's members cost one client per lane rather
+    than one per element (pyegeria's constructor handshake + a token mint + the read was three Egeria calls per
+    element). The reads run as RE's daemon (`Daemon(ACCESS_CHECK)`, named in `_metadata_expert`), so no caller
+    ContextVar has to reach the pool threads. Bounded: a lane with no answer within
+    `ACCESS_READ_TIMEOUT_SECONDS` per element it holds makes each of its elements unreadable. From a pool
+    thread (the run) the lanes run inline, one after another (concurrency's re-entrancy rule)."""
+    from concurrent.futures import TimeoutError as _Timeout
+
+    from resource_explorer.concurrency import in_pool_thread, run_sync_all
+
+    todo = [g for g in dict.fromkeys(guids) if g]
+    if not todo:
+        return {}
+    lanes = 1 if in_pool_thread() else min(ACCESS_READ_CONCURRENCY, len(todo))
+    shares = [todo[i::lanes] for i in range(lanes)]
+    longest = max(len(s) for s in shares)
+    results = run_sync_all([lambda s=s: _read_elements_on_one_client(s) for s in shares],
+                           timeout=ACCESS_READ_TIMEOUT_SECONDS * longest)
+    out: dict[str, Any] = {}
+    for share, (ok, value) in zip(shares, results):
+        if ok and isinstance(value, dict):
+            out.update(value)
+            continue
+        if isinstance(value, _Timeout):
+            why = f"no answer within {ACCESS_READ_TIMEOUT_SECONDS}s"
+        else:
+            why = f"{type(value).__name__}: {value}"
+        for guid in share:
+            out[guid] = AccessUnreadable(f"the element {guid[:8]}: {why}"[:300])
+    for guid in todo:                      # a lane that answered without an element it was given
+        out.setdefault(guid, AccessUnreadable(f"the element {guid[:8]}: no answer"))
+    return out
+
+
+class EgeriaAccessReader:
+    """The three Egeria reads a zone decision needs, for one batch of decisions.
+
+    Controls and accounts are cached for the reader's life (one request, or one run): they do not change
+    because RE writes. Elements are the part that can: a run promotes elements as it goes, so an element's
+    zones can change between two checks of one run. Hence:
+
+    * `cache_elements=True` (a request that decides and then writes nothing to Egeria before it returns: the
+      Publish press, the branch-verdict route) keeps every element read for the request. Never across
+      requests or callers: the reader is built per request and dropped with it.
+    * `cache_elements=False` (the default; the run's re-check right before each write) reads every element
+      fresh for each check. `check(guids)` reads the elements one check needs together, once, and forgets
+      them when the check ends, so the next check reads again.
+    """
+
+    def __init__(self, *, cache_elements: bool = False) -> None:
         self._controls: dict[str, Optional[dict]] = {}
         self._accounts: dict[str, Optional[dict]] = {}
         self._platform: Optional[tuple[str, Optional[str]]] = None
+        self._cache_elements = cache_elements
+        self._elements: dict[str, Any] = {}
+        self._checks = 0
+
+    def prefetch(self, guids: Iterable[str]) -> None:
+        """Read the elements not held yet, together (`read_elements`). Kept until the check ends, or for the
+        reader's life with `cache_elements`."""
+        todo = [g for g in dict.fromkeys(guids) if g and g not in self._elements]
+        if todo:
+            self._elements.update(read_elements(todo))
+
+    @contextmanager
+    def check(self, guids: Iterable[str] = ()):
+        """One access check: the elements it will need are read together up front, and (unless the reader
+        caches elements) forgotten when it ends."""
+        self._checks += 1
+        try:
+            self.prefetch(guids)
+            yield self
+        finally:
+            self._checks -= 1
+            if not self._cache_elements and not self._checks:
+                self._elements.clear()
 
     def element(self, guid: str) -> tuple[list[str], Optional[list[str]], Optional[list[str]]]:
-        # Not cached: a press promotes elements as it goes, so an element's zones can change mid-run and the
-        # next check must see the zones Egeria holds then. Controls and accounts are stable within a press.
-        def read():
-            client = _metadata_expert()
-            try:
-                return client.get_metadata_element_by_guid(guid)
-            finally:
-                _close(client)
-        return element_facts(_bounded(f"the element {guid[:8]}", read))
+        got = self._elements.get(guid)
+        if got is None:
+            got = read_elements([guid]).get(guid) or AccessUnreadable(f"the element {guid[:8]}: no answer")
+            if self._cache_elements or self._checks:
+                self._elements[guid] = got
+        if isinstance(got, BaseException):
+            raise AccessUnreadable(str(got))        # a fresh raise each time; the held answer is unchanged
+        return got
 
     def _resolved_platform(self) -> tuple[str, Optional[str]]:
         if self._platform is None:

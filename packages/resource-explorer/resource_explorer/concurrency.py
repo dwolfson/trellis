@@ -295,6 +295,51 @@ def run_sync(
         raise
 
 
+def run_sync_all(
+    fns: Sequence[Callable[[], T]], *, timeout: float | None = None
+) -> list[tuple[bool, Any]]:
+    """Run several **leaf** callables on the shared pool at once and wait for all of them.
+
+    Returns one ``(ok, value)`` per callable, in order: ``(True, result)`` or ``(False, exception)``; a
+    callable still running when ``timeout`` (seconds, the caller's whole wait) expires gives
+    ``(False, concurrent.futures.TimeoutError())`` and its worker is abandoned and accounted exactly as
+    :func:`run_sync` does. Nothing raises: each caller decides what a failed slot means.
+
+    Called from a pool thread, the callables run inline, one after another (the re-entrancy rule; no
+    timeout, as for :func:`run_sync`). Each callable must be leaf work: it must not call back into the pool.
+    """
+    import time as _time
+
+    if in_pool_thread():
+        out: list[tuple[bool, Any]] = []
+        for fn in fns:
+            try:
+                out.append((True, fn()))
+            except Exception as exc:  # noqa: BLE001 - returned, not raised: the caller decides
+                out.append((False, exc))
+        return out
+
+    pool = get_pool()
+    futures = [pool.submit(fn) for fn in fns]
+    deadline = None if timeout is None else _time.monotonic() + timeout
+    out = []
+    for future in futures:
+        left = None if deadline is None else max(0.0, deadline - _time.monotonic())
+        try:
+            out.append((True, future.result(timeout=left)))
+        except FutureTimeoutError as exc:
+            if not future.cancel():
+                _note_stuck(1)
+                future.add_done_callback(lambda _f: _note_stuck(-1))
+                log.warning("shared sync pool: a batched call did not return within %ss — abandoning the "
+                            "worker (%d slot(s) of %d now held by stuck work)",
+                            timeout, stuck_worker_count(), _pool_size)
+            out.append((False, exc))
+        except Exception as exc:  # noqa: BLE001 - the callable's own failure, returned
+            out.append((False, exc))
+    return out
+
+
 def detach_workers(pool: ThreadPoolExecutor) -> int:
     """Take this pool's threads out of the interpreter's exit joins.
 

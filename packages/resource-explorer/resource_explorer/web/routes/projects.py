@@ -2445,10 +2445,13 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
     # Every scope is checked before any is recorded, so a refusal leaves nothing half-recorded (Brief Z).
+    # One request that writes nothing to Egeria: each element is read once, all of them together up front.
+    from resource_explorer.workflows.curate import _guids_for, _reads_zones
     from resource_explorer.zone_access import EgeriaAccessReader
-    reader = EgeriaAccessReader()
-    for scope in scopes:
-        _authorize_curation(registry, "repo", slug, scope, reader=reader)
+    reader = EgeriaAccessReader(cache_elements=True)
+    with reader.check(_guids_for(registry, slug, scopes) if _reads_zones() else ()):
+        for scope in scopes:
+            _authorize_curation(registry, "repo", slug, scope, reader=reader)
     rows = []
     for scope in scopes:
         rows.append(registry.record_component_verdict(
@@ -2488,7 +2491,9 @@ def architecture_publish(slug: str, request: Request) -> dict:
     from resource_explorer.workflows.curate import CurationDenied
     from resource_explorer.zone_access import EgeriaAccessReader
 
-    reader = EgeriaAccessReader()      # one press, each zone's control read once
+    # One press, decided before anything is written: each zone's control, the account and each element are read
+    # once for the request. The run re-checks each item fresh right before its write (run_publish).
+    reader = EgeriaAccessReader(cache_elements=True)
 
     def authorize(kind: str, key: str) -> None:
         # Every operation the item's write performs (workflows.curate.publish_item_access), raised as
