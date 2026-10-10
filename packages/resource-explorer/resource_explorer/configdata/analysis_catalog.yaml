@@ -1060,6 +1060,34 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: db_statistics_freshness
+    name: "Statistics Freshness"
+    description: >
+      Are this database's planner statistics current? Per table: never
+      analyzed, last analyzed N days ago, and the rows changed since that
+      analyze as a share of live rows, flagged when above the point at which
+      Postgres's autovacuum would itself analyze the table
+      (autovacuum_analyze_threshold 50 + autovacuum_analyze_scale_factor 0.1
+      times the row estimate), with a per-schema roll-up. Reads only the
+      stored table-activity and table rows; no connection is opened. This
+      database's own autovacuum settings are not stored, so Postgres's
+      defaults are used and the result says so. "Never analyzed" is Postgres's
+      own NULL and is a finding; a table whose statistics could not be read is
+      "not read" and is never counted as current or as never analyzed.
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Admin", "Data Expert"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: grain_determination
     name: "Table Grain"
     description: >

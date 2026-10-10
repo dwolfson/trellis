@@ -147,6 +147,9 @@ KNOWN_EXCLUSIVE = {
     # is the same early `return [...]` as `_subject_annotations`, verified by
     # reading it rather than assumed.
     ("database/db_derived.py", "db_hub_tables"),
+    # Added 2026-10-10 with `db_statistics_freshness`; `_freshness_annotations` absence
+    # branch is the same early `return [...]` as `_hub_annotations`.
+    ("database/db_derived.py", "db_statistics_freshness"),
 }
 
 

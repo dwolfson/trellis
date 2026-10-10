@@ -2649,6 +2649,8 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "preliminary_fit": (_db_derived_field_reader("preliminary_fit"), None),
     # Design §5.3's "which tables would a consumer start with" — same reader.
     "db_hub_tables": (_db_derived_field_reader("db_hub_tables"), None),
+    # Backlog 7i(b): planner-statistics currency, same reader.
+    "db_statistics_freshness": (_db_derived_field_reader("db_statistics_freshness"), None),
     "credential_capability": (_credential_capability_results, None),
     # ENRICHMENT-E3: the measured `datdba`, its own fact (see the reader).
     "database_owner": (_database_owner_fact_results, None),
@@ -2699,6 +2701,7 @@ DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     "coverage_signals": _db_derived_explanation_headline("coverage_signals"),
     "preliminary_fit": _db_derived_explanation_headline("preliminary_fit"),
     "db_hub_tables": _db_derived_explanation_headline("db_hub_tables"),
+    "db_statistics_freshness": _db_derived_explanation_headline("db_statistics_freshness"),
     #: Owner's gate follow-up (2026-09-27): the last `db_derived` analysis
     #: with no headline — `fingerprint_database()` already writes a real
     #: `explanation` for every branch (no schema rows; measured, no

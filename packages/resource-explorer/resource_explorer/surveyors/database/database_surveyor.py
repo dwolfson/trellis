@@ -969,6 +969,10 @@ class DatabaseSurveyor:
             info["activity_signals"] = {
                 "table_activity": conn.get_table_activity(),
                 "stats_reset": conn.get_stats_reset(),
+                # The reset time as EVIDENCE (timestamp / "never" / None for
+                # not read) -- `stats_reset` above folds the last two into "".
+                # Read by `_create_table_statistics_annotations`.
+                "stats_reset_evidence": conn.get_stats_reset_evidence(),
                 "table_count": schema_info.get("total_tables", 0),
             }
         else:
@@ -989,6 +993,84 @@ class DatabaseSurveyor:
         )
 
         return info
+
+    def _create_table_statistics_annotations(
+        self, operations_info: dict, schema_info: dict | None = None,
+    ) -> list:
+        """One "Capture Database Table Measurements" annotation per table
+        carrying its statistics-currency metrics (backlog 7i).
+
+        The owner's rule: last analyze / autoanalyze / vacuum / autovacuum,
+        changes since the last analyze, live and dead rows and the database's
+        stats-reset time "provide a notion of currency and correctness on the
+        other statistics", so they ride on the table's measurement annotation.
+        Names and the never-versus-not-read rule live in
+        `table_statistics_metrics` (the one place; proposed for upstream).
+
+        Reads the SAME fetched `activity_signals` dict the database-wide
+        roll-up reads. A table the catalog (`schema_info`) knows but
+        `pg_stat_user_tables` has no row for still gets an annotation, with
+        every metric named in `metricsNotRead` -- absence a reader can see.
+        Returns [] when activity was not collected (capability absent): that
+        case is already stated by the roll-up's own confidence-0 annotation.
+        """
+        from resource_explorer.surveyors.database.table_statistics_metrics import (
+            table_statistics_properties,
+        )
+        from resource_explorer.surveyors.result_materializer import ANN_TABLE_MEASUREMENTS
+
+        activity = (operations_info or {}).get("activity_signals")
+        if not activity:
+            return []
+        if "stats_reset_evidence" in activity:
+            reset = activity["stats_reset_evidence"]
+        else:
+            # A stored snapshot that predates the evidence read: a timestamp is
+            # still a stated value, "" is "not read" (never "never reset").
+            reset = activity.get("stats_reset") or None
+
+        by_key = {
+            (r.get("schemaname", ""), r.get("tablename", "")): r
+            for r in (activity.get("table_activity") or [])
+        }
+        keys = list(by_key)
+        if schema_info:
+            known = set(keys)
+            for schema in schema_info.get("schemas", []):
+                for table in schema.get("tables", []):
+                    key = (schema.get("name", ""), table.get("name", ""))
+                    if key not in known:
+                        keys.append(key)
+                        known.add(key)
+
+        database = getattr(self.db_entity, "database_name", "") or ""
+        annotations: list = []
+        for schema_name, table_name in keys:
+            props = table_statistics_properties(by_key.get((schema_name, table_name)), reset)
+            read = "metricsNotRead" not in props
+            annotations.append(ResourceMeasureAnnotation(
+                summary=f"Table {schema_name}.{table_name} statistics currency",
+                analysis_step="DatabaseOperations",
+                annotation_type_name=ANN_TABLE_MEASUREMENTS,
+                check_name="table_statistics",
+                item_key=f"{schema_name}.{table_name}",
+                confidence=100 if read else (50 if len(props) > 1 else 0),
+                resource_properties={
+                    "tableName": table_name,
+                    "tableQualifiedName": ".".join(p for p in (database, schema_name, table_name) if p),
+                    **props,
+                },
+                explanation=(
+                    "When this table's planner statistics were last refreshed "
+                    "(analyze) and its dead rows last reclaimed (vacuum), how "
+                    "many rows have changed since, and when the database's "
+                    "counters were reset, read from pg_stat_user_tables and "
+                    "pg_stat_database. 'never' is Postgres's own NULL -- it "
+                    "has not happened; a metric listed in metricsNotRead was "
+                    "not read, which says nothing about whether it happened."
+                ),
+            ))
+        return annotations
 
     def _create_operations_annotations(self, operations_info: dict) -> list:
         """Turn `_survey_operations()`'s fetched dict into annotations.
