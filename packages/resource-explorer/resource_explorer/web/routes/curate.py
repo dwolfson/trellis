@@ -172,20 +172,55 @@ def list_tags_detail(entity_type: str, slug: str) -> list[dict]:
     return _registry().list_resource_tags_with_authors(entity_type, slug)
 
 
+def authorize_curation_change(registry: ProjectRegistry, entity_type: str, slug: str, kind: str,
+                              action: str) -> None:
+    """403 unless Brief Z's curation access allows this tag or group change on the resource's element (Brief T):
+    UPDATE_PROPERTIES, plus the operation Egeria itself checks for the link (`curation_egeria.operations_for`).
+    Checked BEFORE RE records the change, so a refusal records nothing."""
+    from resource_explorer.curation_egeria import operations_for
+
+    try:
+        _require_curation_rights(registry, entity_type, slug, "", operations=operations_for(kind, action))
+    except CurationDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def sync_to_egeria(registry: ProjectRegistry, entity_type: str, slug: str, author: str) -> dict:
+    """Send this resource's tags and group to Egeria now, as the signed-in person (Brief T), and answer the plan
+    as re-read after the drain. Never fails the RE write that came before it: an error is in the answer."""
+    from resource_explorer.curation_egeria import sync_curation
+
+    try:
+        return sync_curation(registry, entity_type, slug, by=author)
+    except Exception as exc:  # the RE change is recorded; the band re-reads the state from the rows
+        import logging
+
+        logging.getLogger(__name__).warning("Tags/group sync to Egeria failed for %s %s: %s",
+                                            entity_type, slug, exc, exc_info=True)
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @router.post("/tags/{entity_type}/{slug}")
 def add_tag(entity_type: str, slug: str, body: TagCreate, request: Request) -> dict:
+    """Add a tag in RE, then (Brief T) link it as a public InformalTag when the resource is in Egeria."""
     author = _require_author(request, "add a tag")
     tag = body.tag.strip().lower()
     if not tag:
         raise HTTPException(status_code=400, detail="tag must not be empty")
-    _registry().add_resource_tag(entity_type, slug, tag, author=author)
-    return {"status": "success", "tag": tag, "author": author}
+    reg = _registry()
+    authorize_curation_change(reg, entity_type, slug, "tag", "link")
+    reg.add_resource_tag(entity_type, slug, tag, author=author)
+    return {"status": "success", "tag": tag, "author": author,
+            "egeria": sync_to_egeria(reg, entity_type, slug, author)}
 
 
 @router.delete("/tags/{entity_type}/{slug}/{tag}")
 def remove_tag(entity_type: str, slug: str, tag: str, request: Request) -> dict:
+    """Remove a tag in RE, then (Brief T) unlink it from the asset in Egeria. The InformalTag element itself is
+    never deleted: that is a delete under the ISSUE-117 block, and the owner deletes by hand."""
     author = _require_author(request, "remove a tag")
     reg = _registry()
+    authorize_curation_change(reg, entity_type, slug, "tag", "unlink")
     reg.remove_resource_tag(entity_type, slug, tag)
     # A removal leaves no row to carry an author, so who removed it is
     # recorded in the activity log.
@@ -199,16 +234,50 @@ def remove_tag(entity_type: str, slug: str, tag: str, request: Request) -> dict:
         summary=f"tag {tag!r} removed by {author}",
         annotations=[{"tag": tag, "removed_by": author}],
     ))
-    return {"status": "success", "removed_by": author}
+    return {"status": "success", "removed_by": author, "egeria": sync_to_egeria(reg, entity_type, slug, author)}
 
 
-# SEAM (not implemented, by owner ruling 2026-10-01): tags and journal entries
-# may later be published to Egeria (InformalTag / note log) when the resource is
-# already catalogued. Nothing in this module writes to Egeria; the future hook
-# is `_publish_curation_to_egeria` below, deliberately a no-op.
-def _publish_curation_to_egeria(entity_type: str, slug: str, kind: str, payload: dict) -> None:
-    """Placeholder for the later Egeria publish of a tag or journal entry."""
-    return None
+# ── Tags and group in Egeria (Brief T, 2026-10-10) ───────────────────────────
+# Tags are public InformalTags and the RE group is a Folio (resource_explorer/curation_egeria.py). Journal entries
+# are still not published (the 2026-10-01 ruling's seam stands for them).
+
+class EgeriaRetry(BaseModel):
+    kind: str
+    name: str
+
+
+class EgeriaSync(BaseModel):
+    retry: EgeriaRetry | None = None
+
+
+@router.get("/egeria-state/{entity_type}/{slug}")
+def egeria_state(entity_type: str, slug: str) -> dict:
+    """Per tag and for the group: its state in Egeria, read from the outbox rows (`curation_egeria.curation_plan`,
+    the same function a sync acts on). Read-only: no Egeria call, nothing queued."""
+    from resource_explorer.curation_egeria import curation_plan, plan_as_dict
+
+    return plan_as_dict(curation_plan(_registry(), entity_type, slug))
+
+
+@router.post("/egeria-sync/{entity_type}/{slug}")
+def egeria_sync(entity_type: str, slug: str, request: Request, body: EgeriaSync | None = None) -> dict:
+    """Send what the plan says is not yet in Egeria, or (with `retry`) a person's retry of ONE failed link or
+    unlink: a new row, never a revived one. 403 when curation access says no, 409 when there is nothing to retry."""
+    from resource_explorer.curation_egeria import RetryRefused, retry_item, sync_curation
+
+    author = _require_author(request, "send tags to Egeria")
+    reg = _registry()
+    if body is not None and body.retry is not None:
+        try:
+            return retry_item(reg, entity_type, slug, body.retry.kind, body.retry.name, by=author)
+        except RetryRefused as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CurationDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    out = sync_curation(reg, entity_type, slug, by=author)
+    if out.get("refused"):
+        raise HTTPException(status_code=403, detail=out["refused"])
+    return out
 
 
 # ── Feedback ─────────────────────────────────────────────────────────────────

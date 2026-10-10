@@ -235,7 +235,8 @@ def test_a_failed_non_destructive_outbox_row_is_still_retried(registry, monkeypa
 
 #: Every registered outbox creator, classified. A new creator that is in neither set fails the test below.
 NON_DESTRUCTIVE = {"annotation", "collection_membership", "resource_list", "annotation_link",
-                   "doc_source_publish", "catalogue_schema_attach"}
+                   "doc_source_publish", "catalogue_schema_attach",
+                   "informal_tag_link", "group_folio_membership"}
 DESTRUCTIVE_WORDS = re.compile(r"delete|archive|remove|detach|unpublish|leave_out", re.I)
 
 

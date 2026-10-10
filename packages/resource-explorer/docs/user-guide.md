@@ -159,6 +159,15 @@ Charts for a resource's history — stars, commits, schema growth, and similar �
 
 Ongoing curatorial work distinct from Enrichment's one-time/periodic context form: search tags, resource-level feedback, and curator notes, so the next person to find this resource can tell it's been looked at and vouched for.
 
+**Tags and the group go to Egeria** (the Findable band at the top of Curate). **Decision (project owner, 2026-10-10):** "tags should be public", "Use Folio", "Yes, removing a tag removes it in Egeria".
+
+- A tag on a resource that is in Egeria becomes a **public InformalTag** linked to the resource's asset. RE looks for a tag of that name first and uses it, so everyone's "sales" is one tag in Egeria, not one per person.
+- The resource's **RE group** becomes a **Folio** named `Folio::RE::group::<group>`, with the resource as a member. Changing the group moves the membership; choosing "Ungrouped" removes it.
+- **Removing a tag removes its link** to the asset in Egeria. The tag itself stays in Egeria, and so does a Folio when you leave or delete a group: RE never deletes either. The owner deletes those elements by hand.
+- A resource not yet in Egeria keeps its tags and group in RE, and they are sent when the resource is next published.
+- Each tag chip and the group line show where it stands, as a mark and a short word: **in Egeria**, **not yet (resource not in Egeria)**, **pending**, **pending · retrying**, **failed · <reason>** (with **retry**), or **unlinked**. A removed tag Egeria still has is listed under "removed". **send to Egeria** appears when something has not been sent.
+- A failed removal is never sent again on its own: press **retry** on it. Changing a tag or the group needs the same curation rights as other Curate decisions (see the admin guide, "Who may curate and publish").
+
 ### Automate
 *Goal: get notified when an analysis's results change on a future run*
 
@@ -291,7 +300,7 @@ Prefix your question with the resource slug to scope it: `mydb: how many tables 
 
 Reachable from the header, not the intent nav — this is system/catalog configuration, not something you do to curate one resource.
 - **Annotation Types** — the registry of metadata annotation schemas: what each one means, what properties it carries, and its mapping to Egeria's own property classes. Register, edit, or delete entries here.
-- **Groups** — group related repos/databases/filesystems together (e.g. everything belonging to one product). Create and delete groups here; assigning an individual resource to a group is done from that resource's own record, not from this list.
+- **Groups** — group related repos/databases/filesystems together (e.g. everything belonging to one product). Create and delete groups here; assigning an individual resource to a group is done from that resource's own record, not from this list. Each group with members is a Folio in Egeria (see Curate). Deleting a group removes its members from the Folio; the Folio itself stays in Egeria, and the owner deletes it by hand.
 - **Schedules** — a monitoring overview, not an editor: every scheduled analysis across every resource, whether its last run succeeded (✓ ok) or failed (⚠ error, click to see the detail), when it last/next runs, and a 🗑️ to remove a stale schedule. To *set or change* a cadence, use the ⏱ Schedule action on the analysis card itself (Assessment/Analysis/Discovery) — this page is for watching everything at once, especially for errors that need follow-up. **Read the caveat shown at the top of this pane** — not every listed analysis is fully implemented yet; cross-check against Discovery's Survey Definitions before assuming a scheduled run does what its name suggests.
 - **Discovery Sources** — named, reusable "where do we scout" configs, picked from Scouting's Discover sub-tab instead of re-typing a search every time. Create either a **search**-type source (the same filters the ad-hoc form uses) or a **list**-type source (a pasted set of GitHub URLs — for foundations whose projects live in many separate orgs, or your own enterprise repos). Delete a source here; there's no edit-in-place yet — delete and recreate.
 

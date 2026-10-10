@@ -1263,6 +1263,9 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
                 publish_local_doc_sources("database", slug, asset_guid, registry=registry)
             except Exception:
                 log.warning("Could not publish documentation sources for %s", slug, exc_info=True)
+            # Brief T: tags and the group kept in RE while the database was not in Egeria. Best-effort.
+            from resource_explorer.curation_egeria import publish_pending_curation
+            publish_pending_curation(registry, "database", slug, asset_guid)
         return PublishResult(
             status="ok",
             slug=slug,

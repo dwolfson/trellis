@@ -188,7 +188,9 @@ class TestABlankIdentityFailsLoudly:
 class TestDestructiveKindsStillNeverRetry:
     def test_the_set_is_unchanged(self):
         assert DESTRUCTIVE_OUTBOX_KINDS == frozenset(
-            {"catalogue_schema_leave_out", "doc_source_unpublish"})
+            {"catalogue_schema_leave_out", "doc_source_unpublish",
+             # Brief T (2026-10-10): a tag's AttachedTag unlink and a Folio membership removal
+             "informal_tag_detach", "group_folio_membership_detach"})
 
     def test_a_failed_destructive_write_is_terminal_and_labelled(self, db, calls, monkeypatch):
         def refuse(clients, payload):
