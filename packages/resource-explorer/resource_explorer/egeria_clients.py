@@ -20,7 +20,7 @@ recorded. Who a client acts as is always named, never defaulted:
   identity's `user_id` is the requester (what `Ownership` is stamped with) while the client is
   built for the daemon. Refreshable: the factory re-mints from the daemon credential when the
   shared token nears its `exp`. The credential comes from ONE function, `_daemon_credential()`
-  (today `config.egeria`; it may move to the secrets store later).
+  (today `config.egeria`, a development bootstrap; the product source is an open decision).
 
 Ambient identity. A web request needs nothing: `current_principal()` is `Caller()`. A daemon job
 declares itself once at its entry with `acting_as(Daemon(...))`, and code below it asks
@@ -158,23 +158,95 @@ def Caller() -> EgeriaIdentity:  # noqa: N802 - named as the brief names it
     return replace(identity, kind=KIND_CALLER, is_service_account=False)
 
 
+SOURCE_ENV = "env"
+SOURCE_DEFAULT = "default"          # EGERIA_USER_ID unset: the code default from config.py
+
+_source_lock = threading.Lock()
+_source_logged = False
+
+
+def _daemon_source(egeria) -> str:
+    """`env` when EGERIA_USER_ID was set (environment or .env file), `default` when the value is
+    config.py's code default (pydantic's `model_fields_set` says which)."""
+    fields_set = getattr(egeria, "model_fields_set", None)
+    if fields_set is None:
+        return SOURCE_ENV
+    return SOURCE_ENV if "user_id" in fields_set else SOURCE_DEFAULT
+
+
+def daemon_identity_source_line(user_id: str, source: str = SOURCE_ENV) -> str:
+    """The one line naming where the daemon identity came from. The userId only, never a password."""
+    if source == SOURCE_DEFAULT:
+        return (f"daemon identity: {user_id!r} from the code default (EGERIA_USER_ID unset) — a "
+                "person's persona as RE's daemon; set EGERIA_USER_ID to RE's own account")
+    return (f"daemon identity: {user_id!r} from .env (EGERIA_USER_ID) — development bootstrap; "
+            "not for a shipped product")
+
+
 def _daemon_credential() -> tuple[str, str]:
-    """THE one place RE's daemon credential is loaded. Today: the configured service account
-    (`config.egeria`, unchanged). Kept a single small function so the loading can move (e.g. to
-    the secrets store) without touching any caller.
+    """THE one place RE's daemon credential is loaded.
 
-    The daemon exists in Egeria as userId `resourceexplorernpa` (ITProfile
-    `ITProfile::ResourceExplorer`); deployments set EGERIA_USER_ID to it.
+    Today: `config.egeria` (EGERIA_USER_ID / EGERIA_USER_PASSWORD), set to RE's own Egeria account
+    `resourceexplorernpa` (ITProfile `ITProfile::ResourceExplorer`). **Development bootstrap; not
+    for a shipped product** (owner, 2026-10-09: ".env is ok for the short term — we just can't ship
+    that as product"). The product source (an RE-side secret store, or an Egeria API path) is an
+    open decision; it replaces THIS function and no caller changes.
 
-    TODO(Brief I, follow-up after merge): Egeria daemons hold their identity in an omsecrets
-    `tokenAPI` collection, here named "Resource Explorer" (with a space) —
-    `secretsCollections: {"Resource Explorer": {tokenAPI: {httpRequestType:
-    POST, url: <platform>/api/token, requestBody: {userId, password}}}}` — read through
-    `omsecrets_store._load`. Switch this function to that when the owner decides; nothing else."""
+    Logs `daemon_identity_source_line` once per process: INFO when EGERIA_USER_ID is set, WARNING
+    when it is unset and the code default (a person's persona) is the daemon. Never a value."""
+    global _source_logged
     from resource_explorer.config import get_config
 
     egeria = get_config().egeria
+    with _source_lock:
+        first = not _source_logged
+        _source_logged = True
+    if first:
+        source = _daemon_source(egeria)
+        level = logging.WARNING if source == SOURCE_DEFAULT else logging.INFO
+        log.log(level, "%s", daemon_identity_source_line(egeria.user_id, source))
     return egeria.user_id, egeria.user_password
+
+
+def log_daemon_identity_at_startup() -> None:
+    """Called once from the web app's start, so the INFO source line is in the log at boot."""
+    _daemon_credential()
+
+
+def daemon_identity_status() -> dict:
+    """Who background and queued work runs as, for whoami and the connection popover: the userId
+    the credential seam loaded, and its source. No Egeria call, never a password."""
+    from resource_explorer.config import get_config
+
+    user, _password = _daemon_credential()
+    return {"user_id": user or None, "source": _daemon_source(get_config().egeria)}
+
+
+DAEMON_SIGN_IN_SENTENCE = "this is Resource Explorer's own service account; sign in as yourself"
+
+
+class DaemonSignInRefused(PermissionError):
+    """An interactive sign-in (password, Portal token or raw Egeria bearer) as RE's daemon userId.
+    The daemon is RE's service account, never a person's session. Maps to 403."""
+
+    status_code = 403
+
+    def __init__(self, message: str = DAEMON_SIGN_IN_SENTENCE) -> None:
+        super().__init__(message)
+
+
+def is_daemon_user(user_id: Optional[str]) -> bool:
+    """`user_id` is RE's daemon account (from THE seam, `_daemon_credential()`)."""
+    daemon = (_daemon_credential()[0] or "").strip()
+    return bool(daemon) and (user_id or "").strip().casefold() == daemon.casefold()
+
+
+def refuse_daemon_sign_in(user_id: Optional[str]) -> None:
+    """Raise `DaemonSignInRefused` when `user_id` is RE's daemon account. Every interactive
+    sign-in path calls this before a session is issued."""
+    if is_daemon_user(user_id):
+        log.warning("auth: refused an interactive sign-in as RE's daemon account %r", (user_id or "").strip())
+        raise DaemonSignInRefused()
 
 
 def Daemon(reason: DaemonReason, requested_by: Optional[str] = None) -> EgeriaIdentity:  # noqa: N802

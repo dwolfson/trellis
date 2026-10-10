@@ -205,17 +205,28 @@ export function lastCallWords(whoami) {
   return [last.as, last.purpose, last.at ? ago(last.at) : ''].filter(Boolean).join(' · ');
 }
 
+/** Pure: who background and queued work runs as (Brief L), from whoami's `daemon` — the userId the
+ *  server's credential seam loaded, never inferred. null = whoami not read. */
+export function daemonWords(whoami) {
+  if (!whoami) return null;
+  const d = whoami.daemon;
+  if (!d || !d.user_id) return 'not reported by this server';
+  if (d.source === 'env') return `${d.user_id} · from .env (development bootstrap)`;
+  if (d.source === 'default') return `${d.user_id} · code default (EGERIA_USER_ID unset)`;
+  return d.user_id;
+}
+
 /** Pure: the popover's rows from what was read. Each value is a string or null (not read). */
 export function connectionRows({ me, whoami, status }) {
   const who = me && (me.user_id || me.username || me.egeria_user);
   const heal = lastHeal(status);
   return [
     ['Signed in as', who || null],
-    ['Egeria user', whoami?.user_id || null],
     ['View server', whoami?.view_server || null],
     ['Platform', whoami?.platform_url || null],
     ['Build', whoami ? (whoami.build_sha || null) : null],
     ['Last Egeria call as', lastCallWords(whoami)],
+    ['Background work as', daemonWords(whoami)],
     ['Last bootstrap heal', status ? (heal ? `${heal.batch} · ${heal.result || 'no result'} · ${ago(heal.at)}` : 'not read in this process') : null],
   ];
 }

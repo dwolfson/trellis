@@ -63,6 +63,10 @@ class StubSurveyor(eds.EgeriaDatabaseSurveyor):
     def _find_element_guid(self, name):
         return DB_GUID if name == SLUG else SERVER_GUID
 
+    def _find_by_qualified_name(self, qualified_name):
+        # Adoption is by qualifiedName (Brief L, 7f.7).
+        return DB_GUID if qualified_name.startswith("PostgreSQL Relational Database::") else SERVER_GUID
+
     def _warn_if_database_has_no_connection(self, *a, **k):
         pass
 

@@ -279,6 +279,8 @@ test('connection: when the reads fail every value says not read, and the popover
   const anchor = document.createElement('button'); document.body.appendChild(anchor);
   await mod.openConnectionPopover(document, anchor, { me: null, getInfo: async () => { throw new Error('x'); }, getStatus: async () => { throw new Error('y'); } });
   const values = [...document.querySelectorAll('[data-conn]')].map((e) => e.textContent);
+  // Brief L: "Egeria user" (the configured EGERIA_USER_ID, i.e. the daemon, mislabelled as a user)
+  // became "Background work as".
   assert.equal(values.length, 7);
   assert.ok(values.every((v) => v === 'not read'), values.join('|'));
 });
@@ -399,4 +401,32 @@ test('api: an expired Egeria sign-in is a dead session carrying the server\'s se
   assert.equal(err.message, 'your Egeria sign-in expired; sign in again');
   assert.ok(dead <= 1);
   void window;
+});
+
+/* ── Brief L: who background work runs as ─────────────────────────────── */
+
+test('connection: "Background work as" shows the daemon userId the server loaded and its source, never inferred', async () => {
+  const { mod } = await load();
+  const row = (whoami) => Object.fromEntries(mod.connectionRows({ me: null, whoami, status: null }))['Background work as'];
+  assert.equal(row(null), null, 'whoami not read');
+  assert.equal(row({ user_id: 'svc' }), 'not reported by this server', 'an older server: never inferred from user_id');
+  assert.ok(!Object.keys(Object.fromEntries(mod.connectionRows({ me: null, whoami: { user_id: 'svc' }, status: null }))).includes('Egeria user'),
+    'the daemon id is never shown as "Egeria user"');
+  assert.equal(row({ daemon: { user_id: 'resourceexplorernpa', source: 'env' } }),
+    'resourceexplorernpa · from .env (development bootstrap)');
+  assert.equal(row({ daemon: { user_id: 'erinoverview', source: 'default' } }),
+    'erinoverview · code default (EGERIA_USER_ID unset)', 'never labelled .env when it is not');
+});
+
+test('connection: the popover renders the Background work as row', async () => {
+  const { document, mod } = await load();
+  const anchor = document.createElement('button'); document.body.appendChild(anchor);
+  await mod.openConnectionPopover(document, anchor, {
+    me: { user_id: 'dan' },
+    getInfo: async () => ({ user_id: 'svc', view_server: 'v', platform_url: 'p', build_sha: 'abc',
+      daemon: { user_id: 'resourceexplorernpa', source: 'env' } }),
+    getStatus: async () => STATUS({ a: B() }),
+  });
+  assert.equal(document.querySelector('[data-conn="Background work as"]').textContent,
+    'resourceexplorernpa · from .env (development bootstrap)');
 });

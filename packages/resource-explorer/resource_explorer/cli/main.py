@@ -82,10 +82,19 @@ def login_command(
     from resource_explorer.auth import login_with_password
     from resource_explorer.cli import session as cli_session
 
+    from resource_explorer.egeria_clients import DaemonSignInRefused, is_daemon_user, refuse_daemon_sign_in
+
     if not user:
         from resource_explorer.config import get_config
 
-        user = typer.prompt("Egeria user id", default=get_config().egeria.user_id or None)
+        # Never the daemon's userId (EGERIA_USER_ID is RE's service account, Brief L).
+        prefill = (get_config().egeria.login_default_user or "").strip()
+        user = typer.prompt("Egeria user id", default=(None if not prefill or is_daemon_user(prefill) else prefill))
+    try:
+        refuse_daemon_sign_in(user)
+    except DaemonSignInRefused as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        raise typer.Exit(1) from None
     password = typer.prompt("Password", hide_input=True)
 
     egeria_token = login_with_password(user, password)

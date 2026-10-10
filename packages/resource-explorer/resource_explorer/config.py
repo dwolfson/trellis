@@ -259,6 +259,9 @@ class EgeriaConfig(BaseSettings):
     #: Further Egeria platforms a credential may be sent to, comma separated (Brief I). The
     #: configured `platform_url` is always allowed; any other URL is refused before a request.
     allowed_platform_urls: str = Field(default="", alias="EGERIA_ALLOWED_PLATFORM_URLS")
+    #: Optional login-form prefill (`GET /api/auth/defaults`). Never the daemon's userId: the
+    #: daemon (EGERIA_USER_ID) is RE's service account, and the endpoint is public (Brief L).
+    login_default_user: str = Field(default="", alias="RE_LOGIN_DEFAULT_USER")
     kafka_endpoint: str = Field(default="localhost:9092", alias="EGERIA_KAFKA_ENDPOINT")
     # Base URL for Egeria Workspaces' "The Catalog" app (egeria-workspaces-fs
     # PyegeriaWebHandler) — supports deep-linking to a specific element via

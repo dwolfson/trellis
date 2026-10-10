@@ -76,7 +76,8 @@ def _app_jwt(user_id: str = "peterprofile", egeria_token: str = "egeria-abc") ->
     )
 
 
-def _egeria_jwt(user_id: str = "erinoverview", ttl: int = 3600) -> str:
+# Not the configured daemon (EGERIA_USER_ID defaults to erinoverview), which may not sign in (Brief L).
+def _egeria_jwt(user_id: str = "garygeeke", ttl: int = 3600) -> str:
     """A token shaped like Egeria's own: RS256 in life, but only its claims
     matter here — nothing verifies its signature, by design."""
     return jwt.encode(
@@ -176,7 +177,7 @@ class TestAuthentication:
                               headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
         assert r.json()["auth_source"] == "egeria-token"
-        assert r.json()["user_id"] == "erinoverview"
+        assert r.json()["user_id"] == "garygeeke"
         assert v.call_count == 1
 
     def test_a_rejected_egeria_token_is_401(self):
