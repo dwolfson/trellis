@@ -444,6 +444,27 @@ async def relink_members(slug: str) -> dict:
     return res.as_dict()
 
 
+@router.get("/{slug}/link-status")
+async def link_status(slug: str) -> dict:
+    """Which members are linked to the investigation's Egeria working set.
+
+    Read-only, no Egeria call: derived from the same asset GUIDs and outbox rows
+    `relink-members` decides and records from. Per member `state` is `linked`,
+    `not_linked` (with a reason) or `could_not_tell`; a caller must not turn
+    `could_not_tell` into a zero.
+    """
+    import asyncio
+
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    return await asyncio.to_thread(EgeriaInvestigationPublisher(reg).link_status, slug)
+
+
 @router.post("/{slug}/sync-egeria")
 async def sync_egeria_project(slug: str) -> dict:
     """Push this investigation's name/description to its Egeria Project.

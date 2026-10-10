@@ -574,7 +574,8 @@ class EgeriaInvestigationPublisher:
         successful promotion still links everything before returning.
         """
         from resource_explorer.egeria_outbox import (
-            OutboxClients, drain_outbox, enqueue_collection_members,
+            OutboxClients, collection_membership_qn, drain_outbox,
+            enqueue_collection_members,
         )
 
         linkable: list[dict] = []
@@ -603,7 +604,7 @@ class EgeriaInvestigationPublisher:
         # Report per member from what the drain actually did, not from what was
         # enqueued — an enqueued row is a promise, not a result.
         by_qn = {
-            f"CollectionMembership::{res.collection_guid}::{m['member_guid']}": m
+            collection_membership_qn(res.collection_guid, m["member_guid"]): m
             for m in linkable
         }
         outstanding = {
@@ -672,6 +673,65 @@ class EgeriaInvestigationPublisher:
                            self._registry.list_investigation_members(investigation_slug),
                            investigation_slug)
         return res
+
+    def link_status(self, investigation_slug: str) -> dict:
+        """Which members are linked to the working set, from the rows relink writes.
+
+        Reads the SAME inputs `_link_members` decides from -- `_asset_guid` for
+        "is there anything to attach" and the outbox row keyed by
+        `collection_membership_qn` for "was it attached" -- so the answer cannot
+        disagree with what Link members would do. No Egeria call: a `done`
+        outbox row is the proof the attach succeeded.
+
+        Three states per member, and "could not tell" is never folded into
+        "not linked" or into a zero count: with no working set Collection to
+        key on, nothing can be said about any member.
+        """
+        from resource_explorer.egeria_outbox import collection_membership_qn
+
+        inv = self._registry.get_investigation(investigation_slug)
+        members = self._registry.list_investigation_members(investigation_slug)
+        bound = bool((inv or {}).get("egeria_project_guid"))
+        ws = self._registry.get_or_create_working_set(investigation_slug) if bound else None
+        collection_guid = (ws or {}).get("egeria_collection_guid") or ""
+        out: list[dict] = []
+        rows_by_qn: dict = {}
+        if collection_guid:
+            for r in self._registry.list_outbox_elements(
+                entity_slug=investigation_slug, limit=100000,
+            ):
+                if (r.get("entity_type") == "investigation"
+                        and r.get("element_kind") == "collection_membership"):
+                    # list is newest first; keep the newest row per key.
+                    rows_by_qn.setdefault(r["qualified_name"], r)
+        for m in members:
+            base = {"entity_type": m["entity_type"], "entity_slug": m["entity_slug"]}
+            if not bound:
+                out.append({**base, "state": "could_not_tell",
+                            "reason": "not bound to an Egeria Project"})
+                continue
+            if not collection_guid:
+                out.append({**base, "state": "could_not_tell",
+                            "reason": "no working set Collection yet"})
+                continue
+            asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
+            if not asset_guid:
+                out.append({**base, "state": "not_linked",
+                            "reason": "not in Egeria yet — no asset GUID"})
+                continue
+            row = rows_by_qn.get(collection_membership_qn(collection_guid, asset_guid))
+            if row is None:
+                out.append({**base, "state": "not_linked",
+                            "reason": "not attached yet — use Link members"})
+            elif row["status"] == "done":
+                out.append({**base, "state": "linked", "reason": ""})
+            else:
+                out.append({**base, "state": "not_linked", "reason": (
+                    f"attach failed ({row.get('last_error') or 'pending'}) — "
+                    "queued for retry, see Admin → Publish Queue")})
+        counts = {s: sum(1 for o in out if o["state"] == s)
+                  for s in ("linked", "not_linked", "could_not_tell")}
+        return {"slug": investigation_slug, "bound": bound, "members": out, "counts": counts}
 
     def ensure_working_set(self, investigation_slug: str) -> PromotionResult:
         """Give an already-bound investigation its Egeria working set.

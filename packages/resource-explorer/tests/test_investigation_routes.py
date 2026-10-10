@@ -1878,3 +1878,94 @@ def test_the_marker_is_not_a_kind_and_so_survives_reclassification(made):
         "the marker is in the kind vocabulary — a reclassification would strip it")
     assert INVESTIGATION_MARKER not in ProjectRegistry.PRIVATE_CLASSIFICATIONS, (
         "the marker would drive zoning, which the owner said it must not")
+
+
+# ── link-status: which members are linked, read from what relink writes ───
+
+def _bound_with_members(made, slug_prefix, repos):
+    """A bound investigation whose members are real registry repos; only the
+    Egeria managers (the outermost boundary) are stubbed by callers."""
+    from resource_explorer.registry import Project, ProjectRegistry
+
+    inv = made(display_name=slug_prefix)
+    reg = ProjectRegistry()
+    ws = reg.get_or_create_working_set(inv["slug"])
+    for slug, guid in repos:
+        reg.add(Project(slug=slug, display_name=slug,
+                        github_url=f"https://github.com/o/{slug}", description=""))
+        if guid:
+            reg.set_egeria_asset_guid(slug, guid)
+        reg.add_working_set_member(ws["slug"], "repo", slug)
+    reg.set_investigation_egeria_project(inv["slug"], {"status": "linked", "egeria_project_guid": "g"})
+    return inv["slug"], reg
+
+
+def _states(client, slug):
+    body = client.get(f"/api/investigations/{slug}/link-status").json()
+    return body, {m["entity_slug"]: m for m in body["members"]}
+
+
+def test_link_status_404s_on_an_unknown_investigation(client):
+    assert client.get("/api/investigations/nope-nope/link-status").status_code == 404
+
+
+def test_link_status_unbound_is_could_not_tell_never_zero(client, made):
+    """No Project, no Collection: nothing can be said, and the count of
+    not-linked members must not read as 0 because of it."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Unbound Status")
+    reg = ProjectRegistry()
+    ws = reg.get_or_create_working_set(inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "whatever")
+    body, by = _states(client, inv["slug"])
+    assert body["bound"] is False
+    assert by["whatever"]["state"] == "could_not_tell"
+    assert body["counts"] == {"linked": 0, "not_linked": 0, "could_not_tell": 1}
+
+
+def test_link_status_bound_without_a_collection_is_could_not_tell(client, made):
+    slug, _ = _bound_with_members(made, "No Collection Status", [("lk-a", "asset-a")])
+    body, by = _states(client, slug)
+    assert body["bound"] is True
+    assert by["lk-a"]["state"] == "could_not_tell"
+    assert "Collection" in by["lk-a"]["reason"]
+    assert body["counts"]["not_linked"] == 0
+
+
+def test_link_status_end_to_end_after_a_promotion_with_stubbed_egeria(client, made):
+    """Each state, produced by the real promote/relink and read back by the
+    route. Only the Egeria managers are faked."""
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    slug, reg = _bound_with_members(
+        made, "E2E Status", [("lk-ok", "asset-ok"), ("lk-bad", "asset-bad"), ("lk-none", "")])
+    reg.set_investigation_egeria_project(slug, {"status": "linked", "egeria_project_guid": "g"})
+    ws = reg.get_or_create_working_set(slug)
+    reg.set_working_set_egeria_collection(ws["slug"], "coll-1")
+
+    class FailingForOne(_StubCM):
+        def add_to_collection(self, collection_guid, element_guid, body=None):
+            if element_guid == "asset-bad":
+                raise RuntimeError("boom")
+            super().add_to_collection(collection_guid, element_guid, body)
+
+    # Before any relink: assets exist but nothing was attached.
+    body, by = _states(client, slug)
+    assert by["lk-ok"]["state"] == "not_linked" and "Link members" in by["lk-ok"]["reason"]
+    assert by["lk-none"]["state"] == "not_linked" and "no asset GUID" in by["lk-none"]["reason"]
+
+    pub = EgeriaInvestigationPublisher(reg, project_manager=_StubPM(), collection_manager=FailingForOne())
+    pub.relink_members(slug)
+
+    body, by = _states(client, slug)
+    assert by["lk-ok"]["state"] == "linked"
+    assert by["lk-bad"]["state"] == "not_linked" and "attach failed" in by["lk-bad"]["reason"]
+    assert by["lk-none"]["state"] == "not_linked"
+    assert body["counts"] == {"linked": 1, "not_linked": 2, "could_not_tell": 0}
+
+    # The status agrees with what relink itself reports.
+    res = pub.relink_members(slug)
+    assert sorted(u["entity_slug"] for u in res.members_unlinkable) == ["lk-bad", "lk-none"]

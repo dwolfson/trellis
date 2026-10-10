@@ -1133,6 +1133,16 @@ def enqueue_resource_list(
     )
 
 
+def collection_membership_qn(collection_guid: str, member_guid: str) -> str:
+    """The outbox identity key for one CollectionMembership row.
+
+    One definition for the writer (`enqueue_collection_members`, the publisher's
+    per-member report) and the reader (`link-status`), so what the link decides
+    to attach and what the status says is attached cannot drift apart.
+    """
+    return f"CollectionMembership::{collection_guid}::{member_guid}"
+
+
 def enqueue_collection_members(
     registry, entity_slug: str, collection_guid: str,
     members: list[dict], *, run_id: str = "",
@@ -1157,7 +1167,7 @@ def enqueue_collection_members(
     row_ids: list[int] = []
     for m in members:
         member_slug = m.get("entity_slug", "")
-        qualified_name = f"CollectionMembership::{collection_guid}::{m['member_guid']}"
+        qualified_name = collection_membership_qn(collection_guid, m["member_guid"])
         row_ids.append(registry.enqueue_outbox_element_once(
             "investigation", entity_slug, "collection_membership", qualified_name,
             {"collection_guid": collection_guid, "member_guid": m["member_guid"],
