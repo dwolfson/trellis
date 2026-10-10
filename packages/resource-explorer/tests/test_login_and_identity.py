@@ -633,6 +633,9 @@ class TestOwnershipAndZones:
 # ---------------------------------------------------------------------------
 
 class TestCurateAuthorization:
+    """Brief Z (2026-10-10): the old "owner = last decided_by" gate is gone; access follows Egeria's zones.
+    The full matrix is tests/test_curation_access_by_zone.py; these pin the entry points' shape."""
+
     @staticmethod
     def _as(user_id, role="user"):
         from resource_explorer.a2a_auth import CallerIdentity, current_caller
@@ -642,64 +645,37 @@ class TestCurateAuthorization:
                            role=role)
         )
 
-    def test_the_owner_may_curate_with_no_further_grant(self):
+    @pytest.fixture()
+    def reg(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("EXPLORER_DRAFT_ZONE", raising=False)
+        monkeypatch.setattr("resource_explorer.egeria_identity.configured_publish_zones", lambda: [])
+        r = ProjectRegistry(db_path=str(tmp_path / "auth.db"))
+        r.add(Project(slug="p", display_name="p", github_url="https://github.com/o/p"))
+        return r
+
+    def test_someone_elses_decision_no_longer_locks_an_element(self, reg):
         from resource_explorer.a2a_auth import current_caller
         from resource_explorer.workflows.curate import may_curate
 
-        reset = self._as("dan")
-        try:
-            assert may_curate("dan") == (True, "")
-        finally:
-            current_caller.reset(reset)
-
-    def test_a_curator_role_may_curate_someone_elses_element(self):
-        from resource_explorer.a2a_auth import current_caller
-        from resource_explorer.workflows.curate import may_curate
-
-        for role in ("curator", "admin", "CURATOR"):
-            reset = self._as("erin", role=role)
-            try:
-                assert may_curate("dan")[0] is True, role
-            finally:
-                current_caller.reset(reset)
-
-    def test_a_stranger_may_not(self):
-        from resource_explorer.a2a_auth import current_caller
-        from resource_explorer.workflows.curate import may_curate
-
+        reg.record_component_verdict("repo", "p", "src/a", "accepted", "", "", decided_by="dan")
         reset = self._as("mallory")
         try:
-            allowed, why = may_curate("dan")
-            assert allowed is False
-            assert "'dan'" in why and "mallory" in why
+            assert may_curate(reg, "repo", "p", "src/a") == (True, "")
         finally:
             current_caller.reset(reset)
 
-    def test_nobody_signed_in_may_not(self):
+    def test_nobody_signed_in_may_not(self, reg):
         from resource_explorer.workflows.curate import may_curate
 
-        allowed, why = may_curate("dan")
+        allowed, why = may_curate(reg, "repo", "p", "src/a")
         assert allowed is False
-        assert "Authentication required" in why
+        assert "sign in" in why
 
-    def test_an_unowned_legacy_element_stays_curatable_by_any_signed_in_user(self):
-        """Every verdict recorded before this change has no owner. Locking all
-        of them behind a role nobody has been appointed to would make the
-        existing corpus uncurateable overnight."""
-        from resource_explorer.a2a_auth import current_caller
-        from resource_explorer.workflows.curate import may_curate
-
-        reset = self._as("anyone")
-        try:
-            assert may_curate("") == (True, "")
-        finally:
-            current_caller.reset(reset)
-
-    def test_require_curation_rights_raises_the_type_routes_turn_into_403(self):
+    def test_require_curation_rights_raises_the_type_routes_turn_into_403(self, reg):
         from resource_explorer.workflows.curate import CurationDenied, require_curation_rights
 
         with pytest.raises(CurationDenied):
-            require_curation_rights("dan")
+            require_curation_rights(reg, "repo", "p", "src/a")
 
 
 class TestCurateRoutes:
@@ -727,7 +703,10 @@ class TestCurateRoutes:
         assert r.status_code == 200
         assert r.json()["decided_by"] == "dan"
 
-    def test_a_stranger_gets_403_on_someone_elses_element(self, client):
+    def test_another_person_may_re_decide_when_zones_are_not_in_use(self, client, monkeypatch):
+        """Brief Z: `decided_by` is attribution, not ownership. With no zone anywhere, it is open."""
+        monkeypatch.delenv("EXPLORER_DRAFT_ZONE", raising=False)
+        monkeypatch.setattr("resource_explorer.egeria_identity.configured_publish_zones", lambda: [])
         api, reg = client
         api.post("/api/curate/component-verdicts/repo/p",
                  json={"scope_locator": "src/a", "verdict": "accepted"},
@@ -735,8 +714,8 @@ class TestCurateRoutes:
         r = api.post("/api/curate/component-verdicts/repo/p",
                      json={"scope_locator": "src/a", "verdict": "rejected"},
                      headers={"Authorization": f"Bearer {_app_token('mallory')}"})
-        assert r.status_code == 403
-        assert "owned by 'dan'" in r.json()["detail"]
+        assert r.status_code == 200
+        assert r.json()["decided_by"] == "mallory"
 
     def test_a_curator_role_gets_through(self, client):
         api, reg = client
@@ -753,6 +732,10 @@ class TestCurateRoutes:
         verdict route. The promotion now happens in Publish (architecture_publish._publish_component)."""
         api, reg = client
         monkeypatch.setenv("EXPLORER_DRAFT_ZONE", "resource-explorer-draft")
+        # Zones are configured, so the verdict asks Egeria about them (Brief Z): neither zone has a control.
+        monkeypatch.setattr("resource_explorer.zone_access._platform", lambda: ("plat", "g"))
+        monkeypatch.setattr("resource_explorer.zone_access._security_officer",
+                            lambda: type("SO", (), {"get_security_access_control": lambda self, *a, **k: None})())
         spy = _ClassificationSpy()
         monkeypatch.setattr("resource_explorer.egeria_identity.classification_client", lambda i=None: spy)
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "egeria-runtime")

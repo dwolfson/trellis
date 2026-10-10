@@ -2444,9 +2444,13 @@ def branch_verdicts(slug: str, body: BranchVerdicts, request: Request) -> dict:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    # Every scope is checked before any is recorded, so a refusal leaves nothing half-recorded (Brief Z).
+    from resource_explorer.zone_access import EgeriaAccessReader
+    reader = EgeriaAccessReader()
+    for scope in scopes:
+        _authorize_curation(registry, "repo", slug, scope, reader=reader)
     rows = []
     for scope in scopes:
-        _authorize_curation(registry, "repo", slug, scope)
         rows.append(registry.record_component_verdict(
             "repo", slug, scope, body.verdict, ONLY_THIS if scope in only else "", body.note, decided_by=author))
     return {"verdicts": rows, "run_id": None, "activity_id": None, "queued": 0}
@@ -2482,11 +2486,28 @@ def architecture_publish(slug: str, request: Request) -> dict:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    from resource_explorer.workflows.curate import CurationDenied
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    reader = EgeriaAccessReader()      # one press, each zone's control read once
+
+    def authorize(scope: str) -> None:
+        # The verdict routes' own check (curation_access), raised as CurationDenied so Publish can skip the one
+        # item and go on with the rest (Brief Z: per-item, no whole-press 403 unless nothing is permitted).
+        try:
+            _authorize_curation(registry, "repo", slug, scope, reader=reader)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                raise CurationDenied(str(exc.detail)) from exc
+            raise
+
     try:
         return enqueue_publish(registry, project, publish_plan(registry, slug), requested_by=_requested_by(),
-                               authorize=lambda scope: _authorize_curation(registry, "repo", slug, scope))
+                               authorize=authorize)
     except PublishAlreadyRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CurationDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 # ── Blueprints (SPEC-CURATE-SELECTION-AND-BLUEPRINTS.md §2) ─────────────────

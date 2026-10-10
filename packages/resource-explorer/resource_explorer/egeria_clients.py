@@ -131,6 +131,7 @@ class DaemonReason(str, Enum):
     RUN_QUEUE = "run_queue"            # queued surveys and analyses (requester recorded)
     REACHABILITY = "reachability"      # file-system reachability checks
     ZONE_SETUP = "zone_setup"          # draft/private zone and security-officer bootstrap
+    ACCESS_CHECK = "access_check"      # curation access: an element's zones, their controls, the caller's account
     STARTUP_WARM = "startup_warm"      # the worker's one-shot cache warm at start
     PREFECT_FLOW = "prefect_flow"      # a survey flow run in a Prefect worker process (no caller there)
 

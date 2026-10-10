@@ -9,8 +9,8 @@
   factory; this module keeps the identity record and the governance stamps.
 * **Ownership.** Everything RE publishes gets the `Ownership` classification
   (`0445`) with `owner` = the requesting user's id and
-  `ownerTypeName = "UserIdentity"`. Ownership is curation by default: the
-  owner may accept, reject, promote and delete without any further grant.
+  `ownerTypeName = "UserIdentity"`. Ownership is attribution; who may curate
+  follows Egeria's zones (`workflows/curate.curation_access`, Brief Z).
 * **Draft zone.** One zone per app (owner's decision, 2026-09-04). On publish
   an element joins `resource-explorer-draft`; on curate-accept it is promoted
   into the deployment's publish zones.

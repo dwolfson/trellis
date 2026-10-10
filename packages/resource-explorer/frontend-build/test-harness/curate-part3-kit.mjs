@@ -48,7 +48,7 @@ export function makeServer(over = {}) {
     }
     if (u.endsWith('/architecture/publish-plan')) return ok(s.publishPlan);
     if (u.endsWith('/architecture/publish')) {
-      if (s.publishFail) return err(s.publishFail, 'a publish is already running for this repository');
+      if (s.publishFail) return err(s.publishFail, s.publishFailDetail || 'a publish is already running for this repository');
       s.publishPlan = s.afterPublish || s.publishPlan;
       return ok({ run_id: 'r1', activity_id: 'a1', queued: 1 });
     }

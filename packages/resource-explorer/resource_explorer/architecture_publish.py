@@ -30,6 +30,9 @@ NODE_PUBLISH_ITEM = "architecture_publish"
 _UNCONFIRMED = ("unconfirmed", "error", "unread")
 
 DONE, SKIPPED, FAILED, PARTIAL = "done", "skipped", "failed", "partial"
+#: An item the presser may not change (Brief Z): skipped with the reason, the rest of the press goes on.
+NOT_PERMITTED = "not_permitted"
+NOT_PERMITTED_WORDS = "not permitted"
 
 
 # ── the choices a blueprint verdict carries ───────────────────────────────────────────────────────────
@@ -291,22 +294,38 @@ def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authori
                     only: set[str] | None = None) -> dict:
     """Queue ONE publish_architecture run for the items in `plan` (all of them, or those whose path/key is in
     `only`), with a 'running' activity row the run closes. Shared by the web press and the CLI, so both write
-    exactly what the plan lists. `authorize(scope)` raises for an item the caller may not curate. Returns
-    {run_id, activity_id, queued, plan}; queues nothing when nothing is selected. Raises PublishAlreadyRunning."""
+    exactly what the plan lists. `authorize(scope)` raises `CurationDenied` for an item the caller may not
+    change (workflows.curate.curation_access): that item is NOT written and is reported as its own result row,
+    "not permitted · <reason>", and the rest are queued (Brief Z). Only when nothing is permitted does this
+    raise CurationDenied (the whole-press 403). Returns {run_id, activity_id, queued, refused, plan}; queues
+    nothing when nothing is selected. Raises PublishAlreadyRunning."""
     from resource_explorer.activity_logger import log_survey
+    from resource_explorer.workflows.curate import CurationDenied
 
     slug = project.slug
-    paths = [c["path"] for c in plan["components"]["to_write"] if only is None or c["path"] in only]
-    keys = [b["key"] for b in plan["blueprints"]["to_write"] if only is None or b["key"] in only]
-    if not paths and not keys:
-        return {"run_id": None, "activity_id": None, "queued": 0, "plan": plan}
+    comps = [c for c in plan["components"]["to_write"] if only is None or c["path"] in only]
+    bps = [b for b in plan["blueprints"]["to_write"] if only is None or b["key"] in only]
+    if not comps and not bps:
+        return {"run_id": None, "activity_id": None, "queued": 0, "refused": [], "plan": plan}
     for state in ("queued", "claimed", "running"):
         if any((r.get("target") and slug == json.loads(r["target"]).get("slug"))
                for r in registry.list_runs(kind="publish_architecture", state=state, limit=50)):
             raise PublishAlreadyRunning("a publish is already running for this repository")
-    for scope in [*paths, *keys]:
-        authorize(scope)
-    label = plan["label"] if only is None else label_for(len(paths), len(keys))
+    refused: list[dict] = []
+
+    def permitted(kind: str, key: str, name: str) -> bool:
+        try:
+            authorize(key)
+            return True
+        except CurationDenied as exc:
+            refused.append({"kind": kind, "key": key, "name": name, "words": str(exc)})
+            return False
+    paths = [c["path"] for c in comps if permitted("component", c["path"], c.get("name") or c["path"])]
+    keys = [b["key"] for b in bps if permitted("blueprint", b["key"], b.get("name") or b["key"])]
+    if not paths and not keys:
+        reasons = sorted({r["words"] for r in refused})
+        raise CurationDenied(reasons[0] if len(reasons) == 1 else "; ".join(reasons))
+    label = plan["label"] if only is None and not refused else label_for(len(paths), len(keys))
     activity_id = log_survey(
         registry, entity_type="repo", entity_slug=slug,
         entity_name=project.display_name, entity_location=project.github_url,
@@ -314,14 +333,16 @@ def enqueue_publish(registry, project, plan: dict, *, requested_by: str, authori
         summary=f"Publishing {label.removeprefix('Publish ')} of {project.display_name}…")
     try:
         # Queued: committed by RE's daemon on the person's behalf, Ownership = them (Brief I).
-        run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys},
+        run_id = registry.enqueue_run("publish_architecture", {"slug": slug, "paths": paths, "blueprints": keys,
+                                                               **({"not_permitted": refused} if refused else {})},
                                       result_ref=activity_id, requested_by=requested_by)
     except Exception as exc:
         # Opened 'running' above; nothing will run to close it.
         registry.update_activity_status(
             activity_id, "error", summary=f"Publishing {project.display_name} was not started: {type(exc).__name__}: {exc}"[:400])
         raise
-    return {"run_id": run_id, "activity_id": activity_id, "queued": len(paths) + len(keys), "plan": plan}
+    return {"run_id": run_id, "activity_id": activity_id, "queued": len(paths) + len(keys), "refused": refused,
+            "plan": plan}
 
 
 # ── the write ─────────────────────────────────────────────────────────────────────────────────────────
@@ -439,6 +460,10 @@ def run_publish(registry, slug: str, target: dict, run: str) -> list[dict]:
         results.append(row)
         _record(registry, slug, run, key, guid, {k: row[k] for k in ("kind", "name", "status", "words")})
 
+    # Refused at the press (the presser may not change them): one row each, said with the reason, never written.
+    for r in target.get("not_permitted") or []:
+        add(r.get("kind") or "component", r["key"], r.get("name") or r["key"], NOT_PERMITTED,
+            f"{NOT_PERMITTED_WORDS} · {r.get('words') or ''}".rstrip(" ·"))
     for path in sorted(want_paths):
         c = todo_c.get(path)
         if c is None:                  # present now, or no longer accepted: nothing to write

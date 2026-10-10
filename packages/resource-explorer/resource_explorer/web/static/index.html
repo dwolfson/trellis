@@ -4454,7 +4454,7 @@ async function _archSubmitVerdict(rowUid, verdict, retypedTo) {
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`;
       try { detail = (await resp.json()).detail || detail; } catch (_) { /* body wasn't JSON */ }
-      throw new Error(detail);
+      throw new Error(resp.status === 403 ? `not permitted · ${detail}` : detail);
     }
     // record_component_verdict's own row shape (registry.py) — `created_at`,
     // not `decided_at`; that rename only happens in _verdict_view's
@@ -10226,7 +10226,7 @@ async function _curatePublishMissingComponents(rowUid) {
         body: JSON.stringify({ scope_locator: m.scope_locator, verdict: 'accepted', retyped_to: '', note: '' }),
       });
       const saved = await resp.json();
-      if (!resp.ok) failures.push(`${m.name}: ${saved.detail || `HTTP ${resp.status}`}`);
+      if (!resp.ok) failures.push(`${m.name}: ${resp.status === 403 ? 'not permitted · ' : ''}${saved.detail || `HTTP ${resp.status}`}`);
     } catch (e) {
       failures.push(`${m.name}: ${e.message}`);
     }
@@ -10286,7 +10286,7 @@ async function _archSubmitBlueprintVerdict(rowUid, verdict) {
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`;
       try { detail = (await resp.json()).detail || detail; } catch (_) { /* body wasn't JSON */ }
-      throw new Error(detail);
+      throw new Error(resp.status === 403 ? `not permitted · ${detail}` : detail);
     }
     // A decision only (Brief A): the blueprint route writes nothing; Publish (top of this panel) writes it.
     const saved = await resp.json();
@@ -10428,7 +10428,8 @@ function _classicArchPublishHtml(slug, plan, feedback = '') {
   const nothing = !comps.length && !bps.length;
   const label = plan.label || (nothing ? 'Nothing to publish' : 'Publish');
   const RESULT = { done: ['text-emerald-400', '✓ done'], skipped: ['text-slate-400', '○ already there'],
-                   failed: ['text-red-400', '✗ failed'], partial: ['text-amber-400', '◐ partial'] };
+                   failed: ['text-red-400', '✗ failed'], partial: ['text-amber-400', '◐ partial'],
+                   not_permitted: ['text-amber-400', '⊘ not permitted'] };
   const last = (plan.last && plan.last.items) || [];
   return `<div class="flex items-center justify-between gap-2">
       <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">📤 Publish to Egeria</span>
@@ -10454,7 +10455,8 @@ function _classicArchPublishHtml(slug, plan, feedback = '') {
     ${last.length ? `<div class="mt-2" data-classic-arch-results>
       <div class="text-slate-500">last publish</div>
       ${last.map(r => { const [cls, word] = RESULT[r.status] || ['text-slate-400', r.status];
-        return `<div data-classic-result="${_esc(r.key)}" data-classic-result-status="${_esc(r.status)}"><span class="${cls}">${word}</span> ${_esc(r.name || r.key)}${r.words && r.status !== 'done' ? ` <span class="text-slate-500">· ${_esc(r.words)}</span>` : ''}</div>`; }).join('')}
+        const words = r.status === 'not_permitted' ? String(r.words || '').replace(/^not permitted · /, '') : (r.words || '');
+        return `<div data-classic-result="${_esc(r.key)}" data-classic-result-status="${_esc(r.status)}"><span class="${cls}">${word}</span> ${_esc(r.name || r.key)}${words && r.status !== 'done' ? ` <span class="text-slate-500">· ${_esc(words)}</span>` : ''}</div>`; }).join('')}
     </div>` : ''}`;
 }
 
@@ -10470,7 +10472,8 @@ async function _classicArchPublishPress(slug) {
     if (!res.ok) {
       const why = res.status === 409 ? 'a publish is already running for this repository'
         : res.status === 401 ? 'sign in to publish — it needs an author' : (out.detail || `HTTP ${res.status}`);
-      await _classicArchPublishLoad(slug, `<span class="text-amber-400">not published · ${_esc(why)}</span>`);
+      const lead = res.status === 403 ? '⊘ not permitted' : 'not published';
+      await _classicArchPublishLoad(slug, `<span class="text-amber-400">${lead} · ${_esc(why)}</span>`);
       return;
     }
     if (out.activity_id) await _pollActivityUntilDone(out.activity_id, { intervalMs: 2000 });

@@ -7,7 +7,8 @@
  *                      (GET .../architecture/publish-plan). The control names its object and count:
  *                      "Publish 3 components · 1 blueprint"; only the parts that exist.
  *   after the press    per-item results from the proof rows the run wrote: done, skipped (already there),
- *                      failed (with Egeria's sentence), partial (written, not all of it confirmed).
+ *                      failed (with Egeria's sentence), partial (written, not all of it confirmed), not permitted
+ *                      (the presser may not change it: Egeria's zones, Brief Z; the rest of the press goes on).
  *   a reject           writes nothing: RE cannot remove an element. A rejected item already in Egeria is said to
  *                      be "still in Egeria" (a count, here; the word is on the row).
  *
@@ -31,8 +32,10 @@ const num = (n) => `<span class="tnum">${esc(n ?? 0)}</span>`;
 const whoAmI = () => (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
 
 /** Result status -> the cue the row shows. */
-const RESULT_CUE = { done: 'measured', skipped: 'unrun', failed: 'error', partial: 'partial' };
-const RESULT_WORD = { done: 'done', skipped: 'already there', failed: 'failed', partial: 'partial' };
+const RESULT_CUE = { done: 'measured', skipped: 'unrun', failed: 'error', partial: 'partial', not_permitted: 'no_access' };
+const RESULT_WORD = { done: 'done', skipped: 'already there', failed: 'failed', partial: 'partial', not_permitted: 'not permitted' };
+/** The words after the cue: a refused row's stored words repeat the cue's word, so it is said once. */
+const resultWords = (r) => (r.status === 'not_permitted' ? String(r.words || '').replace(/^not permitted · /, '') : r.words || '');
 const SHOWN = 8;
 
 /** The list of what will be written, then the press, then the last press's results. `plan` is the server's
@@ -75,7 +78,7 @@ export function architecturePublishHtml(plan, { signedIn = true, pending = false
       <div class="text-provenance text-ink-muted">last publish</div>
       ${last.map((r) => `<div data-result="${esc(r.key)}" data-result-status="${esc(r.status)}" class="py-[1px]">
         ${cue(RESULT_CUE[r.status] || 'unrun', RESULT_WORD[r.status] || r.status, r.words || '')}
-        <span class="text-ink">${esc(r.name || r.key)}</span>${r.words && r.status !== 'done' ? ` <span class="text-provenance text-ink-muted">· ${esc(r.words)}</span>` : ''}</div>`).join('')}
+        <span class="text-ink">${esc(r.name || r.key)}</span>${resultWords(r) && r.status !== 'done' ? ` <span class="text-provenance text-ink-muted">· ${esc(resultWords(r))}</span>` : ''}</div>`).join('')}
     </div>` : '';
   return `<div data-architecture-publish>
     <div class="text-caveat text-ink">${held ? `${num(held)} in Egeria` : 'nothing in Egeria yet'}${
@@ -129,7 +132,8 @@ export async function mountArchitecturePublish(host, slug) {
       const fb = host.querySelector('[data-architecture-feedback]');
       if (fb) fb.innerHTML = err.status === 409 ? cue('running', 'a publish is already running for this repository')
         : err.status === 401 ? cue('unrun', 'sign in to publish — it needs an author')
-          : cue('error', `not published · ${err.message}`);
+          : err.status === 403 ? cue('no_access', 'not permitted', err.message) + ` <span class="text-provenance text-ink-muted">· ${esc(err.message)}</span>`
+            : cue('error', `not published · ${err.message}`);
     }
   }
   const onChange = () => { if (!host.isConnected) { document.removeEventListener(ARCHITECTURE_CHANGED, onChange); return; } if (slug === state.selectedSlug && !pending) reread(); };

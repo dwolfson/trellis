@@ -473,8 +473,10 @@ def _activity_words(registry, kind: str, target: dict, outcome: "RunOutcome") ->
         return status, f"Materialising {n} accepted component(s) of {slug or 'the resource'} failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."
     if kind == "publish_architecture":
         n = (len(target.get("paths") or []) + len(target.get("blueprints") or [])) if isinstance(target, dict) else 0
+        refused = len(target.get("not_permitted") or []) if isinstance(target, dict) else 0
         if ok:
-            return status, f"Published {n} accepted item(s) of {slug or 'the resource'}."
+            return status, (f"Published {n} accepted item(s) of {slug or 'the resource'}"
+                            + (f"; {refused} not permitted." if refused else "."))
         return status, f"Publishing {n} accepted item(s) of {slug or 'the resource'} failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."
     if ok:
         return status, f"{kind.replace('_', ' ')} finished."

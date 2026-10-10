@@ -257,7 +257,7 @@ def curate_materialize(
 
     from resource_explorer.architecture_publish import PublishAlreadyRunning, enqueue_publish, publish_plan
     from resource_explorer.run_queue import requested_by
-    from resource_explorer.workflows.curate import CurationDenied, owner_of, require_curation_rights
+    from resource_explorer.workflows.curate import CurationDenied, require_curation_rights
 
     registry = _registry()
     proj = registry.get(project)
@@ -274,13 +274,13 @@ def curate_materialize(
         raise typer.Exit(code=1)
 
     def authorize(scope: str) -> None:
-        # The same check the route makes, from the same place.
-        require_curation_rights(owner_of(registry, entity_type, project, scope))
+        # The same check the routes make, from the same place (workflows.curate.curation_access).
+        require_curation_rights(registry, entity_type, project, scope)
 
     try:
         out = enqueue_publish(registry, proj, plan, requested_by=requested_by(), authorize=authorize, only={target})
     except CurationDenied as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]not permitted · {exc}[/red]")
         raise typer.Exit(code=3)
     except PublishAlreadyRunning as exc:
         console.print(f"[yellow]{exc}[/yellow]")

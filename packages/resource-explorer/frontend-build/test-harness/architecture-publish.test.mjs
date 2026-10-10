@@ -63,6 +63,31 @@ test('a second press while one runs is said, not hidden', async () => {
   assert.match(norm(publishHost(document).querySelector('[data-architecture-feedback]')), /a publish is already running for this repository/);
 });
 
+test('Brief Z: an item the presser may not change is its own row, "not permitted", with the reason said once', async () => {
+  const words = 'not permitted · zone sales-zone does not grant garygeeke update in Egeria';
+  const after = { ...emptyPlan(), last: { run: 'a1', at: 'x', items: [
+    { key: 'a', kind: 'component', name: 'alpha', status: 'done', words: 'created in Egeria' },
+    { key: 'deployment::core', kind: 'blueprint', name: 'Egeria Deployment Blueprint', status: 'not_permitted', words }] } };
+  const { document } = await setUp({ publishPlan: PLAN(), afterPublish: after });
+  publishHost(document).querySelector('[data-architecture-go]').click();
+  await wait(400);
+  const row = publishHost(document).querySelector('[data-result="deployment::core"]');
+  assert.equal(row.dataset.resultStatus, 'not_permitted');
+  assert.equal(row.querySelector('[data-cue]').dataset.cue, 'no_access', 'a refusal has its own cue, not a failure');
+  assert.equal(norm(row), '? not permitted Egeria Deployment Blueprint · zone sales-zone does not grant garygeeke update in Egeria');
+  assert.equal(publishHost(document).querySelector('[data-result="a"]').dataset.resultStatus, 'done', 'the rest went on');
+});
+
+test('Brief Z: a whole press refused (nothing permitted) says "not permitted" and the reason', async () => {
+  const { document } = await setUp({ publishPlan: PLAN(), publishFail: 403,
+    publishFailDetail: 'zone sales-zone does not grant garygeeke update in Egeria' });
+  publishHost(document).querySelector('[data-architecture-go]').click();
+  await wait(300);
+  const fb = publishHost(document).querySelector('[data-architecture-feedback]');
+  assert.equal(fb.querySelector('[data-cue]').dataset.cue, 'no_access');
+  assert.equal(norm(fb), '? not permitted · zone sales-zone does not grant garygeeke update in Egeria');
+});
+
 test('a verdict recorded on the tree makes Publish re-read its list', async () => {
   const { document, server } = await setUp({ publishPlan: PLAN() });
   const reads = () => server.calls.filter((c) => c.url.endsWith('/architecture/publish-plan')).length;
