@@ -64,6 +64,36 @@ _DEFAULT_USER = "erinoverview"
 _DEFAULT_TIMEOUT = 30
 
 
+def governance_summary(outcomes: dict) -> str:
+    """The governance sentence of the publish summary, each part from its OWN recorded outcome.
+
+    `outcomes` is `{guid: {"ownership": bool, "zone_membership": bool, "zones": [...], ...}}`
+    as `stamp_published` returns it. Ownership and zone membership are reported separately, and
+    "no zone configured" is a deployment choice (zones are left to Egeria), never a failure: only
+    a classification that was attempted and did not land gets the warning.
+    """
+    if not outcomes:
+        return ""
+    n = len(outcomes)
+    owned = sum(1 for o in outcomes.values() if o.get("ownership"))
+    parts: list[str] = []
+    if owned < n:
+        parts.append(f"⚠ Ownership NOT set on {n - owned} of {n} element(s) — published but unowned")
+    else:
+        parts.append(f"Ownership set on {n} element(s)")
+    attempted = [o for o in outcomes.values() if o.get("zones")]
+    if not attempted:
+        parts.append("zones left to Egeria")
+    else:
+        zoned = sum(1 for o in attempted if o.get("zone_membership"))
+        if zoned < len(attempted):
+            parts.append(f"⚠ ZoneMembership NOT set on {len(attempted) - zoned} of {len(attempted)} element(s)"
+                         " — outside the draft zone")
+        else:
+            parts.append(f"ZoneMembership set on {len(attempted)} element(s)")
+    return " (" + "; ".join(parts) + ")"
+
+
 class EgeriaConnectionError(RuntimeError):
     """Raised when Egeria credentials are absent or the platform is unreachable."""
 
@@ -383,16 +413,7 @@ class EgeriaPublisher:
         # about that would be the "we never measured this looks like we
         # measured nothing" failure, so it gets its own sentence in the same
         # summary the counts appear in.
-        governance_warning = ""
-        ungoverned = [
-            guid for guid, outcome in (getattr(self, "last_governance", {}) or {}).items()
-            if not (outcome.get("ownership") and outcome.get("zone_membership"))
-        ]
-        if ungoverned:
-            governance_warning = (
-                f" (⚠ Ownership/ZoneMembership NOT set on {len(ungoverned)} element(s) — "
-                f"published but unowned and outside the draft zone)"
-            )
+        governance_warning = governance_summary(getattr(self, "last_governance", {}) or {})
 
         link_warning = ""
         failed_or_skipped = link_counts.get("links_failed", 0) + link_counts.get("links_skipped", 0)

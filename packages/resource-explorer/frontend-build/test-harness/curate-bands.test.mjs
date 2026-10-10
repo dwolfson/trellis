@@ -158,7 +158,10 @@ test('Curate on a database draws the three bands with the real controls', async 
   // band 1: Findable
   const f = band(document, 'findable');
   assert.match(f.textContent, /Findable/);
-  assert.match(f.textContent, /local · not in Egeria/);
+  assert.match(f.textContent, /kept in RE \(not published\)/);
+  assert.doesNotMatch(f.textContent, /not in Egeria/, 'the head is not a status');
+  assert.equal(f.querySelector('[data-cue]'), null, 'no status cue on the Findable head');
+  assert.match(f.textContent, /RE group/, 'RE\'s local group is not mistaken for the Egeria Project binding');
   assert.match(f.textContent, /Sales platform/, 'current group is named');
   assert.ok(f.querySelector('[data-curate-group-select]') && f.querySelector('[data-curate-group-save]'), 'inline group change control');
   assert.ok(f.querySelector('[data-curate-tag="sales"]'), 'tag chip');

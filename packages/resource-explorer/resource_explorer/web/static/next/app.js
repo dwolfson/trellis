@@ -6803,13 +6803,13 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
       ${groups.map((g, gi) => `<details class="border-b border-chrome-line-soft pb-s1" ${gi < 3 ? 'open' : ''}>
         <summary class="cursor-pointer text-subtab text-chrome-ink"><span class="tnum">${g.count}</span> · ${esc(g.name)}</summary>
         <ul class="m-0 mt-[2px] list-none p-0 pl-s2">
-          ${g.members.map((m) => `<li class="flex items-baseline gap-s2 py-[2px] text-caps">
+          ${g.members.map((m) => `<li data-member-row class="flex flex-wrap items-baseline gap-x-s2 py-[2px] text-caps">
             ${m.children_key || readOnly ? '' : `<input type="checkbox" data-pick="${esc(m.name)}" data-group="${esc(g.name)}" data-detail="${esc(m.detail || '')}" class="shrink-0">`}
             ${m.children_key
               ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>
                  <span class="text-chrome-muted tnum">${m.count ?? ''}</span>`
-              : `<span class="min-w-0 break-words font-mono text-chrome-ink">${esc(m.name)}</span>`}
-            ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}
+              : `<span data-member-name class="min-w-[12ch] max-w-full break-words font-mono text-chrome-ink [overflow-wrap:anywhere]">${esc(m.name)}</span>`}
+            ${m.detail ? `<span data-member-detail class="min-w-0 max-w-full break-words text-chrome-muted [overflow-wrap:anywhere]">${esc(m.detail)}</span>` : ''}
           </li>`).join('')}
           ${g.truncated ? `<li class="text-caps text-chrome-muted">and more — the first ${g.members.length} are shown</li>` : ''}
         </ul>

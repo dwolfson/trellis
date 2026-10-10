@@ -187,9 +187,9 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
           class="${me ? 'cursor-pointer' : 'opacity-60'} bg-transparent p-0 text-ink-muted">×</button></span>`).join(' ')
     : `<span class="text-caveat text-ink-muted">No tags yet.</span>`;
 
-  el.innerHTML = `${bandHead('Findable', `<span class="normal-case tracking-normal">· local · not in Egeria</span>`)}
+  el.innerHTML = `${bandHead('Findable', `<span class="normal-case tracking-normal">· kept in RE (not published)</span>`)}
     <div class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat">
-      <span class="text-ink-muted">group</span>
+      <span class="text-ink-muted">RE group</span>
       <span data-curate-group-now class="text-ink">${esc(groupName(gslug))}</span>
       <select data-curate-group-select aria-label="group" class="rounded-sm border border-rule-strong bg-transparent px-1 text-caveat text-ink">${options.join('')}</select>
       <button type="button" data-curate-group-save class="cursor-pointer bg-transparent p-0 text-accent-ink underline">change</button>
