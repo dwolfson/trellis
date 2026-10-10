@@ -61,3 +61,22 @@ def test_cancel_outbox_row_retires_only_an_unsent_row_on_postgres(db, egeria):
     rows = {r["id"]: r for r in db.list_outbox_rows_for_kinds("repo", "tgp", ce.KINDS)}
     assert rows[pending]["status"] == "cancelled" and rows[pending]["last_error"] == "cancelled: superseded"
     assert rows[done]["status"] == "done"
+
+
+def test_r3_delete_group_with_expected_members_on_postgres(db):
+    db.set_project_group("tgp", "tgsales")
+    with pytest.raises(db.GroupMembersChanged):
+        db.delete_group("tgsales", expected_members=set())
+    assert db.get("tgp").group_slug == "tgsales"
+    assert db.delete_group("tgsales", expected_members={("repo", "tgp")}) == 1
+    assert db.get("tgp").group_slug == "" and db.get_group("tgsales") is None
+    db.create_group("tgsales", "Sales", "")      # the fixture's teardown deletes it
+
+
+def test_r3_a_deferral_never_revives_a_dead_row_on_postgres(db):
+    rid = db.enqueue_outbox_element("repo", "tgp", ce.TAG_DETACH, "AttachedTag::x::t", {"tag": "t"})
+    claimed = db.claim_due_outbox_elements(element_id=rid)[0]["claimed_at"]
+    with db._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET status='dead', claimed_at='' WHERE id=?", (rid,))
+    db.mark_outbox_deferred(rid, "late", claimed_at=claimed)
+    assert db.get_outbox_element(rid)["status"] == "dead"

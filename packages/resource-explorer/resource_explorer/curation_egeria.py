@@ -498,11 +498,12 @@ def group_members(registry, group_slug: str) -> list[tuple[str, str]]:
             + [("filesystem", f.slug) for f in registry.list_filesystems_in_group(group_slug)])
 
 
-def group_delete_refusals(registry, group_slug: str) -> list[dict]:
+def group_delete_refusals(registry, group_slug: str, members: "list[tuple[str, str]] | None" = None) -> list[dict]:
     """A group delete removes every member from the Folio: DETACH (with UPDATE_PROPERTIES) on each member,
-    checked BEFORE anything changes. Returns the refused members with their reasons ([] = allowed)."""
+    checked BEFORE anything changes. `members` is the list the caller read once and will delete with (round 3);
+    None reads it here. Returns the refused members with their reasons ([] = allowed)."""
     out = []
-    for entity_type, member in group_members(registry, group_slug):
+    for entity_type, member in (members if members is not None else group_members(registry, group_slug)):
         why = group_change_refusal(registry, entity_type, member, "")
         if why:
             out.append({"entity_type": entity_type, "slug": member, "reason": why})

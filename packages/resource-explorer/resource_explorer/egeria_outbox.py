@@ -840,7 +840,8 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # make no Egeria call at all. Pending, attempts untouched, so the first drain after
             # the configuration is fixed takes them as if nothing had happened.
             for r in rows:
-                registry.mark_outbox_deferred(r["id"], f"Not attempted - configuration error: {exc}")
+                registry.mark_outbox_deferred(r["id"], f"Not attempted - configuration error: {exc}",
+                                              claimed_at=r.get("claimed_at"))
             log.error("Outbox drain: %s (%d row(s) left pending, none attempted)", exc, len(rows))
             summary["config_error"] = str(exc)
             summary["skipped"] = len(rows)
@@ -892,7 +893,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # landed yet. Hand it back to 'pending' with no attempt burned —
             # see mark_outbox_deferred and OutboxNotReadyError's own
             # docstring for why this is not routed through mark_outbox_failed.
-            registry.mark_outbox_deferred(row["id"], str(exc))
+            registry.mark_outbox_deferred(row["id"], str(exc), claimed_at=row.get("claimed_at"))
             summary["skipped"] += 1
             log.info("Outbox row %s (%s %s) deferred: %s",
                      row["id"], row["element_kind"], row["qualified_name"], exc)

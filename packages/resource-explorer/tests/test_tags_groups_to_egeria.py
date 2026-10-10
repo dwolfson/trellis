@@ -711,3 +711,74 @@ def test_r2_a_batch_import_group_change_is_refused_without_a_caller(registry, cl
     res = import_file(registry, text, accept_changes=[{"line": 2, "field": "group"}])
     assert registry.get("r").group_slug == ""
     assert any("not permitted" in f["message"] for f in res["failures"]), res
+
+
+# ══ round 3 ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+def test_r3_a_deferred_hand_back_never_revives_a_row_that_went_dead_in_between(registry):
+    """The lapse rule may kill a destructive row as dead while its claimer is still deciding to defer it: the
+    deferral must not flip it back to pending (dead is terminal)."""
+    rid = registry.enqueue_outbox_element("repo", "p", ce.TAG_DETACH, "AttachedTag::x::t", {"tag": "t"})
+    rows_claimed = registry.claim_due_outbox_elements(element_id=rid)
+    assert rows_claimed and rows_claimed[0]["status"] == "running"
+    with registry._conn() as conn:          # what _kill_lapsed_destructive_claims does
+        conn.execute("UPDATE egeria_outbox SET status='dead', claimed_at='', last_error=? WHERE id=?",
+                     (ob.CLAIM_LAPSED_DESTRUCTIVE, rid))
+    registry.mark_outbox_deferred(rid, "waiting for an earlier link", claimed_at=rows_claimed[0]["claimed_at"])
+    registry.mark_outbox_deferred(rid, "waiting for an earlier link")
+    row = registry.get_outbox_element(rid)
+    assert row["status"] == "dead" and row["last_error"] == ob.CLAIM_LAPSED_DESTRUCTIVE
+
+
+def test_r3_a_deferral_by_a_claimer_whose_claim_was_taken_over_changes_nothing(registry):
+    rid = registry.enqueue_outbox_element("repo", "p", ce.TAG_LINK, "AttachedTag::x::t", {"tag": "t"})
+    first = registry.claim_due_outbox_elements(element_id=rid)[0]["claimed_at"]
+    with registry._conn() as conn:          # a later claimer re-took the row after the lease
+        conn.execute("UPDATE egeria_outbox SET claimed_at='2099-01-01T00:00:00' WHERE id=?", (rid,))
+    registry.mark_outbox_deferred(rid, "stale claimer", claimed_at=first)
+    row = registry.get_outbox_element(rid)
+    assert row["status"] == "running" and row["claimed_at"] == "2099-01-01T00:00:00"
+
+
+def test_r3_a_refused_post_delete_unlink_is_reported_not_counted_as_zero(client, registry, egeria, monkeypatch):
+    client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    from resource_explorer.workflows import curate as wc
+
+    real = wc.curation_access
+    calls = {"n": 0}
+
+    def first_allowed_then_refused(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:                 # the pre-delete check for the one member
+            return real(*a, **k)
+        return wc.AccessDecision(False, "zone sales-zone does not grant peterprofile detach in Egeria", "zone_not_granted")
+    monkeypatch.setattr(wc, "curation_access", first_allowed_then_refused)
+    r = client.delete("/api/projects/groups/sales", headers=as_user())
+    assert r.status_code == 200, r.text
+    (m,) = r.json()["egeria"]["members"]
+    assert m["slug"] == "p" and "does not grant" in m["refused"]
+
+
+def test_r3_a_member_added_while_the_delete_was_being_checked_is_never_ungrouped_unchecked(client, registry, egeria,
+                                                                                         monkeypatch):
+    client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    real = ce.group_delete_refusals
+
+    def check_then_someone_adds_q(reg, group_slug, members=None):
+        out = real(reg, group_slug, members)
+        reg.set_project_group("q", "sales")          # added between the check and the delete
+        return out
+    monkeypatch.setattr(ce, "group_delete_refusals", check_then_someone_adds_q)
+    r = client.delete("/api/projects/groups/sales", headers=as_user())
+    assert r.status_code == 409, r.text
+    assert "q" in r.json()["detail"]
+    assert registry.get_group("sales") is not None
+    assert registry.get("q").group_slug == "sales" and registry.get("p").group_slug == "sales"
+
+
+def test_r3_registry_delete_group_refuses_when_the_members_are_not_the_ones_checked(registry):
+    registry.set_project_group("p", "sales")
+    with pytest.raises(registry.GroupMembersChanged):
+        registry.delete_group("sales", expected_members={("repo", "q")})
+    assert registry.get_group("sales") is not None and registry.get("p").group_slug == "sales"
+    assert registry.delete_group("sales", expected_members={("repo", "p")}) == 1

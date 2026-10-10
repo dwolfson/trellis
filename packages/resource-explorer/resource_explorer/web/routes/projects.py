@@ -305,32 +305,41 @@ async def delete_group(slug: str, request: Request) -> dict:
     answer reports it and the owner deletes it by hand."""
     import asyncio
 
-    from resource_explorer.curation_egeria import (
-        group_deleted_report, group_delete_refusals, group_members, refusal_words, sync_curation)
+    from resource_explorer import curation_egeria as ce
     from resource_explorer.registry import ProjectRegistry
     author = _require_group_author(request, "delete a group")
     registry = ProjectRegistry()
     if not registry.get_group(slug):
         raise HTTPException(status_code=404, detail=f"Group '{slug}' not found")
     # Round 2: a delete detaches every member's Folio membership, so each member is checked (DETACH) BEFORE
-    # anything changes; one refusal refuses the whole delete and names who.
-    refused = await asyncio.to_thread(group_delete_refusals, registry, slug)
+    # anything changes; one refusal refuses the whole delete and names who. Round 3: the members are read ONCE;
+    # that list is checked and is the one the delete must find (same transaction), else nothing changes.
+    members = ce.group_members(registry, slug)
+    refused = await asyncio.to_thread(ce.group_delete_refusals, registry, slug, members)
     if refused:
-        raise HTTPException(status_code=403, detail=refusal_words(refused))
-    members = group_members(registry, slug)
-    unassigned = registry.delete_group(slug)
+        raise HTTPException(status_code=403, detail=ce.refusal_words(refused))
+    try:
+        unassigned = registry.delete_group(slug, expected_members=set(members))
+    except registry.GroupMembersChanged as exc:
+        changed = ", ".join(f"{t} {s}" for t, s in sorted(exc.added | exc.gone))
+        raise HTTPException(status_code=409, detail=(
+            f"the group's members changed while they were being checked ({changed}); nothing was deleted, "
+            "try again")) from exc
 
     def unlink_members() -> list[dict]:
         out = []
         for entity_type, member in members:
             try:
-                r = sync_curation(registry, entity_type, member, by=author)
-                out.append({"entity_type": entity_type, "slug": member, "queued": len(r.get("queued") or [])})
+                r = ce.sync_curation(registry, entity_type, member, by=author)
+                entry = {"entity_type": entity_type, "slug": member, "queued": len(r.get("queued") or [])}
+                if r.get("refused"):          # round 3: a refusal is said, never folded into "queued: 0"
+                    entry["refused"] = r["refused"]
+                out.append(entry)
             except Exception as exc:  # the RE delete stands; the member's band re-reads the rows
                 out.append({"entity_type": entity_type, "slug": member, "error": str(exc)})
         return out
 
-    egeria = {**group_deleted_report(slug), "members": await asyncio.to_thread(unlink_members)}
+    egeria = {**ce.group_deleted_report(slug), "members": await asyncio.to_thread(unlink_members)}
     return {"removed": slug, "resources_unassigned": unassigned, "egeria": egeria}
 
 
