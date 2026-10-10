@@ -442,7 +442,7 @@ class TestGetDatabaseSurveysCacheSurvivesTheRunQueueWorkerPattern:
                 rq.HANDLERS, "curate_commit",
                 lambda target, result_ref: rq.RunOutcome(state="succeeded"),
             )
-            run_id = worker_registry.enqueue_run("curate_commit", {"curation_id": "noop"})
+            run_id = worker_registry.enqueue_run("curate_commit", {"curation_id": "noop"}, requested_by="itest-curator")
             claimed = rq.claim_and_execute_once(worker_registry)
             assert claimed is not None and claimed["id"] == run_id
             assert worker_registry.get_run(run_id)["state"] == "succeeded"
