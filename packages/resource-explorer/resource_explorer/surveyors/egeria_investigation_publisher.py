@@ -680,8 +680,9 @@ class EgeriaInvestigationPublisher:
         Reads the SAME inputs `_link_members` decides from -- `_asset_guid` for
         "is there anything to attach" and the outbox row keyed by
         `collection_membership_qn` for "was it attached" -- so the answer cannot
-        disagree with what Link members would do. No Egeria call: a `done`
-        outbox row is the proof the attach succeeded.
+        disagree with what Link members would do. No Egeria call: "linked" is
+        the outbox's record of a finished attach (a `done` row), not a live
+        check of Egeria's membership.
 
         Three states per member, and "could not tell" is never folded into
         "not linked" or into a zero count: with no working set Collection to
@@ -692,7 +693,9 @@ class EgeriaInvestigationPublisher:
         inv = self._registry.get_investigation(investigation_slug)
         members = self._registry.list_investigation_members(investigation_slug)
         bound = bool((inv or {}).get("egeria_project_guid"))
-        ws = self._registry.get_or_create_working_set(investigation_slug) if bound else None
+        # Read-only lookup: a GET must not create the Folio row.
+        ws_slug = self._registry.investigation_working_set_slug(investigation_slug) if bound else ""
+        ws = self._registry.get_working_set(ws_slug) if ws_slug else None
         collection_guid = (ws or {}).get("egeria_collection_guid") or ""
         out: list[dict] = []
         rows_by_qn: dict = {}
@@ -712,7 +715,8 @@ class EgeriaInvestigationPublisher:
                 continue
             if not collection_guid:
                 out.append({**base, "state": "could_not_tell",
-                            "reason": "no working set Collection yet"})
+                            "reason": ("no working set Collection yet" if ws
+                                       else "no working set yet")})
                 continue
             asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
             if not asset_guid:
@@ -725,6 +729,9 @@ class EgeriaInvestigationPublisher:
                             "reason": "not attached yet — use Link members"})
             elif row["status"] == "done":
                 out.append({**base, "state": "linked", "reason": ""})
+            elif row["status"] in ("cancelled", "superseded"):
+                out.append({**base, "state": "not_linked",
+                            "reason": "not attached — use Link members"})
             else:
                 out.append({**base, "state": "not_linked", "reason": (
                     f"attach failed ({row.get('last_error') or 'pending'}) — "

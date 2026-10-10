@@ -1969,3 +1969,37 @@ def test_link_status_end_to_end_after_a_promotion_with_stubbed_egeria(client, ma
     # The status agrees with what relink itself reports.
     res = pub.relink_members(slug)
     assert sorted(u["entity_slug"] for u in res.members_unlinkable) == ["lk-bad", "lk-none"]
+
+
+def test_link_status_get_does_not_create_a_working_set(client, made):
+    """A GET must not write: no Folio row appears for a bound investigation."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Read Only Status")
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(inv["slug"], {"status": "linked", "egeria_project_guid": "g"})
+    before = reg.investigation_working_set_slug(inv["slug"])
+    if before:
+        pytest.skip("investigation creation already made a working set")
+    body = client.get(f"/api/investigations/{inv['slug']}/link-status").json()
+    assert reg.investigation_working_set_slug(inv["slug"]) == ""
+    assert body["bound"] is True
+
+
+def test_link_status_cancelled_or_superseded_rows_are_not_called_queued(client, made):
+    slug, reg = _bound_with_members(made, "Cancelled Status", [("lk-c", "asset-c"), ("lk-s", "asset-s"), ("lk-p", "asset-p")])
+    ws = reg.get_or_create_working_set(slug)
+    reg.set_working_set_egeria_collection(ws["slug"], "coll-1")
+    from resource_explorer.egeria_outbox import collection_membership_qn
+    for guid, status in (("asset-c", "cancelled"), ("asset-s", "superseded"), ("asset-p", "pending")):
+        rid = reg.enqueue_outbox_element_once(
+            "investigation", slug, "collection_membership",
+            collection_membership_qn("coll-1", guid),
+            {"collection_guid": "coll-1", "member_guid": guid}, run_id="r")
+        with reg._conn() as conn:
+            conn.execute("UPDATE egeria_outbox SET status = ? WHERE id = ?", (status, rid))
+    _, by = _states(client, slug)
+    for s in ("lk-c", "lk-s"):
+        assert by[s]["state"] == "not_linked"
+        assert "queued for retry" not in by[s]["reason"] and "Link members" in by[s]["reason"]
+    assert "queued for retry" in by["lk-p"]["reason"]
