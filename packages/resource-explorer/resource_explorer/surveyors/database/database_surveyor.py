@@ -1744,17 +1744,25 @@ class DatabaseSurveyor:
                     # Brief D 7f.2: a size Postgres would not give is NULL
                     # ("not read"), never the 0 an `or 0` used to invent.
                     table["size_bytes"] = ts.get("total_bytes")
+                    # Brief D: heap and index sizes beside the total; NULL
+                    # when the database did not give them.
+                    table["table_bytes"] = ts.get("relation_bytes")
+                    table["index_bytes"] = ts.get("index_bytes")
                 elif table.get("source") == "catalog_fallback":
                     # Same reasoning as row_count above: pg_tables (the
                     # source of table_stats) is schema-USAGE-filtered, and a
                     # catalog-fallback table has no size measurement to fall
                     # back to at all — leave it unmeasured rather than 0.
                     table["size_bytes"] = None
+                    table["table_bytes"] = None
+                    table["index_bytes"] = None
                 else:
                     # Same stopgap as row_count above -- this run collected
                     # no size data at all, so keep the prior value.
                     prior = prior_by_key.get(key)
                     table["size_bytes"] = prior.get("size_bytes") if prior else None
+                    table["table_bytes"] = prior.get("table_bytes") if prior else None
+                    table["index_bytes"] = prior.get("index_bytes") if prior else None
                 table["size_pretty"] = ts.get("total_size", "")
 
         # `operations`/`credential_capability` preserve-prior, same stopgap

@@ -736,6 +736,8 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
                 "column_count": len(table_columns),
                 "row_count": _blob_int(row_count),
                 "size_bytes": _blob_int(table.get("size_bytes")),
+                "table_bytes": _blob_int(table.get("table_bytes")),
+                "index_bytes": _blob_int(table.get("index_bytes")),
                 "state": STATE_CATALOG_ESTIMATE if is_catalog_fallback else STATE_MEASURED,
             })
 

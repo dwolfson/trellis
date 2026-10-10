@@ -1502,6 +1502,21 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     return value
 
 
+def index_bytes_total(tables: list[dict]) -> int | None:
+    """Sum of the tables' index sizes, or None.
+
+    Brief D: a total only when EVERY base table's `index_bytes` was read (a
+    plain view owns no storage and is ignored). One unread table makes any
+    sum a confident wrong total, so the whole total is NULL -- shown as "not
+    read", never 0. Same rule as the schema's `total_table_size_bytes`.
+    """
+    base = [t for t in tables
+            if str(t.get("table_type") or t.get("type") or "").upper().replace("_", " ") != "VIEW"]
+    if not base or any(t.get("index_bytes") is None for t in base):
+        return None
+    return sum(int(t["index_bytes"]) for t in base)
+
+
 def _row_count_snapshot_results(registry, slug: str) -> dict:
     """Row counts and sizes by table, from the same `database_tables` detail
     rows schema_inventory reads — its own catalog entry, since "how much
@@ -1549,6 +1564,9 @@ def _row_count_snapshot_results(registry, slug: str) -> dict:
         "measured_count": len(measured),
         "total_row_count": sum(t.get("row_count") or 0 for t in measured) if measured else None,
         "total_size_bytes": sum(t.get("size_bytes") or 0 for t in sized) if sized else None,
+        # Brief D: the index share, a total only when every base table's index
+        # size was read (same rule as the schema's total_table_size_bytes).
+        "total_index_bytes": index_bytes_total(tables),
         # Of `measured_count` above, how many are pg_class.reltuples
         # estimates (catalog-only fallback) rather than a live count —
         # folded into `total_row_count` today (both are integers, and
@@ -1762,6 +1780,7 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         row_total = sum(t.get("row_count") or 0 for t in measured) if measured else None
         sized = [t for t in ts if t.get("size_bytes") is not None]
         bytes_total = sum(t.get("size_bytes") or 0 for t in sized) if sized else None
+        index_total = index_bytes_total(ts)
         is_estimate = any(t.get("state") == STATE_CATALOG_ESTIMATE for t in measured)
         scope_state = (states.get(name) or {}).get("state")
 
@@ -1770,21 +1789,21 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         if scope_state == SCOPE_STRUCTURE_ONLY:
             structure_only_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
-                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
                 "classification": "structure_only", "reason": reason,
             })
             continue
         if scope_state == SCOPE_NOT_VISIBLE:
             no_access_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
-                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
                 "classification": "no_access", "reason": reason,
             })
             continue
         if any(marker in name.lower() for marker in _STAGING_NAME_MARKERS):
             staging_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
-                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
                 "classification": "staging", "reason": reason,
             })
             continue
@@ -1803,7 +1822,7 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         if table_count > 0 and all(t.get("table_type") != "BASE TABLE" for t in ts):
             views_only_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
-                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
                 "classification": "views_only",
             })
             continue
@@ -1839,27 +1858,27 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         if table_count == 0 or scope_state == SCOPE_EMPTY:
             empty_rows.append({
                 "schema": name, "table_count": table_count, "row_total": None,
-                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
                 "classification": "no_tables", "reason": reason,
             })
             continue
         if row_total is None:
             empty_rows.append({
                 "schema": name, "table_count": table_count, "row_total": None,
-                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
                 "classification": "not_measured", "reason": reason,
             })
             continue
         if row_total == 0:
             empty_rows.append({
                 "schema": name, "table_count": table_count, "row_total": 0,
-                "bytes_total": bytes_total, "is_estimate": is_estimate,
+                "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
                 "classification": "empty", "reason": reason,
             })
             continue
         data_rows.append({
             "schema": name, "table_count": table_count, "row_total": row_total or 0,
-            "bytes_total": bytes_total, "is_estimate": is_estimate,
+            "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,
             "classification": "data", "reason": reason,
         })
 
@@ -1969,6 +1988,8 @@ def schema_inventory_tree(registry, slug: str) -> dict | None:
                 "row_count": t.get("row_count"),
                 "row_count_state": t.get("state") or "",
                 "size_bytes": t.get("size_bytes"),
+                "table_bytes": t.get("table_bytes"),
+                "index_bytes": t.get("index_bytes"),
                 "column_count": t.get("column_count") if t.get("column_count") is not None else len(col_nodes),
                 "columns": col_nodes,
             })

@@ -4086,7 +4086,7 @@ export function schemaTreeHtml(schemas) {
     const stamp = s.classification === 'data'
       ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}`
       : s.classification === 'measured'
-        ? `${s.table_count ?? '?'} table(s)${s.row_total != null ? ` · ${Number(s.row_total).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}` : ''}${s.bytes_total != null ? ` · ${fmtBytes(s.bytes_total)}` : ''}`
+        ? `${s.table_count ?? '?'} table(s)${s.row_total != null ? ` · ${Number(s.row_total).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}` : ''}${s.bytes_total != null ? ` · ${fmtBytes(s.bytes_total)}` : ''}${'index_bytes_total' in s ? (s.index_bytes_total == null ? ' · index not read' : ` (index ${fmtBytes(s.index_bytes_total)})`) : ''}`
         : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
     const schemaSrc = nodeSourceLine(s);
     // Found live, `laz_local_adventureworks`, 2026-09-27 (Dan's gate):
@@ -4118,6 +4118,11 @@ export function tableHtml(t) {
     ? 'not measured'
     : `${Number(t.row_count).toLocaleString('en-US')} row(s)${t.row_count_state === 'catalog_estimate' ? ' (est.)' : ''}`;
   const byteStamp = t.size_bytes == null ? 'not measured' : fmtBytes(t.size_bytes);
+  // Brief D: the index share beside the total. Drawn only when the server sent
+  // the field at all (an older payload says nothing); a NULL is "index not
+  // read", never 0 B.
+  const indexStamp = !('index_bytes' in t) ? ''
+    : t.index_bytes == null ? ' · index not read' : ` · index ${fmtBytes(t.index_bytes)}`;
   const kindLabel = _TABLE_KIND_LABELS[t.table_type] || 'table';
   const tableSrc = nodeSourceLine(t);
   // Own name only -- see schemaTreeHtml's comment above on why this is no
@@ -4126,7 +4131,7 @@ export function tableHtml(t) {
     <summary class="cursor-pointer text-ink">
       ${esc(t.name)}
       <span class="text-caveat text-ink-muted"> ${esc(kindLabel)}</span>
-      <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)} · ${t.column_count == null ? 'columns not measured' : `${t.column_count} column(s)`}</span>
+      <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)}${esc(indexStamp)} · ${t.column_count == null ? 'columns not measured' : `${t.column_count} column(s)`}</span>
       ${tableSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(tableSrc)}</span>` : ''}
     </summary>
     <table class="ml-s3 mt-[4px] w-full max-w-[110ch] border-collapse text-caveat">

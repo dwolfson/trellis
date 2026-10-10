@@ -453,3 +453,104 @@ class TestPrefectStepsShareTheScanTime:
             entity_type="filesystem", slug="fs", step_key="x", qualified_name="S::x",
             runner_kwargs={}, upstream=[], guarded_by={}, surveyed_at=SCAN_AT)
         assert "scan_surveyed_at" not in seen
+
+
+# ── per-table heap / index sizes (Brief D, owner-approved columns) ─────────
+
+
+def _sized_stats(names, index=None, heap=None):
+    stats = _statistics(names, sizes={n: 8192 for n in names})
+    for row in stats["table_stats"]:
+        n = row["tablename"]
+        row["relation_bytes"] = (heap or {}).get(n, 4096)
+        row["index_bytes"] = (index or {}).get(n, 4096)
+    return stats
+
+
+class TestIndexBytesColumns:
+    def test_fresh_registry_has_both_columns(self, registry):
+        with registry._conn() as conn:
+            cols = registry._get_table_columns(conn, "database_tables")
+        assert {"table_bytes", "index_bytes"} <= set(cols)
+
+    def test_migration_adds_them_to_a_registry_that_lacks_them_and_is_idempotent(
+            self, tmp_path):
+        import sqlite3
+        from resource_explorer.registry import _DB_FS_DETAIL_TABLE_DDL
+
+        path = str(tmp_path / "old.db")
+        ddl = next(d for d in _DB_FS_DETAIL_TABLE_DDL
+                   if "CREATE TABLE IF NOT EXISTS database_tables" in d)
+        old = "\n".join(l for l in ddl.splitlines()
+                        if "table_bytes" not in l and "index_bytes" not in l
+                        and "Brief D: total" not in l)
+        assert "index_bytes" not in old
+        raw = sqlite3.connect(path)
+        raw.executescript(old)
+        raw.close()
+        for _ in range(2):                      # second start: a no-op, no error
+            reg = ProjectRegistry(db_path=path)
+            with reg._conn() as conn:
+                cols = set(reg._get_table_columns(conn, "database_tables"))
+            assert {"table_bytes", "index_bytes"} <= cols
+
+    def test_a_scan_fills_index_bytes_for_every_sized_table(self, registry, db_entity):
+        s = _surveyor(db_entity, registry)
+        stats = _sized_stats(("orders", "items"), index={"orders": 100, "items": 50},
+                             heap={"orders": 7, "items": 8})
+        with _patched_connection(_FakeConnection(_schema_info("orders", "items"), stats)):
+            s.survey(steps=["schema", "statistics"], surveyed_at=SCAN_AT)
+        by = {t["table_name"]: t for t in registry.query_detail_rows(
+            "database_tables", db_entity.slug, SCAN_AT)}
+        assert by["orders"]["index_bytes"] == 100 and by["orders"]["table_bytes"] == 7
+        assert by["items"]["index_bytes"] == 50 and by["items"]["table_bytes"] == 8
+
+    def test_an_unread_index_size_stays_null(self, registry, db_entity):
+        s = _surveyor(db_entity, registry)
+        stats = _sized_stats(("orders",))
+        stats["table_stats"][0]["index_bytes"] = None
+        with _patched_connection(_FakeConnection(_schema_info(), stats)):
+            s.survey(steps=["schema", "statistics"], surveyed_at=SCAN_AT)
+        t = registry.query_detail_rows("database_tables", db_entity.slug, SCAN_AT)[0]
+        assert t["index_bytes"] is None and t["size_bytes"] == 8192
+
+    def test_a_later_step_of_the_scan_keeps_the_index_sizes(self, registry, db_entity):
+        s = _surveyor(db_entity, registry)
+        with _patched_connection(_FakeConnection(_schema_info(), _sized_stats(("orders",)))):
+            s.survey(steps=["schema", "statistics"], surveyed_at=SCAN_AT)
+        with _patched_connection(_FakeConnection(_schema_info())):
+            s.survey(steps=["schema"], surveyed_at=SCAN_AT)
+        t = registry.query_detail_rows("database_tables", db_entity.slug, SCAN_AT)[0]
+        assert t["index_bytes"] == 4096
+
+    def test_rollup_is_a_sum_only_when_every_base_table_was_read(self):
+        from resource_explorer.surveyors.database.survey_definition_adapter import (
+            index_bytes_total)
+        t = lambda i, ty="BASE TABLE": {"index_bytes": i, "table_type": ty}  # noqa: E731
+        assert index_bytes_total([t(10), t(5)]) == 15
+        assert index_bytes_total([t(10), t(None)]) is None
+        assert index_bytes_total([t(10), t(None, "VIEW")]) == 10, "views own no storage"
+        assert index_bytes_total([]) is None
+        assert index_bytes_total([t(0)]) == 0, "a read zero is a zero"
+
+    def test_change_rates_show_index_drift_separately(self, registry, db_entity):
+        for at, ins, idx in (("2026-10-01T00:00:00", 100, 1000),
+                             ("2026-10-02T00:00:00", 150, 1600)):
+            registry.record_database_survey(
+                slug=db_entity.slug, schema_count=1, table_count=1, column_count=1,
+                survey_data={"schema_info": _schema_info()}, surveyed_at=at)
+            registry.write_detail_rows(
+                "database_tables", db_entity.slug, at,
+                rows=[{"schema_name": "public", "table_name": "orders",
+                       "size_bytes": 5000, "index_bytes": idx, "state": "measured"}],
+                coverage_section="tables")
+            registry.write_detail_rows(
+                "database_table_activity", db_entity.slug, at,
+                rows=[{"schema_name": "public", "table_name": "orders",
+                       "rows_inserted": ins, "rows_updated": 0, "rows_deleted": 0,
+                       "state": "measured"}],
+                coverage_section="table_activity")
+        from resource_explorer.surveyors.database.db_derived import (
+            derive_change_rates, load_inputs)
+        e = derive_change_rates(registry, load_inputs(registry, db_entity.slug))["per_table"][0]
+        assert e["index_bytes_delta"] == 600 and e["size_bytes_delta"] == 0

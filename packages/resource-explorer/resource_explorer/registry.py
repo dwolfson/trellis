@@ -642,6 +642,9 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         column_count         INTEGER DEFAULT NULL,
         row_count            INTEGER DEFAULT NULL,
         size_bytes           INTEGER DEFAULT NULL,
+        -- Brief D: total = table_bytes + index_bytes (+ TOAST). NULL = not read.
+        table_bytes          BIGINT DEFAULT NULL,
+        index_bytes          BIGINT DEFAULT NULL,
         is_populated         INTEGER DEFAULT NULL,
         has_indexes          INTEGER DEFAULT NULL,
         has_rules            INTEGER DEFAULT NULL,
@@ -1021,7 +1024,14 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
 #: being silently absent on any registry created before it.
 _DB_FS_DETAIL_TABLE_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ("database_schemas", ()),
-    ("database_tables", ()),
+    # Brief D: per-table heap and index sizes (pg_relation_size /
+    # pg_indexes_size). Added by the same startup loop as every other column
+    # here (`ProjectRegistry._init_schema`): checked against the live column
+    # list, so idempotent and a no-op once present.
+    ("database_tables", (
+        ("table_bytes", "BIGINT DEFAULT NULL"),
+        ("index_bytes", "BIGINT DEFAULT NULL"),
+    )),
     ("database_columns", ()),
     # stats_source/stats_computed_at (designer review, 2026-09-20) were added
     # to this table's CREATE TABLE after it had already been created against

@@ -97,3 +97,56 @@ def test_the_reset_word_is_read_from_pg_stat_database(pg_conn):
     assert evidence is not None, "pg_stat_database is readable by any role"
     assert evidence == STATS_NEVER_RESET or evidence[:2] == "20"
     assert conn.get_statistics()["stats_reset_evidence"] == evidence
+
+
+def test_index_and_heap_sizes_are_read_for_every_table(pg_conn):
+    conn, schema = pg_conn
+    mine = [r for r in conn._get_table_statistics() if r["schemaname"] == schema]
+    assert len(mine) == N_TABLES + 1
+    for r in mine:
+        assert r["index_bytes"] is not None and r["relation_bytes"] is not None, r
+    t0 = next(r for r in mine if r["tablename"] == "t_000")
+    assert t0["index_bytes"] > 0, "a primary key has an index"
+    assert t0["total_bytes"] >= t0["relation_bytes"] + t0["index_bytes"]
+
+
+def test_migration_adds_the_columns_on_a_postgres_registry_that_lacks_them(pg_test_schema):
+    from resource_explorer.config import get_config
+    from resource_explorer.registry import ProjectRegistry
+    import psycopg2
+
+    cfg = get_config().pgvector
+    schema = f"{pg_test_schema}_dbcols"
+    admin = psycopg2.connect(host=cfg.host, port=cfg.port, dbname=cfg.dbname,
+                             user=cfg.db_user, password=cfg.password)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        cur.execute(f'CREATE SCHEMA "{schema}"')
+    url = (f"postgresql://{cfg.db_user}:{cfg.password}@{cfg.host}:{cfg.port}"
+           f"/{cfg.dbname}?options=-csearch_path%3D{schema}")
+
+    def cols():
+        with admin.cursor() as cur:
+            cur.execute("SELECT column_name, data_type FROM information_schema.columns "
+                        "WHERE table_schema = %s AND table_name = 'database_tables'",
+                        (schema,))
+            return dict(cur.fetchall())
+    try:
+        ProjectRegistry(database_url=url)                       # fresh: has them
+        assert cols().get("index_bytes") == "bigint"
+        assert cols().get("table_bytes") == "bigint"
+        with admin.cursor() as cur:                             # an older registry
+            cur.execute(f'ALTER TABLE "{schema}".database_tables '
+                        f'DROP COLUMN table_bytes, DROP COLUMN index_bytes')
+        assert "index_bytes" not in cols()
+        for _ in range(2):                                      # start twice: idempotent
+            # schema init runs once per PROCESS per URL; forget it, as a restart does
+            ProjectRegistry._pg_schema_ready.discard(url)
+            ProjectRegistry(database_url=url)
+            assert cols().get("index_bytes") == "bigint"
+            assert cols().get("table_bytes") == "bigint"
+    finally:
+        with admin.cursor() as cur:
+            cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()

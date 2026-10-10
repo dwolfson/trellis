@@ -83,3 +83,25 @@ test('a failed publish on a step that records no answered_by still shows the wor
   await app.openRunsList('coco');
   assert.match(text(stepRow(document, 'only')), /✕ publish failed/);
 });
+
+// ── Brief D: index size beside the table size ───────────────────────────────
+
+test('a table line shows its index size, and "index not read" for a NULL, never 0', async () => {
+  const { setUp: _unused } = {};
+  const { makeDomEnvironment: mk, ensureLoaderRegistered: ensure } = await import('./dom-harness.mjs');
+  const { window } = mk();
+  ensure();
+  globalThis.location = window.location;
+  const app = await import('/static/next/app.js');
+  const read = app.tableHtml({ name: 'orders', table_type: 'BASE TABLE', row_count: 5,
+    size_bytes: 8192, index_bytes: 4096, column_count: 1, columns: [] });
+  const unread = app.tableHtml({ name: 'items', table_type: 'BASE TABLE', row_count: 5,
+    size_bytes: 8192, index_bytes: null, column_count: 1, columns: [] });
+  const oldPayload = app.tableHtml({ name: 'old', table_type: 'BASE TABLE', row_count: 5,
+    size_bytes: 8192, column_count: 1, columns: [] });
+  const flat = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  assert.match(flat(read), /index 4(\.0)? ?KB|index 4,096|index 4/i);
+  assert.match(flat(unread), /index not read/);
+  assert.doesNotMatch(flat(unread), /index 0/);
+  assert.doesNotMatch(flat(oldPayload), /index/);
+});

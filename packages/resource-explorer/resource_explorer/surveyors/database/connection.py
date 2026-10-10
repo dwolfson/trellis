@@ -1778,7 +1778,8 @@ class PostgreSQLConnection(DatabaseConnection):
                 c.relname AS tablename,
                 pg_total_relation_size(c.oid) AS total_bytes,
                 pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size,
-                pg_relation_size(c.oid) AS relation_bytes
+                pg_relation_size(c.oid) AS relation_bytes,
+                pg_indexes_size(c.oid) AS index_bytes
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p', 'm')
