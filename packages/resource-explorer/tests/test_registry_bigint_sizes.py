@@ -158,3 +158,30 @@ def test_values_over_int4_round_trip_through_record_database_survey_without_the_
          "live_tuples": BIG, "pending_changes": BIG}])
     act = reg.query_detail_rows("database_table_activity", "d", at)[0]
     assert act["rows_inserted"] == BIG and act["pending_changes"] == BIG
+
+
+@pg
+def test_a_lock_held_by_another_process_fails_init_with_a_clear_message_and_widens_nothing(own_schema):
+    import time
+    name, url, admin = own_schema
+    _start(url)
+    with admin.cursor() as cur:
+        for t, c in _PG_INT4_TO_BIGINT_COLUMNS:
+            cur.execute(f'ALTER TABLE "{name}".{t} ALTER COLUMN {c} TYPE INTEGER')
+    other, _ = _admin()
+    other.autocommit = False
+    try:
+        with other.cursor() as cur:       # a reader holding the table open
+            cur.execute(f'LOCK TABLE "{name}".database_tables IN ACCESS SHARE MODE')
+        t0 = time.monotonic()
+        with pytest.raises(RuntimeError, match=r"database_tables.*another process holds a lock.*"
+                                               r"stop other Resource Explorer processes and restart"):
+            _start(url)
+        assert time.monotonic() - t0 < 30
+    finally:
+        other.rollback()
+        other.close()
+    assert all(_types(name)[k] == "integer" for k in _PG_INT4_TO_BIGINT_COLUMNS)  # rolled back
+    ProjectRegistry._pg_schema_ready.discard(url)
+    _start(url)                                                    # lock gone: succeeds
+    assert all(_types(name)[k] == "bigint" for k in _PG_INT4_TO_BIGINT_COLUMNS)

@@ -1524,6 +1524,7 @@ class ProjectRegistry:
         rewrites it (int4 -> int8 changes the on-disk width)."""
         if not conn.is_postgres:
             return
+        pending = []
         for _table, _col in _PG_INT4_TO_BIGINT_COLUMNS:
             row = conn.execute(
                 "SELECT data_type FROM information_schema.columns "
@@ -1532,10 +1533,27 @@ class ProjectRegistry:
                 (_table, _col),
             ).fetchone()
             if row is not None and row["data_type"] == "integer":
-                log.info("Widening %s.%s INTEGER -> BIGINT", _table, _col)
+                pending.append((_table, _col))
+        if not pending:
+            return
+        # Scoped to this init transaction (SET LOCAL), so it cannot leak to
+        # the pool. A table another process holds a lock on fails fast
+        # instead of queueing behind it and blocking every later reader.
+        conn.execute("SET LOCAL lock_timeout = '10s'")
+        for _table, _col in pending:
+            log.info("Widening %s.%s INTEGER -> BIGINT", _table, _col)
+            try:
                 conn.execute(
                     f"ALTER TABLE {_table} ALTER COLUMN {_col} TYPE BIGINT"
                 )
+            except Exception as exc:
+                if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
+                    raise RuntimeError(
+                        f"Could not widen {_table}.{_col} to BIGINT: another "
+                        f"process holds a lock on {_table}; stop other "
+                        f"Resource Explorer processes and restart."
+                    ) from exc
+                raise
 
     def _get_table_columns(self, conn, table_name: str) -> set[str]:
         """Columns currently on table_name, read through the SAME open
