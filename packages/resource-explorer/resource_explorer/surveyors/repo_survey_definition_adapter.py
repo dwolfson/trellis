@@ -3626,7 +3626,7 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
     verdicts = registry.get_component_verdicts("repo", slug)
     materialized_components = registry.get_materialized_components("repo", slug)
     materialized_blueprints = registry.get_materialized_blueprints("repo", slug)
-    materialized_by_identity = registry.get_materialized_blueprints_by_identity("repo", slug)
+    first_by_key, materialized_by_identity = registry.get_materialized_blueprint_lookups("repo", slug)
     slug_to_scope = _blueprint_slug_to_scope_map(registry, slug, snapshot)
     # The shape each cluster WOULD be written in (container or contents, and why), so the accept dialog
     # can name it before the write. Content-pack elements are only knowable from Egeria at the write.
@@ -3668,7 +3668,7 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
         base = identity_qualified_name("repo", slug, perspective)
         # Both lookups are served from rows read once above (no per-blueprint query): `own` is the row
         # for this (perspective, name) and `other` the newest row recorded under the identity.
-        own = materialized_blueprints.get(f"{perspective}::{name}")
+        own = first_by_key.get(f"{perspective}::{name}")
         if own and own.get("guid"):
             return {"needs_identifier": False, "kind_word": kind_word(perspective), "sentence": ""}
         other = materialized_by_identity.get(base)

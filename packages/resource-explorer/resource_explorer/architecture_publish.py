@@ -182,7 +182,9 @@ def publish_plan(registry, slug: str) -> dict:
     # The snapshot and the recovery results are built once and shared: the results already carry the
     # candidate blueprints, so they are not derived a second time below.
     snapshot = _recovery_snapshot(registry, slug)
-    recovery = _architecture_recovery_results(registry, slug, max_depth=None, snapshot=snapshot) or {}
+    # `__wrapped__`: the memoized form keys on its arguments, and a frozen snapshot is unhashable.
+    recovery = getattr(_architecture_recovery_results, "__wrapped__", _architecture_recovery_results)(
+        registry, slug, max_depth=None, snapshot=snapshot) or {}
     with sharing_recovery_results(recovery):
         comps = [c for c in _components(registry, slug) if (c.get("path") or "") not in _NOT_A_PATH]
     verdicts = _component_verdicts(registry, slug)
