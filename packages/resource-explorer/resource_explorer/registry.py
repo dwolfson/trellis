@@ -8147,7 +8147,7 @@ class ProjectRegistry:
             )
         return (cur.rowcount or 0) > 0
 
-    def mark_outbox_deferred(self, row_id: int, note: str) -> None:
+    def mark_outbox_deferred(self, row_id: int, note: str, *, claimed_at: str | None = None) -> None:
         """Hand one claimed row back to 'pending' without burning an attempt,
         recording WHY: its referent(s) — another annotation this row's
         `AnnotationExtension` link points at — have not been applied yet.
@@ -8164,11 +8164,15 @@ class ProjectRegistry:
         than a bare 'pending' with no explanation.
         """
         with self._conn() as conn:
-            conn.execute(
-                "UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
-                "WHERE id=?",
-                (note[:2000], row_id),
-            )
+            # Only the claim being handed back (Brief T round 3): a row the lapse rule killed as dead in between, or
+            # one a later claimer re-took after the lease, is left exactly as it is. Dead stays terminal.
+            sql = ("UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
+                   "WHERE id=? AND status='running'")
+            params: list = [note[:2000], row_id]
+            if claimed_at:
+                sql += " AND claimed_at=?"
+                params.append(claimed_at)
+            conn.execute(sql, tuple(params))
 
     def complete_publish_run_if_done(self, publish_run_id: str) -> bool:
         """When every `egeria_outbox` row belonging to `publish_run_id` — its
@@ -8390,6 +8394,35 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
+
+    def list_outbox_rows_for_kinds(self, entity_type: str, entity_slug: str,
+                                   kinds: "tuple[str, ...] | list[str]") -> list[dict]:
+        """Every outbox row of these kinds for one resource, newest first (Brief T: the tag and group states are
+        read from these rows). Read-only; no limit, since one resource's curation rows are few."""
+        kinds = list(kinds or [])
+        if not kinds:
+            return []
+        marks = ",".join("?" * len(kinds))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM egeria_outbox WHERE entity_type = ? AND entity_slug = ? "  # noqa: S608
+                f"AND element_kind IN ({marks}) ORDER BY id DESC",
+                (entity_type, entity_slug, *kinds),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def cancel_outbox_row(self, row_id: int, reason: str) -> bool:
+        """Retire ONE row that was never applied (pending, or failed and backing off) because a later decision in
+        RE supersedes it. `running`, `done` and `dead` rows are never changed: a running row may be landing now,
+        a done one already landed, and a dead one is for a person. Returns whether it changed the row."""
+        note = f"cancelled: {reason}" if reason else "cancelled"
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET status = 'cancelled', claimed_at = '', last_error = ?, completed_at = ? "
+                "WHERE id = ? AND status IN ('pending', 'failed')",
+                (note[:2000], datetime.now(timezone.utc).isoformat(), int(row_id)),
+            )
+        return (cur.rowcount or 0) > 0
 
     def get_outbox_element(self, row_id: int) -> dict | None:
         """One outbox row by id, or None. Read-only."""
@@ -13140,14 +13173,40 @@ class ProjectRegistry:
             rows = conn.execute("SELECT * FROM project_groups ORDER BY display_name").fetchall()
         return [ProjectGroup(**dict(r)) for r in rows]
 
-    def delete_group(self, slug: str) -> int:
-        """Delete a group. Member resources are ungrouped, not removed."""
+    class GroupMembersChanged(ValueError):
+        """`delete_group(expected_members=...)` found members other than the ones the caller checked."""
+
+        def __init__(self, added: set, gone: set):
+            self.added, self.gone = added, gone
+            super().__init__(f"the group's members changed: added {sorted(added)}, gone {sorted(gone)}")
+
+    def delete_group(self, slug: str, expected_members: "set[tuple[str, str]] | None" = None) -> int:
+        """Delete a group. Member resources are ungrouped, not removed.
+
+        `expected_members` ({(entity_type, slug)}) is the set the caller checked (Brief T round 3: a group delete
+        detaches each member's Folio membership, so each is access-checked first). Read again in the SAME
+        transaction as the delete; any difference raises `GroupMembersChanged` and nothing changes, so a member
+        added after the check is never ungrouped unchecked."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
-            # Ungroup all resources in this group
-            conn.execute("UPDATE projects SET group_slug = '' WHERE group_slug = ?", (slug,))
-            conn.execute("UPDATE databases SET group_slug = '' WHERE group_slug = ?", (slug,))
-            conn.execute("UPDATE file_systems SET group_slug = '' WHERE group_slug = ?", (slug,))
+            if expected_members is not None:
+                now = {(t, r["slug"]) for t, table in (("repo", "projects"), ("database", "databases"),
+                                                       ("filesystem", "file_systems"))
+                       for r in conn.execute(f"SELECT slug FROM {table} WHERE group_slug = ?",  # noqa: S608
+                                             (slug,)).fetchall()}
+                expected = {(t, self._normalize_slug(s)) for t, s in expected_members}
+                if now != expected:
+                    raise self.GroupMembersChanged(now - expected, expected - now)
+            # Ungroup the resources in this group. With `expected_members`, ONLY those: on Postgres a member committed
+            # by another transaction after the check above would otherwise be swept up by these UPDATEs (READ
+            # COMMITTED re-evaluates the WHERE), ungrouped without its check.
+            for t, table in (("repo", "projects"), ("database", "databases"), ("filesystem", "file_systems")):
+                if expected_members is None:
+                    conn.execute(f"UPDATE {table} SET group_slug = '' WHERE group_slug = ?", (slug,))  # noqa: S608
+                    continue
+                for s_ in sorted(m for k, m in expected if k == t):
+                    conn.execute(f"UPDATE {table} SET group_slug = '' WHERE group_slug = ? AND slug = ?",  # noqa: S608
+                                 (slug, s_))
             cursor = conn.execute("DELETE FROM project_groups WHERE slug = ?", (slug,))
             return cursor.rowcount
 

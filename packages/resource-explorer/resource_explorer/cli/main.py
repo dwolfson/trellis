@@ -904,8 +904,11 @@ def group_assign(
     resource_slug: str = typer.Argument(..., help="Slug of the resource to assign"),
     group_slug: str = typer.Argument(..., help="Group slug to assign it to"),
 ):
-    """Assign a registered resource to a group."""
+    """Assign a registered resource to a group. Needs a signed-in session: the group is a Folio in Egeria, so the
+    change is checked like the web's (Brief T round 2) and reaches Egeria at the resource's next sync."""
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.registry import ProjectRegistry
+    cli_session.require_and_activate(console)
     registry = ProjectRegistry()
     
     if not registry.get_group(group_slug):
@@ -916,22 +919,35 @@ def group_assign(
         if not registry.get(resource_slug):
             console.print(f"[red]Repository '{resource_slug}' not found.[/red]")
             raise typer.Exit(1)
-        registry.set_project_group(resource_slug, group_slug)
+        setter = registry.set_project_group
     elif resource_type == "database":
         if not registry.get_database(resource_slug, allow_unreadable=True):
             console.print(f"[red]Database '{resource_slug}' not found.[/red]")
             raise typer.Exit(1)
-        registry.set_database_group(resource_slug, group_slug)
+        setter = registry.set_database_group
     elif resource_type == "filesystem":
         if not registry.get_filesystem(resource_slug):
             console.print(f"[red]Filesystem '{resource_slug}' not found.[/red]")
             raise typer.Exit(1)
-        registry.set_filesystem_group(resource_slug, group_slug)
+        setter = registry.set_filesystem_group
     else:
         console.print(f"[red]Invalid resource type '{resource_type}'. Use 'repo', 'database', or 'filesystem'.[/red]")
         raise typer.Exit(1)
 
-    console.print(f"[green]{resource_type} '{resource_slug}' → group '{group_slug}'.[/green]")
+    _refuse_group_change(registry, resource_type, resource_slug, group_slug)
+    setter(resource_slug, group_slug)
+    console.print(f"[green]{resource_type} '{resource_slug}' → group '{group_slug}'.[/green] "
+                  "Egeria's Folio follows at the resource's next sync.")
+
+
+def _refuse_group_change(registry, resource_type: str, resource_slug: str, group_slug: str) -> None:
+    """Exit 1 with the reason when curation access refuses the group change (the web route's check)."""
+    from resource_explorer.curation_egeria import group_change_refusal
+
+    why = group_change_refusal(registry, resource_type, resource_slug, group_slug)
+    if why:
+        console.print(f"[red]not permitted · {why}[/red]")
+        raise typer.Exit(1)
 
 
 @groups_app.command(name="unassign")
@@ -939,10 +955,15 @@ def group_unassign(
     resource_type: str = typer.Argument(..., help="Type of resource: repo, database, or filesystem"),
     resource_slug: str = typer.Argument(..., help="Slug of the resource to unassign"),
 ):
-    """Remove a resource from whatever group it belongs to."""
+    """Remove a resource from whatever group it belongs to. Needs a signed-in session (see `group assign`)."""
+    from resource_explorer.cli import session as cli_session
     from resource_explorer.registry import ProjectRegistry
+    cli_session.require_and_activate(console)
     registry = ProjectRegistry()
-    
+
+    from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+    if resource_type in SURVEYED_RESOURCE_TYPES:
+        _refuse_group_change(registry, resource_type, resource_slug, "")
     if resource_type == "repo":
         registry.set_project_group(resource_slug, "")
     elif resource_type == "database":
@@ -961,11 +982,19 @@ def group_remove(
     slug: str = typer.Argument(help="Group slug to delete"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
-    """Delete a group. Member resources are ungrouped, not removed."""
+    """Delete a group. Member resources are ungrouped, not removed. Needs a signed-in session: every member leaves
+    the group's Folio in Egeria (at its next sync), so each is checked first; the Folio itself is never deleted."""
+    from resource_explorer.cli import session as cli_session
+    from resource_explorer.curation_egeria import group_delete_refusals, refusal_words
     from resource_explorer.registry import ProjectRegistry
+    cli_session.require_and_activate(console)
     registry = ProjectRegistry()
     if not registry.get_group(slug):
         console.print(f"[red]Group '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    refused = group_delete_refusals(registry, slug)
+    if refused:
+        console.print(f"[red]{refusal_words(refused)}[/red]")
         raise typer.Exit(1)
     if not yes:
         typer.confirm(f"Delete group '{slug}'? Member resources will be ungrouped.", abort=True)

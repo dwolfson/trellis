@@ -65,12 +65,20 @@ class OutboxClients:
     #: build their own from the row's database when the drain was not given them.
     catalogue_gateway: object | None = None
     registry: object | None = None
+    #: Any pyegeria client carrying the feedback-manager methods (`get_tags_by_name`, `create_informal_tag`,
+    #: `add_tag_to_element`, `remove_tag_from_element`): Brief T's tag kinds. `_default_clients` gives a
+    #: ClassificationExplorer from the same factory, built on first use (`feedback_factory`) so a drain with no
+    #: tag rows builds no extra client.
+    feedback: object | None = None
+    feedback_factory: "Callable[[], object] | None" = None
     #: The user id these clients were built for, so a refusal can say who was refused.
     #: pyegeria's own 401 text names no user for an Egeria-wrapped response.
     acting_as: str = ""
 
     def require(self, name: str):
         client = getattr(self, name, None)
+        if client is None and name == "feedback" and self.feedback_factory is not None:
+            client = self.feedback = self.feedback_factory()
         if client is None:
             raise OutboxApplyError(
                 f"This element needs the {name!r} client, which the drain was not given"
@@ -177,7 +185,10 @@ def _resolve_link_referents(payload: dict, resolve_row_guids) -> dict:
 #: asset — a silent gap the generic annotation/membership/link kinds don't
 #: have, because a bare create is everything their own creators do too.
 _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
-                         "catalogue_schema_attach", "catalogue_schema_leave_out"}
+                         "catalogue_schema_attach", "catalogue_schema_leave_out",
+                         # Brief T: a synthetic relationship key; each creator finds its tag / Folio itself.
+                         "informal_tag_link", "informal_tag_detach",
+                         "group_folio_membership", "group_folio_membership_detach"}
 
 
 #: Outbox kinds whose write ARCHIVES, DELETES or DETACHES something in Egeria. A retry of a destructive write is itself
@@ -188,6 +199,10 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
 DESTRUCTIVE_OUTBOX_KINDS = frozenset({
     "catalogue_schema_leave_out",   # detach the cataloguer target, archive / soft-delete the schema's elements
     "doc_source_unpublish",         # detach and delete the removed source's ExternalReference
+    # Brief T: removing a tag's AttachedTag link, and an asset's membership of its group's Folio. Detaches only:
+    # neither ever deletes the InformalTag or the Folio (curation_egeria's module docstring).
+    "informal_tag_detach",
+    "group_folio_membership_detach",
 })
 NOT_RETRIED = "not retried: destructive write"
 
@@ -307,6 +322,11 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         # The proof rows name the outbox row that produced them. Only these kinds
         # take the extra key: the annotation creators pass the payload on as a body.
         payload = dict(payload, _outbox_id=row.get("id"))
+    elif kind in ("informal_tag_link", "informal_tag_detach", "group_folio_membership",
+                  "group_folio_membership_detach"):
+        # Brief T round 2: a link and an unlink of one key apply in queue order (curation_egeria
+        # `_wait_for_earlier_opposite`), which needs the row's id and key.
+        payload = dict(payload, _outbox_id=row.get("id"), _key=row.get("qualified_name"))
     creator = _CREATORS.get(kind)
     if creator is None:
         raise OutboxApplyError(
@@ -681,6 +701,30 @@ def _create_catalogue_schema_leave_out(clients: "OutboxClients", payload: dict) 
         raise OutboxApplyError(str(exc)) from exc
 
 
+def _create_informal_tag_link(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_tag_link
+
+    return create_tag_link(clients, payload)
+
+
+def _create_informal_tag_detach(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_tag_detach
+
+    return create_tag_detach(clients, payload)
+
+
+def _create_group_folio_membership(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_group_membership
+
+    return create_group_membership(clients, payload)
+
+
+def _create_group_folio_membership_detach(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.curation_egeria import create_group_membership_detach
+
+    return create_group_membership_detach(clients, payload)
+
+
 def _guid_of(result) -> str:
     """pyegeria create_* calls variously return a GUID string, a dict, or
     nothing useful. An empty string is not an error here — the row is still
@@ -709,6 +753,10 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "doc_source_unpublish": _create_doc_source_unpublish,
     "catalogue_schema_attach": _create_catalogue_schema_attach,
     "catalogue_schema_leave_out": _create_catalogue_schema_leave_out,
+    "informal_tag_link": _create_informal_tag_link,
+    "informal_tag_detach": _create_informal_tag_detach,
+    "group_folio_membership": _create_group_folio_membership,
+    "group_folio_membership_detach": _create_group_folio_membership_detach,
 }
 
 
@@ -792,7 +840,8 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # make no Egeria call at all. Pending, attempts untouched, so the first drain after
             # the configuration is fixed takes them as if nothing had happened.
             for r in rows:
-                registry.mark_outbox_deferred(r["id"], f"Not attempted - configuration error: {exc}")
+                registry.mark_outbox_deferred(r["id"], f"Not attempted - configuration error: {exc}",
+                                              claimed_at=r.get("claimed_at"))
             log.error("Outbox drain: %s (%d row(s) left pending, none attempted)", exc, len(rows))
             summary["config_error"] = str(exc)
             summary["skipped"] = len(rows)
@@ -844,14 +893,14 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # landed yet. Hand it back to 'pending' with no attempt burned —
             # see mark_outbox_deferred and OutboxNotReadyError's own
             # docstring for why this is not routed through mark_outbox_failed.
-            registry.mark_outbox_deferred(row["id"], str(exc))
+            registry.mark_outbox_deferred(row["id"], str(exc), claimed_at=row.get("claimed_at"))
             summary["skipped"] += 1
             log.info("Outbox row %s (%s %s) deferred: %s",
                      row["id"], row["element_kind"], row["qualified_name"], exc)
             continue
         except Exception as exc:
             exc_text = _describe_refusal(exc, clients)
-            if row.get("element_kind") in DESTRUCTIVE_OUTBOX_KINDS:
+            if is_destructive_outbox_kind(row.get("element_kind") or ""):
                 # max_attempts=1: this failure is the last attempt. 'dead' is the existing terminal state.
                 status = registry.mark_outbox_failed(row["id"], f"{NOT_RETRIED} · {exc_text}", max_attempts=1)
                 summary["not_retried"] = summary.get("not_retried", 0) + 1
@@ -964,9 +1013,18 @@ def _default_clients(identity=None):
     identity = drain_identity(identity)
     publisher = EgeriaPublisher(identity=identity)
     publisher._connect()
+    factory = getattr(publisher, "_clients", None)     # the publisher's EgeriaClients (one token per identity)
+
+    def feedback_client():
+        from pyegeria import ClassificationExplorer
+
+        return factory.of(ClassificationExplorer)
+
     return (
         OutboxClients(discovery=publisher._discovery, metadata_expert=publisher._metadata_expert,
                       collection_manager=publisher._collection_manager,
+                      # Brief T's tag kinds: the feedback-manager calls, from the same factory and token.
+                      feedback_factory=feedback_client if factory is not None else None,
                       acting_as=identity.client_user or identity.user_id),
         publisher._find_element_guid,
     )

@@ -35,6 +35,10 @@ function makeServer(over = {}) {
     groups: [{ slug: 'sales-platform', display_name: 'Sales platform' }, { slug: 'other', display_name: 'Other' }],
     groupOf: { adventureworks: 'sales-platform' },
     signedIn: true,
+    // Brief T: the server's plan for this resource (GET /api/curate/egeria-state), and what a sync does to it.
+    egeria: { items: [{ kind: 'tag', name: 'sales', label: 'sales', desired: true, state: 'in_egeria', word: 'in Egeria', reason: '', retry: false }], to_send: 0 },
+    egeriaFail: false,
+    onSync: null,
     dropWrites: false,   // known-negative: the server accepts a write and persists nothing
     status: {},          // path-substring -> status to answer instead
     ...over,
@@ -47,6 +51,14 @@ function makeServer(over = {}) {
     const ok = (b, status = 200) => ({ ok: true, status, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     for (const [frag, st] of Object.entries(s.status)) if (u.includes(frag) && method !== 'GET') return err(st, `forced ${st}`);
+    if (method === 'GET' && u.includes('/api/curate/egeria-state/')) {
+      return s.egeriaFail ? err(500, 'state unreadable') : ok(s.egeria);
+    }
+    if (method === 'POST' && u.includes('/api/curate/egeria-sync/')) {
+      if (!s.signedIn) return err(401, 'Sign in');
+      if (s.onSync) s.onSync(s, body);
+      return ok({ ...s.egeria, queued: [1] });
+    }
     const m = u.match(/\/api\/curate\/(tags-detail|tags|feedback|notes)\/(?:[a-z]+)\/([^/?]+)(?:\/([^/?]+))?/);
     if (method === 'GET' && u.endsWith('/api/curate/tags')) return ok(s.allTags);
     if (m) {
@@ -158,9 +170,12 @@ test('Curate on a database draws the three bands with the real controls', async 
   // band 1: Findable
   const f = band(document, 'findable');
   assert.match(f.textContent, /Findable/);
-  assert.match(f.textContent, /kept in RE \(not published\)/);
-  assert.doesNotMatch(f.textContent, /not in Egeria/, 'the head is not a status');
-  assert.equal(f.querySelector('[data-cue]'), null, 'no status cue on the Findable head');
+  assert.match(f.textContent, /tags are public in Egeria · the group is a Folio/, 'Brief T: the head says where they go');
+  assert.doesNotMatch(f.textContent, /kept in RE \(not published\)/);
+  // The head names where tags and the group go; it is not itself a status (the cues are on the items, Brief T).
+  const head = f.firstElementChild;
+  assert.doesNotMatch(head.textContent, /not in Egeria/, 'the head is not a status');
+  assert.equal(head.querySelector('[data-cue]'), null, 'no status cue on the Findable head');
   assert.match(f.textContent, /RE group/, 'RE\'s local group is not mistaken for the Egeria Project binding');
   assert.match(f.textContent, /Sales platform/, 'current group is named');
   assert.ok(f.querySelector('[data-curate-group-select]') && f.querySelector('[data-curate-group-save]'), 'inline group change control');
@@ -415,4 +430,116 @@ test('a band whose read fails shows a visible message, not nothing', async () =>
   assert.match(band(document, 'people').textContent, /Ratings could not be read: boom/);
   assert.ok(band(document, 'findable').querySelector('[data-curate-tag-input]'), 'other bands still draw');
   void server;
+});
+
+/* ── Brief T: each tag and the group carry their Egeria state, from the server's plan ───────────────── */
+
+const egeriaItem = (kind, name, st, extra = {}) => ({
+  kind, name, label: extra.label || name, desired: extra.desired !== false, state: st,
+  word: { in_egeria: 'in Egeria', not_yet: 'not yet (resource not in Egeria)', not_sent: 'not sent yet', pending: 'pending',
+    retrying: 'pending · retrying', failed: 'failed', unlinked: 'unlinked' }[st], reason: extra.reason || '', retry: !!extra.retry,
+});
+
+test('Brief T: a tag chip carries its Egeria state as a glyph cue plus the word, from the plan', async () => {
+  const { document } = await setUp('db', { egeria: { items: [egeriaItem('tag', 'sales', 'in_egeria')], to_send: 0 } });
+  await openCurate(document);
+  const cue = q(document, '[data-curate-tag-state="sales"]');
+  assert.ok(cue, 'the chip has a state cue');
+  assert.equal(cue.dataset.egeriaState, 'in_egeria');
+  assert.equal(cue.dataset.cue, 'catalogued');
+  assert.match(cue.className, /text-state-ok/);
+  assert.ok(cue.querySelector('.font-glyph'), 'a glyph, not only a word');
+  assert.match(cue.textContent, /in Egeria/);
+});
+
+test('Brief T: a resource not in Egeria says "not yet (resource not in Egeria)" on the chip', async () => {
+  const { document } = await setUp('db', { egeria: { items: [egeriaItem('tag', 'sales', 'not_yet')], to_send: 0 } });
+  await openCurate(document);
+  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /not yet \(resource not in Egeria\)/);
+  assert.equal(q(document, '[data-curate-egeria-send]'), null, 'nothing to send');
+});
+
+test('Brief T: a failed unlink shows "failed · reason" with retry; retry POSTs {retry:{kind,name}} and the words come from the re-read', async () => {
+  const items = [egeriaItem('tag', 'old', 'failed', { desired: false, retry: true, reason: 'not retried: destructive write · OMAG-500 busy' })];
+  const { document, server } = await setUp('db', {
+    tags: [],
+    egeria: { items, to_send: 0 },
+    onSync: (srv) => { srv.egeria = { items: [egeriaItem('tag', 'old', 'unlinked', { desired: false })], to_send: 0 }; },
+  });
+  await openCurate(document);
+  const removed = q(document, '[data-curate-removed-tag="old"]');
+  assert.ok(removed, 'a removed tag Egeria still has is listed');
+  assert.match(removed.textContent, /failed · not retried: destructive write · OMAG-500 busy/);
+  assert.equal(q(document, '[data-curate-tag-state="old"]').dataset.cue, 'catalogue_failed');
+  removed.querySelector('[data-curate-egeria-retry]').click();
+  await wait();
+  const [c] = calls(server, 'POST', '/api/curate/egeria-sync/database/adventureworks');
+  assert.ok(c, 'retry POSTs the sync route');
+  assert.deepEqual(c.body, { retry: { kind: 'tag', name: 'old' } });
+  assert.match(q(document, '[data-curate-tag-state="old"]').textContent, /unlinked/);
+  assert.match(q(document, '[data-curate-findable-status]').textContent, /retried tag “old” · Egeria: unlinked/);
+});
+
+test('KNOWN-NEGATIVE Brief T: a retry the server did not carry out does not say unlinked', async () => {
+  const items = [egeriaItem('tag', 'old', 'failed', { desired: false, retry: true, reason: 'busy' })];
+  const { document } = await setUp('db', { tags: [], egeria: { items, to_send: 0 } });   // onSync changes nothing
+  await openCurate(document);
+  q(document, '[data-curate-egeria-retry]').click();
+  await wait();
+  assert.doesNotMatch(q(document, '[data-curate-findable-status]').textContent, /unlinked/);
+  assert.match(q(document, '[data-curate-tag-state="old"]').textContent, /failed · busy/);
+});
+
+test('Brief T: the group line carries the Folio state; a group left behind shows its unlink state', async () => {
+  const { document } = await setUp('db', { egeria: { items: [
+    egeriaItem('tag', 'sales', 'in_egeria'),
+    egeriaItem('group', 'sales-platform', 'pending', { label: 'Sales platform' }),
+    egeriaItem('group', 'other', 'unlinked', { desired: false, label: 'Other' }),
+  ], to_send: 0 } });
+  await openCurate(document);
+  const g = q(document, '[data-curate-group-state]');
+  assert.ok(g && g.dataset.egeriaState === 'pending');
+  assert.match(g.textContent, /pending/);
+  const left = q(document, '[data-curate-left-group="other"]');
+  assert.ok(left);
+  assert.match(left.textContent, /Other/);
+  assert.match(left.textContent, /unlinked/);
+});
+
+test('Brief T: "send to Egeria" appears only when the plan has something not sent, and POSTs an empty body', async () => {
+  const { document, server } = await setUp('db', {
+    egeria: { items: [egeriaItem('tag', 'sales', 'not_sent')], to_send: 1 },
+    onSync: (srv) => { srv.egeria = { items: [egeriaItem('tag', 'sales', 'in_egeria')], to_send: 0 }; },
+  });
+  await openCurate(document);
+  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /not sent yet/);
+  q(document, '[data-curate-egeria-send]').click();
+  await wait();
+  const [c] = calls(server, 'POST', '/api/curate/egeria-sync/database/adventureworks');
+  assert.deepEqual(c.body, {});
+  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /in Egeria/);
+  assert.equal(q(document, '[data-curate-egeria-send]'), null);
+  assert.match(q(document, '[data-curate-findable-status]').textContent, /sent · 0 not sent yet/);
+});
+
+test('KNOWN-NEGATIVE Brief T: an unreadable state says so on every chip, never draws "in Egeria" or nothing', async () => {
+  const { document } = await setUp('db', { egeriaFail: true });
+  await openCurate(document);
+  const cue = q(document, '[data-curate-tag-state="sales"]');
+  assert.ok(cue);
+  assert.match(cue.textContent, /could not read/);
+  assert.doesNotMatch(band(document, 'findable').textContent, /in Egeria(?! ·)/);
+  assert.match(q(document, '[data-curate-egeria-unread]').textContent, /Egeria state could not be read/);
+});
+
+test('Brief T: adding a tag says its Egeria state from the re-read', async () => {
+  const { document } = await setUp('db', {
+    egeria: { items: [egeriaItem('tag', 'sales', 'in_egeria'), egeriaItem('tag', 'pii', 'pending')], to_send: 0 },
+  });
+  await openCurate(document);
+  q(document, '[data-curate-tag-input]').value = 'pii';
+  q(document, '[data-curate-tag-add]').click();
+  await wait();
+  assert.match(q(document, '[data-curate-findable-status]').textContent, /“pii” is on the list · Egeria: pending/);
+  assert.match(q(document, '[data-curate-tag-state="pii"]').textContent, /pending/);
 });

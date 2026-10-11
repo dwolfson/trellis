@@ -522,7 +522,7 @@ export const writeJournal = (slug, body, suggestTo = [], entityType) =>
  * CURATE-UI-DATABASES-IMPLEMENTED.md. Every row from tags-detail, feedback
  * and notes carries `author`, `authored` and `author_label` (never blank).
  * Writes return 401 when nobody is signed in; deleting a signed note is a
- * 409 (append-only). All of it is local: nothing here reaches Egeria. */
+ * 409 (append-only). Ratings and notes are local; tags and the group reach Egeria (Brief T, below). */
 const curatePath = (kind, fn, entityType, slug) =>
   `/api/curate/${kind}/${encodeURIComponent(requireKind(fn, entityType))}/${encodeURIComponent(slug)}`;
 export const getCurateAllTags = () => get('/api/curate/tags');
@@ -540,6 +540,13 @@ export const getCurateNotes = (entityType, slug) =>
   get(curatePath('notes', 'getCurateNotes', entityType, slug));
 export const deleteCurateNote = (noteId) =>
   del(`/api/curate/notes/${encodeURIComponent(noteId)}`);
+/* Brief T: tags are public InformalTags and the RE group is a Folio in Egeria. The state per tag and for the
+ * group comes from the server's plan (curation_egeria.curation_plan), read from the outbox rows; a sync sends what
+ * it names, and `retry` re-sends ONE failed link or unlink as a new write. */
+export const getCurateEgeriaState = (entityType, slug) =>
+  get(curatePath('egeria-state', 'getCurateEgeriaState', entityType, slug));
+export const syncCurateEgeria = (entityType, slug, retry = null) =>
+  post(curatePath('egeria-sync', 'syncCurateEgeria', entityType, slug), retry ? { retry } : {});
 
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
