@@ -413,6 +413,12 @@ def _person(eg, user="dana", profile_type="Person", linked=True):
             eg.links.append((ident, prof))
 
 
+def _signed_in(user):
+    from resource_explorer.egeria_identity import EgeriaIdentity, use_identity
+
+    return use_identity(EgeriaIdentity(user_id=user, token=f"token-{user.strip()}"))
+
+
 def _stamp(user, zones=()):
     from resource_explorer.egeria_clients import Daemon, DaemonReason
     from resource_explorer.egeria_identity import stamp_published
@@ -464,8 +470,9 @@ def test_a_failed_lookup_falls_back_reports_and_never_blocks_the_write(egeria, c
     assert egeria.ownership[0][1]["owner"] == "dana"
     assert result["ownership_form"] == "userId"
     assert result["ownership_note"] == "profile lookup failed: UserIdentity search: ConnectionError: refused"
-    assert actor_lookup_status()["user_id"] == "dana"
-    assert routes.whoami()["owner_lookup"]["reason"] == "UserIdentity search: ConnectionError: refused"
+    assert actor_lookup_status("dana")["user_id"] == "dana"
+    with _signed_in("dana"):
+        assert routes.whoami()["owner_lookup"]["reason"] == "UserIdentity search: ConnectionError: refused"
     assert any("Ownership uses the userId form" in r.getMessage() for r in caplog.records)
     # Round 2: a failure is remembered briefly (one wait per press, not one per element).
     egeria.fail.clear()
@@ -609,12 +616,14 @@ def test_round2_whoami_failure_clears_on_the_next_successful_lookup(egeria):
 
     egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
     _stamp("dana")
-    assert routes.whoami()["owner_lookup"]["user_id"] == "dana"
+    with _signed_in("dana"):
+        assert routes.whoami()["owner_lookup"]["user_id"] == "dana"
     egeria.fail.clear()
     _person(egeria, user="dana")
     egeria_actors._cache.clear()                          # the 60s negative entry expired
     _stamp("dana")                                        # round 3: dana's OWN success clears it
-    assert routes.whoami()["owner_lookup"] is None
+    with _signed_in("dana"):
+        assert routes.whoami()["owner_lookup"] is None
 
 
 # ── round 3 ──────────────────────────────────────────────────────────────
@@ -741,3 +750,71 @@ def test_round4_every_by_name_search_passes_the_name_and_the_bootstrap_adopts(eg
     assert methods == {"get_actor_profiles_by_name", "get_user_identities_by_name"}
     for sent in egeria.searches:
         assert sent["name"] and sent["name"] == sent["body"].get("filter"), sent
+
+
+# ── round 5 ──────────────────────────────────────────────────────────────
+
+def test_round5_a_stuck_flight_older_than_the_timeout_is_replaced(egeria, monkeypatch):
+    """The pyegeria asyncio hang is real: a leader that never returns must not pin the user."""
+    from resource_explorer import egeria_actors
+
+    _person(egeria)
+    egeria.delay = 3.0
+    monkeypatch.setattr(egeria_actors, "ACTOR_LOOKUP_TIMEOUT_SECONDS", 0.2)
+    first = egeria_actors.ownership_for_person("dana")
+    assert first.note == "profile lookup failed: no answer within 0.2s"
+    egeria.delay = 0.0
+    egeria_actors._cache.clear()                          # the 60s negative entry expired
+    second = egeria_actors.ownership_for_person("dana")   # the first leader is still asleep
+    assert second.form == "profile", second.note
+
+
+def test_round5_a_thread_that_cannot_start_resolves_its_flight(egeria, monkeypatch):
+    import threading as _real
+    import types
+
+    from resource_explorer import egeria_actors
+
+    class _NoStart(_real.Thread):
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    _person(egeria)
+    monkeypatch.setattr(egeria_actors, "ACTOR_LOOKUP_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(egeria_actors, "threading",
+                        types.SimpleNamespace(Thread=_NoStart, Event=_real.Event, Lock=_real.Lock))
+    shape = egeria_actors.ownership_for_person("dana")
+    assert shape.note == "profile lookup failed: RuntimeError: can't start new thread"
+    assert "dana" not in egeria_actors._inflight, "an unresolved flight would pin dana"
+    monkeypatch.setattr(egeria_actors, "threading", _real)
+    egeria_actors._cache.clear()
+    assert egeria_actors.ownership_for_person("dana").form == "profile"
+
+
+def test_round5_a_full_page_is_possibly_truncated_never_complete(egeria):
+    from resource_explorer.egeria_actors import ensure_re_identity_in_egeria
+
+    page = [{"elementHeader": {"guid": f"g{i}", "type": {"typeName": "Person"}},
+             "properties": {"qualifiedName": f"Person::p{i}"}} for i in range(100)]
+    egeria.override["get_actor_profiles_by_name"] = page
+    state = ensure_re_identity_in_egeria()
+    assert state["status"] == "could not check" and "possibly truncated" in state["reason"], state
+    assert egeria.writes() == []
+
+    page = [{"elementHeader": {"guid": f"u{i}", "type": {"typeName": "UserIdentity"}},
+             "properties": {"qualifiedName": f"UserIdentity::u{i}", "userId": f"u{i}"}} for i in range(100)]
+    egeria.override = {"get_user_identities_by_name": page}
+    result = _stamp("dana")
+    assert result["ownership_form"] == "userId" and "possibly truncated" in result["ownership_note"]
+
+
+def test_round5_whoami_with_no_caller_shows_no_ones_failure_and_strips_the_caller(egeria):
+    from resource_explorer.egeria_actors import actor_lookup_status
+    from resource_explorer.web.routes import egeria as routes
+
+    egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
+    _stamp("dana")
+    assert routes.whoami()["owner_lookup"] is None, "no caller: never another user's failure"
+    assert actor_lookup_status() is None and actor_lookup_status("  ") is None
+    with _signed_in(" dana "):
+        assert (routes.whoami()["owner_lookup"] or {}).get("user_id") == "dana"

@@ -129,8 +129,14 @@ class _Unreadable(Exception):
     """An Egeria answer RE cannot read as either 'there' or 'not there'."""
 
 
-def _elements(what: str, call: Callable[[], Any]) -> list[dict]:
-    """A search's elements. [] only when Egeria said 'none'; anything unreadable raises."""
+#: The pageSize every by-name search asks for (`_by_name_body`).
+SEARCH_PAGE_SIZE = 100
+
+
+def _elements(what: str, call: Callable[[], Any], page_size: int = SEARCH_PAGE_SIZE) -> list[dict]:
+    """A search's elements. [] only when Egeria said 'none'; anything unreadable raises. A FULL
+    page (round 5) may have more behind it, the element searched for among them: "could not
+    check", never read as complete."""
     try:
         result = call()
     except Exception as exc:  # noqa: BLE001 - classified, never read as "none"
@@ -147,6 +153,8 @@ def _elements(what: str, call: Callable[[], Any]) -> list[dict]:
         bad = [e for e in items if not (_guid(e) and isinstance(_props_or_none(e), dict))]
         if bad:
             raise _Unreadable(f"{what}: Egeria returned {len(items)} element(s), {len(bad)} RE cannot parse")
+        if page_size and len(items) >= page_size:
+            raise _Unreadable(f"{what}: a full page of {len(items)} element(s), possibly truncated")
         return list(items)
     raise _Unreadable(f"{what}: an answer RE cannot read ({type(result).__name__})")
 
@@ -177,7 +185,7 @@ def _by_name_body(name: str, type_name: str) -> dict:
     own qualifiedName/userId/type checks stay regardless. `type_name` is BY_QN_TYPE or
     BY_USER_ID_TYPE (see there)."""
     return {"class": "FilterRequestBody", "filter": name, "metadataElementTypeName": type_name,
-            "graphQueryDepth": 3, "startFrom": 0, "pageSize": 100}
+            "graphQueryDepth": 3, "startFrom": 0, "pageSize": SEARCH_PAGE_SIZE}
 
 
 def _element(what: str, call: Callable[[], Any]) -> dict:
@@ -419,9 +427,10 @@ _lookup_failures: dict[str, dict] = {}
 class _Flight:
     """One lookup in progress for one user; concurrent callers wait on it (round 3)."""
 
-    __slots__ = ("done", "error", "shape")
+    __slots__ = ("done", "error", "shape", "started")
 
     def __init__(self) -> None:
+        self.started = time.monotonic()
         self.done = threading.Event()
         self.shape: Optional[OwnershipShape] = None
         self.error: Optional[BaseException] = None
@@ -443,14 +452,14 @@ def _clear_failure(user_id: str) -> None:
 
 
 def actor_lookup_status(user_id: Optional[str] = None) -> Optional[dict]:
-    """The outstanding failed profile lookup for `user_id` in this process, or None (its last
-    lookup here succeeded, or none failed). With no `user_id` (no signed-in caller), the most
-    recent outstanding failure for anyone, or None."""
+    """The outstanding failed profile lookup for `user_id` (stripped, as `ownership_for_person`
+    strips it) in this process, or None (its last lookup here succeeded, or none failed). With no
+    `user_id` (no signed-in caller) always None: round 5, never another user's failure."""
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return None
     with _cache_lock:
-        if user_id:
-            rec = _lookup_failures.get(user_id)
-        else:
-            rec = next(reversed(_lookup_failures.values()), None)
+        rec = _lookup_failures.get(user_id)
         return dict(rec) if rec else None
 
 
@@ -512,9 +521,13 @@ def _bounded_lookup(user_id: str) -> "OwnershipShape":
     one is abandoned (daemon) and its late answer discarded. Round 3: one thread per USER at a
     time. A caller that finds a lookup for the same user in flight waits on it (each waiter still
     bounded by the timeout) instead of starting another, and the thread closes the client
-    `_lookup` built."""
+    `_lookup` built. Round 5: a flight older than the timeout is replaced (a leader stuck in
+    pyegeria's asyncio hang must not pin the user; its `finally` removes only its own entry), and
+    a thread that cannot start resolves its flight and re-raises."""
     with _cache_lock:
         flight = _inflight.get(user_id)
+        if flight is not None and time.monotonic() - flight.started >= ACTOR_LOOKUP_TIMEOUT_SECONDS:
+            flight = None                                  # stuck: abandon it, start afresh
         leader = flight is None
         if leader:
             flight = _inflight[user_id] = _Flight()
@@ -531,7 +544,15 @@ def _bounded_lookup(user_id: str) -> "OwnershipShape":
                         del _inflight[user_id]
                 flight.done.set()
 
-        threading.Thread(target=run, name=f"re-actor-lookup-{user_id}", daemon=True).start()
+        try:
+            threading.Thread(target=run, name=f"re-actor-lookup-{user_id}", daemon=True).start()
+        except BaseException as exc:
+            with _cache_lock:
+                if _inflight.get(user_id) is flight:
+                    del _inflight[user_id]
+            flight.error = exc
+            flight.done.set()
+            raise
 
     if not flight.done.wait(ACTOR_LOOKUP_TIMEOUT_SECONDS):
         raise _Unreadable(f"no answer within {ACTOR_LOOKUP_TIMEOUT_SECONDS:g}s")
