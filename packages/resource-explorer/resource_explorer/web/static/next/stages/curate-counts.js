@@ -24,10 +24,10 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 /** Contents . N chosen. Repo: files + folders in the scope view's manifest (what `savedCountHtml` prints).
  *  Database: schemas whose effective choice is "catalogue" (what `scopeHeaderText` prints). `view` is the
  *  scope view as the controller holds it; null/undefined = not read yet. */
-export function contentsChosen(kind, view) {
+export function contentsChosen(kind, view, failed = false) {
   if (kind === 'repo') {
     const m = view && view.manifest;
-    if (!m) return READING;
+    if (!m) return failed ? FAILED : READING;
     return count((m.files || 0) + (m.folders || 0));
   }
   if (kind === 'db') {
@@ -40,9 +40,9 @@ export function contentsChosen(kind, view) {
 
 /** Contents . M undecided. Repo: candidate/container rows with no choice of their own. Database: the
  *  server's own `schemas_undecided`. */
-export function contentsUndecided(kind, view) {
+export function contentsUndecided(kind, view, failed = false) {
   if (kind === 'repo') {
-    if (!view || !Array.isArray(view.rows)) return READING;
+    if (!view || !Array.isArray(view.rows)) return failed ? FAILED : READING;
     return count(view.rows.filter((r) => (r.candidate || r.role === 'container') && !r.choice).length);
   }
   if (kind === 'db') {
@@ -85,8 +85,8 @@ export function countWords(c, noun) {
 /** Which counts a leading tab carries, in order. Describe and the Understanding tabs carry none. */
 export const TAB_COUNTS = {
   curate_contents: [
-    { fn: (ctx) => contentsChosen(ctx.kind, ctx.view), noun: 'chosen' },
-    { fn: (ctx) => contentsUndecided(ctx.kind, ctx.view), noun: 'undecided' },
+    { fn: (ctx) => contentsChosen(ctx.kind, ctx.view, ctx.viewFailed), noun: 'chosen' },
+    { fn: (ctx) => contentsUndecided(ctx.kind, ctx.view, ctx.viewFailed), noun: 'undecided' },
   ],
   curate_structure: [
     { fn: (ctx) => structureAwaiting(ctx.kind, ctx.plan, ctx.planFailed), noun: 'awaiting you' },

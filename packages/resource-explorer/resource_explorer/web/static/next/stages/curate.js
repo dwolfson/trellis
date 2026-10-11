@@ -584,12 +584,13 @@ export async function renderCurate(slug) {
     visible: () => visibleRows(scope.view, ui),
   });
   // Everything below that needs only the slug starts NOW, beside the plan, not after it.
-  const scopeLoad = scope.load().catch(() => { scope.view = null; });
+  let scopeFailed = false;
+  const scopeLoad = scope.load().catch(() => { scope.view = null; scopeFailed = true; });
   // The Contents count reads from the selection record as soon as it arrives (the plan can take far longer).
   scopeLoad.then(() => { if (!superseded() && host.isConnected) setCounts(); });
   const setCounts = () => {
     const was = state.curate.counts || {};
-    state.curate.counts = { view: scope.view || null, plan: was.plan || null, planFailed: !!was.planFailed };
+    state.curate.counts = { view: scope.view || null, plan: was.plan || null, planFailed: !!was.planFailed, viewFailed: scopeFailed && !scope.view };
     refreshStageRail();
   };
   // The newest commit record is read beside the plan, so the running-commit line is right after a reload.
@@ -612,7 +613,7 @@ export async function renderCurate(slug) {
     if (superseded()) return;                       // a newer render owns the pane and the prefetch
     dropPrefetch();                                 // nothing will paint it: do not leave it to be read as fresh later
     state.curate.onTabShown = null;                 // and a tab opening must not start it again
-    state.curate.counts = { view: scope.view || null, plan: null, planFailed: true };   // Structure says "not read", not "reading"
+    state.curate.counts = { view: scope.view || null, plan: null, planFailed: true, viewFailed: scopeFailed && !scope.view };   // Structure says "not read", not "reading"
     refreshStageRail();
     if (host.isConnected) eachHost((h) => { h.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">${paneError(`The plan could not be read after ${secs()} s: `, err)}</div>`; });
     return;
@@ -632,7 +633,7 @@ export async function renderCurate(slug) {
   const draw = () => {
     if (superseded() || !host.isConnected) return;
     const current = isCurrentCommit(latest) ? latest : null;
-    state.curate.counts = { view: scope.view || null, plan };
+    state.curate.counts = { view: scope.view || null, plan, viewFailed: scopeFailed && !scope.view };
     // Redraws keep the tree, blueprint and depth-offer nodes (open branches, groups, scroll) instead of re-reading
     // them. Each of these lives in one panel; the map is read before any panel is rewritten.
     const keep = {};

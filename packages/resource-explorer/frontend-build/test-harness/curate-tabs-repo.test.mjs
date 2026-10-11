@@ -46,6 +46,7 @@ function makeServer(over = {}) {
     s.calls.push({ method, url: u, body });
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
+    if (s.scopeFail && u.endsWith('/scope-events') && method === 'GET') return err(500, 'scope boom');
     const scoped = await s.scope.handle(u, method, body, ok, err);
     if (scoped) return scoped;
     if (u.endsWith('/curate/commit')) return ok({ curation: { id: 'c1abcdef', state: 'running', author: 'dan', requested_at: new Date().toISOString(), steps: [{ name: 'a', state: 'running' }, { name: 'b', state: 'pending' }] }, activity_id: 'a1' });
@@ -298,6 +299,17 @@ test('when the plan read fails, the Structure count says "not read" with a cue, 
   assert.doesNotMatch(structure, /reading|\b0\b/);
   assert.ok(document.querySelector('[data-subtab-rail] [data-count-state="failed"][data-cue="error"]'));
   assert.ok(document.querySelector('[data-curate-plan-error]'), 'the pane still says the plan failed');
+});
+
+test('when the selection-record read fails, the Contents count says "not read" with a cue, never 0 and never "reading"', async () => {
+  const { document } = await setUp({ scopeFail: true });
+  await openCurate(document);
+  const rail = norm(document.querySelector('[data-subtab-rail]'));
+  const contents = (rail.match(/Contents(.*?)Structure/) || [, ''])[1];
+  assert.match(contents, /not read/);
+  assert.doesNotMatch(contents, /reading|\b0\b/);
+  assert.ok(document.querySelector('[data-subtab-rail] [data-count-state="failed"][data-cue="error"]'));
+  assert.match(norm([...document.querySelectorAll('[data-subtab-rail] > *')].find((e) => /Structure/.test(e.textContent))), /3 awaiting you/, 'the plan count is unaffected');
 });
 
 /* ── the running-commit line ─────────────────────────────────────────── */
