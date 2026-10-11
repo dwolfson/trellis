@@ -12,9 +12,35 @@ a create writes, the next read returns. Nothing here contacts Egeria.
 """
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 
+import pyegeria
 import pytest
+
+#: The REAL pyegeria classes, captured at import (before any fixture patches the module). Round 4:
+#: every fake method is bound against the real method's signature first, so a call real pyegeria
+#: would reject (a missing required `name`, an unknown keyword) fails here too.
+_REAL = {name: getattr(pyegeria, name) for name in ("ActorManager", "ClassificationExplorer", "MetadataExpert")}
+
+
+def _signature_faithful(fake_cls, real_cls):
+    """Wrap each method `fake_cls` defines (and __init__) so its arguments are first bound
+    against the same method on `real_cls`. A method the real class lacks is an AttributeError."""
+    for attr in [a for a, v in vars(fake_cls).items() if inspect.isfunction(v) and not a.startswith("_")] + ["__init__"]:
+        fake = getattr(fake_cls, attr)
+        real_sig = inspect.signature(getattr(real_cls, attr))
+
+        def checked(self, *args, __fake=fake, __sig=real_sig, __attr=attr, **kwargs):
+            try:
+                __sig.bind(self, *args, **kwargs)
+            except TypeError as exc:
+                raise TypeError(f"{real_cls.__name__}.{__attr}(): {exc}") from None
+            return __fake(self, *args, **kwargs)
+
+        setattr(fake_cls, attr, functools.wraps(fake)(checked))
+    return fake_cls
 
 NPA, NPA_PW = "resourceexplorernpa", "fake-npa-password-for-tests"
 HAND_PROFILE = "3fe25189-f315-4507-90bd-f00f096503a8"
@@ -112,7 +138,7 @@ class FakeEgeria:
             def _search(self, method, name, kw, default_type):
                 self._call(method)
                 body = kw.get("body") or {}
-                eg.searches.append({"method": method, "kwargs": sorted(kw), "body": body})
+                eg.searches.append({"method": method, "kwargs": sorted(kw), "body": body, "name": name})
                 if eg.delay:
                     import time as _t
                     _t.sleep(eg.delay)
@@ -171,7 +197,9 @@ class FakeEgeria:
             def update_metadata_element_properties(self, guid, body):
                 self._call("update_metadata_element_properties")
 
-        return ActorManager, ClassificationExplorer, MetadataExpert
+        return (_signature_faithful(ActorManager, _REAL["ActorManager"]),
+                _signature_faithful(ClassificationExplorer, _REAL["ClassificationExplorer"]),
+                _signature_faithful(MetadataExpert, _REAL["MetadataExpert"]))
 
     def writes(self):
         return [c[1] for c in self.calls if c[1].startswith(("create_", "link_"))]
@@ -684,3 +712,32 @@ def test_round3_waiters_on_a_stuck_lookup_are_still_bounded(egeria, monkeypatch)
     assert _t.time() - t0 < 1.5
     assert len(shapes) == 4 and {s.note for s in shapes} == {"profile lookup failed: no answer within 0.2s"}
     assert len([c for c in egeria.calls if c[1] == "get_user_identities_by_name"]) == 1
+
+
+# ── round 4 ──────────────────────────────────────────────────────────────
+
+def test_round4_the_fake_rejects_what_real_pyegeria_rejects(egeria):
+    """Guard on the fake itself: installed pyegeria's get_actor_profiles_by_name has a REQUIRED
+    `name`; a body-only call is a TypeError there, so it must be one here."""
+    am = pyegeria.ActorManager("view-server", "https://platform", NPA)
+    with pytest.raises(TypeError, match="name"):
+        am.get_actor_profiles_by_name(body={"filter": "x"}, output_format="JSON")
+    with pytest.raises(TypeError):                       # one positional too many
+        am.create_actor_profile({"class": "NewElementRequestBody"}, "extra")
+
+
+def test_round4_every_by_name_search_passes_the_name_and_the_bootstrap_adopts(egeria):
+    """Live probe 2026-10-10: the body-only ITProfile search raised TypeError against real
+    pyegeria, so the bootstrap always read 'could not check'. Each search now passes the name
+    positionally, the same value as the body's filter."""
+    from resource_explorer.egeria_actors import ensure_re_identity_in_egeria
+
+    _hand_made(egeria)
+    _person(egeria)
+    state = ensure_re_identity_in_egeria()
+    assert state["status"] == "present", state.get("reason")
+    assert _stamp("dana")["ownership_form"] == "profile"
+    methods = {s["method"] for s in egeria.searches}
+    assert methods == {"get_actor_profiles_by_name", "get_user_identities_by_name"}
+    for sent in egeria.searches:
+        assert sent["name"] and sent["name"] == sent["body"].get("filter"), sent

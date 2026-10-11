@@ -170,7 +170,10 @@ def _by_name_body(name: str, type_name: str) -> dict:
     """The search body, sent whole. pyegeria 6.1.15's `get_user_identities_by_name` /
     `get_actor_profiles_by_name` map their `metadata_element_type_name` argument onto a
     `metadata_element_type` key that `_async_get_name_request` does not read, so the type filter
-    is silently dropped; a full FilterRequestBody carries `metadataElementTypeName` itself. RE's
+    is silently dropped; a full FilterRequestBody carries `metadataElementTypeName` itself. The
+    name is ALSO passed positionally, the same value as the body's filter: `get_actor_profiles_by_name`
+    requires it (round 4, a live probe: body-only raised TypeError, so the bootstrap could never
+    check), and every by-name call passes it for uniformity; the body still wins. RE's
     own qualifiedName/userId/type checks stay regardless. `type_name` is BY_QN_TYPE or
     BY_USER_ID_TYPE (see there)."""
     return {"class": "FilterRequestBody", "filter": name, "metadataElementTypeName": type_name,
@@ -291,7 +294,7 @@ def ensure_re_identity_in_egeria(client: Any = None) -> dict:
         # 1. The ITProfile, adopted by qualifiedName. Searched across every Referenceable
         #    (BY_QN_TYPE), so an element of another type holding the name is seen and refused.
         profiles = _elements("ITProfile search", lambda: am.get_actor_profiles_by_name(
-            body=_by_name_body(IT_PROFILE_QN, BY_QN_TYPE), output_format="JSON"))
+            IT_PROFILE_QN, body=_by_name_body(IT_PROFILE_QN, BY_QN_TYPE), output_format="JSON"))
         profile = _one_by_qn(profiles, IT_PROFILE_QN, "profile")
         if profile is not None and _type_name(profile) != "ITProfile":
             raise _Refused(f"{IT_PROFILE_QN!r} is a {_type_name(profile) or 'element of unknown type'}, "
@@ -316,9 +319,9 @@ def ensure_re_identity_in_egeria(client: Any = None) -> dict:
         #    by-userId lookups ambiguous.
         qn = user_identity_qn(user_id)
         by_qn = _elements("UserIdentity search", lambda: am.get_user_identities_by_name(
-            body=_by_name_body(qn, BY_QN_TYPE), output_format="JSON"))
+            qn, body=_by_name_body(qn, BY_QN_TYPE), output_format="JSON"))
         by_uid = _elements("UserIdentity search", lambda: am.get_user_identities_by_name(
-            body=_by_name_body(user_id, BY_USER_ID_TYPE), output_format="JSON"))
+            user_id, body=_by_name_body(user_id, BY_USER_ID_TYPE), output_format="JSON"))
         merged = {(_guid(e) or str(i)): e for i, e in enumerate([*by_qn, *by_uid])}
         found = list(merged.values())
         identity = _one_by_qn(found, qn, "UserIdentity")
@@ -473,7 +476,7 @@ def _lookup(user_id: str, client: Any = None) -> OwnershipShape:
 
 def _lookup_with(user_id: str, am: Any) -> OwnershipShape:
     found = _elements("UserIdentity search", lambda: am.get_user_identities_by_name(
-        body=_by_name_body(user_id, BY_USER_ID_TYPE), output_format="JSON"))
+        user_id, body=_by_name_body(user_id, BY_USER_ID_TYPE), output_format="JSON"))
     mine = [e for e in found if _props(e).get("userId") == user_id]
     if not mine:
         return _user_id_form(user_id)
