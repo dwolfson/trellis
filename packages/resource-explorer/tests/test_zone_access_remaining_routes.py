@@ -353,10 +353,13 @@ def test_an_analysis_auto_publish_is_skipped_for_a_requester_not_permitted(regis
         f"not permitted · zone {SECURED} does not grant test-caller update in Egeria"
 
 
-def test_a_run_nobody_asked_for_is_left_to_egeria(registry, monkeypatch):
-    """No caller (the scheduler's own cadence): the service's own write, checked by Egeria against the daemon."""
+def test_a_run_nobody_asked_for_proceeds_only_with_no_zone_in_use(registry, monkeypatch):
+    """Round 2 (HIGH 1): no requester (a schedule with no recorded creator, an unattributed queue row) never runs on
+    the service account's rights: open with no zone in use, refused with zones in use."""
     from resource_explorer.workflows import curate as wc
 
     fake = _install(monkeypatch)
+    assert wc.person_write_refusal(registry, "repo", "p") == ""             # g-p has no zone: open
     _zone(fake, "g-p", ["dbas"])
-    assert wc.person_write_refusal(registry, "repo", "p") == "" and fake.calls == []
+    assert wc.person_write_refusal(registry, "repo", "p") == \
+        f"not permitted · {wc.NO_REQUESTER_WORDS}, and zone {SECURED} is in use"

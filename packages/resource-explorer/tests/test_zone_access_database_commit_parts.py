@@ -123,9 +123,10 @@ def test_one_refused_schema_is_skipped_and_the_rest_are_written_and_the_next_rea
     assert again["attach"] == ["archive"] and [r["schema"] for r in again["not_permitted"]] == ["sales"]
 
 
-def test_the_run_rechecks_an_element_the_press_could_not_see(world):
-    """`a_b` is already in Egeria (made outside RE) but RE has no row for it: the press cannot know its zones,
-    the run finds it by qualified name exactly as the attach would adopt it, and refuses it."""
+def test_an_element_rE_has_no_row_for_is_checked_at_the_press_and_in_the_run(world):
+    """`a_b` is already in Egeria (made outside RE) but RE has no row for it: the press resolves it by qualified
+    name through the gateway exactly as the run and the attach do (round 2, LOW 6), so the preview counts what
+    the run writes, and the run refuses it again."""
     reg = world["registry"]
     db = reg.get_database("db")
     adopted = world["fake"].create_schema_element(db, "a_b", "")
@@ -133,11 +134,12 @@ def test_the_run_rechecks_an_element_the_press_could_not_see(world):
     choose(world, "a_b", "catalogue")
     choose(world, "archive", "catalogue")
     out, rec = press(world)
-    assert out["preview"]["not_permitted"] == []           # the press had no element to check
+    assert [r["schema"] for r in out["preview"]["not_permitted"]] == ["a_b"]
+    assert out["preview"]["attach"] == ["archive"]
     assert adopted not in {t.element_guid for t in world["fake"].targets}
     assert {t.element_guid for t in world["fake"].targets} == {guid_of(world, "archive")}
     np = [x for x in reg.list_catalogue_commit_proofs("db") if x["proof"] == cc.P_NOT_PERMITTED]
-    assert [x["schema_name"] for x in np] == ["a_b"]
+    assert [x["schema_name"] for x in np] == ["a_b"]           # the press's refusal, recorded by the run
 
 
 def test_every_part_refused_is_a_403_with_the_reason(world):
@@ -219,7 +221,8 @@ def test_the_run_refuses_the_whole_commit_when_the_database_itself_is_not_permit
     rec = cc.execute_commit(world["registry"], out["curation"]["id"], gateway=world["fake"])
     assert step(rec, "publish_elements")["state"] == "failed"
     assert step(rec, "publish_elements")["detail"].startswith(f"not permitted · zone {SECURED} does not grant {ME}")
-    assert rec["state"] == "failed" and world["fake"].calls[calls:] == []        # nothing sent to Egeria
+    assert rec["state"] == "failed"
+    assert all(c[0] == "read_element" for c in world["fake"].calls[calls:])     # read, nothing sent to Egeria
 
 
 def test_an_anonymous_viewer_is_not_checked_part_by_part_and_cannot_press(world):

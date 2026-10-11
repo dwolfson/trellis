@@ -51,3 +51,16 @@ test('nothing permitted: the button says only "not permitted", and no blocker se
   assert.equal(p.querySelectorAll('[data-scope-blocker]').length, 0);
   assert.equal(p.querySelector('[data-scope-commit-why]').textContent.trim(), '⚠ not permitted');
 });
+
+test('refused whole with the ISSUE-117 block too: the block stays visible as a cue and a short word', () => {
+  const block = 'Egeria archives the whole database tree when any part of it is archived';
+  const pv = base({ can_commit: false, all_refused: true, attach: [], blockers: [`not permitted · ${REASON}`],
+    also_blocked: [{ word: 'ISSUE-117 block', reason: `hr: ${block}` }] });
+  const p = panel(pv);
+  const also = [...p.querySelectorAll('[data-scope-also-blocked]')];
+  assert.equal(also.length, 1);
+  const c = also[0].querySelector('[data-cue]');
+  assert.equal(c.getAttribute('data-cue'), 'human');
+  assert.equal(c.getAttribute('title'), `hr: ${block}`, 'the reason is on demand');
+  assert.ok(also[0].textContent.includes('ISSUE-117 block') && !also[0].textContent.includes('archives'));
+});

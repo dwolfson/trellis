@@ -1298,6 +1298,14 @@ class EgeriaResync:
         return {"contexts_cleared": len(finding.items),
                 "undetermined": len(res.undetermined)}
 
+    def _refusal(self, entity_type: str, slug: str, write: str = "publish") -> str:
+        """Brief Z2 round 2: the per-resource access check every repair write asks, as the person who pressed
+        Apply (`resource_access`), or, run unattended by the scheduler, the no-requester rule (open only with no
+        zone in use). "" = proceed, else the resource's own words "not permitted · <reason>"."""
+        from resource_explorer.workflows.curate import person_write_refusal
+
+        return person_write_refusal(self._registry, entity_type, slug, write)
+
     def _publish_one(self, slug: str, steps) -> dict:
         """`_publish_one_unlogged`, plus a durable record of any failure.
 
@@ -1391,12 +1399,19 @@ class EgeriaResync:
         only what actually succeeded — a repair that says it did 27 when it did
         9 is the exact class of claim this module exists to stop making.
         """
-        results = [self._publish_one(s, steps) for s in slugs]
+        results, skipped = [], []
+        for s in slugs:
+            why = self._refusal("repo", s)
+            if why:                       # Brief Z2 round 2: skipped with its own words, the rest proceed
+                skipped.append({"slug": s, "words": why})
+                continue
+            results.append(self._publish_one(s, steps))
         failed = [r for r in results if not r["ok"]]
         return {
             "attempted": len(results),
             "published": len(results) - len(failed),
             "failed": len(failed),
+            "not_permitted": skipped,
             "steps": list(steps) if steps else "full survey",
             "errors": [{"slug": r["slug"], "error": r["error"]} for r in failed][:20],
         }
@@ -1421,12 +1436,16 @@ class EgeriaResync:
         for inv in self._registry.list_investigations():
             if not inv.get("egeria_project_guid"):
                 continue
-            r = pub.relink_members(inv["slug"])
+            r = pub.relink_members(
+                inv["slug"], refusal=lambda m: self._refusal(m["entity_type"], m["entity_slug"], "link"))
             linked += len(r.members_linked)
             unlinkable += len(r.members_unlinkable)
             per_inv[inv["slug"]] = {
                 "linked": len(r.members_linked),
                 "unlinkable": len(r.members_unlinkable),
+                "not_permitted": [{"entity_type": m.get("entity_type"), "slug": m.get("entity_slug"),
+                                   "words": m["reason"]} for m in r.members_unlinkable
+                                  if str(m.get("reason", "")).startswith("not permitted")],
                 "errors": r.errors,
             }
         return {"members_linked": linked, "members_unlinkable": unlinkable,

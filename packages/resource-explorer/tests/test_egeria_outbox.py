@@ -22,6 +22,15 @@ from resource_explorer.egeria_outbox import (
 )
 from resource_explorer.registry import Project, ProjectRegistry
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch)
+
 # Brief I: these tests drive the drain mechanics, as the background loop does: a declared daemon job.
 pytestmark = pytest.mark.usefixtures("as_daemon")
 

@@ -140,8 +140,11 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
     4. Zones in use: Egeria's own answer, emulated (`zone_access.zone_grants`, mirroring
        `OpenMetadataAccessSecurityConnector.validateZoneAccess`) for EVERY operation in `operations`: a verdict
        needs UPDATE_PROPERTIES (`VERDICT_OPERATIONS`); a Publish item needs what its write performs
-       (`publish_operations`). The zones evaluated are the element's own when it has any (exactly what Egeria
-       checks); otherwise the zones RE will give it (`configured_zones_for`).
+       (`publish_operations`). An element already in Egeria is judged on ITS zones only (Brief Z2 round 2, as
+       Egeria does: an existing element with no zones is open, whatever RE configures); an ANCHORED member is
+       judged on its anchor's zones with the anchor operation, plus READ on the member
+       (`zone_access.ANCHOR_OPERATIONS`, citing validateUserForAnchor*). An element not in Egeria yet is judged
+       on the zones RE will create it in (`configured_zones_for`).
     5. Anything unreadable (Egeria unreachable, a zone, control or account read fails, RE's own row): DENIED,
        "could not check access in Egeria (<reason>)". Never open by default when zones might apply.
 
@@ -167,18 +170,17 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
     user = identity.user_id
     reader = reader or EgeriaAccessReader()
     try:
-        configured = configured_zones_for(registry, entity_type, slug)
         guid = element_guid if element_guid is not None else element_guid_for(registry, entity_type, slug, scope_locator)
-        owners = maintainers = None
-        element_zones: list[str] = []
         if guid:
-            element_zones, owners, maintainers = reader.element(guid)
-        zones = element_zones or configured
-        if not zones:
-            return AccessDecision(True, "", BASIS_NO_ZONES)
-        verdict = zone_grants(user, zones, control_for=reader.control, account_for=lambda: reader.account(user),
-                              owners=owners, maintainers=maintainers, operations=ops,
-                              creating=not guid and CREATE_OPERATION in ops)
+            verdict, zones = _existing_element_verdict(user, guid, ops, reader)
+            if verdict is None:
+                return AccessDecision(True, "", BASIS_NO_ZONES)
+        else:
+            zones = configured_zones_for(registry, entity_type, slug)
+            if not zones:
+                return AccessDecision(True, "", BASIS_NO_ZONES)
+            verdict = zone_grants(user, zones, control_for=reader.control, account_for=lambda: reader.account(user),
+                                  operations=ops, creating=CREATE_OPERATION in ops)
     except (AccessUnreadable, _RegistryUnreadable) as exc:
         return AccessDecision(False, f"could not check access in Egeria ({exc})", BASIS_UNREADABLE)
     if verdict.allowed:
@@ -191,6 +193,44 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
         False, f"zone {secured} does not grant {user} {word} in Egeria" if len(verdict.secured) == 1
         else f"zones {secured} do not grant {user} {word} in Egeria",
         BASIS_ZONE_REFUSED, tuple(zones))
+
+
+def _existing_element_verdict(user: str, guid: str, ops: tuple[str, ...], reader):
+    """Egeria's answer for an element that is already in Egeria: (verdict, zones), or (None, []) when no zone
+    applies at all (open). Raises `AccessUnreadable`.
+
+    Its own anchor (no `Anchors`, or anchorGUID = itself): `validateZoneAccess` on its own zones, with its own
+    owners and maintainers (validateUserForElement*, :1306-1620, :2540). An anchored member: each operation is
+    checked on the ANCHOR's zones as Egeria's validateUserForAnchor* does (`zone_access.ANCHOR_OPERATIONS`), and
+    where Egeria also asks it, READ on the member's own zones. No zone on either: open (Egeria :1205)."""
+    from resource_explorer.zone_access import ANCHOR_OPERATIONS, READ_OPERATION, ZoneVerdict, zone_grants
+
+    member = reader.element(guid)
+    account = lambda: reader.account(user)  # noqa: E731
+    if not member.anchor:
+        if not member.zones:
+            return None, []
+        return zone_grants(user, member.zones, control_for=reader.control, account_for=account,
+                           owners=member.owners, maintainers=member.maintainers, operations=ops), list(member.zones)
+    anchor = reader.element(member.anchor)
+    if not anchor.zones and not member.zones:
+        return None, []
+    last = ZoneVerdict(True)
+    needs_read = False
+    for op in ops:
+        anchor_op, user_maintains, read_member = ANCHOR_OPERATIONS.get(op, (op, False, False))
+        needs_read = needs_read or read_member
+        last = zone_grants(user, anchor.zones, control_for=reader.control, account_for=account,
+                           owners=anchor.owners, maintainers=[user] if user_maintains else anchor.maintainers,
+                           operations=(anchor_op,))
+        if not last.allowed:
+            return last, list(anchor.zones)
+    if needs_read:
+        read = zone_grants(user, member.zones, control_for=reader.control, account_for=account,
+                           owners=member.owners, maintainers=member.maintainers, operations=(READ_OPERATION,))
+        if not read.allowed:
+            return read, list(member.zones)
+    return last, list(anchor.zones or member.zones)
 
 
 def publish_operations(in_egeria: bool, *, attaches: bool = False) -> tuple[str, ...]:
@@ -260,19 +300,56 @@ def require_resource_access(registry: ProjectRegistry, entity_type: str, slug: s
         raise CurationDenied(d.reason)
 
 
-def person_write_refusal(registry: ProjectRegistry, entity_type: str, slug: str, write: str = "publish") -> str:
-    """The run-time re-check at an automatic write (an analysis or Survey Definition run's auto-publish): "" when it
-    may proceed, else "not permitted · <reason>".
+class WriteNotPermitted(RuntimeError):
+    """A write refused at run time (Brief Z2 round 2), e.g. on an element adopted by qualifiedName. Its message
+    is the item's words, "not permitted · <reason>". Deliberately NOT a PermissionError: the web maps those to
+    401 "sign in", and this is a refusal of someone who is signed in (or of a run nobody asked for)."""
+
+
+def zones_in_use(registry: ProjectRegistry, entity_type: str, slug: str, *, reader=None,
+                 element_guid: str | None = None) -> list[str]:
+    """The zones that govern a write to this resource, with nobody to judge (Brief Z2 round 2): its element's
+    zones (an anchored member: its anchor's) when it is in Egeria, else the zones RE would create it in. `[]` =
+    no zone in use (open, the owner's rule). Raises `AccessUnreadable` / `_RegistryUnreadable`."""
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    reader = reader or EgeriaAccessReader()
+    guid = element_guid if element_guid is not None else element_guid_for(registry, entity_type, slug, "")
+    if not guid:
+        return configured_zones_for(registry, entity_type, slug)
+    facts = reader.element(guid)
+    if facts.anchor:
+        return list(reader.element(facts.anchor).zones or facts.zones)
+    return list(facts.zones)
+
+
+NO_REQUESTER_WORDS = "no person asked for this run"
+
+
+def person_write_refusal(registry: ProjectRegistry, entity_type: str, slug: str, write: str = "publish", *,
+                         element_guid: str | None = None) -> str:
+    """The run-time re-check at an automatic write (an analysis or Survey Definition run's auto-publish, a
+    scheduled run): "" when it may proceed, else "not permitted · <reason>".
 
     When a PERSON asked for the run (a signed-in request, or a queued run whose `requested_by` names someone:
-    run_queue sets the caller to them) the same `resource_access` decides. A run nobody asked for (the scheduler's
-    own cadence, an unattributed queue row) is the service's own write, which Egeria checks against the daemon
-    itself; nothing is emulated for it here (a gap the Brief Z2 inventory names)."""
+    run_queue sets the caller to them) the same `resource_access` decides. A run with NO requester (a schedule
+    with no recorded creator, an unattributed queue row) would otherwise write on RE's service account's rights,
+    which nobody can be judged by (Brief Z2 round 2): it proceeds only when no zone is in use for the resource
+    (the owner's "if zones aren't being used then it is open"); with zones in use, or when that cannot be read,
+    it is refused."""
+    from resource_explorer.zone_access import AccessUnreadable
+
     who = _caller_identity()
-    if who is None or not (who.user_id or "").strip():
-        return ""
     try:
-        d = resource_access(registry, entity_type, slug, write)
+        if who is None or not (who.user_id or "").strip():
+            zones = zones_in_use(registry, entity_type, slug, element_guid=element_guid)
+            if not zones:
+                return ""
+            return (f"not permitted · {NO_REQUESTER_WORDS}, and zone{'s' if len(zones) != 1 else ''} "
+                    f"{', '.join(zones)} {'are' if len(zones) != 1 else 'is'} in use")
+        d = resource_access(registry, entity_type, slug, write, element_guid=element_guid)
+    except (AccessUnreadable, _RegistryUnreadable) as exc:
+        return f"not permitted · could not check access in Egeria ({exc})"[:300]
     except Exception as exc:  # noqa: BLE001 - a failure is a refusal with its reason, never a pass
         return f"not permitted · could not check access ({type(exc).__name__}: {exc})"[:300]
     return "" if d.allowed else f"not permitted · {d.reason}"

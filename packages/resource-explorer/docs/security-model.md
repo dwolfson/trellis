@@ -360,9 +360,22 @@ as the requester; a schema not permitted is skipped as "not permitted ·
 <reason>" and the rest proceed. Destructive paths stay behind the ISSUE-117
 block, with the access check in front of it, so a refusal is said before the
 block would be. An automatic publish at the end of an analysis or Survey
-Definition run asks again as the person who requested the run; a run nobody
-requested (the scheduler's own cadence) is RE's service account writing, and
-Egeria checks that account itself.
+Definition run asks again as the person who requested the run. A run nobody
+requested (a schedule, whose creator RE does not record yet; an unattributed
+queue row) never writes on RE's service account's rights: it proceeds only
+while no zone is in use for the resource. `runs enqueue` attributes a run that
+may publish to the signed-in person only.
+
+**Anchors and existing elements (round 2).** An element already in Egeria is
+judged on its own zones only, as Egeria does: one with no zones is open,
+whatever RE configures (RE's configured zones apply to an element it is about
+to create). An anchored member (its `Anchors.anchorGUID` names another
+element, as a schema's names its database) is judged as Egeria's
+`validateUserForAnchor*` judges it: the operation on the anchor's zones
+(ATTACH, DETACH, DELETE_MEMBER for a delete, CREATE, UPDATE_PROPERTIES,
+CLASSIFY, PUBLISH) plus READ on the member itself. An element adopted by
+qualifiedName (the repository publisher, the database commit) is checked
+before it is written.
 
 ---
 

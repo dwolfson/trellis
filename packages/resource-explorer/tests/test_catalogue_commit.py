@@ -530,7 +530,9 @@ def test_schema_collision_a_b_and_aXb_is_flagged_before_the_press_and_disables_i
     assert not p["can_commit"] and "name collision" in p["blockers"][0]
     with pytest.raises(cc.CommitBlocked) as err:
         cc.start_commit(world["registry"], "db", ME, gateway=fake)
-    assert err.value.status == 409 and fake.calls == []                       # refused before any Egeria call
+    # refused before any Egeria WRITE. Brief Z2 round 2: the press's access check resolves each chosen schema by
+    # qualified name (the run's own read, so the preview counts what the run writes); those are reads only.
+    assert err.value.status == 409 and all(c[0] == "read_element" for c in fake.calls), fake.calls
     # the way out: leave the wildcard-bearing schema out; the plain name beside it is no hazard
     choose(world, "a_b", "leave_out")
     choose(world, "aXb", "catalogue")

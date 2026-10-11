@@ -711,10 +711,14 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
   const dis = (why) => `disabled title="${esc(why)}"`;
   const reason = !me ? signInReason : commitWhyNot(preview, declared);
   const refused = (preview.refused || []).map((r) => `<div data-scope-refused="${esc(r.schema)}" class="text-ink">${glyphSpan('human')} ${esc(r.text)}</div>`).join('');
-  const collisions = (preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-right text-ink">${esc(c.text)}</div>`).join('');
+  const collisions = (preview.all_refused ? [] : preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-right text-ink">${esc(c.text)}</div>`).join('');
   // Brief Z2: a part the person may not change is a cue and a short word; the reason is on demand (hover).
   const notPermitted = (preview.not_permitted || []).map((r) => `<div data-scope-not-permitted="${esc(r.schema)}" data-write="${esc(r.write || '')}" class="text-ink">${cue('no_access', 'not permitted', r.reason)} ${esc(r.schema)}</div>`).join('');
   const leave = (preview.leave_out || []).filter((r) => r.form !== 'not_permitted').map((r) => `<div data-scope-leave-out="${esc(r.schema)}" data-form="${esc(r.form)}" class="${r.blocked ? 'text-ink' : 'text-ink-muted'}">${r.blocked ? `${glyphSpan('human')} ` : ''}${esc(r.text)}</div>`).join('');
+  // Round 2: refused whole, the other blockers stay visible, each a cue and a short word (reason on hover).
+  const alsoBlocked = preview.all_refused
+    ? (preview.also_blocked || []).map((b) => `<div data-scope-also-blocked class="text-right text-caveat text-ink">${cue('human', b.word, b.reason)}</div>`).join('')
+    : '';
   const blockers = (preview.all_refused ? [] : preview.blockers || []).map((b) => `<div data-scope-blocker class="text-ink">${glyphSpan('human')} ${esc(b)}</div>`).join('');
   const off = !!reason;
   const sent = ui && ui.polling ? '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>' : '';
@@ -726,7 +730,7 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
       <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
         <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
         ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
-        ${collisions}${blockers}
+        ${collisions}${blockers}${alsoBlocked}
         <label class="flex min-w-0 max-w-full cursor-pointer items-start gap-[4px] break-words text-right text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
       </div>
     </div>

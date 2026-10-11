@@ -357,6 +357,11 @@ def runs_cancel(run_id: str = typer.Argument(help="Run id")):
     raise typer.Exit(code=1)
 
 
+#: Run kinds that may write to Egeria (an analysis or Survey Definition run auto-publishes when the resource has an
+#: assigned Egeria Project): `runs enqueue` attributes them to the signed-in person only (Brief Z2 round 2).
+PUBLISHING_KINDS = frozenset({"analysis_run", "survey_definition_run", "database_analysis_run"})
+
+
 @runs_app.command("enqueue")
 def runs_enqueue(
     kind: str = typer.Argument(help="analysis_run | survey_definition_run | scouting_scan | stage_batch | discovery_expand"),
@@ -400,7 +405,19 @@ def runs_enqueue(
     # person could then hold every worker slot. So: `--requested-by` wins when
     # given (a script attributing on someone's behalf), otherwise the signed-in
     # user, and only a genuinely signed-out shell falls through to "".
-    cli_session.activate(cli_session.resolve_identity()[1])
+    if kind in PUBLISHING_KINDS:
+        # Brief Z2 round 2: these runs may publish to Egeria, and the run re-checks curation access as its
+        # requester. So the requester must be the person at this shell: a session is required, and a
+        # --requested-by naming anyone else is refused (it would borrow their grants).
+        identity = cli_session.require_and_activate(console)
+        me = (getattr(identity, "user_id", "") or run_queue.requested_by() or "").strip()
+        if requested_by and requested_by.strip() != me:
+            console.print(f"[red]--requested-by {requested_by!r} is not the signed-in user ({me!r}): a run that "
+                          "may publish to Egeria is attributed to the person who queues it[/red]")
+            raise typer.Exit(code=1)
+        requested_by = me
+    else:
+        cli_session.activate(cli_session.resolve_identity()[1])
     attributed_to = requested_by or run_queue.requested_by()
     if not attributed_to:
         console.print(

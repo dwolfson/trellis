@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +63,10 @@ log = logging.getLogger(__name__)
 #:   DETACH             validateUserForElementDetach :1639-1694, on BOTH ends (Brief Z2: a leave-out's target removal)
 #:   DELETE             validateUserForElementDelete :2540-2566 (archive, soft delete or purge: Brief Z2's leave-out
 #:                      and bulk delete, both still behind the ISSUE-117 block)
+#:   READ               the member side of every anchored-member check (validateUserForAnchorAttach :2129-2135)
+#:   DELETE_MEMBER      validateUserForAnchorMemberDelete :2481-2500 (on the ANCHOR's zones)
+READ_OPERATION = "READ"
+DELETE_MEMBER_OPERATION = "DELETE_MEMBER"
 CREATE_OPERATION = "CREATE"
 UPDATE_OPERATION = "UPDATE_PROPERTIES"
 ATTACH_OPERATION = "ATTACH"
@@ -79,6 +83,8 @@ OPERATION_WORDS = {
     ATTACH_OPERATION: "attach",
     DETACH_OPERATION: "detach",
     DELETE_OPERATION: "delete",
+    DELETE_MEMBER_OPERATION: "delete (anchored member)",
+    READ_OPERATION: "read",
     CLASSIFY_OPERATION: "classify",
     PUBLISH_OPERATION: "publish (zone change)",
 }
@@ -216,6 +222,38 @@ def zone_grants(user_id: str, zones: Iterable[str], *,
     return last
 
 
+#: Brief Z2 round 2: what Egeria checks on the ANCHOR when the element written is an anchored member (its
+#: `Anchors.anchorGUID` names another element), by the operation on the member, and whether the member is then
+#: also checked for READ. OpenMetadataAccessSecurityConnector.java at egeria af400039c2:
+#:   CREATE            validateUserForAnchorMemberCreate :1965-1990  CREATE on the anchor, maintainer = the user
+#:   UPDATE_PROPERTIES validateUserForAnchorMemberUpdate :2010-2035  UPDATE_PROPERTIES on the anchor, maintainer = the user
+#:   ATTACH            validateUserForAnchorAttach :2100-2145         ATTACH on the anchor (maintainer = the user), READ on the member
+#:   DETACH            validateUserForAnchorDetach :2162-2207         DETACH on the anchor (maintainer = the user), READ on the member
+#:   CLASSIFY          validateUserForAnchorClassify :2346-2400       CLASSIFY on the anchor, the anchor's own maintainers
+#:   PUBLISH           validateUserForAnchorClassify :2346-2370       PUBLISH on the anchor (a zone change), the anchor's maintainers
+#:   DELETE            validateUserForAnchorMemberDelete :2481-2520   DELETE_MEMBER on the anchor (maintainer = the user), READ on the member
+#: (operation on the member) -> (operation on the anchor, the user is the maintainer, READ on the member too)
+ANCHOR_OPERATIONS = {
+    CREATE_OPERATION: (CREATE_OPERATION, True, False),
+    UPDATE_OPERATION: (UPDATE_OPERATION, True, False),
+    ATTACH_OPERATION: (ATTACH_OPERATION, True, True),
+    DETACH_OPERATION: (DETACH_OPERATION, True, True),
+    CLASSIFY_OPERATION: (CLASSIFY_OPERATION, False, False),
+    PUBLISH_OPERATION: (PUBLISH_OPERATION, False, False),
+    DELETE_OPERATION: (DELETE_MEMBER_OPERATION, True, True),
+}
+
+
+class ElementFacts(NamedTuple):
+    """What a zone decision needs from one element: (zones, owners, maintainers, anchor). `anchor` is the
+    `Anchors.anchorGUID` when it names ANOTHER element ('' when the element is its own anchor or has none)."""
+
+    zones: list
+    owners: Optional[list]
+    maintainers: Optional[list]
+    anchor: str = ""
+
+
 # ── reading the element, the controls and the account from Egeria ─────────────────────────────────────
 
 def _string_array(classification: dict, name: str) -> Optional[list[str]]:
@@ -236,9 +274,33 @@ def _classifications(element: dict) -> list[dict]:
             if isinstance(c, dict)]
 
 
-def element_facts(element: Any) -> tuple[list[str], Optional[list[str]], Optional[list[str]]]:
-    """(zones, owners, maintainers) of a raw metadata element. Raises `AccessUnreadable` when the answer is
-    not an element (so "unreadable" is never read as "no zones").
+def _anchor_of(element: dict) -> str:
+    """The `Anchors` classification's anchorGUID ('' with no Anchors). Raises `AccessUnreadable` for an Anchors
+    whose anchor RE cannot read: an unknown anchor is never "its own anchor"."""
+    for c in _classifications(element):
+        if c.get("classificationName") != "Anchors":
+            continue
+        cp = c.get("classificationProperties") or c.get("properties") or {}
+        if not isinstance(cp, dict):
+            raise AccessUnreadable("an Anchors classification with unreadable properties")
+        value = cp.get("anchorGUID")
+        if isinstance(value, str):
+            return value
+        pv = (cp.get("propertyValueMap") or {}).get("anchorGUID")
+        if isinstance(pv, dict) and isinstance(pv.get("primitiveValue"), str):
+            return pv["primitiveValue"]
+        strings = cp.get("propertiesAsStrings")
+        if isinstance(strings, dict) and isinstance(strings.get("anchorGUID"), str):
+            return strings["anchorGUID"]
+        if value is None and "anchorGUID" in cp:
+            return ""                       # an explicit null anchor: no anchor
+        raise AccessUnreadable("an Anchors classification whose anchorGUID RE cannot read")
+    return ""
+
+
+def element_facts(element: Any) -> ElementFacts:
+    """(zones, owners, maintainers, anchor) of a raw metadata element. Raises `AccessUnreadable` when the
+    answer is not an element (so "unreadable" is never read as "no zones").
 
     owners: the `Ownership` classification's `userIds` (what `isUserAnOwner` reads), None when absent.
     maintainers: `versions.maintainedBy` when Egeria returned it, else None (no maintainer groups).
@@ -260,7 +322,12 @@ def element_facts(element: Any) -> tuple[list[str], Optional[list[str]], Optiona
         if isinstance(versions, dict) and isinstance(versions.get("maintainedBy"), list):
             maintainers = [str(m) for m in versions["maintainedBy"]]
             break
-    return zones, owners, maintainers
+    from resource_explorer.catalogue_gateway import _guid_of
+
+    anchor = _anchor_of(element)
+    if anchor and anchor == _guid_of(element):
+        anchor = ""                         # its own anchor: its own zones decide
+    return ElementFacts(zones, owners, maintainers, anchor)
 
 
 def _metadata_expert():
@@ -414,6 +481,11 @@ class EgeriaAccessReader:
         todo = [g for g in dict.fromkeys(guids) if g and g not in self._elements]
         if todo:
             self._elements.update(read_elements(todo))
+            # Brief Z2 round 2: an anchored member is judged on its anchor, so the anchors are read too, together.
+            anchors = [f.anchor for g in todo if isinstance(f := self._elements.get(g), ElementFacts) and f.anchor
+                       and f.anchor not in self._elements]
+            if anchors:
+                self._elements.update(read_elements(anchors))
 
     @contextmanager
     def check(self, guids: Iterable[str] = ()):
@@ -428,7 +500,7 @@ class EgeriaAccessReader:
             if not self._cache_elements and not self._checks:
                 self._elements.clear()
 
-    def element(self, guid: str) -> tuple[list[str], Optional[list[str]], Optional[list[str]]]:
+    def element(self, guid: str) -> ElementFacts:
         got = self._elements.get(guid)
         if got is None:
             got = read_elements([guid]).get(guid) or AccessUnreadable(f"the element {guid[:8]}: no answer")

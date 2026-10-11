@@ -9,9 +9,13 @@ from __future__ import annotations
 AVAILABLE = {"userAccountStatus": "AVAILABLE", "userAccountType": "EMPLOYEE", "securityGroups": [], "securityRoles": []}
 
 
-def element(guid: str, zones=(), owners=None) -> dict:
-    """A raw metadata element in the live shape, with Egeria's array encoding for zones and owners."""
+def element(guid: str, zones=(), owners=None, anchor: str = "") -> dict:
+    """A raw metadata element in the live shape, with Egeria's array encoding for zones and owners, and (Brief Z2
+    round 2) an `Anchors` classification naming `anchor` when given."""
     classes = []
+    if anchor:
+        classes.append({"classificationName": "Anchors", "classificationProperties": {"propertyValueMap": {
+            "anchorGUID": {"primitiveValue": anchor}}}})
     if zones:
         classes.append({"classificationName": "ZoneMembership", "classificationProperties": {"propertyValueMap": {
             "zoneMembership": {"arrayValues": {"propertiesAsStrings": {str(i): z for i, z in enumerate(zones)}}}}}})

@@ -6,6 +6,15 @@ import pytest
 from resource_explorer.registry import TARGET_ANALYSIS, TARGET_SURVEY, Project
 
 
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch, caller_if_none="zone2-tester")
+
+
 def test_a_survey_can_be_scheduled(pg_registry):
     """The whole point: until 2026-08-28 a schedule could only name an
     analysis, so a Survey Definition could be authored, listed and run by hand

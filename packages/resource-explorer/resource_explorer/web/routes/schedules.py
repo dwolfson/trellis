@@ -205,6 +205,13 @@ def save_schedule(entity_type: str, slug: str, entry: ScheduleEntry) -> dict:
                    f"'{TARGET_ANALYSIS}' or '{TARGET_SURVEY}'")
     registry = ProjectRegistry()
     _require_resource(registry, entity_type, slug)
+    if entry.enabled:
+        # Brief Z2 round 2: a scheduled run publishes what it measures (auto-publish when the resource has an
+        # Egeria Project), so the person creating the schedule must be allowed to publish the resource. The run
+        # itself has no requester (the creator is not recorded: that needs DDL), so it follows the no-requester
+        # rule at each run: open only while no zone is in use.
+        from resource_explorer.web.routes.curate import require_resource_write
+        require_resource_write(registry, entity_type, slug, "publish")
     registry.save_schedule(
         entity_type=entity_type,
         entity_slug=slug,
