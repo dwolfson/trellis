@@ -86,51 +86,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _ensure_schema(conn) -> None:
-    """Create this feature's tables if they are not there.
-
-    `CREATE TABLE IF NOT EXISTS` and nothing else — no `ALTER` to a table
-    another session's code also writes. Several Claude sessions and two apps
-    share this database; a purely additive schema cannot break any of them,
-    and that property is worth more here than tidiness.
-    """
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS work_lists (
-            slug            TEXT PRIMARY KEY,
-            display_name    TEXT NOT NULL,
-            description     TEXT NOT NULL DEFAULT '',
-            entity_type     TEXT NOT NULL DEFAULT 'repo',
-            investigation   TEXT NOT NULL DEFAULT '',
-            created_by      TEXT NOT NULL DEFAULT '',
-            created_at      TEXT NOT NULL,
-            derived_from    TEXT NOT NULL DEFAULT '',
-            egeria_guid     TEXT NOT NULL DEFAULT '',
-            published_at    TEXT NOT NULL DEFAULT ''
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS work_list_members (
-            work_list_slug  TEXT NOT NULL,
-            entity_slug     TEXT NOT NULL,
-            rationale       TEXT NOT NULL DEFAULT '',
-            confidence      INTEGER,
-            added_at        TEXT NOT NULL,
-            PRIMARY KEY (work_list_slug, entity_slug)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS work_list_runs (
-            set_id          TEXT NOT NULL,
-            run_id          TEXT NOT NULL,
-            work_list_slug  TEXT NOT NULL DEFAULT '',
-            entity_slug     TEXT NOT NULL,
-            analysis_id     TEXT NOT NULL,
-            enqueued_at     TEXT NOT NULL,
-            PRIMARY KEY (set_id, run_id)
-        )
-    """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_work_list_runs_set ON work_list_runs(set_id)")
+# The work-list tables are created by ProjectRegistry._init_schema (a migration), not here.
 
 
 class WorkLists:
@@ -159,7 +115,6 @@ class WorkLists:
         slugs = list(dict.fromkeys(entity_slugs))
         now = _now()
         with self._conn() as conn:
-            _ensure_schema(conn)
             conn.execute(
                 "INSERT INTO work_lists (slug, display_name, description, entity_type,"
                 " investigation, created_by, created_at, derived_from)"
@@ -178,7 +133,6 @@ class WorkLists:
 
     def get(self, slug: str) -> dict | None:
         with self._conn() as conn:
-            _ensure_schema(conn)
             row = conn.execute(
                 "SELECT * FROM work_lists WHERE slug = ?", (slug,)).fetchone()
             if not row:
@@ -229,7 +183,6 @@ class WorkLists:
 
     def list_all(self, *, investigation: str = "") -> list[dict]:
         with self._conn() as conn:
-            _ensure_schema(conn)
             if investigation:
                 rows = conn.execute(
                     "SELECT * FROM work_lists WHERE investigation = ?"
@@ -253,7 +206,6 @@ class WorkLists:
         investigation was current at save time; this is the one later write.
         The caller checks that the investigation exists."""
         with self._conn() as conn:
-            _ensure_schema(conn)
             conn.execute("UPDATE work_lists SET investigation = ? WHERE slug = ?",
                          (investigation, slug))
 
@@ -261,7 +213,6 @@ class WorkLists:
                    rationale: str = "", confidence: int | None = None) -> None:
         """Add a member, or update the reason it is there."""
         with self._conn() as conn:
-            _ensure_schema(conn)
             existing = conn.execute(
                 "SELECT 1 FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
                 (slug, entity_slug)).fetchone()
@@ -278,7 +229,6 @@ class WorkLists:
 
     def remove_member(self, slug: str, entity_slug: str) -> None:
         with self._conn() as conn:
-            _ensure_schema(conn)
             conn.execute(
                 "DELETE FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
                 (slug, entity_slug))
@@ -292,7 +242,6 @@ class WorkLists:
         nobody meant to spend.
         """
         with self._conn() as conn:
-            _ensure_schema(conn)
             conn.execute("DELETE FROM work_list_members WHERE work_list_slug = ?", (slug,))
             conn.execute("DELETE FROM work_lists WHERE slug = ?", (slug,))
 
@@ -358,7 +307,6 @@ class WorkLists:
             )
             enqueued.append({"run_id": run_id, "entity_slug": entity_slug})
         with self._conn() as conn:
-            _ensure_schema(conn)
             for row in enqueued:
                 conn.execute(
                     "INSERT INTO work_list_runs (set_id, run_id, work_list_slug,"
@@ -378,7 +326,6 @@ class WorkLists:
         a cached count would guarantee.
         """
         with self._conn() as conn:
-            _ensure_schema(conn)
             rows = conn.execute(
                 "SELECT wr.run_id, wr.entity_slug, wr.analysis_id, wr.enqueued_at,"
                 "       r.state, r.error, r.result_ref, r.started_at, r.finished_at"

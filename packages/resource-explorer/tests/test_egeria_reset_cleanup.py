@@ -36,9 +36,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("REGISTRY_DATABASE_URL", url)
     monkeypatch.setenv("PGVECTOR_PORT", "1")
     reg = ProjectRegistry(db_path=str(db))
-    with reg._conn() as c:
-        from resource_explorer import work_lists
-        work_lists._ensure_schema(c)
     seed(reg)
     return {"reg": reg, "dir": tmp_path / "plans", "name": "reset_test.db"}
 
