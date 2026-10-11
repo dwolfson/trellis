@@ -85,7 +85,8 @@ def whoami() -> dict:
 
     `identity_in_egeria` (7h): this process's last startup check of RE's ITProfile/UserIdentity
     (`{status: present|created|could not check|not checked, reason?, words}`), and
-    `owner_lookup`: the last failed person-profile lookup here, or None."""
+    `owner_lookup`: the signed-in user's outstanding failed person-profile lookup here (with no
+    signed-in user, the most recent one for anyone), or None."""
     from resource_explorer.config import get_config
     from resource_explorer.egeria_actors import actor_lookup_status
     from resource_explorer.egeria_clients import daemon_identity_status, last_egeria_identity
@@ -100,7 +101,7 @@ def whoami() -> dict:
         "last_egeria_call": last_egeria_identity(caller_user_id()),
         "daemon": daemon_identity_status(),
         "identity_in_egeria": _identity_in_egeria(),
-        "owner_lookup": actor_lookup_status(),
+        "owner_lookup": actor_lookup_status(caller_user_id() or None),
     }
 
 

@@ -22,6 +22,21 @@ HAND_IDENTITY = "4152cba3-dce2-4367-a074-54d155a8b444"
 NONE = "No elements found"
 
 
+#: Egeria's type hierarchy, as far as these tests reach (OpenMetadataType: Person, Team and
+#: ITProfile are ActorProfiles; ActorProfile, UserIdentity and GlossaryTerm are Referenceables).
+SUPERTYPE = {"Person": "ActorProfile", "Team": "ActorProfile", "ITProfile": "ActorProfile",
+             "ActorProfile": "Referenceable", "UserIdentity": "Referenceable",
+             "GlossaryTerm": "Referenceable"}
+
+
+def _is_a(type_name, want):
+    while type_name:
+        if type_name == want:
+            return True
+        type_name = SUPERTYPE.get(type_name)
+    return False
+
+
 class FakeEgeria:
     """The actor graph, and every call that reached the pyegeria boundary."""
 
@@ -35,6 +50,7 @@ class FakeEgeria:
         self.searches: list[dict] = []               # what each by-name search sent
         self.override: dict[str, object] = {}        # method -> canned answer
         self.delay = 0.0
+        self.closed: list[str] = []                  # class of each client RE closed
         self._n = 0
 
     def add(self, type_name, guid=None, **props):
@@ -58,9 +74,11 @@ class FakeEgeria:
                     out["userIdentities"] = [{"relatedElement": self._shape(i, depth=False)} for i in ids]
         return out
 
-    def by_name(self, name, kinds):
+    def by_name(self, name, type_name):
+        """Like Egeria's getRootElementsByName: `metadataElementTypeName` and its subtypes only."""
         hits = [g for g, e in self.elements.items()
-                if e["type"] in kinds and name in (e["props"].get("qualifiedName"), e["props"].get("userId"))]
+                if _is_a(e["type"], type_name)
+                and name in (e["props"].get("qualifiedName"), e["props"].get("userId"))]
         return [self._shape(g) for g in hits] or NONE
 
     def classes(self):
@@ -80,6 +98,9 @@ class FakeEgeria:
                 self._rec["token"] = f"minted-for-{self._rec['user']}"
                 return self._rec["token"]
 
+            def close_session(self):
+                eg.closed.append(self.name)
+
             def _call(self, method):
                 eg.calls.append((self.name, method, self._rec["user"], self._rec["token"]))
                 if method in eg.fail:
@@ -88,7 +109,7 @@ class FakeEgeria:
         class ActorManager(_Base):
             name = "ActorManager"
 
-            def _search(self, method, name, kw, kinds):
+            def _search(self, method, name, kw, default_type):
                 self._call(method)
                 body = kw.get("body") or {}
                 eg.searches.append({"method": method, "kwargs": sorted(kw), "body": body})
@@ -97,14 +118,15 @@ class FakeEgeria:
                     _t.sleep(eg.delay)
                 if method in eg.override:
                     return eg.override[method]
-                return eg.by_name(name if name is not None else body.get("filter"), kinds)
+                # Egeria's handler uses the body's metadataElementTypeName when set, else its own type.
+                return eg.by_name(name if name is not None else body.get("filter"),
+                                  body.get("metadataElementTypeName") or default_type)
 
             def get_actor_profiles_by_name(self, name=None, **kw):
-                return self._search("get_actor_profiles_by_name", name, kw,
-                                    {"ITProfile", "Person", "ActorProfile", "Team"})
+                return self._search("get_actor_profiles_by_name", name, kw, "ActorProfile")
 
             def get_user_identities_by_name(self, name=None, **kw):
-                return self._search("get_user_identities_by_name", name, kw, {"UserIdentity"})
+                return self._search("get_user_identities_by_name", name, kw, "UserIdentity")
 
             def get_user_identity_by_guid(self, guid, **kw):
                 self._call("get_user_identity_by_guid")
@@ -236,6 +258,9 @@ def test_bootstrap_links_an_unlinked_identity_to_the_profile(egeria):
     ("same_userid_other_qn", f"a UserIdentity for userId '{NPA}' already exists as 'npa-identity'"),
     ("linked_elsewhere", "already linked to another profile (Person::someone)"),
     ("profile_wrong_type", "is a Person, not an ITProfile"),
+    # Round 3: held by a type outside ActorProfile; a typed search would hide it and RE create a twin.
+    ("profile_held_by_a_term", "is a GlossaryTerm, not an ITProfile"),
+    ("identity_wrong_type", f"'UserIdentity::{NPA}' is a Person, not a UserIdentity"),
 ])
 def test_bootstrap_refuses_what_it_should_not_resolve_and_creates_nothing(egeria, setup, words):
     from resource_explorer.egeria_actors import ensure_re_identity_in_egeria
@@ -256,6 +281,11 @@ def test_bootstrap_refuses_what_it_should_not_resolve_and_creates_nothing(egeria
         egeria.links.append((HAND_IDENTITY, other))
     elif setup == "profile_wrong_type":
         egeria.add("Person", qualifiedName="ITProfile::ResourceExplorer")
+    elif setup == "profile_held_by_a_term":
+        egeria.add("GlossaryTerm", qualifiedName="ITProfile::ResourceExplorer")
+    elif setup == "identity_wrong_type":
+        egeria.add("ITProfile", HAND_PROFILE, qualifiedName="ITProfile::ResourceExplorer")
+        egeria.add("Person", qualifiedName=f"UserIdentity::{NPA}")
     before = (dict(egeria.elements), list(egeria.links))
     state = ensure_re_identity_in_egeria()
     assert state["status"] == "could not check"
@@ -522,7 +552,10 @@ def test_round2_searches_send_the_type_filter_egeria_reads(egeria):
     assert egeria.searches
     for sent in egeria.searches:
         assert "metadata_element_type" not in sent["kwargs"]
-        want = "ITProfile" if sent["method"] == "get_actor_profiles_by_name" else "UserIdentity"
+        # Round 3: a qualifiedName search asks every Referenceable (qualifiedName is unique across
+        # them, so a twin of another type must be seen); a userId search asks UserIdentity.
+        by_qn = str(sent["body"].get("filter", "")).startswith(("ITProfile::", "UserIdentity::"))
+        want = "Referenceable" if by_qn else "UserIdentity"
         assert sent["body"].get("metadataElementTypeName") == want, sent
 
 
@@ -550,6 +583,104 @@ def test_round2_whoami_failure_clears_on_the_next_successful_lookup(egeria):
     _stamp("dana")
     assert routes.whoami()["owner_lookup"]["user_id"] == "dana"
     egeria.fail.clear()
-    _person(egeria, user="erin")
-    _stamp("erin")
+    _person(egeria, user="dana")
+    egeria_actors._cache.clear()                          # the 60s negative entry expired
+    _stamp("dana")                                        # round 3: dana's OWN success clears it
     assert routes.whoami()["owner_lookup"] is None
+
+
+# ── round 3 ──────────────────────────────────────────────────────────────
+
+def test_round3_another_users_success_does_not_clear_a_failure(egeria):
+    from resource_explorer.egeria_actors import actor_lookup_status
+    from resource_explorer.egeria_identity import EgeriaIdentity, use_identity
+    from resource_explorer.web.routes import egeria as routes
+
+    egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
+    _stamp("dana")
+    egeria.fail.clear()
+    _person(egeria, user="erin")
+    assert _stamp("erin")["ownership_form"] == "profile"
+    with use_identity(EgeriaIdentity(user_id="dana", token="token-dana")):
+        assert (routes.whoami()["owner_lookup"] or {}).get("user_id") == "dana", "erin's success hid dana's failure"
+    with use_identity(EgeriaIdentity(user_id="erin", token="token-erin")):
+        assert routes.whoami()["owner_lookup"] is None, "erin's popover shows erin's state"
+    assert actor_lookup_status("dana")["reason"] == "UserIdentity search: ConnectionError: refused"
+    assert actor_lookup_status("erin") is None
+
+
+def test_round3_a_failure_is_not_memoized_for_the_whole_scope(egeria):
+    """A long run_queue job holds one scope: after the failure TTL it asks again."""
+    from resource_explorer import egeria_actors
+    from resource_explorer.egeria_clients import client_scope
+
+    with client_scope():
+        egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
+        assert _stamp("dana")["ownership_form"] == "userId"
+        egeria.fail.clear()
+        _person(egeria)
+        for user, (exp, shape) in list(egeria_actors._cache.items()):
+            egeria_actors._cache[user] = (0.0, shape)     # the 60s negative entry expired
+        assert _stamp("dana")["ownership_form"] == "profile"
+
+
+def test_round3_each_lookup_closes_the_client_it_built(egeria):
+    from resource_explorer import egeria_actors
+
+    _person(egeria)
+    _person(egeria, user="erin")
+    egeria.fail["get_user_identities_by_name"] = ConnectionError("refused")
+    egeria_actors.ownership_for_person("dana")            # a failed lookup closes too
+    egeria.fail.clear()
+    egeria_actors.ownership_for_person("erin")
+    built = [b for b in egeria.built if b["cls"] == "ActorManager"]
+    assert len(built) == 2 and egeria.closed == ["ActorManager", "ActorManager"]
+
+
+def test_round3_concurrent_first_presses_share_one_lookup(egeria, monkeypatch):
+    import threading
+
+    from resource_explorer import egeria_actors
+
+    _person(egeria)
+    egeria.delay = 0.5
+    shapes, gate = [], threading.Barrier(8)
+
+    def press():
+        gate.wait()
+        shapes.append(egeria_actors.ownership_for_person("dana"))
+
+    threads = [threading.Thread(target=press) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert len([c for c in egeria.calls if c[1] == "get_user_identities_by_name"]) == 1
+    assert len(shapes) == 8 and {s.form for s in shapes} == {"profile"}
+    assert len([b for b in egeria.built if b["cls"] == "ActorManager"]) == 1
+
+
+def test_round3_waiters_on_a_stuck_lookup_are_still_bounded(egeria, monkeypatch):
+    import threading
+    import time as _t
+
+    from resource_explorer import egeria_actors
+
+    _person(egeria)
+    egeria.delay = 2.0
+    monkeypatch.setattr(egeria_actors, "ACTOR_LOOKUP_TIMEOUT_SECONDS", 0.2)
+    shapes, gate = [], threading.Barrier(4)
+
+    def press():
+        gate.wait()
+        shapes.append(egeria_actors.ownership_for_person("dana"))
+
+    t0 = _t.time()
+    threads = [threading.Thread(target=press) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert _t.time() - t0 < 1.5
+    assert len(shapes) == 4 and {s.note for s in shapes} == {"profile lookup failed: no answer within 0.2s"}
+    assert len([c for c in egeria.calls if c[1] == "get_user_identities_by_name"]) == 1

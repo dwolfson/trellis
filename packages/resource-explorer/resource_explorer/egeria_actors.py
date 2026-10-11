@@ -28,7 +28,8 @@ Two jobs, and nothing else:
     ownerPropertyName "userId". A failed lookup is logged, recorded for the connection popover,
     and never blocks the write. RE never creates an identity for a person (open question for the
     Egeria lead). Results are cached per process for `ACTOR_LOOKUP_TTL_SECONDS`, failures for
-    `ACTOR_LOOKUP_FAILURE_TTL_SECONDS`, and memoized per request/job scope (one press).
+    `ACTOR_LOOKUP_FAILURE_TTL_SECONDS`; successes are also memoized per request/job scope (one
+    press). Concurrent lookups for one person share one Egeria call.
 
 Neither job sets `Ownership.userIds`, the property Egeria's access connector reads
 (`isUserAnOwner`); RE has never set it, and changing that is a security decision, not this one.
@@ -154,12 +155,24 @@ def _props_or_none(element: Any) -> Optional[dict]:
     return element.get("properties") if isinstance(element, dict) else None
 
 
+#: The type a search BY QUALIFIEDNAME asks for (round 3). Egeria's getRootElementsByName returns
+#: only `metadataElementTypeName` and its subtypes, so asking for "ITProfile" hides a Person (or a
+#: GlossaryTerm) that already holds `ITProfile::ResourceExplorer`: RE would read "absent", create a
+#: twin, and its "is a Person, not an ITProfile" refusal could never fire. qualifiedName is a
+#: Referenceable property, unique across every Referenceable, so the qualifiedName searches ask for
+#: Referenceable and RE checks the type itself. Searches BY USERID ask for UserIdentity: userId is
+#: a UserIdentity property, and the question there is "which UserIdentities carry it".
+BY_QN_TYPE = "Referenceable"
+BY_USER_ID_TYPE = "UserIdentity"
+
+
 def _by_name_body(name: str, type_name: str) -> dict:
     """The search body, sent whole. pyegeria 6.1.15's `get_user_identities_by_name` /
     `get_actor_profiles_by_name` map their `metadata_element_type_name` argument onto a
     `metadata_element_type` key that `_async_get_name_request` does not read, so the type filter
     is silently dropped; a full FilterRequestBody carries `metadataElementTypeName` itself. RE's
-    own qualifiedName/userId/type checks stay regardless."""
+    own qualifiedName/userId/type checks stay regardless. `type_name` is BY_QN_TYPE or
+    BY_USER_ID_TYPE (see there)."""
     return {"class": "FilterRequestBody", "filter": name, "metadataElementTypeName": type_name,
             "graphQueryDepth": 3, "startFrom": 0, "pageSize": 100}
 
@@ -223,11 +236,22 @@ def identity_words(state: Optional[dict]) -> str:
 
 
 def _actor_manager(reason) -> Any:
+    """A `shared=False` ActorManager: the caller owns it and closes it (`_close`)."""
     from pyegeria import ActorManager
 
     from resource_explorer.egeria_clients import Daemon, egeria_client
 
     return egeria_client(Daemon(reason), purpose="actor graph", shared=False).of(ActorManager)
+
+
+def _close(client: Any) -> None:
+    """Close a client RE built (round 3: each lookup built one and never closed it). Tidy-up only."""
+    close = getattr(client, "close_session", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - tidy-up, never the answer
+            pass
 
 
 def _one_by_qn(found: list[dict], qn: str, what: str) -> Optional[dict]:
@@ -258,15 +282,20 @@ def ensure_re_identity_in_egeria(client: Any = None) -> dict:
     created: list[str] = []
     notes: list[str] = []
     profile_guid = identity_guid = ""
+    built = None
     try:
-        am = client or _actor_manager(DaemonReason.IDENTITY_BOOTSTRAP)
+        am = client
+        if am is None:
+            am = built = _actor_manager(DaemonReason.IDENTITY_BOOTSTRAP)
 
-        # 1. The ITProfile, adopted by qualifiedName.
+        # 1. The ITProfile, adopted by qualifiedName. Searched across every Referenceable
+        #    (BY_QN_TYPE), so an element of another type holding the name is seen and refused.
         profiles = _elements("ITProfile search", lambda: am.get_actor_profiles_by_name(
-            body=_by_name_body(IT_PROFILE_QN, "ITProfile"), output_format="JSON"))
+            body=_by_name_body(IT_PROFILE_QN, BY_QN_TYPE), output_format="JSON"))
         profile = _one_by_qn(profiles, IT_PROFILE_QN, "profile")
-        if profile is not None and _type_name(profile) not in ("", "ITProfile"):
-            raise _Refused(f"{IT_PROFILE_QN!r} is a {_type_name(profile)}, not an ITProfile")
+        if profile is not None and _type_name(profile) != "ITProfile":
+            raise _Refused(f"{IT_PROFILE_QN!r} is a {_type_name(profile) or 'element of unknown type'}, "
+                           "not an ITProfile")
         if profile is None:
             profile_guid = am.create_actor_profile({
                 "class": "NewElementRequestBody", "isOwnAnchor": True,
@@ -287,12 +316,15 @@ def ensure_re_identity_in_egeria(client: Any = None) -> dict:
         #    by-userId lookups ambiguous.
         qn = user_identity_qn(user_id)
         by_qn = _elements("UserIdentity search", lambda: am.get_user_identities_by_name(
-            body=_by_name_body(qn, "UserIdentity"), output_format="JSON"))
+            body=_by_name_body(qn, BY_QN_TYPE), output_format="JSON"))
         by_uid = _elements("UserIdentity search", lambda: am.get_user_identities_by_name(
-            body=_by_name_body(user_id, "UserIdentity"), output_format="JSON"))
+            body=_by_name_body(user_id, BY_USER_ID_TYPE), output_format="JSON"))
         merged = {(_guid(e) or str(i)): e for i, e in enumerate([*by_qn, *by_uid])}
         found = list(merged.values())
         identity = _one_by_qn(found, qn, "UserIdentity")
+        if identity is not None and _type_name(identity) != "UserIdentity":
+            raise _Refused(f"{qn!r} is a {_type_name(identity) or 'element of unknown type'}, "
+                           "not a UserIdentity")
         if identity is None:
             others = [e for e in found if _props(e).get("userId") == user_id]
             if others:
@@ -346,6 +378,9 @@ def ensure_re_identity_in_egeria(client: Any = None) -> dict:
         return _set_state({"status": COULD_NOT_CHECK_WORD, "reason": reason, "created": created,
                            "it_profile_guid": profile_guid, "user_identity_guid": identity_guid,
                            "user_id": user_id})
+    finally:
+        if built is not None:
+            _close(built)
     return _set_state({"status": CREATED_WORD if created else PRESENT_WORD, "created": created,
                        "it_profile_guid": profile_guid, "user_identity_guid": identity_guid,
                        "user_id": user_id, "notes": notes})
@@ -373,35 +408,72 @@ def _user_id_form(user_id: str, note: str = "") -> OwnershipShape:
 
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, OwnershipShape]] = {}
-_lookup_failure: Optional[dict] = None
+#: Round 3: the outstanding failure PER USER (a success for one person never hides another's).
+#: Insertion order is recency: a re-failure is popped and re-added.
+_lookup_failures: dict[str, dict] = {}
+
+
+class _Flight:
+    """One lookup in progress for one user; concurrent callers wait on it (round 3)."""
+
+    __slots__ = ("done", "error", "shape")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.shape: Optional[OwnershipShape] = None
+        self.error: Optional[BaseException] = None
+
+
+_inflight: dict[str, _Flight] = {}
 
 
 def _record_failure(user_id: str, reason: str) -> None:
-    global _lookup_failure
     with _cache_lock:
-        _lookup_failure = {"user_id": user_id, "reason": reason,
-                           "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        _lookup_failures.pop(user_id, None)
+        _lookup_failures[user_id] = {"user_id": user_id, "reason": reason,
+                                     "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
-def actor_lookup_status() -> Optional[dict]:
-    """The last failed person lookup in this process, or None (none failed here)."""
+def _clear_failure(user_id: str) -> None:
     with _cache_lock:
-        return dict(_lookup_failure) if _lookup_failure else None
+        _lookup_failures.pop(user_id, None)
+
+
+def actor_lookup_status(user_id: Optional[str] = None) -> Optional[dict]:
+    """The outstanding failed profile lookup for `user_id` in this process, or None (its last
+    lookup here succeeded, or none failed). With no `user_id` (no signed-in caller), the most
+    recent outstanding failure for anyone, or None."""
+    with _cache_lock:
+        if user_id:
+            rec = _lookup_failures.get(user_id)
+        else:
+            rec = next(reversed(_lookup_failures.values()), None)
+        return dict(rec) if rec else None
 
 
 def clear_actor_cache() -> None:
-    global _lookup_failure
     with _cache_lock:
         _cache.clear()
-        _lookup_failure = None
+        _lookup_failures.clear()
+        _inflight.clear()     # a running lookup finishes on its own and is no longer joined
 
 
 def _lookup(user_id: str, client: Any = None) -> OwnershipShape:
+    """One person's profile lookup. A client this call builds is closed before it returns."""
     from resource_explorer.egeria_clients import DaemonReason
 
-    am = client or _actor_manager(DaemonReason.ACTOR_LOOKUP)
+    if client is not None:
+        return _lookup_with(user_id, client)
+    am = _actor_manager(DaemonReason.ACTOR_LOOKUP)
+    try:
+        return _lookup_with(user_id, am)
+    finally:
+        _close(am)
+
+
+def _lookup_with(user_id: str, am: Any) -> OwnershipShape:
     found = _elements("UserIdentity search", lambda: am.get_user_identities_by_name(
-        body=_by_name_body(user_id, "UserIdentity"), output_format="JSON"))
+        body=_by_name_body(user_id, BY_USER_ID_TYPE), output_format="JSON"))
     mine = [e for e in found if _props(e).get("userId") == user_id]
     if not mine:
         return _user_id_form(user_id)
@@ -434,23 +506,35 @@ def _bounded_lookup(user_id: str) -> "OwnershipShape":
     Not the shared pool: called FROM a shared-pool thread, `concurrency.run_sync` runs inline with
     no bound at all (its re-entrancy rule), and a dedicated pool is what `concurrency` exists to
     prevent. One short-lived thread per actual lookup is cheap because lookups are cached; a stuck
-    one is abandoned (daemon) and its late answer discarded."""
-    box: dict = {}
+    one is abandoned (daemon) and its late answer discarded. Round 3: one thread per USER at a
+    time. A caller that finds a lookup for the same user in flight waits on it (each waiter still
+    bounded by the timeout) instead of starting another, and the thread closes the client
+    `_lookup` built."""
+    with _cache_lock:
+        flight = _inflight.get(user_id)
+        leader = flight is None
+        if leader:
+            flight = _inflight[user_id] = _Flight()
 
-    def run() -> None:
-        try:
-            box["shape"] = _lookup(user_id)
-        except BaseException as exc:  # noqa: BLE001 - handed to the waiting caller
-            box["error"] = exc
+    if leader:
+        def run() -> None:
+            try:
+                flight.shape = _lookup(user_id)
+            except BaseException as exc:  # noqa: BLE001 - handed to the waiting callers
+                flight.error = exc
+            finally:
+                with _cache_lock:
+                    if _inflight.get(user_id) is flight:
+                        del _inflight[user_id]
+                flight.done.set()
 
-    worker = threading.Thread(target=run, name=f"re-actor-lookup-{user_id}", daemon=True)
-    worker.start()
-    worker.join(ACTOR_LOOKUP_TIMEOUT_SECONDS)
-    if worker.is_alive():
+        threading.Thread(target=run, name=f"re-actor-lookup-{user_id}", daemon=True).start()
+
+    if not flight.done.wait(ACTOR_LOOKUP_TIMEOUT_SECONDS):
         raise _Unreadable(f"no answer within {ACTOR_LOOKUP_TIMEOUT_SECONDS:g}s")
-    if "error" in box:
-        raise box["error"]
-    return box["shape"]
+    if flight.error is not None:
+        raise flight.error
+    return flight.shape
 
 
 def ownership_for_person(user_id: str, *, client: Any = None) -> OwnershipShape:
@@ -459,10 +543,10 @@ def ownership_for_person(user_id: str, *, client: Any = None) -> OwnershipShape:
     Found and not-found answers are cached for `ACTOR_LOOKUP_TTL_SECONDS`; a FAILURE (Egeria
     unreadable, ambiguous, slow) is cached too, for `ACTOR_LOOKUP_FAILURE_TTL_SECONDS`, as the userId
     form with `note` set, so a press over many elements asks once, not once per element. Inside a
-    request or job scope the answer is also memoized for that scope. Every lookup is bounded by
+    request or job scope a SUCCESS is also memoized for that scope (round 3: a failure is not, so
+    a long job asks again once the failure TTL has passed). Every lookup is bounded by
     `ACTOR_LOOKUP_TIMEOUT_SECONDS`. A failure logs one WARNING and is recorded for
-    `actor_lookup_status`; the next successful lookup clears that record."""
-    global _lookup_failure
+    `actor_lookup_status(user_id)`; the next successful lookup for THE SAME user clears it."""
     user_id = (user_id or "").strip()
     if not user_id:
         return _user_id_form(user_id)
@@ -474,7 +558,7 @@ def ownership_for_person(user_id: str, *, client: Any = None) -> OwnershipShape:
     with _cache_lock:
         hit = _cache.get(user_id)
         if hit and hit[0] > now:
-            if memo is not None:
+            if memo is not None and not hit[1].note:      # successes only (a failure has a note)
                 memo[memo_key] = hit[1]
             return hit[1]
     try:
@@ -483,8 +567,7 @@ def ownership_for_person(user_id: str, *, client: Any = None) -> OwnershipShape:
         else:
             shape = _bounded_lookup(user_id)
         ttl = ACTOR_LOOKUP_TTL_SECONDS
-        with _cache_lock:
-            _lookup_failure = None          # round 2: whoami shows the current state
+        _clear_failure(user_id)             # round 3: this user's record only
     except Exception as exc:  # noqa: BLE001 - a lookup never blocks the write
         reason = str(exc) if isinstance(exc, _Unreadable) else f"{type(exc).__name__}: {str(exc)[:200]}"
         log.warning("egeria: profile lookup for %r failed — Ownership uses the userId form "
@@ -494,6 +577,6 @@ def ownership_for_person(user_id: str, *, client: Any = None) -> OwnershipShape:
         ttl = ACTOR_LOOKUP_FAILURE_TTL_SECONDS
     with _cache_lock:
         _cache[user_id] = (time.time() + ttl, shape)
-    if memo is not None:
+    if memo is not None and not shape.note:
         memo[memo_key] = shape
     return shape
