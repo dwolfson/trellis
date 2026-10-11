@@ -222,24 +222,58 @@ def blueprint_attach_scopes(registry: ProjectRegistry, slug: str, key: str) -> l
     return list(dict.fromkeys(out))
 
 
+def _reads_zones() -> bool:
+    """Whether `curation_access` will reach an Egeria read for the current caller: not for an anonymous
+    caller (denied first) nor a Portal curator/admin (allowed first). Only to skip a pointless prefetch; the
+    decision itself is `curation_access`'s."""
+    identity = _caller_identity()
+    return bool(identity is not None and identity.auth_source != "anonymous" and identity.user_id
+                and (identity.role or "").lower() not in CURATOR_ROLES)
+
+
+def _guids_for(registry: ProjectRegistry, slug: str, scopes: list[str]) -> list[str]:
+    """The Egeria elements of these scopes, for a prefetch. A scope RE cannot read is left out here:
+    `curation_access` reads it again and denies with the reason."""
+    out = []
+    for scope in scopes:
+        try:
+            guid = element_guid_for(registry, "repo", slug, scope)
+        except _RegistryUnreadable:
+            continue
+        if guid:
+            out.append(guid)
+    return out
+
+
 def publish_item_access(registry: ProjectRegistry, slug: str, kind: str, key: str, *, reader=None,
                         element_guid: str | None = None) -> AccessDecision:
     """May the caller publish this item: every operation its write performs, and for a blueprint ATTACH on each
     member component and child blueprint it links (both ends, as `validateUserForElementAttach` checks).
-    Used at the press AND by the run immediately before each write (`architecture_publish.run_publish`)."""
+    Used at the press AND by the run immediately before each write (`architecture_publish.run_publish`).
+
+    The elements the check needs (the item's own, and a blueprint's members and children already in Egeria)
+    are read together, once, before the decision (`EgeriaAccessReader.check`): concurrently on the press, on
+    one client in the run. Nothing is read for an element not in Egeria yet, nor for a caller the decision
+    settles before any read (anonymous, Portal curator/admin)."""
     from resource_explorer.zone_access import ATTACH_OPERATION, EgeriaAccessReader
 
     reader = reader or EgeriaAccessReader()
     guid = element_guid if element_guid is not None else None
     in_egeria = bool(guid) if guid is not None else bool(_safe_guid(registry, slug, key))
-    d = curation_access(registry, "repo", slug, key, reader=reader, element_guid=guid,
-                        operations=publish_operations(in_egeria, attaches=kind == "blueprint"))
-    if not d.allowed or kind != "blueprint" or d.basis == BASIS_PORTAL_ROLE:
-        return d
-    for other in blueprint_attach_scopes(registry, slug, key):
-        e = curation_access(registry, "repo", slug, other, reader=reader, operations=(ATTACH_OPERATION,))
-        if not e.allowed:
-            return AccessDecision(False, f"{other.rsplit('/', 1)[-1]}: {e.reason}", e.basis, e.zones)
+    reads = _reads_zones()
+    others = blueprint_attach_scopes(registry, slug, key) if kind == "blueprint" and reads else None
+    wanted: list[str] = []
+    if reads:
+        wanted = ([guid] if guid else _guids_for(registry, slug, [key])) + _guids_for(registry, slug, others or [])
+    with reader.check(wanted):
+        d = curation_access(registry, "repo", slug, key, reader=reader, element_guid=guid,
+                            operations=publish_operations(in_egeria, attaches=kind == "blueprint"))
+        if not d.allowed or kind != "blueprint" or d.basis == BASIS_PORTAL_ROLE:
+            return d
+        for other in (others if others is not None else blueprint_attach_scopes(registry, slug, key)):
+            e = curation_access(registry, "repo", slug, other, reader=reader, operations=(ATTACH_OPERATION,))
+            if not e.allowed:
+                return AccessDecision(False, f"{other.rsplit('/', 1)[-1]}: {e.reason}", e.basis, e.zones)
     return d
 
 
@@ -247,15 +281,16 @@ def resolved_elements_access(registry: ProjectRegistry, slug: str, key: str, gui
                              reader=None) -> AccessDecision:
     """The run's check on the elements a blueprint write RESOLVED (Brief Z round 2): the blueprint itself
     (`guids[0]`) for every operation its write performs, and every member, adopted root and child blueprint
-    for ATTACH (the other end of each link)."""
+    for ATTACH (the other end of each link). All of them are read together, fresh, for this check."""
     from resource_explorer.zone_access import ATTACH_OPERATION, EgeriaAccessReader
 
     reader = reader or EgeriaAccessReader()
-    for i, guid in enumerate(guids):
-        ops = publish_operations(True, attaches=True) if i == 0 else (ATTACH_OPERATION,)
-        d = curation_access(registry, "repo", slug, key, reader=reader, element_guid=guid, operations=ops)
-        if not d.allowed:
-            return d if i == 0 else AccessDecision(False, f"member {guid[:8]}: {d.reason}", d.basis, d.zones)
+    with reader.check(guids if _reads_zones() else ()):
+        for i, guid in enumerate(guids):
+            ops = publish_operations(True, attaches=True) if i == 0 else (ATTACH_OPERATION,)
+            d = curation_access(registry, "repo", slug, key, reader=reader, element_guid=guid, operations=ops)
+            if not d.allowed:
+                return d if i == 0 else AccessDecision(False, f"member {guid[:8]}: {d.reason}", d.basis, d.zones)
     return AccessDecision(True, "", BASIS_ZONE_GRANTED)
 
 
@@ -526,30 +561,24 @@ def materialize_component_if_accepted(registry: ProjectRegistry, entity_type: st
 
 def slug_to_scope_map(registry: ProjectRegistry, slug: str) -> dict[str, str]:
     """component slug -> scope_locator, for every currently-live
-    architecture_recovery component finding. Deliberately its own copy of
-    _architecture_recovery_results' identical loop
-    (repo_survey_definition_adapter.py) rather than a shared import — same
-    reasoning ComponentMaterializer._find_element_guid gives for not
-    sharing with EgeriaPublisher: a small, self-contained piece of logic
-    duplicated once is safer here than a new cross-module coupling for one
-    caller. This is THE fix for the plan's own named identity-mismatch
-    trap: clustering keys a blueprint's members by component slug; verdicts
-    and materialization are keyed by scope_locator. Looking a slug up
-    directly in get_materialized_component()/get_component_verdicts()
+    architecture_recovery component finding. THE fix for the plan's own named
+    identity-mismatch trap: clustering keys a blueprint's members by component
+    slug; verdicts and materialization are keyed by scope_locator. Looking a
+    slug up directly in get_materialized_component()/get_component_verdicts()
     without going through this map first silently finds nothing for every
-    member."""
-    import json as _json
-    out: dict[str, str] = {}
-    for scope in registry.query_finding_scopes(slug, "architecture_recovery", check_name="component"):
-        rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope)
-                if r["check_name"] == "component"]
-        if not rows:
-            continue
-        latest = max(rows, key=lambda r: r["surveyed_at"])
-        detail = _json.loads(latest.get("detail_json") or "{}") if latest.get("detail_json") else {}
-        if detail.get("slug"):
-            out[detail["slug"]] = scope
-    return out
+    member.
+
+    Served from the shared recovery snapshot (one bulk read, cached on the
+    data's fingerprint; `repo_survey_definition_adapter._blueprint_slug_to_
+    scope_map`, the same walk). This used to issue one
+    `query_findings_all_runs` per scope: ~1,000 round trips on egeria_git for
+    every blueprint a Publish press or run checked (2026-10-10). The snapshot
+    returns, per scope, exactly the rows and order the per-scope query does
+    (`ProjectRegistry.query_findings_all_runs_by_scope`), so the latest row,
+    and hence the map, is the same."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import _blueprint_slug_to_scope_map
+
+    return dict(_blueprint_slug_to_scope_map(registry, slug))
 
 
 def find_candidate_blueprint(registry: ProjectRegistry, slug: str,
