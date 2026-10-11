@@ -97,6 +97,7 @@ export async function setUp(over = {}, { settle = 400, open = true, resourceType
   const server = makeServer(over);
   ensureLoaderRegistered();
   globalThis.location = window.location; globalThis.history = window.history;
+  window.HTMLElement.prototype.scrollIntoView = window.HTMLElement.prototype.scrollIntoView || function () {};   // jsdom has none
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
   const app = await import('/static/next/app.js');
   Object.assign(app.state, { resourceType, selectedSlug: 'egeria_git', stage: 'understanding', subTab: 'questions',
@@ -108,6 +109,8 @@ export async function setUp(over = {}, { settle = 400, open = true, resourceType
   app.renderIntentNav();
   document.querySelector('#intent-nav button[data-stage="curate"]').click();
   await wait(settle);
+  // A repository's sections live on the Contents and Structure tabs; an open section reads when its tab first shows.
+  if (open && resourceType === 'repo') for (const tab of ['curate_contents', 'curate_structure']) { document.querySelector(`[data-subtab="${tab}"]`).click(); await wait(60); }
   return { document, app, server, window };
 }
 export const verdictPosts = (server) => server.calls.filter((c) => c.url.endsWith('/components/verdicts'));

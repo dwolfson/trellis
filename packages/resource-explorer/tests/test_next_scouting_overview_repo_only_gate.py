@@ -49,7 +49,10 @@ def _fn_decl(js: str, signature: str) -> str:
 
 
 def _load_pane_source() -> str:
-    return _fn_decl(APP_JS.read_text(), "async function loadPane(")
+    """The overview read moved out of `loadPane` into `primeRepoHeaderReads` (the Curate tabs' pane reads the same
+    header data); `loadPane` calls it. This returns the function that now holds the call, and the loadPane test
+    below pins that the call is still reached from there."""
+    return _fn_decl(APP_JS.read_text(), "function primeRepoHeaderReads(")
 
 
 class TestScoutingOverviewGatedToRepoOnly:
@@ -73,3 +76,8 @@ class TestScoutingOverviewGatedToRepoOnly:
         # call it for the wrong type", not "never call it".
         src = _load_pane_source()
         assert "getScoutingOverview(slug)" in src
+
+
+    def test_load_pane_still_reaches_it(self):
+        src = _fn_decl(APP_JS.read_text(), "async function loadPane(")
+        assert "primeRepoHeaderReads(slug)" in src

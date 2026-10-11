@@ -1680,6 +1680,11 @@ export const getCuratePlan = (slug) => get(`/api/projects/${encodeURIComponent(s
 export const curateCommit = (slug, selection) =>
   post(`/api/projects/${encodeURIComponent(slug)}/curate/commit`, selection);
 
+/** The newest curation record, without the plan (which can take half a minute): {curation: record|null}.
+ *  The running-commit line under the Curate tabs reads it so it survives a reload. */
+export const getLatestCuration = (slug) =>
+  get(`/api/projects/${encodeURIComponent(slug)}/curate/commits/latest`);
+
 export const getCuration = (slug, id) =>
   get(`/api/projects/${encodeURIComponent(slug)}/curate/commits/${encodeURIComponent(id)}`);
 

@@ -121,6 +121,18 @@ def _row(kind: str, label: str, *, evidence: str, source: str, state: str, count
             "detail": detail or {}}
 
 
+def awaiting_counts(comps: list, comp_verdicts: dict) -> dict:
+    """What Structure still waits on a person for. ONE function: it marks the made-of row's `awaiting`
+    figure AND is the plan's top-level `awaiting` (the Structure tab's count), so the two cannot drift.
+    A component awaits a decision when the survey found it and no verdict row exists for its path. Absence
+    of a verdict is "awaiting", never "reviewed"; the count says nothing about whether the caller may decide
+    it (refusals stay per item). Blueprints and dependency rows are read lazily by their own sections and
+    are not part of this figure yet."""
+    unreviewed = sum(1 for c in comps
+                     if (c.get("path") or c.get("scope_locator") or "") not in comp_verdicts)
+    return {"components": unreviewed}
+
+
 def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     from resource_explorer.blueprint_kinds import kind_word
     from resource_explorer.facts import FactLayer
@@ -258,6 +270,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     arch = _fact(layer, slug, "architecture_recovery")
     comps = (arch.get("value") or {}).get("components") or []
     accepted = sum(1 for v in comp_v.values() if v.get("verdict") == "accepted")
+    awaiting = awaiting_counts(comps, comp_v)
     made_of = [
         _row("Component", f"{accepted} of {len(comps):,} components accepted · {len(comp_v)} reviewed",
              # True today, and no more (designer, 2026-09-14): interfaces.propose()
@@ -270,7 +283,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
                       "(current UI) until it moves here",
              source="architecture_recovery", state=arch.get("state", ""), count=accepted,
              members={"analysis_id": "architecture_recovery"}, candidate=accepted > 0,
-             detail={"reviewed": len(comp_v), "blueprints_reviewed": len(bp_v),
+             detail={"reviewed": len(comp_v), "blueprints_reviewed": len(bp_v), "awaiting": awaiting,
                      "blueprints_accepted": sum(1 for v in bp_v.values() if v.get("verdict") == "accepted"),
                      # the kinds of the blueprints accepted ("Deployment Blueprint"), named in the table
                      "blueprint_kinds": sorted({kind_word(k.split("::", 1)[0]) + " Blueprint"
@@ -335,6 +348,8 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
         "what_it_is": what_it_is,
         "what_it_holds": holds,
         "made_of": made_of,
+        # Structure's tab count: the SAME figure the made-of row carries in its detail (awaiting_counts).
+        "awaiting": awaiting,
         "relates": relates,
         "writes": writes,
         "keeps_current": "Resource Explorer surveys, on the Automate schedule. No integration connector exists for this type.",
@@ -456,6 +471,15 @@ class Curations:
     def get(self, cid: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM resource_curation WHERE id = ?", (cid,)).fetchone()
+        return self._decode(row) if row else None
+
+    def latest(self, entity_type: str, slug: str) -> dict | None:
+        """The newest record for a resource, one cheap read (the commit line survives a reload without the
+        plan, which can take half a minute)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM resource_curation WHERE entity_type = ? AND entity_slug = ? "
+                "ORDER BY requested_at DESC LIMIT 1", (entity_type, slug)).fetchone()
         return self._decode(row) if row else None
 
     def for_resource(self, entity_type: str, slug: str) -> list[dict]:

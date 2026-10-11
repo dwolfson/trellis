@@ -405,16 +405,19 @@ test('a database does not get the file-share sentence', async () => {
   assert.doesNotMatch(host(document).textContent, /Nothing to review for file systems/);
 });
 
-test('a repository keeps its plan view in the middle, with the bands around it', async () => {
+test('a repository keeps its plan view across its tabs, with the bands around it', async () => {
   const { document, server } = await setUp('repo');
   await openCurate(document);
-  assert.match(band(document, 'kind').textContent, /disposition/, 'existing plan view still renders');
-  assert.doesNotMatch(band(document, 'kind').textContent, /plan loading/);
+  // The plan's pieces are on three tabs now: the header line on Describe, the sections on Contents and Structure.
+  const panel = (n) => document.querySelector(`[data-curate-tab-panel="${n}"]`);
+  assert.match(panel('describe').textContent, /disposition/, 'the plan header line renders on Describe and publish');
+  assert.ok(panel('contents').querySelector('#curate-sec-what-holds') && panel('structure').querySelector('#curate-sec-made-of'));
+  assert.doesNotMatch(document.getElementById('curate-host').textContent, /plan loading/);
   assert.ok(server.calls.some((c) => c.url.includes('/curate/plan')));
   assert.ok(band(document, 'findable').querySelector('[data-curate-tag-input]'));
   assert.ok(band(document, 'people').querySelector('[data-curate-fb-submit]'));
   assert.ok(calls(server, 'GET', '/api/curate/tags-detail/repo/adventureworks').length >= 1, 'repo tags use entity type repo');
-  assert.equal(band(document, 'kind').querySelector('[data-curate-work]'), null, 'no database sections on a repo');
+  assert.equal(document.querySelector('[data-curate-work]'), null, 'no database sections on a repo');
 });
 
 /* ── a band that cannot read says so ───────────────────────────────────── */

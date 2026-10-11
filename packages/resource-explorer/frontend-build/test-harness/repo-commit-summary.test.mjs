@@ -136,7 +136,8 @@ test('the button names the items it sends; blockers are directly under it', asyn
   box.innerHTML = m.repoCommitPanelHtml({ ...sel({ plan: noProject }), me: 'dan', resurvey: false });
   const b = box.querySelector('[data-commit-blocker="no_project"]');
   assert.match(b.textContent, /no Egeria project context/);
-  assert.ok(b.querySelector('[data-commit-bind]') && b.querySelector('[data-commit-decline]'), 'the two choices are offered');
+  // The choices are ONE Project row on Contents (publish.js), not a second copy in the blocker.
+  assert.equal(b.querySelector('[data-commit-bind]') || b.querySelector('[data-commit-decline]') || b.querySelector('button'), null, 'the blocker names the block; the choices are the Project row');
 
   box.innerHTML = m.repoCommitPanelHtml({ ...sel(), me: '', resurvey: false });
   assert.equal(box.querySelector('[data-curate-go]').disabled, true);

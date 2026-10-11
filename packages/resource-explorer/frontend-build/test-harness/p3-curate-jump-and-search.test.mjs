@@ -91,8 +91,12 @@ async function setUp(over = {}) {
     const d = document.createElement('div'); d.id = id; document.body.appendChild(d);
   }
   app.renderIntentNav();
+  window.HTMLElement.prototype.scrollIntoView = window.HTMLElement.prototype.scrollIntoView || function () {};   // jsdom has none
   document.querySelector('#intent-nav button[data-stage="curate"]').click();
   await wait(500);
+  // The tree and the blueprints are on the Structure tab; an open section reads when its tab first shows.
+  document.querySelector('[data-subtab="curate_structure"]').click();
+  await wait(100);
   return { document, window, app, server };
 }
 const writesOf = (server) => server.calls.filter((c) => c.method !== 'GET');

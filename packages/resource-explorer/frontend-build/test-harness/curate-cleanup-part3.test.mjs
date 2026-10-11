@@ -35,7 +35,7 @@ test('(b) a retry pressed while that section\'s read is already in flight joins 
   app.state.curate.loadSection('curate-sec-made-of');                              // a tracked load, slow
   await wait(50);
   assert.equal(reads(), before + 1);
-  const host = document.querySelector('[data-curate-band="kind"]');
+  const host = document.getElementById('curate-host');
   host.insertAdjacentHTML('beforeend', '<button type="button" data-curate-retry="tree">retry</button>');
   host.querySelector('button[data-curate-retry="tree"]').click();
   await wait(550);
@@ -50,7 +50,7 @@ test('(c) a dependency read that is REJECTED gets the error slot and a retry, no
   dep.forgetDependencyTable();
   globalThis.fetch = (real => async (url, opts) => (String(url).endsWith('/dependencies')
     ? { ok: true, status: 200, json: async () => ({ heading: 'x', kinds: [], counts: {}, runtime_state: '', rows: [null] }) } : real(url, opts)))(globalThis.fetch);
-  document.querySelector('[data-curate-nav="curate-sec-relates"]').click();
+  (await import('/static/next/stages/curate.js')).jumpToCurateSection('curate-sec-relates');   // Structure, opened
   await wait(300);
   const slot = document.querySelector('[data-dependency-table-host]');
   const t = norm(slot);

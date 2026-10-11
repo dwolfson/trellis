@@ -13,6 +13,8 @@ function stubServer() {
     if (u.includes('/api/analyses/facts')) return ok({ subjects: { adventureworks: [] } });
     if (u.includes('/api/doc-sources/')) return ok({ sources: [], published: false, publish_note: '' });
     if (u.includes('/api/context/')) return ok({ enrichment: {}, question_answers: {} });
+    if (u.includes('/curate/plan')) return ok({ technology_type: 'Git repository', disposition: 'using', in_population: true, last_surveyed_at: null,
+      what_it_is: [], what_it_holds: [], made_of: [], relates: [], writes: {}, commits: [], survey: { exists: false }, project: { status: 'linked', word: 'project', name: 'P' } });
     if (u.includes('/questions')) return ok({ questions: [] });
     if (u.includes('/investigations')) return ok([]);
     if (u.includes('/subscriptions') || u.includes('/schedules')) return ok([]);
@@ -96,8 +98,8 @@ for (const kind of ['repo', 'db', 'filesystem']) {
   }
 }
 
-test('gate off: Curate opens on Questions, the URL carries no tab=, openCurate still lands on the Questions frame', async () => {
-  const { document, window, app, ct } = await setUp('repo');
+test('gate off (a database): Curate opens on Questions, the URL carries no tab=, openCurate still lands on the Questions frame', async () => {
+  const { document, window, app, ct } = await setUp('db');
   await clickStage(document, 'curate');
   assert.equal(app.state.stage, 'curate');
   assert.equal(app.state.subTab, 'questions');
@@ -156,18 +158,20 @@ test('stageDefaultSubTab: enrichment=context, gated stage=its first tab, else qu
   assert.equal(app.stageDefaultSubTab('enrichment', 'repo'), 'context');
 });
 
-test('gate on: Curate nav opens on tab 1 with tab= in the URL; a tab click writes tab=; the stub pane draws', async () => {
+test('gate on: Curate nav opens on tab 1 with tab= in the URL; a tab click writes tab= and swaps the panel in place', async () => {
   const { document, window, app, tabs } = await setUp('repo');
   tabs.setStageTabsKinds('curate', ['repo']);
   await clickStage(document, 'curate');
   assert.equal(app.state.subTab, 'curate_describe');
   assert.equal(urlTab(window), 'curate_describe', 'always written on these stages');
-  assert.ok(document.querySelector('[data-stage-tab-panel="curate_describe"]'), 'loader stub drew its host');
+  const shown = () => [...document.querySelectorAll('[data-curate-tab-panel]')].filter((p) => !p.hidden).map((p) => p.dataset.curateTabPanel);
+  assert.deepEqual(shown(), ['describe'], 'three panels in the document, one showing');
+  assert.equal(document.querySelectorAll('[data-curate-tab-panel]').length, 3);
   document.querySelector('[data-subtab="curate_contents"]').click();
   await wait();
   assert.equal(app.state.subTab, 'curate_contents');
   assert.equal(urlTab(window), 'curate_contents');
-  assert.ok(document.querySelector('[data-stage-tab-panel="curate_contents"]'));
+  assert.deepEqual(shown(), ['contents']);
 });
 
 test('gate on: leaving Curate reverts the tab and drops tab=; coming back always opens on tab 1', async () => {

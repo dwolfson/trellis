@@ -298,3 +298,39 @@ class TestTheMembersBehindTheCounts:
         ms = members_for(registry, "p", "sub_resource_survey", scope="all")
         assert ms.total == 3
         assert {g.name: g.count for g in ms.groups} == {"worthy": 2, "not_worthy": 1}
+
+
+class TestTheStructureCountComesFromOneFunction:
+    """The Structure tab's "N awaiting you" is the plan's `awaiting`; it is computed by the SAME function
+    (`awaiting_counts`) the made-of row carries in its detail, and absence of a verdict is "awaiting"."""
+
+    def _components(self, registry, names):
+        for n in names:
+            registry.upsert_finding("p", "architecture_recovery", [{
+                "check_name": "component", "label": "x",
+                "detail": {"name": n, "slug": n, "admission": "built_here"}}],
+                surveyed_at="2026-09-03T00:00:00", scope_locator=f"src/{n}")
+
+    def test_awaiting_is_the_unreviewed_components_and_the_made_of_row_carries_the_same_figure(self, registry):
+        from resource_explorer.curate_plan import awaiting_counts
+        _seed(registry)
+        self._components(registry, ["a", "b", "c"])
+        registry.record_component_verdict("repo", "p", "src/a", "accepted", decided_by="peterprofile")
+        plan = build_plan(registry, "p")
+        assert plan["awaiting"] == {"components": 2}
+        assert plan["made_of"][0]["detail"]["awaiting"] == plan["awaiting"]
+        # the plan's figure IS awaiting_counts of the plan's own inputs
+        comps = [{"path": "src/a"}, {"path": "src/b"}, {"path": "src/c"}]
+        assert awaiting_counts(comps, {"src/a": {}}) == plan["awaiting"]
+
+    def test_no_components_is_zero_awaiting_and_a_rejection_is_a_decision(self, registry):
+        from resource_explorer.curate_plan import awaiting_counts
+        assert awaiting_counts([], {}) == {"components": 0}
+        assert awaiting_counts([{"path": "x"}], {"x": {"verdict": "rejected"}}) == {"components": 0}
+
+    def test_latest_commit_route_returns_the_newest_record_or_none(self, client, registry):
+        assert client.get("/api/projects/p/curate/commits/latest").json() == {"curation": None}
+        Curations(registry).create("repo", "p", author="peterprofile", selection={}, manifest={}, steps=["publish_asset"])
+        got = client.get("/api/projects/p/curate/commits/latest").json()["curation"]
+        assert got["entity_slug"] == "p" and "proof_summary" in got
+        assert client.get("/api/projects/nope/curate/commits/latest").status_code == 404

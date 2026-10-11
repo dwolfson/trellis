@@ -65,7 +65,8 @@ function makeServer(over = {}) {
   return s;
 }
 
-async function setUp(over = {}, { settle = 400, preOpen = [] } = {}) {
+let jumpFn = null;
+async function setUp(over = {}, { settle = 400, preOpen = [], tab = '' } = {}) {
   delete globalThis.localStorage;
   const { document, window } = makeDomEnvironment();
   Object.defineProperty(globalThis, 'localStorage', { value: window.localStorage, configurable: true, writable: true });
@@ -86,11 +87,15 @@ async function setUp(over = {}, { settle = 400, preOpen = [] } = {}) {
   app.renderIntentNav();
   document.querySelector('#intent-nav button[data-stage="curate"]').click();
   await wait(settle);
+  jumpFn = (await import('/static/next/stages/curate.js')).jumpToCurateSection;
+  // The sections live on the Contents and Structure tabs; a section under a hidden tab reads nothing until its tab shows.
+  if (tab) { document.querySelector(`[data-subtab="${tab}"]`).click(); await wait(30); }
   return { document, app, server, window, scrolls };
 }
 const norm = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const calls = (s, frag) => s.calls.filter((c) => c.url.includes(frag));
-const jump = (document, id) => document.querySelector(`[data-curate-nav="${id}"]`).click();
+const jump = (document, id) => jumpFn(id);          // the jump line is retired: a jump switches tab, opens, loads, scrolls
+const showTab = async (document, tab) => { document.querySelector(`[data-subtab="${tab}"]`).click(); await wait(30); };
 
 /* 1 ─ nothing is pre-ticked ───────────────────────────────────────────────────────────────── */
 test('1: "what it is" starts with nothing ticked, and the press sends only what the owner ticked', async () => {
@@ -102,7 +107,7 @@ test('1: "what it is" starts with nothing ticked, and the press sends only what 
   assert.match(norm(document.querySelector('[data-manifest-row="entities"]')), /1 entity · 1 proposed, not ticked/);
   document.querySelector('[data-curate-go]').click();
   await wait(200);
-  assert.deepEqual(calls(server, '/curate/commit')[0].body.confirm, ['Endpoint']);
+  assert.deepEqual(calls(server, '/curate/commit').filter((c) => c.method === 'POST')[0].body.confirm, ['Endpoint']);
 });
 
 /* 2 ─ behind cue ──────────────────────────────────────────────────────────────────────────── */
@@ -193,7 +198,7 @@ test('5: nothing section-specific is read until its section opens', async () => 
   assert.equal(server.calls.filter((c) => c.url.endsWith('/dependencies')).length, 0);
 });
 test('5: opening "what it\'s made of" shows a cue at once, reads the tree and the diagram fact together, once', async () => {
-  const { document, server } = await setUp({ treeDelay: 200 });
+  const { document, server } = await setUp({ treeDelay: 200 }, { tab: 'curate_structure' });
   document.getElementById('curate-sec-made-of').open = true;
   document.getElementById('curate-sec-made-of').dispatchEvent(new document.defaultView.Event('toggle'));
   const slot = document.getElementById('component-tree');
@@ -222,7 +227,7 @@ test('5: opening "how it relates" reads the dependencies; a jump link opens and 
 });
 test('5: a section the viewer left open last time is read at once, beside the plan', async () => {
   let release; const holdPlan = new Promise((r) => { release = r; });
-  const { server } = await setUp({ holdPlan }, { preOpen: ['curate-sec-made-of'], settle: 200 });
+  const { server } = await setUp({ holdPlan }, { preOpen: ['curate-sec-made-of'], settle: 200, tab: 'curate_structure' });
   assert.equal(calls(server, '/components/tree').length, 1, 'requested while the plan is still held');
   assert.equal(calls(server, '/api/analyses/facts').length, 1);
   release();
@@ -290,9 +295,9 @@ test('7: but not if the person scrolled meanwhile', async () => {
 test('7: a click before the plan returns is queued, not lost', async () => {
   let release; const holdPlan = new Promise((r) => { release = r; });
   const { document, scrolls } = await setUp({ holdPlan }, { settle: 150 });
-  assert.ok(document.querySelector('[data-curate-nav="curate-sec-blueprints"]'), 'the jump line is there while the plan loads');
-  jump(document, 'curate-sec-blueprints');
-  assert.match(norm(document.getElementById('curate-host')), /will open when the plan is read/);
+  assert.equal(document.querySelector('[data-curate-nav]'), null, 'the jump line is retired');
+  jump(document, 'curate-sec-blueprints');        // the section is not drawn yet: the jump is queued behind the plan
+  assert.equal(document.querySelector('[data-subtab="curate_structure"]'), null, 'the active tab is a span, not a button');
   release();
   await wait(500);
   assert.equal(document.getElementById('curate-sec-blueprints').open, true);
@@ -377,7 +382,7 @@ test('R6: a mouse-down (scrollbar drag, middle-click autoscroll) counts as the p
   assert.equal(scrolls.length, 1);
 });
 test('R6: a jump into a section whose load is already in flight re-scrolls when it lands', async () => {
-  const { document, scrolls } = await setUp({ bpDelay: 300, blueprints: { blueprints: [bp(1)], perspectives: ['logical'], kinds: [] } });
+  const { document, scrolls } = await setUp({ bpDelay: 300, blueprints: { blueprints: [bp(1)], perspectives: ['logical'], kinds: [] } }, { tab: 'curate_structure' });
   const sec = document.getElementById('curate-sec-blueprints');
   sec.open = true; sec.dispatchEvent(new document.defaultView.Event('toggle'));   // load starts, in flight
   await wait(50);
