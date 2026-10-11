@@ -445,6 +445,11 @@ def in_use_text(schema: str, in_use: list[dict]) -> str:
 
 # ── deriving every state word from proof rows ────────────────────────────────
 
+#: The node kinds a database's commit state is built from (schema/table/column elements, the database
+#: element itself). Anything else on the slug belongs to another kind of resource that shares the slug.
+DATABASE_NODE_KINDS = frozenset({"database", "schema", "table", "column"})
+
+
 def _by_node(proofs: list[dict]) -> dict:
     out: dict[tuple, list[dict]] = {}
     for p in proofs:
@@ -598,7 +603,12 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     `{"schemas": {name: state}, "tables": {"s.t": state}, "header": {...},
     "database": {...}, "collisions": [...]}`. Reads only the registry; Egeria is
     never contacted here, so opening Curate stays free."""
-    proofs_all = registry.list_catalogue_commit_proofs(slug)
+    # Proof rows are keyed by slug alone, and a repository and a database can share one slug. Only the rows
+    # about a database's own nodes describe its commit state: a repository's blueprint-shape, report,
+    # architecture-publish or sub-resource rows must never make a database read "committed" or move a state.
+    # The reset marker is the exception: one per slug, whatever node kind the script gave it.
+    proofs_all = [p for p in registry.list_catalogue_commit_proofs(slug)
+                  if p["node_kind"] in DATABASE_NODE_KINDS or p["proof"] == P_EGERIA_RESET]
     # A reset marker splits the history: rows read before it are what Egeria once held, not what it holds.
     # Ordered by read_at (the reset time), never by id, so a proof recorded after the reset but before the
     # marker was written still counts.
