@@ -91,8 +91,11 @@ async function setUp(serverOver = {}) {
     const d = document.createElement('div'); d.id = id; document.body.appendChild(d);
   }
   app.renderIntentNav();
+  window.HTMLElement.prototype.scrollIntoView = window.HTMLElement.prototype.scrollIntoView || function () {};   // jsdom has none
   document.querySelector('#intent-nav button[data-stage="curate"]').click();
   await wait(400);
+  // The sections live on the Contents and Structure tabs; an open section reads when its tab first shows.
+  for (const tab of ['curate_contents', 'curate_structure']) { document.querySelector(`[data-subtab="${tab}"]`).click(); await wait(60); }
   return { document, app, server };
 }
 const holds = (d) => d.getElementById('curate-sec-what-holds');

@@ -68,7 +68,7 @@ function makeServer(over = {}) {
     if (u.includes('/egeria-surveys/') && u.endsWith('/annotations')) return ok(s.annotations);
     if (u.endsWith('/file-type-measurements')) return ok(s.measurements);
     if (u.includes('/curate/plan')) return ok({ technology_type: 'Git repository', disposition: 'using', in_population: true,
-      last_surveyed_at: null, what_it_is: [], what_it_holds: [], relates: [], commits: [] });
+      last_surveyed_at: null, what_it_is: [], what_it_holds: [], made_of: [], relates: [], writes: {}, commits: [], survey: { exists: false }, project: { status: 'linked', word: 'project', name: 'P' } });
     if (u.includes('/components/tree')) return ok({ branches: [], topology: '' });
     if (u.includes('/blueprints')) return ok({ blueprints: [], perspectives: [] });
     if (u.includes('/questions')) return ok({ questions: [] });
@@ -110,8 +110,11 @@ async function openCurate(document) {
   document.querySelector('#intent-nav button[data-stage="curate"]').click();
   await wait();
 }
+// A repository's Publish band is drawn on two tabs from one read: the report (Describe and publish) and the
+// links and project (Contents). `band` is the report half, `items` the Contents half; `q` finds in either.
 const band = (d) => d.getElementById('curate-host').querySelector('[data-curate-band="publish"]');
-const q = (d, sel) => band(d).querySelector(sel);
+const items = (d) => d.getElementById('curate-host').querySelector('[data-curate-band="publish-items"]');
+const q = (d, sel) => band(d).querySelector(sel) || (items(d) && items(d).querySelector(sel));
 const post = (server, frag) => server.calls.filter((c) => c.method === 'POST' && c.url.includes(frag));
 
 /* ── PI-001 / PI-002 ─────────────────────────────────────────────────── */
@@ -144,8 +147,10 @@ test('publish: POSTs whole (no zones, no steps), then the words come from the re
   assert.deepEqual(c.body, { without_project: false }, 'no zone field, no steps field');
   assert.match(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
   assert.match(q(document, '[data-publish-status]').textContent, /in Egeria/);
-  assert.equal(q(document, '[data-publish-status] [data-guid]').dataset.guid, GUID, 'the asset GUID is shown');
-  assert.ok(q(document, '[data-copy-guid]'), 'and copyable');
+  assert.equal(q(document, '[data-publish-status] [data-guid]'), null, 'the GUID is not on Describe and publish: only the word');
+  assert.equal(q(document, '[data-publish-asset] [data-guid]').dataset.guid, GUID, 'the asset GUID is shown on Contents');
+  assert.ok(items(document).querySelector('[data-copy-guid]'), 'and copyable there');
+  assert.equal(band(document).querySelector('[data-publish-status] [data-copy-guid]'), null, 'the asset\'s copy GUID is not on tab 1 (the reports list keeps its own report GUIDs)');
   assert.equal(q(document, '[data-publish-go]').textContent.trim(), 'Publish again');
   assert.match(q(document, '[data-publish-project]').textContent, /personal exploration/);
   assert.ok(server.calls.filter((x) => x.url.endsWith('/publish-state')).length >= 2, 'the state was re-read after the write');
@@ -202,23 +207,29 @@ test('a 409 (already running) says so and sends nothing else', async () => {
 
 /* ── PI-006: the project gate ────────────────────────────────────────── */
 
-test('a 428 shows the sentence and the two choices; "Publish without one" presses again with without_project', async () => {
+test('a 428 shows a cue and a word on Describe and publish; the three choices are the ONE Project row on Contents', async () => {
   const { document, server } = await setUp('repo', { publishAnswers: '428' });
   await openCurate(document);
   q(document, '[data-publish-go]').click();
   await wait();
-  const gate = q(document, '[data-publish-gate-panel]');
+  const gate = band(document).querySelector('[data-publish-gate-panel]');
   assert.ok(gate);
-  assert.equal(gate.querySelector('div').textContent, 'no Egeria project context · bind this investigation to a project, or publish without one');
-  assert.ok(gate.querySelector('[data-gate-bind]') && gate.querySelector('[data-gate-without]'));
+  assert.match(gate.textContent, /needs a project/);
+  assert.ok(gate.querySelector('[data-cue]'), 'a cue, not a sentence');
+  assert.equal(gate.querySelector('[data-cue]').title, 'no Egeria project context · bind this investigation to a project, or publish without one', 'the sentence on demand');
+  assert.equal(gate.querySelector('[data-gate-bind]') || gate.querySelector('[data-gate-without]'), null, 'no controls on tab 1');
   assert.equal(q(document, '[data-publish-go]').disabled, false, 'the control is enabled again, not stuck pending');
+  const row = items(document).querySelector('[data-curate-project-row]');
+  assert.ok(row.querySelector('[data-gate-bind]') && row.querySelector('[data-gate-without]') && row.querySelector('[data-commit-decline]'));
+  assert.equal(document.querySelectorAll('[data-gate-bind]').length, 1, 'the choices appear once on the whole screen');
   server.publishAnswers = 'ok';
-  gate.querySelector('[data-gate-without]').click();
+  row.querySelector('[data-gate-without]').click();
   await wait();
   const ps = post(server, '/publish-report');
   assert.deepEqual(ps.map((c) => c.body.without_project), [false, true]);
   assert.match(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
   assert.match(q(document, '[data-publish-project]').textContent, /no project \(chosen\)/);
+  assert.equal(items(document).querySelector('[data-gate-bind]'), null, 'answered: the choices are gone');
 });
 
 test('"Bind this investigation to a project" goes to the Investigation stage and publishes nothing', async () => {
@@ -226,7 +237,7 @@ test('"Bind this investigation to a project" goes to the Investigation stage and
   await openCurate(document);
   q(document, '[data-publish-go]').click();
   await wait();
-  q(document, '[data-gate-bind]').click();
+  items(document).querySelector('[data-gate-bind]').click();      // the Project row on Contents
   await wait();
   assert.equal(app.state.stage, 'investigation');
   assert.equal(post(server, '/publish-report').length, 1, 'only the first press went out');

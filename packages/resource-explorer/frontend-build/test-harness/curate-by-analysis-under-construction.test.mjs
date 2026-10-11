@@ -29,7 +29,8 @@ for (const kind of ['repo', 'db', 'filesystem']) {
     const { app, content, calls } = await mount(kind, 'curate');
     await app.loadByAnalysisPane();
     assert.match(content.textContent, /Under construction/);
-    assert.doesNotMatch(content.textContent, /could not|Reading|error|No dashboard/i);
+    // The pane's own words (the rail above it may carry tab counts, which say "reading" when nothing has read yet).
+    assert.doesNotMatch(content.querySelector('[data-under-construction]').textContent, /could not|Reading|error|No dashboard/i);
     assert.deepEqual(calls, [], 'no request is made for a pane that is not built');
     assert.ok(content.querySelector('[data-under-construction]'), 'a marker the page can be found by');
   });

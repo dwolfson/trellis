@@ -26,11 +26,11 @@ import { ago } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getRepoPublishState, publishRepoReport, forgetEgeriaLinks, resurveyRepo,
-  getEgeriaReports, getEgeriaReportAnnotations, getFileTypeMeasurements,
+  getEgeriaReports, getEgeriaReportAnnotations, getFileTypeMeasurements, setRepoProjectContext,
 } from '/static/re-api.js';
 import { mountArchitecturePublish } from '/static/next/stages/architecture-publish.js';
 import {
-  state, esc, $, ensureRailShowing, copyAsEvidence, openCurrentInvestigationStage,
+  state, esc, $, ensureRailShowing, copyAsEvidence, openCurrentInvestigationStage, openCurate,
 } from '/static/next/app.js';
 
 /** The sentence a first press shows when no Egeria project answers (brief PI-006). */
@@ -336,35 +336,78 @@ export function surveyLineHtml(survey) {
       <span class="text-ink-muted">· ${esc(ago(survey.surveyed_at))} · ${num(survey.annotations)} annotations · ${num(survey.steps)} steps ran</span></div>${stale}`;
 }
 
-function repoStatusHtml(s) {
-  return `<div class="text-caveat" data-publish-status>${s.in_egeria
-    ? cue('measured', 'in Egeria') + ` <span class="text-provenance text-ink-muted">· asset</span> ${guidHtml(s.asset_guid)}`
-    : cue('unrun', 'not in Egeria')}</div>
+/* ── a repository's publish state, drawn on two tabs from ONE read ─────────────────────────────────
+ *
+ * Describe and publish holds what a person does to get the REPORT to Egeria (the press, Re-survey now, file
+ * types, the Egeria reports list); Contents holds the plumbing around it (the asset GUID, Forget links, the
+ * ONE Project row); Structure holds Architecture Publish. All three share the single `getRepoPublishState`
+ * read, `reread` and `draw` in `renderPublishRepo`. The words are the server's, as before. */
+
+/** The project as a cue and a short word (the sentence is the tooltip). The controls live on Contents. */
+function projectCueHtml(project) {
+  const status = project && project.status;
+  const unanswered = !project || status === 'unset' || status === 'unbound';
+  const name = project && project.name ? ` ${project.name}` : '';
+  const word = project ? `${project.word}${name}` : 'no project';
+  return cue(unanswered ? 'unrun' : 'measured', word, project && project.detail ? project.detail : '');
+}
+
+/** Tab 1: the status words, the report row, the project as a cue, the survey line. The asset GUID is not
+ *  here (it is on Contents): only the "in Egeria" word. */
+function describeStatusHtml(s) {
+  return `<div class="text-caveat" data-publish-status>${s.in_egeria ? cue('measured', 'in Egeria') : cue('unrun', 'not in Egeria')}</div>
     <div class="mt-s1 text-caveat" data-publish-row>${reportRowHtml(s.row, s.survey)}</div>
-    <div class="mt-s1 text-provenance text-ink-muted" data-publish-project>project · ${projectHtml(s.project)}</div>
+    <div class="mt-s1 text-provenance text-ink-muted" data-publish-project>project · ${projectCueHtml(s.project)}</div>
     ${surveyLineHtml(s.survey)}`;
 }
 
-function controlsHtml(s, signedIn) {
+/** Tab 1's controls: the one press, Re-survey now, and the words beside them. A 428 draws a cue and a short
+ *  word under them (the controls are on Contents). */
+function describeControlsHtml(s, signedIn) {
   const label = s.can_publish_again ? 'Publish again' : 'Publish to Egeria →';
   const hasSurvey = !!(s.survey && s.survey.exists);
   const why = signedIn ? '' : 'sign in to publish — it needs an author';
   return `<div class="mt-s2 flex flex-wrap items-baseline gap-s3">
     ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !(signedIn && hasSurvey) })}
     ${button(`data-resurvey-go title="${esc(RESURVEY_SENTENCE)}"`, hasSurvey ? 'Re-survey now →' : 'Run the first survey →', { disabled: !signedIn })}
-    ${button('data-forget-open', 'Forget Egeria links…', { disabled: !(signedIn && s.in_egeria) })}
     <span data-publish-feedback class="text-provenance text-ink-muted" title="${esc(PUBLISH_SENTENCE)}">${esc(why || PUBLISH_IDLE_WORDS)}</span></div>
     ${hasSurvey ? '' : `<div class="mt-[2px] text-provenance text-ink-muted" data-publish-blocker>${esc(s.survey?.sentence || NO_SURVEY_SENTENCE)}</div>`}
-    <div data-publish-gate></div><div data-forget-confirm></div>`;
+    <div data-publish-gate></div>`;
 }
 
-function gateHtml() {
-  return `<div class="mt-s2 max-w-[70ch] border-l border-rule-strong pl-s2" data-publish-gate-panel role="status">
-    <div class="text-caveat text-ink">${esc(NO_PROJECT_SENTENCE)}</div>
-    <div class="mt-s1 flex flex-wrap gap-s3">
+/** Tab 1, whole. */
+export function renderPublishDescribe(s, signedIn) {
+  return `${head}${describeStatusHtml(s)}
+    <details class="mt-s2" data-file-measurements-section><summary class="cursor-pointer text-answer text-ink">File types
+      <span class="text-provenance text-ink-muted">· in the survey report</span></summary>
+      <div class="mt-s1" data-file-measurements-host></div></details>
+    ${describeControlsHtml(s, signedIn)}
+    <div class="mt-s3" data-egeria-reports-host></div>`;
+}
+
+/** The ONE Project row (Contents). It always names the project; when nothing answers (or an Egeria reset left it
+ *  unbound) it carries the three choices, and nowhere else on the screen does. */
+function projectRowHtml(project, signedIn) {
+  const unanswered = !project || project.status === 'unset' || project.status === 'unbound';
+  return `<div class="mt-s2 text-caveat" data-curate-project-row>
+    <span class="text-provenance text-ink-muted">project</span> ${projectHtml(project)}
+    ${unanswered ? `<span class="ml-s2 inline-flex flex-wrap items-baseline gap-s3" title="${esc(NO_PROJECT_SENTENCE)}">
       ${button('data-gate-bind', 'Bind this investigation to a project')}
-      ${button('data-gate-without', 'Publish without one')}
-    </div></div>`;
+      ${button('data-commit-decline', 'Decline a project')}
+      ${button('data-gate-without', 'Publish this report without one', { disabled: !signedIn })}</span>` : ''}
+    <span data-curate-project-feedback class="ml-s2 text-provenance text-ink-muted"></span></div>`;
+}
+
+/** Contents: the asset GUID and its copy, the Project row, Forget Egeria links. */
+export function renderPublishContents(s, signedIn) {
+  return `<div class="mb-s1 text-caps uppercase tracking-caps text-ink">Publish · links and project</div>
+    <div class="text-caveat" data-publish-asset>${s.in_egeria
+    ? `<span class="text-provenance text-ink-muted">asset</span> ${guidHtml(s.asset_guid)}`
+    : cue('unrun', 'no asset yet')}</div>
+    ${projectRowHtml(s.project, signedIn)}
+    <div class="mt-s2 flex flex-wrap items-baseline gap-s3">
+      ${button('data-forget-open', 'Forget Egeria links…', { disabled: !(signedIn && s.in_egeria) })}</div>
+    <div data-forget-confirm></div>`;
 }
 
 function forgetHtml() {
@@ -406,51 +449,79 @@ async function renderFileTypeMeasurements(host, slug) {
   bindCopy(host);
 }
 
-/** Draw the Publish band for the resource. Never throws into the pane: a failure says so in its own slot. */
+/** Draw the Publish band for a database or a file system. A repository draws through `renderPublishRepo`
+ *  (its two halves live on the Describe and Contents tabs). Never throws into the pane. */
 export async function renderPublishBand(el, slug, entityType) {
   if (!el) throw new Error('Publish band host missing');
+  if (entityType === 'repo') throw new Error('renderPublishBand: a repository draws through renderPublishRepo');
+  el.innerHTML = `${head}${nonRepoStatusHtml(entityType, slug)}<div class="mt-s2" data-egeria-reports-host></div>`;
+  bindCopy(el);
+  const row = resourceRow(slug) || {};
+  mountEgeriaReports(el.querySelector('[data-egeria-reports-host]'), { entityType, slug, inEgeria: !!row.is_published });
+}
+
+/** A repository's publish state on the Curate tabs. `hosts` = { describe, contents, structure } (elements).
+ *  ONE state read serves Describe and Contents; `reread` and `draw` are shared, so a press on either tab
+ *  redraws both from the re-read. Architecture Publish mounts on Structure the first time that tab opens
+ *  (`mountStructure()`), not at page load. Returns { ready, mountStructure } at once; `ready` resolves when the
+ *  first read has been drawn (it never rejects: a failed read says so in the slots). */
+export function renderPublishRepo(hosts, slug) {
+  const { describe: dEl, contents: cEl, structure: sEl } = hosts;
+  if (!dEl || !cEl) throw new Error('Publish band host missing');
   const signedIn = !!whoAmI();
-  if (entityType !== 'repo') {
-    el.innerHTML = `${head}${nonRepoStatusHtml(entityType, slug)}<div class="mt-s2" data-egeria-reports-host></div>`;
-    bindCopy(el);
-    const row = resourceRow(slug) || {};
-    mountEgeriaReports(el.querySelector('[data-egeria-reports-host]'), { entityType, slug, inEgeria: !!row.is_published });
-    return;
-  }
-  el.innerHTML = `${head}<div class="text-caveat text-ink-muted">Reading what Egeria holds…</div>`;
-  let s;
-  try { s = await getRepoPublishState(slug); } catch (err) {
-    if (!stale(el, slug)) el.innerHTML = `${head}<div class="text-caveat text-state-warn">The publish state could not be read: ${esc(err.message)}</div>`;
-    return;
-  }
-  if (stale(el, slug)) return;
-
-  const draw = (st, feedback = '') => {
-    // File types are a measurement the report carries (ruling 2026-10-07): shown here, never pressed.
-    el.innerHTML = `${head}${repoStatusHtml(st)}
-      <details class="mt-s2" data-file-measurements-section><summary class="cursor-pointer text-answer text-ink">File types
-        <span class="text-provenance text-ink-muted">· in the survey report</span></summary>
-        <div class="mt-s1" data-file-measurements-host></div></details>
-      ${controlsHtml(st, signedIn)}
-      <div class="mt-s3" data-architecture-publish-host></div>
-      <div class="mt-s3" data-egeria-reports-host></div>`;
-    bindCopy(el);
-    if (feedback) el.querySelector('[data-publish-feedback]').textContent = feedback;
-    wire(st);
-    // The architecture (accepted components and blueprints) is published by its own control, below.
-    mountArchitecturePublish(el.querySelector('[data-architecture-publish-host]'), slug).catch(() => {});
-    mountEgeriaReports(el.querySelector('[data-egeria-reports-host]'), { entityType: 'repo', slug, inEgeria: st.in_egeria });
+  let archMounted = false;
+  const mountStructure = () => {
+    if (archMounted || !sEl || !sEl.isConnected) return;
+    archMounted = true;
+    // The architecture (accepted components and blueprints) is published by its own control.
+    mountArchitecturePublish(sEl, slug).catch(() => {});
   };
+  const ready = (async () => {
+    dEl.innerHTML = `${head}<div class="text-caveat text-ink-muted">Reading what Egeria holds…</div>`;
+    cEl.innerHTML = `<div class="mb-s1 text-caps uppercase tracking-caps text-ink">Publish · links and project</div>
+      <div class="text-caveat text-ink-muted">Reading what Egeria holds…</div>`;
+    let s;
+    try { s = await getRepoPublishState(slug); } catch (err) {
+      if (!stale(dEl, slug)) {
+        dEl.innerHTML = `${head}<div class="text-caveat text-state-warn">The publish state could not be read: ${esc(err.message)}</div>`;
+        cEl.innerHTML = '';
+      }
+      return;
+    }
+    if (stale(dEl, slug)) return;
+    draw(s);
+  })();
 
+  /** The project answer changed or was re-read: Curate's own plan (the commit blockers) follows it. */
+  const announceProject = (project) =>
+    dEl.ownerDocument.dispatchEvent(new CustomEvent('re:project-changed', { detail: { slug, project } }));
+
+  function draw(st, feedback = '') {
+    dEl.innerHTML = renderPublishDescribe(st, signedIn);
+    cEl.innerHTML = renderPublishContents(st, signedIn);
+    bindCopy(dEl); bindCopy(cEl);
+    if (feedback) {
+      dEl.querySelector('[data-publish-feedback]').textContent = feedback;
+      const pf = cEl.querySelector('[data-curate-project-feedback]');
+      if (pf) pf.textContent = feedback;
+    }
+    wire(st);
+    mountEgeriaReports(dEl.querySelector('[data-egeria-reports-host]'), { entityType: 'repo', slug, inEgeria: st.in_egeria });
+  }
+
+  // After an ACT (a press, a decline, a forget) the state is re-read and both halves redraw from the re-read;
+  // the project answer it carries is told to Curate's own plan, so the commit's blockers follow it.
   const reread = async (feedback = '') => {
     const st = await getRepoPublishState(slug);
-    if (!stale(el, slug)) draw(st, feedback);
+    if (stale(dEl, slug)) return;
+    draw(st, feedback);
+    announceProject(st.project);
   };
 
-  const wire = (st) => {
-    const go = el.querySelector('[data-publish-go]');
-    const feedback = el.querySelector('[data-publish-feedback]');
-    const gate = el.querySelector('[data-publish-gate]');
+  function wire(st) {
+    const go = dEl.querySelector('[data-publish-go]');
+    const feedback = dEl.querySelector('[data-publish-feedback]');
+    const gate = dEl.querySelector('[data-publish-gate]');
     const press = async (withoutProject) => {
       if (go.dataset.pending) return;                       // a second press is ignored
       go.dataset.pending = '1';
@@ -467,13 +538,15 @@ export async function renderPublishBand(el, slug, entityType) {
         if (err.status === 428) {
           go.disabled = false; go.textContent = idle; delete go.dataset.pending;
           feedback.textContent = '';
-          gate.innerHTML = gateHtml();
-          gate.querySelector('[data-gate-bind]').addEventListener('click', () => openCurrentInvestigationStage());
-          gate.querySelector('[data-gate-without]').addEventListener('click', () => press(true));
+          // A cue and a short word; the three choices are the Project row on Contents.
+          gate.innerHTML = `<div class="mt-s1 text-caveat" data-publish-gate-panel role="status">${
+            cue('unrun', 'needs a project', NO_PROJECT_SENTENCE)} ${
+            linkButton('data-publish-gate-goto="curate_contents"', 'Contents ›')}</div>`;
+          gate.querySelector('[data-publish-gate-goto]').addEventListener('click', () => openCurate({ tab: 'curate_contents' }));
           return;
         }
         try { await reread(); } catch { /* the failure below is what matters */ }
-        const fb = el.querySelector('[data-publish-feedback]');
+        const fb = dEl.querySelector('[data-publish-feedback]');
         if (fb) fb.innerHTML = err.status === 403
           ? cue('no_access', 'not permitted', err.message)   // Brief Z2: the reason on demand, not a sentence
           : err.status === 409 && err.message.startsWith('no survey')
@@ -485,9 +558,26 @@ export async function renderPublishBand(el, slug, entityType) {
     };
     go?.addEventListener('click', () => press(false));
 
+    // The Project row (Contents): the three choices, each once.
+    cEl.querySelector('[data-gate-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
+    cEl.querySelector('[data-gate-without]')?.addEventListener('click', () => press(true));
+    const decline = cEl.querySelector('[data-commit-decline]');
+    decline?.addEventListener('click', async () => {
+      if (decline.disabled) return;
+      decline.disabled = true; decline.textContent = 'declining …';
+      try {
+        await setRepoProjectContext(slug, 'declined');
+        await reread();
+      } catch (err) {
+        decline.disabled = false; decline.textContent = 'Decline a project';
+        const pf = cEl.querySelector('[data-curate-project-feedback]');
+        if (pf) pf.textContent = `not declined · ${err.message}`;
+      }
+    });
+
     // Re-survey now: runs the survey and NOTHING else. An immediate visible change on the press; the
     // words after it come from the re-read state (the new age), never from the click.
-    const rs = el.querySelector('[data-resurvey-go]');
+    const rs = dEl.querySelector('[data-resurvey-go]');
     rs?.addEventListener('click', async () => {
       if (rs.dataset.pending) return;
       rs.dataset.pending = '1';
@@ -509,8 +599,8 @@ export async function renderPublishBand(el, slug, entityType) {
       }
     });
 
-    el.querySelector('[data-forget-open]')?.addEventListener('click', () => {
-      const slot = el.querySelector('[data-forget-confirm]');
+    cEl.querySelector('[data-forget-open]')?.addEventListener('click', () => {
+      const slot = cEl.querySelector('[data-forget-confirm]');
       slot.innerHTML = forgetHtml();
       slot.querySelector('[data-forget-cancel]').addEventListener('click', () => { slot.innerHTML = ''; });
       const fgo = slot.querySelector('[data-forget-go]');
@@ -532,14 +622,14 @@ export async function renderPublishBand(el, slug, entityType) {
       });
     });
 
-    const ft = el.querySelector('[data-file-measurements-section]');
+    const ft = dEl.querySelector('[data-file-measurements-section]');
     ft?.addEventListener('toggle', () => {
       if (ft.open && !ft.dataset.loaded) {
         ft.dataset.loaded = '1';
         renderFileTypeMeasurements(ft.querySelector('[data-file-measurements-host]'), slug);
       }
     });
-  };
+  }
 
-  draw(s);
+  return { ready, mountStructure };
 }

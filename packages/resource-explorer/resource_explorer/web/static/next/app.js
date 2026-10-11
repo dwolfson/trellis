@@ -3153,10 +3153,18 @@ export function openCurateStage() {
  *  ignored and Curate opens as it always has (on the Questions frame); with it on, an unknown tab opens tab 1.
  *  A section is jumped to once the pane is drawn (jumpToCurateSection queues it if the plan is still loading). */
 export function openCurate({ tab, section } = {}) {
+  // From one of Curate's own tabs to another, the panels are already in the document: switch in place (the plan
+  // is not read again, a running commit keeps its line).
+  const inPlace = curatePanelsMounted();
   state.stage = 'curate';
   state.subTab = stageTabsOn('curate', state.resourceType)
     ? (STAGE_TAB_IDS.curate.includes(tab) ? tab : STAGE_TAB_IDS.curate[0])
     : 'questions';
+  if (inPlace && STAGE_TAB_IDS.curate.includes(state.subTab)) {
+    switchCurateTab(state.subTab);
+    renderIntentNav();
+    return section ? Promise.resolve(jumpToCurateSection(section)) : Promise.resolve();
+  }
   writeUrl();
   renderIntentNav();
   const loading = loadPane();
@@ -3977,14 +3985,46 @@ export function subTabsHtml() {
  * sentence was review-speak — correct in a handoff, unreadable in the
  * product to anyone who was not in the conversation — and the dashed
  * underline on a deferred tab already carries the fact (design rule 6). */
-/** Sub-tab clicks: the real one switches, a deferred one says it is deferred. */
+/** Is Curate's tabbed pane on screen (its three panels in the document), so a switch between its tabs can be
+ *  done in place without reading the plan again? */
+function curatePanelsMounted() {
+  return state.stage === 'curate' && stageTabsOn('curate', state.resourceType)
+    && isStageTabId(state.subTab) && !!$('content')?.querySelector('[data-curate-tab-panel]');
+}
+
+/** Redraw the rail (labels, counts, the running-commit line) in place. A no-op when the tabbed pane is not
+ *  what is on screen. */
+export function refreshStageRail() {
+  const host = $('content')?.querySelector('[data-rail-host]');
+  if (!host) return;
+  host.innerHTML = subTabsHtml();
+  bindSubTabsIn(host);
+}
+
+/** Show one of Curate's tabs: swap which panel is hidden, redraw the rail, start what the newly shown tab's open
+ *  sections own. Nothing is fetched here that a visible tab did not already have. */
+function switchCurateTab(tab) {
+  state.subTab = tab;
+  writeUrl();
+  const want = tab.replace(/^curate_/, '');
+  $('content').querySelectorAll('[data-curate-tab-panel]').forEach((p) => { p.hidden = p.dataset.curateTabPanel !== want; });
+  refreshStageRail();
+  if (state.curate && state.curate.onTabShown) state.curate.onTabShown();
+}
+
+/** Sub-tab clicks: the real one switches, a deferred one says it is deferred. Between Curate's own tabs the
+ *  switch is in place. */
 export function bindSubTabs() {
-  const el = $('content');
-  el.querySelectorAll('[data-subtab]').forEach((b) => b.addEventListener('click', () => {
+  bindSubTabsIn($('content'));
+}
+
+function bindSubTabsIn(el) {
+  el.querySelectorAll('[data-subtab]').forEach((b) => { b.onclick = () => {
+    if (curatePanelsMounted() && STAGE_TAB_IDS.curate.includes(b.dataset.subtab)) { switchCurateTab(b.dataset.subtab); return; }
     state.subTab = b.dataset.subtab;
     writeUrl();
     loadPane();
-  }));
+  }; });
   el.querySelectorAll('[data-deferred]').forEach((b) => b.addEventListener('click', () => {
     state.subTab = b.dataset.deferred;
     writeUrl();
@@ -4960,11 +5000,68 @@ function nativeProcessesSectionHtml(nativeProcesses) {
  * live state, rather than a list of survey definitions or a per-intent
  * results board.
  */
-/** The leading tabs' pane, as a STUB (Brief S0): the rail, the commit line under it, the resource header and one
- *  host per tab. S1/S2 (Curate) and S4 (Understanding) draw the sections into the host; nothing is moved here. */
+/** The reads a repository's resource header waits on: the scouting overview (homepage, last published, the
+ *  stale-link flag) and the scouting signal chips. Fired once per selection; the header redraws in place as they land
+ *  and is fine without them. Shared by the Questions frame and the Curate tabs. */
+function primeRepoHeaderReads(slug) {
+  // The overview carries `homepage`, `last_published_at` and the stale-link
+  // flag, none of which are on the summary row. Fetched per selection, and
+  // its absence is survivable — the header renders without it.
+  // `/api/projects/{slug}/scouting-overview` is a repo-only endpoint (docs/
+  // Backlog.md, "/next probes scouting-overview for database slugs and
+  // always gets a 404") -- same class of bug as the earlier 'db'/'database'
+  // resourceType mismatch: gate the call so it is never issued for a
+  // resource type it doesn't apply to.
+  if (state.resourceType === 'repo' && state.overview?.slug !== slug) {
+    state.overview = null;
+    getScoutingOverview(slug)
+      .then((ov) => {
+        if (state.selectedSlug !== ov.slug) return;
+        state.overview = ov;
+        // Replace the header IN PLACE, by its own id, so the rows already on
+        // screen stay put. An earlier version matched the header by its class
+        // list and inserted a second copy — the resource name rendered twice.
+        const host = $('resource-header');
+        if (host) {
+          host.innerHTML = resourceHeaderHtml(slug);
+          bindResourceHeader();
+        }
+      })
+      .catch(() => { /* the header is fine without it */ });
+    // PI-051: the scouting signal chips ride on the same selection; "could not read" is kept distinct from "none yet".
+    state.scoutingSignal = null;
+    getSurveySummary(slug, 'scouting')
+      .then((r) => { state.scoutingSignal = { slug, tiles: r.tiles || [] }; })
+      .catch((err) => { state.scoutingSignal = { slug, error: err && err.message ? err.message : 'unknown error' }; })
+      .finally(() => {
+        const host = $('resource-header');
+        if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
+      });
+  }
+
+}
+
+/** The leading tabs' pane. Curate on a repository draws its three panels (stages/curate.js `renderCurate` fills
+ *  them); Understanding's tabs are still a stub (S4). The rail sits in its own host so a tab click can redraw
+ *  it in place, and the resource header reads what it always read. */
 async function loadStageTabPane() {
   const el = $('content');
   const slug = state.selectedSlug;
+  if (state.stage === 'curate' && slug && state.resourceType === 'repo') {
+    primeRepoHeaderReads(slug);
+    el.innerHTML = `<div data-rail-host>${subTabsHtml()}</div>
+      <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+      <div class="my-s3 h-px bg-rule"></div>
+      <div id="curate-host"></div>`;
+    bindSubTabs();
+    bindResourceHeader();
+    renderCurate(slug).catch((err) => {
+      if (slug !== state.selectedSlug) return;
+      const box = $('curate-host');
+      if (box) box.innerHTML = `<div class="py-s3 text-answer text-accent-ink">Curate could not be drawn: ${esc(err.message)}</div>`;
+    });
+    return;
+  }
   el.innerHTML = `${subTabsHtml()}
     ${slug ? `<div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="my-s3 h-px bg-rule"></div>` : ''}
@@ -8231,40 +8328,7 @@ async function loadPane() {
 
   const slug = state.selectedSlug;
 
-  // The overview carries `homepage`, `last_published_at` and the stale-link
-  // flag, none of which are on the summary row. Fetched per selection, and
-  // its absence is survivable — the header renders without it.
-  // `/api/projects/{slug}/scouting-overview` is a repo-only endpoint (docs/
-  // Backlog.md, "/next probes scouting-overview for database slugs and
-  // always gets a 404") -- same class of bug as the earlier 'db'/'database'
-  // resourceType mismatch: gate the call so it is never issued for a
-  // resource type it doesn't apply to.
-  if (state.resourceType === 'repo' && state.overview?.slug !== slug) {
-    state.overview = null;
-    getScoutingOverview(slug)
-      .then((ov) => {
-        if (state.selectedSlug !== ov.slug) return;
-        state.overview = ov;
-        // Replace the header IN PLACE, by its own id, so the rows already on
-        // screen stay put. An earlier version matched the header by its class
-        // list and inserted a second copy — the resource name rendered twice.
-        const host = $('resource-header');
-        if (host) {
-          host.innerHTML = resourceHeaderHtml(slug);
-          bindResourceHeader();
-        }
-      })
-      .catch(() => { /* the header is fine without it */ });
-    // PI-051: the scouting signal chips ride on the same selection; "could not read" is kept distinct from "none yet".
-    state.scoutingSignal = null;
-    getSurveySummary(slug, 'scouting')
-      .then((r) => { state.scoutingSignal = { slug, tiles: r.tiles || [] }; })
-      .catch((err) => { state.scoutingSignal = { slug, error: err && err.message ? err.message : 'unknown error' }; })
-      .finally(() => {
-        const host = $('resource-header');
-        if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
-      });
-  }
+  primeRepoHeaderReads(slug);
 
   // The frame first, then per-row skeletons — rows arrive independently, and
   // a centred spinner would hide the ones that are already here.
@@ -8282,8 +8346,11 @@ async function loadPane() {
   // Curate uses none of the checklist reads below, so it starts NOW and does not wait behind them
   // (getQuestions, getContext and the unfiltered getQuestions run in series and cost seconds). The
   // other stages are unchanged: they need `checklist` and render after it.
+  // A repository's Curate draws on its own tabs (loadStageTabPane); the Questions tab is then the shared one.
+  // A database or a file system still draws Curate in this frame.
+  const curateInFrame = state.stage === 'curate' && !stageTabsOn('curate', state.resourceType);
   let curateStarted = false;
-  if (state.stage === 'curate') {
+  if (curateInFrame) {
     curateStarted = true;
     renderCurate(slug).catch((err) => {
       if (slug !== state.selectedSlug) return;
@@ -8346,7 +8413,7 @@ async function loadPane() {
   // whether or not the catalog has rows for the stage (today it has none).
   // A failed render must be visible, never an empty body: the pane used to
   // go blank here when its host element had been deleted.
-  if (state.stage === 'curate' && !curateStarted) {
+  if (curateInFrame && !curateStarted) {
     renderCurate(slug).catch((err) => {
       if (slug !== state.selectedSlug) return;
       const box = $('question-rows');
@@ -8359,10 +8426,10 @@ async function loadPane() {
   // Survey & analyses pane's sub_resource_survey row instead of a stage-
   // level note (RULING-SUBRESOURCES-PLACEMENT.md; next/stages/analysis.js).
   if (!state.questions.length) {
-    rows.innerHTML = state.stage === 'curate' ? '' : `<div class="py-s3 text-answer text-ink">
+    rows.innerHTML = curateInFrame ? '' : `<div class="py-s3 text-answer text-ink">
       No cataloged questions match this stage and this perspective set.
       That is a fact about the filter, not about the repository.</div>`;
-    $('answered-count').textContent = state.stage === 'curate' ? 'review and commit · Curate' : `0 questions · ${stageLabel()}`;
+    $('answered-count').textContent = curateInFrame ? 'review and commit · Curate' : `0 questions · ${stageLabel()}`;
     return;
   }
 

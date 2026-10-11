@@ -16,14 +16,14 @@ import {
   getComponentFinder, getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
   getComponentTree, getComponentLeaves, postBranchVerdicts,
   getCatalogueDepthOffer, postCatalogueDepthOfferOutcome,
-  getComponentBlueprints, postBlueprintVerdict, setRepoProjectContext,
+  getComponentBlueprints, postBlueprintVerdict, getLatestCuration,
 } from '/static/re-api.js';
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
   renderRulesBlock,
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
-import { renderPublishBand } from '/static/next/stages/publish.js';
+import { renderPublishBand, renderPublishRepo } from '/static/next/stages/publish.js';
 import { ARCHITECTURE_CHANGED } from '/static/next/stages/architecture-publish.js';
 import { repoCommitPanelHtml, commitHeaderHtml, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
 import { createScopeController, scopeListHtml, visibleRows } from '/static/next/stages/resource-scope.js';
@@ -32,9 +32,9 @@ import { admissionHtml, admissionNoteHtml } from '/static/next/stages/curate-adm
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
-  apiEntityType, openCurrentInvestigationStage, openCurate,
+  apiEntityType, openCurate, refreshStageRail,
 } from '/static/next/app.js';
-import { stageTabsOn, tabOfSection } from '/static/next/stages/stage-tabs.js';
+import { stageTabsOn, tabOfSection, STAGE_TAB_IDS } from '/static/next/stages/stage-tabs.js';
 import { setCommitLine, commitLineFromRecord } from '/static/next/stages/curate-tabs.js';
 import { contentsChosen } from '/static/next/stages/curate-counts.js';
 
@@ -91,21 +91,6 @@ const CURATE_COLUMNS = [
  * block: 'center' })`. This is a page-level table of contents, a narrower
  * and separate thing from classic's component/blueprint cross-reference
  * jump -- there was no existing page-nav pattern to port, so this is new. */
-const CURATE_SECTIONS = [
-  { id: 'curate-sec-what-it-is', label: 'what it is' },
-  { id: 'curate-sec-what-holds', label: "what's in it" },
-  { id: 'curate-sec-made-of', label: "what it's made of" },
-  { id: 'curate-sec-blueprints', label: 'blueprints' },
-  { id: 'curate-sec-relates', label: 'how it relates' },
-  { id: 'curate-sec-writes', label: 'what gets written' },
-];
-
-function curateSectionNavHtml() {
-  return `<nav aria-label="Curate sections" class="sticky top-0 z-10 -mx-s2 mb-s3 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px] border-b border-rule bg-paper px-s2 py-s2 text-provenance">
-    ${CURATE_SECTIONS.map((s) => `<a href="#${s.id}" data-curate-nav="${s.id}" class="cursor-pointer text-accent-ink underline">${esc(s.label)}</a>`).join('')}
-  </nav>`;
-}
-
 /** Sections start COLLAPSED (owner, 2026-10-08) and a person's choice is remembered per viewer, like the
  *  Understanding sections (`re.understanding.collapsed.<id>`): '0' = opened by them, '1' = closed. Storage
  *  that is missing or throws just means the in-memory copy for this page load. */
@@ -140,8 +125,8 @@ const LAZY_SECTIONS = {
  *  more, unless the person has scrolled in the meantime. A click before the plan is drawn is queued. */
 export function jumpToCurateSection(id) {
   state.curate = state.curate || {};
-  // With the leading tabs on, a section lives on one tab (TAB_OF_SECTION): switch to it first, then open, load
-  // and scroll. Dormant (no-op) while the gate is off, so the single-page Curate jumps exactly as before.
+  // With the leading tabs on, a section lives on one tab (TAB_OF_SECTION): switch to it first (in place: the plan
+  // is not re-read), then open, load and scroll.
   const tab = tabOfSection(id);
   if (tab && stageTabsOn('curate', state.resourceType) && state.subTab !== tab) {
     openCurate({ tab, section: id });
@@ -180,10 +165,6 @@ function bindCurateSectionNav(host) {
   host.querySelectorAll('details[id^="curate-sec-"]').forEach((d) => d.addEventListener('toggle', () => {
     rememberSection(d.id, d.open);
     if (d.open && state.curate && state.curate.loadSection) state.curate.loadSection(d.id);
-  }));
-  host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    jumpToCurateSection(a.dataset.curateNav);
   }));
 }
 
@@ -448,6 +429,10 @@ function nonRepoCurateHtml(entityType) {
  *  (which always runs for Curate) cannot wipe it. A missing pane frame is a
  *  bug and says so: it throws rather than drawing nothing. */
 export function mountCurateHost() {
+  // The tabbed pane (a repository with the leading tabs on) owns #curate-host itself; the Questions frame
+  // (a database or a file system) mounts it as a sibling of #question-rows.
+  const existing = $('curate-host');
+  if (existing) return existing;
   const rows = $('question-rows');
   if (!rows) throw new Error('Curate pane host missing: #question-rows is not in the document');
   let host = $('curate-host');
@@ -462,9 +447,42 @@ export function mountCurateHost() {
 /** The seconds on the plan's loading line come from this clock (a test swaps it for a fake). */
 const curateClock = {
   now: () => Date.now(),
-  every: (fn, ms) => { const id = setInterval(fn, ms); return () => clearInterval(id); },
+  // unref'd where the timer has it (Node under the test harness): a poll must never keep a process alive.
+  every: (fn, ms) => { const id = setInterval(fn, ms); if (id && id.unref) id.unref(); return () => clearInterval(id); },
 };
 export function setCurateClock(c) { Object.assign(curateClock, c); }
+
+/** The tab the Curate pane is showing. Anything that is not one of Curate's own tabs (a direct call, a stale id)
+ *  reads as the first. */
+export function activeCurateTab() {
+  return STAGE_TAB_IDS.curate.includes(state.subTab) ? state.subTab : STAGE_TAB_IDS.curate[0];
+}
+/** Does this section's tab show right now? A section under a hidden tab reads nothing until its tab opens. */
+function sectionTabShows(id) {
+  const t = tabOfSection(id);
+  return !t || t === activeCurateTab();
+}
+
+/** A repository's Curate panes: one panel per leading tab, ALL in the document, the inactive ones hidden, so a
+ *  tab switch swaps `hidden` and never re-reads the plan. The Describe and Contents halves of the Publish band,
+ *  and Architecture Publish, each have their own host; `draw()` fills the section hosts. */
+function tabbedFrameHtml(active) {
+  const hid = (tab) => (tab === active ? '' : ' hidden');
+  return `<div data-curate-tab-panel="describe"${hid('curate_describe')}>
+      <div data-curate-describe-head></div>
+      <section data-curate-band="findable" class="mb-s4 border-b border-rule pb-s2"></section>
+      <section data-curate-band="publish" class="mb-s4 border-b border-rule pb-s2"></section>
+      <section data-curate-band="people" class="mb-s4"></section>
+    </div>
+    <div data-curate-tab-panel="contents"${hid('curate_contents')}>
+      <section data-curate-band="publish-items" class="mb-s4 border-b border-rule pb-s2"></section>
+      <div data-curate-sections="contents"></div>
+    </div>
+    <div data-curate-tab-panel="structure"${hid('curate_structure')}>
+      <section data-curate-band="architecture" class="mb-s4 border-b border-rule pb-s2"></section>
+      <div data-curate-sections="structure"></div>
+    </div>`;
+}
 
 export async function renderCurate(slug) {
   finderRows = null;       // a fresh page reads the components again (a survey may have changed them)
@@ -481,17 +499,22 @@ export async function renderCurate(slug) {
   // What people say below. `host` is the middle band: everything below that
   // used to write into the whole pane now writes into it, so the repo's plan
   // view is untouched apart from its container.
-  frame.innerHTML = bandFrameHtml();
-  const host = frame.querySelector('[data-curate-band="kind"]');
+  // A repository draws as three tabs (a panel each); a database or a file system as the single pane it has always been.
+  const tabbed = entityType === 'repo';
+  frame.innerHTML = tabbed ? tabbedFrameHtml(activeCurateTab()) : bandFrameHtml();
+  const host = tabbed ? frame : frame.querySelector('[data-curate-band="kind"]');
+  const band = (name) => frame.querySelector(`[data-curate-band="${name}"]`);
+  let publishRepo = null;
+  if (tabbed) publishRepo = renderPublishRepo({ describe: band('publish'), contents: band('publish-items'), structure: band('architecture') }, slug);
   const bands = [
-    renderFindableBand(frame.querySelector('[data-curate-band="findable"]'), slug, entityType),
-    renderPeopleBand(frame.querySelector('[data-curate-band="people"]'), slug, entityType),
+    renderFindableBand(band('findable'), slug, entityType),
+    renderPeopleBand(band('people'), slug, entityType),
     // G1: what Egeria holds for this resource, the same band on every kind. It reads RE's own records
     // first (no Egeria contact) and is independent of the repository plan below, which can take long.
-    renderPublishBand(frame.querySelector('[data-curate-band="publish"]'), slug, entityType),
+    tabbed ? publishRepo.ready : renderPublishBand(band('publish'), slug, entityType),
   ].map((p) => p.catch((err) => {
     // A band that fails says so in its own slot; it never takes the pane down.
-    const slot = frame.querySelector('[data-curate-band="people"]');
+    const slot = band('people');
     // A dead session is said ONCE, by the page banner (session-banner.js), not by every band.
     if (slot && slot.isConnected && !err.loginRequired) slot.insertAdjacentHTML('beforeend', `<div class="text-caveat text-state-warn">A Curate band could not be drawn: ${esc(err.message)}</div>`);
   }));
@@ -527,21 +550,30 @@ export async function renderCurate(slug) {
   endJump();
   const started = curateClock.now();
   const secs = () => Math.max(0, Math.floor((curateClock.now() - started) / 1000));
-  host.innerHTML = `${curateSectionNavHtml()}<div data-curate-queued class="mb-s1 text-provenance text-ink-muted"></div>
-    <div data-curate-plan-loading role="status" class="text-caveat text-ink-muted">plan loading · 0 s</div>`;
-  // The jump line is there while the plan loads; a click is remembered and done once the sections exist.
-  host.querySelectorAll('[data-curate-nav]').forEach((a) => a.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    state.curate.pendingJump = a.dataset.curateNav;
-    const q = host.querySelector('[data-curate-queued]');
-    if (q) q.innerHTML = stateCue('running', 'queued', 'The plan is still being read; this section will open when the plan is read.') + ' will open when the plan is read';
-  }));
+  // Where the plan's pieces are drawn: the Describe head (header line, population cue) and the section hosts of
+  // Contents and Structure. Each says "plan loading" until the plan is read; one ticker counts the seconds in all.
+  const hosts = {
+    describe: host.querySelector('[data-curate-describe-head]'),
+    contents: host.querySelector('[data-curate-sections="contents"]'),
+    structure: host.querySelector('[data-curate-sections="structure"]'),
+  };
+  const eachHost = (fn) => Object.values(hosts).forEach((h) => h && fn(h));
+  eachHost((h) => { h.innerHTML = '<div data-curate-plan-loading role="status" class="text-caveat text-ink-muted">plan loading · 0 s</div>'; });
   const stopTicker = curateClock.every(() => {
-    const line = host.querySelector('[data-curate-plan-loading]');
-    if (!line || !host.isConnected) { stopTicker(); return; }
-    line.textContent = `plan loading · ${secs()} s`;
+    const lines = host.querySelectorAll('[data-curate-plan-loading]');
+    if (!lines.length || !host.isConnected) { stopTicker(); return; }
+    lines.forEach((line) => { line.textContent = `plan loading · ${secs()} s`; });
   }, 1000);
   state.curate = state.curate || {};
+  state.curate.counts = null;                          // the tab counts read "reading" until the pieces arrive
+  // Before the plan arrives, a tab opening starts the prefetch of what its open sections will need (the plan read
+  // can take half a minute); once the plan is drawn this is replaced by the full hook below.
+  state.curate.onTabShown = () => {
+    if (superseded()) return;
+    const keys = [];
+    for (const [id, ks] of Object.entries(LAZY_SECTIONS)) if (sectionOpen(id) && sectionTabShows(id)) keys.push(...ks, ...(ks.includes('tree') ? ['diagram'] : []));
+    if (keys.length) startPrefetch(slug, keys);
+  };
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
   // What the press publishes is the selection RECORD (brief 2a), read from the server and re-read after each
   // choice; this pane keeps no selection of its own. Only the view of it (filter, "show the rest") is local.
@@ -553,9 +585,22 @@ export async function renderCurate(slug) {
   });
   // Everything below that needs only the slug starts NOW, beside the plan, not after it.
   const scopeLoad = scope.load().catch(() => { scope.view = null; });
-  // Only a section the viewer left open is read now, beside the plan; everything else waits for its opening.
+  // The Contents count reads from the selection record as soon as it arrives (the plan can take far longer).
+  scopeLoad.then(() => { if (!superseded() && host.isConnected) setCounts(); });
+  const setCounts = () => {
+    state.curate.counts = { view: scope.view || null, plan: state.curate.counts ? state.curate.counts.plan : null };
+    refreshStageRail();
+  };
+  // The newest commit record is read beside the plan, so the running-commit line is right after a reload.
+  getLatestCuration(slug).then((out) => {
+    const rec = out && out.curation;
+    if (superseded() || !rec || !(rec.state === 'running' || rec.state === 'queued')) return;
+    setCommitLine(commitLineFromRecord('repo', rec));
+  }).catch(() => { /* the line stays blank until a press; the plan carries the record too */ });
+  // Only a section the viewer left open, on the tab that shows, is read now, beside the plan; everything else
+  // waits for its tab and its opening.
   const startNow = [];
-  for (const [id, keys] of Object.entries(LAZY_SECTIONS)) if (sectionOpen(id)) startNow.push(...keys, ...(keys.includes('tree') ? ['diagram'] : []));
+  for (const [id, keys] of Object.entries(LAZY_SECTIONS)) if (sectionOpen(id) && sectionTabShows(id)) startNow.push(...keys, ...(keys.includes('tree') ? ['diagram'] : []));
   if (startNow.length) startPrefetch(slug, startNow);
   const refreshTree = () => { if (state.curate.loaded && state.curate.loaded.tree) renderComponentTree(slug); };
   let plan;
@@ -565,12 +610,13 @@ export async function renderCurate(slug) {
     stopTicker();
     if (superseded()) return;                       // a newer render owns the pane and the prefetch
     dropPrefetch();                                 // nothing will paint it: do not leave it to be read as fresh later
-    if (host.isConnected) host.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">${paneError(`The plan could not be read after ${secs()} s: `, err)}</div>`;
+    state.curate.onTabShown = null;                 // and a tab opening must not start it again
+    if (host.isConnected) eachHost((h) => { h.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">${paneError(`The plan could not be read after ${secs()} s: `, err)}</div>`; });
     return;
   }
   stopTicker();
   if (superseded()) return;
-  if (slug !== state.selectedSlug) { dropPrefetch(); return; }
+  if (slug !== state.selectedSlug) { dropPrefetch(); state.curate.onTabShown = null; return; }
   state.curate = state.curate || {};
   state.curate.blueprintCounts = ((plan.made_of || [])[0] || {}).detail || {};
   // Nothing is ticked until the owner ticks it (2026-10-08): the press sends only what was confirmed.
@@ -583,39 +629,34 @@ export async function renderCurate(slug) {
   const draw = () => {
     if (superseded() || !host.isConnected) return;
     const current = isCurrentCommit(latest) ? latest : null;
-    // Redraws keep the tree, blueprint and depth-offer nodes (open branches, groups, scroll) instead of re-reading them.
+    state.curate.counts = { view: scope.view || null, plan };
+    // Redraws keep the tree, blueprint and depth-offer nodes (open branches, groups, scroll) instead of re-reading
+    // them. Each of these lives in one panel; the map is read before any panel is rewritten.
     const keep = {};
     for (const id of ['blueprint-selector', 'component-tree', 'blueprint-list', 'catalogue-depth-offer', 'curate-dependency-host']) {
       const el = host.querySelector(`#${id}`);
       if (el) keep[id] = el;
     }
     const keepScroll = host.querySelector('[data-scope-rows]')?.scrollTop || 0;
-    host.innerHTML = `
+    const populationSentence = `Only worthy things get curated. Curate's population is
+        disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
+        sub-tab) and this screen commits. Everything below still shows what the catalog would learn.`;
+    // Describe and publish: the header line, and the population as a cue and a short word (the sentence on demand).
+    hosts.describe.innerHTML = `
       <div class="mb-s2 text-caveat text-ink-muted">
         <span class="text-ink">${esc(plan.technology_type)}</span> · disposition <span class="text-ink">${esc(plan.disposition)}</span>${
           plan.last_surveyed_at ? ` · surveyed <span class="tnum">${esc(ago(plan.last_surveyed_at))}</span>` : ' · never surveyed'}
       </div>
-      ${plan.in_population ? '' : `<p class="mb-s3 max-w-[70ch] text-answer text-accent-ink">Only worthy things get curated. Curate's population is
-        disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
-        sub-tab) and this screen commits. Everything below still shows what the catalog would learn.</p>`}
-      ${curateSectionNavHtml()}
-      ${curateSectionHtml('curate-sec-what-it-is', CURATE_COLUMNS[0].title,
-        `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>
-         <span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[0].sub)}</span>`,
-        whatItIsRowsHtml(plan.what_it_is || [], picks))}
+      ${plan.in_population ? '' : `<details data-curate-population-cue class="mb-s3 text-caveat">
+        <summary class="cursor-pointer">${stateCue('unrun', 'not in Curate’s population', 'Only worthy things get curated: this one’s disposition is not tracking or using.')}</summary>
+        <p class="mt-s1 max-w-[70ch] text-answer text-accent-ink">${populationSentence}</p></details>`}`;
+    // Contents: the population sentence in full, then what's in it and what gets written.
+    hosts.contents.innerHTML = `
+      ${plan.in_population ? '' : `<p data-curate-population class="mb-s3 max-w-[70ch] text-answer text-accent-ink">${populationSentence}</p>`}
       ${curateSectionHtml('curate-sec-what-holds', CURATE_COLUMNS[1].title,
         `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[1].sub)}</span>${savedCountHtml(scope.view)}`,
         (plan.what_it_holds || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
         + curateSubsHtml(scope, ui))}
-      ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
-        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
-        `<div id="blueprint-selector"></div>
-         <div id="component-tree" class="text-caveat text-ink-muted" style="min-height:4rem">Reading the components…</div>`)}
-      ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
-        `<div id="blueprint-list" style="min-height:3rem"></div>`)}
-      ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
-        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
-        + '<div class="mt-s2" id="curate-dependency-host" data-dependency-table-host></div>')}
       ${curateSectionHtml('curate-sec-writes', 'what gets written',
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
         `${curateWritesHtml(plan, [...picks], (scope.view?.manifest?.files || 0) + (scope.view?.manifest?.folders || 0), scope.view?.manifest?.containers || 0)}
@@ -626,7 +667,23 @@ export async function renderCurate(slug) {
         resurvey: !!state.curate.resurvey, sentence: CATALOG_SENTENCE, rec: current, ps: current ? (current.proof_summary || null) : null })}</div>
       ${current ? curateRecordHtml(current) : (latest ? commitHistoryHtml(latest, curateRecordHtml(latest)) : '')}
       <div id="catalogue-depth-offer"></div>`)}`;
+    // Structure: what it is, what it's made of, the blueprints, how it relates.
+    hosts.structure.innerHTML = `
+      ${curateSectionHtml('curate-sec-what-it-is', CURATE_COLUMNS[0].title,
+        `<span class="text-provenance text-ink-muted"><span class="tnum">${picks.size}</span> of <span class="tnum">${plan.what_it_is.filter((r) => r.candidate).length}</span> confirmed</span>
+         <span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[0].sub)}</span>`,
+        whatItIsRowsHtml(plan.what_it_is || [], picks))}
+      ${curateSectionHtml('curate-sec-made-of', CURATE_COLUMNS[2].title,
+        `<span class="text-provenance text-ink-muted">${esc(CURATE_COLUMNS[2].sub)}</span>`,
+        `<div id="blueprint-selector"></div>
+         <div id="component-tree" class="text-caveat text-ink-muted" style="min-height:4rem">Reading the components…</div>`)}
+      ${curateSectionHtml('curate-sec-blueprints', 'blueprints', '',
+        `<div id="blueprint-list" style="min-height:3rem"></div>`)}
+      ${curateSectionHtml('curate-sec-relates', CURATE_COLUMNS[3].title, '',
+        (plan.relates || []).map((r) => curateRowHtml(r, picks.has(r.kind), false)).join('')
+        + '<div class="mt-s2" id="curate-dependency-host" data-dependency-table-host></div>')}`;
     for (const [id, old] of Object.entries(keep)) host.querySelector(`#${id}`)?.replaceWith(old);
+    refreshStageRail();                 // the tab labels' counts follow the same plan and view the sections show
 
     bindCurateSectionNav(host);
     if (state.curate.loadSection) for (const id of Object.keys(LAZY_SECTIONS)) if (document.getElementById(id)?.open) state.curate.loadSection(id);
@@ -643,12 +700,6 @@ export async function renderCurate(slug) {
     host.querySelector('[data-scope-show-all]')?.addEventListener('change', (ev) => { ui.showAll = ev.target.checked; drawList(); });
     const counts0Label = () => publishLabel(manifestCounts({ plan, picks, scope: scope.view, fileTypePicks: curateFileTypePicks() }));
     host.querySelector('[data-commit-resurvey]')?.addEventListener('change', (ev) => { state.curate.resurvey = ev.target.checked; draw(); });
-    host.querySelector('[data-commit-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
-    host.querySelector('[data-commit-decline]')?.addEventListener('click', async (ev) => {
-      const b = ev.currentTarget; if (b.disabled) return; b.disabled = true; b.textContent = 'declining …';
-      try { await setRepoProjectContext(slug, 'declined'); plan.project = { status: 'declined', word: 'no project (chosen)', name: '' }; draw(); }
-      catch (err) { b.disabled = false; b.textContent = 'decline a project'; host.querySelector('[data-curate-go-hint]').textContent = `not declined · ${err.message}`; }
-    });
     host.querySelectorAll('[data-curate-pick]').forEach((c) => c.addEventListener('change', () => {
       if (c.checked) picks.add(c.dataset.curatePick); else picks.delete(c.dataset.curatePick);
       state.curate.picks = [...picks]; draw(); refreshTree();
@@ -705,8 +756,43 @@ export async function renderCurate(slug) {
   if (state.curateOnPicks) document.removeEventListener('re:curate-picks', state.curateOnPicks);
   state.curateOnPicks = () => { if (host.isConnected && slug === state.selectedSlug) draw(); };
   document.addEventListener('re:curate-picks', state.curateOnPicks);
+  // The one Project row (Contents) answers the project; the commit blockers follow the same answer.
+  if (state.curateOnProject) document.removeEventListener('re:project-changed', state.curateOnProject);
+  state.curateOnProject = (ev) => {
+    const d = ev.detail || {};
+    if (!host.isConnected || slug !== state.selectedSlug || d.slug !== slug || !d.project) return;
+    const was = plan.project || {};
+    if (was.status === d.project.status && was.word === d.project.word && was.name === d.project.name) return;
+    plan = { ...plan, project: d.project };      // a copy: the plan object may be shared with whoever read it
+    draw();
+  };
+  document.addEventListener('re:project-changed', state.curateOnProject);
+  // A commit already running when the page opened (a reload) is followed to its end, so the line and the record
+  // move with it rather than freezing on the step they had. Bounded: it stops after about two minutes.
+  if (latest && (latest.state === 'running' || latest.state === 'queued')) {
+    setCommitLine(commitLineFromRecord('repo', latest));
+    let ticks = 0;
+    const stopFollow = curateClock.every(async () => {
+      if (!host.isConnected || superseded() || slug !== state.selectedSlug || ++ticks > 40) { stopFollow(); return; }
+      try {
+        const rec = await getCuration(slug, latest.id);
+        plan.commits[0] = rec; latest = rec;
+        setCommitLine(commitLineFromRecord('repo', rec));
+        const slot = host.querySelector('[data-curate-record]');
+        if (slot) slot.outerHTML = curateRecordHtml(rec);
+        if (rec.state !== 'running' && rec.state !== 'queued') { stopFollow(); draw(); }
+      } catch { /* the next tick will */ }
+    }, 3000);
+  }
   if (superseded()) return;
+  // A tab opening starts what its open sections own (and mounts Architecture Publish on Structure).
+  state.curate.onTabShown = () => {
+    if (superseded() || !host.isConnected) return;
+    for (const id of Object.keys(LAZY_SECTIONS)) if (document.getElementById(id)?.open) loadSectionData(id);
+    if (activeCurateTab() === 'curate_structure' && publishRepo) publishRepo.mountStructure();
+  };
   setupLazySections();
+  if (publishRepo && activeCurateTab() === 'curate_structure') publishRepo.mountStructure();
   const pending = state.curate.pendingJump;
   if (pending) { state.curate.pendingJump = null; jumpToCurateSection(pending); }
 
@@ -717,6 +803,8 @@ export async function renderCurate(slug) {
     const keys = LAZY_SECTIONS[id];
     const L = state.curate.loaded;
     if (!keys || !L || L.slug !== slug || superseded()) return null;
+    // A section under a hidden tab reads nothing until its tab opens (onTabShown starts it then).
+    if (!sectionTabShows(id)) return null;
     const work = [];
     const cueIn = (el, word) => { if (el) el.innerHTML = `<span class="text-caveat">${stateCue('running', word)}</span>`; };
     const track = (k, promise) => {

@@ -78,6 +78,7 @@ async function setUp(over = {}, { settle = 400, storage = 'ok', open = true } = 
   const server = makeServer(over);
   ensureLoaderRegistered();
   globalThis.location = window.location; globalThis.history = window.history;
+  window.HTMLElement.prototype.scrollIntoView = window.HTMLElement.prototype.scrollIntoView || function () {};   // jsdom has none
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
   const app = await import('/static/next/app.js');
   Object.assign(app.state, { resourceType: 'repo', selectedSlug: 'egeria_git', stage: 'understanding', subTab: 'questions',
@@ -89,6 +90,8 @@ async function setUp(over = {}, { settle = 400, storage = 'ok', open = true } = 
   app.renderIntentNav();
   document.querySelector('#intent-nav button[data-stage="curate"]').click();
   await wait(settle);
+  // The sections live on the Contents and Structure tabs; an open section reads when its tab first shows.
+  if (open) for (const tab of ['curate_contents', 'curate_structure']) { document.querySelector(`[data-subtab="${tab}"]`).click(); await wait(60); }
   return { document, app, server, window };
 }
 const SECS = ['what-it-is', 'what-holds', 'made-of', 'blueprints', 'relates', 'writes'].map((s) => `curate-sec-${s}`);
@@ -97,7 +100,9 @@ const norm = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 test('every Curate section starts collapsed; opening one is remembered across a redraw', async () => {
   const { document, app } = await setUp({}, { open: false });
   for (const id of SECS) assert.equal(document.getElementById(id).open, false, `${id} collapsed`);
-  document.querySelector('[data-curate-nav="curate-sec-blueprints"]').click();
+  const { jumpToCurateSection } = await import('/static/next/stages/curate.js');
+  jumpToCurateSection('curate-sec-blueprints');          // switches to Structure, opens it
+  await wait(30);
   assert.equal(document.getElementById('curate-sec-blueprints').open, true);
   await wait(50);
   assert.equal(document.getElementById('curate-sec-blueprints').open && true, true);
@@ -115,7 +120,9 @@ test('every Curate section starts collapsed; opening one is remembered across a 
 test('storage that throws: sections still start collapsed and still open', async () => {
   const { document } = await setUp({}, { storage: 'throws', open: false });
   for (const id of SECS) assert.equal(document.getElementById(id).open, false);
-  document.querySelector('[data-curate-nav="curate-sec-writes"]').click();
+  const { jumpToCurateSection } = await import('/static/next/stages/curate.js');
+  jumpToCurateSection('curate-sec-writes');              // switches to Contents, opens it
+  await wait(30);
   assert.equal(document.getElementById('curate-sec-writes').open, true);
 });
 

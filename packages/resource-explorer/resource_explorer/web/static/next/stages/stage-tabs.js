@@ -4,17 +4,18 @@
  * / "Over time". They are the Enrichment "Context" precedent generalised: SUB_TABS entries with `stages`, put at
  * the head of the strip.
  *
- * DORMANT: `STAGE_TABS_KINDS` lists, per stage, the resource kinds ('repo' | 'db' | 'filesystem') that show the
- * tabs. Both lists are empty, so on main nothing on screen changes. The repository slice (S1) adds 'repo' to
- * curate, the database slice (S2) 'db'. A test turns the gate on with `setStageTabsKinds`.
+ * `STAGE_TABS_KINDS` lists, per stage, the resource kinds ('repo' | 'db' | 'filesystem') that show the tabs.
+ * Curate shows them for repositories (S1); the database slice (S2) adds 'db', the file-system slice (S3)
+ * 'filesystem', Understanding's slice (S4) lists its own. A kind not listed keeps the pane it has always had.
+ * A test sets the gate with `setStageTabsKinds`.
  *
  * A LEAF module (no imports): app.js needs these at evaluation time, to build SUB_TABS, and must not wait on
  * curate-tabs.js, which imports app.js back. */
 
-/** Per stage, the resource kinds that show the leading tabs. EMPTY = dormant. */
-export const STAGE_TABS_KINDS = { curate: [], understanding: [] };
+/** Per stage, the resource kinds that show the leading tabs. EMPTY = dormant for that stage. */
+export const STAGE_TABS_KINDS = { curate: ['repo'], understanding: [] };
 
-/** Test hook (and the one line S1/S2 change): set the kinds that show a stage's tabs. */
+/** Test hook: set the kinds that show a stage's tabs. */
 export function setStageTabsKinds(stage, kinds) {
   if (!(stage in STAGE_TABS_KINDS)) throw new Error(`no stage tabs for ${stage}`);
   STAGE_TABS_KINDS[stage] = [...kinds];
@@ -30,7 +31,7 @@ export const STAGE_TAB_IDS = {
 /** The SUB_TABS entries (app.js spreads these in after `context`). Static labels stay the bare names. */
 export const STAGE_TAB_ENTRIES = [
   { id: 'curate_describe', label: 'Describe and publish', does: 'Describe this resource and publish its report', built: true, stages: ['curate'], stageTab: true },
-  { id: 'curate_contents', label: 'Contents', does: 'Choose what is in the catalog entry', built: true, stages: ['curate'], stageTab: true },
+  { id: 'curate_contents', label: 'Contents', does: 'Choose what is published to Egeria', built: true, stages: ['curate'], stageTab: true },
   { id: 'curate_structure', label: 'Structure', does: 'What it is made of and how it relates', built: true, stages: ['curate'], stageTab: true },
   { id: 'understanding_glance', label: 'At a glance', does: 'What changed since the last run, and the headline numbers', built: true, stages: ['understanding'], stageTab: true },
   { id: 'understanding_contents', label: 'Contents', does: 'What is inside this resource', built: true, stages: ['understanding'], stageTab: true },

@@ -2136,6 +2136,23 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     return {"curation": rec, "activity_id": activity_id, "run_id": run_id}
 
 
+@router.get("/{slug}/curate/commits/latest")
+def curate_commit_latest(slug: str) -> dict:
+    """The newest curation record for a repository (or none), without reading the plan. It lets the
+    running-commit line under the Curate tabs survive a reload. Read only. Declared BEFORE the
+    `/commits/{curation_id}` route so "latest" is not taken for an id."""
+    from resource_explorer import repo_publish
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    rec = Curations(registry).latest("repo", slug)
+    if not rec:
+        return {"curation": None}
+    return {"curation": {**rec, "proof_summary": repo_publish.commit_proof_summary(registry, slug, rec)}}
+
+
 @router.get("/{slug}/curate/commits/{curation_id}")
 def curate_commit_status(slug: str, curation_id: str) -> dict:
     from resource_explorer.curate_plan import Curations

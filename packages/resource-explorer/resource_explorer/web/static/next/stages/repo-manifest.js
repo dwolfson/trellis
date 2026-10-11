@@ -167,8 +167,7 @@ export function repoCommitPanelHtml({ plan, picks, scope, fileTypePicks, me, res
         <button type="button" data-curate-go ${off ? 'disabled' : ''} title="${esc(sentence)}"
           class="rounded-sm border border-accent bg-transparent px-3 py-[3px] text-answer text-accent-ink ${off ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}">${publishLabel(counts)}</button>
         <span data-curate-go-hint class="text-right text-provenance text-ink-muted">${off ? '' : 'a queued run; each step reports as it lands'}</span>
-        ${blockers.map((b) => `<div data-commit-blocker="${esc(b.key)}" class="text-right text-caveat text-ink">⚠ ${esc(b.text)}${
-          b.key === 'no_project' ? ` <button type="button" data-commit-bind class="cursor-pointer bg-transparent p-0 text-accent-ink underline">bind this investigation</button> · <button type="button" data-commit-decline class="cursor-pointer bg-transparent p-0 text-accent-ink underline">decline a project</button>` : ''}</div>`).join('')}
+        ${blockers.map((b) => `<div data-commit-blocker="${esc(b.key)}" class="text-right text-caveat text-ink">⚠ ${esc(b.text)}</div>`).join('')}
         ${staleLine}
         <label class="flex min-w-0 max-w-full cursor-pointer items-start gap-[4px] break-words text-right text-caveat text-ink">
           <input type="checkbox" data-commit-resurvey ${resurvey ? 'checked' : ''} ${sv && sv.stale_steps ? '' : 'disabled'}>
