@@ -125,4 +125,13 @@ def test_nothing_selected_is_blocked_with_the_sentence_and_writes_nothing(regist
 def test_the_plan_carries_the_survey_the_commit_would_publish(registry):
     from resource_explorer.curate_plan import build_plan
     plan = build_plan(registry, "p")
-    assert plan["survey"] == {"exists": False, "sentence": "no survey to publish yet · run the first survey"}
+    assert plan["survey"] == {"exists": False, "surveyed_before_kept": False,
+                              "sentence": "no survey to publish yet · run the first survey"}
+
+
+def test_the_plan_of_a_repo_surveyed_before_kept_surveys_says_so(registry):
+    from resource_explorer.curate_plan import build_plan
+    registry.update_project_surveyed_at("p")          # the header's "surveyed <ago>" reads this column
+    plan = build_plan(registry, "p")
+    assert plan["survey"] == {"exists": False, "surveyed_before_kept": True,
+                              "sentence": "surveyed before 10-07 · nothing kept to publish · re-survey to publish"}

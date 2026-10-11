@@ -160,7 +160,7 @@ def test_no_survey_blocks_the_publish_with_the_sentence_and_sends_nothing(regist
 
 
 def test_the_state_says_which_survey_it_would_publish_and_its_age(registry, world):
-    assert rp.publish_state(registry, "myproj")["survey"] == {"exists": False, "sentence": SENTENCE}
+    assert rp.publish_state(registry, "myproj")["survey"] == {"exists": False, "surveyed_before_kept": False, "sentence": SENTENCE}
     old = (datetime.utcnow() - timedelta(hours=5)).isoformat()
     _keep(registry, "repo_language", at=old, anns=[_ann(), _ann()])
     _keep(registry, "repo_health", at=old, anns=[])
@@ -237,3 +237,28 @@ def test_the_commit_route_is_blocked_with_the_sentence_when_nothing_was_surveyed
     assert registry.list_runs() == [], "a blocked commit queued a run"
     from resource_explorer.curate_plan import Curations
     assert Curations(registry).for_resource("repo", "myproj") == [], "a blocked commit left a record"
+
+
+BEFORE = "surveyed before 10-07 · nothing kept to publish · re-survey to publish"
+
+
+def test_never_surveyed_keeps_the_first_survey_sentence(registry):
+    st = rp.survey_state(registry, "myproj")
+    assert st == {"exists": False, "surveyed_before_kept": False, "sentence": SENTENCE}
+
+
+def test_surveyed_before_kept_surveys_says_so_from_the_same_column_the_header_reads(registry, world):
+    registry.update_project_surveyed_at("myproj")        # projects.last_surveyed_at: the header's "surveyed <ago>"
+    assert registry.get("myproj").last_surveyed_at
+    st = rp.survey_state(registry, "myproj")
+    assert st == {"exists": False, "surveyed_before_kept": True, "sentence": BEFORE}
+    out = rp.publish_report(registry, "myproj", "dan", without_project=True)
+    assert out == {"gate": "no_survey", "sentence": BEFORE}
+    assert FakePublisher.instances == []
+
+
+def test_a_kept_survey_is_neither_sentence(registry):
+    registry.update_project_surveyed_at("myproj")
+    _keep(registry)
+    st = rp.survey_state(registry, "myproj")
+    assert st["exists"] is True and "sentence" not in st and "surveyed_before_kept" not in st

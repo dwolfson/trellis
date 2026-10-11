@@ -57,6 +57,12 @@ export const PUBLISH_IDLE_WORDS = 'publishes the kept survey';
 export const PUBLISH_RUNNING_WORDS = 'publishing the kept survey';
 /** The sentence directly under a disabled Publish when nothing has been surveyed (brief section 1). */
 export const NO_SURVEY_SENTENCE = 'no survey to publish yet · run the first survey';
+export const SURVEYED_BEFORE_KEPT_SENTENCE = 'surveyed before 10-07 · nothing kept to publish · re-survey to publish';
+
+/** The words for "no kept survey": the server's sentence, else the one its `surveyed_before_kept` flag names. */
+function noKeptSentence(survey) {
+  return survey?.sentence || (survey?.surveyed_before_kept ? SURVEYED_BEFORE_KEPT_SENTENCE : NO_SURVEY_SENTENCE);
+}
 /** What Re-survey now does, on hover. */
 export const RESURVEY_SENTENCE =
   'Runs the survey on this repository and nothing else: nothing is sent to Egeria. The band then shows the new age.';
@@ -324,7 +330,7 @@ function nonRepoStatusHtml(entityType, slug) {
  *  one gesture away. With no survey: the sentence, and nothing else claims one exists. */
 export function surveyLineHtml(survey) {
   if (!survey || !survey.exists) {
-    return `<div class="mt-s1 text-caveat" data-publish-survey="none">${cue('unrun', survey?.sentence || NO_SURVEY_SENTENCE)}</div>`;
+    return `<div class="mt-s1 text-caveat" data-publish-survey="none">${cue(survey?.surveyed_before_kept ? 'partial' : 'unrun', noKeptSentence(survey))}</div>`;
   }
   const date = String(survey.surveyed_at || '').slice(0, 10);
   const stale = survey.stale_steps
@@ -369,9 +375,9 @@ function describeControlsHtml(s, signedIn) {
   const why = signedIn ? '' : 'sign in to publish — it needs an author';
   return `<div class="mt-s2 flex flex-wrap items-baseline gap-s3">
     ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !(signedIn && hasSurvey) })}
-    ${button(`data-resurvey-go title="${esc(RESURVEY_SENTENCE)}"`, hasSurvey ? 'Re-survey now →' : 'Run the first survey →', { disabled: !signedIn })}
+    ${button(`data-resurvey-go title="${esc(RESURVEY_SENTENCE)}"`, hasSurvey || s.survey?.surveyed_before_kept ? 'Re-survey now →' : 'Run the first survey →', { disabled: !signedIn })}
     <span data-publish-feedback class="text-provenance text-ink-muted" title="${esc(PUBLISH_SENTENCE)}">${esc(why || PUBLISH_IDLE_WORDS)}</span></div>
-    ${hasSurvey ? '' : `<div class="mt-[2px] text-provenance text-ink-muted" data-publish-blocker>${esc(s.survey?.sentence || NO_SURVEY_SENTENCE)}</div>`}
+    ${hasSurvey ? '' : `<div class="mt-[2px] text-provenance text-ink-muted" data-publish-blocker>${esc(noKeptSentence(s.survey))}</div>`}
     <div data-publish-gate></div>`;
 }
 

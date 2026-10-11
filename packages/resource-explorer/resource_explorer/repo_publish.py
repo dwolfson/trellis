@@ -153,7 +153,9 @@ def survey_state(registry, slug: str, now=None) -> dict:
     RE's own records only; nothing here contacts Egeria and nothing here surveys."""
     snap = survey_snapshot.latest(registry, slug)
     if snap is None:
-        return {"exists": False, "sentence": NO_SURVEY_SENTENCE}
+        before = survey_snapshot.surveyed_before_kept(registry, slug)
+        return {"exists": False, "surveyed_before_kept": before,
+                "sentence": survey_snapshot.SURVEYED_BEFORE_KEPT_SENTENCE if before else NO_SURVEY_SENTENCE}
     stale = stale_step_keys(registry, slug, snap)
     return {"exists": True, "surveyed_at": snap.surveyed_at, "age_seconds": snap.age_seconds(now),
             "annotations": snap.annotation_count, "steps": snap.step_count,
@@ -219,7 +221,7 @@ def publish_report(registry, slug: str, author: str, *, without_project: bool = 
         return {"gate": "context_required", "sentence": NO_PROJECT_SENTENCE}
     snapshot = survey_snapshot.latest(registry, slug)
     if snapshot is None:
-        return {"gate": "no_survey", "sentence": NO_SURVEY_SENTENCE}
+        return {"gate": "no_survey", "sentence": survey_snapshot.no_kept_survey_sentence(registry, slug)}
 
     with _running_lock:
         if slug in _running:

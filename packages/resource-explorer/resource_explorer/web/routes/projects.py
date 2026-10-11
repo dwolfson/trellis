@@ -2108,7 +2108,7 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     if survey_snapshot.latest(registry, slug) is None:
         # Publishing never surveys (brief section 1): with nothing surveyed the commit is blocked, and
         # the first survey is a separate, explicit act.
-        raise HTTPException(status_code=409, detail=survey_snapshot.NO_SURVEY_SENTENCE)
+        raise HTTPException(status_code=409, detail=survey_snapshot.no_kept_survey_sentence(registry, slug))
     manifest = {**plan["writes"], "entities": list(body.confirm),
                 "contained": {"data_files": plan["writes"]["contained"]["data_files"] if body.data_files else 0,
                               "sub_resources": len(chosen), "containers": scope_manifest["containers"],

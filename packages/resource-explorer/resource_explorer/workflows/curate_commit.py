@@ -271,7 +271,7 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
             raise RuntimeError("no Egeria Project context — decide it on the Scouting pane (or bind the investigation) and press Catalog again")
         snap = survey_snapshot.latest(registry, slug)
         if snap is None:
-            raise RuntimeError(survey_snapshot.NO_SURVEY_SENTENCE)
+            raise RuntimeError(survey_snapshot.no_kept_survey_sentence(registry, slug))
         resurveyed = ""
         if sel.get("resurvey_stale"):
             stale = repo_publish.stale_step_keys(registry, slug, snap)

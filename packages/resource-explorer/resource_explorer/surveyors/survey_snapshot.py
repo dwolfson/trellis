@@ -40,6 +40,25 @@ INDEX_PREFIX = "repo_survey_index::"
 #: What a publish or a commit says when nothing has been surveyed (brief section 1).
 NO_SURVEY_SENTENCE = "no survey to publish yet · run the first survey"
 
+#: What a publish or a commit says when the repository HAS been surveyed (the header's "surveyed 40d ago")
+#: but no kept survey exists, because kept surveys only exist for surveys completed since 2026-10-07.
+SURVEYED_BEFORE_KEPT_SENTENCE = "surveyed before 10-07 · nothing kept to publish · re-survey to publish"
+
+
+def surveyed_before_kept(registry, slug: str) -> bool:
+    """True when the repository has survey history (the SAME `projects.last_surveyed_at` the header's
+    "surveyed <ago>" reads, so the two lines cannot disagree) while no kept survey exists."""
+    try:
+        project = registry.get(slug)
+    except Exception:  # an unreadable row is "no history known", never a claim of one
+        return False
+    return bool(project is not None and (getattr(project, "last_surveyed_at", "") or ""))
+
+
+def no_kept_survey_sentence(registry, slug: str) -> str:
+    """The sentence for "no kept survey": the two states are told apart by persisted rows."""
+    return SURVEYED_BEFORE_KEPT_SENTENCE if surveyed_before_kept(registry, slug) else NO_SURVEY_SENTENCE
+
 
 def _step_key(slug: str, step: str) -> str:
     return f"{STEP_PREFIX}{slug}::{step}"
