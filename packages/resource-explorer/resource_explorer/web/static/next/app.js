@@ -3939,7 +3939,7 @@ export function isStageTabActive(id) {
  *  { view, plan } as they load; until then every count says "reading", never 0. */
 function stageTabCountCtx() {
   const c = (state.curate && state.curate.counts) || {};
-  return { kind: state.resourceType, view: c.view || null, plan: c.plan || null };
+  return { kind: state.resourceType, view: c.view || null, plan: c.plan || null, planFailed: !!c.planFailed };
 }
 
 /** A known sub-tab that is absent from the current strip (Context outside

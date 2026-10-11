@@ -588,7 +588,8 @@ export async function renderCurate(slug) {
   // The Contents count reads from the selection record as soon as it arrives (the plan can take far longer).
   scopeLoad.then(() => { if (!superseded() && host.isConnected) setCounts(); });
   const setCounts = () => {
-    state.curate.counts = { view: scope.view || null, plan: state.curate.counts ? state.curate.counts.plan : null };
+    const was = state.curate.counts || {};
+    state.curate.counts = { view: scope.view || null, plan: was.plan || null, planFailed: !!was.planFailed };
     refreshStageRail();
   };
   // The newest commit record is read beside the plan, so the running-commit line is right after a reload.
@@ -611,6 +612,8 @@ export async function renderCurate(slug) {
     if (superseded()) return;                       // a newer render owns the pane and the prefetch
     dropPrefetch();                                 // nothing will paint it: do not leave it to be read as fresh later
     state.curate.onTabShown = null;                 // and a tab opening must not start it again
+    state.curate.counts = { view: scope.view || null, plan: null, planFailed: true };   // Structure says "not read", not "reading"
+    refreshStageRail();
     if (host.isConnected) eachHost((h) => { h.innerHTML = `<div data-curate-plan-error class="text-answer text-accent-ink">${paneError(`The plan could not be read after ${secs()} s: `, err)}</div>`; });
     return;
   }

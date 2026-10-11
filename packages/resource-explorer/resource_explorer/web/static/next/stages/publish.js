@@ -513,16 +513,19 @@ export function renderPublishRepo(hosts, slug) {
   // the project answer it carries is told to Curate's own plan, so the commit's blockers follow it.
   const reread = async (feedback = '') => {
     const st = await getRepoPublishState(slug);
-    if (stale(dEl, slug)) return;
+    if (stale(dEl, slug)) return null;
     draw(st, feedback);
     announceProject(st.project);
+    return st;
   };
+  /** Where the Project row's press shows its result: the row's own span, a cue and a short word. */
+  const tellRow = (html) => { const pf = cEl.querySelector('[data-curate-project-feedback]'); if (pf) pf.innerHTML = html; };
 
   function wire(st) {
     const go = dEl.querySelector('[data-publish-go]');
     const feedback = dEl.querySelector('[data-publish-feedback]');
     const gate = dEl.querySelector('[data-publish-gate]');
-    const press = async (withoutProject) => {
+    const press = async (withoutProject, fromRow = false) => {
       if (go.dataset.pending) return;                       // a second press is ignored
       go.dataset.pending = '1';
       go.disabled = true;
@@ -531,9 +534,12 @@ export function renderPublishRepo(hosts, slug) {
       feedback.innerHTML = cue('running', PUBLISH_RUNNING_WORDS);
       feedback.title = PUBLISH_SENTENCE;
       gate.innerHTML = '';
+      if (fromRow) tellRow(cue('running', 'publishing'));
       try {
         await publishRepoReport(slug, { withoutProject });
-        await reread();
+        const st = await reread();
+        // The word follows the re-read row, never the click.
+        if (fromRow && st) tellRow(st.row && st.row.word === 'published' ? cue('measured', 'published') : cue('error', 'not published'));
       } catch (err) {
         if (err.status === 428) {
           go.disabled = false; go.textContent = idle; delete go.dataset.pending;
@@ -554,13 +560,15 @@ export function renderPublishRepo(hosts, slug) {
           : err.status === 409
             ? cue('running', 'a publish is already running for this resource')
             : cue('error', `not published · ${err.message}`);
+        if (fromRow) tellRow(err.status === 403 ? cue('no_access', 'not permitted', err.message)
+          : err.status === 409 ? cue('running', 'already running') : cue('error', 'not published', err.message));
       }
     };
     go?.addEventListener('click', () => press(false));
 
     // The Project row (Contents): the three choices, each once.
     cEl.querySelector('[data-gate-bind]')?.addEventListener('click', () => openCurrentInvestigationStage());
-    cEl.querySelector('[data-gate-without]')?.addEventListener('click', () => press(true));
+    cEl.querySelector('[data-gate-without]')?.addEventListener('click', () => press(true, true));
     const decline = cEl.querySelector('[data-commit-decline]');
     decline?.addEventListener('click', async () => {
       if (decline.disabled) return;

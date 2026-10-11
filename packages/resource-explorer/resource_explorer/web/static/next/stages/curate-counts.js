@@ -17,6 +17,7 @@ const count = (n) => ({ state: 'count', n });
 const READING = Object.freeze({ state: 'reading' });
 const UNKNOWN = Object.freeze({ state: 'unknown' });
 const NONE_YET = Object.freeze({ state: 'none_yet' });
+const FAILED = Object.freeze({ state: 'failed' });   // the read was tried and did not arrive: never 0, never "reading" for ever
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
@@ -55,9 +56,9 @@ export function contentsUndecided(kind, view) {
 /** Structure . N awaiting you. Repo: the plan's `awaiting` total. The plan is read lazily and can take a
  *  long time, so until it arrives this is "reading", and a plan from a server that does not send `awaiting`
  *  is "unknown" (not 0). Database Structure is placeholders today: "none yet", not "0 awaiting". */
-export function structureAwaiting(kind, plan) {
+export function structureAwaiting(kind, plan, failed = false) {
   if (kind === 'repo') {
-    if (!plan) return READING;
+    if (!plan) return failed ? FAILED : READING;
     const a = plan.awaiting;
     if (isNum(a)) return count(a);
     if (a && typeof a === 'object') {
@@ -76,6 +77,7 @@ export function countWords(c, noun) {
     case 'count': return { cue: c.n === 0 ? 'measured_zero' : 'measured', word: `${c.n} ${noun}` };
     case 'reading': return { cue: 'running', word: 'reading' };
     case 'unknown': return { cue: 'not_measured', word: 'not counted' };
+    case 'failed': return { cue: 'error', word: 'not read' };
     default: return { cue: 'unrun', word: 'none yet' };
   }
 }
@@ -87,7 +89,7 @@ export const TAB_COUNTS = {
     { fn: (ctx) => contentsUndecided(ctx.kind, ctx.view), noun: 'undecided' },
   ],
   curate_structure: [
-    { fn: (ctx) => structureAwaiting(ctx.kind, ctx.plan), noun: 'awaiting you' },
+    { fn: (ctx) => structureAwaiting(ctx.kind, ctx.plan, ctx.planFailed), noun: 'awaiting you' },
   ],
 };
 

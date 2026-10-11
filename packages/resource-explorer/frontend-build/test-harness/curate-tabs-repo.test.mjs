@@ -54,9 +54,12 @@ function makeServer(over = {}) {
     if (u.includes('/api/activity')) return ok({ id: 'a1', status: s.activity });
     if (u.endsWith('/publish-state')) return ok(s.state());
     if (u.endsWith('/publish-report')) {
-      if (s.publishAnswers === '428') return err(428, 'egeria_project_context_required');
+      if (s.publishAnswers === '428' && !body.without_project) return err(428, 'egeria_project_context_required');
+      if (s.publishAnswers === '500') return err(500, 'boom');
+      if (body.without_project) s.pubState = { ...s.state(), in_egeria: true, project: { status: 'declined', word: 'no project (chosen)', name: '' }, row: { word: 'published', read_at: '2026-10-07T02:00:00', surveyed_at: '2026-10-07T01:00:00' } };
       return ok({ ok: true });
     }
+    if (u.includes('/curate/plan') && s.planFail) return err(500, 'plan boom');
     if (u.includes('/curate/plan')) { if (s.holdPlan) await s.holdPlan; return ok(s.plan); }
     if (u.endsWith('/architecture/publish-plan')) return ok({ components: { to_write: [], in_egeria: 0 }, blueprints: { to_write: [], in_egeria: 0 }, label: 'Nothing to publish' });
     if (u.includes('/components/tree')) return ok({ branches: [BRANCH], total_components: 3, accepted: 0, reviewed: 0, topology: '' });
@@ -261,6 +264,40 @@ test('a 428 on the report press: a cue and a word on Describe and publish, the P
   gate.querySelector('[data-publish-gate-goto]').click();
   await wait(50);
   assert.equal(panels(document).contents.hidden, false, 'the link goes to Contents');
+});
+
+test('"Publish this report without one" pressed on the Project row shows its result in that row, as a cue and a short word', async () => {
+  const unset = { slug: 'egeria_git', in_egeria: false, asset_guid: '', can_publish_again: false, project: { status: 'unset', word: 'no project', name: '' }, row: { word: 'none' },
+    survey: { exists: true, surveyed_at: '2026-10-07T01:00:00', age_seconds: 1, annotations: 1, steps: 1, stale_steps: 0, stale: [] } };
+  const a = await setUp({ pubState: unset, publishAnswers: '428' });
+  await openCurate(a.document);
+  await tab(a.document, 'curate_contents');
+  a.document.querySelector('[data-curate-project-row] [data-gate-without]').click();
+  await wait(300);
+  const fb = () => a.document.querySelector('[data-curate-project-feedback]');
+  assert.ok(fb().querySelector('[data-cue="measured"]'), 'a cue where it was pressed');
+  assert.match(norm(fb()), /published/);
+  assert.ok(norm(fb()).length < 25, 'a short word');
+  // the result follows the re-read row: a press the server refuses says so in the same place
+  const b = await setUp({ pubState: unset, publishAnswers: '500' });
+  await openCurate(b.document);
+  await tab(b.document, 'curate_contents');
+  b.document.querySelector('[data-curate-project-row] [data-gate-without]').click();
+  await wait(300);
+  const fb2 = b.document.querySelector('[data-curate-project-feedback]');
+  assert.ok(fb2.querySelector('[data-cue="error"]'));
+  assert.match(norm(fb2), /not published/);
+});
+
+test('when the plan read fails, the Structure count says "not read" with a cue, never 0 and never "reading"', async () => {
+  const { document } = await setUp({ planFail: true });
+  await openCurate(document);
+  const rail = norm(document.querySelector('[data-subtab-rail]'));
+  const structure = (rail.match(/Structure(.*?)Questions/) || [, ''])[1];
+  assert.match(structure, /not read/);
+  assert.doesNotMatch(structure, /reading|\b0\b/);
+  assert.ok(document.querySelector('[data-subtab-rail] [data-count-state="failed"][data-cue="error"]'));
+  assert.ok(document.querySelector('[data-curate-plan-error]'), 'the pane still says the plan failed');
 });
 
 /* ── the running-commit line ─────────────────────────────────────────── */
