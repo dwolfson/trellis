@@ -100,8 +100,16 @@ test('repo: since-last-run on At a glance, the survey report on Contents, the ch
   const { document } = await setUp('repo');
   await open(document);
   assert.deepEqual(sectionsOn(document, 'glance'), ['repo-since']);
-  assert.deepEqual(sectionsOn(document, 'contents'), ['repo-report']);
+  assert.deepEqual(sectionsOn(document, 'contents'), ['repo-distribution', 'repo-report']);
   assert.deepEqual(sectionsOn(document, 'over_time'), ['repo-charts']);
+  // chips: the distribution kinds are indexed on Contents, the series on Over time, each kind in exactly one place
+  await tab(document, 'contents');
+  await tab(document, 'over_time');
+  const kinds = (id) => [...document.querySelectorAll(`#${id} > *`)].map((e) => norm(e));
+  const dist = kinds('chart-index-distribution').join('|');
+  const time = kinds('chart-index').join('|');
+  for (const l of ['Languages', 'File types', 'Top committers']) { assert.match(dist, new RegExp(l)); assert.doesNotMatch(time, new RegExp(l)); }
+  for (const l of ['Stars over time', 'Commits over time', 'Commits by week', 'Health', 'Survey history']) { assert.match(time, new RegExp(l)); assert.doesNotMatch(dist, new RegExp(l)); }
   assert.match(norm(panel(document, 'glance').querySelector('[data-since-last-run]')), /^Since the run of 2026-10-03: 112 files, 12 more/);
 });
 
@@ -131,9 +139,12 @@ test('repo: the report and the charts read only when their tab opens, once', asy
   assert.equal(hits(calls, /\/egeria\/[^/]+\/diff/), 1);
   assert.equal(hits(calls, /survey-report|\/charts\//), 0);
   await tab(document, 'over_time');
-  const charts = hits(calls, /\/charts\//);
-  assert.ok(charts > 0);
+  const series = hits(calls, /\/charts\//);
+  assert.equal(series, 5, 'Over time probes only the five series');
+  assert.equal(hits(calls, /charts\/(languages|file_types|top_committers)/), 0);
   await tab(document, 'contents');
+  assert.equal(hits(calls, /charts\/(languages|file_types|top_committers)/), 3, 'Contents probes the three distribution charts');
+  const charts = hits(calls, /\/charts\//);
   assert.equal(hits(calls, /survey-report/), 1);
   for (const t of ['glance', 'over_time', 'contents']) await tab(document, t);
   assert.equal(hits(calls, /survey-report/), 1);

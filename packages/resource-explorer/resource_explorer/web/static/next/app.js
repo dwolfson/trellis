@@ -1516,13 +1516,14 @@ export function chartIsStale(dateStr) {
 // Part 2 §1) — imported below, alongside the other stage modules.
 
 /** Render one figure into the pane, themed from the token layer. */
-export async function drawChart(entry) {
-  const body = $('chart-body');
+export async function drawChart(entry, { bodyId = 'chart-body' } = {}) {
+  const body = $(bodyId);
+  const canvasId = bodyId === 'chart-body' ? 'chart-canvas' : `${bodyId}-canvas`;
   if (!body || !entry) return;
   body.innerHTML = `<div class="text-caveat text-ink-muted">Drawing ${esc(entry.label)}…</div>`;
   try {
     await loadScript('/static/vendor/plotly.min.js');
-    body.innerHTML = `<div id="chart-canvas" style="height:min(62vh,560px)"></div>
+    body.innerHTML = `<div id="${canvasId}" style="height:min(62vh,560px)"></div>
       <div class="mt-s2 text-provenance text-ink-muted">${esc(entry.label)} ·
         <span class="tnum">${entry.points}</span> observation(s) in
         <span class="tnum">${entry.traces}</span> series${
@@ -1535,7 +1536,7 @@ export async function drawChart(entry) {
       ${CHART_CAVEATS[entry.kind]
         ? `<div class="mt-s1 max-w-[70ch] text-caveat text-accent-ink">${esc(CHART_CAVEATS[entry.kind])}</div>`
         : ''}`;
-    await window.Plotly.newPlot($('chart-canvas'), timeAxisData(entry),
+    await window.Plotly.newPlot($(canvasId), timeAxisData(entry),
                                 chartLayout(chartAxes(entry)),
                                 { displaylogo: false, responsive: true });
   } catch (err) {

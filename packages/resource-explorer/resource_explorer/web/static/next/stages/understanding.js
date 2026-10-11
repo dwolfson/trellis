@@ -676,10 +676,15 @@ function repoParts(slug) {
   const charts = collapsibleSectionHtml('repo-charts', h3('Charts'), '',
     `<div id="chart-index" class="mt-s2 flex flex-wrap gap-s2"></div>
     <div id="chart-body" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' });
+  // Tabbed layout only: the three distribution charts are their own section on Contents (what it is made of,
+  // how it is spread); `charts` then holds the series over time. Same chart machinery, own index and body.
+  const distribution = collapsibleSectionHtml('repo-distribution', h3('Distribution'), '',
+    `<div id="chart-index-distribution" class="mt-s2 flex flex-wrap gap-s2"></div>
+    <div id="chart-body-distribution" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' });
   const report = collapsibleSectionHtml('repo-report', h3('Survey report'), '',
     '<div id="repo-report-body"></div>', { attrs: 'class="mt-s4" data-repo-report' });
 
-  const mount = (root, { canRead = () => true } = {}) => {
+  const mount = (root, { canRead = () => true, split = false } = {}) => {
     // PI-053: the full survey report, read when its section is open (and the first time it is opened).
     const reportSection = root.querySelector('details[data-repo-report]');
     let reportRead = false;
@@ -706,22 +711,30 @@ function repoParts(slug) {
         if (slug !== state.selectedSlug || !repoBanner.isConnected) return;
         repoBanner.querySelector('[data-since-last-run]').innerHTML = inner;
       },
-      async contents() { if (reportSection.open) readReport(); },
-      overTime: () => drawRepoCharts(slug),
+      // `split`: the tabbed layout. Contents reads the distribution charts and the report, Over time the rest.
+      async contents() {
+        if (reportSection.open) readReport();
+        if (split) await drawRepoCharts(slug, { kinds: REPO_DISTRIBUTION_KINDS, indexId: 'chart-index-distribution', bodyId: 'chart-body-distribution' });
+      },
+      overTime: () => drawRepoCharts(slug, split ? { kinds: REPO_TIME_KINDS } : {}),
     };
   };
-  return { html: { since, charts, report }, mount };
+  return { html: { since, charts, distribution, report }, mount };
 }
 
-async function drawRepoCharts(slug) {
-  const index = $('chart-index');
-  index.innerHTML = REPO_CHARTS.map(([kind, label]) =>
+const REPO_DISTRIBUTION_KINDS = ['languages', 'file_types', 'top_committers'];
+const REPO_TIME_KINDS = REPO_CHARTS.map(([k]) => k).filter((k) => !REPO_DISTRIBUTION_KINDS.includes(k));
+
+async function drawRepoCharts(slug, { kinds = null, indexId = 'chart-index', bodyId = 'chart-body' } = {}) {
+  const index = $(indexId);
+  const wanted = kinds ? REPO_CHARTS.filter(([k]) => kinds.includes(k)) : REPO_CHARTS;
+  index.innerHTML = wanted.map(([kind, label]) =>
     `<button data-chart="${kind}" disabled
       class="cursor-wait rounded-sm border border-rule-strong bg-transparent px-2 py-[3px]
              text-caveat text-ink-muted">${esc(label)}…</button>`).join('');
 
   // Probe each kind so the index never offers a chart with nothing in it.
-  const results = await Promise.all(REPO_CHARTS.map(async ([kind, label]) => {
+  const results = await Promise.all(wanted.map(async ([kind, label]) => {
     try {
       const fig = asFigure(await getChart(slug, kind));
       // POINTS, NOT TRACES. `fig.data.length` counts series, so a trace
@@ -745,7 +758,7 @@ async function drawRepoCharts(slug) {
     }
   }));
   if (slug !== state.selectedSlug) return;
-  state.charts = results;
+  state.charts = kinds ? [...(state.charts || []).filter((c) => !kinds.includes(c.kind)), ...results] : results;
 
   index.innerHTML = results.map((r) => {
     if (r.error) {
@@ -780,7 +793,7 @@ async function drawRepoCharts(slug) {
   const select = (kind) => {
     index.querySelectorAll('[data-chart]').forEach((o) =>
       o.setAttribute('aria-pressed', o.dataset.chart === kind ? 'true' : 'false'));
-    drawChart(results.find((r) => r.kind === kind));
+    drawChart(results.find((r) => r.kind === kind), { bodyId });
   };
   index.querySelectorAll('[data-chart]').forEach((b) =>
     b.addEventListener('click', () => select(b.dataset.chart)));
@@ -789,7 +802,7 @@ async function drawRepoCharts(slug) {
   if (first) {
     select(first.kind);
   } else {
-    $('chart-body').innerHTML = `<div class="text-answer text-ink">
+    $(bodyId).innerHTML = `<div class="text-answer text-ink">
       Nothing has been recorded for any of this resource's charts yet. That is
       a statement about the history collected so far, not about the resource.</div>`;
   }
@@ -801,7 +814,8 @@ async function drawRepoCharts(slug) {
  *  nothing is read again, and a hidden tab's sections read nothing until it opens.
  *
  *  Placement of the existing sections (nothing inside them changed):
- *    repository  glance: since the last run · contents: survey report · over time: charts
+ *    repository  glance: since the last run · contents: distribution charts (languages, file types, top
+ *                committers) and the survey report · over time: the other charts
  *    database    glance: since the last run (the sentence that used to sit inside "Over time")
  *                contents: Now (the three distribution charts), Views
  *                over time: Over time (the two series), Survey history */
@@ -822,10 +836,11 @@ export async function renderUnderstandingTabs(slug, kind) {
     start = parts.mount(host, { lazy: true });
   } else {
     const parts = repoParts(slug);
-    html = { glance: parts.html.since, contents: parts.html.report, over_time: parts.html.charts };
+    html = { glance: parts.html.since, contents: parts.html.distribution + parts.html.report, over_time: parts.html.charts };
     host.innerHTML = panelsHtml(html);
     bindCollapsibles(host);
-    start = parts.mount(host, { canRead: () => started.has('contents') });
+    state.charts = [];
+    start = parts.mount(host, { canRead: () => started.has('contents'), split: true });
   }
   const run = {
     glance: start.glance, contents: start.contents, over_time: start.overTime,
