@@ -20,7 +20,7 @@ import {
 } from '/static/re-api.js';
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
-  renderRulesBlock,
+  renderRulesBlock, UNSIGNED_LABEL,
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand, renderPublishRepo } from '/static/next/stages/publish.js';
@@ -32,7 +32,7 @@ import { admissionHtml, admissionNoteHtml } from '/static/next/stages/curate-adm
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
-  apiEntityType, openCurate, refreshStageRail,
+  apiEntityType, openCurate, openContext, refreshStageRail,
 } from '/static/next/app.js';
 import { stageTabsOn, tabOfSection, STAGE_TAB_IDS } from '/static/next/stages/stage-tabs.js';
 import { setCommitLine, commitLineFromRecord } from '/static/next/stages/curate-tabs.js';
@@ -346,6 +346,40 @@ export function savedCountHtml(view) {
   return ` <span data-scope-saved-count class="shrink-0 whitespace-nowrap rounded-sm border border-rule-strong px-2 text-provenance text-ink" title="Each choice is saved in Resource Explorer the moment you press Include or Leave out. Nothing reaches Egeria until you press Publish.">${n} included · saved</span>`;
 }
 
+const knowDay = (iso) => String(iso || '').slice(5, 10);   // "2026-10-02T..." -> "10-02"
+
+/** Tab 1's read-only "What we know": the confirmed Context facts (owner, sensitivity, criticality, retention,
+ *  license, documentation sources), each with who declared it and when. Read from plan.know, the SAME facts
+ *  "what gets written" is built from (curate_plan.context_facts). A fact that is not set is a cue plus
+ *  "not declared", never blank; an interim or unsigned one shows its state. Editing stays on Context. */
+export function knowBlockHtml(know) {
+  const link = '<button type="button" data-goto-context class="cursor-pointer bg-transparent p-0 text-provenance text-accent-ink underline">edit on Context ›</button>';
+  const who = (f) => (f.author
+    ? `· declared by ${esc(f.author)}${f.set_at ? ` <span class="tnum">${esc(knowDay(f.set_at))}</span>` : ''}`
+    : '');
+  const rows = know.map((f) => {
+    if (!f.declared) {
+      return `<div class="flex flex-wrap items-baseline gap-x-s2 text-caveat" data-know-fact="${esc(f.key)}" data-declared="no">
+        <span class="w-[9rem] shrink-0 text-ink-muted">${esc(f.label)}</span>${stateCue('unrun', 'not declared', `${f.label} has not been declared on Context.`)} ${link}</div>`;
+    }
+    const marks = `${f.interim ? ` · ${stateCue('proposal', 'interim', 'An interim value: the person who set it stood in until the owner is named.')}` : ''}${
+      f.unsigned ? ` · ${stateCue('unknown', 'unsigned', UNSIGNED_LABEL)}` : ''}${
+      f.review ? ` · ${stateCue('partial', 'flagged for review')}` : ''}${
+      f.skipped ? ` · ${stateCue('unrun', 'will be skipped')}` : ''}`;
+    if (f.key === 'documentation') {
+      return `<div class="text-caveat" data-know-fact="documentation" data-declared="yes">
+        <div class="flex flex-wrap items-baseline gap-x-s2"><span class="w-[9rem] shrink-0 text-ink-muted">${esc(f.label)}</span>
+          <span class="tnum text-ink">${(f.sources || []).length}</span>${marks} ${link}</div>
+        ${(f.sources || []).map((d) => `<div class="ml-[9rem] text-ink" data-know-source>${esc(d.label)}${d.author ? ` · declared by ${esc(d.author)}${d.set_at ? ` <span class="tnum">${esc(knowDay(d.set_at))}</span>` : ''}` : ` · ${stateCue('unknown', 'unsigned', UNSIGNED_LABEL)}`}</div>`).join('')}</div>`;
+    }
+    return `<div class="flex flex-wrap items-baseline gap-x-s2 text-caveat" data-know-fact="${esc(f.key)}" data-declared="yes">
+      <span class="w-[9rem] shrink-0 text-ink-muted">${esc(f.label)}</span><span class="text-ink">${esc(f.shown)}</span>
+      <span class="text-ink-muted">${who(f)}</span>${marks} ${link}</div>`;
+  }).join('');
+  return `<div class="mb-s1 flex flex-wrap items-baseline gap-x-s2 text-caps uppercase tracking-caps text-ink-muted"><span class="text-ink">What we know</span>
+    <span class="text-provenance normal-case tracking-normal">from Context · read-only</span></div>${rows}`;
+}
+
 export function curateWritesHtml(plan, picks, subCount, containers = 0) {
   const w = plan.writes || {};
   const cls = w.classifications || [];
@@ -470,9 +504,10 @@ function tabbedFrameHtml(active) {
   const hid = (tab) => (tab === active ? '' : ' hidden');
   return `<div data-curate-tab-panel="describe"${hid('curate_describe')}>
       <div data-curate-describe-head></div>
+      <section data-curate-band="know" class="mb-s4 border-b border-rule pb-s2"></section>
       <section data-curate-band="findable" class="mb-s4 border-b border-rule pb-s2"></section>
-      <section data-curate-band="publish" class="mb-s4 border-b border-rule pb-s2"></section>
-      <section data-curate-band="people" class="mb-s4"></section>
+      <section data-curate-band="people" class="mb-s4 border-b border-rule pb-s2"></section>
+      <section data-curate-band="publish" class="mb-s4"></section>
     </div>
     <div data-curate-tab-panel="contents"${hid('curate_contents')}>
       <section data-curate-band="publish-items" class="mb-s4 border-b border-rule pb-s2"></section>
@@ -554,6 +589,7 @@ export async function renderCurate(slug) {
   // Contents and Structure. Each says "plan loading" until the plan is read; one ticker counts the seconds in all.
   const hosts = {
     describe: host.querySelector('[data-curate-describe-head]'),
+    know: host.querySelector('[data-curate-band="know"]'),
     contents: host.querySelector('[data-curate-sections="contents"]'),
     structure: host.querySelector('[data-curate-sections="structure"]'),
   };
@@ -654,6 +690,9 @@ export async function renderCurate(slug) {
       ${plan.in_population ? '' : `<details data-curate-population-cue class="mb-s3 text-caveat">
         <summary class="cursor-pointer">${stateCue('unrun', 'not in Curate’s population', 'Only worthy things get curated: this one’s disposition is not tracking or using.')}</summary>
         <p class="mt-s1 max-w-[70ch] text-answer text-accent-ink">${populationSentence}</p></details>`}`;
+    // What we know: the confirmed Context facts, read-only, from the plan's one source (curate_plan.context_facts).
+    hosts.know.innerHTML = knowBlockHtml(plan.know || []);
+    hosts.know.querySelectorAll('[data-goto-context]').forEach((b) => b.addEventListener('click', () => openContext()));
     // Contents: the population sentence in full, then what's in it and what gets written.
     hosts.contents.innerHTML = `
       ${plan.in_population ? '' : `<p data-curate-population class="mb-s3 max-w-[70ch] text-answer text-accent-ink">${populationSentence}</p>`}
