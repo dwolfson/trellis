@@ -51,6 +51,9 @@ function makeServer(over = {}) {
     const ok = (b, status = 200) => ({ ok: true, status, json: async () => b });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     for (const [frag, st] of Object.entries(s.status)) if (u.includes(frag) && method !== 'GET') return err(st, `forced ${st}`);
+    if (method === 'GET' && u.includes('/api/curate/feedback-state/')) {
+      return s.feedbackState ? ok(s.feedbackState) : err(500, 'feedback state unreadable');
+    }
     if (method === 'GET' && u.includes('/api/curate/egeria-state/')) {
       return s.egeriaFail ? err(500, 'state unreadable') : ok(s.egeria);
     }
@@ -272,11 +275,14 @@ test('ratings are counts with no average, each entry signed and dated; unsigned 
   const { document } = await setUp('db');
   await openCurate(document);
   const h = q(document, '[data-curate-ratings-headline]').textContent;
-  assert.match(h, /4 · ★★★★★ 2 · ★★★ 1 · ★★ 1/);
+  // Addendum C: one rating per person counts (jdoe's older ★★★ is behind "earlier ratings ▸")
+  assert.match(h, /3 · ★★★★★ 2 · ★★ 1/);
   const all = band(document, 'people').textContent;
   assert.doesNotMatch(all, /average|avg|mean|\d\.\d\s*(\/|out of)\s*5/i, 'never an average or a score');
   const entries = [...host(document).querySelectorAll('[data-curate-feedback]')].map((e) => e.textContent);
-  assert.equal(entries.length, 4);
+  assert.equal(entries.length, 4, 'every row is still drawn: three current, one under earlier ratings');
+  assert.equal(q(document, '[data-curate-earlier-ratings]').querySelectorAll('[data-curate-feedback]').length, 1);
+  assert.equal(q(document, '[data-curate-earlier-ratings]').open, false, 'earlier ratings are closed by default');
   assert.ok(entries.some((t) => /mchessell · 2026-09-30/.test(t)), 'signed and dated');
   assert.ok(entries.some((t) => t.includes(UNSIGNED)), 'legacy entry says it is unsigned');
 });
@@ -300,8 +306,8 @@ test('submitting a rating POSTs {rating, category, message}; list comes from the
   const [c] = calls(server, 'POST', '/api/curate/feedback/database/adventureworks');
   assert.ok(c);
   assert.deepEqual(c.body, { rating: 4, category: 'quality', message: 'Solid.' });
-  assert.match(q(document, '[data-curate-ratings-headline]').textContent, /5 · ★★★★★ 2 · ★★★★ 1/);
-  assert.match(q(document, '[data-curate-ratings-status]').textContent, /it is in the list above/);
+  assert.match(q(document, '[data-curate-ratings-headline]').textContent, /4 · ★★★★★ 2 · ★★★★ 1 · ★★ 1/);
+  assert.match(q(document, '[data-curate-ratings-status]').textContent, /saved · will publish/);
 });
 
 test('a message is required: no POST without one', async () => {
@@ -439,8 +445,11 @@ test('a band whose read fails shows a visible message, not nothing', async () =>
 
 const egeriaItem = (kind, name, st, extra = {}) => ({
   kind, name, label: extra.label || name, desired: extra.desired !== false, state: st,
-  word: { in_egeria: 'in Egeria', not_yet: 'not yet (resource not in Egeria)', not_sent: 'not sent yet', pending: 'pending',
-    retrying: 'pending · retrying', failed: 'failed', unlinked: 'unlinked' }[st], reason: extra.reason || '', retry: !!extra.retry,
+  // Brief F: the server's words for the single Publish
+  word: st === 'failed' ? (extra.reason ? `not sent · ${extra.reason}` : 'not sent')
+    : { in_egeria: 'published 10-11', not_yet: 'saved · will publish', not_sent: 'saved · will publish', pending: 'sending',
+      retrying: 'sending · retrying', unlinked: 'unlinked' }[st],
+  reason: extra.reason || '', retry: !!extra.retry, action: extra.action || '',
 });
 
 test('Brief T: a tag chip carries its Egeria state as a glyph cue plus the word, from the plan', async () => {
@@ -452,13 +461,14 @@ test('Brief T: a tag chip carries its Egeria state as a glyph cue plus the word,
   assert.equal(cue.dataset.cue, 'catalogued');
   assert.match(cue.className, /text-state-ok/);
   assert.ok(cue.querySelector('.font-glyph'), 'a glyph, not only a word');
-  assert.match(cue.textContent, /in Egeria/);
+  assert.match(cue.textContent, /published 10-11/);
 });
 
-test('Brief T: a resource not in Egeria says "not yet (resource not in Egeria)" on the chip', async () => {
+test('Brief F: a resource not in Egeria says "saved · will publish" on the chip (Publish creates it, then sends)', async () => {
   const { document } = await setUp('db', { egeria: { items: [egeriaItem('tag', 'sales', 'not_yet')], to_send: 0 } });
   await openCurate(document);
-  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /not yet \(resource not in Egeria\)/);
+  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /saved · will publish/);
+  assert.equal(q(document, '[data-curate-tag-state="sales"]').dataset.cue, 'stored');
   assert.equal(q(document, '[data-curate-egeria-send]'), null, 'nothing to send');
 });
 
@@ -472,8 +482,8 @@ test('Brief T: a failed unlink shows "failed · reason" with retry; retry POSTs 
   await openCurate(document);
   const removed = q(document, '[data-curate-removed-tag="old"]');
   assert.ok(removed, 'a removed tag Egeria still has is listed');
-  assert.match(removed.textContent, /failed · not retried: destructive write · OMAG-500 busy/);
-  assert.equal(q(document, '[data-curate-tag-state="old"]').dataset.cue, 'catalogue_failed');
+  assert.match(removed.textContent, /not sent · not retried: destructive write · OMAG-500 busy/);
+  assert.equal(q(document, '[data-curate-tag-state="old"]').dataset.cue, 'partial');
   removed.querySelector('[data-curate-egeria-retry]').click();
   await wait();
   const [c] = calls(server, 'POST', '/api/curate/egeria-sync/database/adventureworks');
@@ -490,7 +500,7 @@ test('KNOWN-NEGATIVE Brief T: a retry the server did not carry out does not say 
   q(document, '[data-curate-egeria-retry]').click();
   await wait();
   assert.doesNotMatch(q(document, '[data-curate-findable-status]').textContent, /unlinked/);
-  assert.match(q(document, '[data-curate-tag-state="old"]').textContent, /failed · busy/);
+  assert.match(q(document, '[data-curate-tag-state="old"]').textContent, /not sent · busy/);
 });
 
 test('Brief T: the group line carries the Folio state; a group left behind shows its unlink state', async () => {
@@ -502,27 +512,22 @@ test('Brief T: the group line carries the Folio state; a group left behind shows
   await openCurate(document);
   const g = q(document, '[data-curate-group-state]');
   assert.ok(g && g.dataset.egeriaState === 'pending');
-  assert.match(g.textContent, /pending/);
+  assert.match(g.textContent, /sending/);
   const left = q(document, '[data-curate-left-group="other"]');
   assert.ok(left);
   assert.match(left.textContent, /Other/);
   assert.match(left.textContent, /unlinked/);
 });
 
-test('Brief T: "send to Egeria" appears only when the plan has something not sent, and POSTs an empty body', async () => {
+test('Brief F: a saved tag reads "saved · will publish" and Findable has NO send control (the page\'s Publish sends)', async () => {
   const { document, server } = await setUp('db', {
-    egeria: { items: [egeriaItem('tag', 'sales', 'not_sent')], to_send: 1 },
-    onSync: (srv) => { srv.egeria = { items: [egeriaItem('tag', 'sales', 'in_egeria')], to_send: 0 }; },
+    egeria: { items: [egeriaItem('tag', 'sales', 'not_sent', { action: 'link' })], to_send: 1 },
   });
   await openCurate(document);
-  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /not sent yet/);
-  q(document, '[data-curate-egeria-send]').click();
-  await wait();
-  const [c] = calls(server, 'POST', '/api/curate/egeria-sync/database/adventureworks');
-  assert.deepEqual(c.body, {});
-  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /in Egeria/);
-  assert.equal(q(document, '[data-curate-egeria-send]'), null);
-  assert.match(q(document, '[data-curate-findable-status]').textContent, /sent · 0 not sent yet/);
+  assert.match(q(document, '[data-curate-tag-state="sales"]').textContent, /saved · will publish/);
+  assert.equal(q(document, '[data-curate-egeria-send]'), null, 'no per-section send');
+  assert.match(band(document, 'findable').textContent, /sent with Publish/);
+  assert.equal(calls(server, 'POST', '/api/curate/egeria-sync/').length, 0);
 });
 
 test('KNOWN-NEGATIVE Brief T: an unreadable state says so on every chip, never draws "in Egeria" or nothing', async () => {
@@ -543,6 +548,52 @@ test('Brief T: adding a tag says its Egeria state from the re-read', async () =>
   q(document, '[data-curate-tag-input]').value = 'pii';
   q(document, '[data-curate-tag-add]').click();
   await wait();
-  assert.match(q(document, '[data-curate-findable-status]').textContent, /“pii” is on the list · Egeria: pending/);
-  assert.match(q(document, '[data-curate-tag-state="pii"]').textContent, /pending/);
+  assert.match(q(document, '[data-curate-findable-status]').textContent, /“pii” is on the list · Egeria: sending/);
+  assert.match(q(document, '[data-curate-tag-state="pii"]').textContent, /sending/);
+});
+
+/* ── Brief F: ratings and notes carry their Egeria state; one rating per person ──────────────────────── */
+
+const fbItem = (kind, id, author, st, word, extra = {}) => ({ kind, id, author, mine: author === 'me', state: st, word, reason: '', action: '', ...extra });
+const FEEDBACK_STATE = {
+  ratings: [
+    fbItem('rating', 'f1', 'mchessell', 'published', 'published 10-11'),
+    fbItem('rating', 'f2', 'jdoe', 'waiting', "jdoe's · waiting for them"),
+    fbItem('rating', 'f3', 'jdoe', 'replaced', 'replaced by a newer rating'),
+    fbItem('rating', 'f4', '', 'kept', 'kept in RE · unsigned'),
+  ],
+  notes: [fbItem('note', 'j1', 'dwolfson', 'not_sent', 'not sent · OMAG-500 busy')],
+  to_send: 0, waiting_for_others: 1,
+};
+
+test('Brief F: each rating shows its Egeria state from the server plan; a replaced one sits under "earlier ratings ▸"', async () => {
+  const { document } = await setUp('db', { feedbackState: FEEDBACK_STATE });
+  await openCurate(document);
+  const cueOf = (id) => [...host(document).querySelectorAll('[data-curate-feedback]')].find((e) => e.dataset.curateFeedback === id)
+    .querySelector('[data-curate-feedback-cue]');
+  assert.match(cueOf('f1').textContent, /published 10-11/);
+  assert.equal(cueOf('f1').dataset.cue, 'catalogued');
+  assert.match(cueOf('f2').textContent, /jdoe's · waiting for them/);
+  const earlier = q(document, '[data-curate-earlier-ratings]');
+  assert.ok(earlier && /earlier ratings ▸/.test(earlier.querySelector('summary').textContent));
+  assert.equal(earlier.querySelector('[data-curate-feedback]').dataset.curateFeedback, 'f3');
+  assert.match(q(document, '[data-curate-ratings-headline]').textContent, /3 · ★★★★★ 2 · ★★ 1 · one per person/);
+});
+
+test('Brief F: each journal entry shows its Note state; a failed one says "not sent · <reason>" with the partial cue', async () => {
+  const { document } = await setUp('db', { feedbackState: FEEDBACK_STATE });
+  await openCurate(document);
+  await wait();
+  const cue = q(document, '[data-journal-cue="j1"] [data-curate-note-cue]');
+  assert.ok(cue, 'the entry carries a cue');
+  assert.match(cue.textContent, /not sent · OMAG-500 busy/);
+  assert.equal(cue.dataset.cue, 'partial');
+});
+
+test('KNOWN-NEGATIVE Brief F: an unreadable feedback state never draws "published" on an entry', async () => {
+  const { document } = await setUp('db');                  // feedback-state answers 500
+  await openCurate(document);
+  await wait();
+  assert.doesNotMatch(band(document, 'people').textContent, /published/);
+  assert.match(q(document, '[data-journal-cue="j1"]').textContent, /could not be read/);
 });

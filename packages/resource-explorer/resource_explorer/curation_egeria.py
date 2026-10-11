@@ -24,9 +24,16 @@ therefore readable by anyone who can read it; what makes RE's tags shared rather
 an existing tag BY NAME before it creates one, and creates with a name-based qualifiedName
 (`InformalTag::<tag>`) rather than pyegeria's per-user, timestamped default (`make_feedback_qn`).
 
+**One Publish per page (Brief F, owner 2026-10-11).** "I think there should be one publish button, but each section
+can have a save or indication that it will be published when the user presses publish". A Save in Findable (a tag
+added or removed, the group changed) records the change in RE ONLY; the band shows "saved · will publish"; the
+page's Publish sends it (`sync_curation`, called from the resource's publish: `publish_pending_curation`, and
+`single_publish.send_with_publish`). Nothing on Save talks to Egeria any more.
+
 **One source of truth (section 5b rule 1).** `curation_plan` is the only function that decides what each tag and
-the group should be in Egeria and what state each is in; the Findable band reads it (GET), and `sync_curation`
-enqueues exactly the actions it names. After a fully successful sync the plan has nothing left to do.
+the group should be in Egeria and what state each is in; the Findable band and the Publish band's list read it
+(GET), and `sync_curation` enqueues exactly the actions it names. After a fully successful sync the plan has nothing
+left to do.
 
 **The state is read from persisted outbox rows**, never from what a click assumed: "in Egeria" means a `done`
 link row for this asset, "unlinked" a `done` detach row, and so on. Rows for an asset GUID that is no longer the
@@ -34,8 +41,8 @@ resource's (an Egeria wipe and re-publish) are history and are ignored: they are
 element is gone.
 
 **Unlinks are destructive outbox kinds** (`egeria_outbox.DESTRUCTIVE_OUTBOX_KINDS`): a failed or lapsed unlink is
-dead on its first failure, never re-sent by the drain, and never re-sent by a later sync either. The band shows
-"failed · <reason>" with a retry a person presses (`retry_item`), which queues a NEW row.
+dead on its first failure, never re-sent by the drain, and never re-sent by a later sync (a later Publish) either.
+The band shows "not sent · <reason>" with a retry a person presses (`retry_item`), which queues a NEW row.
 
 **Identity (Brief I).** A sync inside a person's request drains inline as that person (`current_principal()`, the
 Caller). Rows carry the requester in `by`, so the background loop (a Daemon drain) applies a left-over row as
@@ -59,19 +66,20 @@ _DETACH_OF = {"tag": TAG_DETACH, "group": GROUP_DETACH}
 
 #: Item states (the band draws a glyph and the word for each; `reason` follows "failed ·").
 IN_EGERIA = "in_egeria"
-NOT_YET = "not_yet"            # the resource is not in Egeria, so the tag or group stays in RE for now
-NOT_SENT = "not_sent"          # RE and the queued work disagree: the next sync sends it
+NOT_YET = "not_yet"            # the resource is not in Egeria: the page's Publish creates it, then sends this
+NOT_SENT = "not_sent"          # saved in RE, not in Egeria yet: the page's next Publish sends it
 PENDING = "pending"            # queued or being sent
 RETRYING = "retrying"          # a non-destructive link failed and the drain will try again
 FAILED = "failed"              # dead: needs a person (retry)
 UNLINKED = "unlinked"          # the link was removed in Egeria
+#: Brief F: the words are the single Publish's ("saved · will publish", "published 10-11", "not sent · <reason>").
 STATE_WORDS = {
-    IN_EGERIA: "in Egeria",
-    NOT_YET: "not yet (resource not in Egeria)",
-    NOT_SENT: "not sent yet",
-    PENDING: "pending",
-    RETRYING: "pending · retrying",
-    FAILED: "failed",
+    IN_EGERIA: "published",
+    NOT_YET: "saved · will publish",
+    NOT_SENT: "saved · will publish",
+    PENDING: "sending",
+    RETRYING: "sending · retrying",
+    FAILED: "not sent",
     UNLINKED: "unlinked",
 }
 
@@ -158,10 +166,16 @@ class CurationItem:
     retry: bool = False       # dead: a person may press retry (a NEW row)
     retry_action: str = ""    # "link" | "unlink"
     egeria_guid: str = ""     # the tag's / Folio's GUID, from the newest done link row
+    published_at: str = ""    # when the newest live row landed (a done row's completed_at)
 
     @property
     def word(self) -> str:
-        return STATE_WORDS.get(self.state, self.state)
+        word = STATE_WORDS.get(self.state, self.state)
+        if self.state in (IN_EGERIA, UNLINKED) and len(self.published_at) >= 10:
+            return f"{word} {self.published_at[5:10]}"
+        if self.state == FAILED and self.reason:
+            return f"{word} · {self.reason}"
+        return word
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -193,7 +207,8 @@ def _evaluate(kind: str, desired: bool, rows: list[dict]) -> dict | None:
     live = [r for r in rows if r["id"] not in cancel]
     newest = live[0] if live else None
     out = {"cancel_ids": cancel, "row_id": newest["id"] if newest else None, "action": "",
-           "reason": "", "retry": False, "retry_action": ""}
+           "reason": "", "retry": False, "retry_action": "",
+           "published_at": (newest.get("completed_at") or "") if newest and newest["status"] == "done" else ""}
     if desired:
         if newest is None or newest["element_kind"] == detach:
             return {**out, "state": NOT_SENT, "action": "link"}
@@ -517,8 +532,8 @@ def refusal_words(refused: list[dict]) -> str:
 def group_deleted_report(group_slug: str) -> dict:
     """What a group delete says about Egeria: the Folio stays, and the owner deletes it by hand."""
     return {"folio_qualified_name": folio_qualified_name(group_slug), "left_in_egeria": True,
-            "words": ("The Folio stays in Egeria: RE never deletes it. Members' memberships are removed; "
-                      "the owner deletes the Folio by hand.")}
+            "words": ("The Folio stays in Egeria: RE never deletes it. Each member's membership is removed at that "
+                      "member's next Publish; the owner deletes the Folio by hand.")}
 
 
 # ── the Egeria side: creators the outbox drain calls (egeria_outbox._CREATORS) ─────────────────────────────

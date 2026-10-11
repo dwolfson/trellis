@@ -23,6 +23,9 @@ function makeServer(over = {}) {
     resurveyAnswers: 'ok',
     publishAnswers: 'ok',     // 'ok' | '428' | '409' | 'drop' (200 but nothing recorded) | 'sent'
     reports: [REPORT], reportsStatus: 200,
+    readBack: 42,             // the annotation count the read-back finds (42 = what was published)
+    goesOut: { viewer: 'dan', in_egeria: false, findable: [], feedback: [], doc_sources: [], waiting_for_others: 0, count: 0 },
+    pressAnswer: { ok: true },
     annotations: [{ guid: 'ann-1', annotation_type: 'SchemaAnalysisAnnotation', summary: 'ok', confidence: 90, analysis_step: 'files', explanation: 'because', content_status: '' }],
     measurements: { slug: 'egeria_git', in_egeria: true, inventoried: true,
       profiles: [{ name: 'Profile File Types', type: 'ResourceProfileAnnotation', summary: '2 types', counts: { Python: 12, Markdown: 4 } }],
@@ -30,8 +33,22 @@ function makeServer(over = {}) {
       retired_word: 'retired mechanism · kept in Egeria' },
     ...over,
   };
-  const state = () => ({ slug: 'egeria_git', in_egeria: s.inEgeria, asset_guid: s.inEgeria ? GUID : '', row: s.row,
-    project: s.project, can_publish_again: s.canAgain, survey: s.survey });
+  // Brief F addendum: the server's `repo_publish.confirmation` on the row (the one "same result" function),
+  // mirrored here so the band draws from what the server would send.
+  const confirmOf = (row) => {
+    const day = String(row.read_at || '').slice(5, 10);
+    if (row.word === 'published') {
+      if (row.annotations_in_egeria == null) return { state: 'unconfirmed', word: `published ${day} · not yet confirmed`, read_at: row.read_at };
+      return row.annotations_in_egeria === row.annotation_count
+        ? { state: 'confirmed', word: `published ${day} · confirmed`, read_at: row.read_at, egeria_count: row.annotations_in_egeria, published_count: row.annotation_count }
+        : { state: 'differs', word: `published ${day} · Egeria shows ${row.annotations_in_egeria}`, read_at: row.read_at, egeria_count: row.annotations_in_egeria, published_count: row.annotation_count };
+    }
+    if (row.word === 'sent') return { state: 'unconfirmed', word: `published ${day} · not yet confirmed`, read_at: row.read_at };
+    return { state: '', word: '' };
+  };
+  const state = () => ({ slug: 'egeria_git', in_egeria: s.inEgeria, asset_guid: s.inEgeria ? GUID : '',
+    row: { ...s.row, confirm: s.row.confirm || confirmOf(s.row) },
+    project: s.project, can_publish_again: s.canAgain, survey: s.survey, goes_out: s.goesOut });
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
     const method = opts.method || 'GET';
@@ -49,16 +66,19 @@ function makeServer(over = {}) {
       if (s.publishAnswers === 'nosurvey') return err(409, 'no survey to publish yet · run the first survey');
       if (s.publishAnswers === '428') return err(428, 'egeria_project_context_required');
       if (s.publishAnswers === '409') return err(409, 'a publish for egeria_git is already running');
+      if (s.publishAnswers === '403') return err(403, 'zone sales-zone does not grant dan publish in Egeria');
       if (body.without_project) s.project = { status: 'declined', word: 'no project (chosen)', name: '' };
       if (s.publishAnswers === 'ok') {
         s.inEgeria = true; s.canAgain = true;
-        s.row = { word: 'published', read_at: new Date().toISOString(), report_guid: REPORT.guid, reused: false, annotation_count: 42, surveyed_at: s.survey.surveyed_at };
+        s.row = { word: 'published', read_at: new Date().toISOString(), report_guid: REPORT.guid, reused: false, annotation_count: 42,
+          annotations_in_egeria: s.readBack, surveyed_at: s.survey.surveyed_at };
+        if (s.afterPress) s.afterPress(s);
       } else if (s.publishAnswers === 'sent') {
         s.inEgeria = true; s.canAgain = true; s.row = { word: 'sent', read_at: new Date().toISOString(), sentence: 'sent · waiting for Egeria', first: '' };
       } else if (s.publishAnswers === 'fail') {
         s.row = { word: 'not published', read_at: '', sentence: 'OMAG-500 refused. Context: more', first: 'OMAG-500 refused.' };
       } // 'drop': 200 and nothing recorded
-      return ok({ ok: true });
+      return ok(s.pressAnswer);
     }
     if (u.endsWith('/forget-links')) {
       s.inEgeria = false; s.canAgain = false; s.row = { word: 'forgotten', read_at: new Date().toISOString(), sentence: '', first: '' };
@@ -124,8 +144,7 @@ test('a repository never published: not in Egeria, no row, the publish control i
   await openCurate(document);
   const t = band(document).textContent;
   assert.match(t, /Publish to Egeria/);
-  assert.match(t, /not in Egeria/);
-  assert.match(t, /no publish recorded here/);
+  assert.match(q(document, '[data-publish-row]').textContent, /not in Egeria/, 'line 1 carries one state');
   assert.equal(q(document, '[data-publish-go]').textContent.trim(), 'Publish to Egeria →');
   assert.equal(q(document, '[data-publish-go]').disabled, false);
   assert.equal(q(document, '[data-forget-open]').disabled, true, 'nothing to forget when not in Egeria');
@@ -145,8 +164,8 @@ test('publish: POSTs whole (no zones, no steps), then the words come from the re
   await wait();
   const [c] = post(server, '/api/egeria/egeria_git/publish-report');
   assert.deepEqual(c.body, { without_project: false }, 'no zone field, no steps field');
-  assert.match(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
-  assert.match(q(document, '[data-publish-status]').textContent, /in Egeria/);
+  assert.match(q(document, '[data-publish-row]').textContent, /in Egeria · published \d\d-\d\d · confirmed/);
+  assert.equal(q(document, '[data-publish-confirm]').dataset.publishConfirm, 'confirmed');
   assert.equal(q(document, '[data-publish-status] [data-guid]'), null, 'the GUID is not on Describe and publish: only the word');
   assert.equal(q(document, '[data-publish-asset] [data-guid]').dataset.guid, GUID, 'the asset GUID is shown on Contents');
   assert.ok(items(document).querySelector('[data-copy-guid]'), 'and copyable there');
@@ -162,8 +181,8 @@ test('KNOWN-NEGATIVE: a 200 with nothing recorded does not say published', async
   q(document, '[data-publish-go]').click();
   await wait();
   const t = band(document).textContent;
-  assert.doesNotMatch(t, /published · from the survey of 2026-10-07 · read back/);
-  assert.match(q(document, '[data-publish-row]').textContent, /no publish recorded here/);
+  assert.doesNotMatch(t, /published \d\d-\d\d/);
+  assert.match(q(document, '[data-publish-row]').textContent, /not in Egeria/);
 });
 
 test('a report sent but not read back says "sent · waiting for Egeria", never published', async () => {
@@ -171,8 +190,8 @@ test('a report sent but not read back says "sent · waiting for Egeria", never p
   await openCurate(document);
   q(document, '[data-publish-go]').click();
   await wait();
-  assert.match(q(document, '[data-publish-row]').textContent, /sent · waiting for Egeria/);
-  assert.doesNotMatch(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
+  assert.match(q(document, '[data-publish-row]').textContent, /published \d\d-\d\d · not yet confirmed/);
+  assert.equal(q(document, '[data-publish-confirm]').dataset.publishConfirm, 'unconfirmed', 'never implies confirmed');
 });
 
 test('Egeria refusing reads "not published · <first sentence>" with the full sentence one gesture away', async () => {
@@ -227,7 +246,7 @@ test('a 428 shows a cue and a word on Describe and publish; the three choices ar
   await wait();
   const ps = post(server, '/publish-report');
   assert.deepEqual(ps.map((c) => c.body.without_project), [false, true]);
-  assert.match(q(document, '[data-publish-row]').textContent, /published · from the survey of 2026-10-07 · read back/);
+  assert.match(q(document, '[data-publish-row]').textContent, /in Egeria · published \d\d-\d\d · confirmed/);
   assert.match(q(document, '[data-publish-project]').textContent, /no project \(chosen\)/);
   assert.equal(items(document).querySelector('[data-gate-bind]'), null, 'answered: the choices are gone');
 });
@@ -450,4 +469,145 @@ test('a publish answered 409 "no survey" says nothing was sent, not "already run
   await wait();
   assert.match(q(document, '[data-publish-feedback]').textContent, /no survey to publish yet · run the first survey/);
   assert.doesNotMatch(q(document, '[data-publish-feedback]').textContent, /already running/);
+});
+
+/* ── Brief F: the three-line band, the press acknowledged, success validated, failure a pop-up ───────────── */
+
+const docOf = (d) => d;   // the pop-up is on the document, not in the band
+
+test('Brief F: a press is acknowledged at once ("◔ publishing…"), with no per-step list on tab 1', async () => {
+  const { document } = await setUp('repo', { project: { status: 'personal', word: 'personal exploration', name: '' } });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  const fb = q(document, '[data-publish-feedback]');
+  assert.match(fb.textContent, /publishing…/);
+  assert.equal(fb.querySelector('[data-cue]').dataset.cue, 'running');
+  assert.equal(band(document).querySelector('[data-curate-commit-steps], [data-publish-steps], ol'), null, 'no stepper');
+  await wait();
+});
+
+test('Brief F: success is validated by line 1: "✓ in Egeria · published · confirmed", read back in small text', async () => {
+  const { document } = await setUp('repo', { project: { status: 'personal', word: 'personal exploration', name: '' } });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  const c = q(document, '[data-publish-confirm] [data-cue]');
+  assert.equal(c.dataset.cue, 'measured');
+  assert.match(c.textContent, /✓ in Egeria · published \d\d-\d\d · confirmed/);
+  assert.ok(q(document, '[data-publish-read-back]'), 'the read-back time is labelled as such');
+  assert.match(q(document, '[data-publish-feedback]').textContent, /confirmed/);
+  assert.equal(docOf(document).querySelector('[data-publish-failure]'), null, 'no pop-up on success');
+});
+
+test('Brief F: a read-back that differs says what Egeria shows with the partial cue, never "confirmed"', async () => {
+  const { document } = await setUp('repo', { readBack: 40, project: { status: 'personal', word: 'personal exploration', name: '' } });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  const c = q(document, '[data-publish-confirm] [data-cue]');
+  assert.equal(c.dataset.cue, 'partial');
+  assert.match(c.textContent, /Egeria shows 40/);
+  assert.doesNotMatch(c.textContent, / confirmed/);
+  assert.match(c.title, /Published 42 annotations; Egeria's read-back shows 40/);
+});
+
+test('Brief F: a failure is a pop-up with the items and Retry, AND a persistent cue from the rows', async () => {
+  const { document, server } = await setUp('repo', { publishAnswers: 'fail', project: { status: 'personal', word: 'personal exploration', name: '' } });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  const pop = docOf(document).querySelector('[data-publish-failure]');
+  assert.ok(pop, 'a pop-up');
+  assert.equal(pop.getAttribute('role'), 'alertdialog');
+  assert.match(pop.textContent, /report · .*not published · OMAG-500 refused\./);
+  assert.ok(pop.querySelector('[data-publish-failure-retry]'), 'Retry where a retry can help');
+  pop.querySelector('[data-publish-failure-close]').click();
+  assert.equal(docOf(document).querySelector('[data-publish-failure]'), null);
+  assert.match(q(document, '[data-publish-row]').textContent, /not published · OMAG-500 refused\./, 'the cue stays after the pop-up goes');
+  server.publishAnswers = 'ok';
+  q(document, '[data-publish-go]').click();
+  await wait();
+  assert.equal(post(server, '/publish-report').length, 2);
+});
+
+test('Brief F: a refusal pops up "not permitted" with no Retry; feedback refused per item comes from the re-read list', async () => {
+  const { document } = await setUp('repo', { project: { status: 'personal', word: 'personal exploration', name: '' },
+    afterPress: (srv) => { srv.goesOut = { ...srv.goesOut, feedback: [{ kind: 'rating', id: 'f1', state: 'not_permitted', word: 'not permitted · zone z does not grant dan add feedback' }], count: 1 }; } });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  const pop = docOf(document).querySelector('[data-publish-failure]');
+  assert.match(pop.textContent, /your rating · .*not permitted/);
+  assert.equal(pop.querySelector('[data-publish-failure-retry]'), null, 'a refusal needs a permission change, not a retry');
+  const item = q(document, '[data-goes-out="rating:f1"]');
+  assert.match(item.textContent, /not permitted/);
+  assert.equal(item.querySelector('[data-cue]').dataset.cue, 'no_access');
+  const { document: d2 } = await setUp('repo', { publishAnswers: '403' });
+  await openCurate(d2);
+  band(d2).querySelector('[data-publish-go]').click();
+  await wait();
+  assert.equal(d2.querySelector('[data-publish-failure] [data-publish-failure-retry]'), null);
+  assert.match(d2.querySelector('[data-publish-failure]').textContent, /not permitted/);
+});
+
+test('Brief F: the steps of a press are in the data, behind "details ▸" only, closed by default', async () => {
+  const { document } = await setUp('repo', { project: { status: 'personal', word: 'personal exploration', name: '' },
+    pressAnswer: { ok: true, report_guid: 'rep-guid-0001', sent: { findable: { queued: 1 }, feedback: { queued: 2, refused: '', not_permitted: [] } } } });
+  await openCurate(document);
+  assert.equal(q(document, '[data-publish-details]'), null, 'nothing before a press');
+  q(document, '[data-publish-go]').click();
+  await wait();
+  const d = q(document, '[data-publish-details]');
+  assert.ok(d && d.tagName === 'DETAILS' && !d.open);
+  assert.match(d.querySelector('summary').textContent, /details ▸/);
+  assert.match(d.textContent, /tags and group · 1 queued/);
+  assert.match(d.textContent, /your feedback · 2 sent/);
+});
+
+test('Brief F: line 2 lists what the ONE press sends, each a cue and a word; others\' feedback waits for them', async () => {
+  const { document } = await setUp('repo', { goesOut: { viewer: 'dan', in_egeria: true,
+    findable: [{ kind: 'tag', name: 'observability', label: 'observability', state: 'not_sent', word: 'saved · will publish', action: 'link' }],
+    feedback: [{ kind: 'rating', id: 'f9', state: 'saved', word: 'saved · will publish' }, { kind: 'note', id: 'j9', state: 'saved', word: 'saved · will publish' }],
+    doc_sources: [], waiting_for_others: 2, count: 3 } });
+  await openCurate(document);
+  const next = q(document, '[data-publish-next]');
+  assert.match(next.textContent, /next publish/);
+  assert.match(q(document, '[data-goes-out="report"]').textContent, /report/);
+  assert.match(q(document, '[data-goes-out="tag:observability"]').textContent, /tag observability .*saved · will publish/);
+  assert.equal(q(document, '[data-goes-out="tag:observability"] [data-cue]').dataset.cue, 'stored');
+  assert.match(q(document, '[data-goes-out="rating:f9"]').textContent, /your rating/);
+  assert.match(q(document, '[data-goes-out="note:j9"]').textContent, /your note/);
+  assert.match(q(document, '[data-goes-out-others]').textContent, /2 from others · waiting for them/);
+});
+
+test('Brief F: the Egeria report rows live inside "Show in Egeria ▸" (closed), with no "Egeria reports" heading', async () => {
+  const { document } = await setUp('repo', { inEgeria: true, canAgain: true,
+    row: { word: 'published', read_at: '2026-10-11T16:36:00', report_guid: REPORT.guid, annotation_count: 42, annotations_in_egeria: 42 } });
+  await openCurate(document);
+  await wait();
+  const show = q(document, '[data-publish-show-egeria]');
+  assert.ok(show && show.tagName === 'DETAILS' && !show.open);
+  assert.match(show.querySelector('summary').textContent, /Show in Egeria ▸/);
+  assert.ok(show.querySelector('[data-egeria-reports]'), 'the report rows are inside');
+  assert.doesNotMatch(band(document).textContent, /Egeria reports/);
+});
+
+test('Brief F addendum B: after a press the Findable band re-reads its state (a saved tag then reads published)', async () => {
+  const { document, server } = await setUp('repo', { project: { status: 'personal', word: 'personal exploration', name: '' } });
+  await openCurate(document);
+  const before = server.calls.filter((c) => c.url.includes('/api/curate/egeria-state/')).length;
+  q(document, '[data-publish-go]').click();
+  await wait(400);
+  const after = server.calls.filter((c) => c.url.includes('/api/curate/egeria-state/')).length;
+  assert.ok(after > before, 'the tag state is read again from the rows after the press');
+  assert.ok(server.calls.filter((c) => c.url.includes('/api/curate/feedback-state/')).length >= 1);
+});
+
+test('Brief F: line 2 says when the kept survey is newer than what is published, with its annotation count', async () => {
+  const { document } = await setUp('repo', { inEgeria: true, canAgain: true,
+    survey: { exists: true, surveyed_at: '2026-10-09T01:00:00', age_seconds: 300, annotations: 120, steps: 43, stale_steps: 1, stale: ['x'] },
+    row: { word: 'published', read_at: '2026-10-08T16:36:00', report_guid: REPORT.guid, annotation_count: 117, annotations_in_egeria: 117, surveyed_at: '2026-10-08T01:00:00' } });
+  await openCurate(document);
+  assert.match(q(document, '[data-publish-newer]').textContent, /newer than published · 120 annotations/);
+  assert.ok(q(document, '[data-publish-next] [data-publish-stale]'), 'staleness is on the next-publish line');
 });

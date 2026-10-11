@@ -8069,7 +8069,7 @@ class ProjectRegistry:
 
     def claim_due_outbox_elements(
         self, limit: int = 200, now: str | None = None, run_id: str | None = None,
-        element_id: int | None = None,
+        element_id: int | None = None, exclude_kinds: "tuple[str, ...] | list[str] | frozenset | None" = None,
     ) -> list[dict]:
         """Rows ready to attempt, oldest first.
 
@@ -8117,6 +8117,9 @@ class ProjectRegistry:
         reachable) should call `release_outbox_claim()` immediately rather
         than wait out the lease — see `drain_outbox`'s no-client branch.
 
+        `exclude_kinds` (Brief F) leaves rows of those kinds unclaimed: the background drain passes the feedback
+        kinds, which only their author's own Publish may send.
+
         `run_id` scopes the claim to one publish's rows. A publisher that
         enqueues and then drains inline needs its OWN annotations written
         before it returns; an unscoped claim takes the oldest due rows in the
@@ -8149,6 +8152,12 @@ class ProjectRegistry:
         if element_id is not None:
             sql += "  AND o.id = ? "
             params.append(element_id)
+        if exclude_kinds:
+            # Brief F: kinds only their author may send (feedback) are never claimed by a drain that is not that
+            # person's own request (the background Daemon drain passes them here).
+            kinds = sorted(exclude_kinds)
+            sql += f"  AND o.element_kind NOT IN ({','.join('?' * len(kinds))}) "
+            params.extend(kinds)
         sql += "ORDER BY o.id ASC LIMIT ?"
         params.append(limit)
 

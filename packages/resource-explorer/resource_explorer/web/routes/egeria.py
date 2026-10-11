@@ -988,11 +988,15 @@ class PublishReportRequest(BaseModel):
 
 
 @router.get("/{slug}/publish-state")
-def get_publish_state(slug: str) -> dict:
-    """In Egeria or not, the asset GUID, the last report row and the project: RE's own records only."""
+def get_publish_state(slug: str, request: Request) -> dict:
+    """In Egeria or not, the asset GUID, the last report row and the project: RE's own records only. Brief F:
+    plus what the signed-in viewer's Publish sends besides the report (`goes_out`; "" = signed out, who sends no
+    feedback)."""
     from resource_explorer import repo_publish
     _project, registry = _get_project_or_404(slug)
-    return repo_publish.publish_state(registry, slug)
+    user = get_current_user(request)
+    viewer = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    return repo_publish.publish_state(registry, slug, viewer=viewer)
 
 
 @router.post("/{slug}/publish-report")

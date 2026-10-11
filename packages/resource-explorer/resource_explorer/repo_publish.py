@@ -109,16 +109,56 @@ def project_words(context: dict | None) -> dict:
 
 # ── the state, from proof rows only (PI-002) ─────────────────────────────────
 
+#: Brief F addendum (owner, 2026-10-11): "we just probably need to add a label that says confirmed once we read
+#: back the same result after a publish". Line 1 of the Publish band carries ONE of these.
+CONFIRMED = "confirmed"            # the read-back shows the same report with the same annotation count
+UNCONFIRMED = "unconfirmed"        # published, but no read-back of the count yet (or the read failed)
+DIFFERS = "differs"                # the read-back found the report but Egeria shows a different count
+
+
+def confirmation(row: dict) -> dict:
+    """THE "same result" decision: whether what Egeria answered on the read-back after a publish is what was
+    published. The same report (a `report_published` proof is written only when the report's own GUID was READ
+    BACK among the asset's reports) AND the same annotation count (the count published vs the count that read
+    found). The band's label and every test use this one function.
+
+    Returns {state, word, egeria_count, published_count, read_at}; state "" when nothing was published."""
+    word = row.get("word")
+    read_at = row.get("read_at") or ""
+    day = read_at[5:10] if len(read_at) >= 10 else ""
+    published = f"published {day}".strip()
+    out = {"state": "", "word": "", "egeria_count": row.get("annotations_in_egeria"),
+           "published_count": row.get("annotation_count"), "read_at": read_at}
+    if word == "published":
+        sent, seen = row.get("annotation_count"), row.get("annotations_in_egeria")
+        if seen is None or sent is None:
+            return {**out, "state": UNCONFIRMED, "word": f"{published} · not yet confirmed"}
+        if int(seen) == int(sent):
+            return {**out, "state": CONFIRMED, "word": f"{published} · confirmed"}
+        return {**out, "state": DIFFERS, "word": f"{published} · Egeria shows {int(seen)}"}
+    if word == "sent":
+        return {**out, "state": UNCONFIRMED, "word": f"{published} · not yet confirmed"}
+    return out
+
+
 def _report_row(last: dict | None) -> dict:
+    row = _report_row_words(last)
+    row["confirm"] = confirmation(row)
+    return row
+
+
+def _report_row_words(last: dict | None) -> dict:
     if last is None:
         return {"word": "none", "read_at": "", "sentence": "", "first": "", "report_guid": ""}
     kind, d = last["proof"], last.get("detail") or {}
     if kind == P_REPORT:
         return {"word": "published", "read_at": last["read_at"], "report_guid": last["element_guid"],
                 "reused": bool(d.get("reused")), "annotation_count": d.get("annotation_count"),
+                "annotations_in_egeria": d.get("annotations_in_egeria"),
                 "sentence": "", "first": "", "surveyed_at": d.get("surveyed_at", "")}
     if kind == P_SENT:
         return {"word": "sent", "read_at": last["read_at"], "report_guid": last["element_guid"],
+                "annotation_count": d.get("annotation_count"),
                 "sentence": d.get("note", ""), "first": d.get("note", ""), "surveyed_at": d.get("surveyed_at", "")}
     if kind == P_READ_FAILED:
         full = d.get("error", "")
@@ -179,8 +219,12 @@ def project_state(registry, slug: str) -> dict:
         else project_words(None))
 
 
-def publish_state(registry, slug: str) -> dict:
-    """One read of RE's own records. Nothing here contacts Egeria."""
+def publish_state(registry, slug: str, viewer: str | None = None) -> dict:
+    """One read of RE's own records. Nothing here contacts Egeria.
+
+    With `viewer` (Brief F, the page's ONE Publish) it also says what that person's press sends besides the
+    report (`goes_out`: tags and group, documentation sources, their own rating and notes), from the same
+    functions the press acts on (`single_publish.goes_out`)."""
     asset_guid = registry.get_egeria_asset_guid(slug) or ""
     # The reset marker is keyed by slug, whatever node_kind the script gave it (a repo and a database can
     # share a slug and the script writes one marker per slug), so it is read across node kinds.
@@ -195,10 +239,15 @@ def publish_state(registry, slug: str) -> dict:
     last = proofs[-1] if proofs else None
     proofs = [p for p in proofs if p["proof"] != P_EGERIA_RESET]
     project = project_state(registry, slug)
-    return {"slug": slug, "in_egeria": bool(asset_guid), "asset_guid": asset_guid,
-            "row": _report_row(last), "project": project,
-            "survey": survey_state(registry, slug),
-            "can_publish_again": any(p["proof"] in (P_REPORT, P_SENT) for p in proofs)}
+    out = {"slug": slug, "in_egeria": bool(asset_guid), "asset_guid": asset_guid,
+           "row": _report_row(last), "project": project,
+           "survey": survey_state(registry, slug),
+           "can_publish_again": any(p["proof"] in (P_REPORT, P_SENT) for p in proofs)}
+    if viewer is not None:
+        from resource_explorer.single_publish import goes_out
+
+        out["goes_out"] = goes_out(registry, "repo", slug, viewer)
+    return out
 
 
 # ── publish whole (PI-001) ───────────────────────────────────────────────────
@@ -229,8 +278,13 @@ def publish_report(registry, slug: str, author: str, *, without_project: bool = 
         _running.add(slug)
     try:
         out = publish_snapshot(registry, slug, author, context, snapshot)
+        # Brief F: the same press sends the tags and group, the documentation sources and the PRESSER's own
+        # rating and notes, as them, whenever the asset exists (even when the report itself failed this time).
+        from resource_explorer.single_publish import send_with_publish
+
+        sent = send_with_publish(registry, "repo", slug, registry.get_egeria_asset_guid(slug) or "", author)
         return {"ok": out["ok"], "stage": out.get("stage", ""), "report_guid": out.get("report_guid", ""),
-                "reused": out.get("reused", False), **publish_state(registry, slug)}
+                "reused": out.get("reused", False), "sent": sent, **publish_state(registry, slug, viewer=author)}
     finally:
         with _running_lock:
             _running.discard(slug)

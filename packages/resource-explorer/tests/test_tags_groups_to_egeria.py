@@ -172,6 +172,20 @@ def item(st, kind, name):
     return next((i for i in st["items"] if i["kind"] == kind and i["name"] == name), None)
 
 
+def publish(registry, slug="p", entity_type="repo", user="peterprofile"):
+    """Brief F: the page's ONE Publish, after the resource's own publish, as the presser (a Caller): what
+    `repo_publish.publish_report` and the database / file system publish routes call. A Save sends nothing."""
+    from resource_explorer import single_publish as sp
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    guid = ce.element_guid(registry, entity_type, slug)
+    reset = current_caller.set(CallerIdentity(user_id=user, egeria_token="t", auth_source="app-jwt"))
+    try:
+        return sp.send_with_publish(registry, entity_type, slug, guid, user)
+    finally:
+        current_caller.reset(reset)
+
+
 def rows(registry, kind=None):
     out = registry.list_outbox_rows_for_kinds("repo", "p", ce.KINDS)
     return [r for r in out if kind is None or r["element_kind"] == kind]
@@ -182,14 +196,22 @@ def rows(registry, kind=None):
 def test_adding_a_tag_creates_the_public_tag_once_and_links_it_and_the_next_read_says_in_egeria(client, registry, egeria):
     r = client.post("/api/curate/tags/repo/p", json={"tag": "Sales"}, headers=as_user())
     assert r.status_code == 200, r.text
+    # Brief F: a Save sends nothing; the band says "saved · will publish"
+    assert egeria.calls == [] and rows(registry) == []
+    i = item(state(client), "tag", "sales")
+    assert i["state"] == "not_sent" and i["word"] == "saved · will publish" and i["action"] == "link"
+    publish(registry)
     tag_guid = next(iter(egeria.tags))
-    assert egeria.tags[tag_guid] == {"name": "Sales", "qn": "InformalTag::sales"}, "typed case kept (round 2)"
+    assert egeria.tags[tag_guid] == {"name": "sales", "qn": "InformalTag::sales"}, \
+        "Brief F: sent at Publish, from RE's lower-case key (the typed spelling is not stored)"
     assert (ASSET, tag_guid) in egeria.tag_links
     i = item(state(client), "tag", "sales")
-    assert i["state"] == "in_egeria" and i["word"] == "in Egeria" and i["action"] == "" and i["egeria_guid"] == tag_guid
+    assert i["state"] == "in_egeria" and i["word"].startswith("published ") and i["action"] == "" \
+        and i["egeria_guid"] == tag_guid
     assert state(client)["to_send"] == 0, "after a fully successful press the plan has nothing left to do"
     # the same name on another resource FINDS the tag: never a second InformalTag
     assert client.post("/api/curate/tags/repo/q", json={"tag": "sales"}, headers=as_user()).status_code == 200
+    publish(registry, "q")
     assert len(egeria.tags) == 1
     assert (OTHER_ASSET, tag_guid) in egeria.tag_links
     assert egeria.names().count("create_informal_tag") == 1
@@ -198,12 +220,14 @@ def test_adding_a_tag_creates_the_public_tag_once_and_links_it_and_the_next_read
 def test_a_tag_that_already_exists_in_egeria_is_found_by_name_not_created(client, registry, egeria):
     egeria.tags["tag-portal"] = {"name": "sales", "qn": "InformalTag::::peter::sales::1760000000"}
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     assert "create_informal_tag" not in egeria.names()
     assert (ASSET, "tag-portal") in egeria.tag_links
 
 
 def test_the_inline_drain_runs_as_the_person_and_the_row_records_who_asked(client, registry, egeria):
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user("peterprofile"))
+    publish(registry, user="peterprofile")
     assert [i.kind for i in egeria.identities] == ["caller"]
     assert egeria.identities[0].user_id == "peterprofile"
     assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == "peterprofile"
@@ -213,9 +237,14 @@ def test_the_inline_drain_runs_as_the_person_and_the_row_records_who_asked(clien
 
 def test_removing_a_tag_unlinks_it_and_never_deletes_the_tag(client, registry, egeria):
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     tag_guid = next(iter(egeria.tags))
     r = client.delete("/api/curate/tags/repo/p/sales", headers=as_user())
     assert r.status_code == 200, r.text
+    assert (ASSET, tag_guid) in egeria.tag_links, "Brief F: a removal is saved in RE; the unlink waits for Publish"
+    i = item(state(client), "tag", "sales")
+    assert i["state"] == "not_sent" and i["action"] == "unlink" and i["word"] == "saved · will publish"
+    publish(registry)
     assert (ASSET, tag_guid) not in egeria.tag_links
     assert tag_guid in egeria.tags, "the InformalTag element stays in Egeria"
     assert ("remove_tag_from_element", ASSET, tag_guid) in egeria.calls
@@ -258,7 +287,7 @@ def test_a_resource_not_in_egeria_keeps_the_tag_local_then_links_it_on_the_next_
     assert egeria.calls == [] and rows(registry) == []
     st = state(client)
     assert item(st, "tag", "sales")["state"] == "not_yet"
-    assert item(st, "tag", "sales")["word"] == "not yet (resource not in Egeria)"
+    assert item(st, "tag", "sales")["word"] == "saved · will publish"
     assert item(st, "group", "sales")["state"] == "not_yet"
     # the publish hook (EgeriaPublisher._publish_pending_curation) after the asset exists
     from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
@@ -289,25 +318,32 @@ def test_the_repo_publisher_calls_the_curation_hook_with_the_new_asset(monkeypat
 def test_a_group_becomes_a_folio_with_the_member_and_a_re_sync_queues_nothing(client, registry, egeria):
     r = client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
     assert r.status_code == 200, r.text
-    assert r.json()["egeria"]["items"]
+    assert r.json()["egeria"]["items"][0]["word"] == "saved · will publish" and egeria.calls == []
+    publish(registry)
     folio = next(iter(egeria.folios))
     assert egeria.folios[folio] == {"qn": "Folio::RE::group::sales", "name": "Sales platform"}
     assert (folio, ASSET) in egeria.members
     g = item(state(client), "group", "sales")
     assert g["state"] == "in_egeria" and g["label"] == "Sales platform"
     n_rows, n_calls = len(rows(registry)), len(egeria.calls)
-    again = client.post("/api/curate/egeria-sync/repo/p", json={}, headers=as_user())
-    assert again.status_code == 200 and again.json()["queued"] == []
+    again = publish(registry)
+    assert again["findable"]["queued"] == 0
     assert len(rows(registry)) == n_rows and len(egeria.calls) == n_calls
+    # Brief F: the old per-section send is gone; a bare sync sends nothing and says where it went
+    bare = client.post("/api/curate/egeria-sync/repo/p", json={}, headers=as_user())
+    assert bare.status_code == 409 and "Publish" in bare.json()["detail"]
     # a second member finds the Folio by qualifiedName
     client.post("/api/projects/q/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    publish(registry, "q")
     assert len(egeria.folios) == 1 and (folio, OTHER_ASSET) in egeria.members
 
 
 def test_moving_between_groups_detaches_then_attaches_and_never_deletes_a_folio(client, registry, egeria):
     client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    publish(registry)
     sales = next(iter(egeria.folios))
     client.post("/api/projects/p/group", json={"group_slug": "hr", "resource_type": "repo"}, headers=as_user())
+    publish(registry)
     hr = next(g for g in egeria.folios if g != sales)
     assert (sales, ASSET) not in egeria.members and (hr, ASSET) in egeria.members
     assert ("remove_from_collection", sales, ASSET) in egeria.calls
@@ -317,16 +353,23 @@ def test_moving_between_groups_detaches_then_attaches_and_never_deletes_a_folio(
     assert len(egeria.folios) == 2
     # ungrouped: the membership goes, the Folio stays
     client.post("/api/projects/p/group", json={"group_slug": "", "resource_type": "repo"}, headers=as_user())
+    publish(registry)
     assert (hr, ASSET) not in egeria.members and hr in egeria.folios
 
 
 def test_deleting_a_group_reports_the_folio_and_unlinks_its_members(client, registry, egeria):
     client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
+    publish(registry)
     folio = next(iter(egeria.folios))
     r = client.delete("/api/projects/groups/sales", headers=as_user())
     assert r.status_code == 200, r.text
     assert r.json()["egeria"]["folio_qualified_name"] == "Folio::RE::group::sales"
     assert r.json()["egeria"]["left_in_egeria"] is True
+    # Brief F: each member's unlink waits for that member's Publish, and the answer says so per member
+    assert (folio, ASSET) in egeria.members
+    assert r.json()["egeria"]["members"] == [{"entity_type": "repo", "slug": "p", "state": "not_sent",
+                                              "word": "saved · will publish", "will_unlink": True}]
+    publish(registry)
     assert folio in egeria.folios and (folio, ASSET) not in egeria.members
 
 
@@ -343,20 +386,23 @@ def test_unlinks_are_destructive_outbox_kinds_and_links_are_not():
 
 def test_a_failed_unlink_is_dead_at_once_never_re_sent_and_retried_only_by_a_person(client, registry, egeria):
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     egeria.fail["remove_tag_from_element"] = RuntimeError("OMAG-REPOSITORY-HANDLER-500 the repository is busy")
     client.delete("/api/curate/tags/repo/p/sales", headers=as_user())
+    publish(registry)
     detach = rows(registry, ce.TAG_DETACH)[0]
     assert detach["status"] == "dead" and detach["attempts"] == 1
     assert detach["last_error"].startswith(ob.NOT_RETRIED)
     i = item(state(client), "tag", "sales")
     assert i["state"] == "failed" and i["retry"] and "repository is busy" in i["reason"]
+    assert i["word"].startswith("not sent · ")
     # neither the drain nor a later sync sends it again
     from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
     with acting_as(Daemon(DaemonReason.OUTBOX)):
         ob.drain_outbox(registry)
-    again = client.post("/api/curate/egeria-sync/repo/p", json={}, headers=as_user())
-    assert again.json()["queued"] == []
+    again = publish(registry)
+    assert again["findable"]["queued"] == 0, "a later Publish never re-sends a dead unlink"
     assert egeria.names().count("remove_tag_from_element") == 1
     # the person's retry: a NEW row, the dead one untouched
     egeria.fail.clear()
@@ -370,6 +416,7 @@ def test_a_failed_unlink_is_dead_at_once_never_re_sent_and_retried_only_by_a_per
 
 def test_a_retry_of_an_item_that_did_not_fail_is_refused(client, registry, egeria):
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     r = client.post("/api/curate/egeria-sync/repo/p", json={"retry": {"kind": "tag", "name": "sales"}},
                     headers=as_user())
     assert r.status_code == 409
@@ -378,16 +425,19 @@ def test_a_retry_of_an_item_that_did_not_fail_is_refused(client, registry, egeri
 def test_a_failed_link_retries_on_its_own_and_says_so(client, registry, egeria):
     egeria.fail["add_tag_to_element"] = RuntimeError("connection reset")
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     link = rows(registry, ce.TAG_LINK)[0]
     assert link["status"] == "failed"
     i = item(state(client), "tag", "sales")
-    assert i["state"] == "retrying" and i["word"] == "pending · retrying" and "connection reset" in i["reason"]
+    assert i["state"] == "retrying" and i["word"] == "sending · retrying" and "connection reset" in i["reason"]
 
 
 def test_a_removal_retires_a_link_that_never_landed_instead_of_racing_it(client, registry, egeria):
     egeria.fail["add_tag_to_element"] = RuntimeError("connection reset")
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     client.delete("/api/curate/tags/repo/p/sales", headers=as_user())
+    publish(registry)
     link = rows(registry, ce.TAG_LINK)[0]
     assert link["status"] == "cancelled"
     assert rows(registry, ce.TAG_DETACH) == [], "nothing landed, so there is nothing to unlink"
@@ -396,10 +446,11 @@ def test_a_removal_retires_a_link_that_never_landed_instead_of_racing_it(client,
 
 def test_rows_for_an_asset_that_is_no_longer_the_resources_are_never_detached(client, registry, egeria):
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     registry.set_egeria_asset_guid("p", "77777777-2222-3333-4444-555555555555")      # wiped and re-published
     registry.remove_resource_tag("repo", "p", "sales")
-    out = client.post("/api/curate/egeria-sync/repo/p", json={}, headers=as_user()).json()
-    assert out["queued"] == [] and "remove_tag_from_element" not in egeria.names()
+    out = publish(registry)
+    assert out["findable"]["queued"] == 0 and "remove_tag_from_element" not in egeria.names()
 
 
 # ── 6. curation access ──────────────────────────────────────────────────────────────────────────────────────
@@ -433,6 +484,7 @@ def test_the_tag_check_asks_for_add_feedback_as_egeria_does(client, registry, eg
         "ADD_FEEDBACK": ["allUsers"], "UPDATE_PROPERTIES": ["allUsers"], "DEFAULT": ["salesTeam"]}}
     r = client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
     assert r.status_code == 200, r.text
+    publish(registry)
     assert item(state(client), "tag", "sales")["state"] == "in_egeria"
 
 
@@ -449,6 +501,7 @@ def test_a_database_tag_links_to_the_database_asset(client, registry, egeria):
         conn.execute("UPDATE databases SET egeria_asset_guid=? WHERE slug=?", (OTHER_ASSET, "db1"))
     r = client.post("/api/curate/tags/database/db1", json={"tag": "pii"}, headers=as_user())
     assert r.status_code == 200, r.text
+    publish(registry, "db1", "database")
     tag_guid = next(iter(egeria.tags))
     assert (OTHER_ASSET, tag_guid) in egeria.tag_links
     assert item(state(client, "db1", "database"), "tag", "pii")["state"] == "in_egeria"
@@ -634,16 +687,22 @@ def test_r2_a_publish_hook_records_the_publish_requester(registry, egeria):
 
 # R2-5: the tag keeps the case it was typed in; matching ignores case; a taken qualifiedName is adopted ──────
 
-def test_r2_a_tag_keeps_the_typed_case_in_egeria_with_a_lower_case_key(client, registry, egeria):
-    client.post("/api/curate/tags/repo/p", json={"tag": "Sales EMEA"}, headers=as_user())
+def test_r2_a_tag_is_keyed_lower_case_and_brief_f_sends_res_key_at_publish(client, registry, egeria):
+    """Brief F changed round 2's typed-case displayName: the link now waits for the page's Publish, and RE stores
+    only the lower-case key (no column for the typed spelling; no DDL), so the displayName is that key. Matching
+    still ignores case (the next test)."""
+    r = client.post("/api/curate/tags/repo/p", json={"tag": "Sales EMEA"}, headers=as_user())
+    assert r.json()["typed"] == "Sales EMEA" and egeria.calls == []
+    publish(registry)
     (t,) = egeria.tags.values()
-    assert t == {"name": "Sales EMEA", "qn": "InformalTag::sales emea"}
+    assert t == {"name": "sales emea", "qn": "InformalTag::sales emea"}
     assert registry.list_resource_tags("repo", "p") == ["sales emea"]
 
 
 def test_r2_an_existing_tag_in_another_case_is_found_not_duplicated(client, registry, egeria):
     egeria.tags["tag-up"] = {"name": "SALES", "qn": "InformalTag::::peter::SALES::1760000000"}
     client.post("/api/curate/tags/repo/p", json={"tag": "Sales"}, headers=as_user())
+    publish(registry)
     assert "create_informal_tag" not in egeria.names()
     assert (ASSET, "tag-up") in egeria.tag_links
 
@@ -653,6 +712,7 @@ def test_r2_a_qualified_name_taken_under_another_display_name_is_adopted_not_dea
     egeria.fail["create_informal_tag"] = RuntimeError(
         "SERVER_ERROR_500 OMAG-COMMON-409-001 the qualifiedName InformalTag::sales is not available for use")
     client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
     assert (ASSET, "tag-qn") in egeria.tag_links
     assert rows(registry, ce.TAG_LINK)[0]["status"] == "done"
 
@@ -740,23 +800,17 @@ def test_r3_a_deferral_by_a_claimer_whose_claim_was_taken_over_changes_nothing(r
     assert row["status"] == "running" and row["claimed_at"] == "2099-01-01T00:00:00"
 
 
-def test_r3_a_refused_post_delete_unlink_is_reported_not_counted_as_zero(client, registry, egeria, monkeypatch):
+def test_r3_a_group_delete_sends_nothing_and_says_each_members_unlink_waits_for_its_publish(client, registry, egeria):
+    """Round 3 reported a post-delete unlink refused at the delete. Brief F: the delete sends nothing (each member's
+    unlink goes with that member's Publish), so the answer is each member's state as its plan reads it."""
     client.post("/api/projects/p/group", json={"group_slug": "sales", "resource_type": "repo"}, headers=as_user())
-    from resource_explorer.workflows import curate as wc
-
-    real = wc.curation_access
-    calls = {"n": 0}
-
-    def first_allowed_then_refused(*a, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:                 # the pre-delete check for the one member
-            return real(*a, **k)
-        return wc.AccessDecision(False, "zone sales-zone does not grant peterprofile detach in Egeria", "zone_not_granted")
-    monkeypatch.setattr(wc, "curation_access", first_allowed_then_refused)
+    publish(registry)
+    n = len(egeria.calls)
     r = client.delete("/api/projects/groups/sales", headers=as_user())
     assert r.status_code == 200, r.text
     (m,) = r.json()["egeria"]["members"]
-    assert m["slug"] == "p" and "does not grant" in m["refused"]
+    assert m["slug"] == "p" and m["will_unlink"] and m["word"] == "saved · will publish"
+    assert len(egeria.calls) == n, "nothing sent at the delete"
 
 
 def test_r3_a_member_added_while_the_delete_was_being_checked_is_never_ungrouped_unchecked(client, registry, egeria,

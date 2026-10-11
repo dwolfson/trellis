@@ -190,25 +190,21 @@ def authorize_curation_change(registry: ProjectRegistry, entity_type: str, slug:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def sync_to_egeria(registry: ProjectRegistry, entity_type: str, slug: str, author: str,
-                   display_names: dict | None = None) -> dict:
-    """Send this resource's tags and group to Egeria now, as the signed-in person (Brief T), and answer the plan
-    as re-read after the drain. Never fails the RE write that came before it: an error is in the answer."""
-    from resource_explorer.curation_egeria import sync_curation
+def curation_state(registry: ProjectRegistry, entity_type: str, slug: str) -> dict:
+    """The tags' and the group's state as the plan reads it after a Save (Brief F: a Save sends nothing; the page's
+    Publish does). Never fails the RE write that came before it: an error is in the answer."""
+    from resource_explorer.curation_egeria import curation_plan, plan_as_dict
 
     try:
-        return sync_curation(registry, entity_type, slug, by=author, display_names=display_names)
+        return plan_as_dict(curation_plan(registry, entity_type, slug))
     except Exception as exc:  # the RE change is recorded; the band re-reads the state from the rows
-        import logging
-
-        logging.getLogger(__name__).warning("Tags/group sync to Egeria failed for %s %s: %s",
-                                            entity_type, slug, exc, exc_info=True)
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 @router.post("/tags/{entity_type}/{slug}")
 def add_tag(entity_type: str, slug: str, body: TagCreate, request: Request) -> dict:
-    """Add a tag in RE, then (Brief T) link it as a public InformalTag when the resource is in Egeria."""
+    """Add a tag in RE. Brief F (one Publish per page): it waits, "saved · will publish", and the page's Publish
+    links it as a public InformalTag (Brief T). Access is checked here, before RE records it."""
     author = _require_author(request, "add a tag")
     typed = body.tag.strip()
     tag = typed.lower()          # RE's key; Egeria's displayName keeps the case it was typed in (round 2)
@@ -217,14 +213,15 @@ def add_tag(entity_type: str, slug: str, body: TagCreate, request: Request) -> d
     reg = _registry()
     authorize_curation_change(reg, entity_type, slug, "tag", "link")
     reg.add_resource_tag(entity_type, slug, tag, author=author)
-    return {"status": "success", "tag": tag, "author": author,
-            "egeria": sync_to_egeria(reg, entity_type, slug, author, display_names={tag: typed})}
+    return {"status": "success", "tag": tag, "typed": typed, "author": author,
+            "egeria": curation_state(reg, entity_type, slug)}
 
 
 @router.delete("/tags/{entity_type}/{slug}/{tag}")
 def remove_tag(entity_type: str, slug: str, tag: str, request: Request) -> dict:
-    """Remove a tag in RE, then (Brief T) unlink it from the asset in Egeria. The InformalTag element itself is
-    never deleted: that is a delete under the ISSUE-117 block, and the owner deletes by hand."""
+    """Remove a tag in RE. Brief F: the unlink from the asset waits for the page's Publish ("saved · will publish").
+    The InformalTag element itself is never deleted: that is a delete under the ISSUE-117 block, and the owner
+    deletes by hand."""
     author = _require_author(request, "remove a tag")
     reg = _registry()
     authorize_curation_change(reg, entity_type, slug, "tag", "unlink")
@@ -241,12 +238,12 @@ def remove_tag(entity_type: str, slug: str, tag: str, request: Request) -> dict:
         summary=f"tag {tag!r} removed by {author}",
         annotations=[{"tag": tag, "removed_by": author}],
     ))
-    return {"status": "success", "removed_by": author, "egeria": sync_to_egeria(reg, entity_type, slug, author)}
+    return {"status": "success", "removed_by": author, "egeria": curation_state(reg, entity_type, slug)}
 
 
 # ── Tags and group in Egeria (Brief T, 2026-10-10) ───────────────────────────
-# Tags are public InformalTags and the RE group is a Folio (resource_explorer/curation_egeria.py). Journal entries
-# are still not published (the 2026-10-01 ruling's seam stands for them).
+# Tags are public InformalTags and the RE group is a Folio (resource_explorer/curation_egeria.py). Brief F: they go
+# with the page's ONE Publish; ratings and notes go with it too, as their author (resource_explorer/feedback_egeria.py).
 
 class EgeriaRetry(BaseModel):
     kind: str
@@ -266,13 +263,19 @@ def egeria_state(entity_type: str, slug: str) -> dict:
     return plan_as_dict(curation_plan(_registry(), entity_type, slug))
 
 
+#: Brief F: what a bare send answers now that tags and the group go with the page's Publish.
+SEND_WITH_PUBLISH = "tags and the group go to Egeria with the page's Publish; press Publish to send them"
+
+
 @router.post("/egeria-sync/{entity_type}/{slug}")
 def egeria_sync(entity_type: str, slug: str, request: Request, body: EgeriaSync | None = None) -> dict:
-    """Send what the plan says is not yet in Egeria, or (with `retry`) a person's retry of ONE failed link or
-    unlink: a new row, never a revived one. 403 when curation access says no, 409 when there is nothing to retry."""
-    from resource_explorer.curation_egeria import RetryRefused, retry_item, sync_curation
+    """A person's retry of ONE failed (dead) link or unlink: a new row, never a revived one, drained as them. The
+    unlink kinds are destructive and never re-sent on their own, so the retry is this visible, explicit act.
+    Brief F: without `retry` it sends nothing (409): the page's ONE Publish sends tags and the group. 403 when
+    curation access says no, 409 when there is nothing to retry."""
+    from resource_explorer.curation_egeria import RetryRefused, retry_item
 
-    author = _require_author(request, "send tags to Egeria")
+    author = _require_author(request, "retry a tag or group change in Egeria")
     reg = _registry()
     if body is not None and body.retry is not None:
         try:
@@ -281,10 +284,20 @@ def egeria_sync(entity_type: str, slug: str, request: Request, body: EgeriaSync 
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except CurationDenied as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-    out = sync_curation(reg, entity_type, slug, by=author)
-    if out.get("refused"):
-        raise HTTPException(status_code=403, detail=out["refused"])
-    return out
+    raise HTTPException(status_code=409, detail=SEND_WITH_PUBLISH)
+
+
+@router.get("/feedback-state/{entity_type}/{slug}")
+def feedback_state(entity_type: str, slug: str, request: Request) -> dict:
+    """Brief F: per rating and per journal entry, what it is in Egeria ("saved · will publish", "published 10-11",
+    "not sent · <reason>", "<person>'s · waiting for them", "replaced by a newer rating"), as the signed-in viewer
+    sees it (their own entries are theirs to send). Read from RE's rows and the outbox rows
+    (`feedback_egeria.feedback_plan`, the same function the Publish acts on). No Egeria call."""
+    from resource_explorer.feedback_egeria import feedback_plan, plan_as_dict
+
+    user = get_current_user(request)
+    viewer = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    return plan_as_dict(feedback_plan(_registry(), entity_type, slug, viewer=viewer))
 
 
 # ── Feedback ─────────────────────────────────────────────────────────────────

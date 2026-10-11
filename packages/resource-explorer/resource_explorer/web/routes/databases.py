@@ -1140,6 +1140,21 @@ class PublishResult(BaseModel):
     error: str | None = None
 
 
+async def _publish_presser_feedback(registry, entity_type: str, slug: str, asset_guid: str) -> dict:
+    """Brief F: the signed-in presser's pending ratings and notes, sent as them after the resource's own publish.
+    Best-effort: each item's outcome is on its own row; a failure here never fails the publish."""
+    import asyncio
+
+    from resource_explorer.egeria_identity import caller_user_id
+    from resource_explorer.feedback_egeria import publish_my_feedback
+
+    try:
+        return await asyncio.to_thread(publish_my_feedback, registry, entity_type, slug, asset_guid, caller_user_id())
+    except Exception:  # noqa: BLE001
+        log.warning("Could not send the presser's feedback for %s %s", entity_type, slug, exc_info=True)
+        return {}
+
+
 @router.post("/{slug}/publish", response_model=PublishResult)
 async def publish_database_survey(slug: str, req: PublishRequest = PublishRequest()) -> PublishResult:
     """Publish the latest local database survey to Egeria.
@@ -1270,6 +1285,8 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
             # Brief T: tags and the group kept in RE while the database was not in Egeria. Best-effort.
             from resource_explorer.curation_egeria import publish_pending_curation
             publish_pending_curation(registry, "database", slug, asset_guid)
+            # Brief F: the same press sends the PRESSER's own rating and notes, as them (never anyone else's).
+            await _publish_presser_feedback(registry, "database", slug, asset_guid)
         return PublishResult(
             status="ok",
             slug=slug,

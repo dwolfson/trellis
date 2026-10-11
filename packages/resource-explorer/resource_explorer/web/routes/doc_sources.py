@@ -473,7 +473,8 @@ def publish_local_doc_sources(entity_type: str, slug: str, asset_guid: str, *,
                                registry: ProjectRegistry | None = None) -> list[dict]:
     """Publish every locally-declared source with no Egeria reference yet
     as an `ExternalReference` on `asset_guid`. Called from the
-    database/filesystem publish routes right after a successful publish —
+    database/filesystem publish routes right after a successful publish, and (Brief F §10) from a repository's
+    single Publish (`single_publish.send_with_publish`) —
     see `web/routes/databases.py`'s `publish_database_survey`. Best-effort
     per source; returns the per-source results so the caller can log/report
     which ones failed without the publish itself failing over it.
@@ -487,8 +488,12 @@ def publish_local_doc_sources(entity_type: str, slug: str, asset_guid: str, *,
     # the requester's behalf in a queued run. Built once, BEFORE the loop: no identity is a 401.
     clients = entity_clients(entity, current_principal())
     out = []
+    # Brief F §10: the SAME list the page's Publish band shows as "saved · will publish" (one source).
+    from resource_explorer.single_publish import unpublished_doc_sources
+
+    to_publish = {row["id"] for row in unpublished_doc_sources(registry, entity_type, slug)}
     for row in registry.list_doc_sources(entity_type, slug):
-        if row.get("egeria_external_ref_guid"):
+        if row["id"] not in to_publish:
             out.append({"id": row["id"], "ok": True, "skipped": "already published"})
             continue
         result = publish_doc_source(row, asset_guid, clients=clients, display_name=entity.display_name)

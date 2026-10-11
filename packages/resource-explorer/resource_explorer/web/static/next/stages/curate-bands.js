@@ -15,7 +15,16 @@
  *                   readers, each saying what for; file system: one sentence.
  *   3. What people say -- ratings as COUNTS (never an average), and notes as
  *                   the signed append-only journal, with Classic's curator
- *                   notes read-only beneath it.
+ *                   notes read-only beneath it. Brief F (2026-10-11): ONE
+ *                   rating per person is shown (their newest; earlier ones sit
+ *                   behind "earlier ratings ▸"), and every rating and journal
+ *                   entry carries its Egeria state as a cue plus a short word,
+ *                   read from GET /api/curate/feedback-state (the server's plan).
+ *
+ * Brief F, one Publish per page: no band here sends anything to Egeria. Each
+ * Save records in RE and shows "saved · will publish"; the page's Publish (the
+ * last band on tab 1) sends tags, the group and the PRESSER's own ratings and
+ * notes, as them. After a press the bands re-read ('re:published').
  *
  * Rules this file keeps (CURATE-UI-DATABASES-IMPLEMENTED.md):
  *  - what a list shows is what the server returned on a re-read AFTER a write,
@@ -25,14 +34,14 @@
  *    signed in (the routes answer 401 then);
  *  - an author label is always shown. The server supplies `author_label`;
  *    this file falls back to the same words rather than ever drawing blank;
- *  - nothing here reads back from Egeria; the only writes to it are the tag
- *    and group changes, which the server sends (Brief T).
+ *  - nothing here reads back from Egeria and nothing here writes to it; the
+ *    one exception is a person's "retry" of a dead tag or group write.
  */
 import { ago, savedLine } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getCurateTagsDetail, getCurateAllTags, addCurateTag, removeCurateTag,
-  getCurateEgeriaState, syncCurateEgeria,
+  getCurateEgeriaState, syncCurateEgeria, getCurateFeedbackState,
   getCurateFeedback, addCurateFeedback, getCurateNotes, deleteCurateNote,
   assignGroup, listGroups, getDataClassRules,
 } from '/static/re-api.js';
@@ -160,19 +169,17 @@ const groupName = (gslug) =>
 
 /* Brief T: each tag and the group carry their state in Egeria as a glyph plus a short word (the owner's rule:
  * a cue on the element, the sentence on demand in `title`). The state key comes from the server's plan. */
+/* Brief F: "saved · will publish" is a stored cue (□), "published 10-11" a check, "not sent · <reason>" the
+ * partial cue (◐). The words are the server's. */
 export const EGERIA_CUE = {
-  in_egeria: 'catalogued', not_yet: 'optional', not_sent: 'unrun', pending: 'queued', retrying: 'queued',
-  failed: 'catalogue_failed', unlinked: 'gone', unread: 'unknown',
+  in_egeria: 'catalogued', not_yet: 'stored', not_sent: 'stored', pending: 'queued', retrying: 'queued',
+  failed: 'partial', unlinked: 'gone', unread: 'unknown',
 };
-/** The words beside a cue: the server's word, with the reason after "failed ·" (cut short; full in title). */
+/** The words beside a cue: the server's word (cut short; the reason in full in `title`). */
 export function egeriaWord(item) {
   if (!item) return 'could not read';
-  if (item.state === 'failed') {
-    const r = String(item.reason || '').replace(/\s+/g, ' ').trim();
-    return r ? `failed · ${r.length > 80 ? `${r.slice(0, 79)}…` : r}` : 'failed';
-  }
-  if (item.state === 'pending' && item.reason === 'unlink') return 'pending · unlink';
-  return item.word || item.state;
+  const w = String(item.word || item.state || '').replace(/\s+/g, ' ').trim();
+  return w.length > 90 ? `${w.slice(0, 89)}…` : w;
 }
 /** One cue. The tone class is a literal in each branch (no class interpolation): ok, warn, or muted. */
 export function egeriaCue(item, attr) {
@@ -246,14 +253,12 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
         ${leftGroups.slice(0, 4).map((i) => `<span data-curate-left-group="${esc(i.name)}"><span class="text-ink-muted">${esc(i.label || i.name)}</span> ${egeriaCue(i, `data-curate-group-left-state="${esc(i.name)}"`)}${retryButton(i)}</span>`).join(' ')}
       </div>`
     : '';
-  const toSend = egeria ? Number(egeria.to_send || 0) : 0;
+  // Brief F: no send control here. What is not in Egeria yet goes with the page's Publish (the last band).
   const egeriaLine = egeriaErr
     ? `<div data-curate-egeria-unread class="mb-s1 text-provenance text-state-warn">Egeria state could not be read: ${esc(egeriaErr)}</div>`
-    : toSend && me
-      ? `<div class="mb-s1 text-provenance"><button type="button" data-curate-egeria-send class="cursor-pointer bg-transparent p-0 text-accent-ink underline">send to Egeria</button> <span class="text-ink-muted">· ${esc(String(toSend))} not sent yet</span></div>`
-      : '';
+    : '';
 
-  el.innerHTML = `${bandHead('Findable', `<span class="normal-case tracking-normal">· tags are public in Egeria · the group is a Folio</span>`)}
+  el.innerHTML = `${bandHead('Findable', `<span class="normal-case tracking-normal">· tags are public in Egeria · the group is a Folio · sent with Publish</span>`)}
     <div class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat">
       <span class="text-ink-muted">RE group</span>
       <span data-curate-group-now class="text-ink">${esc(groupName(gslug))}</span>${groupCue}
@@ -324,18 +329,16 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
       : `tag “${tag}” is off the list${egeriaSaid(st, 'tag', tag)}`));
   }));
 
-  // Send what is not yet in Egeria, or retry ONE failed link/unlink (a new write; the server refuses anything else).
+  // A person's retry of ONE dead link/unlink (a new write; the server refuses anything else). Destructive
+  // unlinks are never re-sent on their own, so this explicit, visible press is their only retry.
   const egeriaAct = async (button, retry) => {
     button.disabled = true;
     try { await syncCurateEgeria(entityType, slug, retry); }
-    catch (err) { button.disabled = false; say(failure(err, retry ? 'retry' : 'send to Egeria'), true); return; }
-    await reload((rows, st) => (retry ? `retried ${retry.kind} “${retry.name}”${egeriaSaid(st, retry.kind, retry.name)}`
-      : st ? `sent · ${Number(st.to_send || 0)} not sent yet` : 'sent · Egeria state could not be re-read'));
+    catch (err) { button.disabled = false; say(failure(err, 'retry'), true); return; }
+    await reload((rows, st) => `retried ${retry.kind} “${retry.name}”${egeriaSaid(st, retry.kind, retry.name)}`);
   };
   el.querySelectorAll('[data-curate-egeria-retry]').forEach((b) => b.addEventListener('click', () =>
     egeriaAct(b, { kind: b.dataset.curateEgeriaRetry, name: b.dataset.name })));
-  const sendBtn = el.querySelector('[data-curate-egeria-send]');
-  if (sendBtn) sendBtn.addEventListener('click', () => egeriaAct(sendBtn, null));
 
   el.querySelector('[data-curate-group-save]').addEventListener('click', async () => {
     const want = el.querySelector('[data-curate-group-select]').value;
@@ -353,7 +356,38 @@ export async function renderFindableBand(el, slug, entityType, status = '') {
 
 /* ── Band 3: What people say ─────────────────────────────────────────── */
 
-export function ratingsHeadline(feedback) {
+/** Brief F: one cue per feedback state (the server's `feedback_egeria` states). */
+export const FEEDBACK_CUE = {
+  saved: 'stored', waiting: 'optional', sending: 'queued', published: 'catalogued', not_sent: 'partial',
+  not_permitted: 'no_access', replaced: 'archived', kept: 'optional', unread: 'unknown',
+};
+/** A rating's or a journal entry's state in Egeria: a cue and the server's short word (the reason in `title`). */
+export function feedbackCue(item, attr = '') {
+  const key = item ? (FEEDBACK_CUE[item.state] || 'unknown') : 'unknown';
+  const e = stateEntry(key);
+  const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"'
+    : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
+  const word = item ? String(item.word || item.state) : 'Egeria state could not be read';
+  const short = word.length > 90 ? `${word.slice(0, 89)}…` : word;
+  return `${open} ${attr} data-cue="${esc(key)}" data-feedback-state="${esc(item ? item.state : 'unread')}" title="${esc(word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(short)}</span>`;
+}
+
+/** Addendum C (owner, 2026-10-11): ONE rating per person counts and shows: their newest rated entry. `states` is
+ *  the server's plan by id (an older rating of the same person is `replaced`); without it the same rule is
+ *  applied to the rows (newest rated per author). */
+export function currentRatings(feedback, states = null) {
+  if (states) return feedback.filter((f) => !states[f.id] || states[f.id].state !== 'replaced');
+  const seen = new Set();
+  return newestFirst(feedback).filter((f) => {
+    if (!f.author || f.rating == null || f.rating === '') return true;
+    if (seen.has(f.author)) return false;
+    seen.add(f.author);
+    return true;
+  });
+}
+
+export function ratingsHeadline(feedback, states = null) {
+  feedback = currentRatings(feedback, states);
   const rated = feedback.filter((f) => f.rating != null && f.rating !== '');
   const unrated = feedback.length - rated.length;
   const levels = [5, 4, 3, 2, 1]
@@ -365,11 +399,12 @@ export function ratingsHeadline(feedback) {
   return `${counts}${unrated ? ` · ${unrated} comment${unrated === 1 ? '' : 's'} without a rating` : ''}`;
 }
 
-function feedbackEntryHtml(f) {
-  return `<div data-curate-feedback class="border-t border-rule py-s1">
+function feedbackEntryHtml(f, item, stateRead = true) {
+  return `<div data-curate-feedback="${esc(f.id || '')}" class="border-t border-rule py-s1">
     <div class="text-caveat text-ink">${f.rating ? `<span class="text-ink">${esc(stars(Number(f.rating)))}</span> ` : ''}${
       f.category ? `<span class="text-ink-muted">${esc(f.category)}</span> — ` : ''}${tnum(esc(f.message))}</div>
-    <div class="text-provenance text-ink-muted">${esc(label(f))} · <span class="tnum">${esc(day(f.created_at))}</span></div>
+    <div class="text-provenance text-ink-muted">${esc(label(f))} · <span class="tnum">${esc(day(f.created_at))}</span>${
+      stateRead || item ? ` · ${feedbackCue(item, 'data-curate-feedback-cue')}` : ''}</div>
   </div>`;
 }
 
@@ -377,8 +412,11 @@ export async function renderRatingsBand(el, slug, entityType, status = '') {
   if (!el) throw new Error('Ratings band host missing');
   if (status === '') el.innerHTML = `<div class="text-caveat text-ink-muted">Reading ratings…</div>`;
   let feedback;
-  try { feedback = await getCurateFeedback(entityType, slug); }
-  catch (err) {
+  let fstate = null;
+  try {
+    [feedback, fstate] = await Promise.all([getCurateFeedback(entityType, slug),
+      getCurateFeedbackState(entityType, slug).catch(() => null)]);
+  } catch (err) {
     if (stale(el, slug)) return;
     el.innerHTML = `${bandHead('Ratings')}<div class="text-caveat text-state-warn">Ratings could not be read: ${esc(err.message)}</div>`;
     return;
@@ -386,8 +424,13 @@ export async function renderRatingsBand(el, slug, entityType, status = '') {
   if (stale(el, slug)) return;
   const me = whoAmI();
   const dis = me ? '' : `disabled title="${esc(signInReason('rate or comment'))}"`;
-  el.innerHTML = `${bandHead('Ratings', `<span data-curate-ratings-headline class="normal-case tracking-normal text-ink">· ${esc(ratingsHeadline(feedback))}</span>`)}
-    ${newestFirst(feedback).map(feedbackEntryHtml).join('')}
+  const states = fstate ? Object.fromEntries((fstate.ratings || []).map((i) => [i.id, i])) : null;
+  const current = newestFirst(currentRatings(feedback, states));
+  const earlier = newestFirst(feedback.filter((f) => !current.includes(f)));
+  const entry = (f) => feedbackEntryHtml(f, states ? states[f.id] : null, !!states);
+  el.innerHTML = `${bandHead('Ratings', `<span data-curate-ratings-headline class="normal-case tracking-normal text-ink">· ${esc(ratingsHeadline(feedback, states))} · one per person · public in Egeria</span>`)}
+    ${current.map(entry).join('')}
+    ${earlier.length ? `<details data-curate-earlier-ratings class="mt-s1"><summary class="cursor-pointer text-provenance text-ink-muted">earlier ratings ▸ <span class="tnum">${earlier.length}</span></summary>${earlier.map(entry).join('')}</details>` : ''}
     <div class="mt-s2 flex flex-wrap items-baseline gap-s2 text-caveat">
       <span class="text-ink-muted">rate it</span>
       <select data-curate-fb-rating aria-label="rating" ${dis} class="rounded-sm border border-rule-strong bg-transparent px-1 text-caveat text-ink">
@@ -403,6 +446,7 @@ export async function renderRatingsBand(el, slug, entityType, status = '') {
     <div class="mt-s1 flex items-baseline gap-s3">
       <button type="button" data-curate-fb-submit ${dis}
         class="${me ? 'cursor-pointer' : 'opacity-60'} rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink">Save rating</button>
+      <span class="text-provenance text-ink-muted">a newer rating replaces yours · sent with Publish</span>
       <span data-curate-ratings-status class="text-provenance text-ink-muted">${esc(me ? status : signInReason('rate or comment'))}</span>
     </div>`;
   const say = (msg, warn) => {
@@ -427,7 +471,7 @@ export async function renderRatingsBand(el, slug, entityType, status = '') {
     await renderRatingsBand(el, slug, entityType,
       (() => {
         const mine = [...rows].reverse().find((x) => x.message === message);
-        return mine ? `${savedLine(mine.author_label || mine.author, mine.created_at)} · it is in the list above`
+        return mine ? `${savedLine(mine.author_label || mine.author, mine.created_at)} · saved · will publish`
           : 'the save returned, but the entry is not in the re-read list';
       })());
   });
@@ -481,13 +525,33 @@ export async function renderClassicNotes(el, slug, entityType, status = '') {
 
 /** Notes: the journal (the same component and data as Disposition's) plus
  *  Classic's notes beneath it. */
+/** Brief F: each journal entry's state in Egeria (a Note in the asset's NoteLog), drawn into the entry's own
+ *  `[data-journal-cue]` slot from the server's plan. A failed read says so on every entry. */
+export async function markJournalCues(root, slug, entityType) {
+  const slots = [...root.querySelectorAll('[data-journal-cue]')];
+  if (!slots.length) return;
+  let st = null;
+  try { st = await getCurateFeedbackState(entityType, slug); } catch { st = null; }
+  if (!root.isConnected) return;
+  const byId = st ? Object.fromEntries((st.notes || []).map((i) => [i.id, i])) : {};
+  slots.forEach((s) => { s.innerHTML = ` · ${feedbackCue(st ? byId[s.dataset.journalCue] || null : null, 'data-curate-note-cue')}`; });
+}
+
 export async function renderNotesBand(el, slug, entityType) {
   if (!el) throw new Error('Notes band host missing');
-  el.innerHTML = `${bandHead('Notes', `<span class="normal-case tracking-normal">· the journal · why it matters, and to whom · append-only</span>`)}
+  el.innerHTML = `${bandHead('Notes', `<span class="normal-case tracking-normal">· the journal · why it matters, and to whom · append-only · each entry a public Note in Egeria, sent with Publish</span>`)}
     <div id="journal-write"></div>
     <div id="journal-entries" class="mt-s2 text-caveat text-ink-muted">Reading the journal…</div>
     <div data-curate-classic-notes class="mt-s3"></div>`;
   renderJournalWrite(slug, entityType);
+  // A save re-draws the entries (app.js); the cues follow every draw, read again from the server's plan.
+  if (state.curateOnJournal) el.ownerDocument.removeEventListener('re:journal-drawn', state.curateOnJournal);
+  state.curateOnJournal = (ev) => {
+    const d = ev.detail || {};
+    if (!el.isConnected) { el.ownerDocument.removeEventListener('re:journal-drawn', state.curateOnJournal); return; }
+    if (d.slug === slug && d.entityType === entityType) markJournalCues(el, slug, entityType);
+  };
+  el.ownerDocument.addEventListener('re:journal-drawn', state.curateOnJournal);
   await Promise.all([
     renderJournalEntries(slug, entityType),
     renderClassicNotes(el.querySelector('[data-curate-classic-notes]'), slug, entityType),

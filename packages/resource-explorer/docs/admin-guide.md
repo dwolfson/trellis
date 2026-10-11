@@ -348,9 +348,14 @@ Egeria". `resource_explorer/curation_egeria.py` owns the mapping; every write go
 
 - **RE never deletes an InformalTag or a Folio.** Those are element deletes under the ISSUE-117 block; the owner
   deletes them by hand. A group delete answers with the Folio's qualifiedName and "left in Egeria".
-- **Tag spelling:** the InformalTag's displayName keeps the case the person typed; the qualifiedName is the
-  lower-case `InformalTag::<tag>`; an existing tag is found ignoring case. A qualifiedName already taken under
-  another displayName is adopted rather than failing the row.
+- **Sent with the page's Publish (Brief F, 2026-10-11):** a tag or group change is saved in RE and checked for
+  access when it is made; nothing is sent until the resource's Publish (repository, database or file system), which
+  sends it as the presser. The Findable band has no send control; `POST /api/curate/egeria-sync` only takes a
+  person's `retry` of one dead row (409 otherwise).
+- **Tag spelling:** RE keeps tags lower-case, and since the send moved to Publish the InformalTag's displayName is
+  that lower-case key (the typed spelling is not stored; no column was added). The qualifiedName is
+  `InformalTag::<tag>`; an existing tag is found ignoring case. A qualifiedName already taken under another
+  displayName is adopted rather than failing the row.
 - **Order:** a link and an unlink of the same tag (or membership) on the same asset apply in the order queued: a
   row waits (pending, no attempt counted) while an earlier opposite row is pending, being sent or retrying, so
   "unlinked" never shows while the tag is still on the asset. A change that loses a race with the drain re-reads
@@ -370,10 +375,45 @@ Egeria". `resource_explorer/curation_egeria.py` owns the mapping; every write go
 - **Not yet in Egeria:** tags and the group stay in RE and are sent by the next repository, database or file
   system publish. Group changes made from the CLI (`group assign` / `unassign` / `remove`) or a CSV import take
   the same access check (the CLI refuses without a signed-in session; an import row fails with "not permitted ·
-  …") and reach Egeria at the resource's next sync (a change on the Findable band, a publish, or "send to
-  Egeria").
+  …") and reach Egeria at the resource's next Publish.
 - **Public:** Egeria 6's InformalTag has no public/private flag; "private" is only a filter on the creator. RE's
   tags are public because RE reuses a tag by name instead of creating one per person.
+
+### Ratings and notes in Egeria (Brief F)
+
+**Decision (project owner, 2026-10-11):** "It goes under the user who is logged in and entering the ratings etc. It
+is also possible for another user to login and evaluate the same resource and put in different feedback." /
+"Ratings and notes should be public too." / notes are never edited (a correction is a later note). A per-user
+public/private choice is backlog. `resource_explorer/feedback_egeria.py` owns the mapping;
+`resource_explorer/single_publish.py` is what the page's ONE Publish sends besides the report.
+
+| In RE | In Egeria | Outbox kind | Destructive |
+|---|---|---|---|
+| a person's newest rated entry (stars, message) | that person's `Rating` on the asset (`add_rating_to_element`, public): StarRating by name (`FIVE_STARS` …), the message as `review`. Egeria keeps ONE rating per user per element and updates the caller's own (FeedbackHandler) | `feedback_rating` | no |
+| each journal entry | one `Note` (qualifiedName `Note::RE::journal::<entry id>`, anchored to the asset) in the asset's `NoteLog` (`NoteLog::RE::<asset GUID>`, found by qualifiedName, created attached to the asset only when absent; a duplicate-name refusal adopts the existing one) | `feedback_note` | no |
+
+- **Authorship.** Egeria records the calling user as the author, so a feedback row is sent only in its author's own
+  Publish request, as that person (Caller). Rows carry `by` and live under the run id
+  `Feedback::<type>::<slug>::<user>`. The background (Daemon) drain never claims a feedback row; a Caller drain
+  applies one only when the row's `by` is that caller (otherwise it is handed back untouched: "waiting for its
+  author's own Publish"). An admin "Retry" in Publish Queue only returns the row to pending: it still waits for its
+  author's next Publish.
+- **Failures are not re-sent on their own.** A failed feedback row is dead at once with Egeria's words; Egeria
+  unreachable leaves "Egeria could not be reached; nothing was sent". The person's next Publish queues a new row.
+- **Never an update or a delete.** RE never calls update/remove for a Note, a NoteLog or a Rating, and never
+  deletes an InformalTag, Folio, Rating or Note element: those are the owner's, by hand.
+- **Access.** Brief Z's curation check with the operations Egeria checks for feedback, judged on the asset as the
+  anchor with the person as maintainer (egeria af400039c2): a new Rating, NoteLog or Note is an anchored member
+  (`validateUserForAnchorMemberCreate`, CREATE, OpenMetadataAccessSecurityConnector.java:1965-1990, called from
+  OpenMetadataAPIAnchorHandler.java:357; the parent link is unchecked, MetadataElementHandler.java:2229-2313); an
+  update of the caller's own Rating is feedback (`validateUserForAnchorAddFeedback`, ADD_FEEDBACK, :2224-2250, via
+  OpenMetadataAPIGenericHandler.java:670-686). NoteLog and Note are not feedback types to Egeria
+  (OpenMetadataAPIGenericHandler.java:672-675). So a rating asks CREATE + ADD_FEEDBACK, a note CREATE; no
+  UPDATE_PROPERTIES. A refusal is a dead row "not permitted · <reason>" for that item only.
+- **Documentation sources** declared on a repository are sent by its Publish too (`publish_local_doc_sources`, as
+  the database and file system publishes already did).
+- **Confirmed.** Line 1 of the Publish band says "confirmed" only when the publish proof's read-back found the
+  report with the same annotation count (`repo_publish.confirmation`, the one "same result" function).
 
 ### Observability (optional)
 

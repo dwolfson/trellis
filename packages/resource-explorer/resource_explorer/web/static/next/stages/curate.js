@@ -370,7 +370,10 @@ export function knowBlockHtml(know) {
       return `<div class="text-caveat" data-know-fact="documentation" data-declared="yes">
         <div class="flex flex-wrap items-baseline gap-x-s2"><span class="w-[9rem] shrink-0 text-ink-muted">${esc(f.label)}</span>
           <span class="tnum text-ink">${(f.sources || []).length}</span>${marks} ${link}</div>
-        ${(f.sources || []).map((d) => `<div class="ml-[9rem] text-ink" data-know-source>${esc(d.label)}${d.author ? ` · declared by ${esc(d.author)}${d.set_at ? ` <span class="tnum">${esc(knowDay(d.set_at))}</span>` : ''}` : ` · ${stateCue('unknown', 'unsigned', UNSIGNED_LABEL)}`}</div>`).join('')}</div>`;
+        ${(f.sources || []).map((d) => `<div class="ml-[9rem] text-ink" data-know-source>${esc(d.label)}${d.author ? ` · declared by ${esc(d.author)}${d.set_at ? ` <span class="tnum">${esc(knowDay(d.set_at))}</span>` : ''}` : ` · ${stateCue('unknown', 'unsigned', UNSIGNED_LABEL)}`}${
+          // Brief F §10: the page's Publish sends each source as an ExternalReference; the cue is the row's own reference.
+          d.published === true ? ` · <span data-know-source-state="published">${stateCue('catalogued', 'published')}</span>`
+          : d.published === false ? ` · <span data-know-source-state="saved">${stateCue('stored', 'saved · will publish')}</span>` : ''}</div>`).join('')}</div>`;
     }
     return `<div class="flex flex-wrap items-baseline gap-x-s2 text-caveat" data-know-fact="${esc(f.key)}" data-declared="yes">
       <span class="w-[9rem] shrink-0 text-ink-muted">${esc(f.label)}</span><span class="text-ink">${esc(f.shown)}</span>
@@ -553,6 +556,18 @@ export async function renderCurate(slug) {
     // A dead session is said ONCE, by the page banner (session-banner.js), not by every band.
     if (slot && slot.isConnected && !err.loginRequired) slot.insertAdjacentHTML('beforeend', `<div class="text-caveat text-state-warn">A Curate band could not be drawn: ${esc(err.message)}</div>`);
   }));
+  // Brief F (addendum B): after the page's ONE Publish, the sections it sent re-read their state from the rows
+  // (a tag that was "saved · will publish" now reads "published 10-11"); nothing assumes it from the press.
+  if (state.curateOnPublished) document.removeEventListener('re:published', state.curateOnPublished);
+  state.curateOnPublished = (ev) => {
+    const d = ev.detail || {};
+    if (d.slug !== slug || slug !== state.selectedSlug) return;
+    const f = band('findable');
+    const p = band('people');
+    if (f && f.isConnected) renderFindableBand(f, slug, entityType).catch(() => {});
+    if (p && p.isConnected) renderPeopleBand(p, slug, entityType).catch(() => {});
+  };
+  document.addEventListener('re:published', state.curateOnPublished);
   if (entityType !== 'repo') {
     // Skip every repo-only /api/projects/{slug}/... call entirely rather
     // than firing it and reporting whatever 404 comes back.

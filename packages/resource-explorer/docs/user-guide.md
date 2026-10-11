@@ -159,16 +159,28 @@ Charts for a resource's history — stars, commits, schema growth, and similar �
 
 Ongoing curatorial work distinct from Enrichment's one-time/periodic context form: search tags, resource-level feedback, and curator notes, so the next person to find this resource can tell it's been looked at and vouched for.
 
-**Tags and the group go to Egeria** (the Findable band at the top of Curate). **Decision (project owner, 2026-10-10):** "tags should be public", "Use Folio", "Yes, removing a tag removes it in Egeria".
+**One Publish per page.** **Decision (project owner, 2026-10-11):** "I think there should be one publish button, but each section can have a save or indication that it will be published when the user presses publish." On a repository's first Curate tab (Describe and publish), every section saves in RE only, and shows where it stands as a mark and a short word: **saved · will publish**, **published 10-11**, **not sent · <reason>**, or, for someone else's rating or note, **<person>'s · waiting for them**. The **Publish** band is the last thing on the tab, and one press sends:
 
-- A tag on a resource that is in Egeria becomes a **public InformalTag** linked to the resource's asset. RE looks for a tag of that name first and uses it, so everyone's "sales" is one tag in Egeria, not one per person.
-- The resource's **RE group** becomes a **Folio** named `Folio::RE::group::<group>`, with the resource as a member. Changing the group moves the membership; choosing "Ungrouped" removes it.
-- **Removing a tag removes that tag from the resource in Egeria**, including the same tag added to it directly in Egeria by anyone: Egeria removes every link between the tag and the resource. The tag itself stays in Egeria, and so does a Folio when you leave or delete a group: RE never deletes either. The owner deletes those elements by hand.
-- A tag keeps the capitals you typed in Egeria ("Sales EMEA"); RE matches existing tags without regard to case, so "sales" and "SALES" are one tag.
-- A resource not yet in Egeria keeps its tags and group in RE, and they are sent when the resource is next published.
-- Each tag chip and the group line show where it stands, as a mark and a short word: **in Egeria**, **not yet (resource not in Egeria)**, **pending**, **pending · retrying**, **failed · <reason>** (with **retry**), or **unlinked**. A removed tag Egeria still has is listed under "removed". **send to Egeria** appears when something has not been sent.
-- A failed removal is never sent again on its own: press **retry** on it. Changing a tag or the group needs the same curation rights as other Curate decisions (see the admin guide, "Who may curate and publish"); so does deleting a group, which is refused as a whole, naming who, if any member may not leave its Folio.
-- Group changes from the CLI (`group assign`, `group unassign`, `group remove`) and from a CSV import need you signed in and take the same check; Egeria's Folio follows at the resource's next sync.
+1. the survey report;
+2. the tags and the group (below);
+3. documentation sources not yet in Egeria (as ExternalReferences on the asset);
+4. **your own** rating and notes, written in Egeria **as you**. Never anyone else's: another person's rating and notes wait for their own Publish.
+
+The band has three lines. Line 1 is one state: **✓ in Egeria · published 10-11 · confirmed** when Egeria's read-back after the publish shows the same report with the same number of annotations; **published 10-11 · not yet confirmed** when there is no read-back yet; **◐ published 10-11 · Egeria shows N** when the read-back differs. **Show in Egeria ▸** opens the report rows Egeria holds (GUID, annotations, Ask about this). Line 2, **next publish**, names the kept survey (and how much of it is stale) and lists what the press will send. Line 3 holds **Publish** and **Re-survey now**. A press shows **◔ publishing…** at once; if anything fails, a pop-up says what and why (with **Retry** where a retry can help), and the failed item keeps its "not sent" mark after the pop-up closes. The steps of the press are behind **details ▸**.
+
+**Ratings and notes go to Egeria, public, under your name.** **Decision (project owner, 2026-10-11):** "It goes under the user who is logged in and entering the ratings etc. It is also possible for another user to login and evaluate the same resource and put in different feedback." / "Ratings and notes should be public too."
+
+- **One rating per person.** Your newest rating (stars and message) is your Egeria Rating on the asset; a newer one replaces yours there, as Egeria keeps one rating per person per element. Your earlier ratings stay in RE under **earlier ratings ▸**; RE never deletes them. A comment without stars stays in RE ("kept in RE · no rating").
+- **Each journal entry is one Note** in the asset's note log ("Notes on <resource>"). Notes are never edited or deleted: a correction is a later entry. Who you suggested an entry to stays in RE (it is a work-list entry, not Egeria content).
+- If Egeria refuses or cannot be reached, the item reads **not sent · <reason>** (or **not permitted · <reason>**) and is sent again only by your next Publish.
+
+**Tags and the group go to Egeria** (the Findable band). **Decision (project owner, 2026-10-10):** "tags should be public", "Use Folio", "Yes, removing a tag removes it in Egeria".
+
+- A tag becomes a **public InformalTag** linked to the resource's asset. RE looks for a tag of that name first and uses it, so everyone's "sales" is one tag in Egeria, not one per person. Tags are sent as RE keeps them, in lower case.
+- The resource's **RE group** becomes a **Folio** named `Folio::RE::group::<group>`, with the resource as a member. Changing the group moves the membership at the next Publish; choosing "Ungrouped" removes it.
+- **Removing a tag removes that tag from the resource in Egeria** at the next Publish, including the same tag added to it directly in Egeria by anyone: Egeria removes every link between the tag and the resource. The tag itself stays in Egeria, and so does a Folio when you leave or delete a group: RE never deletes either. The owner deletes those elements by hand.
+- A failed removal is never sent again on its own, not even by a later Publish: press **retry** on it. Changing a tag or the group needs the same curation rights as other Curate decisions (see the admin guide, "Who may curate and publish"); so does deleting a group, which is refused as a whole, naming who, if any member may not leave its Folio.
+- Group changes from the CLI (`group assign`, `group unassign`, `group remove`) and from a CSV import need you signed in and take the same check; Egeria's Folio follows at the resource's next Publish.
 
 ### Automate
 *Goal: get notified when an analysis's results change on a future run*
@@ -302,7 +314,7 @@ Prefix your question with the resource slug to scope it: `mydb: how many tables 
 
 Reachable from the header, not the intent nav — this is system/catalog configuration, not something you do to curate one resource.
 - **Annotation Types** — the registry of metadata annotation schemas: what each one means, what properties it carries, and its mapping to Egeria's own property classes. Register, edit, or delete entries here.
-- **Groups** — group related repos/databases/filesystems together (e.g. everything belonging to one product). Create and delete groups here; assigning an individual resource to a group is done from that resource's own record, not from this list. Each group with members is a Folio in Egeria (see Curate). Deleting a group removes its members from the Folio; the Folio itself stays in Egeria, and the owner deletes it by hand.
+- **Groups** — group related repos/databases/filesystems together (e.g. everything belonging to one product). Create and delete groups here; assigning an individual resource to a group is done from that resource's own record, not from this list. Each group with members is a Folio in Egeria (see Curate). Deleting a group removes each member from the Folio at that member's next Publish; the Folio itself stays in Egeria, and the owner deletes it by hand.
 - **Schedules** — a monitoring overview, not an editor: every scheduled analysis across every resource, whether its last run succeeded (✓ ok) or failed (⚠ error, click to see the detail), when it last/next runs, and a 🗑️ to remove a stale schedule. To *set or change* a cadence, use the ⏱ Schedule action on the analysis card itself (Assessment/Analysis/Discovery) — this page is for watching everything at once, especially for errors that need follow-up. **Read the caveat shown at the top of this pane** — not every listed analysis is fully implemented yet; cross-check against Discovery's Survey Definitions before assuming a scheduled run does what its name suggests.
 - **Discovery Sources** — named, reusable "where do we scout" configs, picked from Scouting's Discover sub-tab instead of re-typing a search every time. Create either a **search**-type source (the same filters the ad-hoc form uses) or a **list**-type source (a pasted set of GitHub URLs — for foundations whose projects live in many separate orgs, or your own enterprise repos). Delete a source here; there's no edit-in-place yet — delete and recreate.
 

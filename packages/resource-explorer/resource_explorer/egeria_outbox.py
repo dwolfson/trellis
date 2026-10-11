@@ -66,7 +66,9 @@ class OutboxClients:
     catalogue_gateway: object | None = None
     registry: object | None = None
     #: Any pyegeria client carrying the feedback-manager methods (`get_tags_by_name`, `create_informal_tag`,
-    #: `add_tag_to_element`, `remove_tag_from_element`): Brief T's tag kinds. `_default_clients` gives a
+    #: `add_tag_to_element`, `remove_tag_from_element`): Brief T's tag kinds; and Brief F's ratings and notes
+    #: (`add_rating_to_element`, `get_attached_ratings`, `get_note_logs_by_name`, `create_note_log`,
+    #: `get_notes_for_note_log`, `create_note`). `_default_clients` gives a
     #: ClassificationExplorer from the same factory, built on first use (`feedback_factory`) so a drain with no
     #: tag rows builds no extra client.
     feedback: object | None = None
@@ -188,7 +190,10 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
                          "catalogue_schema_attach", "catalogue_schema_leave_out",
                          # Brief T: a synthetic relationship key; each creator finds its tag / Folio itself.
                          "informal_tag_link", "informal_tag_detach",
-                         "group_folio_membership", "group_folio_membership_detach"}
+                         "group_folio_membership", "group_folio_membership_detach",
+                         # Brief F: a person's Rating (keyed by element and person) and a journal entry's Note
+                         # (found by its own qualifiedName in the asset's NoteLog by its creator).
+                         "feedback_rating", "feedback_note"}
 
 
 #: Outbox kinds whose write ARCHIVES, DELETES or DETACHES something in Egeria. A retry of a destructive write is itself
@@ -210,6 +215,30 @@ NOT_RETRIED = "not retried: destructive write"
 #: still caught by its name. The safe direction is the default.
 DESTRUCTIVE_KIND_WORDS = ("archive", "delete", "unpublish", "leave_out", "detach", "remove")
 CLAIM_LAPSED_DESTRUCTIVE = "claim lapsed; destructive writes are never re-sent"
+
+
+#: Brief F: kinds that only their AUTHOR may send, inside their own Publish, as themselves (Egeria records the
+#: caller as the feedback's author). The background drain never claims them; a Caller drain applies one only when
+#: the row's `by` is that caller; a failure is never re-sent on its own (dead at once, the person's next Publish
+#: queues a new row). Kept in step with `feedback_egeria.PERSON_ONLY_KINDS` (a test pins the two).
+PERSON_ONLY_KINDS = frozenset({"feedback_rating", "feedback_note"})
+NOT_THIS_PERSON = "waiting for its author's own Publish"
+
+
+def is_person_only_kind(element_kind: str) -> bool:
+    return (element_kind or "") in PERSON_ONLY_KINDS
+
+
+def _person_only_refusal(row: dict, identity) -> str:
+    """"" when this drain may send this row: it is not a person-only kind, or the drain runs as a Caller whose
+    user IS the row's author. Otherwise the reason it is left alone."""
+    if not is_person_only_kind(row.get("element_kind") or ""):
+        return ""
+    by = _row_requester(row)
+    if identity is None or getattr(identity, "kind", "") != "caller" or not by \
+            or (getattr(identity, "user_id", "") or "") != by:
+        return NOT_THIS_PERSON
+    return ""
 
 
 def is_destructive_outbox_kind(element_kind: str) -> bool:
@@ -799,6 +828,18 @@ def _create_catalogue_schema_leave_out(clients: "OutboxClients", payload: dict) 
         raise OutboxApplyError(str(exc)) from exc
 
 
+def _create_feedback_rating(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.feedback_egeria import create_rating
+
+    return create_rating(clients, payload)
+
+
+def _create_feedback_note(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.feedback_egeria import create_note
+
+    return create_note(clients, payload)
+
+
 def _create_informal_tag_link(clients: "OutboxClients", payload: dict) -> str:
     from resource_explorer.curation_egeria import create_tag_link
 
@@ -855,6 +896,8 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "informal_tag_detach": _create_informal_tag_detach,
     "group_folio_membership": _create_group_folio_membership,
     "group_folio_membership_detach": _create_group_folio_membership_detach,
+    "feedback_rating": _create_feedback_rating,
+    "feedback_note": _create_feedback_note,
 }
 
 
@@ -921,8 +964,12 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
     """
     summary = {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
               "publish_run_check_failed": 0}
+    # Brief F: a drain that is not a person's own request (the background Daemon drain, or a drain handed its
+    # clients with no person) never claims a feedback row: only its author's Publish sends it, as them.
+    is_caller = identity is not None and getattr(identity, "kind", "") == "caller"
     try:
-        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id)
+        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id,
+                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary
@@ -975,6 +1022,13 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # the BASE run_id, which is what the activity row was tagged
             # with (see registry.complete_publish_run_if_done).
             touched_run_ids.add(run_id[: -len("::links")] if run_id.endswith("::links") else run_id)
+        not_theirs = _person_only_refusal(row, identity)
+        if not_theirs:
+            # Brief F: claimed by a drain that is not its author's (another person's request, or a claim before
+            # the exclusion): hand it back untouched, no attempt burned, nothing sent.
+            registry.mark_outbox_deferred(row["id"], not_theirs, claimed_at=row.get("claimed_at"))
+            summary["skipped"] += 1
+            continue
         try:
             # Every outbox creator is a write (the module docstring's own
             # comment on _CREATORS: "only the plural, per-element writes are
@@ -1017,12 +1071,18 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                 summary["not_retried"] = summary.get("not_retried", 0) + 1
             elif is_security_refusal(exc):
                 # Permanent until a permission or zone changes: dead on the FIRST refusal, no backoff.
+                # (Brief F: a feedback row reads this as "not permitted" from the stored words.)
                 status = registry.mark_outbox_failed(
                     row["id"],
                     f"{REFUSED_BY_SECURITY}: {_refusal_sentence(exc)} · {NEEDS_PERMISSION_CHANGE}",
                     max_attempts=1)
                 summary["dead" if status == "dead" else "failed"] += 1
                 summary["security_refused"] = summary.get("security_refused", 0) + 1
+            elif is_person_only_kind(row.get("element_kind") or ""):
+                # Brief F: never re-sent on its own (a retry would be the drain choosing when to write as the
+                # person): dead at once with Egeria's words; the person's next Publish queues a new row.
+                status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc_text}", max_attempts=1)
+                summary["dead" if status == "dead" else "failed"] += 1
             else:
                 status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc_text}")
                 summary["dead" if status == "dead" else "failed"] += 1

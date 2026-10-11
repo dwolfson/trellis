@@ -78,6 +78,7 @@ CLASSIFY_OPERATION = "CLASSIFY"
 PUBLISH_OPERATION = "PUBLISH"
 DECLASSIFY_OPERATION = "DECLASSIFY"
 DEFAULT_OPERATION = "DEFAULT"
+ADD_FEEDBACK_OPERATION = "ADD_FEEDBACK"
 
 #: The words a refusal uses for each operation.
 OPERATION_WORDS = {
@@ -91,9 +92,9 @@ OPERATION_WORDS = {
     CLASSIFY_OPERATION: "classify",
     PUBLISH_OPERATION: "publish (zone change)",
     DECLASSIFY_OPERATION: "declassify",
-    # Brief T: a tag link / unlink is feedback (validateUserForElementAddFeedback :1696-1730 and
+    # Brief T: a tag link / unlink is feedback (Brief F: so is a Rating) (validateUserForElementAddFeedback :1696-1730 and
     # validateUserForElementDeleteFeedback :1748-1770); a membership removal is a DETACH.
-    "ADD_FEEDBACK": "tag",
+    "ADD_FEEDBACK": "add feedback (a tag or a rating)",
     "DELETE_FEEDBACK": "untag",
     "DETACH": "detach",
 }
@@ -242,6 +243,8 @@ def zone_grants(user_id: str, zones: Iterable[str], *,
 #:   PUBLISH           validateUserForAnchorClassify :2346-2370       PUBLISH on the anchor (a zone change), the anchor's maintainers
 #:   DELETE            validateUserForAnchorMemberDelete :2481-2520   DELETE_MEMBER on the anchor (maintainer = the user), READ on the member
 #:   DECLASSIFY        validateUserForAnchorDeclassify :2416-2466     DECLASSIFY on the anchor, the anchor's maintainers (Brief Z3)
+#:   ADD_FEEDBACK      validateUserForAnchorAddFeedback :2224-2250    ADD_FEEDBACK on the anchor (maintainer = the user), READ on
+#:                     the feedback element once it exists (Brief F: a Rating, a tag link; a NEW one has nothing to read)
 #: (operation on the member) -> (operation on the anchor, the user is the maintainer, READ on the member too)
 ANCHOR_OPERATIONS = {
     CREATE_OPERATION: (CREATE_OPERATION, True, False),
@@ -252,6 +255,7 @@ ANCHOR_OPERATIONS = {
     PUBLISH_OPERATION: (PUBLISH_OPERATION, False, False),
     DELETE_OPERATION: (DELETE_MEMBER_OPERATION, True, True),
     DECLASSIFY_OPERATION: (DECLASSIFY_OPERATION, False, False),
+    ADD_FEEDBACK_OPERATION: (ADD_FEEDBACK_OPERATION, True, False),
 }
 
 

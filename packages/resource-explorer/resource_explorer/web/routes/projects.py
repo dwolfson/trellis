@@ -301,8 +301,9 @@ async def create_group(body: GroupCreate) -> GroupSummary:
 @router.delete("/groups/{slug}")
 async def delete_group(slug: str, request: Request) -> dict:
     """Delete an RE group. Its members are ungrouped, and (Brief T) each member's membership of the group's Folio
-    is removed in Egeria. The Folio itself is NEVER deleted: that is a delete under the ISSUE-117 block, so the
-    answer reports it and the owner deletes it by hand."""
+    is removed in Egeria: Brief F, at that member's next Publish (each member's Findable band says "saved · will
+    publish"). The Folio itself is NEVER deleted: that is a delete under the ISSUE-117 block, so the answer reports
+    it and the owner deletes it by hand."""
     import asyncio
 
     from resource_explorer import curation_egeria as ce
@@ -326,20 +327,22 @@ async def delete_group(slug: str, request: Request) -> dict:
             f"the group's members changed while they were being checked ({changed}); nothing was deleted, "
             "try again")) from exc
 
-    def unlink_members() -> list[dict]:
+    def member_states() -> list[dict]:
+        """Brief F: nothing is sent here; each member's unlink waits for its own Publish. What each member's plan
+        now says about the old group (read from the rows, never assumed)."""
         out = []
         for entity_type, member in members:
             try:
-                r = ce.sync_curation(registry, entity_type, member, by=author)
-                entry = {"entity_type": entity_type, "slug": member, "queued": len(r.get("queued") or [])}
-                if r.get("refused"):          # round 3: a refusal is said, never folded into "queued: 0"
-                    entry["refused"] = r["refused"]
-                out.append(entry)
+                plan = ce.curation_plan(registry, entity_type, member)
+                left = next((i for i in plan["items"] if i.kind == "group" and i.name == slug), None)
+                out.append({"entity_type": entity_type, "slug": member,
+                            "state": left.state if left else "", "word": left.word if left else "",
+                            "will_unlink": bool(left and left.action == "unlink")})
             except Exception as exc:  # the RE delete stands; the member's band re-reads the rows
                 out.append({"entity_type": entity_type, "slug": member, "error": str(exc)})
         return out
 
-    egeria = {**ce.group_deleted_report(slug), "members": await asyncio.to_thread(unlink_members)}
+    egeria = {**ce.group_deleted_report(slug), "members": await asyncio.to_thread(member_states)}
     return {"removed": slug, "resources_unassigned": unassigned, "egeria": egeria}
 
 
@@ -386,7 +389,7 @@ async def assign_group(slug: str, body: GroupAssign, request: Request) -> dict:
     # the resource's element, ATTACH to join a group's Folio, DETACH to leave one.
     import asyncio
 
-    from resource_explorer.curation_egeria import group_change_refusal, sync_curation
+    from resource_explorer.curation_egeria import curation_plan, group_change_refusal, plan_as_dict
 
     refused = await asyncio.to_thread(group_change_refusal, registry, body.resource_type, slug, body.group_slug)
     if refused:
@@ -394,13 +397,14 @@ async def assign_group(slug: str, body: GroupAssign, request: Request) -> dict:
     setter(slug, body.group_slug)
     saved_at = registry.record_group_change(body.resource_type, slug, body.group_slug, author)
 
-    def send() -> dict:
+    def state() -> dict:
+        # Brief F: a Save sends nothing; the page's Publish sends the membership change. The plan as it now reads.
         try:
-            return sync_curation(registry, body.resource_type, slug, by=author)
+            return plan_as_dict(curation_plan(registry, body.resource_type, slug))
         except Exception as exc:  # the RE change is recorded; the band re-reads the state from the rows
             return {"error": f"{type(exc).__name__}: {exc}"}
 
-    egeria = await asyncio.to_thread(send)
+    egeria = await asyncio.to_thread(state)
     return {"slug": slug, "resource_type": body.resource_type, "group_slug": body.group_slug,
             "saved_by": author, "saved_at": saved_at, "egeria": egeria}
 
