@@ -13,11 +13,23 @@ const DIFF = { prev_date: '2026-09-21T10:00:00', curr_date: '2026-09-28T14:02:00
   new_tables: ['sales.a'], removed_tables: [], table_diff_state: 'measured', curr_table_state: 'measured', prev_table_state: 'measured' };
 const REPO_DIFF = { prev_date: '2026-10-03T09:00:00', curr_date: '2026-10-06T14:02:00', total_prev: 100, total_curr: 112, total_delta: 12, changes: [] };
 
+const CURRENCY = { as_of: '2026-10-09T10:00:00', stale_days: 30,
+  database: { total: 140, behind: 31, never: 3, stale: 28, reset_tables: 2, not_collected: 0,
+    counters_reset: { state: 'reset_at', at: '2026-10-02T08:00:00' } },
+  schemas: [{ schema: 'sales', total: 40, never: 3, stale: 0, reset_tables: 0, not_collected: 0, oldest_days: 41, empty: false },
+    { schema: 'scratch', total: 0, never: 0, stale: 0, reset_tables: 0, not_collected: 0, oldest_days: null, empty: true }],
+  tables: {} };
+const HISTORY = [
+  { run: { surveyed_at: '2026-10-01T10:00:00' }, measured: true, never: 5, stale: 10, reset_tables: 0, counters_reset: { state: 'never_reset' } },
+  { run: { surveyed_at: '2026-10-05T10:00:00' }, measured: false },
+  { run: { surveyed_at: '2026-10-09T10:00:00' }, measured: true, never: 3, stale: 28, reset_tables: 2, counters_reset: CURRENCY.database.counters_reset }];
+
 function stub(calls) {
   globalThis.fetch = async (url) => {
     const u = String(url);
     calls.push(u);
     const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+    if (/\/statistics_currency/.test(u)) return ok(env({ currency: CURRENCY, history: HISTORY }));
     const m = u.match(/\/api\/stats\/databases\/[^/]+\/([a-z_]+)/);
     if (m) return ok(env({ points: [], runs: [], series: [], tables: [], row_counts: [], sizes_mb: [], schemas: [], table_counts: [], column_counts: [], types: [], counts: [] }));
     if (/\/api\/databases\/[^/]+\/diff/.test(u)) return ok(DIFF);
@@ -117,7 +129,8 @@ test('db: a hidden tab reads nothing until it opens; a tab switch reads nothing 
   const { document, calls } = await setUp('db');
   await open(document);
   assert.equal(hits(calls, /\/diff/), 1);
-  assert.equal(hits(calls, /\/api\/stats\/databases\//), 0, 'no chart read while only At a glance is open');
+  assert.equal(hits(calls, /\/api\/stats\/databases\/[^/]+\/(?!statistics_currency)/), 0, 'no chart read while only At a glance is open');
+  assert.equal(hits(calls, /statistics_currency/), 1, 'the statistics line is the one read At a glance adds');
   assert.equal(hits(calls, /\/views|\/surveys/), 0);
   await tab(document, 'contents');
   assert.equal(hits(calls, /\/api\/stats\/databases\/[^/]+\/(schema_distribution|table_sizes|column_types)/), 3);
@@ -129,6 +142,7 @@ test('db: a hidden tab reads nothing until it opens; a tab switch reads nothing 
   assert.equal(hits(calls, /\/surveys/), 1);
   const total = calls.length;
   for (const t of ['glance', 'contents', 'over_time', 'glance', 'over_time']) await tab(document, t);
+  assert.equal(hits(calls, /statistics_currency/), 1, 'the statistics read is shared by all three tabs');
   assert.equal(calls.length, total, 'switching between tabs that were read fetches nothing');
   assert.deepEqual(shown(document), ['over_time']);
 });
@@ -215,4 +229,25 @@ test('Understanding tabs carry no counts, and no "catalog" word appears on the p
   await tab(document, 'contents');
   assert.equal(document.querySelector('[data-tab-counts]'), null);
   assert.doesNotMatch(norm(document.getElementById('content')), /catalog/i);
+});
+
+test('db: the statistics line is on At a glance after the sentence; schema rollups on Contents; counts across surveys on Over time', async () => {
+  const { document } = await setUp('db');
+  await open(document);
+  const g = panel(document, 'glance');
+  const line = g.querySelector('[data-stats-line]');
+  assert.match(norm(line), /^statistics · counters reset 10-02 · 31 of 140 tables not analysed in 30 days · 2 unknowable since reset ◐$/);
+  assert.ok(g.querySelector('[data-since-last-run]').compareDocumentPosition(line) & 4, 'the line follows the sentence');
+  assert.equal(panel(document, 'contents').querySelector('[data-stats-line]'), null);
+  await tab(document, 'contents');
+  const c = panel(document, 'contents');
+  assert.match(norm(c.querySelector('[data-stats-schema="sales"]')), /sales · ◐ 3 of 40 never · oldest 41d/);
+  assert.match(norm(c.querySelector('[data-stats-schema="scratch"]')), /scratch · ∅ no tables/);
+  await tab(document, 'over_time');
+  const t = panel(document, 'over_time');
+  const rows = [...t.querySelectorAll('[data-stats-time-row]')].map(norm);
+  assert.equal(rows.length, 3);
+  assert.match(rows[0], /5 never\s*10 stale\s*0 reset\s*counters never reset/);
+  assert.match(rows[1], /not collected/);
+  assert.doesNotMatch(norm(document.body), /catalog/i);
 });

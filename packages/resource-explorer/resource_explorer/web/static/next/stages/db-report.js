@@ -11,6 +11,7 @@ import {
   esc, gridHtml, historyCols, RANKED_COLS, VIEWS_COLS, fmtSize, stamp,
 } from '/static/next/stages/report-tables.js';
 import { SOURCE_WORD, md } from '/static/next/stages/scope-sources.js';
+import { tableCueHtml } from '/static/next/stages/understanding-stats.js';
 
 /* ── PI-030: the source word ────────────────────────────────────────────── */
 
@@ -130,8 +131,9 @@ export function rankedTablesHtml(resp, diff) {
       name: `<span class="font-mono">${esc(r.name)}</span>`,
       rows: typeof r.row_count === 'number' ? r.row_count.toLocaleString('en-US') : 'not established',
       size: typeof r.size_bytes === 'number' ? esc(fmtSize(r.size_bytes)) : 'not established',
-      analyzed: r.last_analyzed ? `<span class="tnum">${esc(stamp(r.last_analyzed))}</span>`
-        : (r.activity_state === 'not_collected' ? 'not collected' : 'never analyzed'),
+      analyzed: r.statistics ? tableCueHtml(r.statistics)
+        : (r.last_analyzed ? `<span class="tnum">${esc(stamp(r.last_analyzed))}</span>`
+          : (r.activity_state === 'not_collected' ? 'not collected' : 'never analyzed')),
       pending: typeof r.pending_changes === 'number' ? r.pending_changes.toLocaleString('en-US')
         : 'not collected',
       diff: esc(diffWord(diff, r.name)),

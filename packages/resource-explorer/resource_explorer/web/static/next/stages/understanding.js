@@ -30,6 +30,7 @@ import { provenanceFromResponse, saveChartImage } from '/static/next/chart-expor
 import { mountRepoReport } from '/static/next/stages/repo-report.js';
 import { fitFigure, annotateTicks } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
+import { statsLineHtml, schemaRollupsHtml, statsOverTimeHtml } from '/static/next/stages/understanding-stats.js';
 import {
   surveyHistoryHtml, readShowInvalid, writeShowInvalid, rankedTablesHtml, viewsSectionHtml,
   viewFlowchartSource,
@@ -452,9 +453,9 @@ function databaseParts(slug, { tabbed }) {
     // main's template joined the parts with a newline and four spaces; keep the markup identical
     single: [indexBar, now, time, views, history].join('\n    '),
     indexBar,
-    glance: since,
-    contents: now + views,
-    overTime: time + history,
+    glance: since + '<div class="mt-s3" data-stats-glance></div>',                         // S4b mount 1
+    contents: now + '<div data-stats-schemas-slot></div>' + views,                          // S4b mount 2
+    overTime: time + history + '<div data-stats-time-slot></div>',                          // S4b mount 3
   };
 
   const mount = (host, { lazy }) => {
@@ -516,6 +517,19 @@ function databaseParts(slug, { tabbed }) {
       return diffRead;
     };
     const ok = (r) => r && !r.__error;
+    // S4b: statistics currency, ONE read shared by the three tabs that show it (each reads only when opened).
+    let currencyRead = null;
+    const readCurrency = () => {
+      if (!currencyRead) currencyRead = grab('statistics_currency');
+      return currencyRead;
+    };
+    const drawStats = async (selector, render) => {
+      const slotEl = host.querySelector(selector);
+      if (!slotEl) return;
+      const resp = await readCurrency();
+      if (stale()) return;
+      slotEl.innerHTML = render(resp);
+    };
 
     const settle = async (spec, resp, opts) => {
       const card = cards[spec.kind];
@@ -540,6 +554,7 @@ function databaseParts(slug, { tabbed }) {
         host.querySelector('[data-since-last-run]').innerHTML = diff && diff.__error
           ? `The comparison with the previous run could not be read: ${esc(diff.__error)}`
           : sinceLastRunHtml(diff);
+        await drawStats('[data-stats-glance]', statsLineHtml);
       },
 
       async contents() {
@@ -584,6 +599,7 @@ function databaseParts(slug, { tabbed }) {
           nowHeader.textContent = 'no survey has run for this database';
         }
         drawViews(host.querySelector('[data-views-body]'), views);
+        await drawStats('[data-stats-schemas-slot]', schemaRollupsHtml);
       },
 
       async overTime() {
@@ -600,6 +616,7 @@ function databaseParts(slug, { tabbed }) {
         host.querySelector('[data-time-header]').textContent = pts.length
           ? `${pts.length} run${pts.length === 1 ? '' : 's'} since ${runLabel(pts[0].run)}` : '';
         drawSurveyHistory(host.querySelector('[data-survey-history-body]'), surveys);
+        await drawStats('[data-stats-time-slot]', statsOverTimeHtml);
       },
     };
     return start;

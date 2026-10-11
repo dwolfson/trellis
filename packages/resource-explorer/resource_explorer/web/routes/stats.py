@@ -254,6 +254,16 @@ async def database_table_growth(slug: str, top: int = 10, limit: int = 30) -> di
     return db_chart_data.table_growth(registry, slug, top=top, limit=limit)
 
 
+@router.get("/databases/{slug}/statistics_currency")
+async def database_statistics_currency(slug: str, limit: int = 12) -> dict:
+    """How current the planner statistics are: database line, schema rollups,
+    per-table state, and the counts across earlier surveys. Stored rows only."""
+    from resource_explorer import db_chart_data
+    registry = ProjectRegistry()
+    _database_or_404(registry, slug)
+    return db_chart_data.statistics_currency(registry, slug, limit=limit)
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _latest_stats(db_path: str, slug: str) -> dict:
