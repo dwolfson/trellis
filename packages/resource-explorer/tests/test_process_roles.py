@@ -618,7 +618,12 @@ class TestPoolDoesNotHoldTheProcessOpen:
 
 def test_registry_creates_its_schema_on_a_fresh_postgres(monkeypatch):
     """A fresh database has no resource_explorer schema; the registry must create it
-    before its tables, or every CREATE TABLE fails under the pinned search_path."""
+    before its tables, or every CREATE TABLE fails under the pinned search_path.
+
+    The schema is named resource_explorer_test_fresh_<pid>: the shared-registry guard only
+    admits resource_explorer_test* schemas, and a pid-unique name cannot collide with a
+    peer's run or a live server. Skipped (with the reason) only when the role may not
+    create schemas in the database, which is a property of the machine, not of the code."""
     import pytest as _pytest
     try:
         import psycopg2 as _pg
@@ -628,24 +633,31 @@ def test_registry_creates_its_schema_on_a_fresh_postgres(monkeypatch):
     url = get_config().registry.database_url
     if not url.startswith("postgresql"):
         _pytest.skip("registry is not on Postgres in this environment")
+    base = url.split("?")[0]
+    schema = f"resource_explorer_test_fresh_{os.getpid()}"
     try:
-        raw = _pg.connect(url.split("?")[0], connect_timeout=3)
+        raw = _pg.connect(base, connect_timeout=3)
         raw.autocommit = True
     except Exception as exc:  # pragma: no cover - environment dependent
         _pytest.skip(f"postgres unreachable: {exc}")
     with raw.cursor() as cur:
-        cur.execute("DROP SCHEMA IF EXISTS re_fresh_schema_test CASCADE")
+        cur.execute("SELECT has_database_privilege(current_user, current_database(), 'CREATE')")
+        can_create = cur.fetchone()[0]
+        cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
     raw.close()
+    if not can_create:
+        _pytest.skip("the database role lacks CREATE on the database, so a fresh schema "
+                     "cannot be made here")
     # Point the registry at a search_path whose schema does not exist yet.
     from resource_explorer.registry import ProjectRegistry
-    fresh_url = url.split("?")[0] + "?options=-csearch_path%3Dre_fresh_schema_test"
+    fresh_url = base + f"?options=-csearch_path%3D{schema}"
     try:
         reg = ProjectRegistry(database_url=fresh_url)
         assert reg.list_all() == []
     finally:
-        c = _pg.connect(url.split("?")[0]); c.autocommit = True
+        c = _pg.connect(base); c.autocommit = True
         with c.cursor() as cur:
-            cur.execute("DROP SCHEMA IF EXISTS re_fresh_schema_test CASCADE")
+            cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         c.close()
 
 

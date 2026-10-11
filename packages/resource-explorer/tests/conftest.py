@@ -25,7 +25,7 @@ import pytest
 # Installed at import, before any probe below opens a connection, at the
 # SQLAlchemy/psycopg2 connect choke point so a cached config cannot defeat it.
 # Opt-in for a deliberate run: RE_TESTS_ALLOW_SHARED_REGISTRY=1.
-from tests import live_egeria_tier, shared_registry_guard
+from tests import live_egeria_tier, shared_registry_guard, tracked_tree_guard
 
 shared_registry_guard.install()
 
@@ -232,6 +232,25 @@ def pytest_addoption(parser):
              "check, and needs live-peer coordination before every run; see "
              "tests/live_egeria_write_fixtures.py)",
     )
+
+
+def pytest_sessionstart(session):
+    """Fingerprint the tracked tree so pytest_sessionfinish can prove the run left it alone."""
+    if hasattr(session.config, "workerinput"):  # xdist worker: the controller checks
+        return
+    session.config._tracked_tree_before = tracked_tree_guard.snapshot()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if hasattr(session.config, "workerinput"):
+        return
+    before = getattr(session.config, "_tracked_tree_before", None)
+    touched = tracked_tree_guard.changed(before, tracked_tree_guard.snapshot())
+    if touched:
+        print("\n\nTEST RUN MODIFIED THE WORKING TREE under packages/resource-explorer "
+              "(tests must write to tmp_path, never to tracked files):\n  "
+              + "\n  ".join(touched))
+        session.exitstatus = 1
 
 
 def pytest_report_header(config):

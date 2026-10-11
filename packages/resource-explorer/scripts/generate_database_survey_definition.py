@@ -71,6 +71,7 @@ hash-guard overwrite safety).
 from __future__ import annotations
 
 import argparse
+import os
 import hashlib
 import json
 
@@ -95,7 +96,9 @@ SPECS_CSV = DOCS_DIR / "database_survey_types.csv"
 # the repo generator's own layout choice — see that script's identical
 # comment for why the CSV itself stays at the dr-egeria root rather than in
 # a batch folder.
-SURVEY_DEFS_DIR = DOCS_DIR / "survey-definitions-database"
+# RE_SURVEY_DEFS_DIR redirects every write (documents and the provenance sidecar) so a test
+# can exercise the generator on a copy instead of rewriting the tracked tree.
+SURVEY_DEFS_DIR = Path(os.environ.get("RE_SURVEY_DEFS_DIR") or DOCS_DIR / "survey-definitions-database")
 ALL_STEPS_SENTINEL = "*"
 
 

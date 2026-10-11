@@ -261,17 +261,22 @@ def test_isolation_leaves_the_environment_untouched_under_ci(tmp_path):
 
 
 def test_autouse_fixture_applies_the_isolation_outside_ci():
-    """What the real fixture did to this process. Under CI it deliberately
-    does nothing, so only then is the ambient value not asserted."""
+    """What the real fixture did to this process. It leaves two cases alone on purpose:
+    GitHub Actions (the service container IS the registry) and a setting the run itself
+    pointed at a deliberate non-shared target (the local CI-mode gate sets all three to a
+    resource_explorer_test_* schema). In every other case the setting must be SQLite; in
+    the deliberate-override case it must at least not address the shared registry
+    (the fixture's own decision table is driven directly by the isolate_url_settings tests)."""
     import os
     from resource_explorer.config import get_config
+    from resource_explorer.registry_label import is_shared_registry
 
     if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
         pytest.skip("CI leaves the URL settings to the service container")
     cfg = get_config()
     for url in (cfg.registry.database_url, cfg.observability.metrics_database_url,
                 cfg.feedback.database_url):
-        assert url.startswith("sqlite:///"), url[:12]
+        assert url.startswith("sqlite:///") or not is_shared_registry(url), url[:12]
 
 
 def test_refusal_names_the_metrics_setting(fake_connect, monkeypatch):
