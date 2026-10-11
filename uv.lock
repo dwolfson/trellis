@@ -290,7 +290,7 @@ wheels = [
 
 [[package]]
 name = "altair"
-version = "6.2.2"
+version = "6.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -299,9 +299,9 @@ dependencies = [
     { name = "packaging" },
     { name = "typing-extensions", marker = "python_full_version < '3.15'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/a1/5e6cc638a66da48cfc89a79c2f4810dfec00b63385f9b009ab1f069779bb/altair-6.2.2.tar.gz", hash = "sha256:a1ff9d9cfe81c75414641826312b9471780e19d39293ba0b012933f6b6cba0fe", size = 766606, upload-time = "2026-06-23T12:47:13.384Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/de/9731304fae332b5783fdc3ed18531dfaf4a3cc62a66aaaa74c047355b70f/altair-6.3.0.tar.gz", hash = "sha256:fa632121aca6d0fcb198a3d8a9f7d937fa5b7518ec947951cfffb44e736d97c8", size = 766362, upload-time = "2026-09-15T06:38:03.623Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/99/d6031f4f146298951c46b1bf1cc160c2a63f6e44b3c13a30054add100d5f/altair-6.2.2-py3-none-any.whl", hash = "sha256:94014f8ad8617c3cb163d1137359cd6db5ba134b9b46d93cfd8b609fd245a583", size = 797613, upload-time = "2026-06-23T12:47:11.451Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/b9/10a8bb13a0462e0bc4e02c0b7b8237dc24ab590f5bb4be94bec5e8f1d532/altair-6.3.0-py3-none-any.whl", hash = "sha256:7defb6ca730676dfc99a299768e2769f51585fcb3dc960ea71aacc368929d65e", size = 797192, upload-time = "2026-09-15T06:38:01.791Z" },
 ]
 
 [[package]]
@@ -7255,11 +7255,12 @@ wheels = [
 
 [[package]]
 name = "pyegeria"
-version = "6.1.15"
+version = "6.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
     { name = "click" },
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "inflect" },
     { name = "jupyter" },
@@ -7287,9 +7288,9 @@ dependencies = [
     { name = "validators" },
     { name = "wcwidth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/99/c7ab51cfafedd9cb1578978ef00e8a68309e1b301a9f7e4651a621563be1/pyegeria-6.1.15.tar.gz", hash = "sha256:23b0fdd922eee3fd4abe6faa78cb15e01f7c26df18adc7c3e62dae88b9614aa9", size = 2035198, upload-time = "2026-09-13T21:14:09.655Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8e/ee/07c2a29a112652a45e5d4f6ba2f4cbcfe436dc4950b9b21eab4b5fcf55cf/pyegeria-6.2.1.tar.gz", hash = "sha256:7f799ad88c0fff933cf99c4a29db6a28ed1cebc82e7b2c991a5cebd5927a865f", size = 2143000, upload-time = "2026-10-11T02:08:38.035Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/03/3d3f60f83efd6316f53dfb96e24af8af2823cd4c49b733546eb3f9d67a15/pyegeria-6.1.15-py3-none-any.whl", hash = "sha256:f4da9310f86b546a875078d3c8e213e77968e2e3514686489a48682d6993bc1e", size = 2008963, upload-time = "2026-09-13T21:14:07.59Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/78/60dbf44cbef6d5bbf2707e7c8e99239384154cd986f495300fb152283076/pyegeria-6.2.1-py3-none-any.whl", hash = "sha256:fb543e8d1f19bbd872336c1a1956c69da70c908c605500282dbcb354689b06e6", size = 2063395, upload-time = "2026-10-11T02:08:36.017Z" },
 ]
 
 [[package]]
@@ -8350,7 +8351,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
-    { name = "pyegeria", specifier = ">=6.1.10" },
+    { name = "pyegeria", specifier = ">=6.2.1" },
     { name = "pygithub", specifier = ">=2.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
