@@ -441,19 +441,20 @@ function databaseParts(slug, { tabbed }) {
     sinceLastRunBannerHtml('Comparing the last two runs…'));
   const views = collapsibleSectionHtml('db-views', h3('Views'), '',
     '<div data-views-body><div class="text-caveat text-ink-muted">Reading the views…</div></div>',
-    { attrs: tabbed ? 'data-section-views' : 'data-section-views class="mt-s6"' });
+    { attrs: 'data-section-views class="mt-s6"' });
   const history = collapsibleSectionHtml('db-survey-history', h3('Survey history'), '',
     '<div data-survey-history-body><div class="text-caveat text-ink-muted">Reading the survey history…</div></div>',
-    { attrs: tabbed ? 'data-survey-history' : 'data-survey-history class="mt-s6"' });
+    { attrs: 'data-survey-history class="mt-s6"' });
 
   // Placement (tabbed): the sentence leads At a glance; the three "now" charts (what is inside, how it is
   // distributed) and the views are Contents; the two series over runs and the survey history are Over time.
   const html = {
-    single: indexBar + now + time + views + history,
+    // main's template joined the parts with a newline and four spaces; keep the markup identical
+    single: [indexBar, now, time, views, history].join('\n    '),
     indexBar,
     glance: since,
-    contents: `${now}<div class="mt-s6">${views}</div>`,
-    overTime: `${time}<div class="mt-s6">${history}</div>`,
+    contents: now + views,
+    overTime: time + history,
   };
 
   const mount = (host, { lazy }) => {

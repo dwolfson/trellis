@@ -44,7 +44,7 @@ async function setUp({ storage } = {}) {
   await openAllUnderstandingTabs(document);
   return { document, window };
 }
-const sections = (d) => [...d.querySelectorAll('#understanding-tabs-host details[data-collapsible]')];
+const sections = (d) => [...d.querySelectorAll('#understanding-tabs-host [data-understanding-tab-panel] > details[data-collapsible]')];
 const norm = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
 test('every database section is collapsible, open by default, and the survey history is last', async () => {
