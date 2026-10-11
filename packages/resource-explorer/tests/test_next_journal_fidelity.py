@@ -29,7 +29,7 @@ class TestOneTrailFormat:
         wl = (NEXT / "worklist.js").read_text(encoding="utf-8")
         assert "ctx.subTabs" in wl and "← back to questions" in wl
         app = (NEXT / "app.js").read_text(encoding="utf-8")
-        assert re.search(r"subTabs: SUB_TABS\.map", app)
+        assert re.search(r"subTabs: SUB_TABS(\.filter\(\(t\) => !t\.stageTab\))?\.map", app)
 
     def test_the_journal_note_names_the_list_and_stays(self):
         app = (NEXT / "app.js").read_text(encoding="utf-8")

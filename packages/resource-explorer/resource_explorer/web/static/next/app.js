@@ -79,6 +79,10 @@ import { openInvestigationPicker, scopeActWording } from '/static/next/investiga
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane } from '/static/next/stages/understanding.js';
 import { renderCurate, jumpToCurateSection } from '/static/next/stages/curate.js';
+// Stage-specific leading tabs (Brief S0, dormant): the gate and ids are a leaf module, the label counts and the
+// running-commit line need `state`.
+import { STAGE_TAB_ENTRIES, STAGE_TAB_IDS, isStageTabId, stageTabsOn } from '/static/next/stages/stage-tabs.js';
+import { tabCountsHtml, commitLineHtml, bindCommitLine } from '/static/next/stages/curate-tabs.js';
 import { inventoryHeaderText, nodeSourceLine, credentialLineText } from '/static/next/stages/scope-sources.js';
 import { surveySourceWord, threeNumberLine, fkTarget } from '/static/next/stages/db-report.js';
 // Analysis (RULING-SUBRESOURCES-PLACEMENT.md, 2026-09-22) -- Sub-Resources'
@@ -421,6 +425,9 @@ const SUB_TABS = [
   // to), unlike the dashed/deferred tabs below which name a real, just
   // unbuilt, capability.
   { id: 'context', label: 'Context', does: "Everything a person has supplied about this resource, each row signed, dated, and saying what it feeds", built: true, stages: ['enrichment'] },
+  // Curate's and Understanding's leading tabs (Brief S0). Hidden by visibleSubTabs() until stage-tabs.js's gate
+  // (STAGE_TABS_KINDS) names the resource kind, so the strip is unchanged while the gate is empty.
+  ...STAGE_TAB_ENTRIES,
   { id: 'questions', label: 'Questions', does: 'The question checklist', built: true },
   { id: 'survey', label: 'Survey & analyses', does: 'Survey definitions, with their fetch-step counts, and the analyses they run', built: true },
   { id: 'by_analysis', label: 'By analysis', does: 'Survey results grouped by analysis rather than by question', built: true },
@@ -1020,6 +1027,9 @@ export function renderIntentNav() {
 
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
+      // A stage with leading tabs (stage-tabs.js) always opens on its first one, never on a sub-tab carried
+      // over from another stage (owner, 2026-10-11: no landing preference).
+      const enteringTabbed = b.dataset.stage !== state.stage && stageTabsOn(b.dataset.stage, state.resourceType);
       state.stage = b.dataset.stage;
       if (stageClassOf(state.stage) === 'run') state.lastRunStage = state.stage;
       // ENRICHMENT-E1-CONTEXT-TAB: "Enrichment opens on Context, Context tab
@@ -1027,7 +1037,7 @@ export function renderIntentNav() {
       // ('questions') — a subTab the person deliberately chose on another
       // stage (Survey & analyses, Disposition, ...) survives the switch
       // unchanged, same as every other stage-to-stage navigation today.
-      if (state.stage === 'enrichment' && state.subTab === 'questions') state.subTab = 'context';
+      if (enteringTabbed || state.subTab === 'questions') state.subTab = stageDefaultSubTab();
       writeUrl();
       renderIntentNav();
       loadPane();
@@ -3136,11 +3146,22 @@ let _restoringUrl = false;
 /** Go to the Curate stage (where the Publish band and the commit table live). Used by a blocker that says
  *  "publish the repository first →" from another pane. */
 export function openCurateStage() {
+  return openCurate({ tab: 'curate_describe' });
+}
+
+/** Go to Curate, on a tab and optionally a section. While the stage-tabs gate is off for this kind the tab is
+ *  ignored and Curate opens as it always has (on the Questions frame); with it on, an unknown tab opens tab 1.
+ *  A section is jumped to once the pane is drawn (jumpToCurateSection queues it if the plan is still loading). */
+export function openCurate({ tab, section } = {}) {
   state.stage = 'curate';
-  state.subTab = 'questions';
+  state.subTab = stageTabsOn('curate', state.resourceType)
+    ? (STAGE_TAB_IDS.curate.includes(tab) ? tab : STAGE_TAB_IDS.curate[0])
+    : 'questions';
   writeUrl();
   renderIntentNav();
-  loadPane();
+  const loading = loadPane();
+  if (section) return Promise.resolve(loading).then(() => jumpToCurateSection(section));
+  return loading;
 }
 
 /** Switch to the Investigation stage on the current investigation's detail, for the publish gate's
@@ -3166,8 +3187,9 @@ function writeUrl() {
   // one is the default FOR THIS STAGE, so a bookmarked Enrichment URL
   // doesn't carry a redundant `tab=context` while still correctly carrying
   // `tab=questions` if that's what was deliberately chosen instead.
-  const defaultSubTab = state.stage === 'enrichment' ? 'context' : 'questions';
-  if (state.subTab !== defaultSubTab) p.set('tab', state.subTab);
+  // A stage with leading tabs always writes `tab=`, so a shared link names the sender's tab, not "the default".
+  const defaultSubTab = stageDefaultSubTab();
+  if (state.subTab !== defaultSubTab || stageTabsOn(state.stage, state.resourceType)) p.set('tab', state.subTab);
   if (state.workListSlug) p.set('worklist', state.workListSlug);
   if (state.activePerspectives.size) p.set('perspectives', [...state.activePerspectives].join(','));
   const url = `${location.pathname}${p.toString() ? `?${p}` : ''}`;
@@ -3187,7 +3209,8 @@ function readUrl() {
     // Context, same as clicking into Enrichment from the nav (see that
     // click handler's own comment) — the URL restore path was the one place
     // this default did not reach.
-    else if (state.stage === 'enrichment' && state.subTab === 'questions') state.subTab = 'context';
+    // A stage with leading tabs and no `tab=` opens on tab 1.
+    else if (state.subTab === 'questions' || stageTabsOn(state.stage, state.resourceType)) state.subTab = stageDefaultSubTab();
     if (p.get('worklist')) state.workListSlug = p.get('worklist');
     const persp = p.get('perspectives');
     if (persp) state.activePerspectives = new Set(persp.split(',').filter(Boolean));
@@ -3885,7 +3908,30 @@ export function removeConfirmationHtml(entityType, target) {
  *  router cannot disagree about which sub-tab exists where. */
 export function visibleSubTabs() {
   return SUB_TABS.filter((t) => !t.resourceTypes || t.resourceTypes.includes(state.resourceType))
-    .filter((t) => !t.stages || t.stages.includes(state.stage));
+    .filter((t) => !t.stages || t.stages.includes(state.stage))
+    // A leading tab is also gated on the resource kind (stage-tabs.js STAGE_TABS_KINDS; empty = dormant).
+    .filter((t) => !t.stageTab || stageTabsOn(state.stage, state.resourceType));
+}
+
+/** The ONE place a stage's default sub-tab is decided (it replaces four "enrichment ? context : questions"
+ *  ternaries): Enrichment opens on Context; a stage whose leading tabs are on for this kind opens on its first
+ *  (no landing preference); every other stage on Questions. */
+export function stageDefaultSubTab(stage = state.stage, kind = state.resourceType) {
+  if (stage === 'enrichment') return 'context';
+  return stageTabsOn(stage, kind) ? STAGE_TAB_IDS[stage][0] : 'questions';
+}
+
+/** Is `id` one of the leading tabs AND on the strip right now? (A stale `curate_*` id off Curate, or with the
+ *  gate off, is not: reconcileSubTabForStage() reverts it.) */
+export function isStageTabActive(id) {
+  return isStageTabId(id) && visibleSubTabs().some((t) => t.id === id);
+}
+
+/** The inputs the leading tabs' counts read. The Curate slices (S1/S2) fill `state.curate.counts` with
+ *  { view, plan } as they load; until then every count says "reading", never 0. */
+function stageTabCountCtx() {
+  const c = (state.curate && state.curate.counts) || {};
+  return { kind: state.resourceType, view: c.view || null, plan: c.plan || null };
 }
 
 /** A known sub-tab that is absent from the current strip (Context outside
@@ -3897,15 +3943,20 @@ export function visibleSubTabs() {
 export function reconcileSubTabForStage() {
   const known = SUB_TABS.some((t) => t.id === state.subTab);
   if (!known || visibleSubTabs().some((t) => t.id === state.subTab)) return false;
-  state.subTab = state.stage === 'enrichment' ? 'context' : 'questions';
+  state.subTab = stageDefaultSubTab();
   return true;
 }
 
 export function subTabsHtml() {
-  return `<div class="mb-s4 flex flex-wrap items-baseline gap-s3 font-heading text-subtab">
+  // The leading tabs' extras (rail marker, running-commit line, label counts) exist only while the gate is on
+  // for this stage and kind, so the rail is byte-identical to before otherwise.
+  const tabbed = stageTabsOn(state.stage, state.resourceType);
+  const labelOf = (t) => (t.stageTab ? `${t.label}${tabCountsHtml(t.id, stageTabCountCtx())}` : t.label);
+  const commitLine = tabbed && state.stage === 'curate' ? commitLineHtml(state.curate && state.curate.commitLine) : '';
+  return `<div class="mb-s4 flex flex-wrap items-baseline gap-s3 font-heading text-subtab"${tabbed ? ' data-subtab-rail' : ''}>
     ${visibleSubTabs().map((t) => {
       if (t.id === state.subTab) {
-        return `<span class="border-b border-accent pb-[2px] text-ink">${t.label}</span>`;
+        return `<span class="border-b border-accent pb-[2px] text-ink">${labelOf(t)}</span>`;
       }
       // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: a sub-tab's own `built`
       // flag said nothing about whether the STAGE it's shown under is
@@ -3914,12 +3965,12 @@ export function subTabsHtml() {
       // AND the current stage are built.
       const stageDef = STAGES.find((s) => s.id === state.stage);
       if (stageDef?.built && (t.id === 'questions' || t.built)) {
-        return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${t.label}</button>`;
+        return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${labelOf(t)}</button>`;
       }
       return `<button data-deferred="${t.id}"${deferredAttrs(false, { title: `${t.does} — not built in /next`, extraStyle: 'padding-bottom:1px' })}
-        class="cursor-pointer bg-transparent text-ink-muted">${t.label}</button>`;
+        class="cursor-pointer bg-transparent text-ink-muted">${labelOf(t)}</button>`;
     }).join('')}
-  </div>`;
+  </div>${commitLine}`;
 }
 
 /* The header no longer says "N of these are not built in /next". That
@@ -3939,6 +3990,7 @@ export function bindSubTabs() {
     writeUrl();
     loadPane();
   }));
+  bindCommitLine(el);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -4789,12 +4841,8 @@ export function bindSurveyRowActions(el, all, slug) {
     }));
   el.querySelectorAll('[data-catalog-now]').forEach((b) =>
     b.addEventListener('click', () => {
-      // Curate holds the Catalog button; this only goes there.
-      state.stage = 'curate';
-      state.subTab = 'questions';
-      writeUrl();
-      renderIntentNav();
-      loadPane();
+      // Curate holds the Catalog button; this only goes there (Contents, once the tabs are on).
+      openCurate({ tab: 'curate_contents' });
     }));
 }
 
@@ -4912,6 +4960,19 @@ function nativeProcessesSectionHtml(nativeProcesses) {
  * live state, rather than a list of survey definitions or a per-intent
  * results board.
  */
+/** The leading tabs' pane, as a STUB (Brief S0): the rail, the commit line under it, the resource header and one
+ *  host per tab. S1/S2 (Curate) and S4 (Understanding) draw the sections into the host; nothing is moved here. */
+async function loadStageTabPane() {
+  const el = $('content');
+  const slug = state.selectedSlug;
+  el.innerHTML = `${subTabsHtml()}
+    ${slug ? `<div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>` : ''}
+    <div data-stage-tab-panel="${esc(state.subTab)}" class="text-caveat text-ink-muted">not built yet</div>`;
+  bindSubTabs();
+  if (slug) bindResourceHeader();
+}
+
 async function loadContextPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -7996,7 +8057,8 @@ async function loadPane() {
     try {
       await openWorkList({
         el,
-        subTabs: SUB_TABS.map((t) => ({ id: t.id, label: t.label })),
+        // The leading tabs (stage-tabs.js) are not columns of the work-list grid.
+        subTabs: SUB_TABS.filter((t) => !t.stageTab).map((t) => ({ id: t.id, label: t.label })),
         stage: state.stage,
         stageLabel: STAGES.find((s) => s.id === state.stage)?.label || state.stage,
         perspectives: state.activePerspectives,
@@ -8051,6 +8113,7 @@ async function loadPane() {
   // live, and leaving the marker up would have been marking a surface as
   // absent while its data sat one GET away.
   if (state.stage === 'understanding') {
+    if (isStageTabActive(state.subTab)) { await loadStageTabPane(); renderPerspectiveRow(); return; }
     await loadChartsPane();
     renderPerspectiveRow();
     return;
@@ -8086,6 +8149,8 @@ async function loadPane() {
   if (reconcileSubTabForStage()) writeUrl();
   syncRailToSelection();   // the reconcile may have moved the sub-tab
   if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
+  // Curate's and Understanding's leading tabs (Brief S0): loader stubs until the slices put the sections in.
+  if (isStageTabActive(state.subTab)) { await loadStageTabPane(); return; }
   // ENRICHMENT-E1-CONTEXT-TAB: Context is its own pane, not a Questions-
   // engine variant — see loadContextPane() below.
   if (state.subTab === 'context') { await loadContextPane(); return; }

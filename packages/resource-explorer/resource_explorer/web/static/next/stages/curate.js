@@ -32,8 +32,11 @@ import { admissionHtml, admissionNoteHtml } from '/static/next/stages/curate-adm
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
   openMembers, fmtSeconds, tokens, mermaidForKroki, themeSvgElement, deferredAttrs,
-  apiEntityType, openCurrentInvestigationStage,
+  apiEntityType, openCurrentInvestigationStage, openCurate,
 } from '/static/next/app.js';
+import { stageTabsOn, tabOfSection } from '/static/next/stages/stage-tabs.js';
+import { setCommitLine, commitLineFromRecord } from '/static/next/stages/curate-tabs.js';
+import { contentsChosen } from '/static/next/stages/curate-counts.js';
 
 
 
@@ -137,6 +140,13 @@ const LAZY_SECTIONS = {
  *  more, unless the person has scrolled in the meantime. A click before the plan is drawn is queued. */
 export function jumpToCurateSection(id) {
   state.curate = state.curate || {};
+  // With the leading tabs on, a section lives on one tab (TAB_OF_SECTION): switch to it first, then open, load
+  // and scroll. Dormant (no-op) while the gate is off, so the single-page Curate jumps exactly as before.
+  const tab = tabOfSection(id);
+  if (tab && stageTabsOn('curate', state.resourceType) && state.subTab !== tab) {
+    openCurate({ tab, section: id });
+    return true;
+  }
   const el = document.getElementById(id);
   if (!el) { state.curate.pendingJump = id; return false; }
   if (el.tagName === 'DETAILS') { el.open = true; rememberSection(el.id, true); }
@@ -349,9 +359,9 @@ export function curateSubsHtml(scope, ui) {
 /** The standing count of what is chosen for publishing, in the section header, with its cue: a choice is saved
  *  as it is made, so this stays on screen (the per-row "saved" note is only transient). */
 export function savedCountHtml(view) {
-  const m = view && view.manifest;
-  if (!m) return '';
-  const n = (m.files || 0) + (m.folders || 0);
+  const c = contentsChosen('repo', view);   // the same function the Contents tab's label uses
+  if (c.state !== 'count') return '';
+  const n = c.n;
   return ` <span data-scope-saved-count class="shrink-0 whitespace-nowrap rounded-sm border border-rule-strong px-2 text-provenance text-ink" title="Each choice is saved in Resource Explorer the moment you press Include or Leave out. Nothing reaches Egeria until you press Publish.">${n} included · saved</span>`;
 }
 
@@ -661,6 +671,7 @@ export async function renderCurate(slug) {
         });
         plan.commits = [out.curation, ...(plan.commits || [])];
         latest = out.curation;
+        setCommitLine(commitLineFromRecord('repo', out.curation));
         state.curate.pressedId = out.curation.id;     // pressed here: this one is the current state
         draw();
         await pollActivity(out.activity_id, { onTick: async () => {
@@ -668,12 +679,14 @@ export async function renderCurate(slug) {
             const rec = await getCuration(slug, out.curation.id);
             plan.commits[0] = rec;
             latest = rec;
+            setCommitLine(commitLineFromRecord('repo', rec));
             const slot = host.querySelector('[data-curate-record]');
             if (slot) slot.outerHTML = curateRecordHtml(rec);
           } catch { /* the next tick will */ }
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
         latest = plan.commits[0];
+        setCommitLine(commitLineFromRecord('repo', latest));
         try { plan.survey = (await getCuratePlan(slug)).survey || plan.survey; } catch { /* the table keeps the survey it had */ }
         try { await scope.load(); } catch { /* the rows keep the state they had; the next read will say */ }
         draw();

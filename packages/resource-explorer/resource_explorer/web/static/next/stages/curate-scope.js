@@ -29,6 +29,8 @@ import {
   postCatalogueCommit, getCatalogueCommitRecord, getCatalogueLatestCommit, postCatalogueReadBack,
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
+import { contentsChosen } from '/static/next/stages/curate-counts.js';
+import { setCommitLine, commitLineFromRecord } from '/static/next/stages/curate-tabs.js';
 import { glyphSpan } from '/static/next/glyphs.js';
 import { SCOPE_COLS, MANIFEST_COLS } from '/static/next/stages/scope-columns.js';
 import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize } from '/static/next/colresize.js';
@@ -134,7 +136,8 @@ export function commitHeaderText(view) {
 export function scopeHeaderText(view) {
   if (view.declared && view.declared.declared) {
     const c = view.counts || {};
-    return `Your scope: ${c.schemas_catalogue} of ${c.schemas_offered} schemas · declared by ${view.declared.by} ${md(view.declared.at)}${view.sources ? ` · ${sourcesClause(view)}` : ''}`;
+    const chosen = contentsChosen('db', view);   // the same function the Contents tab's label uses
+    return `Your scope: ${chosen.state === 'count' ? chosen.n : c.schemas_catalogue} of ${c.schemas_offered} schemas · declared by ${view.declared.by} ${md(view.declared.at)}${view.sources ? ` · ${sourcesClause(view)}` : ''}`;
   }
   return `Your scope: none declared yet · ${sourcesClause(view)}`;
 }
@@ -800,6 +803,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     if (mode === 'full') {
       commitUi = { slug, id: rec.id, rec, polling: !latest.terminal, sig: stepSig(rec), resumed: true };
       resumedPoll = !latest.terminal;
+      setCommitLine(commitLineFromRecord('db', rec));
     } else {
       commitUi = { slug, id: rec.id, rec: null, polling: false, sig: stepSig(rec), last: latest, resumed: true };
     }
@@ -851,6 +855,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
       await postCatalogueReadBack(slug);
       const rec = await getCatalogueCommitRecord(slug, commitUi.id);
       commitUi.rec = rec;
+      setCommitLine(commitLineFromRecord('db', rec));
       paintSteps();
       await onSteps(rec);
       if (!surveyOpen(rec) && stopWatch) { stopWatch(); stopWatch = null; }
@@ -886,6 +891,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     let rec;
     try { rec = await getCatalogueCommitRecord(slug, commitUi.id); } catch (err) { say(`could not read the commit record: ${err.message}`, true); offerSignIn(err); return; }
     commitUi.rec = rec;
+    setCommitLine(commitLineFromRecord('db', rec));
     paintSteps();
     if (rec.state === 'done' || rec.state === 'failed') {
       commitUi.polling = false;
