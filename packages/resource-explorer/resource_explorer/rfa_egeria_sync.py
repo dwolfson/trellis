@@ -233,7 +233,14 @@ def reconcile_rfa_actions(registry) -> None:
         log.exception("RFA reconciliation: write-direction retry pass failed")
 
     try:
+        from resource_explorer.workflows.egeria_work_access import note_writes, writes_refusal
+
         for row in registry.list_unsynced_rfa_notes():
+            # Brief Z3 round 2 (F3): the retried NoteLog/Note write, by the no-requester rule (nobody recorded).
+            why = writes_refusal(registry, note_writes(row))
+            if why:
+                registry.mark_rfa_note_sync_error(row.get("id", ""), why)
+                continue
             sync_rfa_note(registry, row)
     except Exception:
         log.exception("RFA reconciliation: note write-direction retry pass failed")

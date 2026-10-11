@@ -355,6 +355,14 @@ def update_rfa_note(rfa_id: str, body: RfaNoteRequest) -> dict:
     if registry.get_activity(entry_id) is None:
         raise HTTPException(status_code=404, detail="No activity entry backs this RFA id")
 
+    # Brief Z3 round 2 (F3): the NoteLog and Note this creates on the RFA's ToDo (CREATE, judged on the ToDo as
+    # their anchor), checked as the caller before the local write, the same shape as the status route.
+    from resource_explorer.workflows.egeria_work_access import note_writes, writes_access
+
+    d = writes_access(registry, note_writes(registry.get_rfa_action(rfa_id)))
+    if not d.allowed:
+        raise HTTPException(status_code=403, detail=d.reason)
+
     registry.upsert_rfa_note(rfa_id=rfa_id, entry_id=entry_id, annotation_index=annotation_index, notes=body.notes)
 
     try:

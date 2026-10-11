@@ -56,6 +56,10 @@ class ElementWrite:
     label: str = ""
     anchor_guid: str = ""
     creation_zones: tuple[str, ...] = ()
+    #: Round 2: an EXISTING element judged on the zones an earlier write of the same press moves it to (None: its
+    #: own). `()` with `foreign_after`: RE's own zones (`foreign_after`) are cleared and the rest stay.
+    zones_after: Optional[tuple[str, ...]] = None
+    foreign_after: tuple[str, ...] = ()
 
 
 def _curate():
@@ -82,7 +86,9 @@ def writes_access(registry, writes: Iterable[ElementWrite], *, entity_type: str 
         for w in writes:
             d = wc.curation_access(registry, entity_type, slug, "", operations=w.operations, reader=reader,
                                    element_guid=w.guid, anchor_guid=w.anchor_guid,
-                                   creation_zones=None if (w.guid or w.anchor_guid) else list(w.creation_zones))
+                                   creation_zones=None if (w.guid or w.anchor_guid) else list(w.creation_zones),
+                                   **({"zones_after": list(w.zones_after), "foreign_after": tuple(w.foreign_after)}
+                                      if w.guid and w.zones_after is not None else {}))
             if not d.allowed:
                 if w.label and d.basis != wc.BASIS_ANONYMOUS:
                     return wc.AccessDecision(False, f"{w.label}: {d.reason}", d.basis, d.zones)
@@ -245,6 +251,21 @@ def reclassify_project_write(project_guid: str, from_kind: str) -> ElementWrite:
     return ElementWrite(project_guid, ops)
 
 
+def reclassify_kind_after_move(project_guid: str, from_kind: str, target: Iterable[str],
+                               own_zones: Iterable[str] = ()) -> ElementWrite:
+    """Round 2 (F6): the Project's kind change judged on the zones the move puts it in, as Egeria judges it (the
+    reclassifier moves the zones first, then declassifies the old kind and classifies the new one, each checked
+    on the element's zones at that moment). `own_zones`: RE's zones a loosening with no configured zone clears."""
+    from resource_explorer.registry import ProjectRegistry
+
+    z = _ops()
+    ops = (z.CLASSIFY_OPERATION,)
+    if from_kind and from_kind in ProjectRegistry.PROJECT_CLASSIFICATIONS:
+        ops += (z.DECLASSIFY_OPERATION,)
+    return ElementWrite(project_guid, ops, label="the investigation Project in its new zones",
+                        zones_after=tuple(target), foreign_after=tuple(own_zones))
+
+
 def report_write(report_guid: str) -> ElementWrite:
     """A member's SurveyReport moved with a reclassify: PUBLISH (its zone change)."""
     return ElementWrite(report_guid, (_ops().PUBLISH_OPERATION,))
@@ -288,6 +309,17 @@ def todo_writes(rfa_row: Optional[dict]) -> list[ElementWrite]:
     if guid:
         return [ElementWrite(guid, (z.UPDATE_OPERATION,))]
     return [ElementWrite("", (z.CREATE_OPERATION,), creation_zones=())]
+
+
+def note_writes(rfa_row: Optional[dict]) -> list[ElementWrite]:
+    """Round 2 (F3): `rfa_egeria_sync.sync_rfa_note`'s writes, a NoteLog (the first time) and a Note, both created
+    ANCHORED to the RFA's ToDo. They are not feedback types: Egeria judges them as anchored members, CREATE on the
+    anchor with the user as maintainer (`validateUserForAnchorMemberCreate` :1965-1990). Nothing is written while
+    the RFA has no ToDo yet (the note waits for one), so nothing is checked."""
+    guid = str((rfa_row or {}).get("egeria_todo_guid") or "")
+    if not guid:
+        return []
+    return [ElementWrite("", (_ops().CREATE_OPERATION,), anchor_guid=guid)]
 
 
 def per_member(items: Iterable, refusal: Callable[[object], str]) -> tuple[list, list[tuple[object, str]]]:

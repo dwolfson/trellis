@@ -449,9 +449,17 @@ class InvestigationReclassifier:
         guids, unreadable = self._report_guids(slug)
         refused_reports: dict[str, str] = {}
         if access is not None:
-            from resource_explorer.workflows.egeria_work_access import reclassify_project_write, report_write
+            from resource_explorer.egeria_identity import draft_zones, private_zone
+            from resource_explorer.workflows.egeria_work_access import (
+                reclassify_kind_after_move, reclassify_project_write, report_write,
+            )
 
-            why = access([reclassify_project_write(project_guid, res.from_classification)])
+            # Round 2 (F6): the kind change is also judged on the zones the move puts the Project in, which is
+            # where Egeria checks it; a non-owner's tightening is refused here, before anything moves.
+            target_after = self._target_zones(res.direction, owner)
+            own = (private_zone(), *draft_zones(), *([owner] if owner else []))
+            why = access([reclassify_project_write(project_guid, res.from_classification),
+                          reclassify_kind_after_move(project_guid, res.from_classification, target_after, own)])
             if why:
                 res.not_permitted = why
                 res.errors.append(f"the investigation Project: {why}. Nothing was changed.")

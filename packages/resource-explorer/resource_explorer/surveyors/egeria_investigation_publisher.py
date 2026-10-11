@@ -229,6 +229,16 @@ def is_private_investigation(inv: dict) -> bool:
     )
 
 
+def _unattached_reason(row: dict, unknown: str = "unknown error") -> str:
+    """Why a membership row is not attached. A refusal by the access check (Brief Z3, "not permitted · ...") is
+    dead at once and never retried, so it is said in its own words with no retry clause; anything else is a
+    failed attach the outbox retries."""
+    error = str(row.get("last_error") or "")
+    if error.startswith("not permitted"):
+        return error
+    return f"attach failed ({error or unknown}) — queued for retry, see Admin → Publish Queue"
+
+
 @dataclass
 class PromotionResult:
     """What actually happened, step by step."""
@@ -634,10 +644,7 @@ class EgeriaInvestigationPublisher:
             else:
                 res.members_unlinkable.append({
                     **{k: v for k, v in m.items() if k != "member_guid"},
-                    "reason": (
-                        f"attach failed ({row['last_error'] or 'unknown error'}) — "
-                        f"queued for retry, see Admin → Publish Queue"
-                    ),
+                    "reason": _unattached_reason(row),
                 })
         if summary.get("failed") or summary.get("dead"):
             log.warning("Investigation %s: %d membership(s) queued for retry",
@@ -751,9 +758,7 @@ class EgeriaInvestigationPublisher:
                 out.append({**base, "state": "not_linked",
                             "reason": "not attached — use Link members"})
             else:
-                out.append({**base, "state": "not_linked", "reason": (
-                    f"attach failed ({row.get('last_error') or 'pending'}) — "
-                    "queued for retry, see Admin → Publish Queue")})
+                out.append({**base, "state": "not_linked", "reason": _unattached_reason(row, "pending")})
         counts = {s: sum(1 for o in out if o["state"] == s)
                   for s in ("linked", "not_linked", "could_not_tell")}
         return {"slug": investigation_slug, "bound": bound, "members": out, "counts": counts}
