@@ -2466,6 +2466,32 @@ database_questions:
   catalog_history: '2026-10-02: db_hub_tables built as a zero-fetch db_derived check (Backlog "db_hub_tables
     is most of the way there for free"); the row said GAP: db_hub_tables (proposed) until then.'
   retired: false
+- question: Are this database's planner statistics current?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Expert
+  - Admin
+  purposes:
+  - Maintain
+  - Learn
+  levels:
+  - resource
+  answering:
+    kind: analysis
+    analysis_ids:
+    - db_statistics_freshness
+    checks: []
+    note: db_statistics_freshness
+  answering_mechanism: Database Catalog Query
+  rationale: 'Per table: never analyzed, last analyzed N days ago, and the rows changed since that analyze
+    as a share of live rows against autovacuum''s own trigger (50 + 0.1 x rows by default), with a per-schema
+    roll-up. Read from the stored table-activity rows; no new fetch. Never analyzed (Postgres NULL) and
+    not read are kept apart.'
+  catalog_history: '2026-10-10: db_statistics_freshness built as a zero-fetch db_derived check (backlog
+    7i); the per-table analyze, vacuum, live/dead and change-count values also ride on each table''s measurement
+    annotation.'
+  retired: false
 - question: Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much
     of the data sits in them?
   stage: Discovery
