@@ -1,6 +1,6 @@
 /* Counts for the stage-specific leading tabs (Curate: Contents, Structure).
  *
- * ONE SOURCE (HANDOFF-RE-OPERATIONS.md 5b): a number on a tab label and the same number in its section header
+ * ONE SOURCE (the RE working rules, section 5b): a number on a tab label and the same number in its section header
  * come from the functions in this file, nothing else. The section headers call these too (curate.js
  * `savedCountHtml`, curate-scope.js `scopeHeaderText`), so the two cannot drift.
  *
