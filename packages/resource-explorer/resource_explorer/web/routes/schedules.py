@@ -192,6 +192,12 @@ def run_schedule_now(entity_type: str, slug: str, analysis_id: str) -> dict:
     }
 
 
+def _signed_in_user() -> str:
+    from resource_explorer.run_queue import requested_by
+
+    return requested_by() or ""
+
+
 @router.post("/{entity_type}/{slug}")
 def save_schedule(entity_type: str, slug: str, entry: ScheduleEntry) -> dict:
     """Create or update a schedule for a specific analysis on a resource."""
@@ -207,9 +213,9 @@ def save_schedule(entity_type: str, slug: str, entry: ScheduleEntry) -> dict:
     _require_resource(registry, entity_type, slug)
     if entry.enabled:
         # Brief Z2 round 2: a scheduled run publishes what it measures (auto-publish when the resource has an
-        # Egeria Project), so the person creating the schedule must be allowed to publish the resource. The run
-        # itself has no requester (the creator is not recorded: that needs DDL), so it follows the no-requester
-        # rule at each run: open only while no zone is in use.
+        # Egeria Project), so the person creating the schedule must be allowed to publish the resource. Round 3:
+        # they are recorded as `created_by` and every timer run runs as them, so the run re-checks their rights;
+        # a schedule with no creator (from before) follows the no-requester rule.
         from resource_explorer.web.routes.curate import require_resource_write
         require_resource_write(registry, entity_type, slug, "publish")
     registry.save_schedule(
@@ -219,6 +225,7 @@ def save_schedule(entity_type: str, slug: str, entry: ScheduleEntry) -> dict:
         schedule=entry.schedule,
         enabled=entry.enabled,
         target_kind=entry.target_kind,
+        created_by=_signed_in_user(),       # Brief Z2 round 3: a timer run runs as this person
     )
     hint = _cost_hint(entity_type, entry.analysis_id)
     out = {"status": "ok", "entity_type": entity_type, "entity_slug": slug,

@@ -3354,6 +3354,23 @@ class ProjectRegistry:
                 conn.execute(
                     "ALTER TABLE resource_schedules ADD COLUMN target_kind "
                     "TEXT NOT NULL DEFAULT 'analysis'")
+            # Migration: created_by — who created (or last enabled) the schedule. Brief Z2 round 3; the
+            # project owner approved the column in chat on 2026-10-11 ("Yes to column"). A timer run runs as
+            # this person (scheduler._run_due), so the run-time access re-check judges THEM; NULL (every
+            # schedule from before) follows the no-requester rule (open only with no zone in use).
+            # Nullable, no default: an ADD COLUMN that rewrites nothing. lock_timeout as the BIGINT widening:
+            # a table another process holds fails fast instead of queueing every later reader behind it.
+            if "created_by" not in existing_sched:
+                if conn.is_postgres:
+                    conn.execute("SET LOCAL lock_timeout = '10s'")
+                try:
+                    conn.execute("ALTER TABLE resource_schedules ADD COLUMN created_by TEXT")
+                except Exception as exc:
+                    if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
+                        raise RuntimeError(
+                            "Could not add resource_schedules.created_by: another process holds a lock on "
+                            "resource_schedules; stop other Resource Explorer processes and restart.") from exc
+                    raise
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS survey_definition_cache (
                     entity_type            TEXT NOT NULL,
@@ -5510,8 +5527,13 @@ class ProjectRegistry:
         schedule: str,
         enabled: bool = True,
         target_kind: str = TARGET_ANALYSIS,
+        created_by: str | None = None,
     ) -> None:
         """Schedule an analysis or a Survey Definition.
+
+        `created_by` (Brief Z2 round 3): the signed-in person creating or enabling it; a timer run runs as them.
+        Recorded on creation, and replaced when the schedule is saved enabled (whoever turns it on owns what it
+        writes); a save that disables it keeps the earlier one.
 
         `analysis_id` is the target reference either way — an analysis id, or a
         survey's qualified name when target_kind is "survey". Named for its
@@ -5528,14 +5550,16 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO resource_schedules
                    (entity_type, entity_slug, analysis_id, schedule, enabled,
-                    next_run, target_kind)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                    next_run, target_kind, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(entity_type, entity_slug, analysis_id) DO UPDATE SET
                      schedule=excluded.schedule, enabled=excluded.enabled,
                      next_run=excluded.next_run,
-                     target_kind=excluded.target_kind""",
+                     target_kind=excluded.target_kind,
+                     created_by=CASE WHEN excluded.enabled = 1 THEN excluded.created_by
+                                     ELSE resource_schedules.created_by END""",
                 (entity_type, entity_slug, analysis_id, schedule, int(enabled),
-                 next_run, target_kind),
+                 next_run, target_kind, (created_by or "").strip() or None),
             )
 
     def update_schedule_after_run(
