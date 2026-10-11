@@ -30,6 +30,15 @@ LONG_500 = ("SERVER_ERROR_500 => Egeria detected error: `https://localhost:9443/
 
 
 @pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: the commit asks `curation_access` for the database and each schema. These tests are about proof
+    rows, so no zone is in use: the access reads are faked open at the client boundary."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
     monkeypatch.setattr(cc, "_sleep", lambda s: None)
 
