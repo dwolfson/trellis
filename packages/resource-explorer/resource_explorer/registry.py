@@ -5367,6 +5367,29 @@ class ProjectRegistry:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_materialized_blueprint_lookups(self, entity_type: str, entity_slug: str) -> tuple[dict, dict]:
+        """(by_key, by_identity) from ONE read, each answering what the per-row method it replaces answered:
+        by_key[f"{perspective}::{cluster_name}"] is the FIRST row get_materialized_blueprint's fetchone would
+        return, and by_identity[qualified_name] the newest row by materialized_at, as
+        get_materialized_blueprint_by_identity's ORDER BY gives. Read only."""
+        with self._conn() as conn:
+            rows = [dict(r) for r in conn.execute(
+                """SELECT * FROM architecture_materialized_blueprints
+                   WHERE entity_type=? AND entity_slug=?""",
+                (entity_type, entity_slug),
+            ).fetchall()]
+        by_key: dict[str, dict] = {}
+        for r in rows:
+            by_key.setdefault(f"{r['perspective']}::{r['cluster_name']}", r)
+        by_identity: dict[str, dict] = {}
+        for r in sorted(rows, key=lambda x: x["materialized_at"], reverse=True):   # stable: ties keep read order
+            by_identity.setdefault(r["qualified_name"], r)
+        return by_key, by_identity
+
+    def get_materialized_blueprints_by_identity(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
+        """{qualified_name: newest row}: the bulk form of get_materialized_blueprint_by_identity."""
+        return self.get_materialized_blueprint_lookups(entity_type, entity_slug)[1]
+
     def get_materialized_blueprints(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
         """{f"{perspective}::{cluster_name}": row} for every blueprint this
         resource has ever materialized — mirrors get_materialized_components'

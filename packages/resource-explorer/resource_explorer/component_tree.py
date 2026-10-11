@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.surveyors.arch_recovery import scope_hierarchy
@@ -38,9 +40,25 @@ LOW_CONFIDENCE = 50
 _NOT_A_PATH = {"", ".", "*"}
 
 
+#: An `_architecture_recovery_results(max_depth=None)` the caller on this context already built and keeps (for
+#: its `blueprints`), so `_components` does not build it again. A context variable, not a parameter, because
+#: `_components(registry, slug)` is replaced by two-argument stand-ins in many tests.
+_shared_recovery_results: ContextVar[dict | None] = ContextVar("_shared_recovery_results", default=None)
+
+
+@contextmanager
+def sharing_recovery_results(results: dict):
+    token = _shared_recovery_results.set(results)
+    try:
+        yield
+    finally:
+        _shared_recovery_results.reset(token)
+
+
 def _components(registry: ProjectRegistry, slug: str) -> list[dict]:
     from resource_explorer.surveyors.repo_survey_definition_adapter import _architecture_recovery_results
-    res = _architecture_recovery_results(registry, slug, max_depth=None) or {}
+    shared = _shared_recovery_results.get()
+    res = (shared if shared is not None else _architecture_recovery_results(registry, slug, max_depth=None)) or {}
     comps = [c for c in (res.get("components") or []) if (c.get("path") or "") not in _NOT_A_PATH]
     # A person's reclassification moves a node between the components and the runtime dependencies at once
     # (DESIGN-BLUEPRINT-NODE-ADMISSION.md), without waiting for the next survey.

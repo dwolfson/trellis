@@ -3170,6 +3170,7 @@ def _recovery_snapshot_lookup(key: tuple, fp: tuple) -> dict | None:
 @read_memo.memoize
 def _architecture_recovery_results(
     registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
+    snapshot: dict | None = None,
 ) -> dict:
     """Phase 1 plan §4.4 — the results view. Reads back what
     repo_arch_detect/repo_arch_coupling wrote into the generic findings/
@@ -3194,7 +3195,7 @@ def _architecture_recovery_results(
     `max_depth=None` for the full, unprojected hierarchy (e.g. component-
     scoped analytics, design §6, which wants the fine-grained partition).
     """
-    snapshot = _recovery_snapshot(registry, slug)
+    snapshot = snapshot if snapshot is not None else _recovery_snapshot(registry, slug)
     scopes = _recovery_scopes(registry, slug, "component", snapshot)
     components = []
     slug_to_path: dict[str, str] = {}
@@ -3625,6 +3626,7 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
     verdicts = registry.get_component_verdicts("repo", slug)
     materialized_components = registry.get_materialized_components("repo", slug)
     materialized_blueprints = registry.get_materialized_blueprints("repo", slug)
+    first_by_key, materialized_by_identity = registry.get_materialized_blueprint_lookups("repo", slug)
     slug_to_scope = _blueprint_slug_to_scope_map(registry, slug, snapshot)
     # The shape each cluster WOULD be written in (container or contents, and why), so the accept dialog
     # can name it before the write. Content-pack elements are only knowable from Egeria at the write.
@@ -3664,10 +3666,12 @@ def _candidate_blueprints_results(registry, slug: str, snapshot: dict | None = N
         for an identifier (another LIVE cluster of this kind already holds the repository's identity, or is
         accepted and will take it at the next Publish)."""
         base = identity_qualified_name("repo", slug, perspective)
-        own = registry.get_materialized_blueprint("repo", slug, perspective, name)
+        # Both lookups are served from rows read once above (no per-blueprint query): `own` is the row
+        # for this (perspective, name) and `other` the newest row recorded under the identity.
+        own = first_by_key.get(f"{perspective}::{name}")
         if own and own.get("guid"):
             return {"needs_identifier": False, "kind_word": kind_word(perspective), "sentence": ""}
-        other = registry.get_materialized_blueprint_by_identity("repo", slug, base)
+        other = materialized_by_identity.get(base)
         if other and other.get("cluster_name") in live_by_perspective.get(perspective, set()):
             needs = other.get("cluster_name") != name
             return {"needs_identifier": needs, "kind_word": kind_word(perspective),
