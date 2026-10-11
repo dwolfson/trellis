@@ -41,11 +41,13 @@ def test_the_column_is_added_once_and_a_second_init_is_a_no_op(tmp_path):
     assert "created_by" in first and first == second
 
 
-def test_the_migration_is_idempotent_on_postgres(pg_registry):
+def test_the_migration_is_idempotent_on_postgres(pg_registry, monkeypatch):
     from resource_explorer.registry import ProjectRegistry as PR
 
     assert "resource_explorer_test" in pg_registry.database_url                # the throwaway schema only
     before = _columns(pg_registry)
+    # A process initialises a Postgres URL once (`_pg_schema_ready`); forget that, so the init really runs again.
+    monkeypatch.setattr(PR, "_pg_schema_ready", set())
     again = PR(database_url=pg_registry.database_url)                         # the init runs its migrations again
     assert "created_by" in before and _columns(again) == before
 
@@ -132,3 +134,20 @@ def test_a_schedule_with_no_creator_follows_the_no_requester_rule(registry, monk
     _due(registry, None)
     assert _run_due_judging(registry, monkeypatch) == [
         (None, f"not permitted · {NO_REQUESTER_WORDS}, and zone {SECURED} is in use")]
+
+
+def test_two_processes_starting_together_both_add_the_column_safely(pg_registry, monkeypatch):
+    """Round 4: both see the column missing; the second ADD must not fail (ADD COLUMN IF NOT EXISTS)."""
+    from resource_explorer.registry import ProjectRegistry as PR
+
+    assert "resource_explorer_test" in pg_registry.database_url                # the throwaway schema only
+    real = PR._get_table_columns
+
+    def blind(self, conn, table):
+        cols = real(self, conn, table)
+        return cols - {"created_by"} if table == "resource_schedules" else cols
+    monkeypatch.setattr(PR, "_get_table_columns", blind)
+    monkeypatch.setattr(PR, "_pg_schema_ready", set())                         # a second process: init again
+    again = PR(database_url=pg_registry.database_url)                          # the column is already there
+    monkeypatch.setattr(PR, "_get_table_columns", real)
+    assert "created_by" in _columns(again)

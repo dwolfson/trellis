@@ -316,6 +316,7 @@ class TestRunsCommands:
         assert result.exit_code == 0, result.output
         rows = registry.list_runs(state="queued")
         assert rows[0]["kind"] == "analysis_run"
+        assert rows[0]["requested_by"] == "alice"            # the signed-in person, never unattributed
 
     def test_enqueue_rejects_an_unknown_kind(self, runner, registry):
         result = runner.invoke(app, ["runs", "enqueue", "teleport", "{}"])

@@ -89,13 +89,15 @@ def _step(rec, name):
 
 # ── (2) the database element publish_database hands back is judged ─────────────────────────────────────
 
-def test_a_database_adopted_by_bare_name_is_judged_before_anything_hangs_off_it(world, monkeypatch):
+def test_a_database_element_other_than_the_one_judged_is_judged_before_anything_hangs_off_it(world, monkeypatch):
     _choose(world, "sales", "catalogue")
     fake = world["fake"]
     real = fake.publish_database
 
-    def adopts_another(db_entity, *a, **k):        # the surveyor adopts ANOTHER host's database by bare name
+    def adopts_another(db_entity, *a, registry=None, **k):   # the publish hands back another element (a race)
         pub = real(db_entity, *a, **k)
+        if registry is not None:                                # and records it, as the real surveyor does
+            registry.set_database_egeria_guid(db_entity.slug, "g-elsewhere")
         return PublishedDatabase(pub.server_guid, "g-elsewhere", pub.server_name, pub.database_qualified_name)
     monkeypatch.setattr(fake, "publish_database", adopts_another)
     _secure(world["access"], "g-elsewhere", {"DEFAULT": ["dbas"]})
@@ -235,3 +237,56 @@ def test_a_doc_source_row_without_a_requester_is_checked_as_its_runs(registry, a
     eo.drain_outbox(registry, MagicMock(), lambda qn: "", element_id=row_id, identity=MagicMock(kind="daemon"))
     row = next(r for r in registry.list_outbox_elements(limit=10) if r["id"] == row_id)
     assert applied == [] and row["last_error"] == f"not permitted · zone {SECURED} does not grant dana attach in Egeria"
+
+
+# ── round 4: judged BEFORE the write when it can be; any check failure refuses; the pointer is put back ──
+
+def test_a_database_found_before_the_publish_is_judged_before_publish_database(world, monkeypatch):
+    _choose(world, "sales", "catalogue")
+    fake = world["fake"]
+    real_read = fake.read_element
+    db_qn = "PostgreSQL Relational Database::host.docker.internal:5442::shop"
+    reads = {"n": 0}
+
+    def racing_read(qn, *a, **k):                    # the run's step 0 finds none; by step 1 another process made it
+        if qn == db_qn and reads["n"] is not None:
+            reads["n"] += 1
+            if reads["n"] > 1:
+                return type("E", (), {"guid": "g-raced", "archived": False})()
+        return real_read(qn, *a, **k)
+    monkeypatch.setattr(fake, "read_element", racing_read)
+    _secure(world["access"], "g-raced", {"DEFAULT": ["dbas"]})
+    reads["n"] = None                                 # the press reads normally
+    out = cc.start_commit(world["registry"], "db", ME, gateway=fake)
+    reads["n"] = 0                                    # the run: step 0's read, then step 1's
+    rec = cc.execute_commit(world["registry"], out["curation"]["id"], gateway=fake)
+    first = _step(rec, "publish_elements")
+    assert first["state"] == "failed" and "found before the publish" in first["detail"]
+    assert "publish_database" not in [c[0] for c in fake.calls]
+
+
+def test_a_check_that_fails_on_the_returned_element_refuses_and_leaves_no_pointer(world, monkeypatch):
+    from resource_explorer.workflows import curate as wc
+
+    _choose(world, "sales", "catalogue")
+    fake = world["fake"]
+    real = fake.publish_database
+
+    def adopts_another(db_entity, *a, registry=None, **k):
+        pub = real(db_entity, *a, **k)
+        if registry is not None:
+            registry.set_database_egeria_guid(db_entity.slug, "g-elsewhere")
+        return PublishedDatabase(pub.server_guid, "g-elsewhere", pub.server_name, pub.database_qualified_name)
+    monkeypatch.setattr(fake, "publish_database", adopts_another)
+    real_access = wc.resource_access
+
+    def boom(*a, element_guid=None, **k):
+        if element_guid == "g-elsewhere":
+            raise RuntimeError("registry went away")
+        return real_access(*a, element_guid=element_guid, **k)
+    monkeypatch.setattr(wc, "resource_access", boom)
+    out, rec = _press(world)
+    first = _step(rec, "publish_elements")
+    assert first["state"] == "failed" and "could not check access (RuntimeError: registry went away)" in first["detail"]
+    assert _step(rec, "owner")["state"] == "skipped" and "set_owner" not in [c[0] for c in fake.calls]
+    assert world["registry"].get_database("db").egeria_asset_guid in ("", None)

@@ -149,6 +149,10 @@ class FakeEgeria:
             self.elements[self.server_guid] = {"qn": f"PostgreSQL Server::{server}", "type": "SoftwareServer",
                                                "parent": "", "archived": False, "deleted": False}
             self.zones[self.db_guid] = list(self.default_zones)
+        if registry is not None:
+            # as the real surveyor does (egeria_database_surveyor.py ~:599): it records the database GUID on RE's
+            # row itself while publishing (Brief Z2 round 4 models it, so "never recorded" is tested for real)
+            registry.set_database_egeria_guid(db_entity.slug, self.db_guid)
         return PublishedDatabase(self.server_guid, self.db_guid, server, qn)
 
     def publish_local_report(self, db_entity, db_user, db_pwd, measured, *, registry=None, submitted_by="") -> dict:

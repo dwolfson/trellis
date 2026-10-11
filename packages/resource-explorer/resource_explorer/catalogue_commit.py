@@ -1973,29 +1973,54 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         existed, expected = {}, {
             "server": gw.server_qualified_name(gw.server_name_for(db)),
             "database": gw.database_qualified_name(gw.server_name_for(db), db.database_name)}
+        found_db_guid = ""
         for which, qn_ in expected.items():
             try:
-                existed[which] = gateway.read_element(qn_) is not None
+                el_ = gateway.read_element(qn_)
+                existed[which] = el_ is not None
+                if which == "database" and el_ is not None:
+                    found_db_guid = el_.guid or ""
             except GatewayError:
                 existed[which] = True
-        pub = gateway.publish_database(db, db.db_user, db.db_password, registry=registry, submitted_by=author)
-        db_guid = pub.database_guid
-        if not db_guid:
-            raise GatewayError("Egeria returned no database element")
-        if not override and db_guid != checked_db_guid:
-            # Round 3: publish_database can adopt a database by bare name and hand back ANOTHER element than the
-            # one step 0 judged (or step 0 found none). Judge the element actually returned, before the schema
-            # attaches, the owner and the survey write anything against it.
+
+        def refuse_database(guid_: str, *, written: bool) -> str:
+            """Round 3/4: judge a database element other than the one step 0 judged; "" = permitted. ANY
+            failure of the check is a refusal (as step 0)."""
+            if override or not guid_ or guid_ == checked_db_guid:
+                return ""
             from resource_explorer.workflows.curate import resource_access
 
-            d = resource_access(registry, "database", slug, "publish", element_guid=db_guid)
-            if not d.allowed:
+            try:
+                d = resource_access(registry, "database", slug, "publish", element_guid=guid_)
+                why_ = "" if d.allowed else d.reason
+            except Exception as exc:  # noqa: BLE001 - a failure is a refusal with its reason, never a pass
+                why_ = f"could not check access ({type(exc).__name__}: {exc})"[:300]
+            if why_:
                 cur.set_step(curation_id, "publish_elements", "failed",
-                             f"{NOT_PERMITTED_WORDS} · {d.reason} (the database element Egeria returned, "
-                             f"{db_guid[:8]})")
+                             f"{NOT_PERMITTED_WORDS} · {why_} (the database element "
+                             f"{'Egeria returned' if written else 'found before the publish'}, {guid_[:8]})")
                 for st in STEPS_DB[1:]:
                     cur.set_step(curation_id, st, "skipped", f"{NOT_PERMITTED_WORDS}: nothing more written")
-                return cur.finish(curation_id)
+            return why_
+
+        # Round 4: the element the publish will update, found by its qualified name just now, is judged BEFORE
+        # the write when it is not the one step 0 judged (a race since step 0).
+        if refuse_database(found_db_guid, written=False):
+            return cur.finish(curation_id)
+        before_pointer = getattr(registry.get_database(slug, allow_unreadable=True), "egeria_asset_guid", "") or ""
+        pub = gateway.publish_database(db, db.db_user, db.db_password, registry=registry, submitted_by=author)
+        returned = pub.database_guid
+        if not returned:
+            raise GatewayError("Egeria returned no database element")
+        # Round 3/4: the surveyor resolves the database by its full qualifiedName (Brief L), but a create that
+        # races another, or a lookup that lands elsewhere, can hand back an element neither check above judged.
+        # It is judged before anything is attached, owned or surveyed against it, and held in a local until then.
+        # The surveyor records its GUID on RE's row as it publishes (`set_database_egeria_guid`): on refusal that
+        # pointer is put back, so RE never points at an element the person may not change.
+        if returned != found_db_guid and refuse_database(returned, written=True):
+            registry.set_database_egeria_guid(slug, before_pointer)
+            return cur.finish(curation_id)
+        db_guid = returned
         registry.set_database_egeria_guid(slug, db_guid)
         # Brief I: the server and database elements carry the requester like everything else a
         # queued person-action creates: `requestedBy` merged into their provenance, Ownership = the
@@ -2008,9 +2033,9 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         declared = (((registry.get_context("database", slug) or {}).get("enrichment") or {})
                     .get("owner") or {}).get("value") or ""
         # Brief I round 6: SURE this commit created it = nothing under this host's name before AND
-        # the returned GUID reads back with exactly that name. The surveyor adopts a database by
-        # bare name (a separate backlog bug), so it can hand back ANOTHER host's element: that one
-        # is never stamped, and the step says so.
+        # the returned GUID reads back with exactly that name. Should the publish hand back an element
+        # under another name (a race, or a lookup that landed elsewhere), that one is never stamped,
+        # and the step says so.
         notes = []
         for which, guid_, owner_ in (("server", pub.server_guid, behalf.owner),
                                      ("database", db_guid, "" if declared else behalf.owner)):

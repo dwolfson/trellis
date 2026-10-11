@@ -3364,7 +3364,11 @@ class ProjectRegistry:
                 if conn.is_postgres:
                     conn.execute("SET LOCAL lock_timeout = '10s'")
                 try:
-                    conn.execute("ALTER TABLE resource_schedules ADD COLUMN created_by TEXT")
+                    # IF NOT EXISTS on Postgres (round 4): two processes starting together both see the column
+                    # missing; the second must not fail. SQLite has no IF NOT EXISTS here (single writer).
+                    conn.execute("ALTER TABLE resource_schedules ADD COLUMN IF NOT EXISTS created_by TEXT"
+                                 if conn.is_postgres else
+                                 "ALTER TABLE resource_schedules ADD COLUMN created_by TEXT")
                 except Exception as exc:
                     if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
                         raise RuntimeError(
