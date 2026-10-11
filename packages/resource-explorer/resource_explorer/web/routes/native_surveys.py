@@ -73,6 +73,8 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest) -> di
     registry = ProjectRegistry()
     tech = _check(entity_type, slug, registry)
     submitted_by = requested_by()      # read HERE, in the request, then passed down
+    from resource_explorer.web.routes.curate import authorize_resource_write
+    await authorize_resource_write(registry, entity_type, slug, write="start_action")    # Brief Z2
 
     def _do() -> dict:
         with nsr.port_session(_port()) as port:
@@ -143,6 +145,8 @@ async def register_with_egeria(entity_type: str, slug: str, body: RegisterReques
     registry = ProjectRegistry()
     tech = _check(entity_type, slug, registry)
     submitted_by = requested_by()       # read HERE, in the request, then passed down
+    from resource_explorer.web.routes.curate import authorize_resource_write
+    await authorize_resource_write(registry, entity_type, slug, write="publish")         # Brief Z2
     proc = cas._process_for(entity_type, tech, nsr.KIND_CATALOG_AND_SURVEY)
     process_qn = proc.qualified_name if proc else ""
 

@@ -24,6 +24,15 @@ from resource_explorer import egeria_outbox as ob  # noqa: E402
 from resource_explorer.catalogue_gateway import GatewayError  # noqa: E402
 from resource_explorer.egeria_outbox import OutboxClients, drain_outbox  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch)
+
 SENTENCE = ("OMAG-REPOSITORY-HANDLER-400-010 an archive of RelationalTable element g2 would leave its dependent "
             "element g9 behind because the repository refused it. " + "tail " * 40)
 ELEMENTS = [("g1", "RelationalColumn"), ("g2", "RelationalTable"), ("g3", "DeployedDatabaseSchema")]

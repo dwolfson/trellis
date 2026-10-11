@@ -113,25 +113,30 @@ def _authorize_publish_item(registry: ProjectRegistry, slug: str, kind: str, key
 
 
 async def authorize_resource_write(registry: ProjectRegistry, entity_type: str, slug: str, *,
-                                   publish: bool) -> None:
-    """403 unless the caller may change this resource's own element (Brief Z round 2): the database or file
-    system asset, or a repository's asset. `publish=True` is a write to Egeria (create or update, classify,
-    rezone, attach); False is a scope decision recorded in RE (update). Run off the event loop: the check may
-    read Egeria (bounded). The schema/table elements a database commit writes are not checked one by one yet."""
+                                   publish: bool | None = None, write: str | None = None,
+                                   element_guid: str | None = None) -> None:
+    """403 unless the caller may change this resource's own element (Brief Z round 2, Z2): the database or file
+    system asset, or a repository's asset. `write` names what the route does (`workflows.curate.RESOURCE_WRITES`:
+    publish, decision, start_action, delete); the older `publish=True/False` means publish/decision. The decision
+    is `workflows.curate.resource_access` (the CLI and A2A call the same function). Run off the event loop: the
+    check may read Egeria (bounded). The schema elements a database commit writes are checked one by one in the
+    commit itself (`catalogue_commit.build_preview`, Brief Z2)."""
     import asyncio
 
-    from resource_explorer.workflows.curate import VERDICT_OPERATIONS, curation_access, publish_operations
-    from resource_explorer.workflows.curate import element_guid_for, _RegistryUnreadable
+    from resource_explorer.workflows.curate import resource_access
 
-    def decide():
-        try:
-            in_egeria = bool(element_guid_for(registry, entity_type, slug, ""))
-        except _RegistryUnreadable:
-            in_egeria = True          # curation_access reads it again and denies with the reason
-        ops = publish_operations(in_egeria, attaches=True) if publish else VERDICT_OPERATIONS
-        return curation_access(registry, entity_type, slug, "", operations=ops)
+    what = write or ("publish" if publish else "decision")
+    d = await asyncio.to_thread(resource_access, registry, entity_type, slug, what, element_guid=element_guid)
+    if not d.allowed:
+        raise HTTPException(status_code=403, detail=d.reason)
 
-    d = await asyncio.to_thread(decide)
+
+def require_resource_write(registry: ProjectRegistry, entity_type: str, slug: str, write: str, *,
+                           element_guid: str | None = None) -> None:
+    """`authorize_resource_write` for a synchronous route (already off the event loop): 403 with the reason."""
+    from resource_explorer.workflows.curate import resource_access
+
+    d = resource_access(registry, entity_type, slug, write, element_guid=element_guid)
     if not d.allowed:
         raise HTTPException(status_code=403, detail=d.reason)
 

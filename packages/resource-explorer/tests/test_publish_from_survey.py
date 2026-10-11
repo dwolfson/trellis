@@ -20,6 +20,15 @@ from resource_explorer.surveyors import survey_snapshot as ss
 from resource_explorer.surveyors.survey_report import (
     ClassificationAnnotation, DataClassAnnotation, RequestForActionAnnotation, ResourceMeasureAnnotation)
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch, caller_if_none="zone2-tester")
+
 SENTENCE = "no survey to publish yet · run the first survey"
 
 

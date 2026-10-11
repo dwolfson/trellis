@@ -474,7 +474,9 @@ export async function renderPublishBand(el, slug, entityType) {
         }
         try { await reread(); } catch { /* the failure below is what matters */ }
         const fb = el.querySelector('[data-publish-feedback]');
-        if (fb) fb.innerHTML = err.status === 409 && err.message.startsWith('no survey')
+        if (fb) fb.innerHTML = err.status === 403
+          ? cue('no_access', 'not permitted', err.message)   // Brief Z2: the reason on demand, not a sentence
+          : err.status === 409 && err.message.startsWith('no survey')
           ? cue('unrun', err.message)                    // nothing surveyed: nothing was sent
           : err.status === 409
             ? cue('running', 'a publish is already running for this resource')
@@ -523,7 +525,9 @@ export async function renderPublishBand(el, slug, entityType) {
         } catch (err) {
           fgo.disabled = false; fgo.textContent = 'Forget links'; delete fgo.dataset.pending;
           slot.querySelector('[data-forget-sentence]').insertAdjacentHTML(
-            'afterend', `<div class="text-caveat text-state-warn" data-forget-error>Not forgotten · ${esc(err.message)}</div>`);
+            'afterend', err.status === 403
+              ? `<div class="text-caveat" data-forget-error>${cue('no_access', 'not permitted', err.message)}</div>`
+              : `<div class="text-caveat text-state-warn" data-forget-error>Not forgotten · ${esc(err.message)}</div>`);
         }
       });
     });

@@ -749,6 +749,11 @@ async def run_survey_definition_route(entity_type: str, slug: str,
         )
 
     registry = ProjectRegistry()
+    # Brief Z2: a run on a resource with an assigned Egeria Project publishes what it measures (the executor's own
+    # gate, `has_assigned_egeria_project`). Refused here before anything is queued; the run checks again.
+    if await asyncio.to_thread(registry.has_assigned_egeria_project, entity_type, slug):
+        from resource_explorer.web.routes.curate import authorize_resource_write
+        await authorize_resource_write(registry, entity_type, slug, write="publish")
 
     if body.db_pwd:
         return _start_override_run(registry, entity_type, slug, body)

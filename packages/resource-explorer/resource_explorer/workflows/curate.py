@@ -211,6 +211,73 @@ def publish_operations(in_egeria: bool, *, attaches: bool = False) -> tuple[str,
     return tuple(ops)
 
 
+#: What a write to a RESOURCE's own element performs (Brief Z2), by the name its entry points use:
+#: `publish` writes it to Egeria (create or update, classify, rezone, attach its report and members);
+#: `decision` records a choice in RE about it (the scope decisions, forgetting its links: an update);
+#: `start_action` starts an Egeria engine action on it (a native survey: the action's ActionTarget link is an
+#: attach on the element); `link` / `unlink` add or remove one link on it (a documentation source's
+#: ExternalReference); `delete` removes it (behind the ISSUE-117 block).
+RESOURCE_WRITES = ("publish", "decision", "start_action", "link", "unlink", "delete")
+
+
+def resource_write_operations(write: str, in_egeria: bool) -> tuple[str, ...]:
+    """The Egeria operations one resource-level write performs (`RESOURCE_WRITES`)."""
+    from resource_explorer.zone_access import ATTACH_OPERATION, DELETE_OPERATION, DETACH_OPERATION
+
+    if write == "publish":
+        return publish_operations(in_egeria, attaches=True)
+    if write == "decision":
+        return VERDICT_OPERATIONS
+    if write in ("start_action", "link"):
+        return (ATTACH_OPERATION,)
+    if write == "unlink":
+        return (DETACH_OPERATION,)
+    if write == "delete":
+        return (DELETE_OPERATION,)
+    raise ValueError(f"unknown resource write {write!r}; expected one of {', '.join(RESOURCE_WRITES)}")
+
+
+def resource_access(registry: ProjectRegistry, entity_type: str, slug: str, write: str, *,
+                    element_guid: str | None = None, reader=None) -> AccessDecision:
+    """May the caller make this `write` on a resource's own element (the repository, database or file system
+    asset)? Brief Z2: every web route and CLI command that writes a resource calls this, so they all answer with
+    `curation_access` (the one decision). The A2A surface has no write (its tools are read-only). `element_guid` "" checks it as not in Egeria (a link RE
+    is about to clear and re-create: the stale GUID would only read as unreadable)."""
+    try:
+        guid = element_guid if element_guid is not None else element_guid_for(registry, entity_type, slug, "")
+    except _RegistryUnreadable:
+        guid = None                   # curation_access reads it again and denies with the reason
+    ops = resource_write_operations(write, in_egeria=guid is None or bool(guid))
+    return curation_access(registry, entity_type, slug, "", operations=ops, reader=reader,
+                           element_guid=element_guid)
+
+
+def require_resource_access(registry: ProjectRegistry, entity_type: str, slug: str, write: str, *,
+                            element_guid: str | None = None, reader=None) -> None:
+    """`resource_access`, raised as `CurationDenied` (the CLI and A2A form)."""
+    d = resource_access(registry, entity_type, slug, write, element_guid=element_guid, reader=reader)
+    if not d.allowed:
+        raise CurationDenied(d.reason)
+
+
+def person_write_refusal(registry: ProjectRegistry, entity_type: str, slug: str, write: str = "publish") -> str:
+    """The run-time re-check at an automatic write (an analysis or Survey Definition run's auto-publish): "" when it
+    may proceed, else "not permitted · <reason>".
+
+    When a PERSON asked for the run (a signed-in request, or a queued run whose `requested_by` names someone:
+    run_queue sets the caller to them) the same `resource_access` decides. A run nobody asked for (the scheduler's
+    own cadence, an unattributed queue row) is the service's own write, which Egeria checks against the daemon
+    itself; nothing is emulated for it here (a gap the Brief Z2 inventory names)."""
+    who = _caller_identity()
+    if who is None or not (who.user_id or "").strip():
+        return ""
+    try:
+        d = resource_access(registry, entity_type, slug, write)
+    except Exception as exc:  # noqa: BLE001 - a failure is a refusal with its reason, never a pass
+        return f"not permitted · could not check access ({type(exc).__name__}: {exc})"[:300]
+    return "" if d.allowed else f"not permitted · {d.reason}"
+
+
 def blueprint_attach_scopes(registry: ProjectRegistry, slug: str, key: str) -> list[str]:
     """The other ends a blueprint's write attaches: its member components (scope locators) and its child
     blueprints (`perspective::child`). From RE's own rows (the candidate finding and the slug->scope map)."""

@@ -1316,7 +1316,10 @@ def survey(
 
         # ── Egeria publish ────────────────────────────────────────────────
         report_guid = None
-        if publisher:
+        refused = _resource_write_refusal(registry, "repo", project.slug) if publisher else ""
+        if refused:                       # Brief Z2: this repository is skipped, the rest proceed
+            console.print(f"  [yellow]{refused}[/yellow]")
+        if publisher and not refused:
             try:
                 console.print(f"  [dim]Publishing to Egeria…[/dim]")
                 report_guid = publisher.publish(result)
@@ -1890,6 +1893,7 @@ def database_survey(
     
     # Determine survey mode
     if use_egeria or (not force_custom and not user):
+        _require_resource_write(registry, "database", slug)      # Brief Z2: may catalog it in Egeria
         # Routed through executes_at="egeria-adaptive" (the folded-in
         # HybridDatabaseSurveyor strategy selector) via a one-step synthetic
         # Survey Definition, rather than calling run_hybrid_survey directly
@@ -2345,6 +2349,8 @@ def filesystem_survey(
         raise typer.Exit(1)
         
     _warn_ignored_egeria_credentials(egeria_user, egeria_password)
+    if use_egeria:
+        _require_resource_write(registry, "filesystem", slug)    # Brief Z2: catalogs and publishes it
     console.print(f"[cyan]Surveying filesystem '{slug}'...[/cyan]")
     registry.update_filesystem_status(slug, ProjectStatus.ACTIVE)
     
@@ -2550,6 +2556,26 @@ def _warn_ignored_egeria_credentials(user: Optional[str], password: Optional[str
 
         logging.getLogger(__name__).warning(
             "CLI: %s ignored (per-resource Egeria credentials are no longer used)", "/".join(sent))
+
+
+def _resource_write_refusal(registry, entity_type: str, slug: str, write: str = "publish") -> str:
+    """Brief Z2: the CLI asks the same decision as the web (`workflows.curate.resource_access`). "" when the
+    signed-in person may make this write, else "not permitted · <reason>"."""
+    from resource_explorer.workflows.curate import resource_access
+
+    d = resource_access(registry, entity_type, slug, write)
+    return "" if d.allowed else f"not permitted · {d.reason}"
+
+
+def _require_resource_write(registry, entity_type: str, slug: str, write: str = "publish") -> None:
+    """Sign-in (exit 2 without one) and `_resource_write_refusal` (exit 1, with the reason)."""
+    from resource_explorer.cli import session as cli_session
+
+    cli_session.require_and_activate(console)
+    why = _resource_write_refusal(registry, entity_type, slug, write)
+    if why:
+        console.print(f"[red]{why}[/red]")
+        raise typer.Exit(1)
 
 
 def _try_build_egeria_client(platform_url: Optional[str], view_server: Optional[str]):

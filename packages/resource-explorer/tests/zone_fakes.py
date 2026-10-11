@@ -78,3 +78,24 @@ def permit_publish_routes(monkeypatch, user_id: str = "publisher") -> FakeEgeria
     monkeypatch.setattr("resource_explorer.workflows.curate._caller_identity",
                         lambda: CallerIdentity(user_id=user_id, egeria_token="t", auth_source="app-jwt"))
     return fake
+
+
+def open_access(monkeypatch, *, caller_if_none: str = "") -> FakeEgeria:
+    """For tests of a write path that are about something else (Brief Z2): the access reads are faked at the
+    client boundary and every element answers with no ZoneMembership, so the check runs and permits. RE's own
+    zone configuration is left as the test set it (a configured zone with no access control is not secured).
+    `caller_if_none`: when the test publishes no caller identity of its own (a route test that patches only the
+    route's author lookup), the curation check sees this signed-in user; a caller the test did set is kept."""
+    from resource_explorer.a2a_auth import CallerIdentity
+
+    fake = FakeEgeria()
+    monkeypatch.setattr("resource_explorer.zone_access._metadata_expert", lambda: fake)
+    monkeypatch.setattr("resource_explorer.zone_access._security_officer", lambda: fake)
+    monkeypatch.setattr("resource_explorer.zone_access._platform", lambda: ("Quickstart platform", "plat-guid"))
+    if caller_if_none:
+        from resource_explorer.workflows import curate as wc
+
+        real = wc._caller_identity
+        stand_in = CallerIdentity(user_id=caller_if_none, egeria_token="t", auth_source="app-jwt")
+        monkeypatch.setattr(wc, "_caller_identity", lambda: real() or stand_in)
+    return fake

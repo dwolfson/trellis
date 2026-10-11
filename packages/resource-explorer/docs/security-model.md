@@ -342,6 +342,28 @@ interim override until Egeria role appointments are read. The rule, the
 per-item Publish behaviour and the words on screen are in `admin-guide.md`,
 "Who may curate and publish".
 
+**Every resource write asks the same question (Brief Z2, 2026-10-10).** The
+routes that used to check only the sign-in now call the same decision,
+`workflows/curate.resource_access`, with the operations Egeria would check:
+publishing a repository, database or file system (the Egeria publish routes,
+the publish-report press, the repository commit and sub-resource catalog, a
+database survey through Egeria, Egeria's native survey register, a
+file-system publish or chosen publish on survey, a Survey Definition run on a
+resource with an Egeria Project), starting an Egeria action on it (a native
+survey run: attach), adding or removing a documentation source on a resource
+already in Egeria (attach, detach), RE-only decisions about its link (reset,
+forget links, discarding a stale link: update), and the bulk linkage actions
+item by item. A database commit checks each schema element already in Egeria
+that it would write (attach; a leave-out: detach and delete, plus delete on
+every table and column its delete walks), at the press and again in the run
+as the requester; a schema not permitted is skipped as "not permitted ·
+<reason>" and the rest proceed. Destructive paths stay behind the ISSUE-117
+block, with the access check in front of it, so a refusal is said before the
+block would be. An automatic publish at the end of an analysis or Survey
+Definition run asks again as the person who requested the run; a run nobody
+requested (the scheduler's own cadence) is RE's service account writing, and
+Egeria checks that account itself.
+
 ---
 
 ## 9 · Open items and upstream

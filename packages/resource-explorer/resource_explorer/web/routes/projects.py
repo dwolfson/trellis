@@ -1574,6 +1574,9 @@ async def catalog_sub_resources(slug: str, body: SubResourceCatalogRequest, requ
             status_code=409,
             detail="Repo has no Egeria asset yet — publish the repo itself first before publishing sub-resources.",
         )
+    # Brief Z2: FileFolder/DataFile assets attached under the repository's asset.
+    from resource_explorer.web.routes.curate import authorize_resource_write
+    await authorize_resource_write(registry, "repo", slug, write="publish")
     try:
         out = await asyncio.to_thread(
             resource_scope.publish_chosen, registry, slug, github_url=project.github_url,
@@ -2018,6 +2021,9 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    # Brief Z2: the commit publishes the repository and its chosen files and folders in Egeria.
+    from resource_explorer.web.routes.curate import require_resource_write
+    require_resource_write(registry, "repo", slug, "publish")
     plan = build_plan(registry, slug)
     if not plan["in_population"]:
         raise HTTPException(status_code=409, detail=(

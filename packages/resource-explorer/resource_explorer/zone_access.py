@@ -60,9 +60,14 @@ log = logging.getLogger(__name__)
 #:   ATTACH             validateUserForElementAttach :1582-1620, on BOTH ends
 #:   CLASSIFY           validateUserForElementClassify :1840 (any classification but ZoneMembership)
 #:   PUBLISH            validateUserForElementClassify :1816 / Declassify :1911 (a ZoneMembership change)
+#:   DETACH             validateUserForElementDetach :1639-1694, on BOTH ends (Brief Z2: a leave-out's target removal)
+#:   DELETE             validateUserForElementDelete :2540-2566 (archive, soft delete or purge: Brief Z2's leave-out
+#:                      and bulk delete, both still behind the ISSUE-117 block)
 CREATE_OPERATION = "CREATE"
 UPDATE_OPERATION = "UPDATE_PROPERTIES"
 ATTACH_OPERATION = "ATTACH"
+DETACH_OPERATION = "DETACH"
+DELETE_OPERATION = "DELETE"
 CLASSIFY_OPERATION = "CLASSIFY"
 PUBLISH_OPERATION = "PUBLISH"
 DEFAULT_OPERATION = "DEFAULT"
@@ -72,6 +77,8 @@ OPERATION_WORDS = {
     CREATE_OPERATION: "create",
     UPDATE_OPERATION: "update",
     ATTACH_OPERATION: "attach",
+    DETACH_OPERATION: "detach",
+    DELETE_OPERATION: "delete",
     CLASSIFY_OPERATION: "classify",
     PUBLISH_OPERATION: "publish (zone change)",
 }

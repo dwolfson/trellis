@@ -669,7 +669,7 @@ class TestRound3:
         root = pathlib.Path(__file__).resolve().parents[1] / "resource_explorer"
         writers = [str(p.relative_to(root)) for p in root.rglob("*.py")
                    if re.search(r'["\']portal_role["\']\s*:', p.read_text())]
-        assert writers == ["architecture_publish.py"]
+        assert sorted(writers) == ["architecture_publish.py", "catalogue_commit.py"]   # Brief Z2: both from the caller
 
     def test_an_empty_or_null_zone_array_is_unzoned_not_unreadable(self):
         """LOW: Egeria treats a ZoneMembership with a null or empty array as unzoned (only propertiesAsStrings

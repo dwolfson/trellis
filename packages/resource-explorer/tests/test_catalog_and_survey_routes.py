@@ -13,6 +13,15 @@ from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 from tests.test_catalog_and_survey import (
     CATALOG_QN, DB_GUID, PASSWORD, SERVER_GUID, SERVER_NAME, SQN, RegPort, refusal)
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch, caller_if_none="zone2-tester")
+
 BASE = "/api/native-surveys/database"
 
 

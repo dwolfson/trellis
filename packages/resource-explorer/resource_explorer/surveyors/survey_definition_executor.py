@@ -1067,7 +1067,15 @@ class SurveyDefinitionExecutor:
         # to catalog an unassigned resource explicitly, or to re-publish.
         report_guid = ""
         published: bool | str = False
+        refusal = ""
         if step_outputs and self.registry.has_assigned_egeria_project(entity_type, slug):
+            # Brief Z2: the requester must be allowed to publish this resource, re-checked right before the write.
+            from resource_explorer.workflows.curate import person_write_refusal
+
+            refusal = person_write_refusal(self.registry, entity_type, slug)
+            if refusal:
+                errors.append(f"Not published to Egeria: {refusal}")
+        if step_outputs and not refusal and self.registry.has_assigned_egeria_project(entity_type, slug):
             # Same per-run choice run_analysis() honours (project owner,
             # 2026-09-13) — "wait"/"background" from the caller override
             # RunsConfig.publish_inline for this run only; not asked (None,

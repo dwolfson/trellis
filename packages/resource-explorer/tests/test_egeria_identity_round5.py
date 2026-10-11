@@ -19,6 +19,15 @@ from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as  # 
 
 
 @pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def _daemon(monkeypatch):
     monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("re-daemon", "pw"))
 
