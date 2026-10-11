@@ -188,3 +188,38 @@ def test_a_loosening_with_no_configured_zone_judges_the_kind_on_the_zones_that_s
     w = reclassify_kind_after_move("pg", "PersonalProject", [], own_zones=(SECURED, OWNER))
     assert access_words(registry, [w]) == (f"not permitted · the investigation Project in its new zones: zone "
                                            f"foreign-zone does not grant {USER} classify in Egeria")
+
+
+# ── F2 (prepared; the refusal behaviour waits for the owner): an UNREADABLE check stays local-first ────────
+
+class TestRfaUnreadableStaysLocal:
+    def test_a_status_change_is_recorded_locally_and_not_synced_when_egeria_cannot_be_asked(self, web, monkeypatch):
+        client, _ = web
+        fake = _install(monkeypatch)
+        _zone(fake, "td", [USER])
+        fake.fail_element = "td"
+        monkeypatch.setattr(ProjectRegistry, "get_activity", lambda self, eid: {"id": eid})
+        monkeypatch.setattr(ProjectRegistry, "get_rfa_action", lambda self, rid: {"id": rid, "egeria_todo_guid": "td"})
+        saved, errors, synced = [], {}, []
+        monkeypatch.setattr(ProjectRegistry, "upsert_rfa_action", lambda self, **kw: saved.append(kw["status"]))
+        monkeypatch.setattr(ProjectRegistry, "mark_rfa_sync_error",
+                            lambda self, rid, why: errors.__setitem__(rid, why))
+        monkeypatch.setattr("resource_explorer.rfa_egeria_sync.sync_rfa_action", lambda reg, row: synced.append(row))
+        r = client.patch("/api/activity/rfas/e1::0", json={"status": "deferred"})
+        assert r.status_code == 200, r.text
+        assert saved == ["deferred"] and synced == []
+        assert r.json()["egeria_sync"].startswith("not permitted · could not check access in Egeria (")
+        assert errors["e1::0"] == r.json()["egeria_sync"]
+
+    def test_a_note_is_saved_locally_and_not_synced_when_egeria_cannot_be_asked(self, web, monkeypatch):
+        client, _ = web
+        fake = _install(monkeypatch)
+        fake.fail_element = "td"
+        saved, synced = _note_patches(monkeypatch, "td")
+        errors = {}
+        monkeypatch.setattr(ProjectRegistry, "mark_rfa_note_sync_error",
+                            lambda self, rid, why: errors.__setitem__(rid, why))
+        r = client.patch("/api/activity/rfas/e1::0/notes", json={"notes": "n"})
+        assert r.status_code == 200, r.text
+        assert saved == ["n"] and synced == []
+        assert errors["e1::0"].startswith("not permitted · could not check access in Egeria (")

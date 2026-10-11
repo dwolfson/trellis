@@ -291,6 +291,12 @@ class TestEveryRoute:
         else:
             fake.fail_control = SECURED                       # the control read fails
         _patch(monkeypatch, patches)
+        if name.startswith("RFA"):
+            # Round 2 (F2): an RFA change stays local-first when Egeria cannot be asked: recorded, not synced
+            # (tests/test_zone_access_z3_round2.py::TestRfaUnreadableStaysLocal has the words).
+            _expect_reached(client, method, path, body)
+            assert decisions[-1].basis == "unreadable"
+            return
         r = _call(client, method, path, body)
         assert r.status_code == 403, r.text
         assert r.json()["detail"].startswith("could not check access in Egeria ("), r.json()
