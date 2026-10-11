@@ -133,6 +133,44 @@ def awaiting_counts(comps: list, comp_verdicts: dict) -> dict:
     return {"components": unreviewed}
 
 
+#: The Context facts a repository's Curate page shows and the commit carries, in the order they are shown.
+CONTEXT_FACTS = (("owner", "Owner"), ("sensitivity", "Confidentiality"), ("criticality", "Criticality"),
+                 ("retention", "Retention"), ("licence", "License"))
+
+
+def context_facts(enrichment: dict, doc_sources: list[dict] | None = None) -> list[dict]:
+    """The Context facts, one dict each, from the Enrichment record. The single source for both the
+    "What we know" block (plan["know"]) and the plan's "what gets written" (build_plan derives its
+    classifications, owner and licence from these dicts). `shown` is the words the plan has always shown for
+    the value ("" = not declared); an interim or unsigned fact says so (`interim`, `unsigned`).
+    Documentation sources come from the doc_sources table (declared by `added_by`)."""
+    out = []
+    for key, label in CONTEXT_FACTS:
+        f = enrichment.get(key) or {}
+        shown, skipped = f.get("value") or "", False
+        if key == "retention":
+            from resource_explorer import retention_basis
+            rb = retention_basis.resolve(f)
+            shown = retention_basis.LABELS.get(rb["basis"], "") + (" (from existing text)" if rb["carried"] else "")
+            if not rb["basis"] and (f.get("value") or f.get("note")):
+                # the plan previews what the commit will do: the same words as the step's skip
+                shown, skipped = "skipped · no retention basis picked", True
+        author = f.get("author", "") or ""
+        out.append({"key": key, "label": label, "shown": shown or "", "declared": bool(shown),
+                    "skipped": skipped, "author": author, "set_at": f.get("set_at", "") or "",
+                    "interim": bool(f.get("interim")), "review": bool(f.get("review")),
+                    "unsigned": bool(shown) and not author})
+    docs = [{"label": d.get("label") or d.get("url") or "", "url": d.get("url", ""),
+             "source_type": d.get("source_type", ""), "author": d.get("added_by", "") or "",
+             "set_at": d.get("added_at", "") or ""} for d in (doc_sources or [])]
+    out.append({"key": "documentation", "label": "Documentation sources",
+                "shown": ", ".join(d["label"] for d in docs), "declared": bool(docs), "skipped": False,
+                "author": docs[0]["author"] if docs else "", "set_at": docs[0]["set_at"] if docs else "",
+                "interim": False, "review": False,
+                "unsigned": bool(docs) and not all(d["author"] for d in docs), "sources": docs})
+    return out
+
+
 def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     from resource_explorer.blueprint_kinds import kind_word
     from resource_explorer.facts import FactLayer
@@ -301,31 +339,27 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     ]
 
     # ── what gets written ──────────────────────────────────────────────
+    # ONE source for the Context facts: "What we know" (plan["know"]) and "what gets written" (writes below)
+    # both come from context_facts(), so the two never disagree.
+    know = context_facts(enrichment, registry.list_doc_sources("repo", slug))
+    by_key = {f["key"]: f for f in know}
     classifications = []
-    for key, name in (("sensitivity", "Confidentiality"), ("criticality", "Criticality"), ("retention", "Retention")):
-        f = enrichment.get(key) or {}
-        shown, skipped = f.get("value"), False
-        if key == "retention":
-            from resource_explorer import retention_basis
-            rb = retention_basis.resolve(f)
-            shown = retention_basis.LABELS.get(rb["basis"], "") + (" (from existing text)" if rb["carried"] else "")
-            if not rb["basis"] and (f.get("value") or f.get("note")):
-                # the plan previews what the commit will do: the same words as the step's skip
-                shown, skipped = "skipped · no retention basis picked", True
-        if shown:
-            classifications.append({"key": key, "classification": name, "value": shown, "skipped": skipped,
-                                    "author": f.get("author", ""), "set_at": f.get("set_at", ""),
-                                    "interim": bool(f.get("interim")), "review": bool(f.get("review"))})
-    owner = enrichment.get("owner") or {}
-    licence = enrichment.get("licence") or {}
+    for key in ("sensitivity", "criticality", "retention"):
+        f = by_key[key]
+        if f["shown"]:
+            classifications.append({"key": key, "classification": f["label"], "value": f["shown"], "skipped": f["skipped"],
+                                    "author": f["author"], "set_at": f["set_at"],
+                                    "interim": f["interim"], "review": f["review"]})
+    owner = by_key["owner"]
+    licence = by_key["licence"]
     from resource_explorer.catalogue_commit import _ts, publish_fields
     published = registry.get_last_published_annotation_types(slug) or {}
     writes = {
         "entities": [r["kind"] for r in what_it_is if r["candidate"]],
         "contained": {"data_files": len(profiles), "sub_resources": len(worthy)},
         "classifications": classifications,
-        "owner": {"value": owner.get("value", ""), "interim": bool(owner.get("interim")), "author": owner.get("author", "")},
-        "licence": licence.get("value", ""),
+        "owner": {"value": owner["shown"], "interim": owner["interim"], "author": owner["author"]},
+        "licence": licence["shown"],
         "survey_reports_linked": len(published),
         "last_published_at": max(published.values(), key=_ts, default=""),
         **publish_fields(registry, slug, max(published.values(), key=_ts, default="")),
@@ -352,6 +386,8 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
         "awaiting": awaiting,
         "relates": relates,
         "writes": writes,
+        # Tab 1's read-only "What we know" block: the confirmed Context facts, each with who declared it and when.
+        "know": know,
         "keeps_current": "Resource Explorer surveys, on the Automate schedule. No integration connector exists for this type.",
         "commits": Curations(registry).for_resource("repo", slug),
     }

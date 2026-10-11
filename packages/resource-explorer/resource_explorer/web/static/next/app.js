@@ -3145,6 +3145,15 @@ let _restoringUrl = false;
 
 /** Go to the Curate stage (where the Publish band and the commit table live). Used by a blocker that says
  *  "publish the repository first →" from another pane. */
+/** Go to Enrichment's Context tab (the `data-goto-context` links: the questions rows, Curate's "What we know"). */
+export function openContext() {
+  state.stage = 'enrichment';
+  state.subTab = 'context';
+  writeUrl();
+  renderIntentNav();
+  return loadPane();
+}
+
 export function openCurateStage() {
   return openCurate({ tab: 'curate_describe' });
 }
@@ -8489,11 +8498,7 @@ export function wireHumanAnswers(host, slug) {
     // input+save control on it, the same shape `stages/enrichment.js`
     // already uses for judgements/observations.
     if (ev.target.closest('[data-goto-context]')) {
-      state.stage = 'enrichment';
-      state.subTab = 'context';
-      writeUrl();
-      renderIntentNav();
-      loadPane();
+      openContext();
       return;
     }
     const editBtn = ev.target.closest('[data-human-edit]');

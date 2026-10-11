@@ -78,6 +78,49 @@ def _seed(registry):
     }})
 
 
+class TestWhatWeKnowIsWhatGetsWritten:
+    """Brief S1b: tab 1's "What we know" block (plan["know"]) and "what gets written" (plan["writes"]) are built from
+    ONE function (curate_plan.context_facts); they must never disagree."""
+
+    def _declare(self, registry):
+        registry.save_context("repo", "p", {"enrichment": {
+            "sensitivity": {"value": "internal", "kind": "judgement", "author": "mandy", "set_at": "2026-10-03T09:00:00+00:00"},
+            "criticality": {"value": "high", "kind": "judgement", "author": "", "set_at": ""},
+            "retention": {"value": "keep forever", "kind": "judgement", "author": "mandy", "set_at": "2026-10-03T09:00:00+00:00"},
+            "owner": {"value": "dwolfson", "kind": "judgement", "author": "dwolfson", "set_at": "2026-10-02T09:00:00+00:00", "interim": True},
+            "licence": {"value": "Apache-2.0", "kind": "judgement", "author": "dwolfson", "set_at": "2026-10-02T09:00:00+00:00"},
+        }})
+        registry.add_doc_source("repo", "p", "https://x.example/runbook", label="Runbook", source_type="runbook", added_by="dwolfson")
+
+    def test_the_block_and_the_write_plan_agree(self, registry):
+        self._declare(registry)
+        plan = build_plan(registry, "p")
+        know = {f["key"]: f for f in plan["know"]}
+        w = plan["writes"]
+        # every classification the commit writes is the same fact the block shows
+        assert {c["key"] for c in w["classifications"]} == {"sensitivity", "criticality", "retention"}
+        for c in w["classifications"]:
+            f = know[c["key"]]
+            assert (c["value"], c["author"], c["set_at"], c["interim"], c["skipped"], c["classification"]) == \
+                   (f["shown"], f["author"], f["set_at"], f["interim"], f["skipped"], f["label"])
+        assert (w["owner"]["value"], w["owner"]["author"], w["owner"]["interim"]) == \
+               (know["owner"]["shown"], know["owner"]["author"], know["owner"]["interim"]) == ("dwolfson", "dwolfson", True)
+        assert w["licence"] == know["licence"]["shown"] == "Apache-2.0"
+        # retention is shown in the commit's own words (basis carried from the existing text), not the raw value
+        assert know["retention"]["shown"].endswith("(from existing text)") and know["retention"]["skipped"] is False
+        # an unsigned fact is flagged unsigned, a signed one is not
+        assert know["criticality"]["unsigned"] is True and know["sensitivity"]["unsigned"] is False
+        assert know["documentation"]["declared"] and know["documentation"]["sources"][0]["author"] == "dwolfson"
+
+    def test_a_fact_that_is_not_set_is_not_declared_and_is_not_written(self, registry):
+        plan = build_plan(registry, "p")
+        know = {f["key"]: f for f in plan["know"]}
+        assert [f["key"] for f in plan["know"]] == ["owner", "sensitivity", "criticality", "retention", "licence", "documentation"]
+        assert not any(f["declared"] for f in plan["know"])
+        assert plan["writes"]["classifications"] == [] and plan["writes"]["owner"]["value"] == "" and plan["writes"]["licence"] == ""
+        assert know["owner"]["shown"] == "" and know["documentation"]["sources"] == []
+
+
 class TestThePlan:
     def test_the_three_columns_are_candidates_with_evidence(self, registry):
         _seed(registry)
