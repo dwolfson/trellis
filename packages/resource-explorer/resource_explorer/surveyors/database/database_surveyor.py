@@ -986,7 +986,11 @@ class DatabaseSurveyor:
                 # The reset time as EVIDENCE (timestamp / "never" / None for
                 # not read) -- `stats_reset` above folds the last two into "".
                 # Read by `_create_table_statistics_annotations`.
-                "stats_reset_evidence": conn.get_stats_reset_evidence(),
+                # A connection without the evidence read (an older or non-Postgres
+                # one) must not cost the whole operations step: the key is left
+                # out and the consumer falls back to `stats_reset`.
+                **({"stats_reset_evidence": conn.get_stats_reset_evidence()}
+                   if hasattr(conn, "get_stats_reset_evidence") else {}),
                 "table_count": schema_info.get("total_tables", 0),
             }
         else:
