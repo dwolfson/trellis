@@ -132,6 +132,12 @@ test('the button names the items it sends; blockers are directly under it', asyn
   assert.equal(box.querySelector('[data-curate-go]').disabled, true);
   assert.match(box.querySelector('[data-commit-blocker="no_survey"]').textContent, /no survey to publish yet · run the first survey/);
 
+  const before = { ...PLAN, survey: { exists: false, surveyed_before_kept: true } };
+  box.innerHTML = m.repoCommitPanelHtml({ ...sel({ plan: before }), me: 'dan', resurvey: false });
+  assert.equal(box.querySelector('[data-curate-go]').disabled, true);
+  assert.match(box.querySelector('[data-commit-blocker="no_survey"]').textContent.trim(), /^\S* ?surveyed before 10-07 · nothing kept to publish · re-survey to publish$/);
+  assert.doesNotMatch(box.textContent, /first survey/);
+
   const noProject = { ...PLAN, project: { status: 'unset', word: 'no project' } };
   box.innerHTML = m.repoCommitPanelHtml({ ...sel({ plan: noProject }), me: 'dan', resurvey: false });
   const b = box.querySelector('[data-commit-blocker="no_project"]');

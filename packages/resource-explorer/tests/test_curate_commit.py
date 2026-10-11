@@ -225,3 +225,15 @@ class TestExecuteCurationPublishAssetStep:
             MockPub.return_value.publish.assert_not_called()
             step = next(s for s in rec["steps"] if s["name"] == "publish_asset")
             assert step["state"] == "failed" and "no survey to publish yet · run the first survey" in step["detail"]
+
+    def test_a_repo_surveyed_before_kept_surveys_is_blocked_with_the_other_sentence(self, registry):
+        registry.update_project_surveyed_at("p")
+        cid = _make_commit(registry)
+        with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch, \
+             patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as MockPub:
+            rec = execute_curation(registry, cid)
+        MockOrch.return_value.run.assert_not_called()
+        MockPub.return_value.publish.assert_not_called()
+        step = next(s for s in rec["steps"] if s["name"] == "publish_asset")
+        assert step["state"] == "failed" and "surveyed before 10-07 · nothing kept to publish" in step["detail"]
+        assert "first survey" not in step["detail"]

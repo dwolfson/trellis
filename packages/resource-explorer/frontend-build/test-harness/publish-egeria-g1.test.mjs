@@ -403,6 +403,28 @@ test('no survey: Publish is disabled, the reason is directly under it, and only 
   assert.equal(post(server, '/publish-report').length, 0, 'a disabled Publish sent nothing');
 });
 
+test('surveyed before kept surveys: not the first survey; a cue and short words, Re-survey now, Publish still off', async () => {
+  const { document, server } = await setUp('repo', { survey: { exists: false, surveyed_before_kept: true,
+    sentence: 'surveyed before 10-07 · nothing kept to publish · re-survey to publish' } });
+  await openCurate(document);
+  assert.equal(q(document, '[data-publish-go]').disabled, true);
+  assert.equal(q(document, '[data-resurvey-go]').disabled, false);
+  assert.equal(q(document, '[data-resurvey-go]').textContent.trim(), 'Re-survey now →');
+  assert.equal(q(document, '[data-publish-blocker]').textContent.trim(), 'surveyed before 10-07 · nothing kept to publish · re-survey to publish');
+  assert.equal(q(document, '[data-publish-survey="none"] [data-cue]').dataset.cue, 'partial');
+  assert.doesNotMatch(q(document, '[data-publish-survey]').textContent, /first survey/);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  assert.equal(post(server, '/publish-report').length, 0);
+});
+
+test('surveyed before kept surveys, flag only (no sentence from the server): the same words', async () => {
+  const { document } = await setUp('repo', { survey: { exists: false, surveyed_before_kept: true } });
+  await openCurate(document);
+  assert.equal(q(document, '[data-resurvey-go]').textContent.trim(), 'Re-survey now →');
+  assert.equal(q(document, '[data-publish-blocker]').textContent.trim(), 'surveyed before 10-07 · nothing kept to publish · re-survey to publish');
+});
+
 test('Re-survey now runs the survey and nothing else: no publish is sent, and the age changes from the re-read', async () => {
   const { document, server } = await setUp('repo', { survey: { exists: true, surveyed_at: '2026-10-01T01:00:00', age_seconds: 600000,
     annotations: 42, steps: 12, stale_steps: 2, stale: ['repo_health', 'repo_language'] } });

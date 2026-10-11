@@ -22,6 +22,7 @@ import { esc } from '/static/next/app.js';
 export const NOTHING_SELECTED_SENTENCE = 'nothing selected · confirm a line under what it is, or choose folders and files';
 export const SCOPE_UNREAD_SENTENCE = 'the selection could not be read · reload to try again';
 export const NO_SURVEY_SENTENCE = 'no survey to publish yet · run the first survey';
+export const SURVEYED_BEFORE_KEPT_SENTENCE = 'surveyed before 10-07 · nothing kept to publish · re-survey to publish';
 export const NO_PROJECT_SENTENCE = 'no Egeria project context · bind this investigation to a project, or decline one';
 export const UNBOUND_PROJECT_SENTENCE = 'unbound by reset \u00b7 rebind to recreate \u00b7 bind this investigation to a project, or decline one';
 export const RESURVEY_BOX_WORDS = 're-survey stale steps first (adds minutes)';
@@ -62,7 +63,7 @@ export function manifestCounts({ plan, picks, scope, fileTypePicks }) {
 export function commitBlockers({ plan, counts, me }) {
   const out = [];
   if (!me) out.push({ key: 'signin', text: 'sign in to publish — the record needs an author' });
-  if (plan.survey && plan.survey.exists === false) out.push({ key: 'no_survey', text: plan.survey.sentence || NO_SURVEY_SENTENCE });
+  if (plan.survey && plan.survey.exists === false) out.push({ key: 'no_survey', text: plan.survey.sentence || (plan.survey.surveyed_before_kept ? SURVEYED_BEFORE_KEPT_SENTENCE : NO_SURVEY_SENTENCE) });
   if (counts.unread) out.push({ key: 'scope_unread', text: SCOPE_UNREAD_SENTENCE });
   else if (counts.items === 0) out.push({ key: 'nothing', text: NOTHING_SELECTED_SENTENCE });
   // `unbound` (after an Egeria reset) gates exactly as `unset` does, with the same two choices, but says why.
@@ -116,7 +117,7 @@ export function repoManifestHtml({ plan, picks, scope, fileTypePicks, ps = null 
     ${after ? '<div role="columnheader" class="w-[15rem] shrink-0">state</div>' : ''}</div>`;
   const rows = [
     row('report', 'RE publishes', 'the repository asset and its survey report',
-      sv ? `1 report · ${num(sv.annotations)} annotations` : 'no survey yet',
+      sv ? `1 report · ${num(sv.annotations)} annotations` : (plan.survey && plan.survey.surveyed_before_kept ? 'nothing kept' : 'no survey yet'),
       sv ? `survey of ${esc(String(sv.surveyed_at).slice(0, 10))} (${esc(ago(sv.surveyed_at))})` : '—', stateCell('report', ps)),
     row('entities', 'Egeria gets', 'the lines you confirmed under “what it is”',
       `${num(c.entities)} entit${c.entities === 1 ? 'y' : 'ies'}${c.notConfirmed ? ` · ${num(c.notConfirmed)} proposed, not ticked` : ''}`,
