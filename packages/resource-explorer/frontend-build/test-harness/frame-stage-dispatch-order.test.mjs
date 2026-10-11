@@ -64,7 +64,8 @@ const isContext = (document) => !!document.getElementById('context-form');
 
 const FRAMES = {
   investigation: (d) => /Investigation/.test(text(d)) && !isContext(d),
-  understanding: (d) => /Understanding has one pane/.test(text(d)),
+  // A repository's Understanding now draws its leading tabs (stage-tabs.js) instead of the one-pane header.
+  understanding: (d) => /Understanding has one pane/.test(text(d)) || !!d.getElementById('content').querySelector('[data-understanding-tab-panel]'),
   automate: (d) => !!d.getElementById('content').querySelector('[data-automate-tab]'),
 };
 
@@ -82,7 +83,10 @@ for (const frame of ['investigation', 'understanding', 'automate']) {
     assert.ok(isContext(document));
     await clickStage(document, frame);
     assert.equal(app.state.stage, frame);
-    assert.equal(app.state.subTab, 'context', 'subTab is deliberately left untouched');
+    // Understanding on a repository has leading tabs (stage-tabs.js): entering it always opens tab 1, never the
+    // sub-tab carried over. The routing order (the frame before any sub-tab branch) is what this test pins.
+    assert.equal(app.state.subTab, frame === 'understanding' ? 'understanding_glance' : 'context',
+      frame === 'understanding' ? 'a stage with leading tabs opens on its first' : 'subTab is deliberately left untouched');
     assert.ok(!isContext(document), `Context must not render under ${frame}`);
     assert.ok(FRAMES[frame](document), `${frame} frame must render; got: ${text(document).slice(0, 160)}`);
   });

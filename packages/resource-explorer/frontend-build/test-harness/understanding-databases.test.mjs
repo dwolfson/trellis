@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { openAllUnderstandingTabs } from './understanding-tabs-kit.mjs';
 
 const SLUG = 'adventureworks';
 const RUN = { run_id: 7, surveyed_at: '2026-09-28T14:02:00', source: 'local', surveyed_as: 'survey_user' };
@@ -137,6 +138,7 @@ async function openUnderstanding(document) {
   assert.ok(btn, 'nav must offer an Understanding button');
   btn.click();
   await new Promise((r) => setTimeout(r, 400));
+  await openAllUnderstandingTabs(document);
 }
 
 const card = (document, kind) => document.querySelector(`[data-chart="${kind}"]`);

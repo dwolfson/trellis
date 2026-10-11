@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { openAllUnderstandingTabs } from './understanding-tabs-kit.mjs';
 
 const RUN = { run_id: 7, surveyed_at: '2026-09-28T14:02:00', source: 'local', surveyed_as: 'u' };
 const env = (x = {}) => ({ database: 'db1', run: RUN, state: 'measured', reasons: [], notes: [], scope: { checked: true, partial: false }, figure: null, ...x });
@@ -40,6 +41,7 @@ async function setUp({ storage } = {}) {
   app.renderIntentNav();
   document.querySelector('#intent-nav button[data-stage="understanding"]').click();
   await new Promise((r) => setTimeout(r, 500));
+  await openAllUnderstandingTabs(document);
   return { document, window };
 }
 const chips = (d) => [...d.querySelectorAll('#chart-index [data-chart-chip]')];
@@ -59,7 +61,7 @@ test('a wired chart chip is a button; pressing it scrolls its card into view and
   assert.match(chip.textContent, /Column types · /, 'the state word stays on the chip');
   await press(chip);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0], document.querySelector('#understanding-host [data-chart="column_types"]'));
+  assert.equal(calls[0], document.querySelector('#understanding-tabs-host [data-chart="column_types"]'));
   assert.equal(chip.getAttribute('aria-pressed'), 'true');
   assert.equal(chips(document).filter((c) => c.getAttribute('aria-pressed') === 'true').length, 1);
 });
@@ -74,7 +76,7 @@ test('pressing a chip whose section is folded opens the section first', async ()
   await press(document.querySelector('[data-chart-chip="survey_history"]'));
   assert.ok(sec.open, 'section opened');
   assert.equal(window.localStorage.getItem('re.understanding.collapsed.db-time'), null);
-  assert.equal(calls[0], document.querySelector('#understanding-host [data-chart="survey_history"]'));
+  assert.equal(calls[0], document.querySelector('#understanding-tabs-host [data-chart="survey_history"]'));
 });
 
 test('a chart that is not wired up is muted text, not a control', async () => {
@@ -91,18 +93,18 @@ test('a section index sits at the top in page order and scrolls to each section,
   const { document, window } = await setUp();
   const calls = spy(window);
   const btns = sectionBtns(document);
-  assert.deepEqual(btns.map((b) => b.dataset.goto), ['db-now', 'db-time', 'db-views', 'db-survey-history']);
-  assert.deepEqual(btns.map((b) => b.textContent.trim()), ['Now', 'Over time', 'Views', 'Survey history']);
-  const host = document.querySelector('#understanding-host');
+  assert.deepEqual(btns.map((b) => b.dataset.goto), ['db-since', 'db-now', 'db-time', 'db-views', 'db-survey-history']);
+  assert.deepEqual(btns.map((b) => b.textContent.trim()), ['Since the last run', 'Now', 'Over time', 'Views', 'Survey history']);
+  const host = document.querySelector('#understanding-tabs-host');
   assert.equal(host.firstElementChild.hasAttribute('data-section-index') || host.firstElementChild.contains(document.querySelector('[data-section-index]')), true);
   const sec = document.querySelector('details[data-collapsible="db-views"]');
   sec.open = false;
   sec.dispatchEvent(new window.Event('toggle'));
-  await press(btns[2]);
+  await press(btns[3]);
   assert.ok(sec.open);
   assert.equal(calls.at(-1), sec);
-  assert.equal(btns[2].getAttribute('aria-pressed'), 'true');
-  assert.equal(document.querySelectorAll('#understanding-host h3').length, 4, 'no heading doubled');
+  assert.equal(btns[3].getAttribute('aria-pressed'), 'true');
+  assert.equal(document.querySelectorAll('#understanding-tabs-host h3').length, 5, 'no heading doubled');
 });
 
 test('with localStorage throwing, pressing a chip still opens and scrolls', async () => {

@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { openAllUnderstandingTabs } from './understanding-tabs-kit.mjs';
 
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
@@ -45,6 +46,7 @@ async function setUp(report, { fail = false } = {}) {
   app.renderIntentNav();
   document.querySelector('#intent-nav button[data-stage="understanding"]').click();
   await tick(400);
+  await openAllUnderstandingTabs(document, 300);
   return { document, window, calls };
 }
 
