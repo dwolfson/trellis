@@ -57,6 +57,7 @@ def _docstring_ids(tree):
 #:    answer is orphaned; renaming it is a data migration, recorded in the implemented note as a follow-up).
 PY_ALLOW = (
     "ADD COLUMN kind TEXT NOT NULL DEFAULT 'catalogue'",
+    "TEXT NOT NULL DEFAULT 'catalogue'",  # the same stored default, as registry._init_schema's column list spells it
     "Has this resource already been catalogued in Egeria, and when?",
 )
 
