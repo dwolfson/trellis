@@ -3265,6 +3265,49 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_resource_journal_entity "
                 "ON resource_journal(entity_type, entity_slug, written_at)"
             )
+            # Work lists (work_lists.WorkLists). Moved here from work_lists.py's
+            # per-method _ensure_schema, which ran this DDL on every read and
+            # write. Shapes are the real registry's (no later ADDs), so applying
+            # this there is a no-op.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS work_lists (
+                    slug            TEXT PRIMARY KEY,
+                    display_name    TEXT NOT NULL,
+                    description     TEXT NOT NULL DEFAULT '',
+                    entity_type     TEXT NOT NULL DEFAULT 'repo',
+                    investigation   TEXT NOT NULL DEFAULT '',
+                    created_by      TEXT NOT NULL DEFAULT '',
+                    created_at      TEXT NOT NULL,
+                    derived_from    TEXT NOT NULL DEFAULT '',
+                    egeria_guid     TEXT NOT NULL DEFAULT '',
+                    published_at    TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS work_list_members (
+                    work_list_slug  TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    rationale       TEXT NOT NULL DEFAULT '',
+                    confidence      INTEGER,
+                    added_at        TEXT NOT NULL,
+                    PRIMARY KEY (work_list_slug, entity_slug)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS work_list_runs (
+                    set_id          TEXT NOT NULL,
+                    run_id          TEXT NOT NULL,
+                    work_list_slug  TEXT NOT NULL DEFAULT '',
+                    entity_slug     TEXT NOT NULL,
+                    analysis_id     TEXT NOT NULL,
+                    enqueued_at     TEXT NOT NULL,
+                    PRIMARY KEY (set_id, run_id)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_work_list_runs_set "
+                "ON work_list_runs(set_id)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_component_verdicts (
                     id             TEXT PRIMARY KEY,
