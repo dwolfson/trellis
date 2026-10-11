@@ -509,7 +509,7 @@ function tabbedFrameHtml(active) {
       <section data-curate-band="people" class="mb-s4 border-b border-rule pb-s2"></section>
       <section data-curate-band="publish" class="mb-s4"></section>
     </div>
-        <div data-curate-tab-panel="contents"${hid('curate_contents')}>
+    <div data-curate-tab-panel="contents"${hid('curate_contents')}>
       <section data-curate-band="publish-items" class="mb-s4 border-b border-rule pb-s2"></section>
       <div data-curate-sections="contents"></div>
     </div>
