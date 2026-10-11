@@ -280,8 +280,8 @@ test('connection: when the reads fail every value says not read, and the popover
   await mod.openConnectionPopover(document, anchor, { me: null, getInfo: async () => { throw new Error('x'); }, getStatus: async () => { throw new Error('y'); } });
   const values = [...document.querySelectorAll('[data-conn]')].map((e) => e.textContent);
   // Brief L: "Egeria user" (the configured EGERIA_USER_ID, i.e. the daemon, mislabelled as a user)
-  // became "Background work as".
-  assert.equal(values.length, 7);
+  // became "Background work as". 7h added "RE identity in Egeria".
+  assert.equal(values.length, 8);
   assert.ok(values.every((v) => v === 'not read'), values.join('|'));
 });
 
@@ -429,4 +429,31 @@ test('connection: the popover renders the Background work as row', async () => {
   });
   assert.equal(document.querySelector('[data-conn="Background work as"]').textContent,
     'resourceexplorernpa · from .env (development bootstrap)');
+});
+
+/* ── 7h: RE's own identity in Egeria ──────────────────────────────────── */
+
+test('connection: "RE identity in Egeria" shows the words the startup check recorded, never inferred', async () => {
+  const { mod } = await load();
+  const row = (whoami) => Object.fromEntries(mod.connectionRows({ me: null, whoami, status: null }))['RE identity in Egeria'];
+  assert.equal(row(null), null, 'whoami not read');
+  assert.equal(row({ user_id: 'svc' }), 'not reported by this server', 'an older server');
+  assert.equal(row({ identity_in_egeria: { status: 'present', words: 'present' } }), 'present');
+  assert.equal(row({ identity_in_egeria: { status: 'could not check', words: 'could not check (refused: 2 profile elements)' } }),
+    'could not check (refused: 2 profile elements)');
+  assert.equal(row({ identity_in_egeria: { status: 'present', words: 'present' },
+                     owner_lookup: { user_id: 'dan', reason: 'no answer within 15s' } }),
+    'present · last owner-profile lookup failed (dan): no answer within 15s');
+});
+
+test('connection: the popover renders the RE identity in Egeria row', async () => {
+  const { document, mod } = await load();
+  const anchor = document.createElement('button'); document.body.appendChild(anchor);
+  await mod.openConnectionPopover(document, anchor, {
+    me: { user_id: 'dan' },
+    getInfo: async () => ({ user_id: 'svc', view_server: 'v', platform_url: 'p', build_sha: 'abc',
+      identity_in_egeria: { status: 'created', words: 'created (ProfileIdentity)' } }),
+    getStatus: async () => STATUS({ a: B() }),
+  });
+  assert.equal(document.querySelector('[data-conn="RE identity in Egeria"]').textContent, 'created (ProfileIdentity)');
 });

@@ -231,7 +231,7 @@ class CatalogueGateway(Protocol):
     def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str: ...
     def engine_action_status(self, guid: str) -> EngineActionStatus: ...
     def survey_outcome(self, database_guid: str, engine_action_guid: str, since: str) -> SurveyOutcome: ...
-    def set_owner(self, guid: str, owner: str) -> tuple[str, str]: ...
+    def set_owner(self, guid: str, owner: str, *, person: bool = False) -> tuple[str, str]: ...
     def read_element(self, qualified_name: str, *, for_lineage: bool = False) -> ElementRead | None: ...
     def qualified_name_of(self, guid: str) -> str: ...
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
@@ -667,9 +667,19 @@ class PyegeriaCatalogueGateway:
                 out.annotations = len(annotations_from_report(res))
         return out
 
-    def set_owner(self, guid: str, owner: str) -> tuple[str, str]:
-        """Add Ownership after read-back. ('set' | 'already' | 'refused', detail)."""
-        from resource_explorer.egeria_identity import ownership_body
+    def set_owner(self, guid: str, owner: str, *, person: bool = False) -> tuple[str, str]:
+        """Add Ownership after read-back. ('set' | 'already' | 'refused', detail).
+
+        `person=True` (the requester): `owner` is a person's userId, and Ownership names their
+        profile when Egeria links one to their UserIdentity (7h, `person_ownership_body`). A
+        Context-declared owner (free text) keeps the plain form."""
+        from resource_explorer.egeria_identity import ownership_body, person_ownership_body
+
+        if person:
+            body, shape = person_ownership_body(owner)
+        else:
+            body, shape = ownership_body(owner), None
+        named = body["properties"]["owner"]
         try:
             element = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
         except Exception as exc:
@@ -686,11 +696,12 @@ class PyegeriaCatalogueGateway:
                 current = str(vm["owner"].get("primitiveValue") or "")
             current = current or str((props.get("propertiesAsStrings") or {}).get("owner") or "")
             current = current or str(props.get("owner") or "")
-            if current == owner:
-                return "already", f"Ownership already names {owner}"
+            if current == named:
+                return "already", f"Ownership already names {named}"
+        note = f" ({shape.note})" if shape is not None and shape.note else ""
         try:
-            self._client("ClassificationExplorer").add_ownership_to_element(guid, ownership_body(owner))
-            return "set", f"Ownership set to {owner}"
+            self._client("ClassificationExplorer").add_ownership_to_element(guid, body)
+            return "set", f"Ownership set to {named}{note}"
         except Exception as exc:
             if existing is not None:
                 return "refused", _short(exc)
@@ -769,7 +780,7 @@ class PyegeriaCatalogueGateway:
             reasons.append(f"requestedBy: {why}")
         if owner:
             try:
-                outcome, detail = self.set_owner(guid, owner)
+                outcome, detail = self.set_owner(guid, owner, person=True)
                 if outcome == "refused":
                     reasons.append(f"Ownership refused: {detail}")
             except GatewayError as exc:

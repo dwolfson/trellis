@@ -173,6 +173,27 @@ account; RE holds only the credential it presents.
 - **Where to see it.** The connection popover's "Background work as" row and `GET
   /api/egeria/whoami` (`daemon: {user_id, source}`).
 
+### RE in Egeria's actor graph (7h)
+
+- **At startup** (the worker's one-shot bootstrap, as the daemon) RE ensures the ITProfile
+  `ITProfile::ResourceExplorer`, a UserIdentity `UserIdentity::<EGERIA_USER_ID>` and their
+  ProfileIdentity link. It adopts existing ones by qualifiedName, creates only when Egeria says
+  they are absent, and refuses (creating nothing) on duplicates, on a UserIdentity for the same
+  userId under another qualifiedName, or on a link to another profile. A changed daemon userId
+  gets its own UserIdentity on the same ITProfile; the old link stays (RE has no delete path).
+  The outcome is one log line and the popover's "RE identity in Egeria" row: `present`,
+  `created (...)` or `could not check (reason)`. Startup never waits on it.
+- **Ownership for a person** names their profile (owner = the profile's qualifiedName,
+  ownerTypeName = its type, ownerPropertyName `qualifiedName`, as Egeria's own OpenLineage
+  cataloguer writes it) when their UserIdentity is linked to one, else their userId
+  (`UserIdentity`/`userId`). The lookup is read-only, cached (5 minutes; a failure 1 minute),
+  memoized per press and bounded (15 s); a failure falls back to the userId form and shows in the
+  popover. RE never creates an identity for a person, and never sets `Ownership.userIds`.
+- **Known limits.** Two RE deployments with separate registries pointed at one Egeria could both
+  create on a first run (Egeria has no upsert by qualifiedName; the next start refuses the
+  duplicate and reports it). An ITProfile or UserIdentity in a zone the daemon cannot read comes
+  back as no element, so it reads as absent. Both are open questions for the Egeria lead.
+
 ### Authentication
 
 Login is required on every non-public path (`docs/runtime-architecture-plan.md` §4). Users sign in

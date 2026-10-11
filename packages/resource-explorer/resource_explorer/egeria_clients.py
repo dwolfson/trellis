@@ -134,6 +134,8 @@ class DaemonReason(str, Enum):
     ACCESS_CHECK = "access_check"      # curation access: an element's zones, their controls, the caller's account
     STARTUP_WARM = "startup_warm"      # the worker's one-shot cache warm at start
     PREFECT_FLOW = "prefect_flow"      # a survey flow run in a Prefect worker process (no caller there)
+    IDENTITY_BOOTSTRAP = "identity_bootstrap"  # RE's own ITProfile / UserIdentity / ProfileIdentity (7h)
+    ACTOR_LOOKUP = "actor_lookup"      # read-only: a person's UserIdentity and profile, for Ownership (7h)
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +344,13 @@ def client_scope() -> Iterator[None]:
         yield
     finally:
         _scope.reset(reset)
+
+
+def current_scope() -> Optional[dict]:
+    """The current `client_scope()`'s dict (one request, one job pass), or None outside one.
+    Other modules may memoize per-scope answers in it under a key of their own (a tuple whose
+    first item names the module), never a client key."""
+    return _scope.get()
 
 
 @contextmanager
