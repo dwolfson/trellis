@@ -344,67 +344,8 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
 
 # ── the record of the act ──────────────────────────────────────────────
 
-def _ensure_schema(conn) -> None:
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_curation (
-            id            TEXT PRIMARY KEY,
-            entity_type   TEXT NOT NULL,
-            entity_slug   TEXT NOT NULL,
-            author        TEXT NOT NULL,
-            requested_at  TEXT NOT NULL,
-            selection     TEXT NOT NULL DEFAULT '{}',
-            manifest      TEXT NOT NULL DEFAULT '{}',
-            state         TEXT NOT NULL DEFAULT 'queued',
-            steps         TEXT NOT NULL DEFAULT '[]',
-            finished_at   TEXT NOT NULL DEFAULT '',
-            activity_id   TEXT NOT NULL DEFAULT ''
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_resource_curation_entity "
-                 "ON resource_curation(entity_type, entity_slug, requested_at)")
-    # One table, two kinds (REPORT-RECORD-AND-TWO-CALLS C1, 2026-09-13). A
-    # report is a catalogue record with no steps: a named, dated, authored
-    # record of what was true about a selection at a moment, with its
-    # provenance attached. `kind` and `name` were added after the table
-    # shipped; every pre-existing row is a catalogue.
-    cols = _columns(conn, "resource_curation")
-    if "kind" not in cols:
-        conn.execute("ALTER TABLE resource_curation ADD COLUMN kind TEXT NOT NULL DEFAULT 'catalogue'")
-    if "name" not in cols:
-        conn.execute("ALTER TABLE resource_curation ADD COLUMN name TEXT NOT NULL DEFAULT ''")
-    if "report" not in cols:
-        conn.execute("ALTER TABLE resource_curation ADD COLUMN report TEXT NOT NULL DEFAULT '{}'")
-    # The three acts on a report (REPORT-ACTS, 2026-09-14): a record's USES
-    # are a separate append-only list attached to it, not an edit of it --
-    # the content stays frozen while what it caused accumulates beside it.
-    # A correction is a new record that names what it corrects; the old one
-    # learns who corrected it, in the same place its uses appear.
-    if "uses" not in cols:
-        conn.execute("ALTER TABLE resource_curation ADD COLUMN uses TEXT NOT NULL DEFAULT '[]'")
-    if "corrects" not in cols:
-        conn.execute("ALTER TABLE resource_curation ADD COLUMN corrects TEXT NOT NULL DEFAULT ''")
-    if "corrected_by" not in cols:
-        conn.execute("ALTER TABLE resource_curation ADD COLUMN corrected_by TEXT NOT NULL DEFAULT '{}'")
-    # The layer-2 catalogue-depth offer (owner's ruling, 2026-09-15): the
-    # same shape as DepthOffer's outcome, but recorded on the catalogue
-    # record rather than a disposition-history row -- the layer-2 act is
-    # component materialization, which belongs to a curate commit, not to a
-    # disposition verdict. '{}' means "not yet offered", same convention
-    # DepthOffer's own null column uses.
-    if "layer2_offer" not in cols:
-        conn.execute("ALTER TABLE resource_curation ADD COLUMN layer2_offer TEXT NOT NULL DEFAULT '{}'")
-
-
-def _columns(conn, table: str) -> set[str]:
-    try:
-        if getattr(conn, "is_postgres", False):
-            rows = conn.execute("SELECT column_name FROM information_schema.columns "
-                                "WHERE table_name = ? AND table_schema = current_schema()", (table,)).fetchall()
-            return {r["column_name"] for r in rows}
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        return {r["name"] for r in rows}
-    except Exception:
-        return set()
+# The resource_curation table is created by ProjectRegistry._init_schema (a migration),
+# not here: DDL on a GET fails under a read-only session.
 
 
 @dataclass
@@ -435,7 +376,6 @@ class Curations:
         now = _now()
         rows = [CurationStep(s).__dict__ for s in steps]
         with self._conn() as conn:
-            _ensure_schema(conn)
             conn.execute(
                 "INSERT INTO resource_curation (id, entity_type, entity_slug, author, requested_at, selection, manifest, state, steps, activity_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
@@ -460,7 +400,6 @@ class Curations:
         if corrects and (not old or old["entity_slug"] != slug or old.get("kind") != "report"):
             raise ValueError("a correction must name a report record on the same resource")
         with self._conn() as conn:
-            _ensure_schema(conn)
             conn.execute(
                 "INSERT INTO resource_curation (id, entity_type, entity_slug, author, requested_at, selection, manifest, "
                 "state, steps, activity_id, kind, name, report, finished_at, corrects) "
@@ -516,13 +455,11 @@ class Curations:
 
     def get(self, cid: str) -> dict | None:
         with self._conn() as conn:
-            _ensure_schema(conn)
             row = conn.execute("SELECT * FROM resource_curation WHERE id = ?", (cid,)).fetchone()
         return self._decode(row) if row else None
 
     def for_resource(self, entity_type: str, slug: str) -> list[dict]:
         with self._conn() as conn:
-            _ensure_schema(conn)
             rows = conn.execute(
                 "SELECT * FROM resource_curation WHERE entity_type = ? AND entity_slug = ? ORDER BY requested_at DESC",
                 (entity_type, slug)).fetchall()

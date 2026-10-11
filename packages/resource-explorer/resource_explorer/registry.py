@@ -3198,6 +3198,54 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_resource_curator_notes_entity "
                 "ON resource_curator_notes(entity_type, entity_slug)"
             )
+            # resource_curation: the record of each Catalogue press and each
+            # report (curate_plan.Curations). Moved here from curate_plan's
+            # per-call _ensure_schema, which ran this DDL on every GET (and
+            # failed under a read-only session). Column order is the order
+            # the real registry already has (the original 11, then the seven
+            # later ADDs), so applying this there is a no-op. `kind`/`name`/
+            # `report` (REPORT-RECORD-AND-TWO-CALLS C1), `uses`/`corrects`/
+            # `corrected_by` (REPORT-ACTS) and `layer2_offer` (2026-09-15)
+            # were added after the table shipped; the guarded ALTERs below
+            # carry a registry that still has the original shape.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_curation (
+                    id            TEXT PRIMARY KEY,
+                    entity_type   TEXT NOT NULL,
+                    entity_slug   TEXT NOT NULL,
+                    author        TEXT NOT NULL,
+                    requested_at  TEXT NOT NULL,
+                    selection     TEXT NOT NULL DEFAULT '{}',
+                    manifest      TEXT NOT NULL DEFAULT '{}',
+                    state         TEXT NOT NULL DEFAULT 'queued',
+                    steps         TEXT NOT NULL DEFAULT '[]',
+                    finished_at   TEXT NOT NULL DEFAULT '',
+                    activity_id   TEXT NOT NULL DEFAULT '',
+                    kind          TEXT NOT NULL DEFAULT 'catalogue',
+                    name          TEXT NOT NULL DEFAULT '',
+                    report        TEXT NOT NULL DEFAULT '{}',
+                    uses          TEXT NOT NULL DEFAULT '[]',
+                    corrects      TEXT NOT NULL DEFAULT '',
+                    corrected_by  TEXT NOT NULL DEFAULT '{}',
+                    layer2_offer  TEXT NOT NULL DEFAULT '{}'
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_curation_entity "
+                "ON resource_curation(entity_type, entity_slug, requested_at)"
+            )
+            existing_curation = self._get_table_columns(conn, "resource_curation")
+            for col, defn in [
+                ("kind", "TEXT NOT NULL DEFAULT 'catalogue'"),
+                ("name", "TEXT NOT NULL DEFAULT ''"),
+                ("report", "TEXT NOT NULL DEFAULT '{}'"),
+                ("uses", "TEXT NOT NULL DEFAULT '[]'"),
+                ("corrects", "TEXT NOT NULL DEFAULT ''"),
+                ("corrected_by", "TEXT NOT NULL DEFAULT '{}'"),
+                ("layer2_offer", "TEXT NOT NULL DEFAULT '{}'"),
+            ]:
+                if col not in existing_curation:
+                    conn.execute(f"ALTER TABLE resource_curation ADD COLUMN {col} {defn}")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_component_verdicts (
                     id             TEXT PRIMARY KEY,
