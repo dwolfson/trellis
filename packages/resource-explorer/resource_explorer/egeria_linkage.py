@@ -234,7 +234,10 @@ def guard_linkage(registry, entity_type: str, entity_slug: str, entity_name: str
     except StaleEgeriaLinkageError:
         raise
     except Exception as exc:
-        if not is_unknown_guid_error(exc):
+        from resource_explorer.workflows.curate import WriteNotPermitted
+
+        # Brief Z2 round 3: an access refusal is never a stale link, whatever its words say.
+        if isinstance(exc, WriteNotPermitted) or not is_unknown_guid_error(exc):
             raise
         raise note_divergence(
             registry, entity_type, entity_slug, entity_name, stale_guid, exc) from exc

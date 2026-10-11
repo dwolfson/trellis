@@ -251,7 +251,17 @@ def run_analysis(
     publish_mode = "not-attempted"
     publish_run_id = ""
     pending_published_record = None
+    refusal = ""
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
+        # Brief Z2: the person who asked for this run must be allowed to publish the repository (re-checked here,
+        # right before the write; the findings are kept either way).
+        from resource_explorer.workflows.curate import person_write_refusal
+
+        refusal = person_write_refusal(registry, "repo", slug)
+        if refusal:
+            publish_mode = "not-permitted"
+            summary = summary.rstrip(".") + f"; not published: {refusal}."
+    if result.annotations and not refusal and registry.has_assigned_egeria_project("repo", slug):
         from resource_explorer.config import get_config
 
         # The per-run choice, threaded through from the route: "wait"/

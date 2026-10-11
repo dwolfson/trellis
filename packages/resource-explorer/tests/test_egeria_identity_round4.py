@@ -5,6 +5,8 @@ element's CURRENT additionalProperties; a file-system survey publishes only when
 Fakes only; nothing reaches Egeria."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import sys
 from pathlib import Path
 
@@ -18,6 +20,15 @@ from test_catalogue_commit import (  # noqa: E402,F401
 from resource_explorer import egeria_identity as ident  # noqa: E402
 from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch)
+
 DAEMON_USER = "re-daemon"
 
 
@@ -26,8 +37,19 @@ def _daemon(monkeypatch):
     monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: (DAEMON_USER, "pw"))
 
 
+@contextmanager
 def _queued_for(person):
-    return acting_as(Daemon(DaemonReason.RUN_QUEUE, requested_by=person))
+    """As `run_queue._run_as_requester` runs a queued row: the daemon acts, and the caller ContextVar names the
+    requester (Brief Z2: the run re-checks curation access as that person)."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    reset = current_caller.set(CallerIdentity(user_id=person, egeria_token=None, auth_source="queued-run",
+                                              role="user"))
+    try:
+        with acting_as(Daemon(DaemonReason.RUN_QUEUE, requested_by=person)) as identity:
+            yield identity
+    finally:
+        current_caller.reset(reset)
 
 
 def _press_then_queue(w, fake, person="dana"):

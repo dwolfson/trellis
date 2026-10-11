@@ -948,6 +948,14 @@ class TestCurateBlueprintVerdictsRouter:
 # ── /api/schedules — per-resource + global overview ─────────────────────────────
 
 class TestSchedulesRouter:
+    @pytest.fixture(autouse=True)
+    def _zone_access_open(self, monkeypatch):
+        """Brief Z2 round 2: creating a schedule asks the access check; no zone in use here, and a signed-in
+        person for the check (the route's own sign-in handling is untouched)."""
+        from tests.zone_fakes import open_access
+
+        return open_access(monkeypatch, caller_if_none="zone2-tester")
+
     def test_save_and_get_schedule(self, client):
         resp = client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "weekly"})
         assert resp.status_code == 200

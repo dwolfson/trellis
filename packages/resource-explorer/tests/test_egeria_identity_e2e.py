@@ -19,6 +19,15 @@ import time
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch, caller_if_none="zone2-tester")
+
 PERSON, PERSON_TOKEN = "dana", "tok-dana-signed-in"
 DAEMON_USER, DAEMON_PW = "re-daemon", "pw-daemon-not-a-real-one"
 

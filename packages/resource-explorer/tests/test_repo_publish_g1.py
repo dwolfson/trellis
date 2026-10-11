@@ -16,6 +16,15 @@ from fastapi.testclient import TestClient
 from resource_explorer import repo_publish as rp
 from resource_explorer.registry import Project, ProjectRegistry
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch, caller_if_none="zone2-tester")
+
 EGERIA_SENTENCE = ("OMAG-COMMON-409-001 The qualifiedName SurveyReport::x is not available for use. "
                    "Details follow in the second sentence.")
 

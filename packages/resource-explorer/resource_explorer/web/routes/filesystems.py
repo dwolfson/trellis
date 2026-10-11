@@ -359,6 +359,11 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
             status_code=404,
             detail=f"FileSystem '{slug}' not found."
         )
+    if req.mode in ("hybrid", "egeria") and _publish_chosen(req):
+        # Brief Z2: a chosen publish catalogs and publishes the file system in Egeria (the same choice the survey
+        # passes on as force_egeria_publish); without it, nothing is written there.
+        from resource_explorer.web.routes.curate import require_resource_write
+        require_resource_write(registry, "filesystem", slug, "publish")
 
     # 1. Update status to active/surveying
     registry.update_filesystem_status(slug, ProjectStatus.ACTIVE)
@@ -548,6 +553,9 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             status_code=404,
             detail=f"FileSystem '{slug}' not found."
         )
+
+    from resource_explorer.web.routes.curate import require_resource_write
+    require_resource_write(registry, "filesystem", slug, "publish")        # Brief Z2
 
     survey = registry.get_latest_filesystem_survey(slug)
     if not survey:

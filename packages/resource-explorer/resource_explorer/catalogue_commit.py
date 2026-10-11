@@ -111,6 +111,10 @@ P_RESTORED = "restored"
 P_DELETE_CALL = "delete_call"
 P_LEAVE_OUT_BLOCKED = "leave_out_blocked"   # a leave-out that was refused (ISSUE-117): kept, not sent
 KEPT_NOT_SENT = "kept, not sent · ISSUE-117 block"
+#: Brief Z2: a schema this commit did NOT write because the person may not change it (Egeria's zones, emulated by
+#: `workflows.curate.curation_access`). A record of a refusal, never a state: NOT in STATE_PROOFS.
+P_NOT_PERMITTED = "not_permitted"
+NOT_PERMITTED_WORDS = "not permitted"
 P_SURVEY = "survey_started"
 P_CONNECTOR = "connector_read"
 P_READ_FAILED = "read_failed"
@@ -786,18 +790,107 @@ def survey_schema_list(names: list[str]) -> tuple[list[str], list[str]]:
     return ok, bad
 
 
+# ── who may change each part (Brief Z2) ───────────────────────────────────────
+#
+# The database's own element is checked by the route before anything here runs (`authorize_resource_write`,
+# publish). Each SCHEMA element that is already in Egeria and that this commit would write is checked on its own,
+# with the operations its write performs, by the same decision every other write uses
+# (`workflows.curate.curation_access`, emulating `OpenMetadataAccessSecurityConnector.validateZoneAccess`):
+#   attach    ATTACH                (the CatalogTarget link on the schema: validateUserForElementAttach :1582-1620)
+#   leave out DETACH + DELETE       (the target removal :1639-1694, then the archive / soft delete :2540-2566), and
+#             DELETE on every table, column and schema-type element the delete walks (`read_hangs_off`'s
+#             delete_order) when the ISSUE-117 block is off. With the block on (it is) nothing is deleted, and the
+#             check runs IN FRONT of the block only, so a refusal is said before the block would be.
+# RE writes no table element on an attach: Egeria's cataloguer creates the tables (whole schemas). A part that is
+# not permitted is skipped with its own word ("not permitted · <reason>") and the rest proceed, as Publish does.
+# The element reads are batched (`zone_access.read_elements`: lanes, Daemon(ACCESS_CHECK)); no per-element client.
+
+ATTACH_OPS = ("ATTACH",)
+LEAVE_OUT_OPS = ("DETACH", "DELETE")
+MEMBER_DELETE_OPS = ("DELETE",)
+
+
+def _caller_signed_in() -> bool:
+    from resource_explorer.workflows.curate import _caller_identity
+
+    who = _caller_identity()
+    return bool(who is not None and who.auth_source != "anonymous" and who.user_id)
+
+
+def _caller_overrides() -> bool:
+    """A Portal curator/admin (`curation_access` rule 2): carried into the run, as Publish carries it."""
+    from resource_explorer.workflows.curate import CURATOR_ROLES, _caller_identity
+
+    who = _caller_identity()
+    return bool(who is not None and who.auth_source != "anonymous" and who.user_id
+                and (who.role or "").lower() in CURATOR_ROLES)
+
+
+def known_schema_guid(state: dict) -> str:
+    """The schema element RE's own rows say is in Egeria now ('' when none: never cataloged, deleted, reset, or
+    only an outbox row so far). The run resolves the element by qualified name instead (`parts_access_by_name`)."""
+    if (state or {}).get("state") not in ("catalogued", "attached_waiting", "restored", "sent"):
+        return ""
+    return str(((state or {}).get("proof") or {}).get("element_guid") or "")
+
+
+def parts_access(registry, slug: str, parts: list[tuple[str, list[str], tuple[str, ...]]], *,
+                 reader=None, new_ops: tuple[str, ...] = (), anchor_guid: str = "") -> dict[str, Any]:
+    """{schema: AccessDecision} for each (schema, [element guids], operations): the schema is permitted only when
+    every one of its elements is. All the elements are read together, once (`EgeriaAccessReader.check`), and
+    nothing is read for a caller the decision settles first (anonymous, Portal curator/admin).
+
+    `new_ops` (round 3): a part with NO element yet is one the write will CREATE; with `new_ops` it is judged for
+    those operations as a new member of `anchor_guid` (the database, when it is in Egeria: Egeria's
+    validateUserForAnchorMemberCreate :1965-1990), else on RE's configured zones (`curation_access`)."""
+    from resource_explorer.workflows.curate import AccessDecision, _reads_zones, curation_access
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    reader = reader or EgeriaAccessReader(cache_elements=True)
+    wanted = [g for _, guids, _ in parts for g in guids if g] if _reads_zones() else []
+    if wanted is not None and _reads_zones() and new_ops and anchor_guid and any(not g for _, g, _ in parts):
+        wanted.append(anchor_guid)
+    out: dict[str, Any] = {}
+    with reader.check(wanted):
+        for name, guids, ops in parts:
+            decision = AccessDecision(True)
+            if not [g for g in guids if g] and new_ops:
+                out[name] = curation_access(registry, "database", slug, "", operations=new_ops, reader=reader,
+                                            element_guid="", anchor_guid=anchor_guid)
+                continue
+            for guid in [g for g in guids if g]:
+                d = curation_access(registry, "database", slug, "", operations=ops, reader=reader, element_guid=guid)
+                if not d.allowed:
+                    decision = d
+                    break
+                decision = d
+            out[name] = decision
+    return out
+
+
+def not_permitted_row(schema: str, reason: str) -> dict:
+    return {"schema": schema, "reason": reason, "words": f"{NOT_PERMITTED_WORDS} · {reason}",
+            "text": f"{schema}: {NOT_PERMITTED_WORDS} · {reason}"}
+
+
 def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | None, *,
                   db_entity=None, derived: dict | None = None) -> dict:
     """What pressing Catalogue would do, with the Egeria reads it needs.
 
     `gateway` None means Egeria could not be reached: every leave out that needs
     a read is then "couldn't check what hangs off it" and blocked, which is the
-    honest answer, never "nothing"."""
+    honest answer, never "nothing".
+
+    Brief Z2: each schema element already in Egeria that the commit would write is checked for the signed-in
+    caller (`parts_access`); one not permitted is held with "not permitted · <reason>" and the rest proceed. The
+    press (`start_commit`) builds this same preview, so what the panel shows is what the commit does. An anonymous
+    viewer is not checked part by part: no commit can start without a sign-in (`start_commit` refuses first)."""
     db_entity = db_entity or registry.get_database(slug, allow_unreadable=True)
     derived = derived or derive_commit_state(registry, slug, view)
     states = derived["schemas"]
     chosen, kept = _chosen_and_kept(view, states)
     refused, attach, leave, blockers = [], [], [], []
+    not_permitted: list[dict] = []
 
     for name in chosen:
         st = states[name]
@@ -808,6 +901,48 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     attach += [n for n in kept]
 
     leave_out_names = [s["name"] for s in view["schemas"] if s.get("effective") == LEAVE_OUT]
+    checked = _caller_signed_in()
+    # Round 3: a name collision stops the commit before anything else (409), so no access read is made for it:
+    # nothing is read from Egeria for a press that cannot go ahead (the press's own "no Egeria call" rule).
+    if checked and wildcard_collisions(view, attach):
+        checked = False
+    leave_refused: dict = {}
+    reader = None
+    if checked:
+        from resource_explorer.zone_access import EgeriaAccessReader
+
+        reader = EgeriaAccessReader(cache_elements=True)
+        leave_cands = [n for n in leave_out_names if states.get(n, {}).get("state") in CATALOGED_STATES]
+        if gateway is not None:
+            # Round 2 (§5b): the SAME function the run uses, resolving each schema by qualified name through the
+            # gateway exactly as the write will, so the preview's count is the run's. Round 3: a new schema is
+            # judged as a new member of the database element (found by its qualified name, as the run's step 0
+            # finds it), and a leave-out walks its members exactly as the run does when the block lets it through.
+            try:
+                db_el = gateway.read_element(gw.database_qualified_name(gw.server_name_for(db_entity),
+                                                                       db_entity.database_name))
+                anchor = db_el.guid if db_el is not None else ""
+            except GatewayError:
+                anchor = ""               # the run reads it again; a part read below says if Egeria is unreadable
+            attach, np_attach = parts_check_by_name(registry, gateway, db_entity, slug, attach, ATTACH_OPS,
+                                                    override=False, reader=reader, anchor_guid=anchor)
+            _ok, np_leave = parts_check_by_name(registry, gateway, db_entity, slug, leave_cands, LEAVE_OUT_OPS,
+                                                override=False, reader=reader,
+                                                members=not gw.issue_117_blocked())
+        else:
+            # No gateway: Egeria cannot be reached, and the commit cannot run either. RE's own rows name the
+            # elements it knows; the rest wait for the run.
+            got = parts_access(registry, slug,
+                               [(("attach", n), [known_schema_guid(states.get(n, {}))], ATTACH_OPS) for n in attach
+                                if known_schema_guid(states.get(n, {}))]
+                               + [(("leave", n), [known_schema_guid(states.get(n, {}))], LEAVE_OUT_OPS)
+                                  for n in leave_cands if known_schema_guid(states.get(n, {}))], reader=reader)
+            np_attach = [not_permitted_row(n, d.reason) for (w, n), d in got.items() if w == "attach" and not d.allowed]
+            np_leave = [not_permitted_row(n, d.reason) for (w, n), d in got.items() if w == "leave" and not d.allowed]
+            attach = [n for n in attach if n not in {r["schema"] for r in np_attach}]
+        not_permitted += [{**r, "write": "attach"} for r in np_attach]
+        leave_refused = {r["schema"]: r for r in np_leave}
+
     for name in leave_out_names:
         st = states.get(name, {})
         node = next(s for s in view["schemas"] if s["name"] == name)
@@ -817,6 +952,14 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
             row.update(form="none", blocked=False,
                        text=f"{name}: nothing to remove" + (" · already " + ("deleted in Egeria" if st.get("state") == "deleted" else "archived in Egeria")
                                                                   if st.get("state") in ("deleted", "archived") else " · never cataloged"))
+            leave.append(row)
+            continue
+        # Brief Z2: the access check stands IN FRONT of the ISSUE-117 block (which is unchanged): a person who may
+        # not change the schema is told so, before the block would be.
+        np_row = leave_refused.get(name)
+        if np_row is not None:
+            row.update(form="not_permitted", blocked=True, reason=np_row["words"], text=np_row["text"])
+            not_permitted.append({**np_row, "write": "leave out"})
             leave.append(row)
             continue
         if gw.issue_117_blocked() and st.get("state") in CATALOGED_STATES:
@@ -892,6 +1035,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
             held.setdefault(r.get("reason", CANT_CHECK), []).append(r["schema"])
     for r in refused:
         held.setdefault(S19_SENTENCE, []).append(r["schema"])
+    for r in not_permitted:
+        if r["write"] == "attach":
+            held.setdefault(r["words"], []).append(r["schema"])
     not_committed = [{"reason": why, "schemas": names} for why, names in held.items()]
     for nc in not_committed:
         n = len(nc["schemas"])
@@ -919,6 +1065,15 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     lines.append({"id": "survey_report_whole", "mechanism": 0, "text": report_sentence})
 
     something = bool(attach or [r for r in leave if r["form"] in (SOFT_DELETE, ARCHIVE)])
+    all_refused = bool(not something and not_permitted)
+    # Round 2 (LOW 7): what ELSE holds this commit, each as a short word with its reason on demand, so a refusal
+    # never hides another blocker (a name collision, a leave-out the ISSUE-117 block keeps).
+    also_blocked = [{"word": "name collision", "reason": b} for b in blockers]
+    also_blocked += [{"word": "ISSUE-117 block", "reason": r["text"]} for r in leave if r.get("form") == "issue_117"]
+    if all_refused:
+        # Nothing the person may change is left: refused whole, with the first reason (Publish's rule), and the
+        # other blockers kept beside it.
+        blockers.insert(0, not_permitted[0]["words"])
     if not something and not blockers:
         blockers.append("nothing to commit: choose at least one schema to catalog")
     label = f"Catalog · {len(attach)} schema{'s' if len(attach) != 1 else ''}"
@@ -934,11 +1089,17 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         "blocked_notes": [r["text"] for r in leave if r.get("blocked")],
         "attach": attach,
         "refused": refused,
+        "not_permitted": not_permitted,
+        "all_refused": all_refused,
+        "also_blocked": also_blocked,
+        "access_checked": checked,
         "leave_out": leave,
         "collisions": collisions,
         "survey": {"schemas": ok_names, "not_scopable": comma_names, "line": SURVEY_LINE},
         "manifest": {"lines": lines, "not_committed": not_committed, "schema_targets": len(attach), "new_targets": n_new,
                      "survey_schemas": ok_names, "zones": zones, "zones_written": bool(zones), "owner": owner,
+                     "not_permitted": [{"schema": r["schema"], "write": r["write"], "reason": r["reason"]}
+                                       for r in not_permitted],
                      "whole_schemas_line": WHOLE_SCHEMAS_LINE},
         "tables_line": WHOLE_SCHEMAS_LINE,
     }
@@ -1528,6 +1689,11 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
             log.warning("catalog commit: no Egeria gateway for %s: %s", slug, exc)
             gateway = None
     preview = build_preview(registry, slug, view, gateway, db_entity=db_entity, derived=derived)
+    if preview.get("all_refused"):
+        # Brief Z2: every part the press would write is one the person may not change: refused whole (403).
+        raise CommitBlocked(403, preview["not_permitted"][0]["reason"],
+                            [r["text"] for r in preview["not_permitted"]]
+                            + [f"{b['word']} · {b['reason']}" for b in preview.get("also_blocked") or []])
     if not preview["can_commit"]:
         raise CommitBlocked(409, "The commit is disabled: " + "; ".join(preview["blockers"]), preview["blockers"])
     selection = {
@@ -1538,6 +1704,12 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         "survey_schemas": preview["survey"]["schemas"],
         "survey_not_scopable": preview["survey"]["not_scopable"],
         "refresh_now": bool(refresh_now),
+        # Brief Z2: the parts refused at the press (said by the run as rows, never written), and a Portal
+        # curator/admin override seen at the press, from the verified caller (the run re-checks every part as the
+        # requester unless this is set, as Publish's run does).
+        "not_permitted": [{"schema": r["schema"], "write": r["write"], "reason": r["reason"]}
+                          for r in preview["not_permitted"]],
+        "portal_role": _caller_overrides(),
     }
     from resource_explorer.activity_logger import log_survey
     activity_id = log_survey(
@@ -1655,6 +1827,83 @@ def _try_status(gateway):
         return None
 
 
+def parts_check_by_name(registry, gateway: CatalogueGateway, db, slug: str, names: list[str], ops: tuple[str, ...], *,
+                        override: bool, members: bool = False, reader=None,
+                        anchor_guid: str = "") -> tuple[list[str], list[dict]]:
+    """The run's re-check (Brief Z2), as the requester (run_queue sets the caller), right before each schema's
+    write is queued: (permitted names, not-permitted rows). The element checked is the one the write will use,
+    found by its qualified name exactly as `apply_attach` / `apply_leave_out` find it, so an element adopted since
+    the press is checked too. `members`: also DELETE on every element the leave-out's delete walks
+    (`read_hangs_off`, the delete's own read). A failed read of the schema element denies that schema with the
+    reason; a failed walk leaves the members to the delete, which then sends nothing."""
+    from resource_explorer.workflows.curate import _reads_zones, curation_access
+
+    if override or not names:
+        return list(names), []
+    if not _reads_zones():
+        # Settled before any read (anonymous: denied; a Portal curator/admin: allowed): one decision for all.
+        d = curation_access(registry, "database", slug, "", operations=ops, element_guid="")
+        return (list(names), []) if d.allowed else ([], [not_permitted_row(n, d.reason) for n in names])
+    parts, refused = [], []
+    reads = _reads_zones()
+    for name in names:
+        guids: list[str] = []
+        if reads:
+            try:
+                el = gateway.read_element(schema_qn(db, name))
+                guids = [el.guid] if el is not None and el.guid else []
+                if members and guids:
+                    # A failed walk is not an access answer: the delete itself reads the same walk first and,
+                    # failing, sends nothing ("couldn't check what hangs off it"). Only the schema is checked then.
+                    read = read_hangs_off(gateway, db, name)
+                    if read["state"] == "read":
+                        guids += [g for g, _t, _q in read.get("delete_order") or [] if g]
+            except GatewayError as exc:
+                refused.append(not_permitted_row(name, f"could not check access in Egeria ({exc})"[:300]))
+                continue
+        parts.append((name, guids, ops))
+    # One batched check: the schema itself with `ops`; with `members`, every element its delete walks with DELETE.
+    checks = [((name, "self"), guids[:1] if members else guids, ops) for name, guids, _ in parts]
+    if members:
+        checks += [((name, "members"), guids[1:], MEMBER_DELETE_OPS) for name, guids, _ in parts if guids[1:]]
+    # A schema not in Egeria yet is CREATED by an attach (then classified with Ownership, then attached): judged
+    # as a new member of the database (round 3). A leave-out of one not in Egeria writes nothing.
+    new_ops = (("CREATE", "CLASSIFY") + tuple(ops)) if not members and ops == ATTACH_OPS else ()
+    got = parts_access(registry, slug, checks, reader=reader, new_ops=new_ops,
+                       anchor_guid=anchor_guid) if checks else {}
+    decided = {}
+    for name, _g, _o in parts:
+        head, rest = got[(name, "self")], got.get((name, "members"))
+        decided[name] = rest if head.allowed and rest is not None and not rest.allowed else head
+    ok = []
+    for name, _g, _o in parts:
+        d = decided[name]
+        if d.allowed:
+            ok.append(name)
+        else:
+            refused.append(not_permitted_row(name, d.reason))
+    return ok, refused
+
+
+def _record_not_permitted(registry, slug: str, curation_id: str, author: str, rows: list[dict], write: str) -> None:
+    for r in rows:
+        _proof(registry, slug, P_NOT_PERMITTED, schema=r["schema"], curation_id=curation_id, recorded_by=author,
+               detail={"write": write, "reason": r["reason"], "words": r["words"]})
+
+
+def _np_note(rows: list[dict]) -> str:
+    return f"{NOT_PERMITTED_WORDS}: " + ", ".join(r["schema"] for r in rows) if rows else ""
+
+
+def _add_step_note(cur, cid: str, step: str, note: str) -> None:
+    if not note:
+        return
+    st = next((x for x in cur.get(cid)["steps"] if x["name"] == step), None)
+    if st is not None:
+        cur.set_step(cid, step, st["state"], " · ".join(x for x in (st.get("detail") or "", note) if x),
+                     st.get("more") or "")
+
+
 def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | None = None,
                    drain: Callable[..., Any] | None = None) -> dict:
     """Run the curation record's steps. Nothing raises past a step: a step that
@@ -1685,6 +1934,34 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             return drain_outbox(registry, OutboxClients(catalogue_gateway=gateway, registry=registry),
                                 lambda qn: "", run_id=run_id)
 
+    # 0 ── Brief Z2: the run re-checks as the requester before anything is written (Publish's rule). A Portal
+    # curator/admin override seen at the press is carried in the selection. The parts refused at the press are
+    # rows of their own, never written.
+    override = bool(sel.get("portal_role"))
+    checked_db_guid: str | None = None          # the database element step 0 judged ('' = not in Egeria then)
+    for r in sel.get("not_permitted") or []:
+        _record_not_permitted(registry, slug, curation_id, author, [not_permitted_row(r["schema"], r["reason"])],
+                              r.get("write") or "")
+    if not override:
+        from resource_explorer.workflows.curate import resource_access
+
+        try:
+            # Round 2: the database element the write will use, found by its qualified name exactly as step 1's
+            # read finds it (an element adopted since the press, or never recorded by RE, is checked too).
+            el = gateway.read_element(gw.database_qualified_name(gw.server_name_for(db), db.database_name))
+            checked_db_guid = el.guid if el is not None else ""
+            d = resource_access(registry, "database", slug, "publish", element_guid=checked_db_guid)
+            why = "" if d.allowed else d.reason
+        except GatewayError as exc:
+            why = f"could not check access in Egeria ({exc})"[:300]
+        except Exception as exc:  # noqa: BLE001 - a failure is a refusal with its reason, never a pass
+            why = f"could not check access ({type(exc).__name__}: {exc})"[:300]
+        if why:
+            cur.set_step(curation_id, "publish_elements", "failed", f"{NOT_PERMITTED_WORDS} · {why}")
+            for st in STEPS_DB[1:]:
+                cur.set_step(curation_id, st, "skipped", f"{NOT_PERMITTED_WORDS}: nothing written")
+            return cur.finish(curation_id)
+
     db_guid = ""
     # 1 ── the server and database elements
     cur.set_step(curation_id, "publish_elements", "running")
@@ -1696,15 +1973,54 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         existed, expected = {}, {
             "server": gw.server_qualified_name(gw.server_name_for(db)),
             "database": gw.database_qualified_name(gw.server_name_for(db), db.database_name)}
+        found_db_guid = ""
         for which, qn_ in expected.items():
             try:
-                existed[which] = gateway.read_element(qn_) is not None
+                el_ = gateway.read_element(qn_)
+                existed[which] = el_ is not None
+                if which == "database" and el_ is not None:
+                    found_db_guid = el_.guid or ""
             except GatewayError:
                 existed[which] = True
+
+        def refuse_database(guid_: str, *, written: bool) -> str:
+            """Round 3/4: judge a database element other than the one step 0 judged; "" = permitted. ANY
+            failure of the check is a refusal (as step 0)."""
+            if override or not guid_ or guid_ == checked_db_guid:
+                return ""
+            from resource_explorer.workflows.curate import resource_access
+
+            try:
+                d = resource_access(registry, "database", slug, "publish", element_guid=guid_)
+                why_ = "" if d.allowed else d.reason
+            except Exception as exc:  # noqa: BLE001 - a failure is a refusal with its reason, never a pass
+                why_ = f"could not check access ({type(exc).__name__}: {exc})"[:300]
+            if why_:
+                cur.set_step(curation_id, "publish_elements", "failed",
+                             f"{NOT_PERMITTED_WORDS} · {why_} (the database element "
+                             f"{'Egeria returned' if written else 'found before the publish'}, {guid_[:8]})")
+                for st in STEPS_DB[1:]:
+                    cur.set_step(curation_id, st, "skipped", f"{NOT_PERMITTED_WORDS}: nothing more written")
+            return why_
+
+        # Round 4: the element the publish will update, found by its qualified name just now, is judged BEFORE
+        # the write when it is not the one step 0 judged (a race since step 0).
+        if refuse_database(found_db_guid, written=False):
+            return cur.finish(curation_id)
+        before_pointer = getattr(registry.get_database(slug, allow_unreadable=True), "egeria_asset_guid", "") or ""
         pub = gateway.publish_database(db, db.db_user, db.db_password, registry=registry, submitted_by=author)
-        db_guid = pub.database_guid
-        if not db_guid:
+        returned = pub.database_guid
+        if not returned:
             raise GatewayError("Egeria returned no database element")
+        # Round 3/4: the surveyor resolves the database by its full qualifiedName (Brief L), but a create that
+        # races another, or a lookup that lands elsewhere, can hand back an element neither check above judged.
+        # It is judged before anything is attached, owned or surveyed against it, and held in a local until then.
+        # The surveyor records its GUID on RE's row as it publishes (`set_database_egeria_guid`): on refusal that
+        # pointer is put back, so RE never points at an element the person may not change.
+        if returned != found_db_guid and refuse_database(returned, written=True):
+            registry.set_database_egeria_guid(slug, before_pointer)
+            return cur.finish(curation_id)
+        db_guid = returned
         registry.set_database_egeria_guid(slug, db_guid)
         # Brief I: the server and database elements carry the requester like everything else a
         # queued person-action creates: `requestedBy` merged into their provenance, Ownership = the
@@ -1717,9 +2033,9 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         declared = (((registry.get_context("database", slug) or {}).get("enrichment") or {})
                     .get("owner") or {}).get("value") or ""
         # Brief I round 6: SURE this commit created it = nothing under this host's name before AND
-        # the returned GUID reads back with exactly that name. The surveyor adopts a database by
-        # bare name (a separate backlog bug), so it can hand back ANOTHER host's element: that one
-        # is never stamped, and the step says so.
+        # the returned GUID reads back with exactly that name. Should the publish hand back an element
+        # under another name (a race, or a lookup that landed elsewhere), that one is never stamped,
+        # and the step says so.
         notes = []
         for which, guid_, owner_ in (("server", pub.server_guid, behalf.owner),
                                      ("database", db_guid, "" if declared else behalf.owner)):
@@ -1768,12 +2084,19 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
 
     # 2 ── one schema-kind target per schema, through the outbox
     attach = list(sel.get("attach") or [])
+    pressed_np = {w: [not_permitted_row(r["schema"], r["reason"]) for r in sel.get("not_permitted") or []
+                      if (r.get("write") or "") == w] for w in ("attach", "leave out")}
+    np_attach: list[dict] = []
     if not attach:
-        cur.set_step(curation_id, "schema_targets", "skipped", "no schema to attach")
+        cur.set_step(curation_id, "schema_targets", "skipped",
+                     _np_note(pressed_np["attach"]) or "no schema to attach")
     elif not db_guid:
         cur.set_step(curation_id, "schema_targets", "skipped", "needs the database element first: no database element")
     else:
         cur.set_step(curation_id, "schema_targets", "running")
+        attach, np_attach = parts_check_by_name(registry, gateway, db, slug, attach, ATTACH_OPS, override=override,
+                                                anchor_guid=db_guid)
+        _record_not_permitted(registry, slug, curation_id, author, np_attach, "attach")
         for schema in attach:
             registry.enqueue_outbox_element(
                 "database", slug, KIND_ATTACH, schema_qn(db, schema),
@@ -1782,19 +2105,33 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         drain(curation_id)
         rows = [r for r in registry.list_catalogue_outbox_rows(slug)
                 if r["run_id"] == curation_id and r["element_kind"] == KIND_ATTACH]
-        _step_from_outbox(cur, curation_id, "schema_targets", rows, "attach", registry)
+        note = _np_note(pressed_np["attach"] + np_attach)
+        if attach:
+            _step_from_outbox(cur, curation_id, "schema_targets", rows, "attach", registry)
+            _add_step_note(cur, curation_id, "schema_targets", note)
+        else:
+            cur.set_step(curation_id, "schema_targets", "skipped", note)
 
     # 2b ── leave outs
     leave = list(sel.get("leave_out") or [])
     blocked117 = list(sel.get("blocked_117") or [])
+    # Brief Z2: the access check stands in front of the (unchanged) ISSUE-117 block, at run time as at the press.
+    blocked117, np_blocked = parts_check_by_name(registry, gateway, db, slug, blocked117, LEAVE_OUT_OPS, override=override)
+    _record_not_permitted(registry, slug, curation_id, author, np_blocked, "leave out")
+    ok_leave, np_leave = parts_check_by_name(registry, gateway, db, slug, [i["schema"] for i in leave], LEAVE_OUT_OPS,
+                                          override=override, members=True)
+    _record_not_permitted(registry, slug, curation_id, author, np_leave, "leave out")
+    leave = [i for i in leave if i["schema"] in ok_leave]
+    np_note = _np_note(pressed_np["leave out"] + np_blocked + np_leave)
     for nm in blocked117:
         # nothing is sent; the refusal is recorded as a row so the header can say "0 archived" from it
         _proof(registry, slug, P_LEAVE_OUT_BLOCKED, schema=nm, qualified_name=schema_qn(db, nm), curation_id=curation_id,
                recorded_by=author, detail={"note": KEPT_NOT_SENT, "form": "issue_117"})
     if not leave:
         cur.set_step(curation_id, "leave_outs", "skipped",
-                     (f"{len(blocked117)} left out, {KEPT_NOT_SENT}: {', '.join(blocked117)}" if blocked117
-                      else "no schema to delete or archive"))
+                     " · ".join(x for x in (
+                         (f"{len(blocked117)} left out, {KEPT_NOT_SENT}: {', '.join(blocked117)}" if blocked117
+                          else "" if np_note else "no schema to delete or archive"), np_note) if x))
     else:
         cur.set_step(curation_id, "leave_outs", "running")
         for item in leave:
@@ -1806,6 +2143,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         rows = [r for r in registry.list_catalogue_outbox_rows(slug)
                 if r["run_id"] == curation_id and r["element_kind"] == KIND_LEAVE_OUT]
         _step_from_outbox(cur, curation_id, "leave_outs", rows, "remove", registry)
+        _add_step_note(cur, curation_id, "leave_outs", np_note)
 
     # 3 ── RE's own survey report and annotations (no native survey started here)
     measured = registry.latest_measured_database_survey(slug)
@@ -1845,7 +2183,9 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     # 4 ── Egeria's survey, limited to the chosen schemas by request parameter.
     # Initiation is not completion: the step reads "submitted · <time>" and becomes "done" only
     # when a read-back shows the survey report WITH annotations (`settle_survey`).
-    names = list(sel.get("survey_schemas") or [])
+    # Round 2: a schema refused at run time is never surveyed either (the survey writes its report against it).
+    refused_now = {r["schema"] for r in np_attach}
+    names = [n for n in sel.get("survey_schemas") or [] if n not in refused_now]
     bad = list(sel.get("survey_not_scopable") or [])
     if not db_guid:
         cur.set_step(curation_id, "survey", "skipped", "no database element")

@@ -227,6 +227,7 @@ class TestPublishManyIsolatesFailures:
         """A repair that reports 3 when it did 2 is the class of claim this
         module exists to stop making."""
         r = EgeriaResync(registry=MagicMock())
+        r._refusal = lambda et, slug, write="publish": ""     # Brief Z2 round 2: the access check, open here
         calls = []
 
         def fake(slug, steps):

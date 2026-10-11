@@ -631,6 +631,10 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
     database = _get_database_for_use(registry, slug)
     if not database:
         raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+    if req.use_egeria and not req.force_custom:
+        # Brief Z2: the Egeria-adaptive survey can catalog the database in Egeria and start its native survey.
+        from resource_explorer.web.routes.curate import authorize_resource_write
+        await authorize_resource_write(registry, "database", slug, write="publish")
     
     # Update status to surveying
     registry.update_database_status(slug, ProjectStatus.INDEXING, "")

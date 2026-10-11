@@ -302,7 +302,13 @@ class TestRunsCommands:
         assert "nothing was" in result.output
         assert registry.get_run(run_id)["state"] == "claimed"
 
-    def test_enqueue_queues_arbitrary_work(self, runner, registry):
+    def test_enqueue_queues_arbitrary_work(self, runner, registry, monkeypatch):
+        # Brief Z2 round 2: a run that may publish (analysis_run) is attributed to the signed-in person only.
+        from unittest.mock import MagicMock
+
+        from resource_explorer.cli import session as cli_session
+
+        monkeypatch.setattr(cli_session, "require_and_activate", lambda console=None: MagicMock(user_id="alice"))
         result = runner.invoke(app, [
             "runs", "enqueue", "analysis_run",
             '{"slug": "myproj", "analysis_id": "security_scan"}',
@@ -310,6 +316,7 @@ class TestRunsCommands:
         assert result.exit_code == 0, result.output
         rows = registry.list_runs(state="queued")
         assert rows[0]["kind"] == "analysis_run"
+        assert rows[0]["requested_by"] == "alice"            # the signed-in person, never unattributed
 
     def test_enqueue_rejects_an_unknown_kind(self, runner, registry):
         result = runner.invoke(app, ["runs", "enqueue", "teleport", "{}"])

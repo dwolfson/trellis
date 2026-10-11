@@ -630,6 +630,51 @@ def _row_requester(row: dict) -> str:
     return by.strip() if isinstance(by, str) else ""
 
 
+class OutboxNotPermitted(RuntimeError):
+    """A queued write its requester may no longer make (Brief Z2 round 2). The message is the row's words."""
+
+
+#: The documentation-source kinds re-checked at drain time, and the resource write each makes.
+DOC_SOURCE_WRITES = {"doc_source_publish": "link", "doc_source_unpublish": "unlink"}
+
+
+def _run_requester(registry, row: dict) -> str:
+    """Round 3: a documentation-source row queued before rows carried `by` names no one. When it belongs to a
+    run (`run_id`), the run's own `requested_by` is the person; otherwise nobody, and the no-requester rule
+    applies (open only with no zone in use). A run that cannot be read names nobody (the stricter answer)."""
+    run_id = (row.get("run_id") or "").strip()
+    if not run_id:
+        return ""
+    try:
+        run = registry.get_run(run_id) or {}
+    except Exception:  # noqa: BLE001
+        return ""
+    by = run.get("requested_by") if isinstance(run, dict) else ""
+    return by.strip() if isinstance(by, str) else ""
+
+
+def _doc_source_refusal(registry, row: dict) -> str:
+    """Brief Z2 round 2: the drain-time re-check for a documentation source's ExternalReference write, as the
+    person the row was queued for (its payload's `by`), by the same rule every run uses
+    (`workflows.curate.person_write_refusal`): that person's access, or, with nobody recorded and nobody signed in,
+    open only while no zone is in use. "" = apply it."""
+    kind = row.get("element_kind")
+    if kind not in DOC_SOURCE_WRITES:
+        return ""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.workflows.curate import person_write_refusal
+
+    by = _row_requester(row) or _run_requester(registry, row)
+    reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run",
+                                              role="user")) if by else None
+    try:
+        return person_write_refusal(registry, row.get("entity_type") or "", row.get("entity_slug") or "",
+                                    DOC_SOURCE_WRITES[kind])
+    finally:
+        if reset is not None:
+            current_caller.reset(reset)
+
+
 def _row_identity(row: dict, drain_identity):
     """Brief I round 4: in the background loop (a Daemon drain) a row enqueued for a person is
     applied as `Daemon(OUTBOX, requested_by=<that person>)`, so a retry stamps the original author,
@@ -884,6 +929,9 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # (annotation/collection_membership/resource_list/annotation_
             # link), the same per-call-name granularity the layer-2
             # catalogue-depth offer needs and nothing before this recorded.
+            refused = _doc_source_refusal(registry, row)
+            if refused:
+                raise OutboxNotPermitted(refused)
             with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"), \
                     _row_identity(row, identity):
                 guid = apply_element(row, clients, find_element_guid,
@@ -897,6 +945,16 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             summary["skipped"] += 1
             log.info("Outbox row %s (%s %s) deferred: %s",
                      row["id"], row["element_kind"], row["qualified_name"], exc)
+            continue
+        except OutboxNotPermitted as exc:
+            # Brief Z2 round 2: the requester may not change the resource any more (or nobody asked and zones are
+            # in use). Nothing was sent; permanent until a zone or grant changes: dead at once, said in its words.
+            status = registry.mark_outbox_failed(row["id"], str(exc), max_attempts=1)
+            summary["dead" if status == "dead" else "failed"] += 1
+            summary["not_permitted"] = summary.get("not_permitted", 0) + 1
+            troubled_runs[row.get("run_id") or ""] = row.get("entity_slug") or ""
+            log.warning("Outbox row %s (%s %s) not permitted: %s",
+                        row["id"], row["element_kind"], row["qualified_name"], exc)
             continue
         except Exception as exc:
             exc_text = _describe_refusal(exc, clients)
@@ -1274,6 +1332,17 @@ def enqueue_blueprint_members(
     return row_ids
 
 
+def _requester_now() -> str:
+    """Who is asking, recorded on a queued documentation-source row (Brief Z2 round 2) so the drain re-checks
+    them, never the service account."""
+    from resource_explorer.run_queue import requested_by
+
+    try:
+        return requested_by() or ""
+    except Exception:  # noqa: BLE001 - no caller: the row is unattributed and follows the no-requester rule
+        return ""
+
+
 def enqueue_doc_source_publish(
     registry, entity_type: str, entity_slug: str, source_id: str, url: str, *, run_id: str = "",
 ) -> int:
@@ -1305,7 +1374,7 @@ def enqueue_doc_source_publish(
     qualified_name = f"ExternalReference::{url}"
     return registry.enqueue_outbox_element(
         entity_type, entity_slug, "doc_source_publish", qualified_name,
-        {"entity_type": entity_type, "entity_slug": entity_slug, "source_id": source_id},
+        {"entity_type": entity_type, "entity_slug": entity_slug, "source_id": source_id, "by": _requester_now()},
         run_id=run_id,
     )
 
@@ -1325,7 +1394,7 @@ def enqueue_doc_source_unpublish(
     qualified_name = f"ExternalReferenceRemoval::{ref_guid}"
     return registry.enqueue_outbox_element(
         entity_type, entity_slug, "doc_source_unpublish", qualified_name,
-        {"entity_type": entity_type, "entity_slug": entity_slug, "ref_guid": ref_guid},
+        {"entity_type": entity_type, "entity_slug": entity_slug, "ref_guid": ref_guid, "by": _requester_now()},
         run_id=run_id,
     )
 

@@ -848,6 +848,15 @@ class EgeriaPublisher:
                 )
                 guid = (match or {}).get("elementHeader", {}).get("guid") if match else None
                 if guid:
+                    # Brief Z2 round 2: an asset ADOPTED by qualifiedName was never checked (the route checked
+                    # the repository as not in Egeria, or a stale GUID). Check THIS element before any write.
+                    from resource_explorer.workflows.curate import WriteNotPermitted, person_write_refusal
+
+                    if self._registry is not None:
+                        why = person_write_refusal(self._registry, "repo", result.resource_slug, "publish",
+                                                   element_guid=guid)
+                        if why:
+                            raise WriteNotPermitted(why)
                     log.info("Found existing Egeria asset GUID %s for %s", guid, result.resource_slug)
                     self._cache_asset_guid(result.resource_slug, guid)
                     return guid
@@ -859,6 +868,10 @@ class EgeriaPublisher:
                         len(existing), result.resource_slug,
                     )
         except Exception as exc:
+            from resource_explorer.workflows.curate import WriteNotPermitted
+
+            if isinstance(exc, WriteNotPermitted):
+                raise                      # a refusal, never "search failed, create one"
             log.debug("Asset search failed (will create): %s", exc)
 
         # Gather project stats for additional metadata

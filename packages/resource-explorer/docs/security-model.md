@@ -342,6 +342,41 @@ interim override until Egeria role appointments are read. The rule, the
 per-item Publish behaviour and the words on screen are in `admin-guide.md`,
 "Who may curate and publish".
 
+**Every resource write asks the same question (Brief Z2, 2026-10-10).** The
+routes that used to check only the sign-in now call the same decision,
+`workflows/curate.resource_access`, with the operations Egeria would check:
+publishing a repository, database or file system (the Egeria publish routes,
+the publish-report press, the repository commit and sub-resource catalog, a
+database survey through Egeria, Egeria's native survey register, a
+file-system publish or chosen publish on survey, a Survey Definition run on a
+resource with an Egeria Project), starting an Egeria action on it (a native
+survey run: attach), adding or removing a documentation source on a resource
+already in Egeria (attach, detach), RE-only decisions about its link (reset,
+forget links, discarding a stale link: update), and the bulk linkage actions
+item by item. A database commit checks each schema element already in Egeria
+that it would write (attach; a leave-out: detach and delete, plus delete on
+every table and column its delete walks), at the press and again in the run
+as the requester; a schema not permitted is skipped as "not permitted ·
+<reason>" and the rest proceed. Destructive paths stay behind the ISSUE-117
+block, with the access check in front of it, so a refusal is said before the
+block would be. An automatic publish at the end of an analysis or Survey
+Definition run asks again as the person who requested the run. A run nobody
+requested (a schedule, whose creator RE does not record yet; an unattributed
+queue row) never writes on RE's service account's rights: it proceeds only
+while no zone is in use for the resource. `runs enqueue` attributes a run that
+may publish to the signed-in person only.
+
+**Anchors and existing elements (round 2).** An element already in Egeria is
+judged on its own zones only, as Egeria does: one with no zones is open,
+whatever RE configures (RE's configured zones apply to an element it is about
+to create). An anchored member (its `Anchors.anchorGUID` names another
+element, as a schema's names its database) is judged as Egeria's
+`validateUserForAnchor*` judges it: the operation on the anchor's zones
+(ATTACH, DETACH, DELETE_MEMBER for a delete, CREATE, UPDATE_PROPERTIES,
+CLASSIFY, PUBLISH) plus READ on the member itself. An element adopted by
+qualifiedName (the repository publisher, the database commit) is checked
+before it is written.
+
 ---
 
 ## 9 · Open items and upstream

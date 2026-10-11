@@ -45,6 +45,20 @@ log = logging.getLogger(__name__)
 
 ACTIONS = ("republish", "resurvey", "discard")
 NO_LONGER_STALE = "no longer stale - nothing to resolve"
+NOT_PERMITTED_WORDS = "not permitted"
+
+
+def _refused(registry, entity_type: str, slug: str, write: str, element_guid: str | None = None) -> str:
+    """Brief Z2: the one curation decision (`workflows.curate.resource_access`) for one item: "" when the caller
+    may make this write, else the item's own result words "not permitted · <reason>". An unexpected failure is
+    a refusal with its reason, never a pass."""
+    from resource_explorer.workflows.curate import resource_access
+
+    try:
+        d = resource_access(registry, entity_type, slug, write, element_guid=element_guid)
+    except Exception as exc:  # noqa: BLE001
+        return f"{NOT_PERMITTED_WORDS} · could not check access ({type(exc).__name__}: {exc})"[:300]
+    return "" if d.allowed else f"{NOT_PERMITTED_WORDS} · {d.reason}"
 
 
 @dataclass
@@ -109,6 +123,13 @@ def resolve_all(registry, targets: list[dict], action: str, *,
         link = registry.get_egeria_linkage(entity_type, slug)
         if not link or link.get("status") != "stale":      # an 'uncatalogued' row is not a stale link
             result.record(entity_type, slug, "skipped", NO_LONGER_STALE)
+            continue
+        # Brief Z2: the same check the single-resource resolve makes (the stale element is checked as not in
+        # Egeria). An item the caller may not change is skipped with its own words; the rest proceed.
+        why = _refused(registry, entity_type, slug,
+                       "publish" if entity_type == "repo" and action != "discard" else "decision", element_guid="")
+        if why:
+            result.record(entity_type, slug, "skipped", why)
             continue
         if dry_run:
             result.record(entity_type, slug, "ok", f"would {action}")
@@ -231,6 +252,17 @@ def delete_in_egeria(registry, targets: list[dict], *, dry_run: bool = False,
     """
 
     result = BulkResult(action="delete_in_egeria", dry_run=dry_run)
+
+    # Brief Z2: the access check stands IN FRONT of the ISSUE-117 block (unchanged below): an item the caller may
+    # not delete is said as "not permitted · <reason>" before the block would be. Dry run too.
+    permitted = []
+    for t in targets:
+        why = _refused(registry, t.get("entity_type", "repo"), t.get("slug", ""), "delete")
+        if why:
+            result.record(t.get("entity_type", "repo"), t.get("slug", ""), "skipped", why)
+        else:
+            permitted.append(t)
+    targets = permitted
     total = len(targets)
 
     # ISSUE-117: a delete in Egeria is an archive/delete write, and while the block is ON none may be sent. Refused

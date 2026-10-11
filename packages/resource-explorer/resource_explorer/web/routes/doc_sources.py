@@ -370,6 +370,10 @@ def add_doc_source(entity_type: str, slug: str, body: DocSourceCreate, request: 
     url = body.url.strip()
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="url must be an http(s) URL")
+    if entity.egeria_asset_guid:
+        # Brief Z2: on a resource already in Egeria the add queues an ExternalReference link on it.
+        from resource_explorer.web.routes.curate import require_resource_write
+        require_resource_write(registry, entity_type, slug, "link")
 
     # Signed-in identity, stamped server-side the same way `save_field` stamps
     # an enrichment author -- read from the request here, on the request's own
@@ -440,6 +444,11 @@ def recheck_doc_source(entity_type: str, slug: str, source_id: str) -> DocSource
 def remove_doc_source(entity_type: str, slug: str, source_id: str) -> dict:
     registry = _registry()
     _resolve_entity(registry, entity_type, slug)
+    existing = registry.get_doc_source(entity_type, slug, source_id)
+    if existing and existing.get("egeria_external_ref_guid"):
+        # Brief Z2: the removal queues the ExternalReference's detach in Egeria; checked BEFORE the local row goes.
+        from resource_explorer.web.routes.curate import require_resource_write
+        require_resource_write(registry, entity_type, slug, "unlink")
     row = registry.remove_doc_source(entity_type, slug, source_id)
     if not row:
         raise HTTPException(status_code=404, detail="documentation source not found")

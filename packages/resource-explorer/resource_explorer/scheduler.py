@@ -66,6 +66,8 @@ isn't a SurveyOrchestrator step at all).
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import logging
 import threading
 import time
@@ -335,6 +337,29 @@ def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], l
     return results
 
 
+@contextmanager
+def _as_schedule_creator(sched: dict):
+    """Brief Z2 round 3: a timer run runs as the person who created (or last enabled) the schedule, as run_queue
+    runs a queued row as its requester: the caller ContextVar names them (so the run-time access re-check,
+    `workflows.curate.person_write_refusal`, judges THEIR rights), and Egeria is reached as
+    `Daemon(SCHEDULER, requested_by=<them>)`. A schedule with no `created_by` (every one from before the column)
+    runs with no requester, which writes only while no zone is in use."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    creator = (sched.get("created_by") or "").strip()
+    if not creator:
+        yield
+        return
+    reset = current_caller.set(CallerIdentity(user_id=creator, egeria_token=None, auth_source="scheduled-run",
+                                              role="user"))
+    try:
+        with acting_as(Daemon(DaemonReason.SCHEDULER, requested_by=creator)):
+            yield
+    finally:
+        current_caller.reset(reset)
+
+
 def _run_due() -> None:
     from resource_explorer.activity_logger import log_survey
     from resource_explorer.registry import ProjectRegistry
@@ -369,9 +394,10 @@ def _run_due() -> None:
                 entity_location = project.github_url if project else ""
                 errors = batched[batch_key]
             else:
-                entity_name, entity_location, errors = _execute(
-                    entity_type, entity_slug, analysis_id, registry, next_run,
-                    target_kind=sched.get("target_kind") or TARGET_ANALYSIS)
+                with _as_schedule_creator(sched):
+                    entity_name, entity_location, errors = _execute(
+                        entity_type, entity_slug, analysis_id, registry, next_run,
+                        target_kind=sched.get("target_kind") or TARGET_ANALYSIS)
             status = "error" if errors else "ok"
             detail = "; ".join(errors) if errors else ""
         except Exception as exc:

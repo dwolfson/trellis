@@ -32,6 +32,7 @@ import { state, esc } from '/static/next/app.js';
 import { contentsChosen } from '/static/next/stages/curate-counts.js';
 import { setCommitLine, commitLineFromRecord } from '/static/next/stages/curate-tabs.js';
 import { glyphSpan } from '/static/next/glyphs.js';
+import { cue } from '/static/next/stages/repo-manifest.js';
 import { SCOPE_COLS, MANIFEST_COLS } from '/static/next/stages/scope-columns.js';
 import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize } from '/static/next/colresize.js';
 import { savedLine } from '/static/next/format.js';
@@ -665,7 +666,7 @@ function manifestTableHtml(preview, view, notes = '') {
   const leave = preview.leave_out || [];
   const c = (view && view.counts) || {};
   const names = (xs) => (xs.length ? ` · ${xs.slice(0, 4).map(esc).join(', ')}${xs.length > 4 ? ` +${xs.length - 4}` : ''}` : '');
-  const forms = (r) => (r.form === 'soft_delete' ? 'will delete' : r.form === 'archive' ? 'will archive' : r.form === 'cannot_check' ? 'not committed' : r.form === 'in_use' ? 'not committed' : 'nothing to change');
+  const forms = (r) => (r.form === 'soft_delete' ? 'will delete' : r.form === 'archive' ? 'will archive' : r.form === 'cannot_check' ? 'not committed' : r.form === 'in_use' ? 'not committed' : r.form === 'not_permitted' ? 'not permitted' : 'nothing to change');
   const row = (id, who, what, howMany, when, more = '') => `<div role="row" data-scope-manifest-row="${id}" class="flex items-start gap-s2 text-ink">
     <div role="cell" class="break-words font-semibold" style="${ms('who')}">${who}</div>
     <div role="cell" class="break-words" style="${ms('what')}">${what}${more ? `<details data-scope-details class="block text-provenance text-ink-muted"><summary class="inline cursor-pointer">details</summary>${more}</details>` : ''}</div>
@@ -713,20 +714,26 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
   const dis = (why) => `disabled title="${esc(why)}"`;
   const reason = !me ? signInReason : commitWhyNot(preview, declared);
   const refused = (preview.refused || []).map((r) => `<div data-scope-refused="${esc(r.schema)}" class="text-ink">${glyphSpan('human')} ${esc(r.text)}</div>`).join('');
-  const collisions = (preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-right text-ink">${esc(c.text)}</div>`).join('');
-  const leave = (preview.leave_out || []).map((r) => `<div data-scope-leave-out="${esc(r.schema)}" data-form="${esc(r.form)}" class="${r.blocked ? 'text-ink' : 'text-ink-muted'}">${r.blocked ? `${glyphSpan('human')} ` : ''}${esc(r.text)}</div>`).join('');
-  const blockers = (preview.blockers || []).map((b) => `<div data-scope-blocker class="text-ink">${glyphSpan('human')} ${esc(b)}</div>`).join('');
+  const collisions = (preview.all_refused ? [] : preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-right text-ink">${esc(c.text)}</div>`).join('');
+  // Brief Z2: a part the person may not change is a cue and a short word; the reason is on demand (hover).
+  const notPermitted = (preview.not_permitted || []).map((r) => `<div data-scope-not-permitted="${esc(r.schema)}" data-write="${esc(r.write || '')}" class="text-ink">${cue('no_access', 'not permitted', r.reason)} ${esc(r.schema)}</div>`).join('');
+  const leave = (preview.leave_out || []).filter((r) => r.form !== 'not_permitted').map((r) => `<div data-scope-leave-out="${esc(r.schema)}" data-form="${esc(r.form)}" class="${r.blocked ? 'text-ink' : 'text-ink-muted'}">${r.blocked ? `${glyphSpan('human')} ` : ''}${esc(r.text)}</div>`).join('');
+  // Round 2: refused whole, the other blockers stay visible, each a cue and a short word (reason on hover).
+  const alsoBlocked = preview.all_refused
+    ? (preview.also_blocked || []).map((b) => `<div data-scope-also-blocked class="text-right text-caveat text-ink">${cue('human', b.word, b.reason)}</div>`).join('')
+    : '';
+  const blockers = (preview.all_refused ? [] : preview.blockers || []).map((b) => `<div data-scope-blocker class="text-ink">${glyphSpan('human')} ${esc(b)}</div>`).join('');
   const off = !!reason;
   const sent = ui && ui.polling ? '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>' : '';
   return `<div data-scope-commit-panel class="min-w-0 max-w-full">
     <div class="text-answer text-ink">What this commit does</div>
     <div class="mb-s1"><button type="button" data-rc-reset-commit disabled class="opacity-60 text-ink-muted bg-transparent p-0 text-caveat" title="Put every column back to its default width">reset widths</button></div>
     <div class="flex flex-wrap items-start justify-between gap-s3">
-      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, refused + leave)}</div>
+      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, refused + notPermitted + leave)}</div>
       <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
         <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
         ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
-        ${collisions}${blockers}
+        ${collisions}${blockers}${alsoBlocked}
         <label class="flex min-w-0 max-w-full cursor-pointer items-start gap-[4px] break-words text-right text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
       </div>
     </div>
@@ -758,6 +765,7 @@ function bindManifestResize(host) {
 export function commitWhyNot(preview, declared = true) {
   if (!declared) return 'no scope declared: choose what to include first';
   if (preview.can_commit) return '';
+  if (preview.all_refused) return 'not permitted';     // Brief Z2: each part's reason is on its own row, on hover
   const first = (preview.blockers || [])[0] || '';
   if (/^nothing to commit/.test(first)) return 'nothing chosen: include at least one schema';
   if (/name collision/.test(first)) {
@@ -913,6 +921,9 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     let out;
     try { out = await postCatalogueCommit(slug, refreshNow); } catch (err) {
       btn.disabled = false; btn.textContent = label; say(fail(err, 'the commit'), true); offerSignIn(err);
+      if (err.status === 403 && !host.querySelector('[data-scope-commit-refused]')) {
+        btn.insertAdjacentHTML('afterend', `<span data-scope-commit-refused class="text-right text-caveat">${cue('no_access', 'not permitted', err.message)}</span>`);
+      }
       if (err.status === 401) {
         const why = host.querySelector('[data-scope-commit-why]');
         if (!why) btn.insertAdjacentHTML('afterend', '<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ your session expired · sign in again</span>');

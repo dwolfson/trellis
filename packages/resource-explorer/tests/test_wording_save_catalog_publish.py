@@ -25,6 +25,15 @@ from resource_explorer import catalogue_commit as cc  # noqa: E402
 from resource_explorer.auth import create_access_token  # noqa: E402
 from resource_explorer.registry import Project, ProjectRegistry  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _zone_access_open(monkeypatch):
+    """Brief Z2: this write path asks `curation_access` (the one decision). These tests are about something else,
+    so no zone is in use: the access reads are faked open at the client boundary (`tests/zone_fakes.open_access`)."""
+    from tests.zone_fakes import open_access
+
+    return open_access(monkeypatch)
+
 # Brief I: a catalog commit is a person's own action; it runs as a signed-in caller.
 pytestmark = pytest.mark.usefixtures("signed_in_caller")
 

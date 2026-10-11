@@ -628,7 +628,7 @@ class EgeriaInvestigationPublisher:
             log.warning("Investigation %s: %d membership(s) queued for retry",
                         investigation_slug, summary.get("failed", 0) + summary.get("dead", 0))
 
-    def relink_members(self, investigation_slug: str) -> "PromotionResult":
+    def relink_members(self, investigation_slug: str, *, refusal=None) -> "PromotionResult":
         """Re-attach an already-promoted investigation's members.
 
         promote() links members once, at promotion time, and refuses to run
@@ -643,6 +643,9 @@ class EgeriaInvestigationPublisher:
         republished yet, and nothing existed to run afterwards.
 
         Idempotent: add_to_collection upserts on a uni-link relationship.
+
+        `refusal(member) -> str` (Brief Z2 round 2, resync's per-resource access check): a member it refuses is
+        not attached and is reported unlinkable with those words ("not permitted · <reason>").
         """
         res = PromotionResult()
         inv = self._registry.get_investigation(investigation_slug)
@@ -669,9 +672,17 @@ class EgeriaInvestigationPublisher:
             res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
             return res
 
-        self._link_members(cm, res,
-                           self._registry.list_investigation_members(investigation_slug),
-                           investigation_slug)
+        members = self._registry.list_investigation_members(investigation_slug)
+        if refusal is not None:
+            allowed = []
+            for m in members:
+                why = refusal(m)
+                if why:
+                    res.members_unlinkable.append({**m, "reason": why})
+                else:
+                    allowed.append(m)
+            members = allowed
+        self._link_members(cm, res, members, investigation_slug)
         return res
 
     def link_status(self, investigation_slug: str) -> dict:

@@ -689,6 +689,11 @@ async def resolve_stale_linkage(
         raise HTTPException(
             status_code=404,
             detail=f"No stale Egeria linkage recorded for {entity_type} '{slug}'")
+    # Brief Z2: the link is stale (Egeria no longer holds that GUID), so the element is checked as not in
+    # Egeria: a republish creates it in the zones RE gives it; discard only clears RE's record (a decision).
+    await _authorize(registry, entity_type, slug,
+                     "publish" if entity_type == "repo" and req.action != "discard" else "decision",
+                     element_guid="")
 
     cleared, deleted = False, 0
     if entity_type == "repo":
@@ -794,6 +799,7 @@ async def reset_egeria(slug: str) -> ResetResult:
     the project from scratch instead of referencing stale GUIDs.
     """
     project, registry = _get_project_or_404(slug)
+    await _authorize(registry, "repo", slug, "decision")        # Brief Z2: RE's record of the element
     result = registry.clear_egeria_registration(slug)
     return ResetResult(
         status="ok",
@@ -954,6 +960,15 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     )
 
 
+async def _authorize(registry: ProjectRegistry, entity_type: str, slug: str, write: str, *,
+                     element_guid: str | None = None) -> None:
+    """Brief Z2: the one curation decision (`workflows.curate.resource_access`, via the route form
+    `authorize_resource_write`), on the resource's own element: 403 with the reason when refused."""
+    from resource_explorer.web.routes.curate import authorize_resource_write
+
+    await authorize_resource_write(registry, entity_type, slug, write=write, element_guid=element_guid)
+
+
 # ── Egeria on a repository (parity slice G1, PI-001..PI-006) ─────────────────
 # The Next UI's "Publish" section calls these. Every state word comes from proof rows
 # (resource_explorer/repo_publish.py); nothing below archives or deletes in Egeria.
@@ -986,6 +1001,7 @@ async def publish_report(slug: str, request: Request, req: PublishReportRequest 
     from resource_explorer import repo_publish
     _project, registry = _get_project_or_404(slug)
     author = _publish_author(request, "publish to Egeria")
+    await _authorize(registry, "repo", slug, "publish")         # Brief Z2
     # to_thread copies the caller's context, so the project answer (per caller) is read as the caller.
     try:
         out = await asyncio.to_thread(
@@ -1023,13 +1039,15 @@ async def resurvey_repo(slug: str, request: Request, req: ResurveyRequest | None
 
 
 @router.post("/{slug}/forget-links")
-def forget_links(slug: str, request: Request) -> dict:
+async def forget_links(slug: str, request: Request) -> dict:
     """"Forget Egeria links": RE drops its cached GUIDs and survey history for this resource (PI-005).
-    Nothing is sent to Egeria; nothing there is archived or deleted."""
+    Nothing is sent to Egeria; nothing there is archived or deleted. Brief Z2: the same access check as every
+    other change to the resource (a decision: an update), before anything is forgotten."""
     from resource_explorer import repo_publish
     _project, registry = _get_project_or_404(slug)
     author = _publish_author(request, "forget Egeria links")
-    return repo_publish.forget_links(registry, slug, author)
+    await _authorize(registry, "repo", slug, "decision")
+    return await asyncio.to_thread(repo_publish.forget_links, registry, slug, author)
 
 
 def _file_types_retired() -> HTTPException:
