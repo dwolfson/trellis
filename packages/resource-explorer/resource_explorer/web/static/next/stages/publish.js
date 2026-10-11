@@ -450,9 +450,12 @@ export function renderPublishDescribe(s, signedIn) {
 function describeControlsHtml(s, signedIn) {
   const label = s.can_publish_again ? 'Publish again' : 'Publish to Egeria →';
   const hasSurvey = !!(s.survey && s.survey.exists);
+  // Round 2: with no kept survey the press still sends the rest (tags, group, your feedback) of a resource already
+  // in Egeria; the report line says why there is no report.
+  const restToSend = !!(s.in_egeria && s.goes_out && Number(s.goes_out.count || 0) > 0);
   const why = signedIn ? '' : 'sign in to publish — it needs an author';
   return `<div class="mt-s2 flex flex-wrap items-baseline gap-s3">
-    ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !(signedIn && hasSurvey) })}
+    ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !(signedIn && (hasSurvey || restToSend)) })}
     ${button(`data-resurvey-go title="${esc(RESURVEY_SENTENCE)}"`, hasSurvey || s.survey?.surveyed_before_kept ? 'Re-survey now →' : 'Run the first survey →', { disabled: !signedIn })}
     <span data-publish-feedback class="text-provenance text-ink-muted" title="${esc(PUBLISH_SENTENCE)}">${esc(why || PUBLISH_IDLE_WORDS)}</span></div>
     ${hasSurvey ? '' : `<div class="mt-[2px] text-provenance text-ink-muted" data-publish-blocker>${esc(noKeptSentence(s.survey))}</div>`}
@@ -469,6 +472,7 @@ export function pressFailures(out, st) {
   });
   const sent = (out && out.sent) || {};
   if (sent.findable && sent.findable.error) f.push({ what: 'tags and group', word: `not sent · ${sent.findable.error}` });
+  ((sent.findable && sent.findable.failed) || []).forEach((i) => f.push({ what: `${i.kind} ${i.name}`, word: i.word }));
   if (sent.doc_sources && sent.doc_sources.error) f.push({ what: 'documentation sources', word: `not sent · ${sent.doc_sources.error}` });
   ((sent.doc_sources && sent.doc_sources.failed) || []).forEach((d) => f.push({ what: 'documentation source', word: `not sent · ${d.error || 'failed'}` }));
   if (sent.feedback && sent.feedback.error) f.push({ what: 'your feedback', word: `not sent · ${sent.feedback.error}` });
@@ -681,11 +685,18 @@ export function renderPublishRepo(hosts, slug) {
         if (err.status === 428) {
           go.disabled = false; go.textContent = idle; delete go.dataset.pending;
           feedback.textContent = '';
+          // Round 2: the gate stops the report only; the rest of the press went when the resource is in Egeria,
+          // so the band and the sections re-read their rows first, then the gate is drawn on the new band.
+          let g2 = gate;
+          try {
+            if (await reread()) g2 = dEl.querySelector('[data-publish-gate]') || gate;
+          } catch { /* the gate below is what matters */ }
+          dEl.ownerDocument.dispatchEvent(new CustomEvent('re:published', { detail: { slug } }));
           // A cue and a short word; the three choices are the Project row on Contents.
-          gate.innerHTML = `<div class="mt-s1 text-caveat" data-publish-gate-panel role="status">${
+          g2.innerHTML = `<div class="mt-s1 text-caveat" data-publish-gate-panel role="status">${
             cue('unrun', 'needs a project', NO_PROJECT_SENTENCE)} ${
             linkButton('data-publish-gate-goto="curate_contents"', 'Contents ›')}</div>`;
-          gate.querySelector('[data-publish-gate-goto]').addEventListener('click', () => openCurate({ tab: 'curate_contents' }));
+          g2.querySelector('[data-publish-gate-goto]').addEventListener('click', () => openCurate({ tab: 'curate_contents' }));
           return;
         }
         try { await reread(); } catch { /* the failure below is what matters */ }
@@ -699,7 +710,7 @@ export function renderPublishRepo(hosts, slug) {
         if (fb) fb.innerHTML = err.status === 403
           ? cue('no_access', 'not permitted', err.message)   // Brief Z2: the reason on demand, not a sentence
           : err.status === 409 && err.message.startsWith('no survey')
-          ? cue('unrun', err.message)                    // nothing surveyed: nothing was sent
+          ? cue('unrun', err.message)                    // nothing surveyed: no report (the rest re-reads above)
           : err.status === 409
             ? cue('running', 'a publish is already running for this resource')
             : cue('error', `not published · ${err.message}`);

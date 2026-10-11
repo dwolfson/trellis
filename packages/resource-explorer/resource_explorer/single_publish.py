@@ -62,10 +62,18 @@ def send_with_publish(registry, entity_type: str, slug: str, asset_guid: str, pr
     from resource_explorer import feedback_egeria as fe
 
     try:
-        # check_access=False: each change was checked when it was saved (Brief T); the inline drain runs as the
-        # presser, so Egeria checks it again itself.
-        res = ce.sync_curation(registry, entity_type, slug, asset_guid=asset_guid, check_access=False, by=presser)
-        out["findable"] = {"queued": len(res.get("queued") or []), "to_send": res.get("to_send", 0)}
+        # Round 2: the PRESSER sends other people's saved tags and group under their own name, so the presser is
+        # checked per item (`per_item_access`, the operations Egeria checks for each change); a refusal is that
+        # item's "not permitted" (from its retired row), never the whole press. The inline drain runs as the
+        # presser, so Egeria checks again itself.
+        res = ce.sync_curation(registry, entity_type, slug, asset_guid=asset_guid, check_access=False,
+                               per_item_access=True, by=presser)
+        queued = set(res.get("queued") or [])
+        failed = [{"kind": i["kind"], "name": i["name"], "word": i["word"]} for i in res.get("items") or []
+                  if i.get("row_id") in queued and i.get("state") in (ce.FAILED, ce.RETRYING)]
+        failed += [{"kind": n["kind"], "name": n["name"], "word": f"not permitted · {n['reason']}"}
+                   for n in res.get("not_permitted") or []]
+        out["findable"] = {"queued": len(queued), "to_send": res.get("to_send", 0), "failed": failed}
     except Exception as exc:  # noqa: BLE001
         log.warning("Publish: tags/group for %s %s failed: %s", entity_type, slug, exc)
         out["findable"] = {"error": f"{type(exc).__name__}: {exc}"}

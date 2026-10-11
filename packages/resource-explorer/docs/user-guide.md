@@ -176,7 +176,8 @@ The band has three lines. Line 1 is one state: **✓ in Egeria · published 10-1
 
 **Tags and the group go to Egeria** (the Findable band). **Decision (project owner, 2026-10-10):** "tags should be public", "Use Folio", "Yes, removing a tag removes it in Egeria".
 
-- A tag becomes a **public InformalTag** linked to the resource's asset. RE looks for a tag of that name first and uses it, so everyone's "sales" is one tag in Egeria, not one per person. Tags are sent as RE keeps them, in lower case.
+- A tag becomes a **public InformalTag** linked to the resource's asset. RE looks for a tag of that name first and uses it, so everyone's "sales" is one tag in Egeria, not one per person. A new tag keeps the capitals you typed.
+- Only a person's Publish sends tags and groups; background publishes (scheduled analyses and the like) never do. If you may not make one of the changes waiting, that item reads **not permitted · <reason>** and the rest still go.
 - The resource's **RE group** becomes a **Folio** named `Folio::RE::group::<group>`, with the resource as a member. Changing the group moves the membership at the next Publish; choosing "Ungrouped" removes it.
 - **Removing a tag removes that tag from the resource in Egeria** at the next Publish, including the same tag added to it directly in Egeria by anyone: Egeria removes every link between the tag and the resource. The tag itself stays in Egeria, and so does a Folio when you leave or delete a group: RE never deletes either. The owner deletes those elements by hand.
 - A failed removal is never sent again on its own, not even by a later Publish: press **retry** on it. Changing a tag or the group needs the same curation rights as other Curate decisions (see the admin guide, "Who may curate and publish"); so does deleting a group, which is refused as a whole, naming who, if any member may not leave its Folio.

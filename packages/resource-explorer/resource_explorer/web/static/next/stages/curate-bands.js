@@ -372,11 +372,9 @@ export function feedbackCue(item, attr = '') {
   return `${open} ${attr} data-cue="${esc(key)}" data-feedback-state="${esc(item ? item.state : 'unread')}" title="${esc(word)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(short)}</span>`;
 }
 
-/** Addendum C (owner, 2026-10-11): ONE rating per person counts and shows: their newest rated entry. `states` is
- *  the server's plan by id (an older rating of the same person is `replaced`); without it the same rule is
- *  applied to the rows (newest rated per author). */
-export function currentRatings(feedback, states = null) {
-  if (states) return feedback.filter((f) => !states[f.id] || states[f.id].state !== 'replaced');
+/** Addendum C (owner, 2026-10-11): ONE rating per person counts and shows: their newest rated entry (from the
+ *  rows; the server's plan gives each its cue, and an older rating stays "published" until the newer one lands). */
+export function currentRatings(feedback, _states = null) {
   const seen = new Set();
   return newestFirst(feedback).filter((f) => {
     if (!f.author || f.rating == null || f.rating === '') return true;

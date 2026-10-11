@@ -202,8 +202,7 @@ def test_adding_a_tag_creates_the_public_tag_once_and_links_it_and_the_next_read
     assert i["state"] == "not_sent" and i["word"] == "saved · will publish" and i["action"] == "link"
     publish(registry)
     tag_guid = next(iter(egeria.tags))
-    assert egeria.tags[tag_guid] == {"name": "sales", "qn": "InformalTag::sales"}, \
-        "Brief F: sent at Publish, from RE's lower-case key (the typed spelling is not stored)"
+    assert egeria.tags[tag_guid] == {"name": "Sales", "qn": "InformalTag::sales"}, "typed case kept (round 2)"
     assert (ASSET, tag_guid) in egeria.tag_links
     i = item(state(client), "tag", "sales")
     assert i["state"] == "in_egeria" and i["word"].startswith("published ") and i["action"] == "" \
@@ -289,28 +288,36 @@ def test_a_resource_not_in_egeria_keeps_the_tag_local_then_links_it_on_the_next_
     assert item(st, "tag", "sales")["state"] == "not_yet"
     assert item(st, "tag", "sales")["word"] == "saved · will publish"
     assert item(st, "group", "sales")["state"] == "not_yet"
-    # the publish hook (EgeriaPublisher._publish_pending_curation) after the asset exists
-    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
-
+    # the page's Publish, after the resource's own publish created the asset
     registry.set_egeria_asset_guid("p", ASSET)
-    with acting_as(Daemon(DaemonReason.SCHEDULER)):
-        ce.publish_pending_curation(registry, "repo", "p", ASSET)
+    publish(registry)
     st = state(client)
     assert item(st, "tag", "sales")["state"] == "in_egeria"
     assert item(st, "group", "sales")["state"] == "in_egeria"
     folio = next(iter(egeria.folios))
     assert (folio, ASSET) in egeria.members
-    # round 2: the row records the triggering publish's requester; this daemon job has none, so none
-    assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == ""
+    # the row records the presser
+    assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == "peterprofile"
 
 
-def test_the_repo_publisher_calls_the_curation_hook_with_the_new_asset(monkeypatch):
+def test_f_r2_no_background_publish_sends_tags_or_groups_only_a_persons_press_does():
+    """Brief F round 2: EgeriaPublisher.publish also runs for analysis auto-publish, bulk ops, resync and the CLI
+    (as the Daemon), so it no longer sends tags or the group (an unlink is destructive). The ONLY caller of
+    sync_curation in the package is single_publish.send_with_publish, a person's press."""
     import inspect
+    import pathlib
 
     from resource_explorer.surveyors import egeria_publisher
 
-    src = inspect.getsource(egeria_publisher.EgeriaPublisher.publish)
-    assert "_publish_pending_curation(result.resource_slug, asset_guid)" in src
+    assert not hasattr(egeria_publisher.EgeriaPublisher, "_publish_pending_curation")
+    src = inspect.getsource(egeria_publisher)
+    assert "sync_curation" not in src and "publish_pending_curation" not in src
+    pkg = pathlib.Path(ce.__file__).parent
+    senders = sorted(str(p.relative_to(pkg)) for p in pkg.rglob("*.py")
+                     if re.search(r"\b(sync_curation|publish_pending_curation)\(", p.read_text())
+                     and p.name != "curation_egeria.py")
+    assert senders == ["single_publish.py"], senders
+    assert not hasattr(ce, "publish_pending_curation")
 
 
 # ── 4. group -> Folio, idempotent ───────────────────────────────────────────────────────────────────────────
@@ -666,36 +673,28 @@ def test_r2_an_unlink_waits_while_its_link_is_running_and_never_shows_unlinked_e
 
 # R2-4: each row records its own requester; never another decision's author ───────────────────────────────
 
-def test_r2_a_tag_unlink_from_a_publish_with_nobody_asking_records_no_requester(registry, egeria):
-    with _daemon("peterprofile"):
-        registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
-        ce.sync_curation(registry, "repo", "p", by="peterprofile", check_access=False)
+def test_r2_each_row_records_the_presser_never_another_decisions_author(registry, egeria):
+    registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+    publish(registry, user="peterprofile")
     registry.record_group_change("repo", "p", "", "erinoverview")
     registry.remove_resource_tag("repo", "p", "sales")
-    with _daemon(None):
-        ce.publish_pending_curation(registry, "repo", "p", ASSET)
-    by = json.loads(rows(registry, ce.TAG_DETACH)[0]["payload_json"])["by"]
-    assert by == "", "not the last group change's author"
-
-
-def test_r2_a_publish_hook_records_the_publish_requester(registry, egeria):
-    registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
-    with _daemon("garygeeke"):
-        ce.publish_pending_curation(registry, "repo", "p", ASSET)
-    assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == "garygeeke"
+    publish(registry, user="garygeeke")
+    assert json.loads(rows(registry, ce.TAG_LINK)[0]["payload_json"])["by"] == "peterprofile"
+    assert json.loads(rows(registry, ce.TAG_DETACH)[0]["payload_json"])["by"] == "garygeeke", \
+        "the presser, not the last group change's author"
 
 
 # R2-5: the tag keeps the case it was typed in; matching ignores case; a taken qualifiedName is adopted ──────
 
-def test_r2_a_tag_is_keyed_lower_case_and_brief_f_sends_res_key_at_publish(client, registry, egeria):
-    """Brief F changed round 2's typed-case displayName: the link now waits for the page's Publish, and RE stores
-    only the lower-case key (no column for the typed spelling; no DDL), so the displayName is that key. Matching
-    still ignores case (the next test)."""
+def test_r2_a_tag_keeps_the_typed_case_in_egeria_with_a_lower_case_key(client, registry, egeria):
+    """Brief F round 2: the typed spelling travels in the add's activity entry (no column, no DDL) and the page's
+    Publish uses the newest one as the InformalTag's displayName."""
     r = client.post("/api/curate/tags/repo/p", json={"tag": "Sales EMEA"}, headers=as_user())
     assert r.json()["typed"] == "Sales EMEA" and egeria.calls == []
+    assert ce.typed_spellings(registry, "repo", "p") == {"sales emea": "Sales EMEA"}
     publish(registry)
     (t,) = egeria.tags.values()
-    assert t == {"name": "sales emea", "qn": "InformalTag::sales emea"}
+    assert t == {"name": "Sales EMEA", "qn": "InformalTag::sales emea"}
     assert registry.list_resource_tags("repo", "p") == ["sales emea"]
 
 
@@ -836,3 +835,22 @@ def test_r3_registry_delete_group_refuses_when_the_members_are_not_the_ones_chec
         registry.delete_group("sales", expected_members={("repo", "q")})
     assert registry.get_group("sales") is not None and registry.get("p").group_slug == "sales"
     assert registry.delete_group("sales", expected_members={("repo", "p")}) == 1
+
+
+# ══ Brief F round 2: the presser is checked per item ═══════════════════════════════════════════════════════
+
+def test_f_r2_a_presser_refused_a_tag_gets_that_item_not_permitted_and_the_next_publish_asks_again(
+        client, registry, egeria, zoned):
+    zoned.controls["sales-zone"] = {"associatedSecurityList": {
+        "ADD_FEEDBACK": ["allUsers"], "UPDATE_PROPERTIES": ["allUsers"], "DEFAULT": ["salesTeam"]}}
+    assert client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user()).status_code == 200
+    zoned.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}     # revoked since
+    out = publish(registry)
+    assert out["findable"]["failed"] and out["findable"]["failed"][0]["word"].startswith("not permitted · ")
+    assert egeria.calls == [], "nothing sent for a refused item"
+    i = item(state(client), "tag", "sales")
+    assert i["state"] == "not_permitted" and i["word"].startswith("not permitted · ") and i["action"] == "link"
+    zoned.controls["sales-zone"] = {"associatedSecurityList": {
+        "ADD_FEEDBACK": ["allUsers"], "UPDATE_PROPERTIES": ["allUsers"], "DEFAULT": ["salesTeam"]}}
+    publish(registry)
+    assert item(state(client), "tag", "sales")["state"] == "in_egeria"

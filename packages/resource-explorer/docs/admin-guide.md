@@ -352,8 +352,13 @@ Egeria". `resource_explorer/curation_egeria.py` owns the mapping; every write go
   access when it is made; nothing is sent until the resource's Publish (repository, database or file system), which
   sends it as the presser. The Findable band has no send control; `POST /api/curate/egeria-sync` only takes a
   person's `retry` of one dead row (409 otherwise).
-- **Tag spelling:** RE keeps tags lower-case, and since the send moved to Publish the InformalTag's displayName is
-  that lower-case key (the typed spelling is not stored; no column was added). The qualifiedName is
+- **Only a person's press sends (round 2):** `EgeriaPublisher.publish` no longer sends tags or groups, so analysis
+  auto-publish, bulk operations, resync and the CLI (all as the Daemon) never send them, nor an unlink. The presser
+  is checked per item for the operations Egeria checks (curation check above); a refused item is retired unsent
+  and reads "not permitted · <reason>"; the next Publish asks again. A gated report (no kept survey, no project)
+  still lets the rest of the press go when the resource is already in Egeria.
+- **Tag spelling:** RE keeps tags lower-case; the spelling as typed is kept in the `curate_tag_added` activity entry
+  (no column), and the Publish uses the newest one as the InformalTag's displayName. The qualifiedName is
   `InformalTag::<tag>`; an existing tag is found ignoring case. A qualifiedName already taken under another
   displayName is adopted rather than failing the row.
 - **Order:** a link and an unlink of the same tag (or membership) on the same asset apply in the order queued: a
@@ -413,7 +418,11 @@ public/private choice is backlog. `resource_explorer/feedback_egeria.py` owns th
 - **Documentation sources** declared on a repository are sent by its Publish too (`publish_local_doc_sources`, as
   the database and file system publishes already did).
 - **Confirmed.** Line 1 of the Publish band says "confirmed" only when the publish proof's read-back found the
-  report with the same annotation count (`repo_publish.confirmation`, the one "same result" function).
+  report with the same annotation count (`repo_publish.confirmation`, the one "same result" function). While that
+  report's own outbox rows (by the run id the proof records) are still pending, sending or backing off, a lower
+  count reads "not yet confirmed · N sending"; "Egeria shows N" only once they are settled.
+- **Replaced ratings.** A person's older rating reads "replaced" only once their newer one is in Egeria; until then
+  the older one still reads "published MM-DD".
 
 ### Observability (optional)
 

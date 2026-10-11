@@ -356,9 +356,12 @@ def test_a_newer_rating_replaces_the_same_persons_and_two_peoples_coexist(regist
     second = rate(registry, "peterprofile", 2, "Still learning")
     rate(registry, "erinoverview", 5, "excellent")
     p = plan(registry, "peterprofile")
-    assert by_id(p["ratings"], first)["state"] == fe.REPLACED, "addendum C: one rating per person is shown"
+    # round 2: until the newer one lands, the older one is what Egeria holds, for everyone who looks
+    assert by_id(p["ratings"], first)["state"] == fe.PUBLISHED
+    assert by_id(plan(registry, "erinoverview")["ratings"], first)["word"].startswith("published ")
     assert by_id(p["ratings"], second)["word"] == "saved · will publish"
     press(registry, "peterprofile")
+    assert by_id(plan(registry, "erinoverview")["ratings"], first)["state"] == fe.REPLACED
     press(registry, "erinoverview")
     assert egeria.ratings[(ASSET, "peterprofile")]["star"] == "TWO_STARS"
     assert egeria.ratings[(ASSET, "peterprofile")]["review"] == "Still learning"
@@ -587,3 +590,59 @@ def test_r2_a_ratings_read_without_created_by_records_no_guid_and_never_adds_twi
     assert by_id(plan(registry, "alice")["ratings"], rid)["state"] == fe.PUBLISHED
     press(registry, "alice")
     assert [c[0] for c in egeria.calls].count("add_rating_to_element") == 1, "a re-press sends nothing more"
+
+
+
+# ── round 2 ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def _client(registry, monkeypatch):
+    from resource_explorer import auth
+    from resource_explorer.web.routes import curate as curate_routes
+    from resource_explorer.web.routes import egeria as egeria_routes
+
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None, **kw: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr(curate_routes, "get_current_user", auth.get_current_user)
+    monkeypatch.setattr(egeria_routes, "get_current_user", auth.get_current_user)
+    from resource_explorer.web.app import app
+    return TestClient(app)
+
+
+def _hdr(u):
+    return {"Authorization": "Bearer " + create_access_token(user_id=u, egeria_token="t")}
+
+
+def test_r2_a_press_with_no_kept_survey_sends_no_report_but_sends_the_rest_when_in_egeria(registry, egeria,
+                                                                                          monkeypatch):
+    client = _client(registry, monkeypatch)
+    registry.set_project_context("repo", "p", "personal")
+    nid = note(registry, "alice", "Worth reading.")
+    st = client.get("/api/egeria/p/publish-state", headers=_hdr("alice")).json()
+    assert st["survey"]["exists"] is False and st["goes_out"]["count"] == 1
+    r = client.post("/api/egeria/p/publish-report", json={}, headers=_hdr("alice"))
+    assert r.status_code == 409 and r.json()["sent"]["feedback"]["queued"] == 1
+    assert by_id(plan(registry, "alice")["notes"], nid)["state"] == fe.PUBLISHED
+    assert client.get("/api/egeria/p/publish-state", headers=_hdr("alice")).json()["goes_out"]["count"] == 0
+
+
+def test_r2_a_lower_count_while_the_reports_rows_are_still_sending_is_not_yet_confirmed():
+    base = {"word": "published", "read_at": "2026-10-11T16:36:00", "annotation_count": 117,
+            "annotations_in_egeria": 112}
+    c = rp.confirmation(base, unsettled=5)
+    assert c["state"] == rp.UNCONFIRMED and c["word"] == "published 10-11 · not yet confirmed · 5 sending"
+    assert rp.confirmation(base, unsettled=0)["state"] == rp.DIFFERS
+
+
+def test_r2_the_report_row_counts_its_own_runs_unsettled_rows(registry):
+    run = "Annotation::p::2026-10-11T00:00:00"
+    registry.append_catalogue_commit_proof("p", proof=rp.P_REPORT, node_kind=rp.NODE_REPORT, element_guid="rep",
+                                           target_guid=ASSET, recorded_by="alice",
+                                           detail={"annotation_count": 3, "annotations_in_egeria": 1,
+                                                   "publish_run_id": run})
+    a = registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::a", {}, run_id=run)
+    registry.enqueue_outbox_element("repo", "p", "annotation_link", f"{run}::l", {}, run_id=f"{run}::links")
+    assert rp.publish_state(registry, "p")["row"]["confirm"]["word"].endswith("not yet confirmed · 2 sending")
+    registry.mark_outbox_done(a, "g")
+    with registry._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET status='dead' WHERE run_id=?", (f"{run}::links",))
+    assert rp.publish_state(registry, "p")["row"]["confirm"]["state"] == rp.DIFFERS

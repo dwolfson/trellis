@@ -1016,10 +1016,11 @@ async def publish_report(slug: str, request: Request, req: PublishReportRequest 
     if out.get("gate") == "context_required":
         return JSONResponse(status_code=428, content={
             "detail": "egeria_project_context_required", "entity_type": "repo", "entity_slug": slug,
-            "sentence": out["sentence"]})
+            "sentence": out["sentence"], "sent": out.get("sent") or {}})
     if out.get("gate") == "no_survey":
-        # Publish never surveys (brief section 1): with nothing kept to publish it says so and sends nothing.
-        raise HTTPException(status_code=409, detail=out["sentence"])
+        # Publish never surveys (brief section 1): with nothing kept it sends no REPORT and says so; Brief F round
+        # 2: the rest of the press (tags, group, feedback) still went when the resource is in Egeria (`sent`).
+        return JSONResponse(status_code=409, content={"detail": out["sentence"], "sent": out.get("sent") or {}})
     return out
 
 

@@ -611,3 +611,40 @@ test('Brief F: line 2 says when the kept survey is newer than what is published,
   assert.match(q(document, '[data-publish-newer]').textContent, /newer than published · 120 annotations/);
   assert.ok(q(document, '[data-publish-next] [data-publish-stale]'), 'staleness is on the next-publish line');
 });
+
+/* ── Brief F round 2 ─────────────────────────────────────────────────────── */
+
+test('Brief F r2: the pop-up lists each tag or group item the press could not send, from the press answer', async () => {
+  const { document } = await setUp('repo', { project: { status: 'personal', word: 'personal exploration', name: '' },
+    pressAnswer: { ok: true, sent: { findable: { queued: 1, failed: [{ kind: 'tag', name: 'observability', word: 'not sent · OMAG-500 busy' }] } } } });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  const pop = document.querySelector('[data-publish-failure]');
+  assert.ok(pop);
+  assert.match(pop.textContent, /tag observability · .*not sent · OMAG-500 busy/);
+});
+
+test('Brief F r2: with no kept survey, a resource in Egeria with items to send can still press Publish; the report line says why', async () => {
+  const { document, server } = await setUp('repo', { inEgeria: true, publishAnswers: 'nosurvey',
+    survey: { exists: false, sentence: 'no survey to publish yet · run the first survey' },
+    goesOut: { viewer: 'dan', in_egeria: true, findable: [], feedback: [{ kind: 'note', id: 'j1', state: 'saved', word: 'saved · will publish' }], doc_sources: [], waiting_for_others: 0, count: 1 } });
+  await openCurate(document);
+  const go = q(document, '[data-publish-go]');
+  assert.equal(go.disabled, false);
+  assert.match(q(document, '[data-publish-blocker]').textContent, /no survey to publish yet/);
+  go.click();
+  await wait();
+  assert.equal(post(server, '/publish-report').length, 1);
+  assert.match(q(document, '[data-publish-feedback]').textContent, /no survey/);
+});
+
+test('Brief F r2: a 428 still re-reads the band and the sections (the rest of the press went), then draws the gate', async () => {
+  const { document, server } = await setUp('repo', { publishAnswers: '428' });
+  await openCurate(document);
+  const before = server.calls.filter((c) => c.url.endsWith('/publish-state')).length;
+  q(document, '[data-publish-go]').click();
+  await wait();
+  assert.ok(server.calls.filter((c) => c.url.endsWith('/publish-state')).length > before, 're-read after the gated press');
+  assert.ok(band(document).querySelector('[data-publish-gate-panel]'), 'the gate is on the re-drawn band');
+});

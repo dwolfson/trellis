@@ -219,16 +219,31 @@ def feedback_plan(registry, entity_type: str, slug: str, *, viewer: str = "",
     for f in feedback:
         if f.get("author") and f.get("rating") not in (None, "") and f["author"] not in newest_rated:
             newest_rated[f["author"]] = f["id"]
+    current = {fid: FeedbackItem("rating", fid, author, bool(viewer) and author == viewer,
+                                 **_from_rows(by_rating.get(fid, []), bool(viewer) and author == viewer))
+               for author, fid in newest_rated.items()}
+    # Round 2: an older rating is "replaced" only once the newer one is in Egeria. Until then the newest of the
+    # person's older ratings that DID land (a done row) is still what Egeria holds: it keeps "published MM-DD".
+    still_in_egeria: dict[str, str] = {}
+    for f in feedback:
+        author = f.get("author") or ""
+        if (author and f.get("rating") not in (None, "") and f["id"] != newest_rated.get(author)
+                and author not in still_in_egeria and current[newest_rated[author]].state != PUBLISHED
+                and any(r["status"] == "done" for r in by_rating.get(f["id"], []))):
+            still_in_egeria[author] = f["id"]
     ratings: list[FeedbackItem] = []
     for f in feedback:
         author = f.get("author") or ""
         mine = bool(viewer) and author == viewer
         if not author or f.get("rating") in (None, ""):
             ratings.append(FeedbackItem("rating", f["id"], author, mine, KEPT))
-        elif newest_rated.get(author) != f["id"]:
-            ratings.append(FeedbackItem("rating", f["id"], author, mine, REPLACED))
+        elif f["id"] in current:
+            ratings.append(current[f["id"]])
+        elif still_in_egeria.get(author) == f["id"]:
+            done = [r for r in by_rating[f["id"]] if r["status"] == "done"]
+            ratings.append(FeedbackItem("rating", f["id"], author, mine, **_from_rows(done, mine)))
         else:
-            ratings.append(FeedbackItem("rating", f["id"], author, mine, **_from_rows(by_rating.get(f["id"], []), mine)))
+            ratings.append(FeedbackItem("rating", f["id"], author, mine, REPLACED))
 
     notes: list[FeedbackItem] = []
     for e in Journal(registry).entries(entity_type, slug):                 # newest first

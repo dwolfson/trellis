@@ -306,8 +306,9 @@ class EgeriaPublisher:
             # E2: declared documentation sources for a repo, same hook the
             # database/filesystem publish routes already have. Best-effort.
             self._publish_local_doc_sources(result.resource_slug, asset_guid)
-            # Brief T: tags and the group kept in RE while the repo was not in Egeria. Best-effort.
-            self._publish_pending_curation(result.resource_slug, asset_guid)
+            # Brief F round 2: tags and the group are NOT sent here any more. This publish also runs for analysis
+            # auto-publish, bulk ops, resync and the CLI (as the Daemon); the owner's rule is ONE Publish per page,
+            # so only a person's press sends them (single_publish.send_with_publish, the db/fs publish routes).
             report_guid = self._create_survey_report(result, asset_guid)
             # Ownership + draft zone, on both elements this publish is
             # responsible for, before the annotations are written. Ordered
@@ -1083,19 +1084,6 @@ class EgeriaPublisher:
             publish_local_doc_sources("repo", slug, asset_guid, registry=self._registry)
         except Exception as exc:
             log.warning("Could not publish documentation sources for %s: %s", slug, exc)
-
-    def _publish_pending_curation(self, slug: str, asset_guid: str) -> None:
-        """Brief T: link the repo's RE tags (public InformalTags) and its group's Folio membership to the asset
-        this publish just found or created. Best-effort and never fatal, like the doc-source hook above."""
-        if not (self._registry and asset_guid):
-            return
-        try:
-            from resource_explorer.curation_egeria import publish_pending_curation, requester_of
-            # The rows record THIS publish's requester (round 2): the person, or a queued job's requested_by.
-            publish_pending_curation(self._registry, "repo", slug, asset_guid,
-                                     by=requester_of(self.resolve_identity()))
-        except Exception as exc:
-            log.warning("Could not send tags/group for %s to Egeria: %s", slug, exc)
 
     def _cache_asset_guid(self, slug: str, guid: str) -> None:
         if self._registry:
