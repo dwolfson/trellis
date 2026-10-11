@@ -188,3 +188,24 @@ class TestRead:
         ranked = db_chart_data.table_sizes(registry, "db1")["ranked"]
         by = {r["name"]: r["statistics"]["state"] for r in ranked}
         assert by == {"public.a": CURRENT, "public.b": NOT_COLLECTED}
+
+
+class TestRound2:
+    def test_partitioned_parent_is_labelled_and_in_no_count(self):
+        tables = [{"schema_name": "p", "table_name": "parent", "table_type": "BASE TABLE", "relkind": "p"},
+                  {"schema_name": "p", "table_name": "part1", "table_type": "BASE TABLE"}]
+        rows = [{"schema_name": "p", "table_name": "part1", "last_analyze": "2026-10-08T10:00:00", "stats_reset": "never"}]
+        d = derive_statistics_currency(tables, rows, AS_OF, schemas=["p"])
+        assert d["tables"]["p.parent"]["state"] == "partitioned"
+        assert d["database"]["total"] == 1 and d["database"]["never"] == 0 and d["database"]["partitioned"] == 1
+        assert d["schemas"][0]["total"] == 1
+
+    def test_materialised_views_are_analysed_views_and_foreign_tables_are_not(self):
+        tables = [{"schema_name": "s", "table_name": n, "table_type": t} for n, t in
+                  [("m", "MATERIALIZED VIEW"), ("v", "VIEW"), ("f", "FOREIGN"), ("b", "BASE TABLE"), ("u", "")]]
+        d = derive_statistics_currency(tables, [], AS_OF)
+        assert sorted(d["tables"]) == ["s.b", "s.m", "s.u"]
+
+    def test_every_result_names_its_survey(self):
+        assert table_currency(None, AS_OF)["as_of"] == AS_OF
+        assert table_currency(act(stats_reset="never"), AS_OF)["as_of"] == AS_OF

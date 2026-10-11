@@ -288,7 +288,7 @@ def _ranked_with_activity(registry, slug: str, run: dict, top: list[dict]) -> li
     for t in top:
         a = activity.get(_qualified(t))
         out.append({
-            "statistics": table_currency(a, run["surveyed_at"]),
+            "statistics": table_currency(a, run["surveyed_at"], table=t),
             "name": _qualified(t),
             "row_count": t.get("row_count"),
             "size_bytes": t.get("size_bytes"),
@@ -636,6 +636,6 @@ def statistics_currency(registry, slug: str, limit: int = 12) -> dict:
         history.append(point)
     env["history"] = history
     env["notes"].append(
-        f"Ages are measured at the survey time, not today. Stale means analysed more than "
+        f"Ages are measured at the survey time, not today. Stale means analyzed more than "
         f"{cur['stale_days']} days before the survey.")
     return _finish(registry, slug, env, True, [])

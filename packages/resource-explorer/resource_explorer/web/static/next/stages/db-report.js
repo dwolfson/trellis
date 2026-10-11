@@ -131,7 +131,7 @@ export function rankedTablesHtml(resp, diff) {
       name: `<span class="font-mono">${esc(r.name)}</span>`,
       rows: typeof r.row_count === 'number' ? r.row_count.toLocaleString('en-US') : 'not established',
       size: typeof r.size_bytes === 'number' ? esc(fmtSize(r.size_bytes)) : 'not established',
-      analyzed: r.statistics ? tableCueHtml(r.statistics)
+      analyzed: r.statistics ? tableCueHtml(r.statistics, { withDate: true })
         : (r.last_analyzed ? `<span class="tnum">${esc(stamp(r.last_analyzed))}</span>`
           : (r.activity_state === 'not_collected' ? 'not collected' : 'never analyzed')),
       pending: typeof r.pending_changes === 'number' ? r.pending_changes.toLocaleString('en-US')

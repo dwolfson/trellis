@@ -236,7 +236,7 @@ test('db: the statistics line is on At a glance after the sentence; schema rollu
   await open(document);
   const g = panel(document, 'glance');
   const line = g.querySelector('[data-stats-line]');
-  assert.match(norm(line), /^statistics · counters reset 10-02 · 31 of 140 tables not analysed in 30 days · 2 unknowable since reset ◐$/);
+  assert.match(norm(line), /^statistics · at survey 10-09 · counters reset 10-02 · 31 of 140 tables not analyzed in 30 days · 2 unknowable since reset ◐$/);
   assert.ok(g.querySelector('[data-since-last-run]').compareDocumentPosition(line) & 4, 'the line follows the sentence');
   assert.equal(panel(document, 'contents').querySelector('[data-stats-line]'), null);
   await tab(document, 'contents');

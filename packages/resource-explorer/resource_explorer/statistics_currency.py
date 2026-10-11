@@ -20,6 +20,9 @@ Table states
                    counters were reset: "never" is unknowable, and not claimed
   never_reset_unknown  no analyse time and the survey did not read the reset
                    time: could be never, could be a reset
+  partitioned      a partitioned parent: autovacuum never analyses it (its
+                   partitions carry the statistics), so it reads neither
+                   "never" nor a count. Needs `relkind`/`table_type` to say so
   not_collected    no activity row for the table in that survey: says nothing
 """
 from __future__ import annotations
@@ -39,6 +42,7 @@ NEVER = "never"
 RESET = "reset"
 NEVER_RESET_UNKNOWN = "never_reset_unknown"
 NOT_COLLECTED = "not_collected"
+PARTITIONED = "partitioned"
 TABLE_STATES = (CURRENT, STALE, NEVER, RESET, NEVER_RESET_UNKNOWN, NOT_COLLECTED)
 
 #: Reset words for the database level.
@@ -46,7 +50,19 @@ RESET_AT = "reset_at"
 RESET_NEVER = "never_reset"
 RESET_UNKNOWN = "unknown"
 
-_NO_ANALYSE_TABLE_TYPES = frozenset({"VIEW", "MATERIALIZED_VIEW"})
+#: What autovacuum analyses, which is NOT `db_derived._is_base_table`'s question
+#: (that allowlist is "has a grain / a key to check": it drops materialised views
+#: and keeps foreign tables). Here: plain and temporary tables and materialised
+#: views are analysed; views and foreign tables never are. An unrecorded type is
+#: kept, as there, because it is not evidence of a view.
+_ANALYSED_TABLE_TYPES = frozenset({"BASE_TABLE", "TABLE", "LOCAL_TEMPORARY", "MATERIALIZED_VIEW"})
+_PARTITIONED_TYPES = frozenset({"PARTITIONED_TABLE", "PARTITIONED"})
+
+
+def _ttype(row: dict) -> str:
+    if (row.get("relkind") or "") == "p":
+        return "PARTITIONED_TABLE"
+    return (row.get("table_type") or "").upper().replace(" ", "_")
 
 
 def _parse(value) -> datetime | None:
@@ -54,9 +70,14 @@ def _parse(value) -> datetime | None:
     return _parse_stat_time(value)
 
 
-def _is_base_table(row: dict) -> bool:
-    ttype = (row.get("table_type") or "").upper().replace(" ", "_")
-    return ttype not in _NO_ANALYSE_TABLE_TYPES
+def is_analysed_kind(row: dict) -> bool:
+    """THE one definition of "autovacuum analyses this relation" (see above)."""
+    t = _ttype(row)
+    return not t or t in _ANALYSED_TABLE_TYPES or t in _PARTITIONED_TYPES
+
+
+def is_partitioned_parent(row: dict) -> bool:
+    return _ttype(row) in _PARTITIONED_TYPES
 
 
 def _latest(*values) -> tuple[str | None, datetime | None]:
@@ -68,8 +89,19 @@ def _latest(*values) -> tuple[str | None, datetime | None]:
     return best, best_dt
 
 
-def table_currency(activity: dict | None, as_of: str, stale_days: int = STALE_DAYS) -> dict:
-    """One table's currency from its `database_table_activity` row (or None)."""
+def table_currency(activity, as_of, stale_days=STALE_DAYS, table=None):
+    """See `_table_currency`; every result also names the survey it is measured at."""
+    out = _table_currency(activity, as_of, stale_days, table)
+    out["as_of"] = as_of
+    return out
+
+
+def _table_currency(activity: dict | None, as_of: str, stale_days: int = STALE_DAYS,
+                    table: dict | None = None) -> dict:
+    """One table's currency from its `database_table_activity` row (or None).
+    `table` (a `database_tables` row) only matters for a partitioned parent."""
+    if table is not None and is_partitioned_parent(table):
+        return {"state": PARTITIONED, "last_analyzed": None, "age_days": None, "stats_reset": None}
     now = _parse(as_of)
     if not activity or now is None:
         return {"state": NOT_COLLECTED, "last_analyzed": None, "age_days": None,
@@ -112,7 +144,7 @@ def _rollup(rows: list[dict]) -> dict:
     counts = {s: 0 for s in TABLE_STATES}
     ages = []
     for r in rows:
-        counts[r["state"]] += 1
+        counts[r["state"]] = counts.get(r["state"], 0) + 1
         if r["state"] in (CURRENT, STALE) and r["age_days"] is not None:
             ages.append(r["age_days"])
     return {
@@ -139,22 +171,28 @@ def derive_statistics_currency(
     """
     act = {(a.get("schema_name") or "", a.get("table_name") or ""): a for a in activity_rows}
     per_table: dict[str, dict] = {}
+    partitioned: list[dict] = []
     by_schema: dict[str, list[dict]] = {s: [] for s in (schemas or [])}
     for t in tables:
-        if not _is_base_table(t):
+        if not is_analysed_kind(t):
             continue
         s, n = t.get("schema_name") or "", t.get("table_name") or ""
-        cur = table_currency(act.get((s, n)), as_of, stale_days)
+        cur = table_currency(act.get((s, n)), as_of, stale_days, table=t)
         cur["schema"], cur["table"] = s, n
         per_table[f"{s}.{n}"] = cur
-        by_schema.setdefault(s, []).append(cur)
+        if cur["state"] == PARTITIONED:        # shown, but in no count
+            partitioned.append(cur)
+        else:
+            by_schema.setdefault(s, []).append(cur)
     schema_rows = []
     for name in sorted(by_schema):
         r = _rollup(by_schema[name])
         r["schema"] = name
         r["empty"] = r["total"] == 0
+        r["partitioned"] = sum(1 for p in partitioned if p["schema"] == name)
         schema_rows.append(r)
-    db = _rollup(list(per_table.values()))
+    db = _rollup([c for c in per_table.values() if c["state"] != PARTITIONED])
     db["counters_reset"] = _database_reset(list(act.values()) if per_table else [])
+    db["partitioned"] = len(partitioned)
     return {"as_of": as_of, "stale_days": stale_days,
             "database": db, "schemas": schema_rows, "tables": per_table}
