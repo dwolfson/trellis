@@ -3246,6 +3246,25 @@ class ProjectRegistry:
             ]:
                 if col not in existing_curation:
                     conn.execute(f"ALTER TABLE resource_curation ADD COLUMN {col} {defn}")
+            # resource_journal: the append-only curator journal (journal.Journal).
+            # Moved here from journal.py's per-call _ensure_schema, which ran
+            # this DDL on every read and write. Shape is the real registry's
+            # (7 columns, no later ADDs), so applying it there is a no-op.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_journal (
+                    id            TEXT PRIMARY KEY,
+                    entity_type   TEXT NOT NULL,
+                    entity_slug   TEXT NOT NULL,
+                    author        TEXT NOT NULL,
+                    written_at    TEXT NOT NULL,
+                    body          TEXT NOT NULL,
+                    suggested_to  TEXT NOT NULL DEFAULT '[]'
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_journal_entity "
+                "ON resource_journal(entity_type, entity_slug, written_at)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_component_verdicts (
                     id             TEXT PRIMARY KEY,

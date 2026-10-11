@@ -131,3 +131,56 @@ def test_curations_reads_issue_no_ddl(registry, monkeypatch):
                         lambda self, sql, params=None: (seen.append(sql), real(self, sql, params))[1])
     cur.get(rec["id"]); cur.for_resource("repo", "p")
     assert seen and [s for s in seen if DDL_RE.match(s)] == []
+
+
+# ── resource_journal: same move (journal.py's per-call _ensure_schema) ──────────────────────────
+
+JOURNAL_EXPECTED = [("id", None), ("entity_type", None), ("entity_slug", None), ("author", None),
+                    ("written_at", None), ("body", None), ("suggested_to", "[]")]
+
+
+def test_fresh_sqlite_gets_the_journal_table_from_migrations(tmp_path):
+    db = str(tmp_path / "j.db")
+    ProjectRegistry(db_path=db)
+    c = sqlite3.connect(db)
+    try:
+        rows = c.execute("PRAGMA table_info(resource_journal)").fetchall()
+        idx = {r[1]: [x[2] for x in c.execute(f"PRAGMA index_info({r[1]})").fetchall()]
+               for r in c.execute("PRAGMA index_list(resource_journal)").fetchall()}
+    finally:
+        c.close()
+    assert [(r[1], (r[4] or "").strip("'") if r[4] is not None else None) for r in rows] == JOURNAL_EXPECTED
+    assert idx["idx_resource_journal_entity"] == ["entity_type", "entity_slug", "written_at"]
+
+
+def test_fresh_postgres_schema_gets_the_journal_table_from_migrations(pg_registry):
+    with pg_registry._conn() as conn:
+        cols = conn.execute(
+            "SELECT column_name, column_default, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'resource_journal' "
+            "ORDER BY ordinal_position").fetchall()
+        idx = conn.execute("SELECT indexname, indexdef FROM pg_indexes "
+                           "WHERE schemaname = current_schema() AND tablename = 'resource_journal'").fetchall()
+    assert [(r["column_name"], None if r["column_default"] is None else r["column_default"].split("::")[0].strip("'"))
+            for r in cols] == JOURNAL_EXPECTED
+    assert all(r["is_nullable"] == "NO" for r in cols)
+    defs = {r["indexname"]: r["indexdef"] for r in idx}
+    assert "(entity_type, entity_slug, written_at)" in defs["idx_resource_journal_entity"]
+    assert "resource_journal_pkey" in defs
+
+
+def test_journal_reads_and_writes_issue_no_ddl_and_output_is_unchanged(registry, monkeypatch):
+    from resource_explorer.journal import Journal
+    from resource_explorer.registry import ConnectionWrapper
+    seen: list[str] = []
+    real = ConnectionWrapper.execute
+    monkeypatch.setattr(ConnectionWrapper, "execute",
+                        lambda self, sql, params=None: (seen.append(sql), real(self, sql, params))[1])
+    j = Journal(registry)
+    j.write("repo", "p", author="a", body="first")
+    j.write("repo", "p", author="a", body="second")
+    got = j.entries("repo", "p")
+    assert any("resource_journal" in s for s in seen), "control: the spy saw the journal statements"
+    assert [s for s in seen if DDL_RE.match(s)] == []
+    assert [e["body"] for e in got] == ["second", "first"]
+    assert set(got[0]) == {"id", "author", "written_at", "body", "suggested_to"} and got[0]["suggested_to"] == []
