@@ -1315,6 +1315,8 @@ class EgeriaResync:
         person looks (rule 16). Every not-ok outcome is logged here.
         """
         out = self._publish_one_unlogged(slug, steps)
+        if out.get("not_permitted"):
+            return out                    # a refusal, not a failure: said by _publish_many, never logged as one
         if not out.get("ok"):
             self._log_publish_failure(slug, out.get("error", "unknown error"))
         return out
@@ -1380,8 +1382,13 @@ class EgeriaResync:
         import asyncio as _aio
         loop = _aio.new_event_loop()
         _aio.set_event_loop(loop)
+        from resource_explorer.workflows.curate import WriteNotPermitted
+
         try:
             guid = EgeriaPublisher(registry=reg).publish(survey)
+        except WriteNotPermitted as exc:
+            # Round 3: an adopted asset the caller may not change is a refusal, reported with its words.
+            return {"slug": slug, "ok": False, "not_permitted": str(exc)}
         except Exception as exc:
             return {"slug": slug, "ok": False, "error": f"publish failed: {exc}"}
         finally:
@@ -1405,7 +1412,11 @@ class EgeriaResync:
             if why:                       # Brief Z2 round 2: skipped with its own words, the rest proceed
                 skipped.append({"slug": s, "words": why})
                 continue
-            results.append(self._publish_one(s, steps))
+            out = self._publish_one(s, steps)
+            if out.get("not_permitted"):
+                skipped.append({"slug": s, "words": out["not_permitted"]})
+                continue
+            results.append(out)
         failed = [r for r in results if not r["ok"]]
         return {
             "attempted": len(results),

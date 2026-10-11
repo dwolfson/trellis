@@ -125,7 +125,8 @@ def _caller_identity():
 
 
 def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str, *,
-                    operations=None, reader=None, element_guid: str | None = None) -> AccessDecision:
+                    operations=None, reader=None, element_guid: str | None = None,
+                    anchor_guid: str = "") -> AccessDecision:
     """THE curation-rights decision (Brief Z). Every verdict route, Publish, the database commit and publish,
     the CLI and A2A call this.
 
@@ -147,6 +148,11 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
        on the zones RE will create it in (`configured_zones_for`).
     5. Anything unreadable (Egeria unreachable, a zone, control or account read fails, RE's own row): DENIED,
        "could not check access in Egeria (<reason>)". Never open by default when zones might apply.
+
+    `anchor_guid` (round 3): the element a NEW element will be anchored to (a schema's database). Egeria judges
+    creating an anchored member on the ANCHOR's zones (validateUserForAnchorMemberCreate :1965-1990, maintainer =
+    the user), so with no element yet and an anchor in Egeria, the anchor's zones decide; RE's configured zones
+    are the answer only when there is no anchor in Egeria either.
 
     `element_guid` checks a resolved element instead of the scope's cache row (Publish's run-time re-check of
     an element the write adopted). `decided_by` on a verdict is attribution only; it is not read here.
@@ -175,6 +181,10 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
             verdict, zones = _existing_element_verdict(user, guid, ops, reader)
             if verdict is None:
                 return AccessDecision(True, "", BASIS_NO_ZONES)
+        elif anchor_guid:
+            verdict, zones = _new_member_verdict(user, anchor_guid, ops, reader)
+            if verdict is None:
+                return AccessDecision(True, "", BASIS_NO_ZONES)
         else:
             zones = configured_zones_for(registry, entity_type, slug)
             if not zones:
@@ -193,6 +203,27 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
         False, f"zone {secured} does not grant {user} {word} in Egeria" if len(verdict.secured) == 1
         else f"zones {secured} do not grant {user} {word} in Egeria",
         BASIS_ZONE_REFUSED, tuple(zones))
+
+
+def _new_member_verdict(user: str, anchor_guid: str, ops: tuple[str, ...], reader):
+    """A NEW member of `anchor_guid` (round 3): every operation of its write judged on the ANCHOR's zones as
+    Egeria's validateUserForAnchor* would (`zone_access.ANCHOR_OPERATIONS`; CREATE is
+    validateUserForAnchorMemberCreate :1965-1990, maintainer = the user). There is no member to READ yet.
+    (None, []) when the anchor carries no zone: open, as Egeria (:1205)."""
+    from resource_explorer.zone_access import ANCHOR_OPERATIONS, ZoneVerdict, zone_grants
+
+    anchor = reader.element(anchor_guid)
+    if not anchor.zones:
+        return None, []
+    last = ZoneVerdict(True)
+    for op in ops:
+        anchor_op, user_maintains, _read = ANCHOR_OPERATIONS.get(op, (op, False, False))
+        last = zone_grants(user, anchor.zones, control_for=reader.control, account_for=lambda: reader.account(user),
+                           owners=anchor.owners, maintainers=[user] if user_maintains else anchor.maintainers,
+                           operations=(anchor_op,))
+        if not last.allowed:
+            return last, list(anchor.zones)
+    return last, list(anchor.zones)
 
 
 def _existing_element_verdict(user: str, guid: str, ops: tuple[str, ...], reader):

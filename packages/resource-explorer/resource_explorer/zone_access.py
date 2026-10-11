@@ -298,7 +298,7 @@ def _anchor_of(element: dict) -> str:
     return ""
 
 
-def element_facts(element: Any) -> ElementFacts:
+def element_facts(element: Any, requested_guid: str = "") -> ElementFacts:
     """(zones, owners, maintainers, anchor) of a raw metadata element. Raises `AccessUnreadable` when the
     answer is not an element (so "unreadable" is never read as "no zones").
 
@@ -322,11 +322,15 @@ def element_facts(element: Any) -> ElementFacts:
         if isinstance(versions, dict) and isinstance(versions.get("maintainedBy"), list):
             maintainers = [str(m) for m in versions["maintainedBy"]]
             break
-    from resource_explorer.catalogue_gateway import _guid_of
-
     anchor = _anchor_of(element)
-    if anchor and anchor == _guid_of(element):
-        anchor = ""                         # its own anchor: its own zones decide
+    if anchor:
+        # Round 3: "its own anchor" is decided against the GUID that was ASKED for, never one the answer carries
+        # (an answer naming another element must not make a member its own anchor). With nothing to compare
+        # against, the anchor cannot be judged: unreadable, which denies.
+        if not requested_guid:
+            raise AccessUnreadable("an Anchors classification on an element read without its GUID")
+        if anchor == requested_guid:
+            anchor = ""                     # its own anchor: its own zones decide
     return ElementFacts(zones, owners, maintainers, anchor)
 
 
@@ -406,7 +410,7 @@ def _read_elements_on_one_client(guids: list[str]) -> dict[str, Any]:
     try:
         for guid in guids:
             try:
-                out[guid] = element_facts(client.get_metadata_element_by_guid(guid))
+                out[guid] = element_facts(client.get_metadata_element_by_guid(guid), guid)
             except AccessUnreadable as exc:
                 out[guid] = AccessUnreadable(f"the element {guid[:8]}: {exc}"[:300])
             except Exception as exc:  # noqa: BLE001 - every failure is the one named error

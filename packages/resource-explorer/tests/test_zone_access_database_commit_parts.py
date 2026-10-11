@@ -231,6 +231,7 @@ def test_an_anonymous_viewer_is_not_checked_part_by_part_and_cannot_press(world)
     choose(world, "sales", "catalogue")
     press(world)
     refuse(world, guid_of(world, "sales"))
+    world["access"].calls.clear()                          # the press above read as a signed-in caller
     token = current_caller.set(None)
     try:
         p = preview(world)

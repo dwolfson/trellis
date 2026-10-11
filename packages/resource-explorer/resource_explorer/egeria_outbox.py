@@ -618,6 +618,21 @@ class OutboxNotPermitted(RuntimeError):
 DOC_SOURCE_WRITES = {"doc_source_publish": "link", "doc_source_unpublish": "unlink"}
 
 
+def _run_requester(registry, row: dict) -> str:
+    """Round 3: a documentation-source row queued before rows carried `by` names no one. When it belongs to a
+    run (`run_id`), the run's own `requested_by` is the person; otherwise nobody, and the no-requester rule
+    applies (open only with no zone in use). A run that cannot be read names nobody (the stricter answer)."""
+    run_id = (row.get("run_id") or "").strip()
+    if not run_id:
+        return ""
+    try:
+        run = registry.get_run(run_id) or {}
+    except Exception:  # noqa: BLE001
+        return ""
+    by = run.get("requested_by") if isinstance(run, dict) else ""
+    return by.strip() if isinstance(by, str) else ""
+
+
 def _doc_source_refusal(registry, row: dict) -> str:
     """Brief Z2 round 2: the drain-time re-check for a documentation source's ExternalReference write, as the
     person the row was queued for (its payload's `by`), by the same rule every run uses
@@ -629,7 +644,7 @@ def _doc_source_refusal(registry, row: dict) -> str:
     from resource_explorer.a2a_auth import CallerIdentity, current_caller
     from resource_explorer.workflows.curate import person_write_refusal
 
-    by = _row_requester(row)
+    by = _row_requester(row) or _run_requester(registry, row)
     reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run",
                                               role="user")) if by else None
     try:
