@@ -22,6 +22,19 @@ pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
 
 
 @pytest.fixture(autouse=True)
+def _open_access(monkeypatch):
+    """Brief Z3: the investigation routes and the outbox drain check zone access; no zone in use here (the access
+    reads faked open at the client boundary), so these tests stay about what they test."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from tests.zone_fakes import open_access
+
+    open_access(monkeypatch, caller_if_none="tester")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_registry(pg_test_schema, monkeypatch):
     """Point the investigation routes at the throwaway schema, never the shared
     `resource_explorer` one.
@@ -965,7 +978,7 @@ def test_promote_route_does_not_call_pyegeria_on_the_event_loop(client, made, mo
         def __init__(self, registry, **kw):
             pass
 
-        def promote(self, slug):
+        def promote(self, slug, **kw):        # Brief Z3: the route passes the per-member `refusal`
             try:
                 asyncio.get_running_loop()
             except RuntimeError:

@@ -377,6 +377,34 @@ CLASSIFY, PUBLISH) plus READ on the member itself. An element adopted by
 qualifiedName (the repository publisher, the database commit) is checked
 before it is written.
 
+**Investigations, work lists and RFA ToDos (Brief Z3, 2026-10-11).** The same
+decision now stands in front of the Egeria writes that are not to a
+resource's own asset, through `workflows/egeria_work_access`, which names
+each write as the elements it touches and the operation Egeria checks on
+each. Promoting an investigation creates its Project (create, classify,
+attach; publish too when it is private, in its private zones); binding to an
+existing Project may create its working set under it (create on the Project's
+zones, attach); a rename pushed to the Project is an update; relinking
+attaches each member to the working set (judged on the Project, plus read on
+the working set); a reclassify that moves visibility changes the Project's
+zones and kind (publish, classify, declassify) and each member report's zones
+(publish). Publishing a work list creates or attaches to its `WorkingSet`;
+each membership is an attach on the member's asset. A batch run is checked
+per member when its run would publish (the resource is assigned an Egeria
+Project). An RFA status change creates or updates its Egeria `ToDo` (create,
+update). A member, report or batch item that is refused is skipped with its
+own words ("not permitted · <reason>") and the rest proceed; the route
+answers 403 only when nothing at all is permitted (a refused Project,
+working set or collection, a refused ToDo, or every member refused). Each
+queued membership or ResourceList row records who asked (and a Portal
+curator/admin role only from the verified caller) and is checked again as
+that person when the outbox drains it; a retried ToDo write, whose row
+records nobody, follows the no-requester rule. RE writes no zone on a
+Project, working set, `WorkingSet` or `ToDo` it creates (only a private
+investigation's own private zones), so a new one is judged on exactly those;
+Egeria may still place an element written with no zone in the server's
+default zones, which RE cannot read.
+
 ---
 
 ## 9 · Open items and upstream

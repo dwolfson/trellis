@@ -218,7 +218,16 @@ def reconcile_rfa_actions(registry) -> None:
     scheduler iteration it's part of.
     """
     try:
+        from resource_explorer.workflows.egeria_work_access import todo_writes, writes_refusal
+
         for row in registry.list_unsynced_rfa_actions():
+            # Brief Z3: the run-time re-check before a retried ToDo write. An rfa_actions row records no
+            # requester (adding one is DDL), so this is the no-requester rule unless a caller is set: the
+            # write proceeds only while no zone is in use; refused, the row keeps the words as its sync error.
+            why = writes_refusal(registry, todo_writes(row))
+            if why:
+                registry.mark_rfa_sync_error(row.get("id", ""), why)
+                continue
             sync_rfa_action(registry, row)
     except Exception:
         log.exception("RFA reconciliation: write-direction retry pass failed")

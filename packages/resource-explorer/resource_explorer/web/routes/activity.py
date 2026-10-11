@@ -307,6 +307,15 @@ def update_rfa_action(rfa_id: str, body: RfaActionUpdateRequest) -> dict:
     if registry.get_activity(entry_id) is None:
         raise HTTPException(status_code=404, detail="No activity entry backs this RFA id")
 
+    # Brief Z3: the Egeria ToDo this creates (CREATE) or updates (UPDATE_PROPERTIES on its own zones), checked as
+    # the caller BEFORE the local write, so a refusal changes nothing in either place (RE and Egeria would
+    # otherwise disagree, and the reconciliation pass would pull Egeria's state back over RE's).
+    from resource_explorer.workflows.egeria_work_access import todo_writes, writes_access
+
+    d = writes_access(registry, todo_writes(registry.get_rfa_action(rfa_id)))
+    if not d.allowed:
+        raise HTTPException(status_code=403, detail=d.reason)
+
     registry.upsert_rfa_action(
         rfa_id=rfa_id,
         entry_id=entry_id,

@@ -126,7 +126,7 @@ def _caller_identity():
 
 def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str, *,
                     operations=None, reader=None, element_guid: str | None = None,
-                    anchor_guid: str = "") -> AccessDecision:
+                    anchor_guid: str = "", creation_zones: list[str] | None = None) -> AccessDecision:
     """THE curation-rights decision (Brief Z). Every verdict route, Publish, the database commit and publish,
     the CLI and A2A call this.
 
@@ -153,6 +153,10 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
     creating an anchored member on the ANCHOR's zones (validateUserForAnchorMemberCreate :1965-1990, maintainer =
     the user), so with no element yet and an anchor in Egeria, the anchor's zones decide; RE's configured zones
     are the answer only when there is no anchor in Egeria either.
+
+    `creation_zones` (Brief Z3): the zones a NEW element that is neither a resource asset nor anchored is created
+    in, when the caller knows them (an investigation's Project: its private zones, or none). Without it a new
+    element is judged on `configured_zones_for` the resource.
 
     `element_guid` checks a resolved element instead of the scope's cache row (Publish's run-time re-check of
     an element the write adopted). `decided_by` on a verdict is attribution only; it is not read here.
@@ -186,7 +190,8 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
             if verdict is None:
                 return AccessDecision(True, "", BASIS_NO_ZONES)
         else:
-            zones = configured_zones_for(registry, entity_type, slug)
+            zones = (list(creation_zones) if creation_zones is not None
+                     else configured_zones_for(registry, entity_type, slug))
             if not zones:
                 return AccessDecision(True, "", BASIS_NO_ZONES)
             verdict = zone_grants(user, zones, control_for=reader.control, account_for=lambda: reader.account(user),

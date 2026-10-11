@@ -41,6 +41,7 @@
 import { listRfas, updateRfaAction, dismissRfa, restoreRfaDismissal, saveRfaNote } from '/static/re-api.js';
 import { ago } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
+import { cue } from '/static/next/stages/repo-manifest.js';
 
 function esc(s) {
   return String(s ?? '')
@@ -353,7 +354,11 @@ async function _onListClick(e) {
     _renderList();
   } catch (err) {
     if (actionsHost) {
-      actionsHost.innerHTML = `<span class="text-state-warn">not recorded: ${esc(err && err.message ? err.message : 'could not reach the server')}</span>`;
+      // Brief Z3: refused by the zone check on its Egeria ToDo (403): nothing was recorded in either place; the
+      // cue says so, the reason is on hover.
+      actionsHost.innerHTML = err && err.status === 403
+        ? `<span data-rfa-not-permitted>${cue('no_access', 'not permitted', err.message)}</span>`
+        : `<span class="text-state-warn">not recorded: ${esc(err && err.message ? err.message : 'could not reach the server')}</span>`;
     }
   }
 }

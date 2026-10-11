@@ -275,7 +275,7 @@ class WorkLists:
 
     def enqueue_batch(self, analysis_id: str, entity_slugs: Iterable[str], *,
                       work_list_slug: str = "", requested_by: str = "",
-                      entity_type: str = "repo") -> dict:
+                      entity_type: str = "repo", refusal=None) -> dict:
         """Enqueue one analysis across a SET of resources, and return a set id.
 
         The queue already does the hard half of this — `SKIP LOCKED` claims
@@ -296,6 +296,19 @@ class WorkLists:
         slugs = list(dict.fromkeys(entity_slugs))
         if not slugs:
             raise ValueError("a batch needs at least one resource")
+        # Brief Z3: `refusal(slug) -> str` checks each member's Egeria write as the caller
+        # (`egeria_work_access.batch_refusal`). A refused member gets no run and comes back in `not_permitted`
+        # with its words; the rest run. Nothing permitted at all raises `CurationDenied` (the route's 403).
+        not_permitted: list[dict] = []
+        if refusal is not None:
+            from resource_explorer.workflows.curate import CurationDenied
+            from resource_explorer.workflows.egeria_work_access import per_member
+
+            slugs, refused = per_member(slugs, refusal)
+            not_permitted = [{"entity_slug": s, "words": why} for s, why in refused]
+            if not slugs:
+                reasons = sorted({why.removeprefix("not permitted · ") for _, why in refused})
+                raise CurationDenied(reasons[0] if len(reasons) == 1 else "; ".join(reasons))
         set_id = f"set-{uuid.uuid4().hex[:12]}"
         now = _now()
         enqueued: list[dict] = []
@@ -315,7 +328,7 @@ class WorkLists:
                      analysis_id, now))
         log.info("batch %s: enqueued %s across %d resource(s)", set_id, analysis_id, len(slugs))
         return {"set_id": set_id, "analysis_id": analysis_id,
-                "work_list_slug": work_list_slug, "runs": enqueued}
+                "work_list_slug": work_list_slug, "runs": enqueued, "not_permitted": not_permitted}
 
     def batch_progress(self, set_id: str) -> dict | None:
         """What every run in this set is doing right now.
@@ -381,10 +394,56 @@ class WorkLists:
         A member whose resource was never published to Egeria has no GUID to
         attach and is REPORTED, not retried — that is a fact about the
         resource, not a failed write.
+
+        **Zone access (Brief Z3).** Every write is checked first, as the caller,
+        with the one decision (`workflows.egeria_work_access` ->
+        `curation_access`): the collection (CREATE for a new one, ATTACH) and
+        each member's end of its membership (ATTACH). A refused member is NOT
+        queued and comes back in `not_permitted` with its words ("not permitted
+        · <reason>"); the rest proceed. Raises `CurationDenied` (the route's
+        403) before anything is written when the collection is refused, or when
+        the collection exists already and every member to attach is refused
+        (nothing at all would be permitted). The drain re-checks each queued
+        row as the same person (`egeria_outbox._collection_refusal`).
         """
+        from resource_explorer.workflows.curate import CurationDenied
+        from resource_explorer.workflows.egeria_work_access import (
+            access_words, member_write, per_member, work_list_collection_write,
+        )
+
         wl = self.get(slug)
         if not wl:
             raise KeyError(slug)
+        from resource_explorer.zone_access import EgeriaAccessReader
+
+        reader = EgeriaAccessReader()      # one press: controls and accounts read once, elements fresh per check
+        existing = (wl.get("egeria_guid") or "").strip()
+        refused_collection = access_words(self.registry, [work_list_collection_write(existing)],
+                                          entity_type="work_list", slug=slug, reader=reader)
+        if refused_collection:
+            raise CurationDenied(refused_collection.removeprefix("not permitted · "))
+
+        attachable, unpublished = [], []
+        for m in wl["members"]:
+            project = self.registry.get(m["entity_slug"])
+            member_guid = (getattr(project, "egeria_asset_guid", "") or "") if project else ""
+            if member_guid:
+                attachable.append({
+                    "member_guid": member_guid,
+                    "entity_type": wl["entity_type"],
+                    "entity_slug": m["entity_slug"],
+                    "rationale": m.get("rationale") or "",
+                    "confidence": m.get("confidence"),
+                })
+            else:
+                unpublished.append(m["entity_slug"])
+        attachable, refused = per_member(attachable, lambda m: access_words(
+            self.registry, [member_write(m["member_guid"])], entity_type=m["entity_type"], slug=m["entity_slug"],
+            reader=reader))
+        not_permitted = [{"entity_slug": m["entity_slug"], "words": why} for m, why in refused]
+        if refused and not attachable and existing:
+            reasons = sorted({why.removeprefix("not permitted · ") for _, why in refused})
+            raise CurationDenied(reasons[0] if len(reasons) == 1 else "; ".join(reasons))
 
         from resource_explorer.egeria_outbox import _default_clients
         from resource_explorer.surveyors.egeria_investigation_publisher import (
@@ -416,21 +475,6 @@ class WorkLists:
                     "UPDATE work_lists SET egeria_guid = ?, published_at = ?"
                     " WHERE slug = ?", (guid, _now(), slug))
 
-        attachable, unpublished = [], []
-        for m in wl["members"]:
-            project = self.registry.get(m["entity_slug"])
-            member_guid = (getattr(project, "egeria_asset_guid", "") or "") if project else ""
-            if member_guid:
-                attachable.append({
-                    "member_guid": member_guid,
-                    "entity_type": wl["entity_type"],
-                    "entity_slug": m["entity_slug"],
-                    "rationale": m.get("rationale") or "",
-                    "confidence": m.get("confidence"),
-                })
-            else:
-                unpublished.append(m["entity_slug"])
-
         row_ids = enqueue_work_list_members(
             self.registry, slug, guid, attachable, run_id=run_id)
 
@@ -443,6 +487,8 @@ class WorkLists:
             # Named, not counted: "3 could not be attached" is not actionable
             # and "3 could not be attached: a, b, c" is.
             "members_without_an_egeria_asset": unpublished,
+            # Brief Z3: each member the caller may not attach, with its words; the rest were queued.
+            "not_permitted": not_permitted,
         }
 
 
@@ -455,6 +501,8 @@ def enqueue_work_list_members(registry, work_list_slug: str, collection_guid: st
     change what every existing queued row means. This adds two optional keys
     the shared creator passes through only when they are present.
     """
+    from resource_explorer.egeria_outbox import requester_fields
+
     row_ids: list[int] = []
     for m in members:
         payload: dict[str, Any] = {
@@ -467,6 +515,7 @@ def enqueue_work_list_members(registry, work_list_slug: str, collection_guid: st
             payload["membership_rationale"] = m["rationale"]
         if m.get("confidence") is not None:
             payload["expected_confidence"] = m["confidence"]
+        payload.update(requester_fields())       # Brief Z3: the drain re-checks the person who pressed publish
         row_ids.append(registry.enqueue_outbox_element(
             "work_list", work_list_slug, "collection_membership",
             f"CollectionMembership::{collection_guid}::{m['member_guid']}",

@@ -40,6 +40,23 @@ import {
 } from '/static/next/app.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import { saveCsv } from '/static/next/download.js';
+import { cue } from '/static/next/stages/repo-manifest.js';
+
+/** Brief Z3: a refusal by the zone check (403) is the no_access cue plus "not permitted", the reason on hover;
+ *  any other failure keeps its own words. */
+const refusalHtml = (err) => (err && err.status === 403
+  ? cue('no_access', 'not permitted', err.message)
+  : `<span class="text-state-warn">${esc(err?.message || '')}</span>`);
+
+/** A member line of a promote/relink result: a member the check refused carries the cue, its reason on hover. */
+const memberLine = (m) => {
+  const name = esc(m.entity_slug || m.entity_type || '?');
+  const reason = String(m.reason || '');
+  if (reason.startsWith('not permitted')) {
+    return `<span data-member-not-permitted="${name}">${cue('no_access', 'not permitted', reason.replace(/^not permitted · /, ''))} ${name}</span>`;
+  }
+  return esc(`${m.entity_slug || m.entity_type || '?'}${reason ? ` (${reason})` : ''}`);
+};
 
 // Module-local view state — which investigation (if any) is open, and
 // whether the list includes closed ones. Not on `state`: nothing outside
@@ -659,7 +676,7 @@ function bindDetail(inv, members) {
       } catch (err) {
         btn.disabled = false;
         btn.textContent = 'Reclassify';
-        resultEl.innerHTML = `<span class="text-state-warn">${esc(err.message)}</span>`;
+        resultEl.innerHTML = refusalHtml(err);
       }
     });
   });
@@ -709,7 +726,7 @@ function bindDetail(inv, members) {
         renderDetail(inv.slug);
       } catch (err) {
         btn.disabled = false;
-        host.querySelector('#inv-bind-error').textContent = err.message;
+        host.querySelector('#inv-bind-error').innerHTML = refusalHtml(err);
       }
     });
   });
@@ -736,9 +753,7 @@ function bindDetail(inv, members) {
       host.innerHTML = `<div class="mt-s2 text-caveat ${result.ok ? 'text-state-ok' : 'text-state-warn'}">
         ${result.ok ? (result.classification_confirmed != null ? `published · ${readBackAt()}` : 'sent · waiting for Egeria') : 'Partial — see below.'} ${confirmedLine}.
         ${result.members_linked?.length ? ` Linked: ${result.members_linked.map(esc).join(', ')}.` : ''}
-        ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(
-          m => esc(`${m.entity_slug || m.entity_type || '?'}${m.reason ? ` (${m.reason})` : ''}`)
-        ).join('; ')}.` : ''}
+        ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(memberLine).join('; ')}.` : ''}
         ${result.errors?.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}
         <div class="mt-s2"><button id="inv-promote-reload" class="${btnCls()}">Reload</button></div>
       </div>`;
@@ -756,7 +771,7 @@ function bindDetail(inv, members) {
     } catch (err) {
       btn.disabled = false;
       btn.textContent = 'Publish to Egeria →';
-      host.innerHTML = `<div class="mt-s2 text-caveat text-state-warn">${esc(err.message)}</div>`;
+      host.innerHTML = `<div class="mt-s2 text-caveat" data-inv-promote-refused>${refusalHtml(err)}</div>`;
     }
   });
 
@@ -771,7 +786,8 @@ function bindDetail(inv, members) {
       setTimeout(() => { btn.textContent = 'Publish again'; }, 3000);
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = `Not published: ${err.message}`;
+      if (err.status === 403) btn.innerHTML = cue('no_access', 'not permitted', err.message);
+      else btn.textContent = `Not published: ${err.message}`;
     }
   });
 
@@ -782,10 +798,17 @@ function bindDetail(inv, members) {
     try {
       const res = await relinkInvestigationMembers(inv.slug);
       if (res && Array.isArray(res.members_unlinkable)) _unlinked[inv.slug] = res.members_unlinkable.length;
-      renderDetail(inv.slug);
+      await renderDetail(inv.slug);
+      // Brief Z3: members the check refused stay named under the button, each with the cue.
+      const refused = (res?.members_unlinkable || []).filter((m) => String(m.reason || '').startsWith('not permitted'));
+      const host = $('inv-egeria-form');
+      if (refused.length && host) {
+        host.innerHTML = `<div class="mt-s2 text-caveat" data-inv-relink-refused>${refused.map(memberLine).join('; ')}</div>`;
+      }
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = `Not relinked: ${err.message}`;
+      if (err.status === 403) btn.innerHTML = cue('no_access', 'not permitted', err.message);
+      else btn.textContent = `Not relinked: ${err.message}`;
     }
   });
 

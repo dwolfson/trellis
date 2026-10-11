@@ -65,6 +65,8 @@ log = logging.getLogger(__name__)
 #:                      and bulk delete, both still behind the ISSUE-117 block)
 #:   READ               the member side of every anchored-member check (validateUserForAnchorAttach :2129-2135)
 #:   DELETE_MEMBER      validateUserForAnchorMemberDelete :2481-2500 (on the ANCHOR's zones)
+#:   DECLASSIFY         validateUserForElementDeclassify :1900-1950 (any classification but ZoneMembership; Brief Z3:
+#:                      an investigation reclassify removes the old Project kind)
 READ_OPERATION = "READ"
 DELETE_MEMBER_OPERATION = "DELETE_MEMBER"
 CREATE_OPERATION = "CREATE"
@@ -74,6 +76,7 @@ DETACH_OPERATION = "DETACH"
 DELETE_OPERATION = "DELETE"
 CLASSIFY_OPERATION = "CLASSIFY"
 PUBLISH_OPERATION = "PUBLISH"
+DECLASSIFY_OPERATION = "DECLASSIFY"
 DEFAULT_OPERATION = "DEFAULT"
 
 #: The words a refusal uses for each operation.
@@ -87,6 +90,7 @@ OPERATION_WORDS = {
     READ_OPERATION: "read",
     CLASSIFY_OPERATION: "classify",
     PUBLISH_OPERATION: "publish (zone change)",
+    DECLASSIFY_OPERATION: "declassify",
     # Brief T: a tag link / unlink is feedback (validateUserForElementAddFeedback :1696-1730 and
     # validateUserForElementDeleteFeedback :1748-1770); a membership removal is a DETACH.
     "ADD_FEEDBACK": "tag",
@@ -237,6 +241,7 @@ def zone_grants(user_id: str, zones: Iterable[str], *,
 #:   CLASSIFY          validateUserForAnchorClassify :2346-2400       CLASSIFY on the anchor, the anchor's own maintainers
 #:   PUBLISH           validateUserForAnchorClassify :2346-2370       PUBLISH on the anchor (a zone change), the anchor's maintainers
 #:   DELETE            validateUserForAnchorMemberDelete :2481-2520   DELETE_MEMBER on the anchor (maintainer = the user), READ on the member
+#:   DECLASSIFY        validateUserForAnchorDeclassify :2416-2466     DECLASSIFY on the anchor, the anchor's maintainers (Brief Z3)
 #: (operation on the member) -> (operation on the anchor, the user is the maintainer, READ on the member too)
 ANCHOR_OPERATIONS = {
     CREATE_OPERATION: (CREATE_OPERATION, True, False),
@@ -246,6 +251,7 @@ ANCHOR_OPERATIONS = {
     CLASSIFY_OPERATION: (CLASSIFY_OPERATION, False, False),
     PUBLISH_OPERATION: (PUBLISH_OPERATION, False, False),
     DELETE_OPERATION: (DELETE_MEMBER_OPERATION, True, True),
+    DECLASSIFY_OPERATION: (DECLASSIFY_OPERATION, False, False),
 }
 
 
