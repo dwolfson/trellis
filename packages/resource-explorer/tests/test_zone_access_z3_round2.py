@@ -223,3 +223,85 @@ class TestRfaUnreadableStaysLocal:
         assert r.status_code == 200, r.text
         assert saved == ["n"] and synced == []
         assert errors["e1::0"].startswith("not permitted · could not check access in Egeria (")
+
+
+# ── round 3 ──────────────────────────────────────────────────────────────────────────────────────────────
+
+class TestRound3:
+    def _member_row(self, registry, status_error: str, dead: bool):
+        from resource_explorer.egeria_outbox import collection_membership_qn
+
+        inv = registry.create_investigation("Inv", project_classification="StudyProject", egeria_project_guid="pg")
+        ws = registry.get_or_create_working_set(inv["slug"])
+        registry.set_working_set_egeria_collection(ws["slug"], "cg")
+        registry.add_working_set_member(ws["slug"], "repo", "q")
+        rid = registry.enqueue_outbox_element("investigation", inv["slug"], "collection_membership",
+                                              collection_membership_qn("cg", "g-q"),
+                                              {"collection_guid": "cg", "member_guid": "g-q"})
+        registry.mark_outbox_failed(rid, status_error, max_attempts=1 if dead else 5)
+        return inv["slug"]
+
+    def test_l1_a_dead_row_says_its_error_without_a_retry_clause(self, registry):
+        """Egeria's own security refusal is dead at once (max_attempts=1): it is never retried, so never says so."""
+        from resource_explorer.egeria_outbox import NEEDS_PERMISSION_CHANGE, REFUSED_BY_SECURITY
+        from resource_explorer.surveyors.egeria_investigation_publisher import EgeriaInvestigationPublisher
+
+        words = f"{REFUSED_BY_SECURITY}: no · {NEEDS_PERMISSION_CHANGE}"
+        slug = self._member_row(registry, words, dead=True)
+        reason = EgeriaInvestigationPublisher(registry).link_status(slug)["members"][0]["reason"]
+        assert reason == words
+
+    def test_l1_a_row_still_to_be_attempted_keeps_the_retry_clause(self, registry):
+        from resource_explorer.surveyors.egeria_investigation_publisher import EgeriaInvestigationPublisher
+
+        slug = self._member_row(registry, "ConnectionError: down", dead=False)
+        reason = EgeriaInvestigationPublisher(registry).link_status(slug)["members"][0]["reason"]
+        assert reason == "attach failed (ConnectionError: down) — queued for retry, see Admin → Publish Queue"
+
+    def test_l2a_a_revive_with_nobody_drops_the_requester_and_fails_closed_with_zones_in_use(self, registry,
+                                                                                           monkeypatch):
+        from resource_explorer.egeria_outbox import OutboxClients, drain_outbox, enqueue_collection_members
+        from resource_explorer.workflows.curate import NO_REQUESTER_WORDS
+
+        fake = _install(monkeypatch)
+        rid = TestRevivedRowRequester()._enqueue_as(registry, monkeypatch, OTHER, role="curator")
+        registry.mark_outbox_failed(rid, "boom", max_attempts=1)
+        monkeypatch.setattr("resource_explorer.run_queue.requested_by", lambda: "")    # the unattended resync
+        assert enqueue_collection_members(registry, "i", "cg", [{"member_guid": "g-q", "entity_type": "repo",
+                                                                 "entity_slug": "q"}])[0] == rid
+        payload = json.loads(registry.list_outbox_elements(entity_slug="i", limit=5)[0]["payload_json"])
+        assert "by" not in payload and "portal_role" not in payload
+        fake.elements["g-q"] = _element("g-q", [SECURED])
+        cm = FakeCollections()
+        drain_outbox(registry, OutboxClients(collection_manager=cm), lambda qn: "", limit=5)
+        assert cm.calls == []
+        row = registry.list_outbox_elements(entity_slug="i", limit=5)[0]
+        assert row["status"] == "dead"
+        assert row["last_error"] == f"not permitted · {NO_REQUESTER_WORDS}, and zone {SECURED} is in use"
+
+    def test_l2b_after_an_unreadable_patch_the_reconcile_refuses_with_words_rather_than_syncing(self, web,
+                                                                                               registry,
+                                                                                               monkeypatch):
+        from resource_explorer import rfa_egeria_sync
+
+        client, _ = web
+        fake = _install(monkeypatch)
+        _zone(fake, "td", ["dbas"])                       # a zoned, existing ToDo
+        monkeypatch.setattr(ProjectRegistry, "get_activity", lambda self, eid: {"id": eid})
+        registry.upsert_rfa_action(rfa_id="e1::0", entry_id="e1", annotation_index=0, status="open",
+                                   activity_status="REQUESTED", assignee="", defer_until="", resolution_note="")
+        registry.mark_rfa_synced("e1::0", "td")
+        fake.fail_element = "td"                          # Egeria cannot be asked at the press
+        synced = []
+        monkeypatch.setattr(rfa_egeria_sync, "sync_rfa_action", lambda reg, row: synced.append(row["id"]))
+        r = client.patch("/api/activity/rfas/e1::0", json={"status": "deferred"})
+        assert r.status_code == 200 and r.json()["egeria_sync"].startswith("not permitted · could not check")
+        assert synced == []
+        fake.fail_element = ""                            # Egeria is back; the retry runs with nobody recorded
+        monkeypatch.setattr(registry, "list_unsynced_rfa_notes", lambda: [])
+        monkeypatch.setattr(registry, "list_synced_rfa_actions", lambda: [])
+        rfa_egeria_sync.reconcile_rfa_actions(registry)
+        assert synced == []
+        row = registry.get_rfa_action("e1::0")
+        assert row["rfa_status"] == "deferred"
+        assert row["sync_error"] == f"not permitted · no person asked for this run, and zone {SECURED} is in use"

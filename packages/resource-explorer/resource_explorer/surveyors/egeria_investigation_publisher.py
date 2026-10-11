@@ -230,12 +230,13 @@ def is_private_investigation(inv: dict) -> bool:
 
 
 def _unattached_reason(row: dict, unknown: str = "unknown error") -> str:
-    """Why a membership row is not attached. A refusal by the access check (Brief Z3, "not permitted · ...") is
-    dead at once and never retried, so it is said in its own words with no retry clause; anything else is a
-    failed attach the outbox retries."""
+    """Why a membership row is not attached, decided by the row's STATUS (Brief Z3 round 3): a dead row is never
+    retried (the access check's "not permitted · ...", Egeria's own security refusal, a destructive kind, or its
+    attempts used up), so it says its last error and nothing more; only a row the outbox will still attempt
+    carries the retry clause."""
     error = str(row.get("last_error") or "")
-    if error.startswith("not permitted"):
-        return error
+    if row.get("status") == "dead":
+        return error or "not attached (no error recorded) — not retried"
     return f"attach failed ({error or unknown}) — queued for retry, see Admin → Publish Queue"
 
 
