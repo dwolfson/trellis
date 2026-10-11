@@ -174,9 +174,17 @@ def label_for(n_components: int, n_blueprints: int) -> str:
 
 def publish_plan(registry, slug: str) -> dict:
     """What a Publish press would write now, from RE's rows only (no Egeria call)."""
-    from resource_explorer.component_tree import _NOT_A_PATH, _component_verdicts, _components, resolve_verdict
+    from resource_explorer.component_tree import (
+        _NOT_A_PATH, _component_verdicts, _components, resolve_verdict, sharing_recovery_results)
 
-    comps = [c for c in _components(registry, slug) if (c.get("path") or "") not in _NOT_A_PATH]
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        _architecture_recovery_results, _candidate_blueprints_results, _recovery_snapshot)
+    # The snapshot and the recovery results are built once and shared: the results already carry the
+    # candidate blueprints, so they are not derived a second time below.
+    snapshot = _recovery_snapshot(registry, slug)
+    recovery = _architecture_recovery_results(registry, slug, max_depth=None, snapshot=snapshot) or {}
+    with sharing_recovery_results(recovery):
+        comps = [c for c in _components(registry, slug) if (c.get("path") or "") not in _NOT_A_PATH]
     verdicts = _component_verdicts(registry, slug)
     present = registry.get_materialized_components("repo", slug)
     to_write, in_egeria, rejected_in_egeria = [], 0, 0
@@ -194,14 +202,15 @@ def publish_plan(registry, slug: str) -> dict:
             rejected_in_egeria += 1
 
     from resource_explorer.blueprint_kinds import blueprint_display_name, repo_label
-    from resource_explorer.surveyors.repo_survey_definition_adapter import _candidate_blueprints_results
 
-    blueprints = _candidate_blueprints_results(registry, slug)
+    blueprints = recovery.get("blueprints")
+    if blueprints is None:   # an envelope (never surveyed) carries none: read it the long way
+        blueprints = _candidate_blueprints_results(registry, slug, snapshot)
     raw_verdicts = {k: v for k, v in registry.get_component_verdicts("repo", slug).items()
                     if v.get("verdict_target") == "blueprint"}
     proofs = registry.list_catalogue_commit_proofs(slug)
     from resource_explorer.blueprint_shape import component_nodes
-    nodes_by_slug = component_nodes(registry, slug)
+    nodes_by_slug = component_nodes(registry, slug, snapshot)
     project = registry.get(slug)
     label = repo_label(slug, getattr(project, "display_name", "") or "")
     by_name = {b["cluster_name"]: b for b in blueprints}
