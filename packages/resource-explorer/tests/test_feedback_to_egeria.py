@@ -51,6 +51,7 @@ class Egeria:
         self.identities: list = []
         self.fail: dict[str, Exception] = {}
         self.miss_note_log_once = False                      # a concurrent create: the find misses, the create is refused
+        self.no_created_by = False                           # the ratings read carries no versions.createdBy
         self._n = 0
 
     def new(self, prefix):
@@ -82,8 +83,24 @@ class View:
                                 "public": k.get("is_public")}
         return {"class": "VoidResponse", "relatedHTTPCode": 200}
 
+    @staticmethod
+    def _type_filter(name, k):
+        """The type filter pyegeria puts in the request body: the keyword, else the method's DEFAULT (pyegeria 6.2.1
+        sends `metadataElementTypeName` = the default when filter_results_by_type). Strict: an element is returned
+        only for its own type name (RE must not depend on the filter including subtypes)."""
+        if "body" in k and isinstance(k["body"], dict) and k["body"].get("metadataElementTypeName"):
+            return k["body"]["metadataElementTypeName"]
+        if "metadata_element_type_name" in k:
+            return k["metadata_element_type_name"]
+        return inspect.signature(getattr(ClassificationExplorer, name)).parameters["metadata_element_type_name"].default
+
     def get_attached_ratings(self, *a, **k):
         self._bind("get_attached_ratings", *a, **k)
+        if self._type_filter("get_attached_ratings", k) != "Rating":
+            return "No elements found"
+        if self.eg.no_created_by:
+            return [{"elementHeader": {"guid": r["guid"]}, "properties": {}} for (el, _u), r in self.eg.ratings.items()
+                    if el == a[0]] or "No elements found"
         return [{"elementHeader": {"guid": r["guid"], "versions": {"createdBy": u}},
                  "properties": {"starRating": r["star"], "review": r["review"]}}
                 for (el, u), r in self.eg.ratings.items() if el == a[0]] or "No elements found"
@@ -92,6 +109,8 @@ class View:
     def get_note_logs_by_name(self, *a, **k):
         self._bind("get_note_logs_by_name", *a, **k)
         assert a and a[0] == k["body"]["filter"], "the name travels with the body"
+        if self._type_filter("get_note_logs_by_name", k) != "NoteLog":
+            return "No elements found"
         if self.eg.miss_note_log_once:
             self.eg.miss_note_log_once = False
             return "No elements found"
@@ -109,6 +128,8 @@ class View:
 
     def get_notes_for_note_log(self, *a, **k):
         self._bind("get_notes_for_note_log", *a, **k)
+        if self._type_filter("get_notes_for_note_log", k) != "Note":
+            return "No elements found"
         return [{"elementHeader": {"guid": g}, "properties": {"qualifiedName": n["qn"]}}
                 for g, n in self.eg.notes.items() if n["log"] == a[0]] or "No elements found"
 
@@ -538,3 +559,31 @@ def test_documentation_sources_carry_their_published_state_and_the_publish_list_
 def test_the_repository_publish_sends_the_rest_after_the_report_as_the_presser():
     src = inspect.getsource(rp.publish_report)
     assert 'send_with_publish(registry, "repo", slug, registry.get_egeria_asset_guid(slug) or "", author)' in src
+
+
+# ── round 2: the reads name their type; a missing createdBy is harmless ───────────────────────────────────
+
+def test_r2_a_re_publish_after_a_lost_record_finds_the_note_by_type_note_never_a_second(registry, egeria):
+    """find_note names the Note type. With pyegeria's default ('Action') in the body, a strict type filter finds
+    nothing and the re-send would create a second Note."""
+    note(registry, "alice", "Once.")
+    press(registry, "alice")
+    with registry._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET status='cancelled' WHERE element_kind=?", (fe.NOTE_KIND,))
+    press(registry, "alice")
+    assert len(egeria.notes) == 1
+    assert [c[0] for c in egeria.calls].count("create_note") == 1, "found by the lookup: no second create attempted"
+    (row,) = [r for r in registry.list_outbox_rows_for_kinds("repo", "p", (fe.NOTE_KIND,)) if r["status"] != "cancelled"]
+    assert row["status"] == "done", "the re-send adopts the existing Note (with 'Action' it went dead on a 409)"
+
+
+def test_r2_a_ratings_read_without_created_by_records_no_guid_and_never_adds_twice(registry, egeria):
+    egeria.no_created_by = True
+    rid = rate(registry, "alice", 4, "good")
+    press(registry, "alice")
+    (row,) = registry.list_outbox_rows_for_kinds("repo", "p", (fe.RATING_KIND,))
+    assert row["status"] == "done" and row["egeria_guid"] == ""
+    assert [c[0] for c in egeria.calls].count("add_rating_to_element") == 1
+    assert by_id(plan(registry, "alice")["ratings"], rid)["state"] == fe.PUBLISHED
+    press(registry, "alice")
+    assert [c[0] for c in egeria.calls].count("add_rating_to_element") == 1, "a re-press sends nothing more"

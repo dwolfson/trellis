@@ -386,8 +386,11 @@ def rating_body(stars: int, review: str) -> dict:
 
 
 def find_my_rating(fb, element_guid: str, by: str) -> str:
-    """The GUID of `by`'s Rating on the element (Egeria keeps one per user), or ""."""
-    hits = [e for e in _elements(fb.get_attached_ratings(element_guid)) if _created_by(e) == by and _guid(e)]
+    """The GUID of `by`'s Rating on the element (Egeria keeps one per user), or "". A read-back only, AFTER the add:
+    it never decides whether to add. With no `createdBy` on the answer (or no match) it returns "" and the row is
+    done with no GUID; nothing is created or retried, since the add is Egeria's own per-user upsert."""
+    hits = [e for e in _elements(fb.get_attached_ratings(element_guid, metadata_element_type_name="Rating"))
+            if by and _created_by(e) == by and _guid(e)]
     return _guid(sorted(hits, key=_guid)[0]) if hits else ""
 
 
@@ -447,7 +450,12 @@ def ensure_note_log(fb, payload: dict) -> str:
 
 
 def find_note(fb, note_log_guid: str, qualified_name: str) -> str:
-    hits = [e for e in _elements(fb.get_notes_for_note_log(note_log_guid))
+    """The Note with this qualifiedName in the log, or "". Round 2: the type is named. pyegeria 6.2.1's default
+    `metadata_element_type_name="Action"` goes into the request body as a type filter
+    (`_async_get_results_body_request`, filter_results_by_type). Egeria's typedef makes Note a subtype of
+    Notification and Action (OpenMetadataTypesArchive6_1.java:780-784, 1_2.java:3517-3518), but RE's
+    "never a second Note" must not rest on whether that filter includes subtypes: it asks for "Note"."""
+    hits = [e for e in _elements(fb.get_notes_for_note_log(note_log_guid, metadata_element_type_name="Note"))
             if _props(e).get("qualifiedName") == qualified_name and _guid(e)]
     return _guid(sorted(hits, key=_guid)[0]) if hits else ""
 
