@@ -155,11 +155,9 @@ class WorkLists:
         that say `undecided` rather than no rows at all. The matrix groups on
         this and a missing value is a legitimate group.
         """
-        try:
-            from resource_explorer.registry import ProjectRegistry
-            registry = ProjectRegistry()
-        except Exception:                                   # pragma: no cover
-            return
+        # The registry this instance already holds: a bare ProjectRegistry()
+        # here re-ran the whole registry init on every get (a real cost on SQLite).
+        registry = self.registry
         for m in members:
             m.setdefault("disposition", "")
             m.setdefault("github_url", "")
