@@ -146,14 +146,17 @@ test('plan rows carry a short word, never a check mark that reads as accepted or
   const { document } = await setUp();
   const host = document.getElementById('curate-host');
   for (const id of ['curate-sec-what-holds', 'curate-sec-relates']) {
-    assert.doesNotMatch(norm(document.getElementById(id)), /✓(?! surveyed)/, `${id}: a check never stands alone`);
+    assert.doesNotMatch(norm(document.getElementById(id)), /✓/, `${id}: no green check on a survey row`);
   }
   const chips = [...document.getElementById('curate-sec-what-holds').querySelectorAll('[data-row-found]')];
   assert.deepEqual(chips.map((c) => norm(c)), ['none found', 'found']);
   assert.match(chips[1].title, /nothing here has been accepted or published/);
   assert.equal(norm(host.querySelector('#curate-sec-relates [data-row-found]')), 'info only');
   const cue = holds(document).querySelector('[data-cue="measured"]');
-  assert.match(norm(cue), /✓ surveyed/);
+  assert.match(norm(cue), /● surveyed/);
+  assert.doesNotMatch(norm(cue), /✓/);
+  assert.match(cue.className, /text-ink-muted/);
+  assert.doesNotMatch(cue.outerHTML, /text-state-ok/, 'green is reserved for in Egeria');
   assert.match(cue.title, /nothing here is accepted or published yet/);
 });
 

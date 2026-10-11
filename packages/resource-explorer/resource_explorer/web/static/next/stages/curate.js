@@ -295,11 +295,13 @@ export function rowFoundChip(r) {
 export function sourceCue(r) {
   const key = r.state;
   const e = stateEntry(key);
-  const word = key === 'measured' ? 'surveyed' : e.word;
-  const title = key === 'measured'
-    ? `The ${r.source} survey step ran and measured this. That is all the mark means: nothing here is accepted or published yet.`
-    : `State of the ${r.source} survey step: ${e.word}.`;
-  return stateCue(key, word, title);
+  if (key === 'measured') {
+    // Neutral on purpose: the green check is kept for "in Egeria". A dot in muted ink says only that
+    // the survey step ran.
+    const title = `The ${r.source} survey step ran and measured this. That is all the mark means: nothing here is accepted or published yet.`;
+    return `<span class="text-ink-muted" data-cue="measured" title="${esc(title)}"><span class="font-glyph" aria-hidden="true">●</span> surveyed</span>`;
+  }
+  return stateCue(key, e.word, `State of the ${r.source} survey step: ${e.word}.`);
 }
 
 function curateRowHtml(r, selected, pick) {

@@ -54,6 +54,7 @@ function makeServer(over = {}) {
     if (u.includes('/catalogue-depth-offer')) return ok({ layer1_done: false });
     if (u.endsWith('/publish-state')) return ok(s.publishState || { slug: 's', in_egeria: false, asset_guid: '', row: { word: 'none' }, project: { status: 'unset', word: 'no project' }, can_publish_again: false, survey: { exists: false } });
     if (u.endsWith('/file-type-measurements')) return ok({ inventoried: true, profiles: [], retired: [] });
+    if (u.includes('/members/') && s.members) return ok(s.members);
     if (u.includes('/members/')) return ok({ analysis_id: 'sub_resource_survey', title: 'Sub-resource survey', total: 2, source: 'x', scope_honoured: true,
       groups: [{ name: 'well_known_file', count: 2, members: [{ name: 'bom', detail: 'well_known_file' }, { name: 'bom/README.md', detail: 'well_known_file' }] }] });
     if (u.includes('questions')) { if (s.holdQuestions) await s.holdQuestions; return ok({ questions: [] }); }
@@ -138,6 +139,27 @@ test('3: the sub-resource Members rail has no checkboxes or bulk links, says whe
   assert.match(norm(note), /not saved here · choose what is published with Include in what's in it/);
   note.querySelector('[data-members-goto-scope]').click();
   assert.equal(document.getElementById('curate-sec-what-holds').open, true);
+});
+test('3b: the Members rail keeps a readable name column: long tokens wrap, the name is not squeezed to nothing', async () => {
+  const long = 'GET /api/v1/an-exceptionally-long-endpoint-path-with-no-spaces-at-all/and/more/segments/keep/going/on';
+  const members = { analysis_id: 'api_discovery', title: 'API discovery', total: 2, source: 'project_analysis_findings', scope_honoured: true,
+    groups: [{ name: 'http_api', count: 2, members: [
+      { name: 'http_api', detail: long },
+      { name: 'published_spec', detail: 'published_spec' }] }] };
+  const { document, app } = await setUp({ members }, { settle: 300 });
+  await app.openMembers({ slug: 'egeria_git', analysisId: 'api_discovery', title: 'x' });
+  const rail = document.getElementById('rail-evidence');
+  const names = [...rail.querySelectorAll('[data-member-name]')];
+  assert.deepEqual(names.map((n) => n.textContent), ['http_api', 'published_spec'], 'whole tokens, never split per character');
+  for (const n of names) {
+    assert.match(n.className, /min-w-\[\d+ch\]/, 'the name column keeps a minimum width');
+    assert.match(n.className, /\[overflow-wrap:anywhere\]/);
+  }
+  const d = rail.querySelector('[data-member-detail]');
+  assert.doesNotMatch(d.className, /shrink-0/, 'a long detail may not take the whole row');
+  assert.match(d.className, /min-w-0/);
+  assert.match(d.className, /\[overflow-wrap:anywhere\]/);
+  assert.match(rail.querySelector('[data-member-row]').className, /flex-wrap/, 'the detail drops under the name rather than squeezing it');
 });
 test('3: "N included · saved" stays in the what\'s-in-it header', async () => {
   const { document } = await setUp({}, { settle: 300 });
