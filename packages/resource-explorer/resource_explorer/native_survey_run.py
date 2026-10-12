@@ -123,15 +123,15 @@ STARTED_AS_PROCESS = "process"
 
 def cancellable_kind(run: dict) -> bool:
     """ALLOWLIST: may this row's GUID be handed to Egeria's engine-action cancel? Yes only for a single-action
-    survey: the row is stamped as started by a governance action type, or (an old row with no stamp) its process
-    is configured as KIND_SURVEY_EXISTING. Anything else -- a process instance, a registration, an unknown
+    survey: the row is stamped as started by a governance action type. Anything else -- a process instance, a registration, an unknown
     process name -- is no."""
     import json
 
     from resource_explorer.surveyors.technology_type_processes import kind_of
 
+    raw = run.get("declared")
     try:
-        declared = json.loads(run.get("declared") or "{}")
+        declared = raw if isinstance(raw, dict) else json.loads(raw or "{}")
     except (ValueError, TypeError):
         declared = {}
     how = declared.get("started_as") if isinstance(declared, dict) else None
@@ -139,9 +139,8 @@ def cancellable_kind(run: dict) -> bool:
     kind = kind_of(process_qn)
     if kind == KIND_CATALOG_AND_SURVEY:
         return False
-    if how:
-        return how == STARTED_AS_ACTION_TYPE
-    return kind == KIND_SURVEY_EXISTING
+    # No name fallback: an unstamped (old) row is refused outright. It can be cancelled in Egeria directly.
+    return how == STARTED_AS_ACTION_TYPE
 
 
 def cancel_offered(run: dict) -> bool:
@@ -1004,8 +1003,9 @@ def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slu
         last = port.read_action(engine_action_guid)
     except Exception as exc:  # noqa: BLE001
         raise NativeStatusUnreadable(UNREADABLE_STATUS_WORDS) from exc
-    registry.record_native_survey_readback(engine_action_guid, read_at=_now(), status=last.status,
-                                           message=last.message)
+    registry.record_native_survey_readback(
+        engine_action_guid, read_at=_now(), status=last.status,
+        message=scrub_secret(last.message, _resource_entity(registry, entity_type, slug)))
     if last.status not in ACTIVE_STATUSES:
         raise NativeSurveyCannotRun(
             f"Only a waiting or running action can be cancelled; Egeria now says {last.status}.")

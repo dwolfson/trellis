@@ -52,6 +52,7 @@ class Egeria:
     """Egeria's engine actions, behind the two pyegeria classes the cancel path uses."""
 
     def __init__(self):
+        self.messages: dict[str, str] = {}
         self.status = {G_OURS: "IN_PROGRESS", G_OTHER: "IN_PROGRESS", G_DONE: "COMPLETED"}
         self.cancel_calls: list[tuple] = []         # (guid, user, token)
         self.reads: list[str] = []
@@ -89,7 +90,7 @@ class Egeria:
                     raise eg.read_error
                 return {"elementProperties": {"propertyValueMap": {
                     "activityStatus": {"symbolicName": eg.status[guid]},
-                    "completionMessage": {"primitiveValue": ""}}}}
+                    "completionMessage": {"primitiveValue": eg.messages.get(guid, "")}}}}
 
             def get_related_metadata_elements(self, *a, **k):
                 guid = a[0]
@@ -120,11 +121,11 @@ def registry(tmp_path):
     assert str(tmp_path) in r.database_url
     for slug in ("d", "other"):
         r.register_database(DatabaseEntity(slug=slug, display_name=slug, db_type="postgresql", host="h", port=5432,
-                                           database_name=slug, db_user="u", db_password="pw",
+                                           database_name=slug, db_user="u", db_password="s3cretpw",
                                            egeria_asset_guid=f"asset-{slug}"))
     for slug, guid, status in (("d", G_OURS, "IN_PROGRESS"), ("d", G_DONE, "COMPLETED"), ("other", G_OTHER, "IN_PROGRESS")):
         r.record_native_survey_submission("database", slug, SURVEY, ("2026-09-30T01:41:00" if guid == G_DONE else "2026-10-01T01:41:00"),
-                                          engine_action_guid=guid, submitted_by=USER)
+                                          engine_action_guid=guid, submitted_by=USER, started_as="gov_action_type")
         r.record_native_survey_readback(guid, read_at="2026-10-11T12:00:00", status=status)
     return r
 
@@ -374,6 +375,7 @@ def test_the_second_read_right_before_the_write_refuses_an_action_that_just_fini
     (G_PROC, SURVEY, "process"),                                 # even under a listed name, the stamp wins
     (G_REG, CATALOG, "process"),                                 # the registration
     (G_REG, CATALOG, ""),
+    (G_PROC, SURVEY, ""),                                        # unstamped under a LISTED name: refused outright
 ])
 def test_only_a_single_action_survey_is_ever_sent_to_egeria(web, egeria, access, registry, guid, name, stamp):
     client, _ = web
@@ -418,3 +420,33 @@ def test_a_submitted_survey_is_stamped_as_started_by_an_action_type(registry):
                                              started_as=nsr.STARTED_AS_ACTION_TYPE)
     row = next(r for r in registry.list_native_survey_runs("database", "d") if r["engine_action_guid"] == "g9")
     assert json.loads(row["declared"]) == {"started_as": "gov_action_type"}
+
+
+def test_the_second_reads_message_is_scrubbed_of_the_resources_password(web, egeria, access, registry):
+    client, _ = web
+    egeria.status[G_OURS] = "COMPLETED"
+    egeria.messages[G_OURS] = "login failed for password s3cretpw"
+    assert client.post(URL.format(G_OURS)).status_code == 409
+    row = next(x for x in registry.list_native_survey_runs("database", "d") if x["engine_action_guid"] == G_OURS)
+    assert "s3cretpw" not in (row["engine_action_message"] or "")
+    assert "s3cretpw" not in str(client.get("/api/native-surveys/database/d").json())
+
+
+def test_the_pre_write_read_scrubs_when_the_action_looked_live_at_the_gate(registry):
+    """Unit on the SECOND read alone: the gate (gated=True) is skipped, so only that read's message is stored."""
+    from tests.test_native_survey_run import FakePort
+
+    port = FakePort()
+    port.actions[G_OURS] = ("COMPLETED", "password s3cretpw rejected")
+    with pytest.raises(nsr.NativeSurveyCannotRun):
+        nsr.cancel_native_action(registry, port, "database", "d", G_OURS, gated=True)
+    row = next(x for x in registry.list_native_survey_runs("database", "d") if x["engine_action_guid"] == G_OURS)
+    assert "s3cretpw" not in row["engine_action_message"] and row["engine_action_message"]
+
+
+def test_declared_that_is_already_a_dict_is_read_as_stamped():
+    ok = {"declared": {"started_as": "gov_action_type"}, "executor_ref": "X", "step_key": "egeria-native:X"}
+    assert nsr.cancellable_kind(ok) is True
+    assert nsr.cancellable_kind({**ok, "declared": '{"started_as": "gov_action_type"}'}) is True
+    assert nsr.cancellable_kind({**ok, "declared": "{}"}) is False
+    assert nsr.cancellable_kind({**ok, "declared": {"started_as": "process"}}) is False
