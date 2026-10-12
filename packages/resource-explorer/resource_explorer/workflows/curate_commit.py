@@ -76,10 +76,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
 
-from resource_explorer.curate_plan import CONFIDENTIALITY_LEVELS, CRITICALITY_LEVELS, Curations
-from resource_explorer import retention_basis
+from resource_explorer.curate_plan import Curations, classification_writes
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.secret_redaction import scrub_text
 
@@ -89,49 +87,13 @@ STEPS = ("publish_asset", "classifications", "sub_resources", "components")
 
 
 def _classification_bodies(enrichment: dict) -> list[tuple[str, str, dict]]:
-    """(step-method name, human name, body) for each judgement that maps to a
-    governance classification. A value outside the level map is not
-    dropped -- it goes into `notes` with level 0, because testimony is
+    """(step-method name, human name, body) for each judgement that maps to a governance classification.
+
+    Brief F §9 (one source): these are read through `curate_plan.classification_writes`, the SAME function the
+    plan's "what gets written" is drawn from, which decides from `context_facts()` whether each classification is
+    written. A value outside the level map is not dropped -- it goes into `notes` with level 0, because testimony is
     copied, not normalised away."""
-    out = []
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-    def common(f, notes=None):
-        return {"steward": f.get("author", "") or "", "stewardTypeName": "UserIdentity",
-                "stewardPropertyName": "userId", "source": "resource-explorer enrichment",
-                "confidence": 100,
-                "notes": notes if notes is not None else f"{f.get('value','')} — set by {f.get('author','?')} on {(f.get('set_at') or '')[:10]}"
-                         f"{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}"}
-
-    f = enrichment.get("sensitivity") or {}
-    if f.get("value"):
-        out.append(("set_confidentiality_classification", f"Confidentiality · {f['value']}", {
-            "class": "NewClassificationRequestBody",
-            "properties": {"class": "ConfidentialityProperties",
-                           "confidentialityLevel": CONFIDENTIALITY_LEVELS.get(str(f["value"]).lower(), 0),
-                           "statusIdentifier": 0, **common(f)}}))
-    f = enrichment.get("criticality") or {}
-    if f.get("value"):
-        out.append(("set_criticality_classification", f"Criticality · {f['value']}", {
-            "class": "NewClassificationRequestBody",
-            "properties": {"class": "CriticalityProperties",
-                           "criticalityLevel": CRITICALITY_LEVELS.get(str(f["value"]).lower(), 0),
-                           "statusIdentifier": 0, **common(f)}}))
-    f = enrichment.get("retention") or {}
-    rb = retention_basis.resolve(f)
-    if rb["basis"]:
-        # `status` is not sent: pyegeria ISSUE-22 -- the server ignores `status` on these classifications
-        # (the real key is `statusIdentifier`), and Dr.Egeria's live-confirmed Retention path sends neither.
-        label = retention_basis.LABELS[rb["basis"]]
-        notes = (f"{label}{' — ' + rb['note'] if rb['note'] else ''} — set by {f.get('author','?')} on "
-                 f"{(f.get('set_at') or '')[:10]}{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}")
-        # common() first, then the two fields this classification owns, so nothing spread can override them
-        body = {
-            "class": "NewClassificationRequestBody",
-            "properties": {**common(f, notes), "class": "RetentionClassificationProperties",
-                           "retentionBasis": retention_basis.ordinal(rb["basis"])}}
-        out.append(("set_retention_classification", f"Retention · {label}", body))
-    return out
+    return [c["write"] for c in classification_writes(enrichment) if c["write"]]
 
 
 NO_RETENTION_BASIS = "skipped · no retention basis picked"
@@ -139,9 +101,9 @@ NO_RETENTION_BASIS = "skipped · no retention basis picked"
 
 def _retention_skipped(enrichment: dict) -> bool:
     """A retention field exists (a note, say) but no basis resolves from it. Nothing stored at all is not
-    this: that is 'not set', and the step says nothing about it."""
-    f = enrichment.get("retention") or {}
-    return bool(f) and not retention_basis.resolve(f)["basis"] and bool(f.get("note") or f.get("value"))
+    this: that is 'not set', and the step says nothing about it. Read from the same `classification_writes`
+    item the plan shows as "skipped · no retention basis picked" (Brief F §9)."""
+    return any(c["key"] == "retention" and c["skipped"] for c in classification_writes(enrichment))
 
 
 def _exc_text(exc: Exception) -> tuple[str, str, str]:

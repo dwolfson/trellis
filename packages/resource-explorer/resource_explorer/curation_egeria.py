@@ -24,9 +24,17 @@ therefore readable by anyone who can read it; what makes RE's tags shared rather
 an existing tag BY NAME before it creates one, and creates with a name-based qualifiedName
 (`InformalTag::<tag>`) rather than pyegeria's per-user, timestamped default (`make_feedback_qn`).
 
+**One Publish per page (Brief F, owner 2026-10-11).** "I think there should be one publish button, but each section
+can have a save or indication that it will be published when the user presses publish". A Save in Findable (a tag
+added or removed, the group changed) records the change in RE ONLY; the band shows "saved · will publish"; the
+page's Publish sends it (`sync_curation`, called ONLY from `single_publish.send_with_publish`, which a person's
+press runs: the repository's Publish, the database and file system publish routes). Nothing on Save, and no
+background publish (analysis auto-publish, bulk ops, resync, CLI), talks to Egeria for tags or groups (round 2).
+
 **One source of truth (section 5b rule 1).** `curation_plan` is the only function that decides what each tag and
-the group should be in Egeria and what state each is in; the Findable band reads it (GET), and `sync_curation`
-enqueues exactly the actions it names. After a fully successful sync the plan has nothing left to do.
+the group should be in Egeria and what state each is in; the Findable band and the Publish band's list read it
+(GET), and `sync_curation` enqueues exactly the actions it names. After a fully successful sync the plan has nothing
+left to do.
 
 **The state is read from persisted outbox rows**, never from what a click assumed: "in Egeria" means a `done`
 link row for this asset, "unlinked" a `done` detach row, and so on. Rows for an asset GUID that is no longer the
@@ -34,12 +42,12 @@ resource's (an Egeria wipe and re-publish) are history and are ignored: they are
 element is gone.
 
 **Unlinks are destructive outbox kinds** (`egeria_outbox.DESTRUCTIVE_OUTBOX_KINDS`): a failed or lapsed unlink is
-dead on its first failure, never re-sent by the drain, and never re-sent by a later sync either. The band shows
-"failed · <reason>" with a retry a person presses (`retry_item`), which queues a NEW row.
+dead on its first failure, never re-sent by the drain, and never re-sent by a later sync (a later Publish) either.
+The band shows "not sent · <reason>" with a retry a person presses (`retry_item`), which queues a NEW row.
 
 **Identity (Brief I).** A sync inside a person's request drains inline as that person (`current_principal()`, the
-Caller). Rows carry the requester in `by`, so the background loop (a Daemon drain) applies a left-over row as
-`Daemon(OUTBOX, requested_by=<by>)`.
+Caller), who is checked per item (`per_item_access`). Rows carry the requester in `by`, so the background loop (a
+Daemon drain) applies a left-over row as `Daemon(OUTBOX, requested_by=<by>)`.
 """
 from __future__ import annotations
 
@@ -59,20 +67,25 @@ _DETACH_OF = {"tag": TAG_DETACH, "group": GROUP_DETACH}
 
 #: Item states (the band draws a glyph and the word for each; `reason` follows "failed ·").
 IN_EGERIA = "in_egeria"
-NOT_YET = "not_yet"            # the resource is not in Egeria, so the tag or group stays in RE for now
-NOT_SENT = "not_sent"          # RE and the queued work disagree: the next sync sends it
+NOT_YET = "not_yet"            # the resource is not in Egeria: the page's Publish creates it, then sends this
+NOT_SENT = "not_sent"          # saved in RE, not in Egeria yet: the page's next Publish sends it
 PENDING = "pending"            # queued or being sent
 RETRYING = "retrying"          # a non-destructive link failed and the drain will try again
 FAILED = "failed"              # dead: needs a person (retry)
 UNLINKED = "unlinked"          # the link was removed in Egeria
+NOT_PERMITTED = "not_permitted"  # the presser's Publish was refused this change (RE's check); the next Publish asks again
+#: Brief F round 2: the note a refused change's (never sent) row is retired with; the plan reads the refusal from it.
+REFUSAL_NOTE = "not permitted · "
+#: Brief F: the words are the single Publish's ("saved · will publish", "published 10-11", "not sent · <reason>").
 STATE_WORDS = {
-    IN_EGERIA: "in Egeria",
-    NOT_YET: "not yet (resource not in Egeria)",
-    NOT_SENT: "not sent yet",
-    PENDING: "pending",
-    RETRYING: "pending · retrying",
-    FAILED: "failed",
+    IN_EGERIA: "published",
+    NOT_YET: "saved · will publish",
+    NOT_SENT: "saved · will publish",
+    PENDING: "sending",
+    RETRYING: "sending · retrying",
+    FAILED: "not sent",
     UNLINKED: "unlinked",
+    NOT_PERMITTED: "not permitted",
 }
 
 #: The Egeria operations each action needs, as Egeria's access connector checks them
@@ -158,10 +171,18 @@ class CurationItem:
     retry: bool = False       # dead: a person may press retry (a NEW row)
     retry_action: str = ""    # "link" | "unlink"
     egeria_guid: str = ""     # the tag's / Folio's GUID, from the newest done link row
+    published_at: str = ""    # when the newest live row landed (a done row's completed_at)
 
     @property
     def word(self) -> str:
-        return STATE_WORDS.get(self.state, self.state)
+        word = STATE_WORDS.get(self.state, self.state)
+        if self.state in (IN_EGERIA, UNLINKED) and len(self.published_at) >= 10:
+            return f"{word} {self.published_at[5:10]}"
+        if self.state in (FAILED, NOT_PERMITTED) and self.reason:
+            return f"{word} · {self.reason}"
+        if self.state == PENDING and self.reason.startswith("waiting to re-check access"):
+            return self.reason.split(":", 1)[0]
+        return word
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -193,7 +214,8 @@ def _evaluate(kind: str, desired: bool, rows: list[dict]) -> dict | None:
     live = [r for r in rows if r["id"] not in cancel]
     newest = live[0] if live else None
     out = {"cancel_ids": cancel, "row_id": newest["id"] if newest else None, "action": "",
-           "reason": "", "retry": False, "retry_action": ""}
+           "reason": "", "retry": False, "retry_action": "",
+           "published_at": (newest.get("completed_at") or "") if newest and newest["status"] == "done" else ""}
     if desired:
         if newest is None or newest["element_kind"] == detach:
             return {**out, "state": NOT_SENT, "action": "link"}
@@ -203,7 +225,7 @@ def _evaluate(kind: str, desired: bool, rows: list[dict]) -> dict | None:
         if status == "done":
             return {**out, "state": IN_EGERIA}
         if status in ("pending", "running"):
-            return {**out, "state": PENDING}
+            return {**out, "state": PENDING, "reason": _wait_reason(newest)}
         if status == "failed":
             return {**out, "state": RETRYING, "reason": newest.get("last_error") or ""}
         return {**out, "state": FAILED, "reason": newest.get("last_error") or "", "retry": True,
@@ -220,9 +242,17 @@ def _evaluate(kind: str, desired: bool, rows: list[dict]) -> dict | None:
     if status == "done":
         return {**out, "state": UNLINKED}
     if status in ("pending", "running"):
-        return {**out, "state": PENDING, "reason": "unlink"}
+        return {**out, "state": PENDING, "reason": _wait_reason(newest) or "unlink"}
     return {**out, "state": FAILED, "reason": newest.get("last_error") or "", "retry": True,
             "retry_action": "unlink"}
+
+
+def _wait_reason(row: dict) -> str:
+    """Round 4: a pending row deferred because access could not be re-checked says so (not "sending")."""
+    from resource_explorer.egeria_outbox import ACCESS_WAIT_WORDS
+
+    err = str(row.get("last_error") or "")
+    return err if row.get("status") == "pending" and err.startswith(ACCESS_WAIT_WORDS) else ""
 
 
 def _done_link_guid(rows: list[dict], link_kind: str) -> str:
@@ -256,12 +286,21 @@ def curation_plan(registry, entity_type: str, slug: str, *, asset_guid: str | No
                 "items": items}
 
     by_key: dict[tuple[str, str], list[dict]] = {}
+    refused: dict[tuple[str, str], dict] = {}
     for r in registry.list_outbox_rows_for_kinds(entity_type, slug, KINDS):
-        if r["status"] in ("cancelled", "superseded"):
-            continue
         p = _payload(r)
         if (p.get("element_guid") or "") != guid:
             continue                      # history for an asset that is no longer this resource's
+        if r["status"] in ("cancelled", "superseded"):
+            # Brief F round 2: a change the presser's Publish was refused is a retired (never sent) row whose note
+            # starts "not permitted · "; the newest such row per key is the refusal the band shows.
+            err = str(r.get("last_error") or "")
+            if r["status"] == "cancelled" and err.startswith("cancelled: " + REFUSAL_NOTE):
+                k = ("tag" if r["element_kind"] in (TAG_LINK, TAG_DETACH) else "group",
+                     p.get("tag") if r["element_kind"] in (TAG_LINK, TAG_DETACH) else p.get("group_slug"))
+                if k[1] and k not in refused:
+                    refused[k] = r
+            continue
         kind = "tag" if r["element_kind"] in (TAG_LINK, TAG_DETACH) else "group"
         name = p.get("tag") if kind == "tag" else p.get("group_slug")
         if name:
@@ -276,6 +315,12 @@ def curation_plan(registry, entity_type: str, slug: str, *, asset_guid: str | No
         if ev is None:
             continue
         key = tag_link_key(name, guid) if kind == "tag" else group_link_key(name, guid)
+        no = refused.get((kind, name))
+        if no and ev["action"] and int(no["id"]) > max([int(r["id"]) for r in rows] or [0]):
+            # Refused at the last Publish and nothing sent since: said as "not permitted"; the action stays, so the
+            # next Publish asks again (a permission may have changed).
+            ev = {**ev, "state": NOT_PERMITTED,
+                  "reason": str(no["last_error"])[len("cancelled: " + REFUSAL_NOTE):]}
         items.append(CurationItem(
             kind=kind, name=name, label=name if kind == "tag" else label_of(name), key=key,
             desired=(kind, name) in seen, egeria_guid=_done_link_guid(rows, _LINK_OF[kind]), **ev))
@@ -305,11 +350,15 @@ def requester_of(identity) -> str:
 
 
 def _enqueue(registry, entity_type: str, slug: str, item: CurationItem, action: str, guid: str, by: str,
-             display: dict) -> int:
+             display: dict, retired: "tuple[str, str] | None" = None) -> int:
     """Queue one row. `by` is THIS row's requester, recorded at queue time and never inferred later."""
     kind = item.kind
     element_kind = _LINK_OF[kind] if action == "link" else _DETACH_OF[kind]
     payload = {"entity_type": entity_type, "entity_slug": slug, "element_guid": guid, "by": by}
+    if by and _caller_is_curator(by):
+        # Round 5: the verified caller's Portal curator/admin role, so the drain re-check judges them as the press
+        # did. From the session's ContextVar only (never a request body), and only for the row's own requester.
+        payload.update({"portal_role": True})
     if kind == "tag":
         payload["tag"] = item.name
         payload["display_name"] = display.get("display_name") or item.name
@@ -322,7 +371,15 @@ def _enqueue(registry, entity_type: str, slug: str, item: CurationItem, action: 
         if action == "unlink" and item.egeria_guid:
             payload["folio_guid"] = item.egeria_guid
     return registry.enqueue_outbox_element(entity_type, slug, element_kind, item.key, payload,
-                                           run_id=run_id_for(entity_type, slug))
+                                           run_id=run_id_for(entity_type, slug), retired=retired)
+
+
+def _caller_is_curator(by: str) -> bool:
+    from resource_explorer.workflows.curate import CURATOR_ROLES, _caller_identity
+
+    who = _caller_identity()
+    return bool(who is not None and who.auth_source != "anonymous" and (who.user_id or "") == by
+                and (who.role or "").lower() in CURATOR_ROLES)
 
 
 def _group_display(registry, group_slug: str) -> dict:
@@ -355,24 +412,44 @@ def plan_operations(plan: dict) -> tuple[str, ...]:
     return tuple(ops)
 
 
+def typed_spellings(registry, entity_type: str, slug: str) -> dict:
+    """Brief F round 2: the newest spelling each tag was TYPED in, from the "curate_tag_added" activity entries the
+    add route writes (RE keeps tags lower-case; no column holds the typed case). {tag: typed}."""
+    out: dict = {}
+    try:
+        entries = registry.list_activity(entity_type=entity_type, entity_slug=slug, operation="curate_tag_added",
+                                         limit=500)
+    except Exception:  # noqa: BLE001 - the spelling is cosmetic; the key is used instead
+        return out
+    for e in entries:                                   # newest first
+        for a in e.get("annotations") or []:
+            tag, typed = (a or {}).get("tag"), (a or {}).get("typed")
+            if tag and typed and tag not in out and typed.lower() == tag:
+                out[tag] = typed
+    return out
+
+
 def sync_curation(registry, entity_type: str, slug: str, *, by: str = "", asset_guid: str | None = None,
                   check_access: bool = True, drain: bool = True, identity=None,
-                  display_names: dict | None = None) -> dict:
+                  display_names: dict | None = None, per_item_access: bool = False) -> dict:
     """Queue what `curation_plan` says is not yet in Egeria (links and unlinks), retire unsent rows it supersedes,
     then drain this resource's curation rows inline. Returns the plan as re-read afterwards, with `refused` when
     curation access said no (nothing is queued then) and `drain` (the drain summary).
 
     Never raises for an Egeria failure: the rows carry it. `check_access` is the Brief Z decision for the
-    operations the queued actions perform; a publish hook passes False (the tags were checked when they were
-    added, and the inline drain acts as the person who pressed Publish, so Egeria checks them itself).
+    operations the queued actions perform, all or nothing; `per_item_access` (Brief F round 2) checks the person
+    asking per item instead and refuses only those items. The page's Publish passes `check_access=False,
+    per_item_access=True`: other people's saved changes go out under the presser's name, so it is the presser who
+    is checked, item by item; the inline drain runs as the presser, and the drain re-checks each row as its
+    requester (`egeria_outbox._curation_refusal`).
 
     `display_names` maps a tag (RE's lower-case key) to the spelling the person typed, for the InformalTag's
     displayName. Round 2: a cancel that loses to a drain's claim means the plan was stale, so the plan is read
     again and decides afresh (a fresh link behind a landing unlink, or an unlink behind a landing link)."""
     by = by or _caller_user()
-    display_names = display_names or {}
+    display_names = {**typed_spellings(registry, entity_type, slug), **(display_names or {})}
     plan = curation_plan(registry, entity_type, slug, asset_guid=asset_guid)
-    result: dict = {"refused": "", "queued": [], "cancelled": [], "drain": {}}
+    result: dict = {"refused": "", "queued": [], "cancelled": [], "drain": {}, "not_permitted": []}
     if not any(i.action or i.cancel_ids for i in plan["items"]):
         return {**plan_as_dict(plan), **result}
     checked: set[str] = set()
@@ -402,10 +479,36 @@ def sync_curation(registry, entity_type: str, slug: str, *, by: str = "", asset_
         result["refused"] = why
         return {**plan_as_dict(plan), **result}
     guid = plan["element_guid"]
+    decided: dict = {}
+
+    def item_refusal(item) -> str:
+        """Brief F round 2 (`per_item_access`): the PRESSER's own right to send this change, per item, with the
+        operations Egeria checks for it; "" = allowed."""
+        ops = operations_for(item.kind, item.action)
+        if ops not in decided:
+            from resource_explorer.workflows.curate import curation_access
+
+            from resource_explorer.workflows.curate import BASIS_UNREADABLE
+
+            d = curation_access(registry, entity_type, slug, "", operations=ops, element_guid=guid)
+            # Round 4: access that cannot be READ is not a refusal: the row is queued normally and the drain
+            # re-checks it as its requester (deferring it unsent while Egeria cannot answer).
+            decided[ops] = "" if d.allowed or d.basis == BASIS_UNREADABLE else (d.reason or "refused")
+        return decided[ops]
+
     for item in plan["items"]:
         if item.action and not item.cancel_ids:
             display = (_group_display(registry, item.name) if item.kind == "group"
                        else {"display_name": display_names.get(item.name, "")})
+            # Round 3: the refusal is decided BEFORE any row exists. A refused change is recorded as a row born
+            # cancelled with its words (no drain can ever claim it), so the band reads "not permitted" from a row,
+            # nothing is sent (a destructive unlink included), and the next Publish asks again.
+            why = item_refusal(item) if per_item_access else ""
+            if why:
+                _enqueue(registry, entity_type, slug, item, item.action, guid, by, display,
+                         retired=("cancelled", "cancelled: " + REFUSAL_NOTE + why))
+                result["not_permitted"].append({"kind": item.kind, "name": item.name, "reason": why})
+                continue
             result["queued"].append(_enqueue(registry, entity_type, slug, item, item.action, guid, by, display))
     if drain and result["queued"]:
         result["drain"] = _drain(registry, entity_type, slug, len(result["queued"]), identity)
@@ -449,28 +552,6 @@ def retry_item(registry, entity_type: str, slug: str, kind: str, name: str, *, b
     summary = _drain(registry, entity_type, slug, 1, identity)
     return {**plan_as_dict(curation_plan(registry, entity_type, slug)), "queued": [row_id], "drain": summary,
             "refused": "", "cancelled": []}
-
-
-def publish_pending_curation(registry, entity_type: str, slug: str, asset_guid: str, *,
-                             by: str | None = None) -> dict:
-    """The publish hook: a resource that has just been published (its asset GUID is `asset_guid`) sends the
-    tags and group it kept while it was not in Egeria. The rows record the publish's requester (`by`, else the
-    current principal's person, else none). Best-effort; never raises."""
-    if not asset_guid:
-        return {}
-    if by is None:
-        try:
-            from resource_explorer.egeria_clients import current_principal
-
-            by = requester_of(current_principal())
-        except Exception:
-            by = ""
-    try:
-        return sync_curation(registry, entity_type, slug, asset_guid=asset_guid, check_access=False,
-                             by=by or "", identity=None)
-    except Exception as exc:
-        log.warning("Could not send tags/group for %s %s to Egeria: %s", entity_type, slug, exc)
-        return {"error": str(exc)}
 
 
 def group_change_refusal(registry, entity_type: str, slug: str, new_group: str) -> str:
@@ -517,8 +598,8 @@ def refusal_words(refused: list[dict]) -> str:
 def group_deleted_report(group_slug: str) -> dict:
     """What a group delete says about Egeria: the Folio stays, and the owner deletes it by hand."""
     return {"folio_qualified_name": folio_qualified_name(group_slug), "left_in_egeria": True,
-            "words": ("The Folio stays in Egeria: RE never deletes it. Members' memberships are removed; "
-                      "the owner deletes the Folio by hand.")}
+            "words": ("The Folio stays in Egeria: RE never deletes it. Each member's membership is removed at that "
+                      "member's next Publish; the owner deletes the Folio by hand.")}
 
 
 # ── the Egeria side: creators the outbox drain calls (egeria_outbox._CREATORS) ─────────────────────────────

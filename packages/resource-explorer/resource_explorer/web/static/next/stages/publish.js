@@ -53,8 +53,10 @@ export const PUBLISH_SENTENCE =
   'Publishes the survey already kept on this repository to Egeria and reads the report back. '
   + 'It does not run a survey: Re-survey now does that, separately.';
 /** The short words beside the button, idle and while it runs. */
-export const PUBLISH_IDLE_WORDS = 'publishes the kept survey';
-export const PUBLISH_RUNNING_WORDS = 'publishing the kept survey';
+export const PUBLISH_IDLE_WORDS = 'publishes the kept survey, tags, group and your feedback';
+/** Brief F (owner, 2026-10-11): "we need to acknowledge that the user asked for a publish and validate its
+ *  success". The press is acknowledged at once with this cue and word; no per-step list on tab 1. */
+export const PUBLISH_RUNNING_WORDS = 'publishing…';
 /** The sentence directly under a disabled Publish when nothing has been surveyed (brief section 1). */
 export const NO_SURVEY_SENTENCE = 'no survey to publish yet · run the first survey';
 export const SURVEYED_BEFORE_KEPT_SENTENCE = 'surveyed before 10-07 · nothing kept to publish · re-survey to publish';
@@ -191,7 +193,7 @@ function defaultAsk(text) {
  *  `onAsk`       optional (text) => boolean, replaces the chat-rail prefill
  *  Returns `{ refresh, ready, expand(guid) }` so another stage can open one report. `refresh()` and `ready`
  *  resolve true when Egeria was read, false when the read failed, null when superseded. */
-export function mountEgeriaReports(el, { entityType, slug, inEgeria, onAsk = defaultAsk }) {
+export function mountEgeriaReports(el, { entityType, slug, inEgeria, onAsk = defaultAsk, heading = true }) {
   if (!entityType) throw new Error('mountEgeriaReports: entityType is required');
   let reports = [];
   const body = () => el.querySelector('[data-egeria-reports-body]');
@@ -199,7 +201,7 @@ export function mountEgeriaReports(el, { entityType, slug, inEgeria, onAsk = def
   const frame = () => {
     el.innerHTML = `<div data-egeria-reports class="min-w-0">
       <div class="flex flex-wrap items-baseline gap-x-s2">
-        <span class="text-answer text-ink">Egeria reports</span>
+        ${heading ? '<span class="text-answer text-ink">Egeria reports</span>' : ''}
         ${button('data-reports-refresh', 'Refresh')}
         <span data-reports-status class="text-provenance text-ink-muted"></span>
       </div>
@@ -358,37 +360,156 @@ function projectCueHtml(project) {
   return cue(unanswered ? 'unrun' : 'measured', word, project && project.detail ? project.detail : '');
 }
 
-/** Tab 1: the status words, the report row, the project as a cue, the survey line. The asset GUID is not
- *  here (it is on Contents): only the "in Egeria" word. */
-function describeStatusHtml(s) {
-  return `<div class="text-caveat" data-publish-status>${s.in_egeria ? cue('measured', 'in Egeria') : cue('unrun', 'not in Egeria')}</div>
-    <div class="mt-s1 text-caveat" data-publish-row>${reportRowHtml(s.row, s.survey)}</div>
-    <div class="mt-s1 text-provenance text-ink-muted" data-publish-project>project · ${projectCueHtml(s.project)}</div>
-    ${surveyLineHtml(s.survey)}`;
+/* ── Tab 1's Publish band: three lines (Brief F addendum A, owner 2026-10-11) ───────────────────────────────
+ *
+ *   1. ONE state: "✓ in Egeria · published 10-11 · confirmed" (the read-back matched: `repo_publish.confirmation`,
+ *      the one "same result" function), "in Egeria · published 10-11 · not yet confirmed", or
+ *      "◐ in Egeria · published 10-11 · Egeria shows N"; the project as a cue; [Show in Egeria ▸] holds the
+ *      Egeria report rows (GUID, copy, Show annotations, Ask about this, Refresh) as detail on demand.
+ *   2. next publish: the kept survey, its staleness, whether it is newer than what is published, and what the
+ *      ONE press sends (the report, tags and group, documentation sources, YOUR rating and notes), each a cue and
+ *      a short word, from `goes_out` (the server's `single_publish.goes_out`, the functions the press acts on).
+ *   3. the presses.
+ * A press is acknowledged at once ("◔ publishing…"); success is validated by line 1 turning "confirmed"; a
+ * failure is a pop-up with the reason and the items, AND a persistent cue from the rows. The steps the press
+ * took are in the data, behind "details ▸" only. */
+
+const CONFIRM_CUE = { confirmed: 'measured', unconfirmed: 'queued', differs: 'partial' };
+const hhmm = (iso) => { const t = String(iso || ''); return t.length >= 16 ? t.slice(11, 16) : ''; };
+
+/** Line 1's state, from the server's row and its `confirm` (never from the click). */
+export function inEgeriaHtml(s) {
+  const row = (s && s.row) || {};
+  const c = row.confirm || {};
+  if ((row.word === 'published' || row.word === 'sent') && c.state) {
+    const title = c.state === 'differs'
+      ? `Published ${c.published_count ?? '?'} annotations; Egeria's read-back shows ${c.egeria_count ?? '?'}.`
+      : c.state === 'confirmed' ? `read back ${hhmm(c.read_at)} · Egeria shows the same report and count`
+        : 'published; the read-back has not shown the same result yet';
+    return `<span data-publish-confirm="${esc(c.state)}">${cue(CONFIRM_CUE[c.state] || 'queued', `in Egeria · ${c.word}`, title)}</span>`
+      + behindCue(row, s.survey)
+      + (row.annotation_count != null ? ` <span class="text-provenance text-ink-muted">· ${num(row.annotation_count)} annotations</span>` : '')
+      + (c.state === 'confirmed' && hhmm(c.read_at) ? ` <span class="text-provenance text-ink-muted" data-publish-read-back>· read back ${esc(hhmm(c.read_at))}</span>` : '')
+      + (row.reused ? ' <span class="text-provenance text-ink-muted">· reused the report already in Egeria</span>' : '');
+  }
+  const lead = s && s.in_egeria ? cue('measured', 'in Egeria') : cue('unrun', 'not in Egeria');
+  return row.word && row.word !== 'none' ? `${lead} · ${reportRowHtml(row, s.survey)}` : lead;
 }
 
-/** Tab 1's controls: the one press, Re-survey now, and the words beside them. A 428 draws a cue and a short
+/** One item the next press sends: a cue and a short word. */
+const goesItem = (attr, what, state, word) => {
+  // From the server's word: a tag's `not_sent` is "saved · will publish", a rating's is a failed send.
+  const w = String(word || '');
+  const key = /^not permitted/.test(w) ? 'no_access' : /^not sent/.test(w) ? 'partial' : 'stored';
+  return `<span class="mr-s2 inline-block" ${attr}><span class="text-ink">${esc(what)}</span> ${cue(key, word)}</span>`;
+};
+
+/** Line 2: the kept survey is newer than what is published (the same dates `behindCue` compares). */
+function newerHtml(s) {
+  if (!behindCue((s && s.row) || {}, s && s.survey)) return '';
+  return `<div class="mt-[2px] text-provenance" data-publish-newer>${cue('partial', `newer than published · ${s.survey.annotations ?? '?'} annotations`)}</div>`;
+}
+
+/** Line 2's list: what the ONE press sends (the server's `goes_out`). */
+export function goesOutHtml(s) {
+  const g = (s && s.goes_out) || null;
+  const parts = [];
+  if (s && s.survey && s.survey.exists) parts.push(goesItem('data-goes-out="report"', 'report', 'saved', 'will publish'));
+  if (!g) {
+    return `<div class="mt-[2px] text-provenance" data-publish-goes-out>${parts.join('')}<span class="text-ink-muted">tags, group and feedback: sign in to see what your press sends</span></div>`;
+  }
+  (g.findable || []).forEach((i) => parts.push(goesItem(`data-goes-out="${esc(i.kind)}:${esc(i.name)}"`,
+    `${i.kind === 'group' ? 'group' : 'tag'} ${i.label || i.name}`, i.state, i.word)));
+  (g.doc_sources || []).forEach((d) => parts.push(goesItem(`data-goes-out="doc:${esc(d.id ?? d.url)}"`, `doc ${d.label}`, 'saved', d.word)));
+  (g.feedback || []).forEach((i) => parts.push(goesItem(`data-goes-out="${esc(i.kind)}:${esc(i.id)}"`,
+    i.kind === 'rating' ? 'your rating' : 'your note', i.state, i.word)));
+  const others = g.waiting_for_others
+    ? `<span class="text-ink-muted" data-goes-out-others>· ${num(g.waiting_for_others)} from others · waiting for them</span>` : '';
+  return `<div class="mt-[2px] text-provenance" data-publish-goes-out>${parts.join('') || '<span class="text-ink-muted">nothing else to send</span>'}${others}</div>`;
+}
+
+/** Tab 1, whole: the three lines, then (after a press) the steps behind "details ▸". */
+export function renderPublishDescribe(s, signedIn) {
+  return `${head}
+    <div class="text-caveat" data-publish-line1><span data-publish-status><span data-publish-row>${inEgeriaHtml(s)}</span></span>
+      <span class="text-provenance text-ink-muted" data-publish-project>· project ${projectCueHtml(s.project)}</span>
+      <details class="inline" data-publish-show-egeria><summary class="inline cursor-pointer text-accent-ink underline">Show in Egeria ▸</summary>
+        <div class="mt-s1" data-egeria-reports-host></div></details></div>
+    <div class="mt-s1 text-caveat" data-publish-next><span class="text-provenance text-ink-muted">next publish</span>
+      ${surveyLineHtml(s.survey)}${newerHtml(s)}
+      ${goesOutHtml(s)}
+      <details class="mt-[2px]" data-file-measurements-section><summary class="cursor-pointer text-provenance text-ink-muted">file types ▸
+        <span class="text-ink-muted">· in the survey report</span></summary>
+        <div class="mt-s1" data-file-measurements-host></div></details></div>
+    ${describeControlsHtml(s, signedIn)}
+    <div data-publish-details-host></div>`;
+}
+
+/** Line 3: the one press, Re-survey now, and the words beside them. A 428 draws a cue and a short
  *  word under them (the controls are on Contents). */
 function describeControlsHtml(s, signedIn) {
   const label = s.can_publish_again ? 'Publish again' : 'Publish to Egeria →';
   const hasSurvey = !!(s.survey && s.survey.exists);
+  // Round 2: with no kept survey the press still sends the rest (tags, group, your feedback) of a resource already
+  // in Egeria; the report line says why there is no report.
+  const restToSend = !!(s.in_egeria && s.goes_out && Number(s.goes_out.count || 0) > 0);
   const why = signedIn ? '' : 'sign in to publish — it needs an author';
   return `<div class="mt-s2 flex flex-wrap items-baseline gap-s3">
-    ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !(signedIn && hasSurvey) })}
+    ${button(`data-publish-go title="${esc(PUBLISH_SENTENCE)}"`, esc(label), { disabled: !(signedIn && (hasSurvey || restToSend)) })}
     ${button(`data-resurvey-go title="${esc(RESURVEY_SENTENCE)}"`, hasSurvey || s.survey?.surveyed_before_kept ? 'Re-survey now →' : 'Run the first survey →', { disabled: !signedIn })}
     <span data-publish-feedback class="text-provenance text-ink-muted" title="${esc(PUBLISH_SENTENCE)}">${esc(why || PUBLISH_IDLE_WORDS)}</span></div>
     ${hasSurvey ? '' : `<div class="mt-[2px] text-provenance text-ink-muted" data-publish-blocker>${esc(noKeptSentence(s.survey))}</div>`}
     <div data-publish-gate></div>`;
 }
 
-/** Tab 1, whole. */
-export function renderPublishDescribe(s, signedIn) {
-  return `${head}${describeStatusHtml(s)}
-    <details class="mt-s2" data-file-measurements-section><summary class="cursor-pointer text-answer text-ink">File types
-      <span class="text-provenance text-ink-muted">· in the survey report</span></summary>
-      <div class="mt-s1" data-file-measurements-host></div></details>
-    ${describeControlsHtml(s, signedIn)}
-    <div class="mt-s3" data-egeria-reports-host></div>`;
+/** What went wrong in a press, from the re-read rows (and the press's own answer for parts with no row). */
+export function pressFailures(out, st) {
+  const f = [];
+  const row = (st && st.row) || {};
+  if (row.word === 'not published') f.push({ what: 'report', word: `not published · ${row.first || 'Egeria gave no sentence'}` });
+  ((st && st.goes_out && st.goes_out.feedback) || []).forEach((i) => {
+    if (i.state === 'not_sent' || i.state === 'not_permitted') f.push({ what: i.kind === 'rating' ? 'your rating' : 'your note', word: i.word });
+  });
+  const sent = (out && out.sent) || {};
+  if (sent.findable && sent.findable.error) f.push({ what: 'tags and group', word: `not sent · ${sent.findable.error}` });
+  ((sent.findable && sent.findable.failed) || []).forEach((i) => f.push({ what: `${i.kind} ${i.name}`, word: i.word }));
+  if (sent.doc_sources && sent.doc_sources.error) f.push({ what: 'documentation sources', word: `not sent · ${sent.doc_sources.error}` });
+  ((sent.doc_sources && sent.doc_sources.failed) || []).forEach((d) => f.push({ what: 'documentation source', word: `not sent · ${d.error || 'failed'}` }));
+  if (sent.feedback && sent.feedback.error) f.push({ what: 'your feedback', word: `not sent · ${sent.feedback.error}` });
+  return f;
+}
+
+/** The failure pop-up (owner: "if there is a failure that might be a pop-up"). Retry only when something other
+ *  than a refusal failed (a refusal needs a permission change, not a retry); destructive writes are never in it. */
+export function showPublishFailure(doc, failures, onRetry) {
+  doc.querySelector('[data-publish-failure]')?.remove();
+  const canRetry = failures.some((x) => !/^not permitted/.test(x.word));
+  const box = doc.createElement('div');
+  box.setAttribute('data-publish-failure', '1');
+  box.setAttribute('role', 'alertdialog');
+  box.setAttribute('aria-modal', 'true');
+  box.setAttribute('aria-label', 'Publish did not finish');
+  box.className = 'fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-s4 overflow-auto';
+  box.innerHTML = `<div class="mt-[6vh] w-full max-w-[640px] rounded bg-paper p-s4 text-caveat text-ink shadow-lg">
+    <div class="text-answer text-ink">The publish did not finish</div>
+    <ul class="m-0 mt-s1 list-none p-0">${failures.map((x) => `<li data-publish-failed-item class="py-[2px]"><span class="text-ink">${esc(x.what)}</span> · ${cue(/^not permitted/.test(x.word) ? 'no_access' : 'partial', x.word)}</li>`).join('')}</ul>
+    <div class="mt-s2 flex gap-s3">${canRetry ? button('data-publish-failure-retry', 'Retry') : ''}${button('data-publish-failure-close', 'Close')}</div></div>`;
+  doc.body.appendChild(box);
+  box.querySelector('[data-publish-failure-close]').addEventListener('click', () => box.remove());
+  box.querySelector('[data-publish-failure-retry]')?.addEventListener('click', () => { box.remove(); onRetry(); });
+  return box;
+}
+
+/** The steps a press took (the press's own answer), for diagnosis only: never shown by default. */
+export function pressDetailsHtml(out) {
+  const sent = (out && out.sent) || {};
+  const lines = [`report · ${out && out.ok === false ? `failed at ${out.stage || 'publish'}` : 'published'}${out && out.report_guid ? ` · ${out.report_guid}` : ''}`];
+  if (sent.skipped) lines.push(`rest · ${sent.skipped}`);
+  if (sent.findable) lines.push(`tags and group · ${sent.findable.error || `${sent.findable.queued} queued`}`);
+  if (sent.doc_sources) lines.push(`documentation sources · ${sent.doc_sources.error || `${sent.doc_sources.published} published`}`);
+  if (sent.feedback) lines.push(`your feedback · ${sent.feedback.error || sent.feedback.refused || `${sent.feedback.queued} sent`}${(sent.feedback.not_permitted || []).length ? ` · ${sent.feedback.not_permitted.length} not permitted` : ''}${(sent.feedback.unread || []).length ? ` · ${sent.feedback.unread.length} not sent (couldn't check access)` : ''}`);
+  return `<details class="mt-s1" data-publish-details><summary class="cursor-pointer text-provenance text-ink-muted">details ▸</summary>
+    <ul class="m-0 list-none p-0 font-mono text-provenance text-ink-muted">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></details>`;
 }
 
 /** The ONE Project row (Contents). It always names the project; when nothing answers (or an Egeria reset left it
@@ -502,6 +623,7 @@ export function renderPublishRepo(hosts, slug) {
   const announceProject = (project) =>
     dEl.ownerDocument.dispatchEvent(new CustomEvent('re:project-changed', { detail: { slug, project } }));
 
+  let lastPress = null;          // the last press's own answer: its steps, behind "details ▸" only
   function draw(st, feedback = '') {
     dEl.innerHTML = renderPublishDescribe(st, signedIn);
     cEl.innerHTML = renderPublishContents(st, signedIn);
@@ -511,8 +633,11 @@ export function renderPublishRepo(hosts, slug) {
       const pf = cEl.querySelector('[data-curate-project-feedback]');
       if (pf) pf.textContent = feedback;
     }
+    if (lastPress) dEl.querySelector('[data-publish-details-host]').innerHTML = pressDetailsHtml(lastPress);
     wire(st);
-    mountEgeriaReports(dEl.querySelector('[data-egeria-reports-host]'), { entityType: 'repo', slug, inEgeria: st.in_egeria });
+    // The Egeria report rows are detail on demand: they sit inside the closed "Show in Egeria ▸" disclosure
+    // (read as before, so another stage can still open one report in it).
+    mountEgeriaReports(dEl.querySelector('[data-egeria-reports-host]'), { entityType: 'repo', slug, inEgeria: st.in_egeria, heading: false });
   }
 
   // After an ACT (a press, a decline, a forget) the state is re-read and both halves redraw from the re-read;
@@ -542,27 +667,50 @@ export function renderPublishRepo(hosts, slug) {
       gate.innerHTML = '';
       if (fromRow) tellRow(cue('running', 'publishing'));
       try {
-        await publishRepoReport(slug, { withoutProject });
+        const out = await publishRepoReport(slug, { withoutProject });
+        lastPress = out || null;
         const st = await reread();
+        // The validation is line 1 (the re-read row's `confirm`); the sections it sent re-read their own rows.
+        dEl.ownerDocument.dispatchEvent(new CustomEvent('re:published', { detail: { slug } }));
+        if (st) {
+          const c = (st.row && st.row.confirm) || {};
+          const fb = dEl.querySelector('[data-publish-feedback]');
+          if (fb && c.word) fb.innerHTML = cue(CONFIRM_CUE[c.state] || 'queued', c.word);
+          const failures = pressFailures(out, st);
+          if (failures.length) showPublishFailure(dEl.ownerDocument, failures, () => dEl.querySelector('[data-publish-go]')?.click());
+        }
         // The word follows the re-read row, never the click.
         if (fromRow && st) tellRow(st.row && st.row.word === 'published' ? cue('measured', 'published') : cue('error', 'not published'));
       } catch (err) {
         if (err.status === 428) {
           go.disabled = false; go.textContent = idle; delete go.dataset.pending;
           feedback.textContent = '';
+          // Round 2: the gate stops the report only; the rest of the press went when the resource is in Egeria,
+          // so the band and the sections re-read their rows first, then the gate is drawn on the new band.
+          let g2 = gate;
+          try {
+            if (await reread()) g2 = dEl.querySelector('[data-publish-gate]') || gate;
+          } catch { /* the gate below is what matters */ }
+          dEl.ownerDocument.dispatchEvent(new CustomEvent('re:published', { detail: { slug } }));
           // A cue and a short word; the three choices are the Project row on Contents.
-          gate.innerHTML = `<div class="mt-s1 text-caveat" data-publish-gate-panel role="status">${
+          g2.innerHTML = `<div class="mt-s1 text-caveat" data-publish-gate-panel role="status">${
             cue('unrun', 'needs a project', NO_PROJECT_SENTENCE)} ${
             linkButton('data-publish-gate-goto="curate_contents"', 'Contents ›')}</div>`;
-          gate.querySelector('[data-publish-gate-goto]').addEventListener('click', () => openCurate({ tab: 'curate_contents' }));
+          g2.querySelector('[data-publish-gate-goto]').addEventListener('click', () => openCurate({ tab: 'curate_contents' }));
           return;
         }
         try { await reread(); } catch { /* the failure below is what matters */ }
+        dEl.ownerDocument.dispatchEvent(new CustomEvent('re:published', { detail: { slug } }));
+        if (err.status !== 409) {
+          // A failure is a pop-up (owner, 2026-10-11) AND a persistent cue below (a pop-up disappears).
+          showPublishFailure(dEl.ownerDocument, [{ what: 'publish', word: err.status === 403 ? `not permitted · ${err.message}` : `not published · ${err.message}` }],
+            () => dEl.querySelector('[data-publish-go]')?.click());
+        }
         const fb = dEl.querySelector('[data-publish-feedback]');
         if (fb) fb.innerHTML = err.status === 403
           ? cue('no_access', 'not permitted', err.message)   // Brief Z2: the reason on demand, not a sentence
           : err.status === 409 && err.message.startsWith('no survey')
-          ? cue('unrun', err.message)                    // nothing surveyed: nothing was sent
+          ? cue('unrun', err.message)                    // nothing surveyed: no report (the rest re-reads above)
           : err.status === 409
             ? cue('running', 'a publish is already running for this resource')
             : cue('error', `not published · ${err.message}`);

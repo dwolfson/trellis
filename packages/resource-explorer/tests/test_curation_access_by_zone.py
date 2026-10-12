@@ -668,10 +668,11 @@ class TestRound3:
         import re
 
         root = pathlib.Path(__file__).resolve().parents[1] / "resource_explorer"
-        writers = [str(p.relative_to(root)) for p in root.rglob("*.py")
-                   if re.search(r'["\']portal_role["\']\s*:', p.read_text())]
-        assert sorted(writers) == ["architecture_publish.py", "catalogue_commit.py",   # Brief Z2: both from the caller
-                                   "egeria_outbox.py"]                                # Brief Z3: requester_fields
+        writers = [str(p.relative_to(root)) for p in root.rglob("*.py") if PORTAL_ROLE_WRITE.search(p.read_text())]
+        # Brief Z2: both from the caller; Brief Z3: requester_fields; Brief F round 5: curation rows
+        # (curation_egeria._enqueue, from the caller, only for the row's own requester)
+        assert sorted(writers) == ["architecture_publish.py", "catalogue_commit.py", "curation_egeria.py",
+                                   "egeria_outbox.py"]
 
     def test_an_empty_or_null_zone_array_is_unzoned_not_unreadable(self):
         """LOW: Egeria treats a ZoneMembership with a null or empty array as unzoned (only propertiesAsStrings
@@ -687,3 +688,18 @@ class TestRound3:
         assert z({"propertyValueMap": {"zoneMembership": None}}) == []
         assert z({"propertyValueMap": {"zoneMembership": {"arrayValues": None}}}) == []
         assert z({"propertyValueMap": {"zoneMembership": {"arrayValues": {"propertiesAsStrings": {}}}}}) == []
+
+
+#: Brief F round 6: a write of `portal_role` in any form, a dict literal key or a subscript assignment.
+PORTAL_ROLE_WRITE = __import__("re").compile(
+    r'["\']portal_role["\']\s*:|\[["\']portal_role["\']\]\s*=|\bportal_role\s*=(?!=)|setdefault\(\s*["\']portal_role')
+
+
+def test_f_r6_the_portal_role_guard_sees_a_subscript_write_too():
+    assert PORTAL_ROLE_WRITE.search('payload["portal_role"] = True')
+    assert PORTAL_ROLE_WRITE.search("target['portal_role']=x")
+    assert PORTAL_ROLE_WRITE.search('{"portal_role": True}')
+    assert not PORTAL_ROLE_WRITE.search('payload.get("portal_role")')
+    assert PORTAL_ROLE_WRITE.search('enqueue(portal_role=True)')
+    assert PORTAL_ROLE_WRITE.search('target.setdefault("portal_role", True)')
+    assert not PORTAL_ROLE_WRITE.search('if portal_role == True:')

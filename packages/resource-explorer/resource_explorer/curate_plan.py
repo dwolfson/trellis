@@ -143,7 +143,8 @@ def context_facts(enrichment: dict, doc_sources: list[dict] | None = None) -> li
     "What we know" block (plan["know"]) and the plan's "what gets written" (build_plan derives its
     classifications, owner and licence from these dicts). `shown` is the words the plan has always shown for
     the value ("" = not declared); an interim or unsigned fact says so (`interim`, `unsigned`).
-    Documentation sources come from the doc_sources table (declared by `added_by`)."""
+    Documentation sources come from the doc_sources table (declared by `added_by`), each with `published` (Brief F
+    §10: the repository's single Publish sends them; they are not part of the Contents commit's writes)."""
     out = []
     for key, label in CONTEXT_FACTS:
         f = enrichment.get(key) or {}
@@ -162,12 +163,77 @@ def context_facts(enrichment: dict, doc_sources: list[dict] | None = None) -> li
                     "unsigned": bool(shown) and not author})
     docs = [{"label": d.get("label") or d.get("url") or "", "url": d.get("url", ""),
              "source_type": d.get("source_type", ""), "author": d.get("added_by", "") or "",
-             "set_at": d.get("added_at", "") or ""} for d in (doc_sources or [])]
+             "set_at": d.get("added_at", "") or "",
+             # Brief F §10: a repository's single Publish sends each source as an ExternalReference; the row's own
+             # Egeria reference says whether it is there (the same test `single_publish.unpublished_doc_sources` uses).
+             "published": bool(d.get("egeria_external_ref_guid"))} for d in (doc_sources or [])]
     out.append({"key": "documentation", "label": "Documentation sources",
                 "shown": ", ".join(d["label"] for d in docs), "declared": bool(docs), "skipped": False,
                 "author": docs[0]["author"] if docs else "", "set_at": docs[0]["set_at"] if docs else "",
                 "interim": False, "review": False,
                 "unsigned": bool(docs) and not all(d["author"] for d in docs), "sources": docs})
+    return out
+
+
+#: The Context facts a commit copies onto the asset as governance classifications, in order.
+CLASSIFIED_FACTS = ("sensitivity", "criticality", "retention")
+
+
+def _classification_write(key: str, f: dict) -> tuple[str, str, dict]:
+    """(pyegeria method, human name, body) for one judgement. A value outside the level map is not dropped -- it
+    goes into `notes` with level 0, because testimony is copied, not normalised away."""
+    from resource_explorer import retention_basis
+
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def common(notes=None):
+        return {"steward": f.get("author", "") or "", "stewardTypeName": "UserIdentity",
+                "stewardPropertyName": "userId", "source": "resource-explorer enrichment",
+                "confidence": 100,
+                "notes": notes if notes is not None else f"{f.get('value','')} — set by {f.get('author','?')} on {(f.get('set_at') or '')[:10]}"
+                         f"{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}"}
+
+    if key == "sensitivity":
+        return ("set_confidentiality_classification", f"Confidentiality · {f['value']}", {
+            "class": "NewClassificationRequestBody",
+            "properties": {"class": "ConfidentialityProperties",
+                           "confidentialityLevel": CONFIDENTIALITY_LEVELS.get(str(f["value"]).lower(), 0),
+                           "statusIdentifier": 0, **common()}})
+    if key == "criticality":
+        return ("set_criticality_classification", f"Criticality · {f['value']}", {
+            "class": "NewClassificationRequestBody",
+            "properties": {"class": "CriticalityProperties",
+                           "criticalityLevel": CRITICALITY_LEVELS.get(str(f["value"]).lower(), 0),
+                           "statusIdentifier": 0, **common()}})
+    rb = retention_basis.resolve(f)
+    # `status` is not sent: pyegeria ISSUE-22 -- the server ignores `status` on these classifications
+    # (the real key is `statusIdentifier`), and Dr.Egeria's live-confirmed Retention path sends neither.
+    label = retention_basis.LABELS[rb["basis"]]
+    notes = (f"{label}{' — ' + rb['note'] if rb['note'] else ''} — set by {f.get('author','?')} on "
+             f"{(f.get('set_at') or '')[:10]}{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}")
+    # common() first, then the two fields this classification owns, so nothing spread can override them
+    return ("set_retention_classification", f"Retention · {label}", {
+        "class": "NewClassificationRequestBody",
+        "properties": {**common(notes), "class": "RetentionClassificationProperties",
+                       "retentionBasis": retention_basis.ordinal(rb["basis"])}})
+
+
+def classification_writes(enrichment: dict, facts: list[dict] | None = None) -> list[dict]:
+    """THE classifications a repository commit writes, one dict each (Brief F §9: one source). What the plan shows
+    ("what gets written", the Publish list) AND what `workflows/curate_commit` writes both come from here, and
+    whether a classification is written at all is decided from `context_facts()`: a fact that is declared and not
+    skipped is written; a skipped one (retention with no basis) is shown with its skip words and `write` None.
+    `write` is (pyegeria method, human name, body)."""
+    facts = facts if facts is not None else context_facts(enrichment)
+    by_key = {f["key"]: f for f in facts}
+    out = []
+    for key in CLASSIFIED_FACTS:
+        f = by_key[key]
+        if not f["shown"]:
+            continue
+        out.append({"key": key, "classification": f["label"], "value": f["shown"], "skipped": f["skipped"],
+                    "author": f["author"], "set_at": f["set_at"], "interim": f["interim"], "review": f["review"],
+                    "write": None if f["skipped"] else _classification_write(key, enrichment.get(key) or {})})
     return out
 
 
@@ -343,13 +409,8 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     # both come from context_facts(), so the two never disagree.
     know = context_facts(enrichment, registry.list_doc_sources("repo", slug))
     by_key = {f["key"]: f for f in know}
-    classifications = []
-    for key in ("sensitivity", "criticality", "retention"):
-        f = by_key[key]
-        if f["shown"]:
-            classifications.append({"key": key, "classification": f["label"], "value": f["shown"], "skipped": f["skipped"],
-                                    "author": f["author"], "set_at": f["set_at"],
-                                    "interim": f["interim"], "review": f["review"]})
+    # Brief F §9: the commit writes exactly these (classification_writes is the one function both read).
+    classifications = [{k: v for k, v in c.items() if k != "write"} for c in classification_writes(enrichment, know)]
     owner = by_key["owner"]
     licence = by_key["licence"]
     from resource_explorer.catalogue_commit import _ts, publish_fields

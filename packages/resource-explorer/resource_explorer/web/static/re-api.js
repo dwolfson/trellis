@@ -545,8 +545,13 @@ export const deleteCurateNote = (noteId) =>
  * it names, and `retry` re-sends ONE failed link or unlink as a new write. */
 export const getCurateEgeriaState = (entityType, slug) =>
   get(curatePath('egeria-state', 'getCurateEgeriaState', entityType, slug));
+/** Brief F: a person's retry of ONE failed (dead) tag or group link/unlink. A bare send is gone: the page's ONE
+ *  Publish sends tags and the group (the server answers 409 without `retry`). */
 export const syncCurateEgeria = (entityType, slug, retry = null) =>
   post(curatePath('egeria-sync', 'syncCurateEgeria', entityType, slug), retry ? { retry } : {});
+/** Brief F: each rating's and journal entry's state in Egeria for the signed-in viewer (feedback_egeria.feedback_plan). */
+export const getCurateFeedbackState = (entityType, slug) =>
+  get(curatePath('feedback-state', 'getCurateFeedbackState', entityType, slug));
 
 export const getContext = (entityType, slug) =>
   get(`/api/context/${entityType}/${encodeURIComponent(slug)}`);

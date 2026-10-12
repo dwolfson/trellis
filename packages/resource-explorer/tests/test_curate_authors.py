@@ -209,15 +209,18 @@ def test_guard_check_fails_on_an_unguarded_route():
     assert "_require_author(" not in inspect.getsource(sneaky_write)
 
 
-def test_the_no_op_seam_is_replaced_by_the_tag_sync():
-    """The owner's 2026-10-01 no-op seam was superseded on 2026-10-10 (Brief T: "tags should be public"): the tag
-    routes now send to Egeria through curation_egeria (tests/test_tags_groups_to_egeria.py)."""
+def test_the_tag_routes_save_in_re_only_and_publish_sends():
+    """The owner's 2026-10-01 no-op seam was superseded on 2026-10-10 (Brief T: "tags should be public"), and Brief F
+    (2026-10-11, one Publish per page) moved the send to the page's Publish: the tag routes save in RE and answer
+    the plan's state; nothing on Save calls Egeria (tests/test_tags_groups_to_egeria.py)."""
     import inspect
 
     from resource_explorer.web.routes import curate
     assert not hasattr(curate, "_publish_curation_to_egeria")
+    assert not hasattr(curate, "sync_to_egeria")
     for fn in (curate.add_tag, curate.remove_tag):
-        assert "sync_to_egeria(" in inspect.getsource(fn)
+        src = inspect.getsource(fn)
+        assert "curation_state(" in src and "sync_curation" not in src
 
 
 # ── migration ────────────────────────────────────────────────────────────────

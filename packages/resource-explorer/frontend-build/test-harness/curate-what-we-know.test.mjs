@@ -167,3 +167,16 @@ test('with the plan unreadable the block says so instead of drawing empty', asyn
   await openCurate(document);
   assert.ok(block(document).querySelector('[data-curate-plan-error]'));
 });
+
+test('Brief F §10: each documentation source says whether the page\'s Publish has sent it (from its own row)', async () => {
+  const know = KNOW.map((f) => (f.key === 'documentation'
+    ? { ...f, sources: [{ ...f.sources[0], published: true }, { label: 'Wiki', url: 'https://w', source_type: 'wiki', author: 'dan', set_at: '2026-10-05T09:00:00', published: false }] }
+    : f));
+  const { document } = await setUp(withKnow(know));
+  await openCurate(document);
+  const rows = [...block(document).querySelectorAll('[data-know-source]')];
+  assert.match(norm(rows[0]), /Runbook .* published/);
+  assert.equal(rows[0].querySelector('[data-know-source-state] [data-cue]').dataset.cue, 'catalogued');
+  assert.match(norm(rows[1]), /Wiki .* saved · will publish/);
+  assert.equal(rows[1].querySelector('[data-know-source-state] [data-cue]').dataset.cue, 'stored');
+});

@@ -4728,11 +4728,13 @@ export async function renderJournalEntries(slug, entityType) {
   host.innerHTML = `
     <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">Earlier entries · <span class="tnum">${entries.length}</span>${
       data.suggested_to?.length ? ` · suggested to ${esc(data.suggested_to.join(', '))}` : ''}</div>
-    ${entries.map((e) => `<div class="border-t border-rule py-s2">
+    ${entries.map((e) => `<div class="border-t border-rule py-s2" data-journal-entry="${esc(e.id || '')}">
       <p class="m-0 max-w-[70ch] text-answer text-ink">${tnum(esc(e.body))}</p>
       <div class="text-provenance text-ink-muted">${esc(e.author || 'unsigned · from before authors were recorded')} · <span class="tnum">${esc(ago(e.written_at))}</span>${
-        e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}</div>
+        e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}<span data-journal-cue="${esc(e.id || '')}"></span></div>
     </div>`).join('')}`;
+  // Brief F: Curate's notes band fills each entry's Egeria state (a cue and a word) into its slot.
+  host.ownerDocument.dispatchEvent(new CustomEvent('re:journal-drawn', { detail: { slug, entityType } }));
   return entries;
 }
 

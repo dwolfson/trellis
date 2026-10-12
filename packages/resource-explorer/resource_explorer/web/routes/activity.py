@@ -11,6 +11,9 @@ from resource_explorer.registry import ProjectRegistry
 
 log = logging.getLogger(__name__)
 
+#: Activity rows Curate writes as bookkeeping (who added or removed a tag, the typed spelling): never RFAs.
+CURATE_BOOKKEEPING_OPERATIONS = ("curate_tag_added", "curate_tag_removed")
+
 router = APIRouter()
 
 RFA_STATUSES = {"open", "deferred", "reassigned", "completed"}
@@ -116,7 +119,10 @@ def list_rfas(
     provenance, e.g. "local") is unrelated and untouched — don't confuse
     the two."""
     registry = _registry()
-    entries = registry.list_activity(entity_type=entity_type, entity_slug=entity_slug, limit=limit)
+    # Brief F round 3: Curate's tag add/remove bookkeeping rows carry no RFAs and must not push real ones out of
+    # the newest-N window.
+    entries = registry.list_activity(entity_type=entity_type, entity_slug=entity_slug, limit=limit,
+                                     exclude_operations=CURATE_BOOKKEEPING_OPERATIONS)
     overrides = registry.list_rfa_action_overrides()
     # Dismissed RFAs are returned like every other one, carrying `dismissed`
     # and the dismissal record — NEVER filtered out here. Dan asked for

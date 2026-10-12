@@ -154,7 +154,7 @@ def test_the_proof_row_names_surveyed_at_and_reused(registry, world):
 
 def test_no_survey_blocks_the_publish_with_the_sentence_and_sends_nothing(registry, world):
     out = rp.publish_report(registry, "myproj", "dan", without_project=True)
-    assert out == {"gate": "no_survey", "sentence": SENTENCE}
+    assert out == {"gate": "no_survey", "sentence": SENTENCE, "sent": {}}, "not in Egeria: nothing else sent either"
     assert FakePublisher.instances == [] and registry.list_catalogue_commit_proofs("myproj") == []
     world.return_value.run.assert_not_called()
 
@@ -253,7 +253,7 @@ def test_surveyed_before_kept_surveys_says_so_from_the_same_column_the_header_re
     st = rp.survey_state(registry, "myproj")
     assert st == {"exists": False, "surveyed_before_kept": True, "sentence": BEFORE}
     out = rp.publish_report(registry, "myproj", "dan", without_project=True)
-    assert out == {"gate": "no_survey", "sentence": BEFORE}
+    assert out == {"gate": "no_survey", "sentence": BEFORE, "sent": {}}
     assert FakePublisher.instances == []
 
 

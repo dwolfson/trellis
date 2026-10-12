@@ -7956,7 +7956,7 @@ class ProjectRegistry:
     def enqueue_outbox_element(
         self, entity_type: str, entity_slug: str, element_kind: str,
         qualified_name: str, payload: dict, *, run_id: str = "",
-        depends_on_id: int | None = None,
+        depends_on_id: int | None = None, retired: "tuple[str, str] | None" = None,
     ) -> int:
         """Record one pending Egeria element write. Returns its row id.
 
@@ -7974,14 +7974,23 @@ class ProjectRegistry:
         if not qualified_name:
             raise ValueError("qualified_name is the idempotency key and cannot be empty")
         now = datetime.utcnow().isoformat()
+        # Brief F round 3: `retired=(status, note)` records a decision that was NEVER to be sent (a refusal) as a
+        # row that is born terminal ('cancelled' or 'dead', with its words), so no drain can claim it in between.
+        status, note, next_at, completed = "pending", "", now, ""
+        if retired is not None:
+            status, note = retired
+            if status not in ("cancelled", "dead"):
+                raise ValueError(f"a retired outbox row is 'cancelled' or 'dead', not {status!r}")
+            next_at, completed = "", now
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO egeria_outbox "
                 "(entity_type, entity_slug, run_id, element_kind, qualified_name, "
-                " payload_json, depends_on_id, status, attempts, next_attempt_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)",
+                " payload_json, depends_on_id, status, attempts, next_attempt_at, created_at, "
+                " last_error, completed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
                 (entity_type, entity_slug, run_id, element_kind, qualified_name,
-                 json.dumps(payload), depends_on_id, now, now),
+                 json.dumps(payload), depends_on_id, status, next_at, now, note[:2000], completed),
             )
             row_id = getattr(cur, "lastrowid", None)
             if row_id is None:
@@ -8069,7 +8078,7 @@ class ProjectRegistry:
 
     def claim_due_outbox_elements(
         self, limit: int = 200, now: str | None = None, run_id: str | None = None,
-        element_id: int | None = None,
+        element_id: int | None = None, exclude_kinds: "tuple[str, ...] | list[str] | frozenset | None" = None,
     ) -> list[dict]:
         """Rows ready to attempt, oldest first.
 
@@ -8117,6 +8126,9 @@ class ProjectRegistry:
         reachable) should call `release_outbox_claim()` immediately rather
         than wait out the lease — see `drain_outbox`'s no-client branch.
 
+        `exclude_kinds` (Brief F) leaves rows of those kinds unclaimed: the background drain passes the feedback
+        kinds, which only their author's own Publish may send.
+
         `run_id` scopes the claim to one publish's rows. A publisher that
         enqueues and then drains inline needs its OWN annotations written
         before it returns; an unscoped claim takes the oldest due rows in the
@@ -8149,6 +8161,12 @@ class ProjectRegistry:
         if element_id is not None:
             sql += "  AND o.id = ? "
             params.append(element_id)
+        if exclude_kinds:
+            # Brief F: kinds only their author may send (feedback) are never claimed by a drain that is not that
+            # person's own request (the background Daemon drain passes them here).
+            kinds = sorted(exclude_kinds)
+            sql += f"  AND o.element_kind NOT IN ({','.join('?' * len(kinds))}) "
+            params.extend(kinds)
         sql += "ORDER BY o.id ASC LIMIT ?"
         params.append(limit)
 
@@ -8303,7 +8321,8 @@ class ProjectRegistry:
             )
         return (cur.rowcount or 0) > 0
 
-    def mark_outbox_deferred(self, row_id: int, note: str, *, claimed_at: str | None = None) -> None:
+    def mark_outbox_deferred(self, row_id: int, note: str, *, claimed_at: str | None = None,
+                             delay_seconds: int = 0) -> None:
         """Hand one claimed row back to 'pending' without burning an attempt,
         recording WHY: its referent(s) — another annotation this row's
         `AnnotationExtension` link points at — have not been applied yet.
@@ -8322,9 +8341,17 @@ class ProjectRegistry:
         with self._conn() as conn:
             # Only the claim being handed back (Brief T round 3): a row the lapse rule killed as dead in between, or
             # one a later claimer re-took after the lease, is left exactly as it is. Dead stays terminal.
-            sql = ("UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
-                   "WHERE id=? AND status='running'")
-            params: list = [note[:2000], row_id]
+            # Brief F round 4: `delay_seconds` pushes the next attempt out (an access re-check Egeria could not
+            # answer is not retried on every drain); 0 keeps the row due at once, as before.
+            if delay_seconds:
+                due = (datetime.utcnow() + timedelta(seconds=int(delay_seconds))).isoformat()
+                sql = ("UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=?, next_attempt_at=? "
+                       "WHERE id=? AND status='running'")
+                params: list = [note[:2000], due, row_id]
+            else:
+                sql = ("UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
+                       "WHERE id=? AND status='running'")
+                params = [note[:2000], row_id]
             if claimed_at:
                 sql += " AND claimed_at=?"
                 params.append(claimed_at)
@@ -8603,7 +8630,19 @@ class ProjectRegistry:
                 "next_attempt_at=?, last_error='' WHERE id=? AND status='dead'",
                 (datetime.utcnow().isoformat(), row_id),
             )
-        return (cur.rowcount or 0) > 0
+            revived = (cur.rowcount or 0) > 0
+            if revived:
+                # Brief F round 6: a revived row is re-checked as an ordinary user. A Portal curator/admin role is
+                # recorded at a person's press (`portal_role`) and honoured only for the row that press queued.
+                row = conn.execute("SELECT payload_json FROM egeria_outbox WHERE id=?", (row_id,)).fetchone()
+                try:
+                    payload = json.loads((row["payload_json"] if row else "") or "{}")
+                except (TypeError, ValueError):
+                    payload = None
+                if isinstance(payload, dict) and "portal_role" in payload:
+                    payload.pop("portal_role")
+                    conn.execute("UPDATE egeria_outbox SET payload_json=? WHERE id=?", (json.dumps(payload), row_id))
+        return revived
 
     def outbox_counts(self) -> dict[str, int]:
         """Row count per status — what a health endpoint or the drain's own
@@ -12321,9 +12360,13 @@ class ProjectRegistry:
         status: str | None = None,
         since: str | None = None,
         limit: int = 200,
+        exclude_operations: "tuple[str, ...] | list[str] | None" = None,
     ) -> list[dict]:
         filters: list[str] = []
         params: list = []
+        if exclude_operations:
+            filters.append(f"operation NOT IN ({','.join('?' * len(exclude_operations))})")
+            params.extend(exclude_operations)
         if entity_type:
             filters.append("entity_type = ?")
             params.append(entity_type)

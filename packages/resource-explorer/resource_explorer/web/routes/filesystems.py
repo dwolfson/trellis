@@ -584,14 +584,15 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
         # best-effort and never fails the filesystem's own publish.
         fs_asset_guid = publish_res.get("filesystem_guid", "")
         if fs_asset_guid:
+            # Brief F round 3: documentation sources go ONCE, inside send_with_publish (unpublished ones only).
+            # Brief F: the same press sends the tags and group (the presser checked per item) and the PRESSER's
+            # own rating and notes, as them (never anyone else's).
+            from resource_explorer.egeria_identity import caller_user_id
+            from resource_explorer.single_publish import send_with_publish
             try:
-                from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
-                publish_local_doc_sources("filesystem", slug, fs_asset_guid, registry=registry)
-            except Exception:
-                log.warning("Could not publish documentation sources for %s", slug, exc_info=True)
-            # Brief T: tags and the group kept in RE while the file system was not in Egeria. Best-effort.
-            from resource_explorer.curation_egeria import publish_pending_curation
-            publish_pending_curation(registry, "filesystem", slug, fs_asset_guid)
+                send_with_publish(registry, "filesystem", slug, fs_asset_guid, caller_user_id())
+            except Exception:  # noqa: BLE001 - each item's outcome is on its row; never fails the publish
+                log.warning("Could not send the presser's feedback for %s", slug, exc_info=True)
         return {
             "status": "ok",
             "egeria_asset_guid": publish_res.get("filesystem_guid", ""),

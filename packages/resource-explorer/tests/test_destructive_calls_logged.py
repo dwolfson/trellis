@@ -245,7 +245,9 @@ def test_a_failed_non_destructive_outbox_row_is_still_retried(registry, monkeypa
 #: Every registered outbox creator, classified. A new creator that is in neither set fails the test below.
 NON_DESTRUCTIVE = {"annotation", "collection_membership", "resource_list", "annotation_link",
                    "doc_source_publish", "catalogue_schema_attach",
-                   "informal_tag_link", "group_folio_membership"}
+                   "informal_tag_link", "group_folio_membership",
+                   # Brief F: a person's Rating (Egeria upserts the caller's own) and a journal entry's Note (append-only)
+                   "feedback_rating", "feedback_note"}
 DESTRUCTIVE_WORDS = re.compile(r"delete|archive|remove|detach|unpublish|leave_out", re.I)
 
 

@@ -257,7 +257,7 @@ test('Publish band: the file types section comes before the Publish controls and
   assert.match(norm(ft), /Files are cataloged by selection on Curate/);
 });
 
-test('Publish: idle and running words say it publishes the kept survey (it never surveys)', async () => {
+test('Publish: idle words say it publishes the kept survey (it never surveys); the press is acknowledged at once', async () => {
   const gate = deferred();
   const { document, server } = await setUp();
   server.hold.publish = gate.p;
@@ -266,7 +266,7 @@ test('Publish: idle and running words say it publishes the kept survey (it never
   assert.match(norm(fb), /publishes the kept survey/);
   assert.match(band.querySelector('[data-publish-go]').title, /does not run a survey/);
   band.querySelector('[data-publish-go]').click();
-  assert.match(norm(band.querySelector('[data-publish-feedback]')), /publishing the kept survey/);
+  assert.match(norm(band.querySelector('[data-publish-feedback]')), /◔ publishing…/);
   assert.doesNotMatch(norm(band.querySelector('[data-publish-feedback]')), /takes a while/);
   gate.resolve();
   await wait(100);

@@ -66,7 +66,9 @@ class OutboxClients:
     catalogue_gateway: object | None = None
     registry: object | None = None
     #: Any pyegeria client carrying the feedback-manager methods (`get_tags_by_name`, `create_informal_tag`,
-    #: `add_tag_to_element`, `remove_tag_from_element`): Brief T's tag kinds. `_default_clients` gives a
+    #: `add_tag_to_element`, `remove_tag_from_element`): Brief T's tag kinds; and Brief F's ratings and notes
+    #: (`add_rating_to_element`, `get_attached_ratings`, `get_note_logs_by_name`, `create_note_log`,
+    #: `get_notes_for_note_log`, `create_note`). `_default_clients` gives a
     #: ClassificationExplorer from the same factory, built on first use (`feedback_factory`) so a drain with no
     #: tag rows builds no extra client.
     feedback: object | None = None
@@ -125,6 +127,18 @@ class OutboxNotReadyError(RuntimeError):
     attempted — this exists for the pass where they do not (a referent that
     itself failed and is backing off, or a drain that claimed the link row
     before the annotation row in the same batch)."""
+
+
+class OutboxAccessUnreadable(OutboxNotReadyError):
+    """Brief F round 4: a tag or group row whose requester's access could not be read (Egeria unreachable). Not a
+    refusal and not a failure: the row waits unsent, and is not tried again until `DELAY_SECONDS` later, so each
+    drain does not re-read Egeria for it."""
+
+    DELAY_SECONDS = 300
+
+
+#: The words a deferred row carries while its access cannot be re-checked (the band shows them, not "sending").
+ACCESS_WAIT_WORDS = "waiting to re-check access"
 
 
 #: Egeria's signature for "this qualifiedName is already taken".
@@ -188,7 +202,10 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
                          "catalogue_schema_attach", "catalogue_schema_leave_out",
                          # Brief T: a synthetic relationship key; each creator finds its tag / Folio itself.
                          "informal_tag_link", "informal_tag_detach",
-                         "group_folio_membership", "group_folio_membership_detach"}
+                         "group_folio_membership", "group_folio_membership_detach",
+                         # Brief F: a person's Rating (keyed by element and person) and a journal entry's Note
+                         # (found by its own qualifiedName in the asset's NoteLog by its creator).
+                         "feedback_rating", "feedback_note"}
 
 
 #: Outbox kinds whose write ARCHIVES, DELETES or DETACHES something in Egeria. A retry of a destructive write is itself
@@ -210,6 +227,30 @@ NOT_RETRIED = "not retried: destructive write"
 #: still caught by its name. The safe direction is the default.
 DESTRUCTIVE_KIND_WORDS = ("archive", "delete", "unpublish", "leave_out", "detach", "remove")
 CLAIM_LAPSED_DESTRUCTIVE = "claim lapsed; destructive writes are never re-sent"
+
+
+#: Brief F: kinds that only their AUTHOR may send, inside their own Publish, as themselves (Egeria records the
+#: caller as the feedback's author). The background drain never claims them; a Caller drain applies one only when
+#: the row's `by` is that caller; a failure is never re-sent on its own (dead at once, the person's next Publish
+#: queues a new row). Kept in step with `feedback_egeria.PERSON_ONLY_KINDS` (a test pins the two).
+PERSON_ONLY_KINDS = frozenset({"feedback_rating", "feedback_note"})
+NOT_THIS_PERSON = "waiting for its author's own Publish"
+
+
+def is_person_only_kind(element_kind: str) -> bool:
+    return (element_kind or "") in PERSON_ONLY_KINDS
+
+
+def _person_only_refusal(row: dict, identity) -> str:
+    """"" when this drain may send this row: it is not a person-only kind, or the drain runs as a Caller whose
+    user IS the row's author. Otherwise the reason it is left alone."""
+    if not is_person_only_kind(row.get("element_kind") or ""):
+        return ""
+    by = _row_requester(row)
+    if identity is None or getattr(identity, "kind", "") != "caller" or not by \
+            or (getattr(identity, "user_id", "") or "") != by:
+        return NOT_THIS_PERSON
+    return ""
 
 
 def is_destructive_outbox_kind(element_kind: str) -> bool:
@@ -675,6 +716,64 @@ def _doc_source_refusal(registry, row: dict) -> str:
             current_caller.reset(reset)
 
 
+#: Brief F round 3: the tag and group kinds, and the Egeria operations each checks (curation_egeria.operations_for).
+CURATION_WRITES = {"informal_tag_link": ("tag", "link"), "informal_tag_detach": ("tag", "unlink"),
+                   "group_folio_membership": ("group", "link"),
+                   "group_folio_membership_detach": ("group", "unlink")}
+
+
+def _curation_refusal(registry, row: dict) -> str:
+    """Brief F round 3: the drain-time re-check for a tag or group row, as the person it was queued for (`by`), with
+    the operations Egeria checks for it, on the element the row names: "" = apply it, else "not permitted · <why>".
+    When access cannot be read at all it raises `OutboxNotReadyError` (deferred unsent, never killed by an outage).
+    A refusal is decided before anything is sent (a destructive unlink included). A row with no requester (queued
+    before rows carried one) is not re-checked here; Egeria checks whoever the drain runs as."""
+    write = CURATION_WRITES.get(row.get("element_kind") or "")
+    if not write:
+        return ""
+    by = _row_requester(row)
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.curation_egeria import operations_for
+    from resource_explorer.workflows.curate import BASIS_UNREADABLE, curation_access, person_write_refusal
+
+    try:
+        guid = (json.loads(row.get("payload_json") or "{}") or {}).get("element_guid") or ""
+    except (TypeError, ValueError):
+        guid = ""
+    et, slug = row.get("entity_type") or "", row.get("entity_slug") or ""
+    if not by:
+        # Round 4: a row nobody is recorded for (Brief T rows before `by`) is judged by the no-requester rule, as a
+        # documentation-source row is: open only while no zone is in use, refused otherwise or when unreadable.
+        reset = current_caller.set(None)
+        try:
+            why = person_write_refusal(registry, et, slug, write[1], element_guid=guid or None)
+        finally:
+            current_caller.reset(reset)
+        if why.startswith("not permitted · could not check access"):
+            # Round 5: an outage is not a refusal here either: the row waits unsent, as a requester's row does.
+            raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {why[len('not permitted · '):]}")
+        return why
+    # Round 5: a Portal curator/admin seen at the press (from the verified caller, `curation_egeria._enqueue`) is
+    # judged as one here too, as the press judged them; never taken from anything a request sends. A pending row
+    # honours the role recorded at its press (round 6); an admin revive of a dead row drops it
+    # (`registry.retry_outbox_element`), so a revived row is re-checked as an ordinary user unless re-pressed.
+    try:
+        portal = bool((json.loads(row.get("payload_json") or "{}") or {}).get("portal_role"))
+    except (TypeError, ValueError):
+        portal = False
+    reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run",
+                                              role="curator" if portal else "user"))
+    try:
+        d = curation_access(registry, et, slug, "", operations=operations_for(*write), element_guid=guid or None)
+    finally:
+        current_caller.reset(reset)
+    if not d.allowed and d.basis == BASIS_UNREADABLE:
+        # Egeria could not be read to decide: not a refusal. The row waits (pending, no attempt burned), unsent,
+        # and is not tried again for a while (round 4).
+        raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {d.reason}")
+    return "" if d.allowed else f"not permitted · {d.reason}"
+
+
 #: Brief Z3: the membership and ResourceList rows of an investigation's working set and a work list's WorkingSet,
 #: re-checked at drain time as the person they were queued for.
 COLLECTION_ENTITY_TYPES = ("investigation", "work_list")
@@ -724,8 +823,9 @@ def _collection_refusal(registry, row: dict) -> str:
 
 
 def _queued_write_refusal(registry, row: dict) -> str:
-    """Every drain-time re-check (Brief Z2 round 2's documentation sources, Brief Z3's collections)."""
-    return _doc_source_refusal(registry, row) or _collection_refusal(registry, row)
+    """Every drain-time re-check (Brief Z2 round 2's documentation sources, Brief Z3's collections, Brief F's tag
+    and group rows)."""
+    return _doc_source_refusal(registry, row) or _collection_refusal(registry, row) or _curation_refusal(registry, row)
 
 
 def _row_identity(row: dict, drain_identity):
@@ -799,6 +899,18 @@ def _create_catalogue_schema_leave_out(clients: "OutboxClients", payload: dict) 
         raise OutboxApplyError(str(exc)) from exc
 
 
+def _create_feedback_rating(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.feedback_egeria import create_rating
+
+    return create_rating(clients, payload)
+
+
+def _create_feedback_note(clients: "OutboxClients", payload: dict) -> str:
+    from resource_explorer.feedback_egeria import create_note
+
+    return create_note(clients, payload)
+
+
 def _create_informal_tag_link(clients: "OutboxClients", payload: dict) -> str:
     from resource_explorer.curation_egeria import create_tag_link
 
@@ -855,6 +967,8 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "informal_tag_detach": _create_informal_tag_detach,
     "group_folio_membership": _create_group_folio_membership,
     "group_folio_membership_detach": _create_group_folio_membership_detach,
+    "feedback_rating": _create_feedback_rating,
+    "feedback_note": _create_feedback_note,
 }
 
 
@@ -921,8 +1035,12 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
     """
     summary = {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0,
               "publish_run_check_failed": 0}
+    # Brief F: a drain that is not a person's own request (the background Daemon drain, or a drain handed its
+    # clients with no person) never claims a feedback row: only its author's Publish sends it, as them.
+    is_caller = identity is not None and getattr(identity, "kind", "") == "caller"
     try:
-        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id)
+        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id,
+                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary
@@ -975,6 +1093,13 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # the BASE run_id, which is what the activity row was tagged
             # with (see registry.complete_publish_run_if_done).
             touched_run_ids.add(run_id[: -len("::links")] if run_id.endswith("::links") else run_id)
+        not_theirs = _person_only_refusal(row, identity)
+        if not_theirs:
+            # Brief F: claimed by a drain that is not its author's (another person's request, or a claim before
+            # the exclusion): hand it back untouched, no attempt burned, nothing sent.
+            registry.mark_outbox_deferred(row["id"], not_theirs, claimed_at=row.get("claimed_at"))
+            summary["skipped"] += 1
+            continue
         try:
             # Every outbox creator is a write (the module docstring's own
             # comment on _CREATORS: "only the plural, per-element writes are
@@ -994,7 +1119,8 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # landed yet. Hand it back to 'pending' with no attempt burned —
             # see mark_outbox_deferred and OutboxNotReadyError's own
             # docstring for why this is not routed through mark_outbox_failed.
-            registry.mark_outbox_deferred(row["id"], str(exc), claimed_at=row.get("claimed_at"))
+            registry.mark_outbox_deferred(row["id"], str(exc), claimed_at=row.get("claimed_at"),
+                                          delay_seconds=getattr(exc, "DELAY_SECONDS", 0))
             summary["skipped"] += 1
             log.info("Outbox row %s (%s %s) deferred: %s",
                      row["id"], row["element_kind"], row["qualified_name"], exc)
@@ -1017,12 +1143,18 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                 summary["not_retried"] = summary.get("not_retried", 0) + 1
             elif is_security_refusal(exc):
                 # Permanent until a permission or zone changes: dead on the FIRST refusal, no backoff.
+                # (Brief F: a feedback row reads this as "not permitted" from the stored words.)
                 status = registry.mark_outbox_failed(
                     row["id"],
                     f"{REFUSED_BY_SECURITY}: {_refusal_sentence(exc)} · {NEEDS_PERMISSION_CHANGE}",
                     max_attempts=1)
                 summary["dead" if status == "dead" else "failed"] += 1
                 summary["security_refused"] = summary.get("security_refused", 0) + 1
+            elif is_person_only_kind(row.get("element_kind") or ""):
+                # Brief F: never re-sent on its own (a retry would be the drain choosing when to write as the
+                # person): dead at once with Egeria's words; the person's next Publish queues a new row.
+                status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc_text}", max_attempts=1)
+                summary["dead" if status == "dead" else "failed"] += 1
             else:
                 status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc_text}")
                 summary["dead" if status == "dead" else "failed"] += 1

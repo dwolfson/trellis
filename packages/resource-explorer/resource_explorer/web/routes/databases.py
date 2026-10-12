@@ -1140,6 +1140,21 @@ class PublishResult(BaseModel):
     error: str | None = None
 
 
+async def _send_with_publish(registry, entity_type: str, slug: str, asset_guid: str) -> dict:
+    """Brief F: what the page's ONE Publish sends after the resource's own publish, as the signed-in presser
+    (`single_publish.send_with_publish`). Best-effort: each item's outcome is on its own row."""
+    import asyncio
+
+    from resource_explorer.egeria_identity import caller_user_id
+    from resource_explorer.single_publish import send_with_publish
+
+    try:
+        return await asyncio.to_thread(send_with_publish, registry, entity_type, slug, asset_guid, caller_user_id())
+    except Exception:  # noqa: BLE001
+        log.warning("Could not send the presser's feedback for %s %s", entity_type, slug, exc_info=True)
+        return {}
+
+
 @router.post("/{slug}/publish", response_model=PublishResult)
 async def publish_database_survey(slug: str, req: PublishRequest = PublishRequest()) -> PublishResult:
     """Publish the latest local database survey to Egeria.
@@ -1262,14 +1277,11 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
         # than raises per source.
         asset_guid = result.get("asset_guid") or ""
         if asset_guid:
-            try:
-                from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
-                publish_local_doc_sources("database", slug, asset_guid, registry=registry)
-            except Exception:
-                log.warning("Could not publish documentation sources for %s", slug, exc_info=True)
-            # Brief T: tags and the group kept in RE while the database was not in Egeria. Best-effort.
-            from resource_explorer.curation_egeria import publish_pending_curation
-            publish_pending_curation(registry, "database", slug, asset_guid)
+            # Brief F round 3: the documentation sources go ONCE, inside send_with_publish (it publishes exactly
+            # `single_publish.unpublished_doc_sources`), not here as well.
+            # Brief F: the same press sends the tags and group (the presser checked per item) and the PRESSER's own
+            # rating and notes, as them (never anyone else's).
+            await _send_with_publish(registry, "database", slug, asset_guid)
         return PublishResult(
             status="ok",
             slug=slug,
