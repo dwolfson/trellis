@@ -501,7 +501,7 @@ def _is_base_table(row: dict) -> bool:
         # Not recorded — treat as a base table rather than dropping it
         # silently. An unrecorded type is not evidence of a view.
         return True
-    return ttype in {"BASE_TABLE", "TABLE", "LOCAL_TEMPORARY", "FOREIGN"}
+    return ttype in {"BASE_TABLE", "PARTITIONED_TABLE", "TABLE", "LOCAL_TEMPORARY", "FOREIGN"}
 
 
 def _foreign_key_edges(columns: list[dict]) -> list[dict]:

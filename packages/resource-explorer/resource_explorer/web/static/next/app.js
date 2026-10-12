@@ -4184,7 +4184,7 @@ const _SCHEMA_SHORTFALL_LABELS = {
 //: a view/materialized view (Dan's gate, 2026-09-27: he asked for a way to
 //: tell them apart at a glance without being didactic about it).
 const _TABLE_KIND_LABELS = {
-  'BASE TABLE': 'table', 'VIEW': 'view', 'MATERIALIZED VIEW': 'matview',
+  'BASE TABLE': 'table', 'PARTITIONED TABLE': 'table', 'VIEW': 'view', 'MATERIALIZED VIEW': 'matview',
   'FOREIGN': 'foreign table',
 };
 
