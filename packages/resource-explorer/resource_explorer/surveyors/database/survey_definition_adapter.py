@@ -31,6 +31,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from resource_explorer.table_kinds import is_table_type
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     register_adapter,
@@ -1395,7 +1396,7 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     # "table count" -- `table_type` (`information_schema.tables`, or a
     # catalog-only-fallback row's `_catalog_table_summary` mapping) is
     # always one of these four for the relkinds `get_schema_info`/
-    # `_enumerate_relations` select (`r`/`p` -> BASE TABLE, `v` -> VIEW,
+    # `_enumerate_relations` select (`r` -> BASE TABLE, `p` -> PARTITIONED TABLE (counted with base tables), `v` -> VIEW,
     # `m` -> MATERIALIZED VIEW, `f` -> FOREIGN). `base_table_count` is kept
     # as the stable field existing comparators already diff.
     #
@@ -1415,7 +1416,7 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     # unlike the `credential_capability` probe's `table_total`/
     # `table_select`, which ARE read back from old stored blobs elsewhere in
     # this module.
-    base_table_count = sum(1 for t in tables if t.get("table_type") == "BASE TABLE")
+    base_table_count = sum(1 for t in tables if is_table_type(t.get("table_type")))
     view_count = sum(1 for t in tables if t.get("table_type") == "VIEW")
     materialized_view_count = sum(1 for t in tables if t.get("table_type") == "MATERIALIZED VIEW")
     foreign_table_count = sum(1 for t in tables if t.get("table_type") == "FOREIGN")
@@ -1445,7 +1446,7 @@ def _schema_inventory_results(registry, slug: str) -> dict:
     # figure (reported 10, truth 5 base-table-bearing schemas).
     schemas_with_tables = len({
         t.get("schema_name") for t in tables
-        if t.get("schema_name") and t.get("table_type") == "BASE TABLE"
+        if t.get("schema_name") and is_table_type(t.get("table_type"))
     })
     cap = _credential_capability_results(registry, slug)
     value = {
@@ -1819,7 +1820,7 @@ def _schema_inventory_container_rows(registry, slug: str) -> list[dict] | None:
         # that lives elsewhere" without opening the schema — exactly the
         # owner's Slice 22 usability gate ("see which schema holds the
         # data at a glance") that this conflation defeats.
-        if table_count > 0 and all(t.get("table_type") != "BASE TABLE" for t in ts):
+        if table_count > 0 and not any(is_table_type(t.get("table_type")) for t in ts):
             views_only_rows.append({
                 "schema": name, "table_count": table_count, "row_total": row_total,
                 "bytes_total": bytes_total, "index_bytes_total": index_total, "is_estimate": is_estimate,

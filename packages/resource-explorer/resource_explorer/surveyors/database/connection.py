@@ -612,6 +612,7 @@ class PostgreSQLConnection(DatabaseConnection):
                 tables.append({
                     "name": table_name,
                     "type": info.get("table_type") or "",
+                    "relkind": info.get("relkind"),
                     "description": "",
                     "columns": self._catalog_columns_for_table(schema_name, table_name),
                     "source": "catalog_fallback",
@@ -839,12 +840,19 @@ class PostgreSQLConnection(DatabaseConnection):
         pk_lookup, fk_lookup = self._catalog_keys_for_schema(schema_name)
         for table_name, info in catalog.items():
             if table_name in tables:
+                # information_schema reports a partitioned parent as plain
+                # "BASE TABLE" and has no relkind; the pg_class read above
+                # already knows, so say so (no extra query).
+                if info.get("relkind") == "p":
+                    tables[table_name]["type"] = info["table_type"]
+                    tables[table_name]["relkind"] = "p"
                 continue
             columns = self._catalog_columns_for_table(
                 schema_name, table_name, pk_lookup, fk_lookup)
             tables[table_name] = {
                 "name": table_name,
                 "type": info.get("table_type") or "",
+                "relkind": info.get("relkind"),
                 "description": "",
                 "columns": columns,
                 "source": "catalog_fallback",
@@ -872,7 +880,7 @@ class PostgreSQLConnection(DatabaseConnection):
         """
         rows = self.execute_query(query, (schema_name,))
         kind_to_type = {
-            "r": "BASE TABLE", "p": "BASE TABLE",
+            "r": "BASE TABLE", "p": "PARTITIONED TABLE",
             "v": "VIEW", "m": "MATERIALIZED VIEW",
         }
         out: dict[str, dict] = {}
@@ -883,6 +891,7 @@ class PostgreSQLConnection(DatabaseConnection):
             reltuples = r.get("reltuples")
             out[name] = {
                 "table_type": kind_to_type.get(r.get("relkind"), ""),
+                "relkind": r.get("relkind"),
                 "reltuples": (
                     int(reltuples) if reltuples is not None and reltuples >= 0 else None
                 ),

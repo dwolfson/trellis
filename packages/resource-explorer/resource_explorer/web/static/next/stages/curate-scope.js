@@ -425,7 +425,7 @@ function columnRowsHtml(table) {
       <span aria-hidden="true" class="text-rule-strong">└</span> <span class="font-mono">${esc(c.name)}</span> <span>${esc(c.type || '')}</span> <span class="text-accent-ink">${esc(c.key_role || '')}</span></div>`).join('')}</div></div>`;
 }
 
-const TABLE_KIND = { 'BASE TABLE': 'table', VIEW: 'view', 'MATERIALIZED VIEW': 'matview', FOREIGN: 'foreign table' };
+const TABLE_KIND = { 'BASE TABLE': 'table', 'PARTITIONED TABLE': 'table', VIEW: 'view', 'MATERIALIZED VIEW': 'matview', FOREIGN: 'foreign table' };
 
 /** What the tree shows: every schema, or (with a filter) the schemas that match by name or hold a
  *  matching table, expanded, with the matching tables (all of them when the schema's own name matches).
