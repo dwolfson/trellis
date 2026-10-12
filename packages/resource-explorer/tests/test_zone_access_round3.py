@@ -157,6 +157,46 @@ class TestOwnAnchor:
         with pytest.raises(AccessUnreadable):
             element_facts(el("g-x", anchor="g-x"), "")
 
+    def test_an_anchors_classification_with_no_anchor_guid_is_its_own_anchor(self):
+        """The LIVE shape (egeria_git's Asset, 2026-10-12): Anchors carries anchorTypeName/anchorDomainName and no
+        anchorGUID. Egeria reads a null anchorGUID as "its own anchor" (OpenMetadataAPIGenericHandler ~:1736), so its
+        own zones decide; refusing it as unreadable blocked every Publish on such an asset."""
+        from resource_explorer.zone_access import element_facts
+
+        live = {"elementGUID": "g-asset", "type": {"typeName": "Asset"},
+                "classifications": [{"classificationName": "Anchors", "classificationProperties": {"propertyValueMap": {
+                    "anchorTypeName": {"primitiveValue": "Asset"},
+                    "anchorDomainName": {"primitiveValue": "Asset"}}}}]}
+        assert element_facts(live, "g-asset").anchor == ""
+        assert element_facts(live, "").anchor == ""          # nothing to compare is needed when there is no anchor
+
+    def test_a_present_but_unreadable_anchor_guid_still_denies(self):
+        from resource_explorer.zone_access import AccessUnreadable, element_facts
+
+        odd = {"elementGUID": "g-x", "classifications": [{"classificationName": "Anchors", "classificationProperties": {
+            "propertyValueMap": {"anchorGUID": {"primitiveValue": 42}}}}]}
+        with pytest.raises(AccessUnreadable):
+            element_facts(odd, "g-x")
+
+    @pytest.mark.parametrize("cp", [
+        {"anchorGUID": {"primitiveValue": "g-other"}},            # flat key, not a string: names ANOTHER element
+        {"anchorGUID": 42},
+        {"instanceProperties": {"anchorGUID": {"primitiveValue": "g-other"}}},   # a shape RE does not read
+    ])
+    def test_a_present_or_unrecognised_anchor_never_reads_as_its_own(self, cp):
+        from resource_explorer.zone_access import AccessUnreadable, element_facts
+
+        el_ = {"elementGUID": "g-x", "classifications": [{"classificationName": "Anchors", "classificationProperties": cp}]}
+        with pytest.raises(AccessUnreadable):
+            element_facts(el_, "g-x")
+
+    @pytest.mark.parametrize("cp", [{}, None, {"anchorGUID": None}, {"anchorTypeName": "Asset", "anchorDomainName": "Asset"}])
+    def test_shapes_with_no_anchor_guid_read_as_its_own_anchor(self, cp):
+        from resource_explorer.zone_access import element_facts
+
+        el_ = {"elementGUID": "g-x", "classifications": [{"classificationName": "Anchors", "classificationProperties": cp}]}
+        assert element_facts(el_, "g-x").anchor == ""
+
     def test_the_batched_reader_passes_the_requested_guid(self, monkeypatch):
         from resource_explorer import zone_access as za
 
