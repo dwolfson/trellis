@@ -44,9 +44,31 @@ PKG = Path(__file__).resolve().parents[1] / "resource_explorer"
 
 
 def _registry_url() -> str:
+    """A Postgres URL for the advisory-lock tests.
+
+    Outside CI the conftest guard points the registry at a throwaway SQLite
+    file, where election is a deliberate no-op, so both locks "won" and these
+    tests failed on every local run with Postgres reachable. Advisory locks
+    write nothing and every test uses a unique name, so the PGVECTOR_*
+    instance is safe to lock against, addressed through the per-test scratch
+    schema that the shared-registry guard admits."""
+    from urllib.parse import quote
+
     from resource_explorer.config import get_config
 
-    return get_config().registry.database_url
+    url = get_config().registry.database_url
+    if url.startswith("postgresql"):
+        return url
+    host = os.environ.get("PGVECTOR_HOST")
+    if not host:
+        pytest.skip("no Postgres configured (PGVECTOR_HOST unset) for the advisory-lock tests")
+    user = quote(os.environ.get("PGVECTOR_USER", ""), safe="")
+    pw = quote(os.environ.get("PGVECTOR_PASSWORD", ""), safe="")
+    # The per-test scratch schema (conftest's isolate_pgvector_schema) is the name the shared-registry guard
+    # admits; an advisory lock never touches it, so it need not exist.
+    schema = os.environ.get("PGVECTOR_SCHEMA", "resource_explorer_test")
+    return (f"postgresql://{user}:{pw}@{host}:{os.environ.get('PGVECTOR_PORT', '5432')}/"
+            f"{os.environ.get('PGVECTOR_DBNAME', 'postgres')}?options=-csearch_path%3D{schema}")
 
 
 # ── B. Leader election ──────────────────────────────────────────────────
