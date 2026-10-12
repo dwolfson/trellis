@@ -170,3 +170,12 @@ def test_a_submission_writes_an_activity_entry(client, registry):
         ).fetchall()
     assert [r["status"] for r in rows_] == ["triggered"]
     assert "engine action" in rows_[0]["summary"]
+
+
+def test_a_run_through_the_route_is_stamped_as_started_by_an_action_type(client, port, registry):
+    import json
+
+    r = client.post("/api/native-surveys/database/adventureworks/run", json={"process_qualified_name": SURVEY_QN})
+    guid = r.json()["run"]["engine_action_guid"]
+    row = next(x for x in registry.list_native_survey_runs("database", "adventureworks") if x["engine_action_guid"] == guid)
+    assert json.loads(row["declared"]) == {"started_as": "gov_action_type"}

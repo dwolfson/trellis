@@ -300,6 +300,19 @@ def _ranked_with_activity(registry, slug: str, run: dict, top: list[dict]) -> li
     return out
 
 
+def _totals(counted: list[dict]) -> dict:
+    """Whole-database sums over the tables the same read already holds. A sum covers only the
+    tables whose figure is established, and says how many those are, so a reader can tell a
+    total from a lower bound; a figure no table established is None, never 0."""
+    def add(key):
+        vals = [t.get(key) for t in counted if t.get(key) is not None]
+        return (sum(vals) if vals else None), len(vals)
+    rows, rows_n = add("row_count")
+    size, size_n = add("size_bytes")
+    return {"tables": len(counted), "rows": rows, "rows_tables": rows_n,
+            "size_bytes": size, "size_tables": size_n}
+
+
 def table_sizes(registry, slug: str, limit: int = 20, measure: str = "rows") -> dict:
     if measure not in ("rows", "size"):
         raise ValueError("measure must be 'rows' or 'size'")
@@ -312,7 +325,7 @@ def table_sizes(registry, slug: str, limit: int = 20, measure: str = "rows") -> 
         "table_count_total": 0, "views_excluded": 0,
         "not_established_count": 0, "not_established_tables": [],
         "ranked_count": 0, "truncated_by_limit": 0, "ranked": [],
-        "provenance": "",
+        "provenance": "", "totals": None,
     })
     if not run:
         return _not_run(env, "never_surveyed", "No survey has run for this database.")
@@ -333,6 +346,7 @@ def table_sizes(registry, slug: str, limit: int = 20, measure: str = "rows") -> 
     env["truncated_by_limit"] = len(established) - len(top)
     env["not_established_count"] = len(missing)
     env["not_established_tables"] = sorted(_qualified(t) for t in missing)
+    env["totals"] = _totals(counted)
 
     def mb(v):
         return None if v is None else round(v / 1_048_576, 2)
@@ -620,9 +634,13 @@ def statistics_currency(registry, slug: str, limit: int = 12) -> dict:
         t_state, t_note = section_state(registry, slug, runs[0], "tables", len(tables))
         return _not_run(env, t_state if not _is_measured(t_state) else "no_tables", t_note)
     if not n_act:
-        return _not_run(env, "no_table_activity",
-                        "The latest survey stored no table-activity rows, so statistics "
-                        "currency was not measured. This is not a finding that it is current.")
+        out = _not_run(env, "no_table_activity",
+                       "The latest survey stored no table-activity rows, so statistics "
+                       "currency was not measured. This is not a finding that it is current.")
+        # Why, where the stored rows show it: what this credential could read (the latest probe on
+        # record, which may not be this run's; the scope says so).
+        out["scope"] = credential_scope(registry, slug)
+        return out
     env["currency"] = cur
     history = []
     for run in reversed(runs):                       # oldest first

@@ -27,10 +27,11 @@ import { ago, storedCopyWords } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getNativeSurveys, runNativeSurvey, refreshNativeSurveys, getNativeSurveyReport,
-  registerWithEgeria, checkNativeSurveyPointers,
+  registerWithEgeria, checkNativeSurveyPointers, cancelNativeAction,
 } from '/static/re-api.js';
 import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
+import { reportViewerHtml, bindReportViewer } from '/static/next/stages/native-report.js';
 
 const POLL_MS = 8000;
 const CONFIRM_MS = 6000;      // how long "Confirm: start again" stays armed
@@ -63,6 +64,17 @@ function guidSpan(guid) {
   return guid ? `<span class="font-mono" title="Egeria engine action ${esc(guid)}">${esc(guid)}</span>` : '';
 }
 
+/** "◐ stalled?" when the server flagged the action as active far longer than a survey takes. The sentence
+ *  (what was measured, and the limit) is on hover; the line carries only the cue and the word. */
+function stallCue(r) {
+  if (!r.stalled) return '';
+  const hours = (s) => (s >= 86400 ? (() => { const d = Math.round(s / 3600 / 2.4) / 10; return `${d} ${d === 1 ? 'day' : 'days'}`; })() : (() => { const h = Math.round(s / 360) / 10; return `${h} ${h === 1 ? 'hour' : 'hours'}`; })());
+  const tip = `Requested ${hours(r.requested_age_s)} ago and Egeria still says ${r.egeria_status || 'nothing yet'}. `
+    + `Flagged after ${hours(r.stall_after_s)} ${r.phase === 'running' ? 'since the request (waiting included)' : 'without starting'}. `
+    + 'RE does not cancel or retry on this.';
+  return ` · <span class="text-state-warn" data-native-stalled title="${esc(tip)}"><span class="font-glyph" aria-hidden="true">◐</span> stalled?</span>`;
+}
+
 /** The one line of status. Pure over `row.run`. */
 export function nativeSurveyStatusHtml(row) {
   const r = row.run || { state: 'not_run' };
@@ -71,12 +83,16 @@ export function nativeSurveyStatusHtml(row) {
     case 'submit_failed':
       return `<span class="text-state-warn">not submitted — Egeria did not accept it: ${esc(r.error)}</span>`;
     case 'submitted':
-      return `submitted to Egeria · ${timeSpan(r.submitted_at)} · ${guidSpan(r.engine_action_guid)}`;
+      return `submitted to Egeria · ${timeSpan(r.submitted_at)}${stallCue(r)} · ${guidSpan(r.engine_action_guid)}`;
     case 'unreadable':
       return `submitted to Egeria · ${timeSpan(r.submitted_at)} · ${guidSpan(r.engine_action_guid)}`
         + ` · <span class="text-state-warn">last read failed: ${esc(r.error)}</span>`;
     case 'running':
-      return `running · Egeria says <span class="font-mono">${esc(r.egeria_status)}</span>`
+      // Waiting to start and running are two states; both say when the action was requested, and a stall is a
+      // cue plus a word. The age is measured from the request (the start time Egeria gives is not stored).
+      return `${r.phase === 'waiting' ? '<span class="font-glyph" aria-hidden="true">◌</span> waiting to start' : 'running'}`
+        + `${r.submitted_at ? ` · requested ${timeSpan(r.submitted_at)}` : ''}${stallCue(r)}`
+        + ` · Egeria says <span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}${err}`;
     case 'awaiting_report':
       return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
@@ -91,6 +107,11 @@ export function nativeSurveyStatusHtml(row) {
             ><span class="tnum">${esc(String(r.annotation_count))}</span> annotation${
               r.annotation_count === 1 ? '' : 's'} ›</button>`;
     case 'failed':
+      // A cancel Egeria read back as CANCELLED is a decision, not a fault: its own words, with the check.
+      if (r.egeria_status === 'CANCELLED') {
+        return `<span class="font-glyph" aria-hidden="true">✓</span> cancelled in Egeria`
+          + ` · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
+      }
       return `<span class="text-state-warn"><span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · ${esc(r.message)}</span> · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
     case 'registered':
@@ -142,6 +163,37 @@ function reachNoteHtml(row) {
     ? `<div class="mt-[2px] text-provenance text-ink-muted" data-native-reach>${esc(row.reach_note)}</div>` : '';
 }
 
+/** Cancel cues that outlive a repaint: a cancel Egeria did not confirm stays on its row until the next try
+ *  (guid -> the words). A cancel that worked needs none: the row's own status then says CANCELLED. */
+const cancelCues = new Map();
+/** Cancels in flight (guid): a poll repaint mid-request keeps "cancelling…" on the row. */
+const cancelling = new Set();
+
+/** The cancel control, only while Egeria last said the action is waiting or running (the server's `run.state`
+ *  is 'running' exactly for those statuses). Cue plus short words; the confirm is a state of the control. */
+export function cancelControlHtml(row) {
+  const r = row.run || {};
+  const guid = r.engine_action_guid;
+  // The server decides (`cancellable`: a single-action survey, Egeria's last read succeeded and said waiting or
+  // running). A process run, a registration or a failed last read never offers it.
+  const live = row.cancellable === true && r.state === 'running' && !r.error;
+  const cue = guid && cancelCues.get(guid);
+  const keep = cue && live
+    ? `<div class="mt-[2px] text-provenance text-state-warn" data-native-cancel-cue><span class="font-glyph" aria-hidden="true">◐</span> ${esc(cue)}</div>` : '';
+  if (!live || !guid) return '';
+  return `<div class="mt-[2px]" data-native-cancel-box="${esc(guid)}">
+    <button type="button" data-native-cancel="${esc(guid)}"
+      class="cursor-pointer border-0 bg-transparent p-0 text-provenance text-accent-ink underline">Cancel</button>
+    <span hidden data-native-cancel-confirm class="text-provenance text-ink">
+      <span class="font-glyph" aria-hidden="true">◌</span> cancel this survey in Egeria?
+      <button type="button" data-native-cancel-yes="${esc(guid)}" class="cursor-pointer rounded-sm border border-state-warn bg-transparent px-2 text-provenance text-state-warn">Yes, cancel</button>
+      <button type="button" data-native-cancel-no class="cursor-pointer border-0 bg-transparent p-0 text-provenance text-ink-muted underline">keep it</button>
+    </span>
+    <span ${cancelling.has(guid) ? '' : 'hidden'} data-native-cancel-ack class="text-provenance text-ink-muted">${
+  cancelling.has(guid) ? '<span class="font-glyph" aria-hidden="true">◔</span> cancelling…' : ''}</span>
+    ${keep}</div>`;
+}
+
 /** One survey row: glyph, name, kind, status, and Run when RE can run it. */
 export function nativeSurveyRowHtml(row) {
   const run = row.run || { state: 'not_run' };
@@ -156,6 +208,7 @@ export function nativeSurveyRowHtml(row) {
         <span class="text-provenance text-ink-muted">Egeria's own survey engine</span>
       </div>
       <div class="mt-[2px] text-provenance text-ink-muted" data-native-status>${nativeSurveyStatusHtml(row)}</div>
+      ${cancelControlHtml(row)}
       ${row.credentials_note ? `<div class="mt-[2px] text-provenance text-ink-muted"><span class="text-ink-muted" title="not confirmed either way">?</span> ${esc(row.credentials_note)}</div>` : ''}
       ${reachNoteHtml(row)}
       ${(row.notes || []).map((n) => `<div class="mt-[2px] text-provenance text-ink-muted" data-native-note>${esc(n)}</div>`).join('')}
@@ -315,6 +368,55 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       () => register(b, b.dataset.nativeRegisterSlug, '')));
     host.querySelectorAll('[data-native-report]').forEach((b) => b.addEventListener('click',
       () => openReport(slug, b.dataset.nativeReport)));
+    host.querySelectorAll('[data-native-cancel]').forEach((b) => b.addEventListener('click', () => {
+      const box = b.closest('[data-native-cancel-box]');
+      b.hidden = true;
+      const conf = box.querySelector('[data-native-cancel-confirm]');
+      conf.hidden = false;
+      // The confirm is a state of the control: it lapses, as the register confirm does.
+      setTimeout(() => { if (box.isConnected && !cancelling.has(box.dataset.nativeCancelBox)) { conf.hidden = true; b.hidden = false; } }, CONFIRM_MS);
+    }));
+    host.querySelectorAll('[data-native-cancel-no]').forEach((b) => b.addEventListener('click', () => {
+      const box = b.closest('[data-native-cancel-box]');
+      box.querySelector('[data-native-cancel-confirm]').hidden = true;
+      box.querySelector('[data-native-cancel]').hidden = false;
+    }));
+    host.querySelectorAll('[data-native-cancel-yes]').forEach((b) => b.addEventListener('click', async () => {
+      const guid = b.dataset.nativeCancelYes;
+      const box = b.closest('[data-native-cancel-box]');
+      const ack = box.querySelector('[data-native-cancel-ack]');
+      box.querySelector('[data-native-cancel-confirm]').hidden = true;
+      cancelCues.delete(guid);
+      cancelling.add(guid);
+      ack.hidden = false;
+      ack.innerHTML = '<span class="font-glyph" aria-hidden="true">◔</span> cancelling…';   // acknowledged at once
+      const done = () => cancelling.delete(guid);
+      try {
+        const res = await cancelNativeAction(slug, guid, { entityType: apiEntityType(state.resourceType) });
+        done();
+        if (res.cancelled) {
+          // Validated by the read-back, not by the 200: the repaint below is the server's own rows.
+          paint(res.surveys);          // the row's own status now reads "✓ cancelled in Egeria"
+          if (res.note) {
+            const d = openDialog('Cancelled in Egeria', '');
+            d.querySelector('#wl-detail-body').innerHTML = `<p class="text-ink" data-native-cancel-note>${esc(res.note)}</p>`;
+          }
+          return;
+        }
+        const why = res.read_error
+          ? `asked Egeria to cancel; the read-back failed (${res.read_error})`
+          : `asked Egeria to cancel; it still says ${res.egeria_status || 'nothing'}`;
+        cancelCues.set(guid, why);
+        paint(res.surveys);
+        failDialog(why);
+      } catch (err) {
+        done();
+        const why = `not cancelled: ${err.message}`;
+        cancelCues.set(guid, why);
+        paint(rows);
+        failDialog(why);
+      }
+    }));
   };
 
   // Read the stored pointer back from Egeria, once, ONLY when one is stored (registered rows carry the
@@ -333,6 +435,12 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
   if (rows.some((r) => r.asset_guid)) checkPointers();
 }
 
+/** A failed cancel: the reason in a pop-up (the persistent cue is on the row). */
+function failDialog(reason) {
+  const d = openDialog('Could not cancel the survey', '');
+  d.querySelector('#wl-detail-body').innerHTML = `<p class="text-state-warn" data-native-cancel-error>${esc(reason)}</p>`;
+}
+
 async function openReport(slug, reportGuid) {
   const d = openDialog('Egeria survey report', reportGuid);
   const body = d.querySelector('#wl-detail-body');
@@ -343,17 +451,12 @@ async function openReport(slug, reportGuid) {
     body.innerHTML = `<p class="text-state-warn">${esc(err.message)}</p>`;
     return;
   }
-  const anns = rep.annotations || [];
   // This is RE's own stored copy; say so, with when it was read from Egeria, and ONE added line only when the
   // reset marker postdates that read (the server decides, from the marker row).
   const copy = storedCopyWords(rep);
   body.innerHTML = `
-    <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(copy.head)}
-      · report from ${esc(rep.report_at || 'an unrecorded time')}</div>
+    <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(copy.head)}</div>
     ${copy.resetLine ? `<div class="mb-s2 text-provenance text-state-warn" data-stored-copy-reset>${esc(copy.resetLine)}</div>` : ''}
-    <div class="mb-s2 text-provenance text-ink-muted">engine action <span class="font-mono">${esc(rep.engine_action_guid)}</span>
-      · <span class="tnum">${anns.length}</span> annotation${anns.length === 1 ? '' : 's'}</div>
-    ${anns.length ? `<ul class="max-w-[70ch] list-disc pl-s4">${anns.map((a) => `
-      <li class="text-ink"><span class="text-ink-muted">${esc(a.annotation_type)}</span> — ${esc(a.summary)}</li>`).join('')}
-    </ul>` : '<p class="text-ink-muted">Egeria completed this survey and its report holds no annotations.</p>'}`;
+    ${reportViewerHtml(rep)}`;
+  bindReportViewer(body, rep);
 }

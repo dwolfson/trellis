@@ -1099,6 +1099,10 @@ export const registerWithEgeria = (slug, { entityType, startAgain = false } = {}
   post(`${nativePath(slug, requireKind('registerWithEgeria', entityType))}/register`, { start_again: !!startAgain });
 export const checkNativeSurveyPointers = (slug, { entityType } = {}) =>
   post(`${nativePath(slug, requireKind('checkNativeSurveyPointers', entityType))}/check`);
+/** Cancel one of this resource's waiting or running Egeria survey actions (an Egeria write, as the signed-in
+ *  person). The answer's `cancelled` is true only when the read-back after the cancel says CANCELLED. */
+export const cancelNativeAction = (slug, engineActionGuid, { entityType } = {}) =>
+  post(`${nativePath(slug, requireKind('cancelNativeAction', entityType))}/egeria-actions/${encodeURIComponent(engineActionGuid)}/cancel`);
 export const getNativeSurveyReport = (slug, reportGuid, { entityType } = {}) =>
   get(`${nativePath(slug, requireKind('getNativeSurveyReport', entityType))}/reports/${encodeURIComponent(reportGuid)}`);
 

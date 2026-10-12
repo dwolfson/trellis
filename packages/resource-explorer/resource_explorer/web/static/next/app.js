@@ -5332,6 +5332,22 @@ async function loadEnrichmentByAnalysisSummaryPane() {
   });
 }
 
+/** Why the survey list is not narrowed to the stage, in short words, from the route's own `scoping_reason`.
+ *  `no_questions`: the question catalog has none for this kind of resource at this stage (nothing to retry).
+ *  `none_resolved`: questions exist, no published survey is scoped to them (a retry can change that).
+ *  No reason (an older server): the old words, which claimed more than the response shows. */
+export function scopeFallbackHtml(data, stage) {
+  const retry = `<button type="button" data-act="rescope" class="cursor-pointer bg-transparent underline">retry</button>`;
+  const kind = esc(apiEntityType(state.resourceType) || 'this kind');
+  if (data.scoping_reason === 'no_questions') {
+    return `<span data-scope-reason="no_questions">all stages — no ${esc(stage)} questions for a ${kind} yet</span>`;
+  }
+  if (data.scoping_reason === 'none_resolved') {
+    return `<span data-scope-reason="none_resolved">all stages — no published survey is scoped to ${esc(stage)} · ${retry}</span>`;
+  }
+  return `all tiers — stage filter unavailable · ${retry}`;
+}
+
 export async function loadSurveyPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -5410,10 +5426,7 @@ export async function loadSurveyPane() {
       <span class="ml-auto rounded-sm border ${
         data.scoping === 'full-scan' && all.length ? 'border-state-warn text-state-warn' : 'border-rule-strong text-ink-muted'}
         px-2 py-[1px] text-provenance">
-        Scope: ${data.scoping === 'full-scan' && all.length
-          ? `all tiers — stage filter unavailable · <button type="button" data-act="rescope"
-              class="cursor-pointer bg-transparent underline">retry</button>`
-          : esc(stage)}</span>
+        Scope: ${data.scoping === 'full-scan' && all.length ? scopeFallbackHtml(data, stage) : esc(stage)}</span>
     </div>
 
     ${nativeProcessesHtml}

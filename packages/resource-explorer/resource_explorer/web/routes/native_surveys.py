@@ -197,6 +197,93 @@ async def refresh_native_surveys(entity_type: str, slug: str) -> dict:
     return {"technology_type": tech, "surveys": await asyncio.to_thread(_do)}
 
 
+@router.post("/{entity_type}/{slug}/egeria-actions/{engine_action_guid}/cancel")
+async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: str) -> dict:
+    """Cancel one of this resource's waiting or running Egeria survey actions. An Egeria WRITE, and a person's
+    direct act, so it runs as the signed-in CALLER (Brief I; never the daemon): nobody signed in is a 401.
+
+    Fails CLOSED (Egeria's cancel has no status guard). Order, each step before the write: sign-in -> the GUID is one RE recorded for THIS resource (404
+    otherwise; an arbitrary GUID is never sent) -> a fresh read: only a waiting or running action (409) -> Egeria's access rule for the engine action element
+    (`engine_action_cancel_access`; 403 with the reason) -> (a failed or unadvanced read is a 502, not a guess; a process or registration GUID is a 409) -> a second read right before the write -> the cancel (the sub-second window between that read and the write cannot be closed) -> a read-back by the same status refresh
+    the poll uses. The answer says `cancelled` only when that read-back says CANCELLED."""
+    from resource_explorer.egeria_clients import Caller, EgeriaRefused, refusal
+    from resource_explorer.workflows.curate import engine_action_cancel_access
+
+    from resource_explorer.run_queue import requested_by
+
+    registry = ProjectRegistry()
+    _check(entity_type, slug, registry)
+    Caller()                                  # NoCallerIdentity / CallerTokenExpired -> 401 (not logged)
+    person = requested_by()                   # read HERE, in the request, as the run route does
+
+    def refuse(process_qn: str, why: str) -> None:
+        _log_activity(registry, entity_type, slug, process_qn, status="error",
+                      summary=f"Cancel of Egeria action {engine_action_guid} refused: {why}",
+                      detail={"engine_action_guid": engine_action_guid, "cancelled_by": person, "refused": why})
+
+    try:
+        run = nsr.own_action_run(registry, entity_type, slug, engine_action_guid)
+    except nsr.NativeActionNotOurs as exc:
+        refuse("", str(exc))
+        raise HTTPException(status_code=404, detail=str(exc))
+    process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(nsr.NATIVE_SURVEY_STEP_PREFIX):]
+
+    def _gate() -> None:
+        with nsr.port_session(_port()) as port:
+            nsr.cancel_gate(registry, port, entity_type, slug, engine_action_guid)
+
+    # The liveness gate (a fresh read) comes BEFORE the access check: a finished action is a 409, not a 403.
+    try:
+        await asyncio.to_thread(_gate)
+    except nsr.NativeSurveyCannotRun as exc:
+        refuse(process_qn, str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
+    except nsr.NativeStatusUnreadable as exc:
+        refuse(process_qn, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    decision = await asyncio.to_thread(engine_action_cancel_access, registry, entity_type, slug, engine_action_guid)
+    if not decision.allowed:
+        refuse(process_qn, decision.reason)
+        raise HTTPException(status_code=403, detail=decision.reason)
+
+    def _do() -> dict:
+        with nsr.port_session(_port()) as port:
+            return nsr.cancel_native_action(registry, port, entity_type, slug, engine_action_guid, gated=True)
+
+    try:
+        out = await asyncio.to_thread(_do)
+    except nsr.NativeActionNotOurs as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except nsr.NativeSurveyCannotRun as exc:
+        refuse(process_qn, str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
+    except nsr.NativeStatusUnreadable as exc:
+        refuse(process_qn, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except nsr.NativeSurveyError as exc:
+        _log_activity(registry, entity_type, slug, process_qn, status="error",
+                      summary=f"Egeria did not cancel action {engine_action_guid}: {exc}",
+                      detail={"engine_action_guid": engine_action_guid, "cancelled_by": person})
+        refused = refusal(exc.__cause__) if exc.__cause__ is not None else None
+        if isinstance(refused, EgeriaRefused):
+            raise refused
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    _log_activity(
+        registry, entity_type, slug, out["process_qualified_name"] or process_qn,
+        status="ok" if out["cancelled"] else "unconfirmed",
+        summary=(f"Cancelled Egeria action {engine_action_guid} on {slug}: Egeria now says {out['egeria_status']}"
+                 if out["cancelled"] else
+                 f"Asked Egeria to cancel action {engine_action_guid} on {slug}; the read-back says "
+                 f"{out['egeria_status'] or 'nothing'}{' (' + out['read_error'] + ')' if out['read_error'] else ''}")
+        + (f" · {out['note']}" if out["note"] else ""),
+        detail={"engine_action_guid": engine_action_guid, "egeria_status": out["egeria_status"],
+                "access_basis": decision.basis, "cancelled_by": person})
+    tech = _technology_type(entity_type)
+    return {**out, "access_basis": decision.basis, "surveys": await asyncio.to_thread(
+        nsr.native_survey_rows, registry, entity_type, slug, tech)}
+
+
 @router.get("/{entity_type}/{slug}/reports/{report_guid}")
 async def native_survey_report(entity_type: str, slug: str, report_guid: str) -> dict:
     """The annotations RE read from one survey report, with the report's time.
@@ -228,6 +315,9 @@ async def native_survey_report(entity_type: str, slug: str, report_guid: str) ->
             "egeria_reset_at": reset_at,
             "reset_since": reset_since_read(copy_read_at, reset_at),
             "engine_action_guid": run.get("engine_action_guid") or "",
+            "process_qualified_name": (run.get("step_key") or "")[len(nsr.NATIVE_SURVEY_STEP_PREFIX):]
+            if (run.get("step_key") or "").startswith(nsr.NATIVE_SURVEY_STEP_PREFIX) else "",
+            "requested_at": run.get("surveyed_at") or "",
             "annotations": annotations,
         }
 

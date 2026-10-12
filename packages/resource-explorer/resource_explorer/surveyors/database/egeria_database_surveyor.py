@@ -647,6 +647,7 @@ class EgeriaDatabaseSurveyor:
         }
 
     _last_survey_process_qn: str = ""
+    _last_survey_started_as: str = ""
 
     def _record_survey_submission(
         self, registry, db_entity, tech_type: str, engine_action_guid: str,
@@ -686,7 +687,8 @@ class EgeriaDatabaseSurveyor:
             registry.record_native_survey_submission(
                 "database", db_entity.slug, process_qn,
                 datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
-                engine_action_guid=guid, submitted_by=submitted_by or "")
+                engine_action_guid=guid, submitted_by=submitted_by or "",
+                started_as=self._last_survey_started_as)
         except Exception as exc:  # noqa: BLE001
             log.error(f"Survey {guid} was initiated but its proof row could not be "
                       f"recorded: {exc}")
@@ -858,6 +860,7 @@ class EgeriaDatabaseSurveyor:
                     start_time=start_time,
                 )
                 self._last_survey_process_qn = process_name
+                self._last_survey_started_as = "process"
                 log.info(f"Initiated dynamically discovered survey process {process_name} on {target_guid}: {guid}"
                          + (f" (start_time={start_time.isoformat()})" if start_time else ""))
                 return guid
@@ -882,6 +885,7 @@ class EgeriaDatabaseSurveyor:
             )
         guid = self._initiate_native_survey(native.qualified_name, target_guid)
         self._last_survey_process_qn = native.qualified_name
+        self._last_survey_started_as = "gov_action_type"
         return guid
 
     def _initiate_native_survey(self, survey_qualified_name: str, target_guid: str) -> str:

@@ -2198,7 +2198,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             guid, process_qn = gateway.initiate_survey(db_guid, {"includeSchemaNames": ",".join(names)})
             submitted_at = _now()
             registry.record_native_survey_submission("database", slug, process_qn, submitted_at,
-                                                     engine_action_guid=guid, submitted_by=author)
+                                                     engine_action_guid=guid, submitted_by=author,
+                                                     started_as="gov_action_type")
             _proof(registry, slug, P_SURVEY, node_kind="database", element_guid=guid, curation_id=curation_id,
                    detail={"includeSchemaNames": names, "not_scopable": bad, "process": process_qn,
                            "submitted_at": submitted_at, "engine_action": guid})
