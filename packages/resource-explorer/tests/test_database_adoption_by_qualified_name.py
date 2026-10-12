@@ -96,7 +96,7 @@ def test_host_a_sales_is_still_adopted_on_host_a(surveyor, egeria):
 
 
 def test_publishing_step_results_for_host_b_does_not_attach_to_host_a_sales(surveyor):
-    with pytest.raises(EgeriaDatabaseSurveyorError, match="not yet cataloged"):
+    with pytest.raises(EgeriaDatabaseSurveyorError, match="not yet published to Egeria"):
         surveyor.publish_step_annotations(_host_b_sales(), schema_info={}, statistics=None,
                                           surveyed_at="2026-10-09T00:00:00")
 

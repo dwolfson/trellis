@@ -939,7 +939,7 @@ class EgeriaDatabaseSurveyor:
         fix. Adoption stays exact-match (7f.7); this only explains the miss."""
         from resource_explorer.catalogue_gateway import parse_element_answer, server_name_for
 
-        base = (f"Database '{db_entity.database_name}' is not yet cataloged in Egeria under "
+        base = (f"Database '{db_entity.database_name}' is not yet published to Egeria under "
                 f"{expected_qn!r} — cannot publish a Survey Definition step's results without an "
                 "existing asset to attach the SurveyReport to.")
         stored = (db_entity.egeria_asset_guid or "").strip()

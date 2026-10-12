@@ -29,7 +29,7 @@ PROFILE_ASSET_TYPES = "Profile Asset Types"
 #: Egeria's own name for this one is "Profile File Names to External Log" (SurveyFolderAnnotationType).
 PROFILE_FILE_NAMES = "Profile File Names to External Log"
 
-#: Egeria's summary and explanation, verbatim from SurveyFolderAnnotationType except the spelling "catalogued" -> "cataloged" (this repo's wording guard).
+#: Egeria's summary and explanation from SurveyFolderAnnotationType, with one named departure: "catalogued" reads "published" (project owner, 2026-10-12: Publish is the one verb for writing to Egeria).
 _TEXT = {
     CAPTURE_FILE_COUNTS: ("Count up the number of files and directories under the surveyed directory that have specific characteristics.",
                           "Count the number of directories and files under the starting directory."),
@@ -37,8 +37,8 @@ _TEXT = {
                               "The file extension often provides a hint as to the type of file."),
     PROFILE_FILE_TYPES: ("Iterate through files under a directory (folder) and count the occurrences of each file type.",
                          "The file type is a category of file that describes its use.  The file types are defined as reference data in Egeria."),
-    PROFILE_ASSET_TYPES: ("Iterate through files under a directory (folder) and count each potential asset type if they were to be cataloged in open metadata.",
-                          "The asset type is an open metadata type.  This annotation identifies the numbers of each type of asset that will be created if the files were cataloged in the open metadata ecosystem."),
+    PROFILE_ASSET_TYPES: ("Iterate through files under a directory (folder) and count each potential asset type if they were to be published to open metadata.",
+                          "The asset type is an open metadata type.  This annotation identifies the numbers of each type of asset that will be created if the files were published to the open metadata ecosystem."),
     PROFILE_FILE_NAMES: ("Iterate through files under a directory (folder) and count the occurrences of each file name.",
                          "Some file names indicate a file of special type/use.  This profile information is likely to be large so it is logged to a CSV File."),
 }
