@@ -41,7 +41,7 @@ function makeServer(over = {}) {
     if (s.scopeFail && u.endsWith('/scope-events') && method === 'GET') return err(500, 'scope boom');
     const scoped = await s.scope.handle(u, method, body, ok, err);
     if (scoped) return scoped;
-    if (u.endsWith('/curate/commit') && s.commitFail) return err(500, 'the registry is read-only');
+    if (u.endsWith('/curate/commit') && s.commitFail) return err(s.commitFail === true ? 500 : s.commitFail, 'the registry is read-only');
     if (u.endsWith('/curate/commit')) return ok({ curation: { id: 'c1abcdef', state: 'running', author: 'dan', requested_at: new Date().toISOString(), steps: [{ name: 'a', state: 'running' }, { name: 'b', state: 'pending' }] }, activity_id: 'a1' });
     if (u.endsWith('/curate/commits/latest')) return ok({ curation: s.latest });
     if (u.includes('/curate/commits/') && s.record) return ok(typeof s.record === 'function' ? s.record() : s.record);
@@ -113,7 +113,7 @@ const STEPS_OK = (assetDetail) => [
 ];
 const REC = (over = {}) => ({ id: 'c1abcdef', state: 'done', author: 'dan', requested_at: '2026-10-11T08:00:00', finished_at: '2026-10-11T08:01:00',
   steps: STEPS_OK('published · from the survey of 2026-10-07 · asset g · survey report r · 42 annotations linked'),
-  proof_summary: { report: { state: 'published', read_at: '2026-10-11T08:01:00' }, sub_resources: { read_back: 2, sent: 0, failed: 0 } }, ...over });
+  proof_summary: { report: { state: 'published', read_at: '2026-10-11T08:01:00' }, confirm: { state: 'confirmed', word: 'published 10-11 · confirmed' }, sub_resources: { read_back: 2, sent: 0, failed: 0 } }, ...over });
 const press = async (document, server) => {
   server.scope.events.push({ locator: 'docs/a.md', choice: 'include', action: 'set', author: 'dan' });
   await openCurate(document);
@@ -207,4 +207,52 @@ test('the running-commit line under the rail keeps its one line and its words', 
   assert.ok(!lines[0].querySelector('[data-commit-result]') && !lines[0].querySelector('details'));
   server.activity = 'success';
   await wait(2400);
+});
+
+test('confirmed is decided by the server\'s one function: pending or dead annotations are never "confirmed"; no proof summary is not confirmed', async () => {
+  const sub = { sent: 0, failed: 0 };
+  const rep = { state: 'published', read_at: '2026-10-11T08:01:00' };
+  const cases = [
+    [{ report: rep, confirm: { state: 'unconfirmed', word: 'published 10-11 · not yet confirmed · 3 sending' }, sub_resources: sub }, 'unconfirmed', /not yet confirmed · 3 sending/],
+    [{ report: rep, confirm: { state: 'differs', word: 'published 10-11 · Egeria shows 40 · 2 not sent' }, sub_resources: sub }, 'differs', /Egeria shows 40 · 2 not sent/],
+    [{ report: rep, sub_resources: sub }, 'unconfirmed', /not yet confirmed/],
+  ];
+  for (const [ps, state, re] of cases) {
+    const { document, server } = await setUp({ record: REC({ proof_summary: ps }) });
+    await press(document, server);
+    await wait(2400);
+    const res = document.querySelector('[data-curate-record] [data-commit-result]');
+    assert.equal(res.dataset.commitResult, state);
+    assert.match(norm(res), re);
+    assert.doesNotMatch(norm(res), /· confirmed$/);
+  }
+  const { document, server } = await setUp({ record: { ...REC(), proof_summary: undefined } });
+  await press(document, server);
+  await wait(2400);
+  assert.equal(document.querySelector('[data-curate-record] [data-commit-result]').dataset.commitResult, 'unconfirmed');
+});
+
+test('a refused request (401, 403, 409) offers no Retry; a failed step of a finished record does', async () => {
+  for (const status of [401, 403, 409]) {
+    const b = await setUp({ commitFail: status });
+    await press(b.document, b.server);
+    await wait(300);
+    const pop = b.document.querySelector('[data-publish-failure]');
+    assert.ok(pop, `pop-up on ${status}`);
+    assert.equal(pop.querySelector('[data-publish-failure-retry]'), null, `no Retry on ${status}`);
+    assert.match(norm(pop), /not permitted/);
+  }
+  const steps = STEPS_OK('published').map((st) => st.name === 'sub_resources' ? { ...st, state: 'failed', detail: 'boom' } : st);
+  const c = await setUp({ record: REC({ state: 'failed', steps }) });
+  await press(c.document, c.server);
+  await wait(2400);
+  assert.ok(c.document.querySelector('[data-publish-failure-retry]'), 'Retry stays for a failed step');
+});
+
+test('the idle hint under Publish does not narrate the steps', async () => {
+  const { document, server } = await setUp();
+  server.scope.events.push({ locator: 'docs/a.md', choice: 'include', action: 'set', author: 'dan' });
+  await openCurate(document);
+  await tab(document, 'curate_contents');
+  assert.doesNotMatch(norm(document.querySelector('[data-repo-commit-panel]')), /each step reports|a queued run/);
 });

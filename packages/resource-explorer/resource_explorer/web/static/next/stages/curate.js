@@ -885,7 +885,10 @@ export async function renderCurate(slug) {
       } catch (err) {
         b.disabled = false; b.textContent = counts0Label();
         if (b.nextElementSibling) b.nextElementSibling.textContent = '';
-        const why = err.status === 401 ? 'sign in to publish' : err.status === 409 ? err.message : `not published: ${err.message}`;
+        // A refusal (401, 403, 409) needs a change of permission or state, not a retry: it says "not permitted ·"
+        // (the pop-up then offers no Retry, as the tab-1 band does). Anything else may be retried.
+        const why = err.status === 401 ? 'not permitted · sign in to publish'
+          : (err.status === 403 || err.status === 409) ? `not permitted · ${err.message}` : `not published: ${err.message}`;
         host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span data-commit-result="failed" class="text-caveat text-ink">${stateCue('partial', `not finished · ${why}`)}</span>`);
         showPublishFailure(host.ownerDocument, [{ what: 'the commit', word: why }], () => host.querySelector('[data-curate-go]')?.click());
       }
