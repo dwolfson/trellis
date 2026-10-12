@@ -15,7 +15,7 @@ postgres = ["psycopg2-binary"]
 dotenv = ["python-dotenv"]
 # curation_coverage counts against RE's own node set (catalogue_scope.resolve_node_set), so it needs RE.
 re = ["resource-explorer"]
-dev = ["pytest>=8.3.0"]
+dev = ["pytest>=8.3.0", "papermill", "ipykernel", "nbformat"]   # the notebook host's test runs the notebook with papermill
 
 # Installation is registration: every manifest the library ships is an entry point.
 [project.entry-points."trellis.analytics"]

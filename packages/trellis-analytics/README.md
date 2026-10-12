@@ -11,6 +11,13 @@ Routines and steps with a result envelope, discovered through the
 - `trellis_analytics.readers.ods`: read-only access to RE's registry (SQLite file or Postgres).
 - `trellis_analytics.routines.curation_coverage`: published / not yet / blocked.
 
+- `trellis_analytics.portal`: host 3, the Portal tile. `curation_coverage_tile` reshapes the routine's result (no
+  computing of its own) and `report_specs()` is the tile's `FormatSet`; load it with
+  `PYEGERIA_REPORT_SPEC_MODULES=trellis_analytics.portal:report_specs`.
+- `examples/`: host 1 `curation_coverage.py`, host 2 `curation_coverage.ipynb` (papermill: `slug`, `ods_url`),
+  and `curation_coverage_tile.md`, the tile's spec as a Dr.Egeria report-spec document (the Advisor's parser reads it to
+  the same `FormatSet`).
+
 No executor: a routine is called directly; a step is run by a host.
 
 ```python

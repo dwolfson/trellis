@@ -243,3 +243,23 @@ def test_move_to_outbox_fallback_and_folder_of(tmp_path, monkeypatch):
     inbox_file = dm._paths["inbox"] / f"{doc_id}.md"
     assert not inbox_file.exists()
 
+
+
+def test_parse_analytic_only_spec_with_output_types():
+    rsd = """
+## Create Report Spec
+### Heading
+Tile
+### Description
+An analytic tile
+### Analytic Function
+pkg.mod.func
+### Analytic Spec Params
+resource_type=database, limit=30
+### Output Types
+DICT, BAR
+"""
+    spec = parse_report_spec_markdown(rsd)
+    assert spec.action.function == "" and spec.action.analytic_function == "pkg.mod.func"
+    assert spec.action.analytic_spec_params == {"resource_type": "database", "limit": 30}
+    assert [f.types for f in spec.formats] == [["DICT", "BAR"]]
