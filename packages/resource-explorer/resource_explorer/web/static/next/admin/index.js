@@ -40,10 +40,10 @@
  * Egeria Links (PI-130) and Publish Queue (PI-131) were the two named
  * deferrals; both are built now (admin/egeria_links.js, admin/outbox.js). The
  * Publish Queue never offers a retry on a write that archives, deletes or
- * detaches, and Egeria Links offers no delete at all. A tab with `defer`
- * instead of `render` still draws the not-built page below.
+ * detaches, and Egeria Links offers no delete at all. Every tab has a `render`;
+ * the not-built page that served a tab without one was removed as unreachable.
  */
-import { $, esc, icon, oldUiHref } from '/static/next/app.js';
+import { $, esc } from '/static/next/app.js';
 import { renderAnnotationTypes } from '/static/next/admin/annotation_types.js';
 import { renderQuestionCatalog } from '/static/next/admin/question_catalog.js';
 import { renderLogs } from '/static/next/admin/logs.js';
@@ -60,8 +60,7 @@ const PANEL_ID = 'admin-panel';
 
 /** Same grouping and order as classic's `_ADMIN_GROUPS` — a person who knows
  *  the current UI should find the same three groups here, not a reshuffled
- *  version of them. `render` is set only for the seven built panes; a
- *  deferred one carries `defer` naming exactly what and why instead. */
+ *  version of them. Every tab carries its own `render`. */
 const GROUPS = [
   { name: 'Configure', tabs: [
     { id: 'annotations', label: '📝 Annotation Types', render: renderAnnotationTypes },
@@ -98,19 +97,6 @@ function onPanelKeydown(e) {
   if (e.key === 'Escape') closeAdminPanel();
 }
 
-function deferredHtml(tab) {
-  return `
-    <h3 class="m-0 font-heading text-name font-normal text-ink">${esc(tab.label)} · not built in /next</h3>
-    <div class="my-s3 h-px bg-rule"></div>
-    <p class="max-w-[70ch] text-answer text-ink">${esc(tab.defer.does)}.</p>
-    <p class="max-w-[70ch] text-caveat text-ink-muted">Deferred, deliberately: ${esc(tab.defer.why)}.</p>
-    <p class="max-w-[70ch] text-answer text-ink">
-      <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
-        >Open Admin → ${esc(tab.label.replace(/^\S+\s/, ''))} in the current UI</a>
-      ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
-    </p>`;
-}
-
 function groupSelectHtml(group) {
   const holdsActive = group.tabs.some((t) => t.id === panel.tab);
   const active = group.tabs.find((t) => t.id === panel.tab);
@@ -143,7 +129,6 @@ async function renderBody() {
   if (!host) return;
   const tab = ALL_TABS.find((t) => t.id === panel.tab);
   if (!tab) { host.innerHTML = '<p class="text-answer text-ink-muted">Unknown pane.</p>'; return; }
-  if (!tab.render) { host.innerHTML = deferredHtml(tab); return; }
   host.innerHTML = '<p class="text-answer text-ink-muted">Loading…</p>';
   try {
     await tab.render(host);

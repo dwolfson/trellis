@@ -27,8 +27,7 @@ from pathlib import Path
 NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
 
 #: Egeria Links and Publish Queue were the two named deferrals; both were built under parity P1
-#: (PI-130, PI-131). The deferral machinery in admin/index.js stays for a future one.
-DEFERRED_TAB_IDS: list[str] = []
+#: (PI-130, PI-131). The not-built page in admin/index.js was removed as unreachable.
 BUILT_TAB_IDS = [
     "admin-egeria-links",
     "admin-outbox",
@@ -121,7 +120,7 @@ class TestGroupsAndTabsMatchClassic:
 
     def test_every_classic_tab_id_is_present(self):
         src = _admin_index_src()
-        for tab_id in BUILT_TAB_IDS + DEFERRED_TAB_IDS:
+        for tab_id in BUILT_TAB_IDS:
             assert f"id: '{tab_id}'" in src, f"missing tab id {tab_id!r}"
 
     def test_exactly_built_tab_ids_are_wired_to_a_real_renderer(self):
@@ -141,36 +140,16 @@ class TestEgeriaLinksAndPublishQueueAreBuilt:
         assert (NEXT / "admin" / "egeria_links.js").exists() and (NEXT / "admin" / "outbox.js").exists()
 
 
-class TestDeferralsAreSpecificNotGeneric:
-    """The Automate item's house style (ITEM-4-AUTOMATE-IMPLEMENTED.md):
-    name specifically what is deferred and why, not a generic 'not built'
-    string, and link out via the shared oldUiHref() helper."""
+class TestNoDeferralMachinery:
+    """Every admin tab renders; the not-built page (and its link out to the
+    old UI) was removed in re/next-remove-deferral-stubs."""
 
-    def test_every_deferred_tab_names_a_specific_does_and_why(self):
+    def test_admin_index_has_no_not_built_page_or_old_ui_link(self):
         src = _admin_index_src()
-        for tab_id in DEFERRED_TAB_IDS:
-            i = src.index(f"id: '{tab_id}'")
-            block = src[i:src.index("} },", i) + 4]
-            assert "does:" in block
-            assert "why:" in block
-            # A generic placeholder would defeat the whole point of naming
-            # the reason -- each block's `why` must be long enough to be an
-            # actual explanation, not a one-word stub.
-            why_start = block.index("why:")
-            why_text = block[why_start:why_start + 200]
-            assert len(why_text) > 40
-
-    def test_deferred_panes_link_out_via_the_shared_helper(self):
-        src = _admin_index_src()
-        assert "import { $, esc, icon, oldUiHref } from '/static/next/app.js';" in src
-        assert "oldUiHref()" in src
-
-    def test_no_deferred_tab_id_also_carries_a_render_function(self):
-        src = _admin_index_src()
-        for tab_id in DEFERRED_TAB_IDS:
-            i = src.index(f"id: '{tab_id}'")
-            block = src[i:src.index("} },", i) + 4]
-            assert "render:" not in block
+        assert "deferredHtml" not in src
+        assert "not built in /next" not in src
+        assert "oldUiHref" not in src
+        assert "defer:" not in src
 
 
 class TestAnnotationTypesBrowse:
