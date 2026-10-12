@@ -63,16 +63,19 @@ test('a judgement row (enrichment.js) and a question-answer row (app.js) render 
   const judgementDef = { key: 'sensitivity', label: 'Sensitivity', options: ['public', 'internal', 'confidential', 'restricted'] };
   const judgementRowHtml = enrichment.fieldRowHtml(judgementDef, 'judgement');
 
+  // The evidence-moved warning is said once per resource (movedSummaryHtml); the row keeps who + when through the
+  // shared function and carries only a small "review" cue, never the analyses list again.
   const expectedJudgementProvenance = personRowLineHtml({
     author: 'peterprofile',
     whenIso: app.state.enrichment.sensitivity.set_at,
-    moved: ['cve_scan'],
   });
-  assert.ok(expectedJudgementProvenance.includes('⚠ review — evidence moved: cve_scan'));
   assert.ok(
     judgementRowHtml.includes(expectedJudgementProvenance),
     'fieldRowHtml\'s provenance line must be exactly what personRowLineHtml produces for the same input',
   );
+  assert.ok(judgementRowHtml.includes('data-moved-jump'), 'the row carries the small review cue');
+  assert.ok(!judgementRowHtml.includes('evidence moved: cve_scan</span>'), 'the row does not repeat the warning text');
+  assert.ok(enrichment.movedSummaryHtml().includes('⚠ review — evidence moved: cve_scan'), 'the one summary names the moved analysis');
 
   // ── Question-answer row: a human-question answer, author-stamped ───────
   const question = 'Do we already support these dependencies?';

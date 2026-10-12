@@ -213,6 +213,22 @@ function ownerMaterialHtml() {
   return `<div data-owner-material class="text-provenance text-ink-muted">${body}</div>`;
 }
 
+/** The one summary line for judgements whose evidence moved: the analyses that moved (union over the judgements),
+ *  and how many judgements it touches. '' when none moved. Same source as each row's cue (`movedSince`). */
+export function movedSummaryHtml() {
+  const ids = [];
+  let rows = 0;
+  for (const d of JUDGEMENTS) {
+    const f = (state.enrichment || {})[d.key];
+    const m = f ? movedSince(f) : [];
+    if (m.length) rows += 1;
+    for (const id of m) if (!ids.includes(id)) ids.push(id);
+  }
+  if (!rows) return '';
+  return `<div data-moved-summary class="mb-s2 text-provenance"><span class="text-state-warn">⚠ review — evidence moved: ${esc(ids.join(', '))}</span>
+    <span class="text-ink-muted"> · ${rows} judgement${rows === 1 ? '' : 's'} made before ${ids.length === 1 ? 'it' : 'they'} last ran</span></div>`;
+}
+
 export function fieldRowHtml(def, kind) {
   const field = (state.enrichment || {})[def.key];
   const moved = field && kind === 'judgement' ? movedSince(field) : [];
@@ -227,10 +243,14 @@ export function fieldRowHtml(def, kind) {
   // and invisible. Both halves render now, in that order. Built through the
   // shared row anatomy (row-anatomy.js) — the same function the Questions
   // tab's human-answer rows call.
-  const who = proposing ? '' : personRowLineHtml({
+  // The evidence-moved warning is said ONCE per resource (`movedSummaryHtml`, above the judgements); a row carries
+  // only a small cue that jumps to it. The same eight analyses repeated on every row stopped being read.
+  const movedCue = moved.length
+    ? `<button type="button" data-moved-jump title="evidence moved: ${esc(moved.join(', '))}" class="cursor-pointer bg-transparent p-0 text-state-warn underline">⚠ review</button>${field?.author ? ' · ' : ''}`
+    : '';
+  const who = proposing ? '' : movedCue + personRowLineHtml({
     author: field?.author,
     whenIso: field?.set_at,
-    moved,
     sourceLine: kind === 'observation' && field?.source ? `from ${esc(field.source)}` : '',
     suffix: field?.interim ? ' · interim' : '',
   });
@@ -377,6 +397,7 @@ function renderEnrichmentForm(slug) {
       <span class="font-heading text-question text-ink">What we judge</span>
       <span class="text-provenance text-ink-muted"><span class="tnum">${setJ}</span> of <span class="tnum">${JUDGEMENTS.length}</span> set · perishable</span>
     </div>
+    ${movedSummaryHtml()}
     ${JUDGEMENTS.map((d) => fieldRowHtml(d, 'judgement')).join('')}
     <div class="mb-s1 mt-s4 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">What we record</span>
@@ -387,6 +408,7 @@ function renderEnrichmentForm(slug) {
     <div class="mb-s1 mt-s4 text-caps uppercase tracking-caps text-ink">What only you can answer</div>
     <div class="mb-s2 text-provenance text-ink-muted">The catalog's own questions for a person, below — each saves alone.</div>`;
 
+  host.querySelectorAll('[data-moved-jump]').forEach((b) => b.addEventListener('click', () => host.querySelector('[data-moved-summary]')?.scrollIntoView?.({ block: 'center' })));
   wireEnrichmentFieldControls(host, slug, () => renderEnrichmentForm(slug));
   renderEnrichmentEvidence(slug);
   if (['db', 'filesystem'].includes(state.resourceType)) renderDocSources(slug);

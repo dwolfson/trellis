@@ -224,7 +224,7 @@ test('a pasted Structure URL reads the rules at once and not the commit preview'
 test('the Contents count equals the scope view\'s own numbers; Structure says "none yet", not 0', async () => {
   const { document } = await setUp(viewWith());
   const rail = norm(document.querySelector('[data-subtab-rail]'));
-  assert.match(rail, /Contents ✓ 1 chosen · ✓ 2 undecided/);
+  assert.match(rail, /Contents ✓ 1 chosen · ◌ 2 undecided/);
   assert.match(rail, /Structure .*none yet/);
   assert.doesNotMatch(rail, /Structure[^A-Z]*0 awaiting/);
   const { scopeHeaderText } = await import('/static/next/stages/curate-scope.js');
@@ -248,7 +248,7 @@ test('the counts follow the view after a choice (the tab label is re-drawn from 
   server.view.counts = { ...server.view.counts, schemas_catalogue: 2, schemas_undecided: 1 };
   document.querySelector('[data-scope-depth-radio]').dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
   await wait(400);
-  assert.match(norm(document.querySelector('[data-subtab-rail]')), /Contents ✓ 2 chosen · ✓ 1 undecided/);
+  assert.match(norm(document.querySelector('[data-subtab-rail]')), /Contents ✓ 2 chosen · ◌ 1 undecided/);
 });
 
 test('a commit started on Contents shows its one-line state on Describe and Structure', async () => {
