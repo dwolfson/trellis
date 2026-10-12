@@ -31,6 +31,7 @@ import {
 } from '/static/re-api.js';
 import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
+import { reportViewerHtml, bindReportViewer } from '/static/next/stages/native-report.js';
 
 const POLL_MS = 8000;
 const CONFIRM_MS = 6000;      // how long "Confirm: start again" stays armed
@@ -63,6 +64,17 @@ function guidSpan(guid) {
   return guid ? `<span class="font-mono" title="Egeria engine action ${esc(guid)}">${esc(guid)}</span>` : '';
 }
 
+/** "◐ stalled?" when the server flagged the action as active far longer than a survey takes. The sentence
+ *  (what was measured, and the limit) is on hover; the line carries only the cue and the word. */
+function stallCue(r) {
+  if (!r.stalled) return '';
+  const hours = (s) => (s >= 86400 ? `${Math.round(s / 3600 / 2.4) / 10} days` : `${Math.round(s / 360) / 10} hours`);
+  const tip = `Requested ${hours(r.requested_age_s)} ago and Egeria still says ${r.egeria_status || 'nothing yet'}. `
+    + `Flagged after ${hours(r.stall_after_s)} ${r.phase === 'running' ? 'since the request (waiting included)' : 'without starting'}. `
+    + 'RE does not cancel or retry on this.';
+  return ` · <span class="text-state-warn" data-native-stalled title="${esc(tip)}"><span class="font-glyph" aria-hidden="true">◐</span> stalled?</span>`;
+}
+
 /** The one line of status. Pure over `row.run`. */
 export function nativeSurveyStatusHtml(row) {
   const r = row.run || { state: 'not_run' };
@@ -71,12 +83,16 @@ export function nativeSurveyStatusHtml(row) {
     case 'submit_failed':
       return `<span class="text-state-warn">not submitted — Egeria did not accept it: ${esc(r.error)}</span>`;
     case 'submitted':
-      return `submitted to Egeria · ${timeSpan(r.submitted_at)} · ${guidSpan(r.engine_action_guid)}`;
+      return `submitted to Egeria · ${timeSpan(r.submitted_at)}${stallCue(r)} · ${guidSpan(r.engine_action_guid)}`;
     case 'unreadable':
       return `submitted to Egeria · ${timeSpan(r.submitted_at)} · ${guidSpan(r.engine_action_guid)}`
         + ` · <span class="text-state-warn">last read failed: ${esc(r.error)}</span>`;
     case 'running':
-      return `running · Egeria says <span class="font-mono">${esc(r.egeria_status)}</span>`
+      // Waiting to start and running are two states; both say when the action was requested, and a stall is a
+      // cue plus a word. The age is measured from the request (the start time Egeria gives is not stored).
+      return `${r.phase === 'waiting' ? '<span class="font-glyph" aria-hidden="true">◌</span> waiting to start' : 'running'}`
+        + `${r.submitted_at ? ` · requested ${timeSpan(r.submitted_at)}` : ''}${stallCue(r)}`
+        + ` · Egeria says <span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}${err}`;
     case 'awaiting_report':
       return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
@@ -343,17 +359,12 @@ async function openReport(slug, reportGuid) {
     body.innerHTML = `<p class="text-state-warn">${esc(err.message)}</p>`;
     return;
   }
-  const anns = rep.annotations || [];
   // This is RE's own stored copy; say so, with when it was read from Egeria, and ONE added line only when the
   // reset marker postdates that read (the server decides, from the marker row).
   const copy = storedCopyWords(rep);
   body.innerHTML = `
-    <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(copy.head)}
-      · report from ${esc(rep.report_at || 'an unrecorded time')}</div>
+    <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(copy.head)}</div>
     ${copy.resetLine ? `<div class="mb-s2 text-provenance text-state-warn" data-stored-copy-reset>${esc(copy.resetLine)}</div>` : ''}
-    <div class="mb-s2 text-provenance text-ink-muted">engine action <span class="font-mono">${esc(rep.engine_action_guid)}</span>
-      · <span class="tnum">${anns.length}</span> annotation${anns.length === 1 ? '' : 's'}</div>
-    ${anns.length ? `<ul class="max-w-[70ch] list-disc pl-s4">${anns.map((a) => `
-      <li class="text-ink"><span class="text-ink-muted">${esc(a.annotation_type)}</span> — ${esc(a.summary)}</li>`).join('')}
-    </ul>` : '<p class="text-ink-muted">Egeria completed this survey and its report holds no annotations.</p>'}`;
+    ${reportViewerHtml(rep)}`;
+  bindReportViewer(body, rep);
 }

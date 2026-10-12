@@ -83,6 +83,18 @@ UNREADABLE = "unreadable"
 CANNOT_RUN = "cannot_run"
 
 
+#: Egeria's "not started yet" words; IN_PROGRESS is the one that means the engine has the action.
+#: Waiting to start and running are two states, never one.
+WAITING_STATUSES = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING"})
+
+#: A survey action still active this long after it was REQUESTED is flagged "stalled?". Measured from the
+#: request (the one time RE stores; Egeria's own start time is not kept). A native survey takes minutes, so
+#: an action still waiting after an hour has not been picked up, and one still running after six hours,
+#: counting the wait, is far beyond any survey seen. Flag only: RE never cancels or retries on this.
+STALL_AFTER_WAITING_S = 60 * 60
+STALL_AFTER_RUNNING_S = 6 * 60 * 60
+
+
 class NativeSurveyError(RuntimeError):
     """A submission that did not produce an engine action."""
 
@@ -381,7 +393,37 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
-def derive_native_state(run: dict | None, *, stored_annotation_count: int | None = None) -> dict:
+def _age_seconds(then: str, now: datetime | None) -> float | None:
+    """Seconds from a stored naive-UTC stamp to `now` (naive UTC), or None when the stamp is unreadable."""
+    try:
+        t = datetime.fromisoformat(str(then).replace("Z", ""))
+    except ValueError:
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone(timezone.utc).replace(tzinfo=None)
+    n = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    return max(0.0, (n - t).total_seconds())
+
+
+def _stall(out: dict, now: datetime | None) -> None:
+    """Fill `phase`, `requested_age_s`, `stall_after_s` and `stalled` for an action that is still active.
+    From the request time and Egeria's last-read status only; unknown stays unknown (None), never False."""
+    status = out["egeria_status"]
+    if status in WAITING_STATUSES:
+        out["phase"] = "waiting"
+    elif status in ACTIVE_STATUSES:
+        out["phase"] = "running"
+    else:
+        out["phase"] = ""            # submitted, no status read yet: not known to be either
+    age = _age_seconds(out["submitted_at"], now)
+    out["requested_age_s"] = age
+    after = STALL_AFTER_RUNNING_S if out["phase"] == "running" else STALL_AFTER_WAITING_S
+    out["stall_after_s"] = after
+    out["stalled"] = None if age is None else age > after
+
+
+def derive_native_state(run: dict | None, *, stored_annotation_count: int | None = None,
+                        now: datetime | None = None) -> dict:
     """The row's status, computed from persisted proof and nothing else.
 
     `run` is the newest `step_runs` row for (resource, process), or None.
@@ -399,6 +441,7 @@ def derive_native_state(run: dict | None, *, stored_annotation_count: int | None
         "state": NOT_RUN, "egeria_status": "", "message": "", "submitted_at": "",
         "read_at": "", "report_at": "", "report_guid": "", "engine_action_guid": "",
         "annotation_count": None, "error": "",
+        "phase": "", "requested_age_s": None, "stall_after_s": None, "stalled": False,
     }
     if not run:
         return out
@@ -424,10 +467,13 @@ def derive_native_state(run: dict | None, *, stored_annotation_count: int | None
 
     if not status:
         out["state"] = UNREADABLE if read_error else SUBMITTED
+        if out["state"] == SUBMITTED:
+            _stall(out, now)
         return out
 
     if status in ACTIVE_STATUSES:
         out["state"] = RUNNING
+        _stall(out, now)
         return out
 
     if status in SUCCESS_STATUSES:

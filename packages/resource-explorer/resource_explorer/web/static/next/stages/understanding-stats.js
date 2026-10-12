@@ -68,8 +68,16 @@ function unreadable(resp, what) {
     return `<div class="text-caveat text-state-warn" data-stats-unreadable>${what} could not be read: ${esc(resp.__error)}</div>`;
   }
   const why = ((resp && resp.reasons) || []).join(', ').replace(/_/g, ' ');
-  return `<div class="text-caveat text-ink-muted" data-stats-not-measured><span class="font-glyph" aria-hidden="true">?</span> ${
-    what} not measured${why ? ` · ${esc(why)}` : ''}</div>`;
+  // The reason, only where the stored rows show it: what the credential could read (the latest probe on
+  // record) and which survey stored nothing. Never a guess at a cause the rows do not carry.
+  const sc = resp && resp.scope;
+  const sees = sc && sc.partial ? (sc.schema_fraction || sc.fraction) : '';
+  const run = resp && resp.run;
+  const from = run ? ` the survey of ${monthDay(run.surveyed_at)} (${run.source === 'local' ? "RE's own" : run.source || 'unknown source'})` : ' the survey';
+  const reason = (resp && (resp.reasons || []).includes('no_table_activity'))
+    ? `${from} stored no table activity${sees ? ` · credential scope: ${sees}` : ''}` : '';
+  return `<div class="text-caveat text-ink-muted" data-stats-not-measured title="${esc((resp && (resp.notes || [])[0]) || '')}"><span class="font-glyph" aria-hidden="true">?</span> ${
+    what} not measured${why ? ` · ${esc(why)}` : ''}${reason ? ` ·${esc(reason)}` : ''}</div>`;
 }
 
 function resetWords(r) {

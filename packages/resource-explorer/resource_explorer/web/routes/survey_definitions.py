@@ -307,12 +307,18 @@ async def list_candidates(
         # exists to fix, so the response says which happened rather than
         # leaving the caller to infer it from a count.
         scoping = "questions"
+        #: Why the list is not narrowed to the stage, when it is not. `no_questions`: the question
+        #: catalog holds no question for this resource type at this stage (an authoring fact, so a
+        #: retry cannot change it). `none_resolved`: questions exist but no published Survey
+        #: Definition is scoped to them (a retry can change that). Empty when it IS narrowed.
+        scoping_reason = ""
         if questions:
             thin_candidates = reader.find_candidate_process_guids_by_questions(
                 questions, adapter.technology_type, survey_kind=survey_kind,
             )
         if not thin_candidates:
             scoping = "full-scan"
+            scoping_reason = "none_resolved" if questions else "no_questions"
             # No cataloged Questions for this resource type, none resolved to
             # a real Egeria GUID yet, or none are scoped to any matching
             # Survey Definition — fall back to the full scan rather than
@@ -628,6 +634,8 @@ async def list_candidates(
             # `full-scan` — nothing resolved, so this is EVERY Survey Definition
             # for the technology type, whatever phase was asked for.
             "scoping": scoping,
+            "scoping_reason": scoping_reason,
+            "scoping_question_count": len(questions),
             "phase": phase or "",
         }
 

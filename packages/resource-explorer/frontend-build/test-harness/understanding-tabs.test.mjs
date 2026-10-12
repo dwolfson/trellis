@@ -129,11 +129,13 @@ test('db: a hidden tab reads nothing until it opens; a tab switch reads nothing 
   const { document, calls } = await setUp('db');
   await open(document);
   assert.equal(hits(calls, /\/diff/), 1);
-  assert.equal(hits(calls, /\/api\/stats\/databases\/[^/]+\/(?!statistics_currency)/), 0, 'no chart read while only At a glance is open');
+  // At a glance draws its headline from the three Now reads; the series and history stay unread.
+  assert.equal(hits(calls, /\/api\/stats\/databases\/[^/]+\/(schema_distribution|table_sizes|column_types)/), 3, 'the headline reads the three Now charts');
+  assert.equal(hits(calls, /survey_history|table_growth/), 0, 'no series read while only At a glance is open');
   assert.equal(hits(calls, /statistics_currency/), 1, 'the statistics line is the one read At a glance adds');
   assert.equal(hits(calls, /\/views|\/surveys/), 0);
   await tab(document, 'contents');
-  assert.equal(hits(calls, /\/api\/stats\/databases\/[^/]+\/(schema_distribution|table_sizes|column_types)/), 3);
+  assert.equal(hits(calls, /\/api\/stats\/databases\/[^/]+\/(schema_distribution|table_sizes|column_types)/), 3, 'Contents reuses the headline reads');
   assert.equal(hits(calls, /\/views/), 1);
   assert.equal(hits(calls, /survey_history|table_growth|\/surveys/), 0, 'Over time still unread');
   assert.equal(hits(calls, /\/diff/), 1, 'the diff is one read shared by the sentence and the ranked tables');

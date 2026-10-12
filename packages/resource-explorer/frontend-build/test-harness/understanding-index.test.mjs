@@ -44,7 +44,7 @@ async function setUp({ storage } = {}) {
   await openAllUnderstandingTabs(document);
   return { document, window };
 }
-const chips = (d) => [...d.querySelectorAll('#chart-index [data-chart-chip]')];
+const chips = (d) => [...d.querySelectorAll('[data-chart-chip]')];
 const sectionBtns = (d) => [...d.querySelectorAll('[data-section-index] button[data-goto]')];
 function spy(window) {
   const calls = [];
@@ -93,17 +93,22 @@ test('a section index sits at the top in page order and scrolls to each section,
   const { document, window } = await setUp();
   const calls = spy(window);
   const btns = sectionBtns(document);
-  assert.deepEqual(btns.map((b) => b.dataset.goto), ['db-since', 'db-now', 'db-time', 'db-views', 'db-survey-history']);
-  assert.deepEqual(btns.map((b) => b.textContent.trim()), ['Since the last run', 'Now', 'Over time', 'Views', 'Survey history']);
-  const host = document.querySelector('#understanding-tabs-host');
-  assert.equal(host.firstElementChild.hasAttribute('data-section-index') || host.firstElementChild.contains(document.querySelector('[data-section-index]')), true);
+  // The index lives with what it indexes: Contents holds Now and Views, Over time the series and the history;
+  // At a glance has no index bar and no chart chips.
+  assert.deepEqual(btns.map((b) => b.dataset.goto), ['db-now', 'db-views', 'db-time', 'db-survey-history']);
+  assert.deepEqual(btns.map((b) => b.textContent.trim()), ['Now', 'Views', 'Over time', 'Survey history']);
+  const g = document.querySelector('[data-understanding-tab-panel="glance"]');
+  assert.equal(g.querySelector('[data-section-index], [data-chart-index], [data-chart-chip]'), null, 'no index bar on At a glance');
+  const inPanel = (id) => [...document.querySelectorAll(`[data-understanding-tab-panel="${id}"] [data-chart-chip]`)].map((c) => c.dataset.chartChip);
+  assert.deepEqual(inPanel('contents'), ['schema_distribution', 'table_sizes', 'column_types']);
+  assert.deepEqual(inPanel('over_time'), ['survey_history', 'table_growth', 'table_activity']);
   const sec = document.querySelector('details[data-collapsible="db-views"]');
   sec.open = false;
   sec.dispatchEvent(new window.Event('toggle'));
-  await press(btns[3]);
+  await press(btns[1]);
   assert.ok(sec.open);
   assert.equal(calls.at(-1), sec);
-  assert.equal(btns[3].getAttribute('aria-pressed'), 'true');
+  assert.equal(btns[1].getAttribute('aria-pressed'), 'true');
   assert.equal(document.querySelectorAll('#understanding-tabs-host h3').length, 5, 'no heading doubled');
 });
 

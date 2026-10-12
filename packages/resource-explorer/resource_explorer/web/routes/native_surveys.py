@@ -228,6 +228,9 @@ async def native_survey_report(entity_type: str, slug: str, report_guid: str) ->
             "egeria_reset_at": reset_at,
             "reset_since": reset_since_read(copy_read_at, reset_at),
             "engine_action_guid": run.get("engine_action_guid") or "",
+            "process_qualified_name": (run.get("step_key") or "")[len(nsr.NATIVE_SURVEY_STEP_PREFIX):]
+            if (run.get("step_key") or "").startswith(nsr.NATIVE_SURVEY_STEP_PREFIX) else "",
+            "requested_at": run.get("surveyed_at") or "",
             "annotations": annotations,
         }
 

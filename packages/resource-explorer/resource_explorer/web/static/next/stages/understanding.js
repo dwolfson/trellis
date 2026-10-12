@@ -31,6 +31,7 @@ import { mountRepoReport } from '/static/next/stages/repo-report.js';
 import { fitFigure, annotateTicks } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
 import { statsLineHtml, schemaRollupsHtml, statsOverTimeHtml } from '/static/next/stages/understanding-stats.js';
+import { databaseHeadlineHtml, repoHeadlineHtml } from '/static/next/stages/understanding-glance.js';
 import {
   surveyHistoryHtml, readShowInvalid, writeShowInvalid, rankedTablesHtml, viewsSectionHtml,
   viewFlowchartSource,
@@ -429,6 +430,17 @@ function databaseParts(slug, { tabbed }) {
         class="wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink">${esc(label)}</button>`).join('')}</div>
       <div id="chart-index" class="mt-s2 flex flex-wrap items-baseline gap-s2" data-chart-index aria-label="Charts on this page"></div>
     </div>`;
+  // Tabbed layout: the index lives with what it indexes. Contents holds Now and Views, Over time holds the
+  // series and the survey history; At a glance has none. The single page keeps its one bar (above).
+  const barFor = (id, secs) => `
+    <div class="mb-s3" data-index-bar="${id}">
+      <div class="flex flex-wrap items-baseline gap-s2" data-section-index aria-label="Sections on this tab">${
+  secs.map(([sid, label]) => `<button type="button" data-goto="${sid}" aria-pressed="false"
+        class="wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink">${esc(label)}</button>`).join('')}</div>
+      <div id="chart-index-${id}" class="mt-s2 flex flex-wrap items-baseline gap-s2" data-chart-index="${id}" aria-label="Charts on this tab"></div>
+    </div>`;
+  const contentsBar = barFor('now', [['db-now', 'Now'], ['db-views', 'Views']]);
+  const timeBar = barFor('time', [['db-time', 'Over time'], ['db-survey-history', 'Survey history']]);
   const now = collapsibleSectionHtml('db-now', h3('Now'),
     '<span class="text-caveat text-ink-muted" data-now-header>reading the latest survey…</span>',
     `<div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'now').map(slot).join('')}</div>`,
@@ -453,9 +465,9 @@ function databaseParts(slug, { tabbed }) {
     // main's template joined the parts with a newline and four spaces; keep the markup identical
     single: [indexBar, now, time, views, history].join('\n    '),
     indexBar,
-    glance: since + '<div class="mt-s3" data-stats-glance></div>',                         // S4b mount 1
-    contents: now + '<div data-stats-schemas-slot></div>' + views,                          // S4b mount 2
-    overTime: time + history + '<div data-stats-time-slot></div>',                          // S4b mount 3
+    glance: since + '<div data-glance-slot></div><div class="mt-s3" data-stats-glance></div>',                         // S4b mount 1
+    contents: contentsBar + now + '<div data-stats-schemas-slot></div>' + views,                          // S4b mount 2
+    overTime: timeBar + time + history + '<div data-stats-time-slot></div>',                          // S4b mount 3
   };
 
   const mount = (host, { lazy }) => {
@@ -468,7 +480,7 @@ function databaseParts(slug, { tabbed }) {
       b.addEventListener('click', () => gotoTarget(host, b,
         host.querySelector(`details[data-collapsible="${b.dataset.goto}"]`)));
     });
-    const chipsEl = host.querySelector('[data-chart-index]');
+    const chipsFor = (section) => host.querySelector(`[data-chart-index="${section}"]`) || host.querySelector('[data-chart-index]');
     for (const spec of DB_CHARTS) {
       const card = cardShell(spec);
       host.querySelector(`[data-slot="${spec.kind}"]`).replaceWith(card);
@@ -491,7 +503,7 @@ function databaseParts(slug, { tabbed }) {
       }
       // A chart on a tab that has not opened has not been read: say so, never the "…" of a read in flight.
       chip.textContent = `${spec.title} · ${spec.route ? (lazy ? 'not read yet' : '…') : 'not wired up yet'}`;
-      chipsEl.appendChild(chip);
+      chipsFor(spec.section).appendChild(chip);
       chips[spec.kind] = chip;
     }
     const setChip = (spec, text) => { chips[spec.kind].textContent = `${spec.title} · ${text}`; };
@@ -522,6 +534,14 @@ function databaseParts(slug, { tabbed }) {
     const readCurrency = () => {
       if (!currencyRead) currencyRead = grab('statistics_currency');
       return currencyRead;
+    };
+    // The three "Now" reads feed At a glance (headline) AND Contents (charts): one read each, shared.
+    let nowRead = null;
+    const readNow = () => {
+      if (!nowRead) {
+        nowRead = Promise.all([grab('schema_distribution'), grab('table_sizes', { measure: 'rows' }), grab('column_types')]);
+      }
+      return nowRead;
     };
     const drawStats = async (selector, render) => {
       const slotEl = host.querySelector(selector);
@@ -554,13 +574,17 @@ function databaseParts(slug, { tabbed }) {
         host.querySelector('[data-since-last-run]').innerHTML = diff && diff.__error
           ? `The comparison with the previous run could not be read: ${esc(diff.__error)}`
           : sinceLastRunHtml(diff);
+        const [dist, sizes, types] = await readNow();
+        if (stale()) return;
+        const headline = host.querySelector('[data-glance-slot]');
+        if (headline) headline.innerHTML = databaseHeadlineHtml({ dist, sizes, types });
         await drawStats('[data-stats-glance]', statsLineHtml);
       },
 
       async contents() {
         reading('now');
-        const [dist, sizes, types, views, diff] = await Promise.all([
-          grab('schema_distribution'), grab('table_sizes', { measure: 'rows' }), grab('column_types'),
+        const [[dist, sizes, types], views, diff] = await Promise.all([
+          readNow(),
           getDatabaseViews(slug).catch((err) => ({ __error: err.message })),
           readDiff(),
         ]);
@@ -721,13 +745,18 @@ function repoParts(slug) {
         const repoBanner = $('repo-diff-banner');
         bindNamesToggles(repoBanner);
         let inner;
+        let diffForHeadline = null;
         try {
-          inner = repoSinceLastRunHtml(await getRepoDiff(slug));
+          diffForHeadline = await getRepoDiff(slug);
+          inner = repoSinceLastRunHtml(diffForHeadline);
         } catch (err) {
           inner = `The comparison with the previous run could not be read: ${esc(err.message)}`;
         }
         if (slug !== state.selectedSlug || !repoBanner.isConnected) return;
         repoBanner.querySelector('[data-since-last-run]').innerHTML = inner;
+        if (split && diffForHeadline && !diffForHeadline.__error) {
+          repoBanner.insertAdjacentHTML('afterend', repoHeadlineHtml(diffForHeadline));
+        }
       },
       // `split`: the tabbed layout. Contents reads the distribution charts and the report, Over time the rest.
       async contents() {
@@ -848,7 +877,7 @@ export async function renderUnderstandingTabs(slug, kind) {
   if (kind === 'database') {
     const parts = databaseParts(slug, { tabbed: true });
     html = { glance: parts.html.glance, contents: parts.html.contents, over_time: parts.html.overTime };
-    beforePanels = parts.html.indexBar;
+    beforePanels = '';
     host.innerHTML = '';
     host.insertAdjacentHTML('beforeend', beforePanels + panelsHtml(html));
     start = parts.mount(host, { lazy: true });
