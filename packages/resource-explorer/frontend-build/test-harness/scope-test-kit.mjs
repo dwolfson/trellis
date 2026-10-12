@@ -183,7 +183,8 @@ export async function setUp(view, opts = {}) {
   // preview (which reads Egeria) is read when that tab is shown. Tests of the scope open it, as a person does.
   if (opts.tab !== 'describe') {
     const t = document.querySelector('[data-subtab="curate_contents"]');
-    if (t) { t.click(); await wait(); }
+    assert.ok(t, 'a database offers the Contents tab');
+    t.click(); await wait();
   }
   return { document, window, app, server };
 }

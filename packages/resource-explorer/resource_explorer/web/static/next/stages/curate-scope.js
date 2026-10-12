@@ -147,25 +147,40 @@ export function commitHeaderText(view) {
  *  commit row at all, and then this line says "not committed". `view` null = the scope is still being read;
  *  `failed` = it could not be read (never "not committed": absence of a read is not an absence of a commit). */
 export function commitStateLine(view, failed = false) {
-  if (!view) return failed ? { state: 'unread', cue: 'unknown', word: 'not read', text: '' } : { state: 'reading', cue: 'running', word: 'reading', text: '' };
+  if (!view) return failed ? { state: 'unread', how: 'unread', cue: 'unknown', word: 'not read', text: '', clause: '' } : { state: 'reading', how: 'reading', cue: 'running', word: 'reading', text: '', clause: '' };
   const h = (view.commit || {}).header;
   const st = h && h.state ? h.state : 'unknown';
   const text = commitHeaderText(view);
-  if (st === 'not_committed') return { state: st, cue: 'unrun', word: 'not committed', text };
-  if (st === 'committed') return { state: st, cue: 'stored', word: 'committed', text };
-  return { state: st, cue: 'unknown', word: 'not read', text };
+  const clause = h && h.text ? String(h.text).split(' \u00b7 ')[0] : '';
+  const mk = (how, cue, word) => ({ state: st, how, cue, word, text, clause });
+  if (st === 'not_committed') return mk('none', 'unrun', 'not committed');
+  if (st !== 'committed') return mk('unread', 'unknown', 'not read');
+  // "committed" in the header means only that SOME proof or outbox row exists. The word comes from what each chosen
+  // schema's own state says (view.commit.schemas), so a commit whose schemas all failed is never drawn as done.
+  const states = (view.commit || {}).schemas || {};
+  const chosen = (view.schemas || []).filter((x) => x.effective === 'catalogue').map((x) => (states[x.name] || {}).state || 'none');
+  if (/not in Egeria now/.test(text) || chosen.some((x) => x === 'reset')) return mk('reset', 'unrun', 'not in Egeria now · reset');
+  const ok = chosen.filter((x) => x === 'catalogued' || x === 'restored').length;
+  const failed_ = chosen.filter((x) => x === 'failed').length;
+  const waiting = chosen.length - ok - failed_;
+  if (!chosen.length) return mk('empty', 'stored', 'committed · none chosen');
+  if (ok === chosen.length) return mk('done', 'measured', 'committed');
+  const bits = [failed_ ? `${failed_} failed` : '', waiting ? `${waiting} queued` : ''].filter(Boolean).join(' / ');
+  return mk('partial', 'partial', `partly committed · ${bits}`);
 }
 
-/** The line itself: a cue and a short word (the full sentence is on demand), then the link to Contents. */
+/** The line itself: a cue and a short word, the header's first clause inline, the full sentence on demand, then the
+ *  link to Contents. */
 export function commitStateLineHtml(view, failed = false) {
   const l = commitStateLine(view, failed);
   const e = stateEntry(l.cue);
   const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"' : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
   const cueHtml = `${open} data-cue="${esc(l.cue)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(l.word)}</span>`;
+  const clause = l.clause ? ` <span data-db-publish-state-clause class="text-ink-muted">· ${esc(l.clause)}</span>` : '';
   const body = l.text
-    ? `<details class="inline"><summary class="inline cursor-pointer">${cueHtml}</summary><span data-db-publish-state-text class="mt-s1 block max-w-[70ch] text-provenance text-ink-muted">${esc(l.text)}</span></details>`
+    ? `<details class="inline"><summary class="inline cursor-pointer">${cueHtml}</summary><span data-db-publish-state-text class="mt-s1 block max-w-[70ch] text-provenance text-ink-muted">${esc(l.text)}</span></details>${clause}`
     : cueHtml;
-  return `<div data-db-publish-state="${esc(l.state)}" class="text-caveat">${body} · <button type="button" data-db-goto-contents class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button></div>`;
+  return `<div data-db-publish-state="${esc(l.state)}" data-db-publish-how="${esc(l.how)}" class="text-caveat">${body} · <button type="button" data-db-goto-contents class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button></div>`;
 }
 
 /** Every scope view this pane takes (first read, a re-read after a write, a commit's refresh) is announced, so the
@@ -721,7 +736,7 @@ function manifestTableHtml(preview, view, notes = '') {
     ${row('catalogs', 'Egeria catalogs', 'your included schemas', `${attach.length}${names(attach)}`, 'next refresh (or now, if ticked)', detail('cataloguer_creates', 'whole_schemas'))}
     ${row('surveys', 'Egeria surveys', 'the same schemas', `${((preview.survey || {}).schemas || []).length}`, 'after attach', detail('survey_measures'))}
     ${row('left_out', 'Left out', leave.length ? 'what changes in Egeria' : 'nothing in Egeria to change', leaveHow, leave.length ? 'at this commit' : '—')}
-    ${row('undecided', 'Undecided', 'Egeria stays as it is', `${(() => { const u = contentsUndecided('db', view); return u.state === 'count' ? u.n : (c.schemas_undecided ?? 0); })()}`, '—')}
+    ${row('undecided', 'Undecided', 'Egeria stays as it is', `${(() => { const u = contentsUndecided('db', view); return u.state === 'count' ? u.n : u.state === 'failed' ? 'not read' : '\u2014'; })()}`, '—')}
     ${noted()}
   </div></div>`;
 }
@@ -987,6 +1002,22 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
   });
 }
 
+/** An unfinished commit found on load is followed from whichever tab is showing (bounded), so the one-line state
+ *  settles without Contents being opened. The panel's own poll takes over, and this one stops, once it runs. */
+function followUnfinished(el, slug, id) {
+  let ticks = 0;
+  const stop = scopeClock.every(async () => {
+    if (stale(el, slug) || (commitUi && commitUi.slug === slug && commitUi.polling) || ++ticks > 40) { stop(); return; }
+    let rec;
+    try { rec = await getCatalogueCommitRecord(slug, id); } catch { return; }
+    setCommitLine(commitLineFromRecord('db', rec));
+    if (rec.state === 'done' || rec.state === 'failed') {
+      stop();
+      try { const v = await getCatalogueScope(slug); if (v && Array.isArray(v.schemas) && !stale(el, slug)) announceView(el, slug, v); } catch { /* the line is already settled */ }
+    }
+  }, commitPollMs);
+}
+
 export async function renderCatalogueScope(el, slug, status = '', known = null) {
   if (!el) throw new Error('Catalog scope host missing');
   if (openFor !== slug) { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = slug; sectionOpen = null; }
@@ -1007,7 +1038,10 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
     if (stale(el, slug)) return;
     // A commit still running when the page opened shows its one line on every tab at once, not only after Contents
     // has read what the commit would do.
-    if (resumed && resumed.latest && resumeMode(resumed.latest) === 'full' && !resumed.latest.terminal) setCommitLine(commitLineFromRecord('db', resumed.latest.commit));
+    if (resumed && resumed.latest && resumeMode(resumed.latest) === 'full' && !resumed.latest.terminal) {
+      setCommitLine(commitLineFromRecord('db', resumed.latest.commit));
+      followUnfinished(el, slug, resumed.latest.commit.id);
+    }
   }
   try {
     paintScope(el, slug, status, view);

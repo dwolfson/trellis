@@ -179,7 +179,8 @@ async function setUp(view, opts = {}) {
   await wait();
   // A database's Curate is three tabs (Brief S2): the scope tree and the commit panel are on Contents.
   const contentsTab = document.querySelector('[data-subtab="curate_contents"]');
-  if (contentsTab) { contentsTab.click(); await wait(); }
+  assert.ok(contentsTab, 'a database offers the Contents tab');
+  contentsTab.click(); await wait();
   return { document, window, app, server };
 }
 

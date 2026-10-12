@@ -80,7 +80,7 @@ for (const stage of ['scouting', 'discovery', 'assessment', 'analysis', 'curate'
     assert.equal(app.state.stage, stage);
     assertConsistent(document, window, app, stage);
     // Curate on a database (Brief S2) opens on its first leading tab; every other stage opens on Questions.
-    const landing = stage === 'curate' ? 'Describe and publish' : 'Questions';
+    const landing = stage === 'curate' && ['db', 'repo'].includes(app.state.resourceType) ? 'Describe and publish' : 'Questions';
     assert.ok(highlighted(document).includes(landing), `${stage}: ${landing} should be highlighted; got ${highlighted(document)}`);
   });
 }

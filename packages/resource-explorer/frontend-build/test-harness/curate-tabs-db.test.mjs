@@ -39,7 +39,7 @@ function viewWith(over = {}) {
   return v;
 }
 
-function makeServer(view, { rules = [], record = null, scopeFail = false } = {}) {
+function makeServer(view, { rules = [], record = null, scopeFail = false, latest = null } = {}) {
   const s = { calls: [], view, rules, record, polls: 0 };
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url); const method = opts.method || 'GET';
@@ -53,7 +53,7 @@ function makeServer(view, { rules = [], record = null, scopeFail = false } = {})
           steps: [{ name: 'publish_elements', state: 'running', detail: '' }, { name: 'schema_targets', state: 'pending', detail: '' }] };
         return ok({ curation: s.record, run_id: 'run00000-1', activity_id: 'a' });
       }
-      if (method === 'GET' && u.endsWith('/commits/latest')) return ok({ commit: null, terminal: null, age_hours: null, stale_unfinished: false, states: {} });
+      if (method === 'GET' && u.endsWith('/commits/latest')) return ok(latest || { commit: null, terminal: null, age_hours: null, stale_unfinished: false, states: {} });
       if (method === 'GET' && u.includes('/commits/')) return ok(s.record);   // stays running: the line must show while it does
       if (method === 'GET' && scopeFail) return { ok: false, status: 500, statusText: 'registry down', json: async () => ({ detail: 'registry down' }) };
       if (method === 'GET') return ok(s.view);
@@ -271,4 +271,80 @@ test('known negative: the hidden tabs hold no Contents controls while their pane
   assert.equal(panels(document).contents.hidden, true);
   assert.equal(panels(document).structure.hidden, true);
   assert.equal(flat(panels(document).describe).includes('What this commit does'), false, 'the commit panel is not drawn on Describe');
+});
+
+/* ── round 2: the word follows the chosen schemas' own states ─────────── */
+
+const withCommit = (header, states) => {
+  const v = viewWith();
+  v.commit = { ...v.commit, header, schemas: { sales: { state: 'none' }, ...states } };
+  return v;
+};
+const HDR = (text) => ({ state: 'committed', text });
+const wordOf = (document) => {
+  const l = document.querySelector('[data-db-publish-state]');
+  return { how: l.dataset.dbPublishHow, word: norm(l.querySelector('summary')), line: norm(l) };
+};
+
+test('"committed" only when every chosen schema is done', async () => {
+  const { document } = await setUp(withCommit(HDR(COMMITTED_TEXT), { sales: { state: 'catalogued' } }));
+  const w = wordOf(document);
+  assert.equal(w.how, 'done');
+  assert.match(w.word, /✓ committed/);
+  assert.match(w.line, /Database element d0000001 in Egeria/, 'the first clause is inline');
+  assert.equal(document.querySelector('[data-db-publish-state-text]').textContent, COMMITTED_TEXT, 'the full sentence is behind the disclosure');
+});
+
+test('every schema failed: "partly committed", never "committed"', async () => {
+  const { document } = await setUp(withCommit(HDR('Database element d1 in Egeria · published 10-05 · 1 schema chosen: 1 failed'), { sales: { state: 'failed' } }));
+  const w = wordOf(document);
+  assert.equal(w.how, 'partial');
+  assert.match(w.word, /◐ partly committed · 1 failed$/);
+  assert.doesNotMatch(w.word, /^✓/);
+});
+
+test('queued and failed are counted apart', async () => {
+  const v = withCommit(HDR('x · y'), { sales: { state: 'queued' }, archive: { state: 'failed' } });
+  v.schemas[1].effective = 'catalogue';
+  const { document } = await setUp(v);
+  assert.match(wordOf(document).word, /partly committed · 1 failed \/ 1 queued/);
+});
+
+test('after an Egeria reset: "not in Egeria now · reset"', async () => {
+  const { document } = await setUp(withCommit(HDR('Database element d1 published earlier · Egeria was reset 10-08 · not in Egeria now'), { sales: { state: 'reset' } }));
+  const w = wordOf(document);
+  assert.equal(w.how, 'reset');
+  assert.match(w.word, /not in Egeria now · reset/);
+});
+
+test('no proof at all: "not committed"', async () => {
+  const { document } = await setUp(viewWith());
+  assert.equal(wordOf(document).how, 'none');
+  assert.match(wordOf(document).word, /not committed/);
+});
+
+test('an unfinished commit found on load is followed from Describe, without opening Contents', async () => {
+  const { setCommitPollMs } = await import('/static/next/stages/curate-scope.js');
+  setCommitPollMs(40);
+  const rec = (done) => ({ id: 'beef0000aaaa', author: 'me', state: done ? 'done' : 'running', requested_at: new Date().toISOString(),
+    steps: [{ name: 'a', state: done ? 'done' : 'running' }, { name: 'b', state: done ? 'done' : 'pending' }] });
+  const latest = { commit: rec(false), terminal: false, age_hours: 0, stale_unfinished: false, states: {} };
+  const { document, server } = await setUp(viewWith(), { latest, record: rec(false) });
+  assert.match(norm(document.querySelector('[data-curate-commit-line]')), /running/, 'the line is there on load');
+  assert.equal(panels(document).contents.hidden, true, 'Contents was never opened');
+  server.record = rec(true);
+  await wait(400);
+  assert.match(norm(document.querySelector('[data-curate-commit-line]')), /published/, 'the line settled from Describe');
+  assert.equal(server.calls.filter((c) => c.url.endsWith('/commit-preview')).length, 0, 'and nothing read Egeria');
+  setCommitPollMs(2000);
+});
+
+test('the manifest never prints 0 for an undecided count it has not read', async () => {
+  const { contentsUndecided } = await import('/static/next/stages/curate-counts.js');
+  assert.equal(contentsUndecided('db', { counts: {} }).state, 'reading');
+  const v = viewWith(); v.counts = { schemas_offered: 3 };
+  const { document } = await setUp(v);
+  await tab(document, 'curate_contents');
+  assert.match(norm(document.querySelector('[data-scope-manifest-row="undecided"]')), /Undecided Egeria stays as it is —/);
+  assert.doesNotMatch(norm(document.querySelector('[data-scope-manifest-row="undecided"]')), /it is 0/);
 });

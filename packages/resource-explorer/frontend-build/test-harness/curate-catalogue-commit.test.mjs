@@ -180,7 +180,8 @@ async function setUp(view, preview, opts = {}) {
   await wait();
   // A database's Curate is three tabs (Brief S2): the scope tree and the commit panel are on Contents.
   const contentsTab = document.querySelector('[data-subtab="curate_contents"]');
-  if (contentsTab) { contentsTab.click(); await wait(); }
+  assert.ok(contentsTab, 'a database offers the Contents tab');
+  contentsTab.click(); await wait();
   // a declared scope starts collapsed to one line, and the commit's preview is read only once it is open
   const fold = document.querySelector('[data-scope-collapse]');
   if (opts.leaveCollapsed) return { document, window, app, server };
