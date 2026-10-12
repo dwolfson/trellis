@@ -143,10 +143,10 @@ Proposal for v1, for the owner to decide:
 - **Team sharing** follows the pattern RE's investigations already use
   (owner, 2026-10-12): a list is shared with a **Community or a Team**,
   both Egeria actor profiles, and "my lists" shows the lists of every
-  community and team the user belongs to. The browser reuses the same
-  relationship the investigation publish writes between a project and
-  its community or team, so the two apps agree; the builder reads it
-  from RE's investigation publish path rather than choosing one.
+  community and team the user belongs to. The relationship is
+  `ResourceList` from the Community's or Team's actor profile to the
+  WorkingSet (owner, 2026-10-12), the same one RE's investigation
+  publish writes, so the two apps agree.
 - **The type is right.** RE's work lists are already Egeria's
   `WorkingSet` (the official type; RE's module says so in its first
   lines). Only the qualifiedName prefix is RE's own. Nothing to correct.
@@ -224,8 +224,8 @@ chosen. Phases 1 and 2 are enough for gates 2 and 5.
 
 - [x] Hub flavour type: `DataSharingHub` (owner, 2026-10-12).
 - [ ] Work lists v1: option (a) two prefixes, one direction each (owner).
-- [ ] Team sharing: Community or Team as investigations do (owner);
-      the builder names the relationship from RE's investigation publish.
+- [x] Team sharing: Community or Team by `ResourceList`, as
+      investigations do (owner, 2026-10-12).
 - [ ] Hand to a steward: RFA versus to-do (owner with the Egeria lead).
 - [ ] Search beyond L0: L1 buckets as search keywords is the owner's
       direction; bucket names and quantile schedule to be set; L2 later
