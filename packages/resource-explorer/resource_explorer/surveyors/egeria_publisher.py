@@ -1641,7 +1641,7 @@ class EgeriaPublisher:
             placeholder_values = {
                 "directoryPathName": qualified_name,
                 "directoryName": name or "/",
-                "description": f"Sub-resource folder published from survey: {path or '(root)'}",
+                "description": f"Sub-resource folder cataloged from survey: {path or '(root)'}",
             }
         else:
             from resource_explorer.surveyors.sub_resource_templates import resolve_technology_type
@@ -1653,7 +1653,7 @@ class EgeriaPublisher:
                 "fileType": tech_type,
                 "filePathName": qualified_name,
                 "fileExtension": ext,
-                "description": f"Sub-resource file published from survey: {path}",
+                "description": f"Sub-resource file cataloged from survey: {path}",
                 "versionIdentifier": "1.0",
             }
 
