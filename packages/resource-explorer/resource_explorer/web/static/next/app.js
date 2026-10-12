@@ -4874,7 +4874,7 @@ function producesTypes(c) {
 
 /** A run that failed because the database is not cataloged in Egeria (the
  *  executor's own two sentences, the same ones Classic matched). */
-const NOT_CATALOGED_RE = /no stored Egeria asset guid|is not yet cataloged in Egeria|uncataloged database|unpublished database/i;
+const NOT_CATALOGED_RE = /no stored Egeria asset guid|is not yet cataloged in Egeria|is not yet published to Egeria|uncataloged database|unpublished database/i;
 
 /** Parity G2, PI-019. On a database definition whose last run failed because
  *  the database is not cataloged: "Catalog now →" (Curate's own Catalog button

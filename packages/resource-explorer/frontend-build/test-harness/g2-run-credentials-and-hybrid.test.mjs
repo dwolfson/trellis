@@ -316,3 +316,13 @@ test('running with the override box unticked forgets what was remembered', async
   ctx.app.planSurveyRun(CAND(), 'coco');
   assert.equal(dlgOf(ctx.document).querySelector('[data-run-override]').checked, false);
 });
+
+test('both wordings of the surveyor error offer "Publish now →": the server now says "not yet published to Egeria"', async () => {
+  // The server text changed (owner, 2026-10-12); the old text stays matched so either PR can merge first.
+  for (const e of ["Database 'coco' is not yet published to Egeria under qualified name x — cannot survey it",
+                   "Database 'coco' is not yet cataloged in Egeria under qualified name x — cannot survey it"]) {
+    const ctx = await setUp({}, { published: false });
+    ctx.content.innerHTML = ctx.app.surveyRowHtml(CAND({ last_run_at: new Date().toISOString(), last_run_status: 'error', last_run_errors: [e] }));
+    assert.ok(ctx.content.querySelector('[data-catalog-now]'), e);
+  }
+});
