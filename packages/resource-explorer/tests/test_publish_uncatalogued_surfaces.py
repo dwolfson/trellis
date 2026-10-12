@@ -67,6 +67,6 @@ def test_analysis_payloads_return_publish_uncatalogued(registry):
 def test_front_ends_render_the_wording_from_the_field():
     index = (STATIC / "index.html").read_text()
     app_js = (STATIC / "next" / "app.js").read_text()
-    for src in (index, app_js):
-        assert WORDING in src
+    assert WORDING in index                         # Classic keeps its wording
+    assert "not published, publish needed" in app_js   # /next: Catalog is retired as on-screen wording (2026-10-10)
     assert "publish_uncatalogued" in index and "publish_uncatalogued" in app_js

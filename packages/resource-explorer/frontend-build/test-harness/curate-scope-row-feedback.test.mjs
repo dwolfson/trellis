@@ -1,5 +1,5 @@
 /** Panel A of the designer's state-as-visual-cue drawing: the choice cell is a two-part selector
- *  ("Include in catalog?" · Include | Leave out · ×), the chosen segment filled in ink; a press dims
+ *  ("Include in Egeria?" · Include | Leave out · ×), the chosen segment filled in ink; a press dims
  *  the selector and says "saving…" in that cell; the record's answer fills the segment and prints
  *  "saved · you · just now" there, in the SAME render as the PUT's answer (not after the next scope
  *  read); a failed PUT rolls the cell back with a visible "not saved"; a second press while one is out
@@ -25,10 +25,10 @@ test('the header asks the question and the cell answers with a selector: Include
   const v = baseView();
   v.schemas[0].explicit = person('catalogue'); v.schemas[0].effective = 'catalogue'; v.schemas[0].state = 'chosen';
   const { document } = await open(v);
-  assert.equal(flat(document.querySelector('[data-scope-choice-head]')), 'Include in catalog?');
+  assert.equal(flat(document.querySelector('[data-scope-choice-head]')), 'Include in Egeria?');
   const sel = cell(document, 'schema:sales').querySelector('[data-scope-selector]');
   assert.equal(sel.getAttribute('role'), 'group');
-  assert.equal(sel.getAttribute('aria-label'), 'Include in catalog?');
+  assert.equal(sel.getAttribute('aria-label'), 'Include in Egeria?');
   assert.deepEqual([...sel.querySelectorAll('button')].map((b) => flat(b)), ['Include', 'Leave out', '×']);
   assert.ok(filled(seg(document, 'schema:sales', 'catalogue')), 'the chosen segment is filled in ink');
   assert.ok(!filled(seg(document, 'schema:sales', 'leave_out')) && seg(document, 'schema:sales', 'leave_out').className.includes('border-rule-strong'), 'the other is outlined');
@@ -118,7 +118,7 @@ test('the cell shows the answer and "saved · you · just now" when the PUT has 
   assert.ok(filled(seg(ctx.document, 'schema:sales', 'catalogue')));
   const note = c.querySelector('[data-scope-saved-note]');
   assert.equal(flat(note), 'saved · you · just now');
-  assert.match(note.title, /^saved in Resource Explorer · me · .* · not yet cataloged in Egeria$/);
+  assert.match(note.title, /^saved in Resource Explorer · me · .* · not yet published to Egeria$/);
   assert.equal(c.querySelector('[data-scope-saving]'), null);
   assert.equal(c.getAttribute('aria-busy'), null);
   assert.ok(calls(ctx.server, 'GET', '/api/catalogue-scope/adventureworks').filter((x) => !x.url.includes('/commit')).length >= 2, 'the scope read had begun and is still pending');

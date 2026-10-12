@@ -222,7 +222,7 @@ export async function openActivityPanel({ focusId = '' } = {}) {
       <div class="flex items-start justify-between gap-s3">
         <div>
           <div class="font-heading text-name text-ink">Activity</div>
-          <div class="mt-[2px] text-caveat text-ink-muted">Every scouting, survey, catalog,
+          <div class="mt-[2px] text-caveat text-ink-muted">Every scouting, survey,
             publish and RFA operation this instance has recorded (rule 16) — read from the
             same log the current UI's Activity tab shows, not a separate client-side copy.</div>
         </div>

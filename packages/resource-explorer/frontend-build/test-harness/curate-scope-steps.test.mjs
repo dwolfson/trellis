@@ -42,7 +42,7 @@ test('the steps are a numbered list under one header line: step n of m · runnin
   const { mod } = await open();
   const host = document.createElement('div');
   host.innerHTML = mod.commitStepsHtml(REC(STEPS({ schema_targets: { state: 'failed', detail: 'TIMEOUT_ERROR_408 => Request timed out', more: '* Context: * class name' } })));
-  assert.equal(flat(host.querySelector('[data-scope-steps-head]')), 'Catalog · commit a3f2c001 · step 6 of 9 · running: Egeria survey · 1 failed');
+  assert.equal(flat(host.querySelector('[data-scope-steps-head]')), 'Publish · commit a3f2c001 · step 6 of 9 · running: Egeria survey · 1 failed');
   const lis = [...host.querySelectorAll('ol > li')];
   assert.equal(lis.length, 9);
   assert.match(flat(lis[0]), /^1\. ✓ Publish elements · done/);

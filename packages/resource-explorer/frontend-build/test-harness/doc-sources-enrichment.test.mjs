@@ -128,7 +128,7 @@ test('a published, cataloged source shows no "local only" note, and an unpublish
   await enrichment.renderDocSources('adventureworks');
 
   assert.doesNotMatch(host.textContent, /local only/);
-  assert.match(host.textContent, /cataloged in Egeria/);
+  assert.match(host.textContent, /published in Egeria/);
 });
 
 test('a stale-linkage publish note is shown verbatim instead of the generic "local only" copy', async () => {
@@ -252,7 +252,7 @@ test('each of the four Egeria publish-state rows renders its own required wordin
 
   await enrichment.renderDocSources('adventureworks');
 
-  assert.match(host.textContent, /cataloged in Egeria/, 'state 1: cataloged');
+  assert.match(host.textContent, /published in Egeria/, 'state 1: cataloged');
   assert.match(host.textContent, /local — publishing…/, 'state 2: publishing');
   assert.match(
     host.textContent,
@@ -292,9 +292,9 @@ test('the not_catalogued state (round 4, 2026-09-29) renders its own honest word
 
   await enrichment.renderDocSources('adventureworks');
 
-  assert.match(host.textContent, /local — not cataloged \(publish needed\)/);
+  assert.match(host.textContent, /local — not published \(publish needed\)/);
   assert.doesNotMatch(host.textContent, /local — publishing…/);
-  assert.doesNotMatch(host.textContent, /cataloged in Egeria/);
+  assert.doesNotMatch(host.textContent, /published in Egeria/);
 });
 
 test('a "publishing" row polls the GET endpoint and updates to cataloged without any user action (round 4, 2026-09-29)', async () => {
@@ -339,7 +339,7 @@ test('a "publishing" row polls the GET endpoint and updates to cataloged without
     await new Promise((resolve) => realSetTimeout(resolve, 10));
     await new Promise((resolve) => realSetTimeout(resolve, 10));
 
-    assert.match(host.textContent, /cataloged in Egeria/, 'row must update on its own');
+    assert.match(host.textContent, /published in Egeria/, 'row must update on its own');
     assert.ok(call >= 2, 'expected the poll to have re-fetched at least once');
   } finally {
     globalThis.setTimeout = realSetTimeout;

@@ -92,7 +92,7 @@ export async function mountSubResourcePanel(slug, panel) {
 function catalogedBadge(row) {
   return row.egeria_guid
     ? '<span class="text-accent-ink" title="Published to Egeria">☁ published</span>'
-    : '<span class="text-ink-muted" title="Tracked locally only">🗂 cataloged</span>';
+    : '<span class="text-ink-muted" title="Tracked locally only">🗂 chosen</span>';
 }
 
 /** The rows shown (filtered, sorted): the record's rows joined to the survey's own columns by path. */

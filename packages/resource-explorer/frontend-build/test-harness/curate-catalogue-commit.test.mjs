@@ -200,7 +200,7 @@ test('the manifest lists the three mechanisms in order, the target count, the su
   // the table: one row per mechanism, the long sentences behind "details" on the row they qualify
   const rows = [...document.querySelectorAll('[data-scope-manifest-row]')].map((r) => r.dataset.scopeManifestRow);
   assert.deepEqual(rows, ['publishes', 'catalogs', 'surveys', 'left_out', 'undecided']);
-  assert.match(flat(document.querySelector('[data-scope-manifest-row="catalogs"]')), /Egeria catalogs your included schemas.*2 · sales, archive.*next refresh/);
+  assert.match(flat(document.querySelector('[data-scope-manifest-row="catalogs"]')), /Egeria adds your included schemas.*2 · sales, archive.*next refresh/);
   assert.match(flat(lines[0]), /^1\. RE publishes .* before any target is attached/);
   assert.match(flat(lines[1]), /^2\. Egeria's cataloguer creates tables and columns for 2 schema targets .* never the database or the server/);
   assert.match(flat(lines[3]), /^3\. Egeria's survey is limited to your chosen schemas: sales, archive$/);
@@ -270,7 +270,7 @@ test('signed out: the manifest is readable, the commit and the read are disabled
   assert.ok(document.querySelector('[data-scope-manifest-line]'));
   const btn = document.querySelector('[data-scope-commit-btn]');
   assert.equal(btn.disabled, true);
-  assert.match(btn.title, /sign in to change what gets cataloged/);
+  assert.match(btn.title, /sign in to change what gets published/);
   assert.equal(document.querySelector('[data-scope-read-back]').disabled, true);
   assert.equal(document.querySelector('[data-scope-refresh-now]').disabled, true);
 });
@@ -461,7 +461,7 @@ test('Read Egeria again posts the read-back and the status comes from its answer
   document.querySelector('[data-scope-read-back]').click();
   await wait(120);
   assert.equal(server.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/read-back')).length, 1);
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: 1 cataloged · 1 attached, waiting$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: 1 published · 1 attached, waiting$/);
 });
 
 test('a collapsed section reads nothing from Egeria: the preview is read when it is opened', async () => {
@@ -480,7 +480,7 @@ test('a collapsed section reads nothing from Egeria: the preview is read when it
 test('the commit control is "Catalog", the button without a server label falls back to it, and no UK spelling is on the panel', async () => {
   const { document } = await setUp(baseView(), previewFor({ button: '' }));
   const btn = document.querySelector('[data-scope-commit-btn]');
-  assert.equal(flat(btn), 'Catalog');
+  assert.equal(flat(btn), 'Publish');
   const panel = flat(document.querySelector('[data-scope-commit-panel]'));
   assert.doesNotMatch(panel.replace(/Egeria's cataloguer/g, '').replace(/refresh Egeria's cataloguer/g, ''), /[Cc]atalogu(e|ed|es|ing)\b/);
 });
@@ -499,7 +499,7 @@ test('"Read Egeria again" reports in the Egeria family: "cataloged" only from th
   const { document } = await setUp(committedView(), previewFor());
   document.querySelector('[data-scope-read-back]').click();
   await wait(120);
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: 1 cataloged · 1 attached, waiting$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: 1 published · 1 attached, waiting$/);
 });
 
 test('a schema row sent to Egeria says so before the read-back, and cataloged only after it', async () => {

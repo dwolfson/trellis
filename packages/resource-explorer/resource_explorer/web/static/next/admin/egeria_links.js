@@ -90,7 +90,7 @@ function render() {
         <th class="pb-s2 pr-s3 font-normal">Resource</th><th class="pb-s2 pr-s3 font-normal">Stale GUID</th>
         <th class="pb-s2 pr-s3 font-normal">Detected</th><th class="pb-s2 font-normal">Resolve</th>
       </tr></thead><tbody>${_rows.map(rowHtml).join('')}</tbody></table>`
-    : `<p data-link-none class="text-answer text-state-ok">✓ No stale links. Every resource RE has cataloged still
+    : `<p data-link-none class="text-answer text-state-ok">✓ No stale links. Every resource RE has published still
         resolves in Egeria, as of the last time something tried to use it.</p>`}`;
   bind();
 }

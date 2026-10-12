@@ -1971,7 +1971,7 @@ function markKeyHtml() {
     <div class="mb-[4px] uppercase tracking-caps text-chrome-muted">Lifecycle</div>
     ${row('sparkles', 'new', 'registered, not surveyed')}
     ${row('bar-chart-2', 'surveyed', 'has survey results')}
-    ${row('cloud', 'published', 'in the Egeria catalog')}
+    ${row('cloud', 'published', 'in Egeria')}
     <div class="mb-[4px] mt-s2 uppercase tracking-caps text-chrome-muted">Disposition</div>
     ${Object.entries(DISPOSITION_ICON).map(([d, ic]) => row(ic, d, '')).join('')}
     <div class="mt-[3px] text-chrome-muted">undecided has no mark</div>
@@ -3330,7 +3330,7 @@ export function resourceHeaderHtml(slug) {
   }
   if (ov?.egeria_link_stale) {
     published = `<span class="text-accent-ink">published, but the Egeria link is stale —`
-      + ` the catalog entry cannot be reached</span>`;
+      + ` the Egeria entry cannot be reached</span>`;
   }
   // Fourth publish state (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
   // REPLY-PUBLISH-STATE-GO-AHEAD.md §4): the DATE stays — the row is the only
@@ -3340,7 +3340,7 @@ export function resourceHeaderHtml(slug) {
   // publish trigger of its own yet to wire it to, and its Analysis pane has
   // no publish control either, so the sentence below must not point there.
   if (ov?.publish_uncatalogued) {
-    published += ` <span class="text-accent-ink">⚠ not cataloged, publish needed</span>`;
+    published += ` <span class="text-accent-ink">⚠ not published, publish needed</span>`;
   }
   if (ov?.publish_stale) {
     published += ` <span class="text-accent-ink">⚠ these elements are no longer in the store —`
@@ -4370,7 +4370,7 @@ async function loadDispositionPane() {
     <div id="depth-offer" class="mb-s4"></div>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Records</span>
-      <span class="text-provenance text-ink-muted">what was cataloged, and what was written down · a snapshot, not a query</span>
+      <span class="text-provenance text-ink-muted">what was published, and what was written down · a snapshot, not a query</span>
     </div>
     <div id="records" class="mb-s4 text-caveat text-ink-muted">Reading the records…</div>
     <div class="mb-s1 flex items-baseline gap-s2">
@@ -4429,7 +4429,7 @@ export async function renderRecords(slug, entityType) {
   try { recs = (await listRecords(slug, entityType)).records || []; }
   catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
-  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing cataloged, nothing written down.'; return; }
+  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing published, nothing written down.'; return; }
   const scopeAct = await scopeActState(entityType, slug);
   if (slug !== state.selectedSlug) return;
   host.innerHTML = recs.map((r) => {
@@ -4457,7 +4457,7 @@ export async function renderRecords(slug, entityType) {
     }
     // curateRecordHtml carries the author, date and state line itself.
     return `<div class="border-t border-rule py-s2" data-record="${esc(r.id)}">
-      <div class="text-answer text-ink">cataloged${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
+      <div class="text-answer text-ink">published${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
       ${curateRecordHtml(r)}
     </div>`;
   }).join('');
@@ -4892,7 +4892,7 @@ function catalogRetryHtml(c) {
         >Retry →</button>`
     : `<button type="button" data-catalog-now="${esc(c.qualified_name || c.guid)}"
         class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-        title="not cataloged in Egeria · the Catalog button on Curate writes it">Catalog now →</button>`;
+        title="not published to Egeria · the Publish button on Curate writes it">Publish now →</button>`;
 }
 
 /** The run buttons of the survey pane's rows: plan a run, retry, catalog now. */
@@ -4968,9 +4968,9 @@ export function surveyRowHtml(c) {
 // fallback keeps an unmapped or future kind from disappearing rather than
 // crashing the render.
 const NATIVE_PROCESS_KIND_LABELS = {
-  survey_existing: 'surveys an existing catalog entry',
-  catalog_and_survey: 'catalogs, then surveys',
-  delete: 'deletes a catalog entry',
+  survey_existing: 'surveys an existing Egeria entry',
+  catalog_and_survey: 'publishes, then surveys',
+  delete: 'deletes an Egeria entry',
 };
 function nativeProcessKindLabel(kind) {
   return NATIVE_PROCESS_KIND_LABELS[kind] || `Egeria process kind: ${kind}`;
@@ -5621,7 +5621,7 @@ export function analysisIndexRowHtml(row) {
     </div>
     ${isSubRes ? `<button type="button" data-subres-toggle aria-expanded="false"
       class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
-      >🗂 select &amp; catalog</button>` : ''}
+      >🗂 select &amp; publish</button>` : ''}
     ${analysisCredentialHtml(row)}
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
@@ -5742,7 +5742,7 @@ async function renderAnalysesIndexSection(slug, stage) {
     const opening = subresPanel.classList.contains('hidden');
     subresPanel.classList.toggle('hidden', !opening);
     subresToggle.setAttribute('aria-expanded', String(opening));
-    subresToggle.textContent = opening ? '🗂 select & catalog ▲' : '🗂 select & catalog';
+    subresToggle.textContent = opening ? '🗂 select & publish ▲' : '🗂 select & publish';
     if (opening) await mountSubResourcePanel(slug, subresPanel);
   });
   const startRun = async (b, aid, credential = null, force = false) => {
@@ -5957,9 +5957,9 @@ function bindRunOptions(body, slug) {
 
   const sayHybrid = () => {
     hybridNote.textContent = !cataloged
-      ? 'not cataloged in Egeria · catalog it on Curate first'
+      ? 'not published to Egeria · publish it on Curate first'
       : hybrid.checked
-        ? 'Egeria is tried first. The run publishes to Egeria when it finishes (a SurveyReport is written to the catalog). Untick for a local-only run.'
+        ? 'Egeria is tried first. The run publishes to Egeria when it finishes (a SurveyReport is written to Egeria). Untick for a local-only run.'
         : 'Local only: nothing is asked of Egeria in the steps that would try it first.';
   };
   hybrid.addEventListener('change', sayHybrid);
@@ -8467,7 +8467,7 @@ async function loadPane() {
   // level note (RULING-SUBRESOURCES-PLACEMENT.md; next/stages/analysis.js).
   if (!state.questions.length) {
     rows.innerHTML = curateInFrame ? '' : `<div class="py-s3 text-answer text-ink">
-      No cataloged questions match this stage and this perspective set.
+      No questions match this stage and this perspective set.
       That is a fact about the filter, not about the repository.</div>`;
     $('answered-count').textContent = curateInFrame ? 'review and commit · Curate' : `0 questions · ${stageLabel()}`;
     return;

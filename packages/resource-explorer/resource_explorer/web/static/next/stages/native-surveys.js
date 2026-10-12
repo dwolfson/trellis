@@ -158,7 +158,7 @@ export function nativeSurveyStatusHtml(row) {
 }
 
 /** The databases a server survey found, exactly as Egeria reported them. A database RE has registered and
- *  Egeria has no asset for is "found, not yet cataloged", with the one control. */
+ *  Egeria has no asset for is "found, not yet published", with the one control. */
 export function discoveredDatabasesHtml(row) {
   const found = row.discovered || [];
   if (!found.length) return '';
@@ -167,8 +167,8 @@ export function discoveredDatabasesHtml(row) {
     ${found.map((d) => `<div class="flex flex-wrap items-baseline gap-s2 py-[2px]">
       <span class="font-mono text-ink">${esc(d.name)}</span>
       <span class="text-provenance text-ink-muted">${
-        d.state === 'cataloged' ? 'cataloged in Egeria'
-          : (d.re_slug ? 'found, not yet cataloged' : 'found · not registered in RE')}</span>
+        d.state === 'cataloged' ? 'published in Egeria'
+          : (d.re_slug ? 'found, not yet published' : 'found · not registered in RE')}</span>
       ${d.control ? `<button type="button" data-native-register-slug="${esc(d.re_slug)}"
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
         >${esc(d.control)}</button>` : ''}

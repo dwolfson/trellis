@@ -56,7 +56,7 @@ test('the new rows say they are kept in Resource Explorer, not that Curate reads
   for (const k of ['steward', 'notes', 'location', 'backup_status']) {
     assert.match(text(row(k)), /kept in Resource Explorer · no publish step reads it yet/, k);
   }
-  assert.match(text(row('sensitivity')), /feeds → Curate \(catalog record\)/);
+  assert.match(text(row('sensitivity')), /feeds → Curate \(publish record\)/);
 });
 
 test('saving a new row sends one PATCH with the key, value and kind, and the row re-reads signed', async () => {

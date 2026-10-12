@@ -185,7 +185,7 @@ test('hybrid is disabled with its reason when the database is not cataloged in E
   const h = d.querySelector('[data-run-hybrid]');
   assert.equal(h.disabled, true);
   assert.equal(h.checked, false);
-  assert.match(text(d), /not cataloged in Egeria · catalog it on Curate first/);
+  assert.match(text(d), /not published to Egeria · publish it on Curate first/);
   d.querySelector('[data-act="go"]').click();
   await tick(80);
   assert.equal(post(ctx.calls).body.force_custom, true, 'no Egeria-first for a database Egeria does not hold');
@@ -258,17 +258,17 @@ const NOT_CATALOGED = CAND({
   last_run_errors: ["Step 'x' failed: Database 'coco' has no stored Egeria asset guid — cannot trigger Egeria's native survey for an uncataloged database."],
 });
 
-test('a run that failed because the database is not cataloged offers "Catalog now →" which goes to Curate, with no Retry yet', async () => {
+test('a run that failed because the database is not cataloged offers "Publish now →" which goes to Curate, with no Retry yet', async () => {
   const ctx = await setUp({}, { published: false });
   ctx.content.innerHTML = ctx.app.surveyRowHtml(NOT_CATALOGED);
   const catalog = ctx.content.querySelector('[data-catalog-now]');
   assert.ok(catalog);
-  assert.match(text(catalog), /Catalog now →/);
+  assert.match(text(catalog), /Publish now →/);
   assert.equal(ctx.content.querySelector('[data-retry-run]'), null);
   assert.equal(ctx.calls.filter((c) => c.method === 'POST').length, 0, 'no automatic anything');
 });
 
-test('Catalog now → routes to the Curate stage; once the database reads cataloged the same row offers Retry →, which plans, never runs', async () => {
+test('Publish now → routes to the Curate stage; once the database reads cataloged the same row offers Retry →, which plans, never runs', async () => {
   const ctx = await setUp({}, { published: false });
   ctx.content.innerHTML = ctx.app.surveyRowHtml(NOT_CATALOGED);
   ctx.app.bindSurveyRowActions(ctx.content, [NOT_CATALOGED], 'coco');

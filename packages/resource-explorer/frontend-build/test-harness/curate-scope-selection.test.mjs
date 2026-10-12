@@ -138,7 +138,7 @@ test('signed out: the table ticks, the filter-driven select all and the bulk but
   document.querySelector('[data-scope-toggle="sales"]').click();
   const b = tableBox(document, 'sales', 'orders');
   assert.ok(b.disabled);
-  assert.match(b.title, /sign in to change what gets cataloged/);
+  assert.match(b.title, /sign in to change what gets published/);
   assert.ok(!document.querySelector('[data-scope-filter]').disabled, 'filtering is a read: it stays usable');
   assert.ok(scopeEl(document));
 });

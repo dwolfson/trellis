@@ -71,10 +71,10 @@ test('the five sections render in order, each row saying what it feeds', async (
   }
 
   // Every judgement/observation row says what it feeds.
-  assert.match(html, /feeds → Curate \(catalog record\)/);
+  assert.match(html, /feeds → Curate \(publish record\)/);
   // License additionally names its survey source (`fromAnalysis`), not a
   // fabricated cross-reference.
-  assert.match(html, /feeds → Curate \(catalog record\) · sourced from license_classification/);
+  assert.match(html, /feeds → Curate \(publish record\) · sourced from license_classification/);
 
   // The human question row (section 4): no declared consumer (no
   // `analysis_ids`), so the honest line -- never the catalog's prose.

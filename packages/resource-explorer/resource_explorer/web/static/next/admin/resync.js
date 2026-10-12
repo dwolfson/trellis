@@ -58,7 +58,7 @@ const SCHEDULE_INTERVAL_TEXT = 'every ~600s';
 const BLAST_RADIUS = {
   clear_stale_assets: (n) =>
     `Clears the local "has an Egeria asset" pointer on ${n} record(s) whose asset no `
-    + `longer resolves in Egeria. Local only — writes nothing to Egeria, and re-cataloging `
+    + `longer resolves in Egeria. Local only — writes nothing to Egeria, and re-publishing `
     + `later restores the pointer. Reversible.`,
   clear_orphan_publish_claims: (n) =>
     `Clears ${n} local publish-claim record(s) that point at a survey report Egeria no `
@@ -91,7 +91,7 @@ const BLAST_RADIUS = {
     + `API budget. Adds a new report; does not delete the existing asset.`,
   reauthor_survey_definitions: (n) =>
     `Re-authors ${n} Survey Definition(s) IN EGERIA by re-running their Dr.Egeria documents, `
-    + `then reconciles their step links. Writes to the shared catalog and can take a few `
+    + `then reconciles their step links. Writes to shared Egeria and can take a few `
     + `minutes — leave the page open.`,
   relink_investigation_members: (n) =>
     `Attaches ${n} investigation member(s) to their Egeria assets. Additive — does not detach `
@@ -233,8 +233,8 @@ function render() {
       <div class="my-s3 h-px bg-rule"></div>
       <p class="text-answer text-state-warn">Egeria is unreachable — nothing was checked.</p>
       <p class="text-caveat text-ink-muted">${esc(d.unreachable_reason || '')}</p>
-      <p class="text-caveat text-ink-muted">Deliberately not reported as "no drift": a catalog we
-        cannot read is not a catalog known to be fine.</p>
+      <p class="text-caveat text-ink-muted">Deliberately not reported as "no drift": an Egeria we
+        cannot read is not one known to be fine.</p>
       <button type="button" data-retry
         class="mt-s2 cursor-pointer rounded-sm border border-rule-strong px-2 py-[2px] text-caveat text-ink hover:border-accent">Retry</button>`;
     _host.querySelector('[data-retry]')?.addEventListener('click', load);
@@ -258,7 +258,7 @@ function render() {
         class="cursor-pointer rounded-sm border border-rule-strong px-2 py-[2px] text-caveat text-ink hover:border-accent">🔄 Re-scan</button>
     </div>
     <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Everywhere RE and Egeria have drifted
-      apart, in both directions: pointers here into a catalog that no longer holds what they point
+      apart, in both directions: pointers here into Egeria that no longer holds what they point
       at, and definitions in Egeria that have fallen behind what RE can now run. Scanning never
       writes.</p>
     ${privateZoneHtml()}

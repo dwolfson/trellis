@@ -196,9 +196,9 @@ test('the scope is on Contents; the two waiting sections and the dependencies li
   const structure = document.querySelector('[data-curate-tab-panel="structure"]');
   assert.deepEqual([...contents.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['scope']);
   assert.deepEqual([...structure.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['glossary', 'schema-match', 'dependencies']);
-  assert.match(flat(contents.querySelector('[data-curate-work="scope"]')), /^What gets cataloged/);
-  assert.match(flat(structure.querySelector('[data-curate-work="glossary"]')), /and the tables to be cataloged first \(on Contents\)/);
-  assert.match(flat(structure.querySelector('[data-curate-work="schema-match"]')), /and the tables to be cataloged first \(on Contents\)/);
+  assert.match(flat(contents.querySelector('[data-curate-work="scope"]')), /^What gets published/);
+  assert.match(flat(structure.querySelector('[data-curate-work="glossary"]')), /and the tables to be published first \(on Contents\)/);
+  assert.match(flat(structure.querySelector('[data-curate-work="schema-match"]')), /and the tables to be published first \(on Contents\)/);
   assert.equal(document.querySelectorAll('#curate-host table').length, 0, 'never a <table>');
 });
 
@@ -475,12 +475,12 @@ test('a database with no stored rows says so in words, not an empty table', asyn
 
 test('signed out: the tree reads, every control is disabled with the reason, and no write is attempted', async () => {
   const { document, server } = await setUp(withProposal(), { signedIn: false });
-  assert.match(flat(document.querySelector('[data-scope-signed-out]')), /You can read the scope as it stands\. sign in to change what gets cataloged/);
+  assert.match(flat(document.querySelector('[data-scope-signed-out]')), /You can read the scope as it stands\. sign in to change what gets published/);
   const controls = [...scopeEl(document).querySelectorAll('button[data-scope-act], input[data-scope-depth-radio]')];
   assert.ok(controls.length > 4);
   for (const c of controls) {
     assert.ok(c.disabled, 'control is disabled');
-    assert.match(c.title, /sign in to change what gets cataloged/);
+    assert.match(c.title, /sign in to change what gets published/);
   }
   row(document, 'schema:empty_one').querySelector('[data-scope-act="confirm"]').click();
   await wait(50);
@@ -553,7 +553,7 @@ test('activity is a word with its window: active, dormant, or can\'t tell with t
 test('columns, left to right: choice, Schema / table, Rows, Size, Activity, Classification, In Egeria (full names in the titles)', async () => {
   const { document } = await setUp(baseView());
   const headEls = [...document.querySelector('[data-scope-tree-head]').children].filter((c) => flat(c));
-  assert.deepEqual(headEls.map(flat), ['Include in catalog?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
+  assert.deepEqual(headEls.map(flat), ['Include in Egeria?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
   // every shortened header keeps its meaning on hover
   const byText = Object.fromEntries(headEls.map((c) => [flat(c), c.title]));
   assert.match(byText.Rows, /Row count/);
@@ -707,7 +707,7 @@ test('bulk, signed out: every bulk control is disabled with the reason and nothi
   assert.ok(controls.length >= 7);
   for (const c of controls) {
     assert.ok(c.disabled, 'disabled');
-    assert.match(c.title, /sign in to change what gets cataloged/);
+    assert.match(c.title, /sign in to change what gets published/);
   }
   document.querySelector('[data-scope-catalogue-all]').click();
   await wait(50);

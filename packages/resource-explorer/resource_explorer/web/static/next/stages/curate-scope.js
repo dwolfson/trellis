@@ -45,7 +45,7 @@ const whoAmI = () =>
   (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
 const words = (choice) => (choice === 'leave_out' ? 'leave out' : choice === 'catalogue' ? 'include' : '');
 const opposite = (choice) => (choice === 'leave_out' ? 'catalogue' : 'leave_out');
-const signInReason = 'sign in to change what gets cataloged: every choice needs an author';
+const signInReason = 'sign in to change what gets published: every choice needs an author';
 const num = (n) => Number(n).toLocaleString('en-US');
 
 /** Which schemas are expanded survives a redraw (a write redraws the tree). */
@@ -211,7 +211,7 @@ function setterButtons(node, me) {
   const tbl = node.kind === 'table' ? esc(node.name) : '';
   return selectorHtml({
     own: node.explicit ? node.explicit.choice : '', explicit: !!node.explicit, off, dis,
-    segs: [['catalogue', 'Include'], ['leave_out', 'Leave out']], ariaLabel: 'Include in catalog?',
+    segs: [['catalogue', 'Include'], ['leave_out', 'Leave out']], ariaLabel: 'Include in Egeria?',
     segAttrs: (choice) => `data-scope-act="set" data-scope-choice="${choice}" data-scope-schema="${sch}" data-scope-table="${tbl}"`,
     clearAttrs: `data-scope-act="clear" data-scope-schema="${sch}" data-scope-table="${tbl}"`,
     clearTitle: node.state === 'disagrees' ? 'reconsider: back to undecided' : 'back to undecided',
@@ -272,7 +272,7 @@ function savedNoteHtml(node, commit) {
   const n = savedNotes.get(key);
   if (!n) return '';
   const st = node.kind === 'schema' ? ((commit || {}).schemas || {})[node.name] : ((commit || {}).tables || {})[`${node.schema}.${node.name}`];
-  const tail = !st || ['none', 'uncommitted', 'left_out'].includes(st.state) ? 'not yet cataloged in Egeria' : 'Egeria changes when you press Catalog';
+  const tail = !st || ['none', 'uncommitted', 'left_out'].includes(st.state) ? 'not yet published to Egeria' : 'Egeria changes when you press Publish';
   return `<div><span data-scope-saved-note title="saved in Resource Explorer · ${esc(n.by)} · ${esc(n.at)} · ${tail}" class="text-provenance text-ink-muted">saved · ${esc(who(n.by))} · just now</span></div>`;
 }
 
@@ -509,7 +509,7 @@ export function treeHtml(view, me) {
   }
   const hc = (key, label, title, attr = '') => `<div class="shrink-0" style="${cs(key)};${headCellStyle(SCOPE_COLS, key)}"${attr} title="${esc(title || label)}">${esc(label)}${handleHtml(SCOPE_COLS, key, label)}</div>`;
   const head = `<div class="flex items-start gap-s2 border-b border-rule py-[3px] text-caveat text-caps uppercase tracking-caps text-ink-muted" style="padding-left:7px" data-scope-tree-head>
-    <div class="shrink-0" style="${cs('sel')}"></div>${hc('choice', 'Include in catalog?', '', ' data-scope-choice-head')}${hc('name', 'Schema / table')}
+    <div class="shrink-0" style="${cs('sel')}"></div>${hc('choice', 'Include in Egeria?', '', ' data-scope-choice-head')}${hc('name', 'Schema / table')}
     ${hc('rows', 'Rows', 'Row count; the source and date ride on each cell')}
     ${hc('size', 'Size', 'Size on disk; the source and date ride on each cell')}
     ${hc('act', 'Activity', `Activity: dormant means 0 writes in at least ${String(view.dormancy_days || 90)} days of counter evidence`, ' data-scope-activity-head')}
@@ -596,7 +596,7 @@ function treeSourceText(view) {
 
 export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(view, '')) {
   const el = view.egeria_element || {};
-  const element = el.short ? `reads Egeria element <span class="font-mono">${esc(el.short)}</span>…` : esc(el.text || 'not cataloged in Egeria');
+  const element = el.short ? `reads Egeria element <span class="font-mono">${esc(el.short)}</span>…` : esc(el.text || 'not published to Egeria');
   const ns = view.new_since || {};
   const dis = me ? '' : `disabled title="${esc(signInReason)}"`;
   const nsLine = ns.text
@@ -696,8 +696,8 @@ export function commitStepsHtml(rec) {
   const nFailed = steps.filter((st) => st.state === 'failed').length;
   const idx = cur ? steps.indexOf(cur) + 1 : steps.length;
   const head = cur
-    ? `Catalog · commit ${esc(String(rec.id || '').slice(0, 8))} · step ${idx} of ${steps.length} · running: ${esc(STEP_LABEL[cur.name] || cur.name)} · ${nFailed} failed`
-    : `Catalog · commit ${esc(String(rec.id || '').slice(0, 8))} · ${steps.length} of ${steps.length} steps · ${esc(rec.state || '')} · ${nFailed} failed`;
+    ? `Publish · commit ${esc(String(rec.id || '').slice(0, 8))} · step ${idx} of ${steps.length} · running: ${esc(STEP_LABEL[cur.name] || cur.name)} · ${nFailed} failed`
+    : `Publish · commit ${esc(String(rec.id || '').slice(0, 8))} · ${steps.length} of ${steps.length} steps · ${esc(rec.state || '')} · ${nFailed} failed`;
   // The step line already says its state; a detail that starts with the same word would say it twice.
   const bare = (st) => String(st.detail || '').replace(new RegExp(`^${String(st.state).replace(/[^a-z_]/gi, '')} · `, 'i'), '');
   const rows = steps.map((st, i) => {
@@ -733,7 +733,7 @@ function manifestTableHtml(preview, view, notes = '') {
   return `<div data-scope-manifest-host class="min-w-0 max-w-full overflow-x-auto"><div data-scope-manifest role="table" aria-label="What this commit does" class="text-caveat" style="${innerStyle(MANIFEST_COLS)}">
     <div role="row" class="flex items-start gap-s2 text-provenance text-ink-muted">${hc('who', '')}${hc('what', 'what')}${hc('many', 'how many')}${hc('when', 'when')}</div>
     ${row('publishes', 'RE publishes', 'the server and database', '2 elements', 'now', detail('re_publishes', 'survey_report_whole'))}
-    ${row('catalogs', 'Egeria catalogs', 'your included schemas', `${attach.length}${names(attach)}`, 'next refresh (or now, if ticked)', detail('cataloguer_creates', 'whole_schemas'))}
+    ${row('catalogs', 'Egeria adds', 'your included schemas', `${attach.length}${names(attach)}`, 'next refresh (or now, if ticked)', detail('cataloguer_creates', 'whole_schemas'))}
     ${row('surveys', 'Egeria surveys', 'the same schemas', `${((preview.survey || {}).schemas || []).length}`, 'after attach', detail('survey_measures'))}
     ${row('left_out', 'Left out', leave.length ? 'what changes in Egeria' : 'nothing in Egeria to change', leaveHow, leave.length ? 'at this commit' : '—')}
     ${row('undecided', 'Undecided', 'Egeria stays as it is', `${(() => { const u = contentsUndecided('db', view); return u.state === 'count' ? u.n : u.state === 'failed' ? 'not read' : '\u2014'; })()}`, '—')}
@@ -786,7 +786,7 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
     <div class="flex flex-wrap items-start justify-between gap-s3">
       <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, refused + notPermitted + leave)}</div>
       <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
-        <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Catalog')}</button>
+        <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Publish')}</button>
         ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
         ${collisions}${blockers}${alsoBlocked}
         <label class="flex min-w-0 max-w-full cursor-pointer items-start gap-[4px] break-words text-right text-caveat text-ink"><input type="checkbox" data-scope-refresh-now checked ${me ? '' : 'disabled'}> refresh Egeria's cataloger now (about 16 s; RE never restarts a connector)</label>
@@ -998,7 +998,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     say('Reading Egeria…');
     let r;
     try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); offerSignIn(err); return; }
-    await redraw(`read back: ${r.catalogued || 0} cataloged · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
+    await redraw(`read back: ${r.catalogued || 0} published · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
   });
 }
 
@@ -1019,7 +1019,7 @@ function followUnfinished(el, slug, id) {
 }
 
 export async function renderCatalogueScope(el, slug, status = '', known = null) {
-  if (!el) throw new Error('Catalog scope host missing');
+  if (!el) throw new Error('Scope host missing');
   if (openFor !== slug) { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = slug; sectionOpen = null; }
   let view;
   try {
@@ -1028,7 +1028,7 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
   } catch (err) {
     if (stale(el, slug)) return;
     announceView(el, slug, null, true);
-    el.innerHTML = `<div data-scope-error class="text-caveat text-state-warn">The catalog scope could not be read: ${esc(err.message)}</div>`;
+    el.innerHTML = `<div data-scope-error class="text-caveat text-state-warn">The scope could not be read: ${esc(err.message)}</div>`;
     return;
   }
   if (stale(el, slug)) return;
@@ -1047,7 +1047,7 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
     paintScope(el, slug, status, view);
   } catch (err) {
     // A throw while drawing must never leave a blank pane: say what broke and what to do.
-    el.innerHTML = `<div data-scope-render-error role="alert" class="text-caveat text-state-warn">The catalog scope could not be drawn: ${esc(err && err.message ? err.message : String(err))}. Reload the page to try again; nothing you chose was lost.</div>`;
+    el.innerHTML = `<div data-scope-render-error role="alert" class="text-caveat text-state-warn">The scope could not be drawn: ${esc(err && err.message ? err.message : String(err))}. Reload the page to try again; nothing you chose was lost.</div>`;
   }
 }
 
