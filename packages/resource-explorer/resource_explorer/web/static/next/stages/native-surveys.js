@@ -166,6 +166,8 @@ function reachNoteHtml(row) {
 /** Cancel cues that outlive a repaint: a cancel Egeria did not confirm stays on its row until the next try
  *  (guid -> the words). A cancel that worked needs none: the row's own status then says CANCELLED. */
 const cancelCues = new Map();
+/** Cancels in flight (guid): a poll repaint mid-request keeps "cancelling…" on the row. */
+const cancelling = new Set();
 
 /** The cancel control, only while Egeria last said the action is waiting or running (the server's `run.state`
  *  is 'running' exactly for those statuses). Cue plus short words; the confirm is a state of the control. */
@@ -185,7 +187,8 @@ export function cancelControlHtml(row) {
       <button type="button" data-native-cancel-yes="${esc(guid)}" class="cursor-pointer rounded-sm border border-state-warn bg-transparent px-2 text-provenance text-state-warn">Yes, cancel</button>
       <button type="button" data-native-cancel-no class="cursor-pointer border-0 bg-transparent p-0 text-provenance text-ink-muted underline">keep it</button>
     </span>
-    <span hidden data-native-cancel-ack class="text-provenance text-ink-muted"></span>
+    <span ${cancelling.has(guid) ? '' : 'hidden'} data-native-cancel-ack class="text-provenance text-ink-muted">${
+  cancelling.has(guid) ? '<span class="font-glyph" aria-hidden="true">◔</span> cancelling…' : ''}</span>
     ${keep}</div>`;
 }
 
@@ -366,7 +369,10 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
     host.querySelectorAll('[data-native-cancel]').forEach((b) => b.addEventListener('click', () => {
       const box = b.closest('[data-native-cancel-box]');
       b.hidden = true;
-      box.querySelector('[data-native-cancel-confirm]').hidden = false;
+      const conf = box.querySelector('[data-native-cancel-confirm]');
+      conf.hidden = false;
+      // The confirm is a state of the control: it lapses, as the register confirm does.
+      setTimeout(() => { if (box.isConnected && !cancelling.has(box.dataset.nativeCancelBox)) { conf.hidden = true; b.hidden = false; } }, CONFIRM_MS);
     }));
     host.querySelectorAll('[data-native-cancel-no]').forEach((b) => b.addEventListener('click', () => {
       const box = b.closest('[data-native-cancel-box]');
@@ -379,10 +385,13 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       const ack = box.querySelector('[data-native-cancel-ack]');
       box.querySelector('[data-native-cancel-confirm]').hidden = true;
       cancelCues.delete(guid);
+      cancelling.add(guid);
       ack.hidden = false;
       ack.innerHTML = '<span class="font-glyph" aria-hidden="true">◔</span> cancelling…';   // acknowledged at once
+      const done = () => cancelling.delete(guid);
       try {
         const res = await cancelNativeAction(slug, guid, { entityType: apiEntityType(state.resourceType) });
+        done();
         if (res.cancelled) {
           // Validated by the read-back, not by the 200: the repaint below is the server's own rows.
           paint(res.surveys);          // the row's own status now reads "✓ cancelled in Egeria"
@@ -395,6 +404,7 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
         paint(res.surveys);
         failDialog(why);
       } catch (err) {
+        done();
         const why = `not cancelled: ${err.message}`;
         cancelCues.set(guid, why);
         paint(rows);

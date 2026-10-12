@@ -65,6 +65,25 @@ test('the control shows while Egeria says waiting or running, and for nothing el
   assert.equal(ns.cancelControlHtml({ ...RUNNING, run: { ...RUNNING.run, engine_action_guid: '' } }), '');
 });
 
+test('Cancel stays offered when the last read failed but the stored status is live', async () => {
+  const { ns } = await setUp();
+  assert.match(ns.cancelControlHtml(row({ state: 'running', egeria_status: 'IN_PROGRESS', error: 'connection refused' })), /data-native-cancel="/);
+});
+
+test('"cancelling…" survives a poll repaint while the request is in flight', async () => {
+  const { ns, content } = await setUp();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  stub({ [CANCEL_URL]: async () => { await gate; return { cancelled: true, egeria_status: 'CANCELLED', surveys: [CANCELLED] }; } });
+  mount(ns, content, [RUNNING]);
+  content.querySelector('[data-native-cancel]').click();
+  content.querySelector('[data-native-cancel-yes]').click();
+  await wait(60);                                   // a poll repaint (25ms) happens while the cancel is pending
+  assert.match(text(content.querySelector('[data-native-cancel-ack]')), /◔ cancelling…/);
+  assert.equal(content.querySelector('[data-native-cancel-ack]').hidden, false);
+  release(); await wait(40);
+});
+
 test('Cancel asks first ("cancel this survey in Egeria?") and "keep it" backs out with nothing sent', async () => {
   const { ns, content } = await setUp();
   const calls = stub({});

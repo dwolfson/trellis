@@ -320,9 +320,10 @@ class PyegeriaSurveyPort:
         return ActionRead(status=status, message=message)
 
     def cancel(self, engine_action_guid: str) -> None:
-        """Ask Egeria to cancel an engine action and stop its running service (pyegeria 6.2.1
+        """Ask Egeria to cancel an engine action (pyegeria 6.2.1
         `AutomatedCuration.cancel_engine_action(engine_action_guid) -> None`). A WRITE, made as the port's
-        principal (the signed-in Caller on a route). Whether it took effect is read back by the caller."""
+        principal (the signed-in Caller on a route). Egeria marks the action CANCELLED; whether the engine host
+        stops work already running is not verified. Whether it took effect is read back by the caller."""
         self._enter()
         self._get_curation().cancel_engine_action(engine_action_guid)
 
@@ -897,19 +898,12 @@ def own_action_run(registry, entity_type: str, slug: str, engine_action_guid: st
     raise NativeActionNotOurs(f"{engine_action_guid} is not one of the Egeria actions RE started for {slug}")
 
 
-def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slug: str,
-                         engine_action_guid: str) -> dict:
-    """Cancel one of this resource's Egeria survey actions, and say what Egeria then reports.
-
-    1. Ownership, from RE's own step_runs (`own_action_run`): nothing else is ever sent.
-    2. Only an action Egeria last reported as waiting or running (`ACTIVE_STATUSES`) can be cancelled;
-       anything else is `NativeSurveyCannotRun` with the status in the words.
-    3. `port.cancel` (the write), as whoever the port acts as.
-    4. The read-back is the SAME status refresh the poll uses (`refresh_run`: read the action, record
-       status and time on the row). The result says `cancelled` only when that read says CANCELLED; an
-       accepted cancel that Egeria does not yet report is `cancelled: False` with Egeria's own word.
-
-    Returns {cancelled, egeria_status, read_error, process_qualified_name}."""
+def cancel_gate(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, engine_action_guid: str) -> dict:
+    """May this action still be cancelled? Ownership, then a FRESH read of Egeria's status (the poll's own
+    `refresh_run`), then the gate on that fresh status. Egeria's cancel writes CANCELLED with no status guard
+    (EngineActionHandler.cancelEngineAction :2431-2490), so a cancel sent for an action that finished since
+    the last poll would turn COMPLETED into CANCELLED and RE would never read in the report. A failed read
+    leaves the stored status, which is then all there is to go on. Returns the refreshed row."""
     from resource_explorer.surveyors.technology_type_processes import kind_of
 
     run = own_action_run(registry, entity_type, slug, engine_action_guid)
@@ -917,10 +911,32 @@ def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slu
     if kind_of(process_qn) == KIND_CATALOG_AND_SURVEY:
         raise NativeSurveyCannotRun("A registration is not cancelled from here: it is the optional step of "
                                     "giving Egeria this database.")
-    status = run.get("engine_action_status") or ""
+    refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
+    fresh = own_action_run(registry, entity_type, slug, engine_action_guid)
+    status = fresh.get("engine_action_status") or ""
     if status not in ACTIVE_STATUSES:
         raise NativeSurveyCannotRun(
-            f"Only a waiting or running action can be cancelled; Egeria last said {status or 'nothing yet'}.")
+            f"Only a waiting or running action can be cancelled; Egeria now says {status or 'nothing yet'}.")
+    return fresh
+
+
+def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slug: str,
+                         engine_action_guid: str, *, gated: bool = False) -> dict:
+    """Cancel one of this resource's Egeria survey actions, and say what Egeria then reports.
+
+    1. Ownership, from RE's own step_runs (`own_action_run`): nothing else is ever sent.
+    2. `cancel_gate`: a fresh read, and only an action Egeria NOW reports as waiting or running can be
+       cancelled; anything else is `NativeSurveyCannotRun`. (`gated=True`: the caller already ran it.)
+    3. `port.cancel` (the write), as whoever the port acts as.
+    4. The read-back is the SAME status refresh the poll uses (`refresh_run`: read the action, record
+       status and time on the row). The result says `cancelled` only when that read says CANCELLED; an
+       accepted cancel that Egeria does not yet report is `cancelled: False` with Egeria's own word.
+
+    Returns {cancelled, egeria_status, read_error, process_qualified_name}."""
+    run = own_action_run(registry, entity_type, slug, engine_action_guid)
+    process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(NATIVE_SURVEY_STEP_PREFIX):]
+    if not gated:
+        run = cancel_gate(registry, port, entity_type, slug, engine_action_guid)
     try:
         port.cancel(engine_action_guid)
     except Exception as exc:  # noqa: BLE001 -- the route reads __cause__ for an Egeria security refusal

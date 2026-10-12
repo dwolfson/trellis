@@ -136,6 +136,19 @@ def web(registry, monkeypatch):
     return TestClient(app), who
 
 
+def _activity(registry):
+    import json
+
+    with registry._conn() as conn:
+        rows = [dict(x) for x in conn.execute("SELECT summary, status, detail FROM activity_log ORDER BY rowid").fetchall()]
+    for r in rows:
+        try:
+            r["detail"] = json.loads(r["detail"] or "{}")
+        except ValueError:
+            r["detail"] = {}
+    return rows
+
+
 def _status(client, guid=G_OURS):
     rows = client.get("/api/native-surveys/database/d").json()["surveys"]
     return next(r for r in rows if r["qualified_name"] == SURVEY)["run"]
@@ -150,7 +163,7 @@ def test_success_cancels_as_the_caller_and_the_read_back_says_cancelled(web, ege
     # the write reached Egeria once, for this GUID, as THE PERSON (their token), never the daemon
     assert egeria.cancel_calls == [(G_OURS, USER, f"tok-{USER}")]
     # the read-back is the status refresh: it read the action and RE's row now carries what Egeria said
-    assert egeria.reads == [G_OURS]
+    assert egeria.reads == [G_OURS, G_OURS]          # the liveness gate's fresh read, then the read-back
     row = next(x for x in registry.list_native_survey_runs("database", "d") if x["engine_action_guid"] == G_OURS)
     assert row["engine_action_status"] == "CANCELLED" and row["engine_action_read_at"] > "2026-10-11T12:00:01"
     run = next(s for s in body["surveys"] if s["qualified_name"] == SURVEY)["run"]
@@ -160,6 +173,7 @@ def test_success_cancels_as_the_caller_and_the_read_back_says_cancelled(web, ege
     with registry._conn() as conn:
         acts = [dict(x) for x in conn.execute("SELECT summary, status FROM activity_log").fetchall()]
     assert any(f"Cancelled Egeria action {G_OURS}" in a["summary"] and a["status"] == "ok" for a in acts), acts
+    assert _activity(registry)[-1]["detail"]["cancelled_by"] == USER
 
 
 def test_a_cancel_Egeria_accepts_but_does_not_report_is_not_called_cancelled(web, egeria, access):
@@ -186,7 +200,7 @@ def test_a_guid_that_is_not_this_resources_is_refused_before_egeria(web, egeria,
     assert egeria.cancel_calls == [] and egeria.reads == []
 
 
-def test_an_access_refusal_gives_the_word_and_sends_nothing(web, egeria, access):
+def test_an_access_refusal_gives_the_word_and_sends_nothing(web, egeria, access, registry):
     client, _ = web
     access.elements[G_OURS] = _element(G_OURS, zones=["sales-zone"])
     access.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
@@ -194,17 +208,20 @@ def test_an_access_refusal_gives_the_word_and_sends_nothing(web, egeria, access)
     assert r.status_code == 403
     assert r.json()["detail"].startswith(f"zone sales-zone does not grant {USER} ")
     assert egeria.cancel_calls == []
+    acts = _activity(registry)
+    assert acts[-1]["status"] == "error" and "refused" in acts[-1]["summary"] and acts[-1]["detail"]["cancelled_by"] == USER
     # the operations Egeria checks for a cancel: read the element, then update its properties
-    from resource_explorer.workflows import curate as wc
     assert ("element", G_OURS) in access.calls
 
 
-def test_an_egeria_error_is_a_502_with_the_reason_and_the_row_still_says_running(web, egeria, access):
+def test_an_egeria_error_is_a_502_with_the_reason_and_the_row_still_says_running(web, egeria, access, registry):
     client, _ = web
     egeria.cancel_error = RuntimeError("engine host unreachable")
     r = client.post(URL.format(G_OURS))
     assert r.status_code == 502 and "engine host unreachable" in r.json()["detail"]
     assert _status(client)["egeria_status"] == "IN_PROGRESS"          # nothing was guessed onto the row
+    last = _activity(registry)[-1]
+    assert last["status"] == "error" and "engine host unreachable" in last["summary"] and last["detail"]["cancelled_by"] == USER
 
 
 def test_egeria_security_refusal_is_a_403_in_egerias_words(web, egeria, access):
@@ -214,12 +231,52 @@ def test_egeria_security_refusal_is_a_403_in_egerias_words(web, egeria, access):
     assert r.status_code == 403 and "OPEN-METADATA-SECURITY-403" in r.json()["detail"]
 
 
-def test_a_finished_action_cannot_be_cancelled(web, egeria, access):
+def test_a_finished_action_cannot_be_cancelled(web, egeria, access, registry):
     client, _ = web
     r = client.post(URL.format(G_DONE))
-    assert r.status_code == 409 and "Egeria last said COMPLETED" in r.json()["detail"]
+    assert r.status_code == 409 and "Egeria now says COMPLETED" in r.json()["detail"]
     assert egeria.cancel_calls == []
+    last = _activity(registry)[-1]
+    assert last["status"] == "error" and "refused" in last["summary"] and last["detail"]["cancelled_by"] == USER
     # and a second press after a success is refused the same way
     assert client.post(URL.format(G_OURS)).status_code == 200
     assert client.post(URL.format(G_OURS)).status_code == 409
     assert len(egeria.cancel_calls) == 1
+
+
+def test_an_action_that_finished_since_the_last_poll_is_never_overwritten(web, egeria, access, registry):
+    """RE's stored row still says IN_PROGRESS; Egeria already says COMPLETED. Egeria's cancel has no status
+    guard, so sending it would turn COMPLETED into CANCELLED. The gate reads first and refuses (409)."""
+    client, _ = web
+    egeria.status[G_OURS] = "COMPLETED"
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 409 and "Egeria now says COMPLETED" in r.json()["detail"]
+    assert egeria.cancel_calls == []
+    assert egeria.status[G_OURS] == "COMPLETED"
+    row = next(x for x in registry.list_native_survey_runs("database", "d") if x["engine_action_guid"] == G_OURS)
+    assert row["engine_action_status"] == "COMPLETED"              # the fresh read was recorded
+
+
+def test_the_liveness_gate_comes_before_the_access_check(web, egeria, access):
+    """A finished action in a zone the person cannot update is a 409 (it is finished), not a 403."""
+    client, _ = web
+    egeria.status[G_OURS] = "COMPLETED"
+    access.elements[G_OURS] = _element(G_OURS, zones=["sales-zone"])
+    access.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
+    assert client.post(URL.format(G_OURS)).status_code == 409
+
+
+def test_read_granted_but_update_not_granted_is_refused_naming_update(web, egeria, access, registry):
+    client, _ = web
+    access.elements[G_OURS] = _element(G_OURS, zones=["sales-zone"])
+    access.controls["sales-zone"] = {"associatedSecurityList": {"READ": [USER], "UPDATE_PROPERTIES": ["salesTeam"]}}
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 403 and "update" in r.json()["detail"], r.text
+    assert egeria.cancel_calls == []
+
+
+def test_a_guid_that_is_not_ours_is_logged_as_refused_with_the_person(web, egeria, access, registry):
+    client, _ = web
+    assert client.post(URL.format(G_OTHER)).status_code == 404
+    last = _activity(registry)[-1]
+    assert last["status"] == "error" and "refused" in last["summary"] and last["detail"]["cancelled_by"] == USER
