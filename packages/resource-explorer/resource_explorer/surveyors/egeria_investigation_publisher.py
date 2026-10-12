@@ -751,17 +751,21 @@ class EgeriaInvestigationPublisher:
                 continue
             row = rows_by_qn.get(collection_membership_qn(collection_guid, asset_guid))
             if row is None:
-                out.append({**base, "state": "not_linked",
+                out.append({**base, "state": "not_linked", "linkable": True,
                             "reason": "not attached yet — use Link members"})
             elif row["status"] == "done":
                 out.append({**base, "state": "linked", "reason": ""})
             elif row["status"] in ("cancelled", "superseded"):
-                out.append({**base, "state": "not_linked",
+                out.append({**base, "state": "not_linked", "linkable": True,
                             "reason": "not attached — use Link members"})
             else:
-                out.append({**base, "state": "not_linked", "reason": _unattached_reason(row, "pending")})
+                out.append({**base, "state": "not_linked", "linkable": True,
+                            "reason": _unattached_reason(row, "pending")})
         counts = {s: sum(1 for o in out if o["state"] == s)
                   for s in ("linked", "not_linked", "could_not_tell")}
+        # Linkable: an asset GUID exists and no finished attach is recorded -- the members `_link_members`
+        # (what relink runs) would enqueue and drain. A member with no asset GUID is not linkable.
+        counts["linkable"] = sum(1 for o in out if o.get("linkable"))
         return {"slug": investigation_slug, "bound": bound, "members": out, "counts": counts}
 
     def ensure_working_set(self, investigation_slug: str) -> PromotionResult:

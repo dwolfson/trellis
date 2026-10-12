@@ -148,7 +148,7 @@ def test_a_member_refused_at_drain_is_said_in_its_own_words_not_queued_for_retry
                                           {"collection_guid": "cg", "member_guid": "g-q"})
     registry.mark_outbox_failed(rid, words, max_attempts=1)
     status = EgeriaInvestigationPublisher(registry).link_status(inv["slug"])
-    assert status["members"] == [{"entity_type": "repo", "entity_slug": "q", "state": "not_linked", "reason": words}]
+    assert status["members"] == [{"entity_type": "repo", "entity_slug": "q", "state": "not_linked", "linkable": True, "reason": words}]  # a refused member stays linkable: the relink retries it and is refused again
 
 
 # ── F6: the kind change on the zones the move puts the Project in ────────────────────────────────────────
