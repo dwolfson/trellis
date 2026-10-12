@@ -9,7 +9,7 @@
  *    - a 428 on the report press: a cue and a word on tab 1, the Project row on Contents;
  *    - a commit started on Contents shows its one-line state on Describe, Structure and a shared tab;
  *    - a reload with tab= reopens that tab; a pasted Structure URL opens Structure;
- *    - a database and a file system draw EXACTLY what main drew (fixture generated from main's tree). */
+ *    - a file system draws EXACTLY what main drew (fixture generated from main's tree; a database has its tabs, S2). */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -352,10 +352,10 @@ test('a reload while a commit is running: the line comes from the cheap latest-c
   await wait(200);
 });
 
-/* ── database and file system: exactly what main drew ────────────────── */
+/* ── file system: exactly what main drew (a database has its own tabs now: curate-tabs-db.test.mjs) ── */
 
 const FIXTURE = JSON.parse(readFileSync(new URL('./curate-nonrepo.fixture.json', import.meta.url), 'utf8'));
-for (const kind of ['db', 'filesystem']) {
+for (const kind of ['filesystem']) {
   test(`${kind}: Curate draws byte-for-byte what main drew (gate off for the kind)`, async () => {
     const out = await snapshotNonRepoCurate(kind);
     assert.equal(out.rail, FIXTURE[kind].rail, 'the rail');

@@ -19,11 +19,11 @@ import {
   getComponentBlueprints, postBlueprintVerdict, getLatestCuration,
 } from '/static/re-api.js';
 import {
-  bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, filesystemWorkHtml,
-  renderRulesBlock, UNSIGNED_LABEL,
+  bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, databaseScopeHtml, databaseStructureHtml,
+  filesystemWorkHtml, renderRulesBlock, UNSIGNED_LABEL,
 } from '/static/next/stages/curate-bands.js';
-import { renderCatalogueScope } from '/static/next/stages/curate-scope.js';
-import { renderPublishBand, renderPublishRepo } from '/static/next/stages/publish.js';
+import { renderCatalogueScope, setCommitPanelGate, startScopeCommitIfShown } from '/static/next/stages/curate-scope.js';
+import { renderPublishBand, renderPublishRepo, renderPublishDb, paintDbPublishState } from '/static/next/stages/publish.js';
 import { ARCHITECTURE_CHANGED } from '/static/next/stages/architecture-publish.js';
 import { repoCommitPanelHtml, commitHeaderHtml, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
 import { createScopeController, scopeListHtml, visibleRows } from '/static/next/stages/resource-scope.js';
@@ -522,6 +522,25 @@ function tabbedFrameHtml(active) {
     </div>`;
 }
 
+/** A database's Curate panes (Brief S2): the same three panels, all in the document, the inactive ones hidden.
+ *  Describe: Findable, What people say, and the Publish to Egeria band LAST (its state line; no press). Contents:
+ *  the asset row, then the scope tree and the commit panel. Structure: the proposals, the rules, the dependencies. */
+function tabbedDbFrameHtml(active) {
+  const hid = (tab) => (tab === active ? '' : ' hidden');
+  return `<div data-curate-tab-panel="describe"${hid('curate_describe')}>
+      <section data-curate-band="findable" class="mb-s4 border-b border-rule pb-s2"></section>
+      <section data-curate-band="people" class="mb-s4 border-b border-rule pb-s2"></section>
+      <section data-curate-band="publish" class="mb-s4"></section>
+    </div>
+    <div data-curate-tab-panel="contents"${hid('curate_contents')}>
+      <section data-curate-band="publish-items" class="mb-s4"></section>
+      <div data-curate-sections="contents"></div>
+    </div>
+    <div data-curate-tab-panel="structure"${hid('curate_structure')}>
+      <div data-curate-sections="structure"></div>
+    </div>`;
+}
+
 export async function renderCurate(slug) {
   finderRows = null;       // a fresh page reads the components again (a survey may have changed them)
   const frame = mountCurateHost();
@@ -539,8 +558,10 @@ export async function renderCurate(slug) {
   // view is untouched apart from its container.
   // A repository draws as three tabs (a panel each); a database or a file system as the single pane it has always been.
   const tabbed = entityType === 'repo';
-  frame.innerHTML = tabbed ? tabbedFrameHtml(activeCurateTab()) : bandFrameHtml();
-  const host = tabbed ? frame : frame.querySelector('[data-curate-band="kind"]');
+  const tabbedDb = entityType === 'database' && stageTabsOn('curate', state.resourceType);
+  setCommitPanelGate(null);                            // the default (always); a database's tabs set their own below
+  frame.innerHTML = tabbed ? tabbedFrameHtml(activeCurateTab()) : tabbedDb ? tabbedDbFrameHtml(activeCurateTab()) : bandFrameHtml();
+  const host = tabbed || tabbedDb ? frame : frame.querySelector('[data-curate-band="kind"]');
   const band = (name) => frame.querySelector(`[data-curate-band="${name}"]`);
   let publishRepo = null;
   if (tabbed) publishRepo = renderPublishRepo({ describe: band('publish'), contents: band('publish-items'), structure: band('architecture') }, slug);
@@ -549,7 +570,7 @@ export async function renderCurate(slug) {
     renderPeopleBand(band('people'), slug, entityType),
     // G1: what Egeria holds for this resource, the same band on every kind. It reads RE's own records
     // first (no Egeria contact) and is independent of the repository plan below, which can take long.
-    tabbed ? publishRepo.ready : renderPublishBand(band('publish'), slug, entityType),
+    tabbed ? publishRepo.ready : tabbedDb ? renderPublishDb({ describe: band('publish'), contents: band('publish-items') }, slug) : renderPublishBand(band('publish'), slug, entityType),
   ].map((p) => p.catch((err) => {
     // A band that fails says so in its own slot; it never takes the pane down.
     const slot = band('people');
@@ -568,9 +589,52 @@ export async function renderCurate(slug) {
     if (p && p.isConnected) renderPeopleBand(p, slug, entityType).catch(() => {});
   };
   document.addEventListener('re:published', state.curateOnPublished);
+  /** A database's tabs: the scope tree and commit panel on Contents, the placeholders and rules on Structure. The
+   *  scope view is read ONCE (RE's own rows); every view it takes is announced ('re:scope-view') and the Describe
+   *  tab's state line and the tab counts follow it. What READS Egeria (the commit preview, the data-class rules)
+   *  waits for the tab that owns it. */
+  async function renderDatabaseTabs() {
+    const contentsHost = frame.querySelector('[data-curate-sections="contents"]');
+    const structureHost = frame.querySelector('[data-curate-sections="structure"]');
+    contentsHost.innerHTML = databaseScopeHtml();
+    structureHost.innerHTML = databaseStructureHtml();
+    const scopeEl = contentsHost.querySelector('[data-curate-scope]');
+    setCommitPanelGate(() => !superseded() && activeCurateTab() === 'curate_contents');
+    state.curate.counts = null;                         // the tab counts read "reading" until the view arrives
+    if (state.curateOnScopeView) document.removeEventListener('re:scope-view', state.curateOnScopeView);
+    state.curateOnScopeView = (ev) => {
+      const d = ev.detail || {};
+      if (superseded() || d.slug !== slug || slug !== state.selectedSlug || !frame.isConnected) return;
+      state.curate.counts = { view: d.view || null, plan: null, planFailed: false, viewFailed: !!d.failed };
+      paintDbPublishState(frame.querySelector('[data-curate-band="publish"]'), d.view || null, !!d.failed);
+      refreshStageRail();
+    };
+    document.addEventListener('re:scope-view', state.curateOnScopeView);
+    let rulesStarted = false;
+    const startRules = () => {
+      if (rulesStarted) return;
+      rulesStarted = true;
+      renderRulesBlock(structureHost.querySelector('[data-curate-rules]')).catch(() => {});
+    };
+    state.curate.onTabShown = () => {
+      if (superseded() || !frame.isConnected) return;
+      const t = activeCurateTab();
+      if (t === 'curate_contents') startScopeCommitIfShown(scopeEl);
+      if (t === 'curate_structure') startRules();
+    };
+    if (activeCurateTab() === 'curate_structure') startRules();
+    bands.push(renderCatalogueScope(scopeEl, slug).catch((err) => {
+      if (scopeEl && scopeEl.isConnected) scopeEl.innerHTML = `<div class="text-caveat text-state-warn">The catalog scope could not be drawn: ${esc(err.message)}</div>`;
+    }));
+    await Promise.all(bands);
+  }
   if (entityType !== 'repo') {
     // Skip every repo-only /api/projects/{slug}/... call entirely rather
     // than firing it and reporting whatever 404 comes back.
+    if (tabbedDb) {
+      await renderDatabaseTabs();
+      return;
+    }
     host.innerHTML = nonRepoCurateHtml(entityType);
     if (entityType === 'database') {
       // PI-041: the read-only rules block under the glossary section; it fails inside itself.

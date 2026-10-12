@@ -177,6 +177,10 @@ async function setUp(view, opts = {}) {
   assert.ok(btn, 'nav must offer a Curate button');
   btn.click();
   await wait();
+  // A database's Curate is three tabs (Brief S2): the scope tree and the commit panel are on Contents.
+  const contentsTab = document.querySelector('[data-subtab="curate_contents"]');
+  assert.ok(contentsTab, 'a database offers the Contents tab');
+  contentsTab.click(); await wait();
   return { document, window, app, server };
 }
 
@@ -186,15 +190,16 @@ const calls = (server, method, frag) => server.calls.filter((c) => c.method === 
 
 /* ── the section, its header, the element ──────────────────────────────── */
 
-test('the scope is the FIRST section of a database band 2, above the two waiting sections', async () => {
+test('the scope is on Contents; the two waiting sections and the dependencies line are on Structure', async () => {
   const { document } = await setUp(baseView());
-  const kind = document.querySelector('[data-curate-band="kind"]');
-  const order = [...kind.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork);
-  assert.deepEqual(order, ['scope', 'glossary', 'schema-match']);
-  assert.match(flat(kind.querySelector('[data-curate-work="scope"]')), /^What gets cataloged/);
-  assert.match(flat(kind.querySelector('[data-curate-work="glossary"]')), /and the tables to be cataloged first \(above\)/);
-  assert.match(flat(kind.querySelector('[data-curate-work="schema-match"]')), /and the tables to be cataloged first \(above\)/);
-  assert.equal(kind.querySelectorAll('table').length, 0, 'never a <table>');
+  const contents = document.querySelector('[data-curate-tab-panel="contents"]');
+  const structure = document.querySelector('[data-curate-tab-panel="structure"]');
+  assert.deepEqual([...contents.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['scope']);
+  assert.deepEqual([...structure.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['glossary', 'schema-match', 'dependencies']);
+  assert.match(flat(contents.querySelector('[data-curate-work="scope"]')), /^What gets cataloged/);
+  assert.match(flat(structure.querySelector('[data-curate-work="glossary"]')), /and the tables to be cataloged first \(on Contents\)/);
+  assert.match(flat(structure.querySelector('[data-curate-work="schema-match"]')), /and the tables to be cataloged first \(on Contents\)/);
+  assert.equal(document.querySelectorAll('#curate-host table').length, 0, 'never a <table>');
 });
 
 test('header, undeclared, Egeria the source: "29 schemas · Egeria survey 10-04"', async () => {

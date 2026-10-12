@@ -179,6 +179,13 @@ export async function setUp(view, opts = {}) {
   assert.ok(btn, 'nav must offer a Curate button');
   btn.click();
   await wait();
+  // A database's Curate is three tabs (Brief S2): the scope tree and the commit panel are on Contents, and the commit
+  // preview (which reads Egeria) is read when that tab is shown. Tests of the scope open it, as a person does.
+  if (opts.tab !== 'describe') {
+    const t = document.querySelector('[data-subtab="curate_contents"]');
+    assert.ok(t, 'a database offers the Contents tab');
+    t.click(); await wait();
+  }
   return { document, window, app, server };
 }
 

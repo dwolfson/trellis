@@ -29,9 +29,9 @@ import {
   postCatalogueCommit, getCatalogueCommitRecord, getCatalogueLatestCommit, postCatalogueReadBack,
 } from '/static/re-api.js';
 import { state, esc } from '/static/next/app.js';
-import { contentsChosen } from '/static/next/stages/curate-counts.js';
+import { contentsChosen, contentsUndecided } from '/static/next/stages/curate-counts.js';
 import { setCommitLine, commitLineFromRecord } from '/static/next/stages/curate-tabs.js';
-import { glyphSpan } from '/static/next/glyphs.js';
+import { glyphSpan, stateEntry } from '/static/next/glyphs.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
 import { SCOPE_COLS, MANIFEST_COLS } from '/static/next/stages/scope-columns.js';
 import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize } from '/static/next/colresize.js';
@@ -100,6 +100,13 @@ const RESUME_FULL_HOURS = 24;
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
 export function resetScopeUi() { commitUi = null; resumed = null; resumeFor = null; if (pageWatchStop) { pageWatchStop(); pageWatchStop = null; } savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
 
+/** Whether the commit panel may read Egeria now. The tabbed pane sets this to "Contents is showing"; the default
+ *  (always) is the pane as it has always been. */
+let commitPanelGate = () => true;
+export function setCommitPanelGate(fn) { commitPanelGate = typeof fn === 'function' ? fn : () => true; }
+/** Start the commit panel's read if the section is open and it has not started (Contents just opened). */
+export function startScopeCommitIfShown(el) { if (el && typeof el._startScopeCommit === 'function') el._startScopeCommit(); }
+
 /** Whether the whole section is open. Decided once per pane visit (from the remembered
  *  choice, else from whether a scope is declared) and then only a click changes it, so a
  *  write that redraws the section (or declares the scope) never flips it under the person. */
@@ -132,6 +139,54 @@ export function sourcesClause(view) {
 export function commitHeaderText(view) {
   const h = (view.commit || {}).header;
   return h && h.text ? h.text : 'Egeria state not read: this server sent no proof rows';
+}
+
+/** The database's publish state as ONE line for the Describe tab (Brief S2). It comes from the scope view's commit
+ *  header (`view.commit.header`, the server's derivation from the commit's proof rows), the same field the Contents
+ *  tab prints in full. It never reads the registry's `is_published` flag: a database can carry that flag with no
+ *  commit row at all, and then this line says "not committed". `view` null = the scope is still being read;
+ *  `failed` = it could not be read (never "not committed": absence of a read is not an absence of a commit). */
+export function commitStateLine(view, failed = false) {
+  if (!view) return failed ? { state: 'unread', how: 'unread', cue: 'unknown', word: 'not read', text: '', clause: '' } : { state: 'reading', how: 'reading', cue: 'running', word: 'reading', text: '', clause: '' };
+  const h = (view.commit || {}).header;
+  const st = h && h.state ? h.state : 'unknown';
+  const text = commitHeaderText(view);
+  const clause = h && h.text ? String(h.text).split(' \u00b7 ')[0] : '';
+  const mk = (how, cue, word) => ({ state: st, how, cue, word, text, clause });
+  if (st === 'not_committed') return mk('none', 'unrun', 'not committed');
+  if (st !== 'committed') return mk('unread', 'unknown', 'not read');
+  // "committed" in the header means only that SOME proof or outbox row exists. The word comes from what each chosen
+  // schema's own state says (view.commit.schemas), so a commit whose schemas all failed is never drawn as done.
+  const states = (view.commit || {}).schemas || {};
+  const chosen = (view.schemas || []).filter((x) => x.effective === 'catalogue').map((x) => (states[x.name] || {}).state || 'none');
+  if (/not in Egeria now/.test(text) || chosen.some((x) => x === 'reset')) return mk('reset', 'unrun', 'not in Egeria now · reset');
+  const ok = chosen.filter((x) => x === 'catalogued' || x === 'restored').length;
+  const failed_ = chosen.filter((x) => x === 'failed').length;
+  const waiting = chosen.length - ok - failed_;
+  if (!chosen.length) return mk('empty', 'stored', 'committed · none chosen');
+  if (ok === chosen.length) return mk('done', 'measured', 'committed');
+  const bits = [failed_ ? `${failed_} failed` : '', waiting ? `${waiting} queued` : ''].filter(Boolean).join(' / ');
+  return mk('partial', 'partial', `partly committed · ${bits}`);
+}
+
+/** The line itself: a cue and a short word, the header's first clause inline, the full sentence on demand, then the
+ *  link to Contents. */
+export function commitStateLineHtml(view, failed = false) {
+  const l = commitStateLine(view, failed);
+  const e = stateEntry(l.cue);
+  const open = e.tone === 'text-state-ok' ? '<span class="text-state-ok"' : e.tone === 'text-state-warn' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
+  const cueHtml = `${open} data-cue="${esc(l.cue)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(l.word)}</span>`;
+  const clause = l.clause ? ` <span data-db-publish-state-clause class="text-ink-muted">· ${esc(l.clause)}</span>` : '';
+  const body = l.text
+    ? `<details class="inline"><summary class="inline cursor-pointer">${cueHtml}</summary><span data-db-publish-state-text class="mt-s1 block max-w-[70ch] text-provenance text-ink-muted">${esc(l.text)}</span></details>${clause}`
+    : cueHtml;
+  return `<div data-db-publish-state="${esc(l.state)}" data-db-publish-how="${esc(l.how)}" class="text-caveat">${body} · <button type="button" data-db-goto-contents class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button></div>`;
+}
+
+/** Every scope view this pane takes (first read, a re-read after a write, a commit's refresh) is announced, so the
+ *  Describe tab's state line and the tab counts follow the same view the Contents tab shows. */
+function announceView(el, slug, view, failed = false) {
+  el.ownerDocument.dispatchEvent(new CustomEvent('re:scope-view', { detail: { slug, view, failed } }));
 }
 
 export function scopeHeaderText(view) {
@@ -681,7 +736,7 @@ function manifestTableHtml(preview, view, notes = '') {
     ${row('catalogs', 'Egeria catalogs', 'your included schemas', `${attach.length}${names(attach)}`, 'next refresh (or now, if ticked)', detail('cataloguer_creates', 'whole_schemas'))}
     ${row('surveys', 'Egeria surveys', 'the same schemas', `${((preview.survey || {}).schemas || []).length}`, 'after attach', detail('survey_measures'))}
     ${row('left_out', 'Left out', leave.length ? 'what changes in Egeria' : 'nothing in Egeria to change', leaveHow, leave.length ? 'at this commit' : '—')}
-    ${row('undecided', 'Undecided', 'Egeria stays as it is', `${c.schemas_undecided ?? 0}`, '—')}
+    ${row('undecided', 'Undecided', 'Egeria stays as it is', `${(() => { const u = contentsUndecided('db', view); return u.state === 'count' ? u.n : u.state === 'failed' ? 'not read' : '\u2014'; })()}`, '—')}
     ${noted()}
   </div></div>`;
 }
@@ -931,6 +986,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
       return;
     }
     commitUi = { slug, id: out.curation.id, rec: out.curation, polling: true, sig: stepSig(out.curation) };
+    setCommitLine(commitLineFromRecord('db', out.curation));   // the one line on the other tabs, from the record, at once
     btn.textContent = label;
     if (!host.querySelector('[data-scope-commit-sent]')) host.querySelector('[data-scope-commit-row]').insertAdjacentHTML('afterend', '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>');
     say(`queued: commit ${String(out.curation.id).slice(0, 8)} · run ${String(out.run_id || '').slice(0, 8)}`);
@@ -946,6 +1002,22 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
   });
 }
 
+/** An unfinished commit found on load is followed from whichever tab is showing (bounded), so the one-line state
+ *  settles without Contents being opened. The panel's own poll takes over, and this one stops, once it runs. */
+function followUnfinished(el, slug, id) {
+  let ticks = 0;
+  const stop = scopeClock.every(async () => {
+    if (stale(el, slug) || (commitUi && commitUi.slug === slug && commitUi.polling) || ++ticks > 40) { stop(); return; }
+    let rec;
+    try { rec = await getCatalogueCommitRecord(slug, id); } catch { return; }
+    setCommitLine(commitLineFromRecord('db', rec));
+    if (rec.state === 'done' || rec.state === 'failed') {
+      stop();
+      try { const v = await getCatalogueScope(slug); if (v && Array.isArray(v.schemas) && !stale(el, slug)) announceView(el, slug, v); } catch { /* the line is already settled */ }
+    }
+  }, commitPollMs);
+}
+
 export async function renderCatalogueScope(el, slug, status = '', known = null) {
   if (!el) throw new Error('Catalog scope host missing');
   if (openFor !== slug) { openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = slug; sectionOpen = null; }
@@ -955,6 +1027,7 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
     if (!view || !Array.isArray(view.schemas)) throw new Error('the server answered with something that is not a scope');
   } catch (err) {
     if (stale(el, slug)) return;
+    announceView(el, slug, null, true);
     el.innerHTML = `<div data-scope-error class="text-caveat text-state-warn">The catalog scope could not be read: ${esc(err.message)}</div>`;
     return;
   }
@@ -963,6 +1036,12 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
     resumeFor = slug;
     try { resumed = { slug, latest: await getCatalogueLatestCommit(slug) }; } catch { resumed = null; }   // the page works without it
     if (stale(el, slug)) return;
+    // A commit still running when the page opened shows its one line on every tab at once, not only after Contents
+    // has read what the commit would do.
+    if (resumed && resumed.latest && resumeMode(resumed.latest) === 'full' && !resumed.latest.terminal) {
+      setCommitLine(commitLineFromRecord('db', resumed.latest.commit));
+      followUnfinished(el, slug, resumed.latest.commit.id);
+    }
   }
   try {
     paintScope(el, slug, status, view);
@@ -975,6 +1054,7 @@ export async function renderCatalogueScope(el, slug, status = '', known = null) 
 /** Draws the scope pane from a view and wires it (synchronous; the commit preview loads after). */
 function paintScope(el, slug, status, view) {
   const me = whoAmI();
+  announceView(el, slug, view);
   if (sectionOpen === null) sectionOpen = scopeStartsOpen(view, readScopePref(storage(), me, slug));
   // A commit still running (or just finished) is what a reload must put in front of the person: open the section for it.
   if (!sectionOpen && resumed && resumed.slug === slug && resumeMode(resumed.latest) === 'full') sectionOpen = true;
@@ -1003,6 +1083,7 @@ function paintScope(el, slug, status, view) {
     try { v = await getCatalogueScope(slug); } catch { return; }
     if (stale(el, slug) || !v || !Array.isArray(v.schemas)) return;
     view = v;
+    announceView(el, slug, v);
     redrawTree();
     const mk = el.querySelector('[data-scope-commit-header]');
     if (mk) { mk.textContent = commitHeaderText(v); mk.dataset.scopeCommitHeaderState = ((v.commit || {}).header || {}).state || 'unknown'; }
@@ -1322,5 +1403,8 @@ function paintScope(el, slug, status, view) {
   if (again) again.addEventListener('click', () => afterWrite(() => redeclareCatalogueScope(slug), 'start a new baseline',
     (v) => ((v.new_since || {}).text ? 'the baseline was saved, but the re-read scope still shows new things'
       : `${savedLine((v.declared || {}).by, (v.declared || {}).at)} · new baseline: nothing is new since now`)));
-  if (sectionOpen || !(view.declared && view.declared.declared)) startCommitPanel();
+  // The commit panel READS Egeria (the preview), so on the tabbed pane it waits until Contents is the tab on screen;
+  // `startScopeCommitIfShown` starts it when that tab first opens.
+  el._startScopeCommit = () => { if ((sectionOpen || !(view.declared && view.declared.declared)) && !el.querySelector('[data-scope-commit-panel], [data-scope-commit-loading]')) startCommitPanel(); };
+  if (commitPanelGate()) el._startScopeCommit();
 }

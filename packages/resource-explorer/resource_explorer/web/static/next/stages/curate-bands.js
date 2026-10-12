@@ -76,12 +76,12 @@ const DB_WORK_SECTIONS = [
   {
     id: 'glossary',
     title: 'Glossary terms on tables and columns',
-    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against, and the tables to be cataloged first (above).',
+    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against, and the tables to be cataloged first (on Contents).',
   },
   {
     id: 'schema-match',
     title: 'Logical schema match',
-    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read, and the tables to be cataloged first (above). Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
+    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read, and the tables to be cataloged first (on Contents). Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
   },
 ];
 
@@ -94,12 +94,21 @@ export function databaseScopeHtml() {
     <div data-curate-scope class="mt-s1 min-w-0 max-w-full text-caveat text-ink-muted">Reading the catalog scope…</div></div>`;
 }
 
+/** A database's Structure tab (Brief S2): the term and logical-schema proposals (placeholders until their readers
+ *  exist), the data-class rules block inside the glossary section, and the dependencies line. */
+export function databaseStructureHtml() {
+  return DB_WORK_SECTIONS.map((s) => `<div data-curate-work="${s.id}" class="mb-s2">
+    <div class="text-answer text-ink">${esc(s.title)}</div>
+    <div class="text-caveat text-ink-muted">${esc(s.waits)}</div>${s.id === 'glossary' ? rulesBlockShellHtml() : ''}</div>`).join('')
+    + `<div data-curate-work="dependencies" class="mb-s2">
+    <div class="text-answer text-ink">Dependencies</div>
+    <div data-curate-dependencies-none class="text-caveat text-ink-muted">none detected for databases yet</div></div>`;
+}
+
 export function databaseWorkHtml() {
   // The rules block sits INSIDE the glossary (term) section, not beside it: the section order the
   // stage pins (scope, glossary, schema-match) is unchanged.
-  return databaseScopeHtml() + DB_WORK_SECTIONS.map((s) => `<div data-curate-work="${s.id}" class="mb-s2">
-    <div class="text-answer text-ink">${esc(s.title)}</div>
-    <div class="text-caveat text-ink-muted">${esc(s.waits)}</div>${s.id === 'glossary' ? rulesBlockShellHtml() : ''}</div>`).join('');
+  return databaseScopeHtml() + databaseStructureHtml();
 }
 
 /* ── PI-041: "Rules Egeria applies", read-only ───────────────────────────

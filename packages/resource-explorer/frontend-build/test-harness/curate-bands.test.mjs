@@ -186,21 +186,23 @@ test('Curate on a database draws the three bands with the real controls', async 
   assert.ok(f.querySelector('[data-curate-tag-input]') && f.querySelector('[data-curate-tag-add]'));
   const opts = [...f.querySelectorAll('#curate-tag-datalist option')].map((o) => o.value);
   assert.deepEqual(opts, ['sales', 'postgres'], 'autocomplete is GET /api/curate/tags');
-  // band 2: the kind's own work, present with the sentence naming what it waits for
-  const k = band(document, 'kind').textContent;
+  // the kind's own work (Brief S2): the proposals and rules are on Structure, with the sentence naming what they wait for
+  const k = host(document).querySelector('[data-curate-tab-panel="structure"]').textContent;
   assert.match(k, /Glossary terms on tables and columns/);
   assert.match(k, /needs data classes per column \(data_class_match\) and a glossary to match against/);
   assert.match(k, /Logical schema match/);
   assert.match(k, /needs the logical schemas Egeria knows to be read/);
-  assert.equal(band(document, 'kind').querySelectorAll('table').length, 0, 'never an empty table');
-  // band 3: what people say
+  assert.match(k, /none detected for databases yet/, 'dependencies: present and explained');
+  assert.equal(host(document).querySelectorAll('table').length, 0, 'never an empty table');
+  // What people say
   const p = band(document, 'people');
   assert.match(p.textContent, /What people say/);
   assert.ok(p.querySelector('[data-curate-fb-rating]') && p.querySelector('[data-curate-fb-submit]'));
   assert.ok(p.querySelector('#journal-save') && p.querySelector('#journal-body'), 'notes band is the journal');
-  // order: findable, kind, publish (G1: the Egeria band), people
-  const order = [...host(document).querySelectorAll('[data-curate-band]')].map((e) => e.dataset.curateBand);
-  assert.deepEqual(order, ['findable', 'kind', 'publish', 'people']);
+  // order on Describe: findable, people, then Publish to Egeria LAST (Brief S2, Brief F); the scope is on Contents
+  const order = [...host(document).querySelector('[data-curate-tab-panel="describe"]').querySelectorAll('[data-curate-band]')].map((e) => e.dataset.curateBand);
+  assert.deepEqual(order, ['findable', 'people', 'publish']);
+  assert.ok(host(document).querySelector('[data-curate-tab-panel="contents"] [data-curate-scope]'), 'the scope tree is on Contents');
   // the false sentences are gone and no repo-only call fired
   assert.doesNotMatch(host(document).textContent, /reachable from the resource header|offers none of them|Curate isn't available/);
   assert.equal(server.calls.filter((c) => c.url.includes('/curate/plan')).length, 0);

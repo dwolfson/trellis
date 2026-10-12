@@ -337,14 +337,19 @@ test('Ask about this → prefills the chat rail with the report\'s identity and 
 
 /* ── one component, every kind ───────────────────────────────────────── */
 
-test('a database: the same band, in Egeria from its row, reports from the database route, no publish control', async () => {
+test('a database: one state line (never the registry flag), reports from the database route, no publish control', async () => {
   const { document, server } = await setUp('db', {}, { slug: 'coco_pharma', rows: { is_published: true, egeria_asset_guid: 'db-asset-guid' } });
   await openCurate(document);
   const t = band(document).textContent;
-  assert.match(t, /in Egeria/);
-  assert.equal(q(document, '[data-publish-status] [data-guid]').dataset.guid, 'db-asset-guid');
-  assert.equal(q(document, '[data-publish-go]'), null, 'a database publishes through Catalog');
-  assert.match(t, /Catalog → above/);
+  // The registry row says is_published, but no commit proof was read: the line must not say the database is in Egeria.
+  assert.doesNotMatch(t, /\bin Egeria\b/);
+  assert.doesNotMatch(q(document, '[data-db-publish-state]').textContent, /published/);
+  assert.ok(q(document, '[data-publish-status] [data-db-publish-state]'), 'the state line is in the Publish band');
+  assert.match(t, /Contents ›/);
+  assert.equal(q(document, '[data-publish-asset] [data-guid]').dataset.guid, 'db-asset-guid', 'the asset row (GUID + copy) is on Contents');
+  assert.equal(document.querySelector('[data-curate-tab-panel="describe"] [data-publish-asset]'), null);
+  assert.equal(q(document, '[data-publish-go]'), null, 'a database has no publish press on tab 1');
+  assert.doesNotMatch(t, /Catalog → above/);
   assert.equal(server.calls.filter((c) => c.url.includes('/api/databases/coco_pharma/egeria-surveys')).length, 1);
   assert.ok(q(document, '[data-egeria-report]'));
 });

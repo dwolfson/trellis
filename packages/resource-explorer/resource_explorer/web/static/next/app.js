@@ -5072,13 +5072,13 @@ function primeRepoHeaderReads(slug) {
 
 }
 
-/** The leading tabs' pane. Curate on a repository draws its three panels (stages/curate.js `renderCurate` fills
+/** The leading tabs' pane. Curate on a repository or a database draws its three panels (stages/curate.js `renderCurate` fills
  *  them); Understanding's tabs are still a stub (S4). The rail sits in its own host so a tab click can redraw
  *  it in place, and the resource header reads what it always read. */
 async function loadStageTabPane() {
   const el = $('content');
   const slug = state.selectedSlug;
-  if (state.stage === 'curate' && slug && state.resourceType === 'repo') {
+  if (state.stage === 'curate' && slug && (state.resourceType === 'repo' || state.resourceType === 'db')) {
     primeRepoHeaderReads(slug);
     el.innerHTML = `<div data-rail-host>${subTabsHtml()}</div>
       <div id="resource-header">${resourceHeaderHtml(slug)}</div>
@@ -8409,8 +8409,8 @@ async function loadPane() {
   // Curate uses none of the checklist reads below, so it starts NOW and does not wait behind them
   // (getQuestions, getContext and the unfiltered getQuestions run in series and cost seconds). The
   // other stages are unchanged: they need `checklist` and render after it.
-  // A repository's Curate draws on its own tabs (loadStageTabPane); the Questions tab is then the shared one.
-  // A database or a file system still draws Curate in this frame.
+  // A repository's or a database's Curate draws on its own tabs (loadStageTabPane); the Questions tab is then the shared one.
+  // A file system still draws Curate in this frame.
   const curateInFrame = state.stage === 'curate' && !stageTabsOn('curate', state.resourceType);
   let curateStarted = false;
   if (curateInFrame) {

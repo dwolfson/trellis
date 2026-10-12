@@ -32,7 +32,7 @@ export function contentsChosen(kind, view, failed = false) {
   }
   if (kind === 'db') {
     const c = view && view.counts;
-    if (!c || !isNum(c.schemas_catalogue)) return READING;
+    if (!c || !isNum(c.schemas_catalogue)) return failed && !view ? FAILED : READING;
     return count(c.schemas_catalogue);
   }
   return NONE_YET;
@@ -47,7 +47,7 @@ export function contentsUndecided(kind, view, failed = false) {
   }
   if (kind === 'db') {
     const c = view && view.counts;
-    if (!c || !isNum(c.schemas_undecided)) return READING;
+    if (!c || !isNum(c.schemas_undecided)) return failed && !view ? FAILED : READING;
     return count(c.schemas_undecided);
   }
   return NONE_YET;
