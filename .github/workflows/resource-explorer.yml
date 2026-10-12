@@ -201,4 +201,6 @@ jobs:
         # Its routines read RE's registry through resolve_node_set, so its tests need resource_explorer installed;
         # `--with-editable` layers the library on this job's environment without re-syncing it. Its scratch
         # registries are temp SQLite (ProjectRegistry(db_path=...)), never this job's Postgres.
-        run: uv run --with-editable ../trellis-analytics pytest ../trellis-analytics/tests -q --no-header -rs
+        # `[dev]` adds papermill + a kernel for the notebook host; the spec-document test loads the Advisor's
+        # parser by path (it needs only pyegeria + md_processing, not the Advisor's install).
+        run: uv run --with-editable '../trellis-analytics[dev]' pytest ../trellis-analytics/tests -q --no-header -rs
