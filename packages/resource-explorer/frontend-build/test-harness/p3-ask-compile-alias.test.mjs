@@ -41,7 +41,7 @@ function makeServer(over = {}) {
   const s = {
     calls: [], questions: [Q_RUN, Q_NONE], ran: new Set(), schedules: [], aliases: [],
     gaps: ['cve_scan', 'activity_metrics'], runStatus: 'success', runError: 'rate limit reached',
-    scheduleFails: false, aliasLists: true, noGaps: false, ...over,
+    scheduleFails: false, aliasLists: true, noGaps: false, deferred: [], stateFactOnly: false, ...over,
   };
   const enc = new TextEncoder();
   globalThis.fetch = async (url, opts = {}) => {
@@ -51,6 +51,9 @@ function makeServer(over = {}) {
     const ok = (b) => ({ ok: true, status: 200, json: async () => b, text: async () => JSON.stringify(b) });
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/scouting-questions')) return ok({ questions: s.questions });
+    if (u.includes(`/api/analyses/facts/${SLUG}/answer`) && u.includes('safe') && s.stateFactOnly) return ok({ answerable: true, facts: [
+      { is_known: true, analysis_id: 'activity_metrics', state: 'measured', headline: HEADLINE, last_run_at: '' }],
+      analyses_behind: [{ analysis_id: 'cve_scan', state: 'measured', is_known: true, last_run_at: '2026-10-08T10:00:00' }] });
     if (u.includes(`/api/analyses/facts/${SLUG}/answer`) && u.includes('safe')) return ok({ answerable: false, blocked_reason: 'Part of this has not run.', facts: [
       { is_known: true, analysis_id: 'activity_metrics', state: 'measured', headline: HEADLINE, last_run_at: '2026-10-09T10:00:00' },
       { is_known: false, analysis_id: 'cve_scan', state: 'never_run', can_run: ['cve_scan'] }] });
@@ -72,6 +75,7 @@ function makeServer(over = {}) {
       const open = s.gaps.filter((g) => !s.ran.has(g));
       const manifest = { packed: [{ key: 'foss_scorecard', rung: 'FULL', size: 120 }], compile_id: 'c1' };
       if (!s.noGaps) manifest.gaps = open.map((key) => ({ key, reason: 'no stored result' }));
+      if (s.deferred.length) manifest.deferred = s.deferred.map((key) => ({ key, reason: 'below the section cap of 12' }));
       return ok({ text: 'compiled text', manifest, derivation: [], compile_id: 'c1' });
     }
     if (u === '/api/aliases/' && method === 'POST') {
@@ -300,6 +304,17 @@ test('PI-116: with nothing typed, or no gaps reported, it says so rather than cl
   assert.doesNotMatch(text(g), /nothing missing/);
 });
 
+test('PI-116: analyses ranked below the section cap are said to be not read, never folded into "nothing missing"', async () => {
+  const { document } = await setUp({ gaps: [], deferred: ['cve_scan', 'secret_scan'] });
+  document.getElementById('ask-input').value = 'Does this repository have any known security vulnerabilities in its dependencies?';
+  document.getElementById('ask-compile').click();
+  await wait();
+  const g = text(document.querySelector('[data-compile-gaps]'));
+  assert.match(g, /2 not read/);
+  assert.match(g, /cve_scan, secret_scan/);
+  assert.doesNotMatch(g, /nothing missing\s*every analysis/);
+});
+
 test('PI-117: Run on a gap runs that analysis, compiles again, and the gap is gone only if the new compile says so', async () => {
   const { document, server } = await setUp();
   document.getElementById('ask-input').value = 'How healthy is the project?';
@@ -435,4 +450,13 @@ test('review 5: nothing the disclosure says uses the word "catalog"', async () =
   assert.match(html, /none stated in the question list/);
   assert.match(html, /follows in the list's own order/);
   assert.doesNotMatch(html, /catalog/i);
+});
+
+test('walk 2026-10-12: an analysis the server reports behind a state-answered question reads "has run", not "not run"', async () => {
+  const { document } = await setUp({ questions: [Q_TWO], stateFactOnly: true });
+  document.querySelector('#qrow-0 button[data-ask-chat]').click();
+  await wait();
+  const st = text(document.querySelector('[data-runnable="cve_scan"] [data-run-status]'));
+  assert.match(st, /has run/);
+  assert.doesNotMatch(st, /not run/);
 });

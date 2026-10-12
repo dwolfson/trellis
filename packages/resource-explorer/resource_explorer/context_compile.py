@@ -248,6 +248,21 @@ _STOPWORDS = frozenset({
 })
 
 
+#: Words that name the same thing as a catalog analysis's own vocabulary. "Are there outstanding CVEs?" is the
+#: catalog's question for cve_scan, so an asker who says "known security vulnerabilities" shared no token with it:
+#: cve_scan ranked on catalog position alone, fell below the section cap and was deferred (walk 2026-10-12).
+#: Applied to BOTH sides of the overlap, so the entries that already say "vulnerabilities" keep matching.
+_TOKEN_ALIASES = {
+    "vulnerability": "cve", "vulnerabilities": "cve", "vulnerable": "cve", "cves": "cve",
+    "advisory": "cve", "advisories": "cve",
+}
+
+
+def _tokens(text: str) -> set[str]:
+    import re
+    return {_TOKEN_ALIASES.get(t, t) for t in re.findall(r"[a-z0-9]+", text.lower())}
+
+
 def _question_relevance(question: str, catalog_question: str, analysis_ids: list[str]) -> float:
     """How much a catalog entry's own question and analysis ids overlap the
     free-text question actually asked, as a fraction of the asked question's
@@ -287,12 +302,12 @@ def _question_relevance(question: str, catalog_question: str, analysis_ids: list
     if re.sub(r"[^a-z0-9]+", " ", question.lower()).strip() == \
             re.sub(r"[^a-z0-9]+", " ", catalog_question.lower()).strip():
         return 1.0
-    q_tokens = set(re.findall(r"[a-z0-9]+", question.lower())) - _STOPWORDS
+    q_tokens = _tokens(question) - _STOPWORDS
     if not q_tokens:
         return 0.0
-    candidate_tokens = set(re.findall(r"[a-z0-9]+", catalog_question.lower()))
+    candidate_tokens = _tokens(catalog_question)
     for aid in analysis_ids:
-        candidate_tokens |= set(aid.split("_"))
+        candidate_tokens |= _tokens(aid.replace("_", " "))
     candidate_tokens -= _STOPWORDS
     return len(q_tokens & candidate_tokens) / len(q_tokens)
 

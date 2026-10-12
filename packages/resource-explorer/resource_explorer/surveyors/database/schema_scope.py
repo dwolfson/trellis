@@ -316,6 +316,9 @@ def credential_shortfall(
     # tables is not withholding anything. Counted separately as well, so the
     # fraction can be disputed.
     reachable = len(readable) + len(empty)
+    # "Visible" (USAGE granted: the header's "sees N of M") and "readable" (every table SELECTable) count
+    # different things. A schema with USAGE and SELECT on only some tables is visible, not readable.
+    visible = sum(1 for s in states.values() if s["usage_granted"])
     # The level's name comes from the engine's declaration, never a literal:
     # the same probe shape against Oracle would be reporting on *owners*.
     # "container" is the honest generic when no engine was passed — a caller
@@ -326,13 +329,16 @@ def credential_shortfall(
         "container_level": level,
         "container_total": len(states),
         "containers_readable": reachable,
+        "containers_visible": visible,
         "containers_empty": len(empty),
         "short_containers": short,
         "by_container": {n: states[n] for n in sorted(states)},
         "relation_total": relation_total,
         "relation_select": relation_select,
         "phrase": (
-            f"{reachable} of {len(states)} {level}s readable; "
+            f"{reachable} of {len(states)} {level}s readable"
+            + (f" ({visible} visible)" if visible != reachable else "")
+            + "; "
             f"{relation_select} of {relation_total} relation(s)"
         ),
         "short_phrase": (
