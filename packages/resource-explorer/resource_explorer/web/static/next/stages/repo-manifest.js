@@ -137,6 +137,49 @@ export function repoManifestHtml({ plan, picks, scope, fileTypePicks, ps = null 
   return `<div data-repo-manifest role="table" aria-label="What this press does" class="min-w-0 max-w-full overflow-x-auto text-caveat">${head}${rows}</div>`;
 }
 
+/** The ONE result of a repository commit, read from the record's persisted steps and state (and the proof
+ *  summary beside it), never from the code path the click took (owner, 2026-10-11: acknowledge the press and
+ *  validate its success; a failure is a pop-up).
+ *    running      the record is queued or running                         "◔ publishing…"
+ *    confirmed    finished, nothing failed, and the commit's own read-back (the publish_asset step says
+ *                 "published", not "sent, not yet read back"; the proof rows hold no report left unread, no
+ *                 element sent-but-unread, none failed)                    "✓ published <date> · confirmed"
+ *    unconfirmed  finished, nothing failed, the read-back has not shown it "✓ published <date> · not yet confirmed"
+ *    failed       a step failed, or the record says failed                  "◐ not finished · <reason>"
+ *  `items` are the failed steps, for the pop-up. */
+export function commitVerdict(rec, ps = null) {
+  if (!rec) return null;
+  const steps = rec.steps || [];
+  if (rec.state === 'running' || rec.state === 'queued') return { state: 'running', date: '', reason: '', items: [] };
+  const firstSentence = (t) => { const x = String(t || '').trim(); return x.split(/\.\s|\n/)[0].slice(0, 200).trim(); };
+  const failedSteps = steps.filter((st) => st.state === 'failed');
+  const items = failedSteps.map((st) => ({ what: st.name, word: firstSentence(st.detail || st.reason || st.error) || 'failed' }));
+  const sub = (ps && ps.sub_resources) || {};
+  if (!failedSteps.length && sub.failed) items.push({ what: 'files and folders', word: `${sub.failed} not created${sub.first_failure ? ` · ${sub.first_failure}` : ''}` });
+  if (failedSteps.length || rec.state === 'failed' || sub.failed) {
+    const reason = items.length ? items[0].word : firstSentence(rec.reason || rec.error) || 'the run did not finish';
+    if (!items.length) items.push({ what: 'the commit', word: reason });
+    return { state: 'failed', date: '', reason, items };
+  }
+  const when = String(rec.finished_at || rec.requested_at || '');
+  const date = when.length >= 10 ? when.slice(5, 10) : '';
+  const asset = steps.find((st) => st.name === 'publish_asset');
+  const readBack = !!asset && asset.state === 'done' && /(^|\s)published(\s|$)/.test(String(asset.detail || '')) && !/not yet read back/.test(String(asset.detail || ''));
+  const proofOk = !ps || (((ps.report || {}).state === 'published') && !sub.sent && !sub.failed);
+  const finished = steps.length > 0 && steps.every((st) => ['done', 'skipped'].includes(st.state));
+  return { state: finished && readBack && proofOk ? 'confirmed' : 'unconfirmed', date, reason: '', items: [] };
+}
+
+/** The one result line of a commit record: cue + short word. The steps are behind "details ▸" (curate.js). */
+export function commitResultHtml(rec, ps = null) {
+  const v = commitVerdict(rec, ps);
+  if (!v) return '';
+  const body = v.state === 'running' ? cue('running', 'publishing…')
+    : v.state === 'failed' ? cue('partial', `not finished · ${v.reason}`)
+      : cue(v.state === 'confirmed' ? 'measured' : 'queued', `published ${v.date} · ${v.state === 'confirmed' ? 'confirmed' : 'not yet confirmed'}`);
+  return `<div data-commit-result="${esc(v.state)}" class="text-caveat text-ink">${body}</div>`;
+}
+
 /** The commit header line and the numbered steps (after a press). Counts of steps are the record's. */
 export function commitHeaderHtml(rec, labelOf = (n) => n) {
   if (!rec) return '';
