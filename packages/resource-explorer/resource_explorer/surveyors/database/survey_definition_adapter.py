@@ -455,18 +455,27 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
         credential_capability=credential_capability,
     )
     report_guid = result.get("report_guid", "")
-    registry.record_step_run(
-        entity.slug, "egeria_publish", surveyed_at, entity_type="database",
-        source="egeria", executor="local",
-        metrics={"report_guid": report_guid,
-                 "annotation_count": result.get("annotation_count", 0),
-                 "published_measured_at": (measured_row or {}).get("surveyed_at", "")},
-    )
-    # Outcome goes ON the measured row (never a new row). For an in-run
-    # measurement the row is the run's own (slug, surveyed_at); a no-op if
-    # this run stored none.
-    registry.record_database_survey_published(
-        entity.slug, (measured_row or {}).get("surveyed_at") or surveyed_at, report_guid)
+    try:
+        registry.record_step_run(
+            entity.slug, "egeria_publish", surveyed_at, entity_type="database",
+            source="egeria", executor="local",
+            metrics={"report_guid": report_guid,
+                     "annotation_count": result.get("annotation_count", 0),
+                     "published_measured_at": (measured_row or {}).get("surveyed_at", "")},
+        )
+        # Outcome goes ON the measured row (never a new row). For an in-run
+        # measurement the row is the run's own (slug, surveyed_at); a no-op if
+        # this run stored none.
+        registry.record_database_survey_published(
+            entity.slug, (measured_row or {}).get("surveyed_at") or surveyed_at, report_guid)
+    except Exception as exc:
+        if not report_guid:
+            raise
+        # Egeria accepted the report; only RE's record of it failed. The guid
+        # travels on, so the run says "published" (backlog 7f.8 review).
+        from resource_explorer.surveyors.survey_definition_executor import PublishedNotRecorded
+
+        raise PublishedNotRecorded(report_guid, exc) from exc
     return report_guid
 
 

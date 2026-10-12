@@ -35,9 +35,12 @@ from resource_explorer.surveyors.database.egeria_database_surveyor import (
     EgeriaDatabaseSurveyor,
     EgeriaDatabaseSurveyorError,
 )
+from resource_explorer.registry import STATS_NEVER_RESET
 from resource_explorer.surveyors.survey_definition_executor import (
+    NOTHING_TO_PUBLISH,
     PUBLISH_NOT_CHOSEN,
     PUBLISHED,
+    PUBLISHED_NOT_RECORDED,
     SurveyDefinitionExecutor,
 )
 from resource_explorer.surveyors.survey_definition_reader import (
@@ -54,6 +57,12 @@ class FakePostgres(PostgreSQLConnection):
     answer from canned rows, and anything not overridden reaches
     `execute_query`, which answers nothing."""
 
+    #: What pg_stat_database.stats_reset says, as the real getter reports it:
+    #: a timestamp, or STATS_NEVER_RESET for a NULL.
+    reset = "2026-01-01T00:00:00"
+    #: Set to make the schema read fail, so no step produces results.
+    unreachable = False
+
     def __init__(self):  # no socket
         self.conn = None
 
@@ -68,6 +77,8 @@ class FakePostgres(PostgreSQLConnection):
         return EngineCapabilities(column_stats=True, tuple_counters=True, index_stats=True)
 
     def get_schema_info(self) -> dict:
+        if self.unreachable:
+            raise ConnectionError("could not connect to server")
         return {
             "schemas": [{"name": "public", "description": "", "tables": [{
                 "name": "orders", "type": "BASE TABLE", "description": "",
@@ -81,8 +92,8 @@ class FakePostgres(PostgreSQLConnection):
 
     def get_statistics(self) -> dict:
         return {
-            "stats_reset": "2026-01-01T00:00:00",
-            "stats_reset_evidence": "2026-01-01T00:00:00",
+            "stats_reset": self.reset if self.reset != STATS_NEVER_RESET else "",
+            "stats_reset_evidence": self.reset,
             "row_stats": [{"schemaname": "public", "tablename": "orders", "row_count": 5,
                            "last_analyzed": "", "last_vacuumed": "", "pending_changes": 0}],
             "table_stats": [{"schemaname": "public", "tablename": "orders",
@@ -127,7 +138,7 @@ def db(registry):
     return registry.get_database("advisor")
 
 
-def run_scouting_scan(registry, db) -> dict:
+def run_scouting_scan(registry, db, runner_kwargs=None) -> dict:
     steps = [SurveyStep(guid="", display_name=k, qualified_name=f"Step::{k}",
                         executes_at="resource-explorer", re_analysis_step=k)
              for k in SCOUTING_STEPS]
@@ -140,7 +151,8 @@ def run_scouting_scan(registry, db) -> dict:
             entity_type="database", slug="advisor", entity=db, survey_def=survey_def,
             process_guid="", process_qn=survey_def.qualified_name, publish=None,
             engine_override="resource-explorer",
-            runner_kwargs={"db_user": "surveyor", "db_pwd": "not-a-real-password"})
+            runner_kwargs=runner_kwargs if runner_kwargs is not None
+            else {"db_user": "surveyor", "db_pwd": "not-a-real-password"})
 
 
 def run_detail(registry) -> dict:
@@ -163,6 +175,16 @@ def test_one_scouting_scan_is_one_snapshot_at_the_runs_time_with_its_activity(re
                                           result["surveyed_at"])
     assert [a["rows_inserted"] for a in activity] == [761184], (
         "the scan's activity must sit on its one snapshot")
+    # 7f.3: the reset time read from pg_stat_database is stored on it
+    assert [a["stats_reset"] for a in activity] == ["2026-01-01T00:00:00"]
+
+
+def test_7f3_never_reset_is_stored_as_the_never_word_not_as_not_read(registry, db, monkeypatch):
+    monkeypatch.setattr(FakePostgres, "reset", STATS_NEVER_RESET)
+    result = run_scouting_scan(registry, db)
+    activity = registry.query_detail_rows("database_table_activity", "advisor",
+                                          result["surveyed_at"])
+    assert [a["stats_reset"] for a in activity] == [STATS_NEVER_RESET]
 
 
 # -- 7f.8: the run's publish word --------------------------------------------
@@ -203,3 +225,82 @@ def test_the_word_never_carries_the_runs_password(registry, db):
                       side_effect=EgeriaDatabaseSurveyorError("login not-a-real-password refused")):
         run_scouting_scan(registry, db)
     assert "not-a-real-password" not in json.dumps(run_detail(registry))
+
+
+def test_a_publish_with_no_report_guid_is_stored_as_not_published(registry, db):
+    """Egeria answered without a report guid: the word says failed, and the
+    stored flag must agree with it, never `published: true` beside it."""
+    registry.set_project_context("database", "advisor", status="linked", egeria_project_guid="p-1")
+    with patch.object(EgeriaDatabaseSurveyor, "publish_step_annotations", autospec=True,
+                      return_value={"asset_guid": "a-1", "report_guid": "", "annotation_count": 0}):
+        result = run_scouting_scan(registry, db)
+    assert result["publish_state"].startswith("publish failed · ")
+    assert result["published"] is False
+    assert run_detail(registry)["published"] is False
+
+
+def test_a_refused_publish_says_failed_with_the_refusal(registry, db, monkeypatch):
+    """No requester and a configured zone: the access re-check refuses. Real
+    `person_write_refusal`, real config; only Egeria is faked (and never called)."""
+    monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "Zone-A")
+    registry.set_project_context("database", "advisor", status="linked", egeria_project_guid="p-1")
+    with patch.object(EgeriaDatabaseSurveyor, "publish_step_annotations", autospec=True,
+                      return_value={"report_guid": "r-1"}) as published:
+        result = run_scouting_scan(registry, db)
+    assert published.call_count == 0
+    stored = run_detail(registry)["publish_state"]
+    assert stored == result["publish_state"]
+    assert stored.startswith("publish failed · not permitted"), stored
+    assert run_detail(registry)["published"] is False
+
+
+def test_a_run_whose_steps_all_failed_has_nothing_to_publish(registry, db, monkeypatch):
+    monkeypatch.setattr(FakePostgres, "unreachable", True)
+    registry.set_project_context("database", "advisor", status="linked", egeria_project_guid="p-1")
+    with patch.object(EgeriaDatabaseSurveyor, "publish_step_annotations", autospec=True) as published:
+        result = run_scouting_scan(registry, db)
+    assert published.call_count == 0
+    assert result["publish_state"] == NOTHING_TO_PUBLISH
+    assert run_detail(registry)["publish_state"] == NOTHING_TO_PUBLISH
+    assert NOTHING_TO_PUBLISH != PUBLISH_NOT_CHOSEN
+
+
+def test_the_word_masks_a_short_stored_password_and_credentials_in_the_error(registry):
+    """The stored password is 3 characters (below the run-password masking
+    floor) and the run typed none; the error also carries URL userinfo and a
+    bearer token. None of it may reach the stored detail, and the word is bounded."""
+    registry.register_database(DatabaseEntity(
+        slug="advisor", display_name="Advisor", db_type="postgresql",
+        host="localhost", port=5442, database_name="advisor",
+        db_user="surveyor", db_password="pw7"))
+    short = registry.get_database("advisor")
+    assert short.db_password == "pw7"
+    registry.set_project_context("database", "advisor", status="linked", egeria_project_guid="p-1")
+    noisy = ("login pw7 refused at https://admin:s3cretpass@egeria.example:9443/x "
+             "Authorization: Bearer abcdef0123456789 " + "x" * 600)
+    with patch.object(EgeriaDatabaseSurveyor, "publish_step_annotations", autospec=True,
+                      side_effect=EgeriaDatabaseSurveyorError(noisy)):
+        result = run_scouting_scan(registry, short, runner_kwargs={})
+    detail = json.dumps(run_detail(registry))
+    for secret in ("pw7", "s3cretpass", "abcdef0123456789"):
+        assert secret not in detail, secret
+    assert result["publish_state"].startswith("publish failed · ")
+    assert len(result["publish_state"]) <= 300
+
+
+def test_egeria_accepted_but_not_recorded_locally_still_says_published(registry, db):
+    """The report guid is the proof: a local bookkeeping failure after Egeria
+    accepted the report must not turn into "publish failed"."""
+    registry.set_project_context("database", "advisor", status="linked", egeria_project_guid="p-1")
+
+    def broken(*_a, **_k):
+        raise RuntimeError("registry write failed")
+
+    with patch.object(EgeriaDatabaseSurveyor, "publish_step_annotations", autospec=True,
+                      return_value={"asset_guid": "a-1", "report_guid": "r-9", "annotation_count": 1}), \
+            patch.object(registry, "record_database_survey_published", broken):
+        result = run_scouting_scan(registry, db)
+    stored = run_detail(registry)
+    assert stored["publish_state"].startswith(PUBLISHED_NOT_RECORDED), stored["publish_state"]
+    assert stored["egeria_report_guid"] == "r-9"
+    assert stored["published"] is True and result["published"] is True

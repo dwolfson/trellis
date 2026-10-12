@@ -94,3 +94,29 @@ test('an entry the open list filters out costs one re-read, not one per watch ti
   assert.equal(t.fetches(), 2);
   t.document.querySelector('[data-act="close"]')?.click();
 });
+
+test('after the poll budget runs out, a finished scan still turns the row finished', async () => {
+  const rows = { current: [row('s1', 'running', 'Database Scouting Scan')] };
+  const t = await open(rows);   // maxTicks 5, intervalMs 20
+  const body = () => t.document.getElementById('activity-panel-body').textContent;
+  await sleep(250);             // budget spent; the list still says running
+  assert.match(body(), /running/);
+  const n = t.fetches();
+  rows.current = [row('s1', 'ok', 'Database Scouting Scan')];
+  assert.equal(await t.mod.noticeActivity(rows.current), true);
+  assert.doesNotMatch(body(), /running/);
+  assert.equal(t.fetches(), n + 1);
+  assert.equal(await t.mod.noticeActivity(rows.current), false, 'one re-read per change');
+  t.document.querySelector('[data-act="close"]')?.click();
+});
+
+test('closing the panel forgets what it noticed', async () => {
+  const rows = { current: [row('a1', 'ok', 'done')] };
+  const t = await open(rows);
+  const page = [row('n1', 'ok', 'filtered elsewhere'), row('a1', 'ok', 'done')];
+  assert.equal(await t.mod.noticeActivity(page), true);
+  t.document.querySelector('[data-act="close"]').click();
+  await t.mod.openActivityPanel();
+  assert.equal(await t.mod.noticeActivity(page), true, 'a reopened list reacts again');
+  t.document.querySelector('[data-act="close"]')?.click();
+});

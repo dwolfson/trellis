@@ -114,24 +114,50 @@ const scoutingSteps = ['postgres_schema_and_stats', 'postgres_operations', 'cred
   .map((k) => ({ step: `GovActionProcessStep::DatabaseScoutingSurvey::${k}`, status: 'ok', answered_by: 'prefect' }));
 const runWord = (document) => dlgOf(document).querySelector('[data-run-publish] [data-step-publish]');
 
-test('a database run draws its own publish word: failed, not chosen, published', async () => {
+test('a database run draws its own publish word: failed, not chosen, nothing to publish, published', async () => {
   const cases = [
-    ['publish failed · EGERIA_PLATFORM_URL is not set', 'error', /^✕ publish failed$/],
-    ['local only · publish not chosen', 'unclassified', /^· not published$/],
-    ['published to Egeria', 'measured', /^✓ published$/],
-    ['publish queued · the outbox sends it', 'queued', /^◔ publish queued$/],
+    [{ publish_state: 'publish failed · EGERIA_PLATFORM_URL is not set', published: false }, 'error', /^✕ publish failed$/],
+    [{ publish_state: 'local only · publish not chosen', published: false }, 'unclassified', /^· not published$/],
+    [{ publish_state: 'nothing to publish · no step produced results', published: false }, 'nothing', /^∅ nothing to publish$/],
+    [{ publish_state: 'published to Egeria', published: true, egeria_report_guid: 'r-1' }, 'measured', /^✓ published$/],
   ];
-  for (const [state, kind, shown] of cases) {
-    const { document, app } = await setUp(scoutingSteps, { publish_state: state, published: false });
+  for (const [extra, kind, shown] of cases) {
+    const { document, app } = await setUp(scoutingSteps, extra);
     await app.openRunsList('advisor');
     const w = runWord(document);
-    assert.ok(w, `no run publish word for ${state}`);
+    assert.ok(w, `no run publish word for ${extra.publish_state}`);
     assert.equal(w.dataset.stepPublish, kind);
     assert.match(text(w), shown);
-    assert.equal(w.getAttribute('title'), state);
+    assert.equal(w.getAttribute('title'), extra.publish_state);
     // the run word is the run's, not repeated on each step
     assert.equal(dlgOf(document).querySelectorAll('[data-step-publish]').length, 1);
   }
+});
+
+test('nothing to publish and publish not chosen no longer look alike', async () => {
+  const a = await setUp(scoutingSteps, { publish_state: 'nothing to publish · no step produced results' });
+  await a.app.openRunsList('advisor');
+  const nothing = text(runWord(a.document));
+  const b = await setUp(scoutingSteps, { publish_state: 'local only · publish not chosen' });
+  await b.app.openRunsList('advisor');
+  assert.notEqual(nothing, text(runWord(b.document)));
+});
+
+test('"published" without a report guid is not drawn as published', async () => {
+  const { document, app } = await setUp(scoutingSteps, { publish_state: 'published to Egeria', published: true });
+  await app.openRunsList('advisor');
+  const w = runWord(document);
+  assert.notEqual(w.dataset.stepPublish, 'measured');
+  assert.doesNotMatch(text(w), /✓/);
+  assert.match(text(w), /not established/);
+});
+
+test('a run with no step list still shows its publish word', async () => {
+  const { document, app } = await setUp([], { publish_state: 'publish failed · boom' });
+  await app.openRunsList('advisor');
+  const w = runWord(document);
+  assert.ok(w, 'the run word was hidden with the step list');
+  assert.match(text(w), /✕ publish failed/);
 });
 
 test('a run that recorded no publish_state draws no run word', async () => {

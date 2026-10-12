@@ -6492,7 +6492,8 @@ export function stepPublishHtml(s) {
   let word = 'not published';
   if (/^published\b/i.test(state)) { kind = 'measured'; word = 'published'; }
   else if (/^publish failed\b/i.test(state)) { kind = 'error'; word = 'publish failed'; }
-  else if (/^publish queued\b/i.test(state)) { kind = 'queued'; word = 'publish queued'; }
+  else if (/^nothing to publish\b/i.test(state)) { kind = 'nothing'; word = 'nothing to publish'; }
+  else if (/^publish not established\b/i.test(state)) { word = 'not established'; }
   const g = GLYPH_STATES[kind];
   const title = `title="${esc(state)}"`;
   const glyph = esc(g.glyph);
@@ -6506,9 +6507,32 @@ export function stepPublishHtml(s) {
       + `<span class="text-state-ok font-glyph" aria-hidden="true">${glyph}</span> `
       + `<span class="text-ink-muted">${esc(word)}</span></span>`;
   }
-  return `<span class="text-provenance" data-step-publish="${kind === 'queued' ? 'queued' : 'unclassified'}" ${title}>`
+  return `<span class="text-provenance" data-step-publish="${kind}" ${title}>`
     + `<span class="text-ink-muted font-glyph" aria-hidden="true">${glyph}</span> `
     + `<span class="text-ink-muted">${esc(word)}</span></span>`;
+}
+
+/** Backlog 7f.8: a database run's own publish word. It publishes once, after
+ *  its steps, so the word is the run's `publish_state`; "published" is drawn
+ *  only with the run's `egeria_report_guid` beside it (the proof), never from
+ *  the sentence alone. A run that recorded no word draws nothing. */
+export function runPublishHtml(d) {
+  const state = String((d && d.publish_state) || '');
+  if (!state) return '';
+  if (/^published\b/i.test(state) && !String((d && d.egeria_report_guid) || '').trim()) {
+    return stepPublishHtml({ publish_state: `publish not established · the run says "${state}" but recorded no report guid` });
+  }
+  return stepPublishHtml({ publish_state: state });
+}
+
+/** Backlog 7f.6: the header activity watch's page reader. The same page also tells an open Activity list that is
+ *  not polling that something started or ended (`noticeActivity`). Exported so the harness drives the real wiring. */
+export function activityWatchEntries(list = listActivity) {
+  return async () => {
+    const entries = await list(50);
+    noticeActivity(entries).catch(() => { /* the list keeps what it shows */ });
+    return entries;
+  };
 }
 
 export async function openRunsList(slug) {
@@ -6532,10 +6556,7 @@ export async function openRunsList(slug) {
     try {
       const d = typeof r.detail === 'string' ? JSON.parse(r.detail) : (r.detail || {});
       steps = d.steps || [];
-      // Backlog 7f.8: a database run publishes once, after its steps, so the
-      // word is the run's (`publish_state` in its detail), drawn beside the
-      // step count. A run that recorded none draws nothing.
-      runPublish = stepPublishHtml({ publish_state: d.publish_state });
+      runPublish = runPublishHtml(d);
     } catch (_) { /* a detail we cannot parse is a run with no step list */ }
     const ok = steps.filter((s) => s.status === 'ok').length;
     const bad = steps.filter((s) => s.status && s.status !== 'ok');
@@ -6568,7 +6589,7 @@ export async function openRunsList(slug) {
           </li>`;
           }).join('')}
         </ul>`
-        : '<p class="mt-s1 text-caveat text-ink-muted">This run recorded no step list.</p>'}
+        : `${runPublish ? `<div class="mt-s1 text-provenance text-ink-muted"><span data-run-publish>${runPublish}</span></div>` : ''}<p class="mt-s1 text-caveat text-ink-muted">This run recorded no step list.</p>`}
       <div data-dvr="${esc(r.id)}"></div>
     </details>`;
   }).join('');
@@ -10209,12 +10230,7 @@ async function start() {
   startActivityWatch({
     doc: document,
     first: activity.status === 'fulfilled' && Array.isArray(activity.value) ? activity.value : [],
-    // Backlog 7f.6: the same page also tells an open, idle Activity list that something new started or ended.
-    fetchEntries: async () => {
-      const entries = await listActivity(50);
-      noticeActivity(entries).catch(() => { /* the list keeps what it shows */ });
-      return entries;
-    },
+    fetchEntries: activityWatchEntries(),
     openPanel: (opts) => openActivityPanel(opts),
   });
   await loadPane();

@@ -196,18 +196,21 @@ function scheduleRefresh() {
 }
 
 const noticed = new Set();  // `id:status` pairs already acted on, so a filtered-out entry costs one re-read, not one per tick
-/** Backlog 7f.6, the case the running-row poll cannot see: the list was opened while nothing ran, so it is not
- *  polling, and a scan started afterwards. The header's activity watch (activity-unread.js, every 30 s) hands
- *  each page it reads here; when the open, idle list is missing an entry that page has, or shows as finished
- *  nothing the page says is running, the list re-reads once and the bounded running-row poll takes over. Does
- *  nothing when the panel is closed or already polling. Returns whether it refreshed. */
+/** Backlog 7f.6, the cases the running-row poll cannot see: the list was opened while nothing ran (so it is not
+ *  polling) and a scan started afterwards; or the poll's budget ran out while a row still showed running. The
+ *  header's activity watch (activity-unread.js, every 30 s) hands each page it reads here. The open, not-polling
+ *  list re-reads once when that page has an entry the list lacks, or an entry whose running-ness differs from the
+ *  list's (running there and finished here, or finished there and still running here); the bounded running-row
+ *  poll then takes over if anything runs. Keyed on id:status, so each change costs one re-read. Does nothing when
+ *  the panel is closed or already polling. Returns whether it refreshed. */
 export async function noticeActivity(entries) {
   if (!document.getElementById(PANEL_ID) || refreshTimer || !Array.isArray(panel.entries)) return false;
   const shown = new Map(panel.entries.map((e) => [e?.id, String(e?.status || '').toLowerCase()]));
   const fresh = (entries || []).filter((e) => {
     if (!e?.id) return false;
     const st = String(e.status || '').toLowerCase();
-    return (!shown.has(e.id) || (RUNNING.has(st) && !RUNNING.has(shown.get(e.id)))) && !noticed.has(`${e.id}:${st}`);
+    const changed = !shown.has(e.id) || RUNNING.has(st) !== RUNNING.has(shown.get(e.id));
+    return changed && !noticed.has(`${e.id}:${st}`);
   });
   if (!fresh.length) return false;
   fresh.forEach((e) => noticed.add(`${e.id}:${String(e.status || '').toLowerCase()}`));
@@ -220,6 +223,7 @@ export async function noticeActivity(entries) {
 function closeActivityPanel() {
   stopRefresh();
   refreshTicks = 0;
+  noticed.clear();
   document.getElementById(PANEL_ID)?.remove();
   document.removeEventListener('keydown', onPanelKeydown);
 }
