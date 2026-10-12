@@ -75,6 +75,25 @@ function stallCue(r) {
   return ` · <span class="text-state-warn" data-native-stalled title="${esc(tip)}"><span class="font-glyph" aria-hidden="true">◐</span> stalled?</span>`;
 }
 
+/** Compact span for the timing cue: "5m", "11h", "2.5d". */
+function brief(s) {
+  const round = (n) => Math.round(n * 10) / 10;
+  if (s >= 86400) return `${round(s / 86400)}d`;
+  if (s >= 3600) return `${round(s / 3600)}h`;
+  return `${Math.max(1, Math.round(s / 60))}m`;
+}
+
+/** When Egeria's own start time is stored: "◌ queued 2.5d before start · running 11h" (queued = requested →
+ *  started, running = started → now). The sentence is on hover. Empty when no start time is stored, so the
+ *  caller falls back to "requested Xd ago". */
+function timingCue(r) {
+  if (!r.started_at || r.running_s == null) return '';
+  const queued = r.queued_s != null ? `<span class="font-glyph" aria-hidden="true">◌</span> queued ${brief(r.queued_s)} before start · ` : '';
+  const tip = `${r.queued_s != null ? `Egeria queued the action ${brief(r.queued_s)} (requested ${r.requested_at} UTC, started ${r.started_at} UTC). ` : `Egeria started it at ${r.started_at} UTC. `}`
+    + `It has run ${brief(r.running_s)} since the start, as of this read.`;
+  return `<span data-native-timing title="${esc(tip)}">${queued}running ${brief(r.running_s)}</span>`;
+}
+
 /** The one line of status. Pure over `row.run`. */
 export function nativeSurveyStatusHtml(row) {
   const r = row.run || { state: 'not_run' };
@@ -89,9 +108,9 @@ export function nativeSurveyStatusHtml(row) {
         + ` · <span class="text-state-warn">last read failed: ${esc(r.error)}</span>`;
     case 'running':
       // Waiting to start and running are two states; both say when the action was requested, and a stall is a
-      // cue plus a word. The age is measured from the request (the start time Egeria gives is not stored).
-      return `${r.phase === 'waiting' ? '<span class="font-glyph" aria-hidden="true">◌</span> waiting to start' : 'running'}`
-        + `${r.submitted_at ? ` · requested ${timeSpan(r.submitted_at)}` : ''}${stallCue(r)}`
+      // cue plus a word. The stall age is measured from the request; when Egeria's start time is stored the line says queued vs running.
+      return `${r.phase === 'waiting' ? '<span class="font-glyph" aria-hidden="true">◌</span> waiting to start' : (timingCue(r) || 'running')}`
+        + `${timingCue(r) ? '' : (r.submitted_at ? ` · requested ${timeSpan(r.submitted_at)}` : '')}${stallCue(r)}`
         + ` · Egeria says <span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}${err}`;
     case 'awaiting_report':
