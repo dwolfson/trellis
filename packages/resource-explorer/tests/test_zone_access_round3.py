@@ -178,6 +178,25 @@ class TestOwnAnchor:
         with pytest.raises(AccessUnreadable):
             element_facts(odd, "g-x")
 
+    @pytest.mark.parametrize("cp", [
+        {"anchorGUID": {"primitiveValue": "g-other"}},            # flat key, not a string: names ANOTHER element
+        {"anchorGUID": 42},
+        {"instanceProperties": {"anchorGUID": {"primitiveValue": "g-other"}}},   # a shape RE does not read
+    ])
+    def test_a_present_or_unrecognised_anchor_never_reads_as_its_own(self, cp):
+        from resource_explorer.zone_access import AccessUnreadable, element_facts
+
+        el_ = {"elementGUID": "g-x", "classifications": [{"classificationName": "Anchors", "classificationProperties": cp}]}
+        with pytest.raises(AccessUnreadable):
+            element_facts(el_, "g-x")
+
+    @pytest.mark.parametrize("cp", [{}, None, {"anchorGUID": None}, {"anchorTypeName": "Asset", "anchorDomainName": "Asset"}])
+    def test_shapes_with_no_anchor_guid_read_as_its_own_anchor(self, cp):
+        from resource_explorer.zone_access import element_facts
+
+        el_ = {"elementGUID": "g-x", "classifications": [{"classificationName": "Anchors", "classificationProperties": cp}]}
+        assert element_facts(el_, "g-x").anchor == ""
+
     def test_the_batched_reader_passes_the_requested_guid(self, monkeypatch):
         from resource_explorer import zone_access as za
 

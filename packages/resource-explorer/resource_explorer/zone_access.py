@@ -307,11 +307,16 @@ def _anchor_of(element: dict) -> str:
         strings = cp.get("propertiesAsStrings")
         if isinstance(strings, dict) and isinstance(strings.get("anchorGUID"), str):
             return strings["anchorGUID"]
-        if isinstance(pv, dict) or (isinstance(strings, dict) and "anchorGUID" in strings):
+        if value is not None or pv is not None or (isinstance(strings, dict) and "anchorGUID" in strings):
             raise AccessUnreadable("an Anchors classification whose anchorGUID RE cannot read")
-        # No anchorGUID at all: Egeria leaves it null when the element is its own anchor
-        # (OpenMetadataAPIGenericHandler ~:1736 "A null anchorGUID meant that the element is its own Anchor").
-        # Seen live 2026-10-12 on egeria_git's Asset: Anchors {anchorTypeName, anchorDomainName}, no anchorGUID.
+        # No anchorGUID at all, in a shape RE recognises: Egeria counts the element as its own anchor
+        # (OpenMetadataAPIAnchorHandler.getAnchorsFromAnchorsClassification: "If the anchorGUID is not filled out
+        # then the entity is its own anchor"; null properties = unanchored), so its own zones decide.
+        # Seen live on egeria_git's Asset: Anchors {anchorTypeName, anchorDomainName}, no anchorGUID.
+        known = (not cp or isinstance(cp.get("propertyValueMap"), dict) or isinstance(strings, dict)
+                 or set(cp) <= {"anchorGUID", "anchorTypeName", "anchorDomainName", "anchorScopeGUID", "class"})
+        if not known:
+            raise AccessUnreadable("an Anchors classification in a shape RE cannot read")
         return ""
     return ""
 
