@@ -541,6 +541,8 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
     if reports:
         last, d = reports[-1], reports[-1].get("detail") or {}
         if last["proof"] == P_REPORT:
+            # ONE decider for "same result" (the tab-1 band's): this report's own outbox run settles it.
+            out["confirm"] = _report_row(last, registry, slug)["confirm"]
             out["report"] = {"state": "published", "read_at": last["read_at"], "surveyed_at": d.get("surveyed_at", ""),
                              "annotation_count": d.get("annotation_count"), "reused": bool(d.get("reused")),
                              "guid": last["element_guid"]}

@@ -209,7 +209,7 @@ test('a failed accept shows an error state on the control, which can be pressed 
 
 /* ── item 10: Catalog says what it does ────────────────────────────────── */
 
-test('Catalog: pressing shows a pending cue that says it publishes the survey already kept (no survey is run)', async () => {
+test('Catalog: the press is acknowledged with a cue and a short word; the tooltip says it publishes the survey already kept (no survey is run)', async () => {
   const gate = deferred();
   const { document, server } = await setUp();
   document.querySelector('[data-curate-pick]').click();   // nothing is pre-ticked any more: the owner ticks a line
@@ -219,11 +219,10 @@ test('Catalog: pressing shows a pending cue that says it publishes the survey al
   assert.match(go.title, /Publishes the survey already kept/);
   assert.match(go.title, /does not run a survey/);
   go.click();
-  assert.match(norm(go), /Publishing…/);
+  assert.match(norm(go), /^◔ publishing…$/);
   assert.ok(go.disabled);
   const hint = go.nextElementSibling;
-  assert.match(norm(hint), /publishing the survey already kept/);
-  assert.doesNotMatch(norm(hint), /re-surveying|surveying first/);
+  assert.equal(norm(hint), '', 'no sentence narrating the steps (owner 2026-10-11: acknowledge, then validate)');
   gate.resolve();
   await wait(100);
 });

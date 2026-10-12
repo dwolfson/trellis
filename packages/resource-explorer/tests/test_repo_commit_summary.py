@@ -135,3 +135,24 @@ def test_the_plan_of_a_repo_surveyed_before_kept_surveys_says_so(registry):
     plan = build_plan(registry, "p")
     assert plan["survey"] == {"exists": False, "surveyed_before_kept": True,
                               "sentence": "surveyed before 10-07 · nothing kept to publish · re-survey to publish"}
+
+
+def test_the_summary_carries_the_one_confirmation_verdict_from_the_reports_own_run(registry):
+    """One decider for "same result": a report found by GUID is not confirmed while its annotations are still
+    sending, nor when some are dead; only the settled, none-dead run is confirmed (repo_publish.confirmation)."""
+    cur = Curations(registry).create("repo", "p", author="dan", selection={}, manifest={}, steps=list(STEPS))
+    assert "confirm" not in rp.commit_proof_summary(registry, "p", cur)
+    run = "Annotation::p::2026-10-11T00:00:00"
+    registry.append_catalogue_commit_proof("p", proof="report_published", node_kind="repo_report", element_guid="r1",
+                                           detail={"annotation_count": 2, "annotations_in_egeria": 2,
+                                                   "publish_run_id": run})
+    ids = [registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::{i}", {}, run_id=run) for i in range(2)]
+    c = rp.commit_proof_summary(registry, "p", cur)["confirm"]
+    assert c["state"] == rp.UNCONFIRMED and c["word"].endswith("not yet confirmed · 2 sending")
+    registry.mark_outbox_done(ids[0], "g0")
+    with registry._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET status='dead' WHERE id=?", (ids[1],))
+    c = rp.commit_proof_summary(registry, "p", cur)["confirm"]
+    assert c["state"] == rp.DIFFERS and c["word"].endswith("Egeria shows 1")
+    registry.mark_outbox_done(ids[1], "g1")
+    assert rp.commit_proof_summary(registry, "p", cur)["confirm"]["state"] == rp.CONFIRMED

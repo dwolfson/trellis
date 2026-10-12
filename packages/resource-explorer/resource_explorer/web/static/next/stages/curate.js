@@ -23,9 +23,9 @@ import {
   filesystemWorkHtml, renderRulesBlock, UNSIGNED_LABEL,
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope, setCommitPanelGate, startScopeCommitIfShown } from '/static/next/stages/curate-scope.js';
-import { renderPublishBand, renderPublishRepo, renderPublishDb, paintDbPublishState } from '/static/next/stages/publish.js';
+import { renderPublishBand, renderPublishRepo, renderPublishDb, paintDbPublishState, showPublishFailure } from '/static/next/stages/publish.js';
 import { ARCHITECTURE_CHANGED } from '/static/next/stages/architecture-publish.js';
-import { repoCommitPanelHtml, commitHeaderHtml, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
+import { repoCommitPanelHtml, commitHeaderHtml, commitResultHtml, commitVerdict, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
 import { createScopeController, scopeListHtml, visibleRows } from '/static/next/stages/resource-scope.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { admissionHtml, admissionNoteHtml } from '/static/next/stages/curate-admission.js';
@@ -418,10 +418,14 @@ const CURATE_TASK_TO_FACT_STATE = {
   done: 'measured', failed: 'error', running: 'running', skipped: 'unrun', pending: 'unrun',
 };
 
-function curateRecordHtml(rec) {
+function curateRecordHtml(rec, open = false) {
   if (!rec) return '';
   const g = (taskState) => factGlyph(CURATE_TASK_TO_FACT_STATE[taskState] || 'unclassified');
+  // One result line (acknowledge, then validate: from the record's steps and proof rows); the steps the
+  // commit took are the same data, behind "details ▸", collapsed.
   return `<div class="mt-s2 border-t border-rule pt-s2" data-curate-record="${esc(rec.id)}">
+    ${commitResultHtml(rec, rec.proof_summary || null)}
+    <details class="mt-s1" data-commit-details ${open ? 'open' : ''}><summary class="cursor-pointer text-provenance text-ink-muted">details ▸</summary>
     ${commitHeaderHtml(rec)}
     <div class="text-provenance text-ink-muted">cataloged by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
       · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
@@ -430,7 +434,16 @@ function curateRecordHtml(rec) {
       <span class="${g(st.state).tone} font-glyph">${g(st.state).glyph}</span>
       <span class="font-mono text-ink">${esc(st.name)}</span>
       <span class="text-ink-muted">${esc(st.state)}${st.detail ? ` · ${esc(st.detail)}` : ''}</span></li>`).join('')}</ol>
+    </details>
   </div>`;
+}
+
+/** Redraw the record in place (a poll tick), keeping "details ▸" open if the person opened it. */
+function swapCurateRecord(host, rec) {
+  const slot = host.querySelector('[data-curate-record]');
+  if (!slot) return;
+  const open = !!slot.querySelector('[data-commit-details]')?.open;
+  slot.outerHTML = curateRecordHtml(rec, open);
 }
 
 /** Curate is a generic `/next` nav item (reachable for any resource type via
@@ -835,9 +848,11 @@ export async function renderCurate(slug) {
       // already kept. It re-surveys only if the box under the button is ticked, and then only the
       // stale steps. Say which, as a cue plus a short word.
       const resurvey = !!state.curate.resurvey;
-      b.innerHTML = stateCue('running', 'Publishing…', CATALOG_SENTENCE);
+      // The press is acknowledged at once: a cue and a short word. The steps are not narrated (owner,
+      // 2026-10-11); the result line below turns "confirmed" from the record's read-back.
+      b.innerHTML = stateCue('running', 'publishing…', resurvey ? 'Re-surveying the stale steps first, then publishing.' : CATALOG_SENTENCE);
       const hint = b.nextElementSibling;
-      if (hint) hint.innerHTML = stateCue('running', resurvey ? 're-surveying the stale steps, then publishing' : 'publishing the survey already kept', CATALOG_SENTENCE);
+      if (hint) hint.textContent = '';
       try {
         const out = await curateCommit(slug, {
           confirm: [...picks], data_files: false, resurvey_stale: resurvey,   // the files and folders come from the record
@@ -853,13 +868,15 @@ export async function renderCurate(slug) {
             plan.commits[0] = rec;
             latest = rec;
             setCommitLine(commitLineFromRecord('repo', rec));
-            const slot = host.querySelector('[data-curate-record]');
-            if (slot) slot.outerHTML = curateRecordHtml(rec);
+            swapCurateRecord(host, rec);
           } catch { /* the next tick will */ }
         } });
         plan.commits[0] = await getCuration(slug, out.curation.id);
         latest = plan.commits[0];
         setCommitLine(commitLineFromRecord('repo', latest));
+        // A failure is a pop-up with the reason and the failed items; the persistent cue is the result line.
+        const verdict = commitVerdict(latest, latest.proof_summary || null);
+        if (verdict && verdict.state === 'failed') showPublishFailure(host.ownerDocument, verdict.items, () => host.querySelector('[data-curate-go]')?.click());
         try { plan.survey = (await getCuratePlan(slug)).survey || plan.survey; } catch { /* the table keeps the survey it had */ }
         try { await scope.load(); } catch { /* the rows keep the state they had; the next read will say */ }
         draw();
@@ -868,8 +885,12 @@ export async function renderCurate(slug) {
       } catch (err) {
         b.disabled = false; b.textContent = counts0Label();
         if (b.nextElementSibling) b.nextElementSibling.textContent = '';
-        const why = err.status === 401 ? 'sign in to publish' : err.status === 409 ? err.message : `not published: ${err.message}`;
-        host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span class="text-caveat text-accent-ink">${esc(why)}</span>`);
+        // A refusal (401, 403, 409) needs a change of permission or state, not a retry: it says "not permitted ·"
+        // (the pop-up then offers no Retry, as the tab-1 band does). Anything else may be retried.
+        const why = err.status === 401 ? 'not permitted · sign in to publish'
+          : (err.status === 403 || err.status === 409) ? `not permitted · ${err.message}` : `not published: ${err.message}`;
+        host.querySelector('[data-curate-go]').insertAdjacentHTML('afterend', `<span data-commit-result="failed" class="text-caveat text-ink">${stateCue('partial', `not finished · ${why}`)}</span>`);
+        showPublishFailure(host.ownerDocument, [{ what: 'the commit', word: why }], () => host.querySelector('[data-curate-go]')?.click());
       }
     });
   };
@@ -900,8 +921,7 @@ export async function renderCurate(slug) {
         const rec = await getCuration(slug, latest.id);
         plan.commits[0] = rec; latest = rec;
         setCommitLine(commitLineFromRecord('repo', rec));
-        const slot = host.querySelector('[data-curate-record]');
-        if (slot) slot.outerHTML = curateRecordHtml(rec);
+        swapCurateRecord(host, rec);
         if (rec.state !== 'running' && rec.state !== 'queued') { stopFollow(); draw(); }
       } catch { /* the next tick will */ }
     }, 3000);
