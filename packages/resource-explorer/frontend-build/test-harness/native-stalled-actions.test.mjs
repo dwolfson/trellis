@@ -27,6 +27,35 @@ test('waiting to start is its own state, not "running"', () => {
   assert.doesNotMatch(t, /^running/);
 });
 
+test('with Egeria\'s start time stored: queued vs running, in place of "requested Xd ago"', () => {
+  const t = text(ns.nativeSurveyStatusHtml(run({ stalled: true, requested_at: '2026-10-09T01:41:00', started_at: '2026-10-11T13:00:00',
+    queued_s: 2.5 * 86400, running_s: 11 * 3600 })));
+  assert.match(t, /^◌ queued 2\.5d before start · running 11h · ◐ stalled\? · Egeria says IN_PROGRESS/);
+  assert.doesNotMatch(t, /requested/);
+  const h = ns.nativeSurveyStatusHtml(run({ requested_at: '2026-10-09T01:41:00', started_at: '2026-10-11T13:00:00', queued_s: 2.5 * 86400, running_s: 11 * 3600 }));
+  assert.match(h, /data-native-timing title="Egeria queued the action 2\.5d \(requested 2026-10-09T01:41:00 UTC, started 2026-10-11T13:00:00 UTC\)\. It has run 11h/);
+});
+
+test('a start time without a request time says running only; none stored falls back to "requested"', () => {
+  const t = text(ns.nativeSurveyStatusHtml(run({ started_at: '2026-10-11T13:00:00', queued_s: null, running_s: 5 * 60 })));
+  assert.match(t, /^running 5m · Egeria says/); assert.doesNotMatch(t, /queued/);
+  const none = text(ns.nativeSurveyStatusHtml(run({ started_at: '', queued_s: null, running_s: null })));
+  assert.match(none, /^running · requested /); assert.doesNotMatch(none, /queued/);
+});
+
+test('a zero or sub-minute gap reads "<1m", and the hover says "as of now"', () => {
+  const o = { requested_at: '2026-10-11T13:00:00', started_at: '2026-10-11T13:00:00', queued_s: 0, running_s: 30 };
+  const t = text(ns.nativeSurveyStatusHtml(run(o)));
+  assert.match(t, /^◌ queued &lt;1m before start · running &lt;1m/);
+  assert.match(ns.nativeSurveyStatusHtml(run(o)), /as of now\./);
+  assert.match(text(ns.nativeSurveyStatusHtml(run({ ...o, queued_s: 60, running_s: 90 }))), /queued 1m before start · running 2m/);
+});
+
+test('waiting to start keeps "requested" (nothing has started)', () => {
+  const t = text(ns.nativeSurveyStatusHtml(run({ egeria_status: 'WAITING', phase: 'waiting', started_at: '', queued_s: null, running_s: null })));
+  assert.match(t, /^◌ waiting to start · requested /);
+});
+
 test('the sentence is on hover: the age and the limit, and that RE does not cancel on it', () => {
   const h = ns.nativeSurveyStatusHtml(run({ stalled: true }));
   assert.match(h, /data-native-stalled title="Requested 2\.5 days ago and Egeria still says IN_PROGRESS\. Flagged after 6 hours/);

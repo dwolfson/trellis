@@ -88,7 +88,7 @@ CANNOT_RUN = "cannot_run"
 WAITING_STATUSES = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING"})
 
 #: A survey action still active this long after it was REQUESTED is flagged "stalled?". Measured from the
-#: request (the one time RE stores; Egeria's own start time is not kept). A native survey takes minutes, so
+#: request (the stall limit is unchanged; Egeria's start time, when stored, only refines the display). A native survey takes minutes, so
 #: an action still waiting after an hour has not been picked up, and one still running after six hours,
 #: counting the wait, is far beyond any survey seen. Flag only: RE never cancels or retries on this.
 STALL_AFTER_WAITING_S = 60 * 60
@@ -165,6 +165,28 @@ class NativeSurveyBusy(NativeSurveyError):
 class ActionRead:
     status: str
     message: str
+    #: Egeria's own `requestedStartTime` / `startTime` as ISO UTC (naive), or None when it did not state one.
+    requested_at: str | None = None
+    started_at: str | None = None
+
+
+def epoch_ms_to_iso(value) -> str | None:
+    """Egeria's epoch-millisecond time (a bare number, or a property value carrying `primitiveValue`) as the
+    registry's naive-UTC ISO spelling. Missing, zero or unreadable is None, never a made-up time."""
+    if isinstance(value, dict):
+        value = value.get("primitiveValue")
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ms < 1e11:                 # below 1e11 is seconds (or nonsense), not epoch milliseconds: unknown, not 1970
+        return None
+    try:
+        return datetime.fromtimestamp(ms / 1000, timezone.utc).replace(tzinfo=None).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -357,7 +379,9 @@ class PyegeriaSurveyPort:
             raise NativeSurveyError(
                 "Egeria's engine-action element carried no activityStatus")
         message = (props.get("completionMessage") or {}).get("primitiveValue") or ""
-        return ActionRead(status=status, message=message)
+        return ActionRead(status=status, message=message,
+                          requested_at=epoch_ms_to_iso(props.get("requestedStartTime")),
+                          started_at=epoch_ms_to_iso(props.get("startTime")))
 
     def cancel(self, engine_action_guid: str) -> None:
         """Ask Egeria to cancel an engine action (pyegeria 6.2.1
@@ -458,7 +482,19 @@ def _age_seconds(then: str, now: datetime | None) -> float | None:
     return max(0.0, (n - t).total_seconds())
 
 
-def _stall(out: dict, now: datetime | None) -> None:
+def _gap_seconds(earlier: str | None, later: str | None) -> float | None:
+    """Seconds from one stored naive-UTC stamp to a later one, or None when either is missing or unreadable."""
+    if not earlier or not later:
+        return None
+    try:
+        a = datetime.fromisoformat(str(earlier).replace("Z", ""))
+        b = datetime.fromisoformat(str(later).replace("Z", ""))
+    except ValueError:
+        return None
+    return max(0.0, (b.replace(tzinfo=None) - a.replace(tzinfo=None)).total_seconds())
+
+
+def _stall(out: dict, now: datetime | None, requested_at: str = "", started_at: str = "") -> None:
     """Fill `phase`, `requested_age_s`, `stall_after_s` and `stalled` for an action that is still active.
     From the request time and Egeria's last-read status only; unknown stays unknown (None), never False."""
     status = out["egeria_status"]
@@ -470,6 +506,13 @@ def _stall(out: dict, now: datetime | None) -> None:
         out["phase"] = ""            # submitted, no status read yet: not known to be either
     age = _age_seconds(out["submitted_at"], now)
     out["requested_age_s"] = age
+    # Egeria's own times, when stored: how long it queued before starting, and how long it has run since.
+    # Unknown stays None (a row from before the columns, or an action Egeria has not started).
+    out["queued_s"] = out["running_s"] = None
+    out["requested_at"], out["started_at"] = requested_at or "", started_at or ""
+    if started_at and out["phase"] == "running":
+        out["running_s"] = _age_seconds(started_at, now)
+        out["queued_s"] = _gap_seconds(requested_at, started_at)
     after = STALL_AFTER_RUNNING_S if out["phase"] == "running" else STALL_AFTER_WAITING_S
     out["stall_after_s"] = after
     out["stalled"] = None if age is None else age > after
@@ -495,6 +538,7 @@ def derive_native_state(run: dict | None, *, stored_annotation_count: int | None
         "read_at": "", "report_at": "", "report_guid": "", "engine_action_guid": "",
         "annotation_count": None, "error": "",
         "phase": "", "requested_age_s": None, "stall_after_s": None, "stalled": False,
+        "requested_at": "", "started_at": "", "queued_s": None, "running_s": None,
     }
     if not run:
         return out
@@ -526,7 +570,7 @@ def derive_native_state(run: dict | None, *, stored_annotation_count: int | None
 
     if status in ACTIVE_STATUSES:
         out["state"] = RUNNING
-        _stall(out, now)
+        _stall(out, now, run.get("engine_action_requested_at") or "", run.get("engine_action_started_at") or "")
         return out
 
     if status in SUCCESS_STATUSES:
@@ -790,7 +834,8 @@ def refresh_run(registry, port: EgeriaSurveyPort, run: dict, *, entity_type: str
         return _refetch(registry, entity_type, slug, process_qn)
     registry.record_native_survey_readback(
         guid, read_at=_now(), status=action.status,
-        message=scrub_secret(action.message, entity))
+        message=scrub_secret(action.message, entity),
+        requested_at=action.requested_at, started_at=action.started_at)
 
     if action.status in SUCCESS_STATUSES:
         _read_report_in(registry, port, run, action, entity_type=entity_type,

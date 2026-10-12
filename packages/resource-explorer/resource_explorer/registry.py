@@ -2590,6 +2590,24 @@ class ProjectRegistry:
             ):
                 if _step_run_cols and _col not in _step_run_cols:
                     conn.execute(f"ALTER TABLE step_runs ADD COLUMN {_col} {_ddl}")
+            # Migration: Egeria's own request and start times for a native survey's engine action (owner,
+            # 2026-10-12, "yes on the start time"). ISO UTC strings, nullable, no default: an ADD COLUMN
+            # that rewrites nothing; NULL = Egeria did not state it (or the row predates the column).
+            # IF NOT EXISTS on Postgres so two processes starting together cannot fail each other; lock_timeout
+            # as the created_by / BIGINT migrations, so a held table fails fast instead of queueing readers.
+            for _col in ("engine_action_requested_at", "engine_action_started_at"):
+                if _step_run_cols and _col not in _step_run_cols:
+                    if conn.is_postgres:
+                        conn.execute("SET LOCAL lock_timeout = '10s'")
+                    try:
+                        conn.execute(f"ALTER TABLE step_runs ADD COLUMN IF NOT EXISTS {_col} TEXT"
+                                     if conn.is_postgres else f"ALTER TABLE step_runs ADD COLUMN {_col} TEXT")
+                    except Exception as exc:
+                        if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
+                            raise RuntimeError(
+                                f"Could not add step_runs.{_col}: another process holds a lock on "
+                                "step_runs; stop other Resource Explorer processes and restart.") from exc
+                        raise
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_step_runs_step "
                 "ON step_runs(step_key, surveyed_at)"
@@ -7243,6 +7261,7 @@ class ProjectRegistry:
     def record_native_survey_readback(
         self, engine_action_guid: str, *, read_at: str, status: str = "",
         message: str = "", error: str = "",
+        requested_at: str | None = None, started_at: str | None = None,
     ) -> None:
         """Persist what Egeria said about the engine action, and when RE read it.
 
@@ -7261,8 +7280,12 @@ class ProjectRegistry:
                 conn.execute(
                     "UPDATE step_runs SET engine_action_status = ?, "
                     "engine_action_message = ?, engine_action_read_at = ?, "
-                    "engine_action_read_error = '' WHERE engine_action_guid = ?",
-                    (status, message, read_at, engine_action_guid),
+                    "engine_action_read_error = '', "
+                    # Egeria's own times (ISO UTC). A read that states none leaves what is stored: NULL stays NULL.
+                    "engine_action_requested_at = COALESCE(?, engine_action_requested_at), "
+                    "engine_action_started_at = COALESCE(?, engine_action_started_at) "
+                    "WHERE engine_action_guid = ?",
+                    (status, message, read_at, requested_at, started_at, engine_action_guid),
                 )
 
     def record_native_survey_report(
