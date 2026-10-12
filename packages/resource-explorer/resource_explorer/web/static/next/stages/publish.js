@@ -507,7 +507,7 @@ export function pressDetailsHtml(out) {
   if (sent.skipped) lines.push(`rest · ${sent.skipped}`);
   if (sent.findable) lines.push(`tags and group · ${sent.findable.error || `${sent.findable.queued} queued`}`);
   if (sent.doc_sources) lines.push(`documentation sources · ${sent.doc_sources.error || `${sent.doc_sources.published} published`}`);
-  if (sent.feedback) lines.push(`your feedback · ${sent.feedback.error || sent.feedback.refused || `${sent.feedback.queued} sent`}${(sent.feedback.not_permitted || []).length ? ` · ${sent.feedback.not_permitted.length} not permitted` : ''}`);
+  if (sent.feedback) lines.push(`your feedback · ${sent.feedback.error || sent.feedback.refused || `${sent.feedback.queued} sent`}${(sent.feedback.not_permitted || []).length ? ` · ${sent.feedback.not_permitted.length} not permitted` : ''}${(sent.feedback.unread || []).length ? ` · ${sent.feedback.unread.length} not sent (couldn't check access)` : ''}`);
   return `<details class="mt-s1" data-publish-details><summary class="cursor-pointer text-provenance text-ink-muted">details ▸</summary>
     <ul class="m-0 list-none p-0 font-mono text-provenance text-ink-muted">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></details>`;
 }

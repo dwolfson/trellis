@@ -648,3 +648,14 @@ test('Brief F r2: a 428 still re-reads the band and the sections (the rest of th
   assert.ok(server.calls.filter((c) => c.url.endsWith('/publish-state')).length > before, 're-read after the gated press');
   assert.ok(band(document).querySelector('[data-publish-gate-panel]'), 'the gate is on the re-drawn band');
 });
+
+test('Brief F r6: the details line counts unread-access items apart from refusals', async () => {
+  const { document } = await setUp('repo', { project: { status: 'personal', word: 'personal exploration', name: '' },
+    pressAnswer: { ok: true, sent: { feedback: { queued: 0, refused: '', not_permitted: [], unread: [{ kind: 'rating', id: 'f1' }] } } } });
+  await openCurate(document);
+  q(document, '[data-publish-go]').click();
+  await wait();
+  const d = q(document, '[data-publish-details]');
+  assert.match(d.textContent, /1 not sent \(couldn't check access\)/);
+  assert.doesNotMatch(d.textContent, /not permitted/);
+});

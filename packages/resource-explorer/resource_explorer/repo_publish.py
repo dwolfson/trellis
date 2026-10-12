@@ -190,9 +190,10 @@ def _per_annotation(rows: list[dict]) -> dict:
             continue
         live = [r for r in key_rows if r.get("status") not in ("cancelled", "superseded")]
         if not live:
-            if len(key_rows) == 1:
-                out["rows"] += 1
-                out["not_sent"] += 1
+            # Round 6: no live row and none done, however many retired rows: queued and never sent. ("capped" is
+            # only the proof-vs-queued gap, never this.)
+            out["rows"] += 1
+            out["not_sent"] += 1
             continue
         newest = max(live, key=lambda r: int(r.get("id") or 0))
         out["rows"] += 1

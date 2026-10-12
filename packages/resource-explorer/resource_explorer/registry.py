@@ -8630,7 +8630,19 @@ class ProjectRegistry:
                 "next_attempt_at=?, last_error='' WHERE id=? AND status='dead'",
                 (datetime.utcnow().isoformat(), row_id),
             )
-        return (cur.rowcount or 0) > 0
+            revived = (cur.rowcount or 0) > 0
+            if revived:
+                # Brief F round 6: a revived row is re-checked as an ordinary user. A Portal curator/admin role is
+                # recorded at a person's press (`portal_role`) and honoured only for the row that press queued.
+                row = conn.execute("SELECT payload_json FROM egeria_outbox WHERE id=?", (row_id,)).fetchone()
+                try:
+                    payload = json.loads((row["payload_json"] if row else "") or "{}")
+                except (TypeError, ValueError):
+                    payload = None
+                if isinstance(payload, dict) and "portal_role" in payload:
+                    payload.pop("portal_role")
+                    conn.execute("UPDATE egeria_outbox SET payload_json=? WHERE id=?", (json.dumps(payload), row_id))
+        return revived
 
     def outbox_counts(self) -> dict[str, int]:
         """Row count per status — what a health endpoint or the drain's own

@@ -349,6 +349,7 @@ def publish_my_feedback(registry, entity_type: str, slug: str, asset_guid: str, 
     run_id = run_id_for(entity_type, slug, presser)
     queued: list[int] = []
     refused: list[dict] = []
+    unread: list[dict] = []
     for item in items:
         if item.kind not in decisions:
             from resource_explorer.workflows.curate import BASIS_UNREADABLE
@@ -366,8 +367,9 @@ def publish_my_feedback(registry, entity_type: str, slug: str, asset_guid: str, 
             # a refused rating or note back to life; the plan reads "not permitted" from the note.
             registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id,
                                             retired=("cancelled", decisions[item.kind]))
-            refused.append({"kind": item.kind, "id": item.id,
-                            "reason": decisions[item.kind][len("cancelled: "):]})
+            # Round 6: an item whose access could not be READ is not a refusal; it is said under its own key.
+            (unread if decisions[item.kind].startswith(UNREAD_NOTE) else refused).append(
+                {"kind": item.kind, "id": item.id, "reason": decisions[item.kind][len("cancelled: "):]})
         else:
             queued.append(registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id))
     summary: dict = {}
@@ -386,7 +388,8 @@ def publish_my_feedback(registry, entity_type: str, slug: str, asset_guid: str, 
             if row.get("status") == "pending":
                 registry.mark_outbox_failed(row_id, why, max_attempts=1)
     after = feedback_plan(registry, entity_type, slug, viewer=presser, asset_guid=guid)
-    return {**plan_as_dict(after), "refused": "", "not_permitted": refused, "queued": queued, "drain": summary}
+    return {**plan_as_dict(after), "refused": "", "not_permitted": refused, "unread": unread, "queued": queued,
+            "drain": summary}
 
 
 # ── the Egeria side: creators the outbox drain calls (egeria_outbox._CREATORS) ─────────────────────────────

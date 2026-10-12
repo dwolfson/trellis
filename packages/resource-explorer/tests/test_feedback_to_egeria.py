@@ -814,3 +814,27 @@ def test_r5_unreadable_access_at_the_press_is_not_sent_not_not_permitted(registr
     zones.fail_element = ""
     press(registry, "alice")
     assert by_id(plan(registry, "alice")["ratings"], rid)["state"] == fe.PUBLISHED
+
+
+# ── round 6 ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_r6_a_key_cancelled_twice_is_still_not_sent_never_capped(registry):
+    run = "Annotation::p::2026-10-11T05:00:00"
+    _proof_with_run(registry, run, published=2)
+    registry.mark_outbox_done(registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::a", {}, run_id=run),
+                              "ga")
+    for _ in range(2):                                       # two presses, then an admin batch cancel
+        registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::b", {}, run_id=run,
+                                        retired=("cancelled", "cancelled: by an admin"))
+    c = rp.publish_state(registry, "p")["row"]["confirm"]
+    assert c["state"] == rp.DIFFERS and c["queued_count"] == 2 and c["capped"] == 0
+    assert c["word"].endswith("Egeria shows 1 · 1 not sent")
+
+
+def test_r6_unreadable_items_are_said_apart_from_refusals(registry, egeria, monkeypatch):
+    zones = install_zones(monkeypatch)
+    zones.fail_element = ASSET
+    rate(registry, "alice", 5, "great")
+    out = press(registry, "alice")["feedback"]
+    assert out["not_permitted"] == [] and len(out["unread"]) == 1
+    assert out["unread"][0]["reason"].startswith("not sent · couldn't check access")

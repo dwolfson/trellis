@@ -668,8 +668,7 @@ class TestRound3:
         import re
 
         root = pathlib.Path(__file__).resolve().parents[1] / "resource_explorer"
-        writers = [str(p.relative_to(root)) for p in root.rglob("*.py")
-                   if re.search(r'["\']portal_role["\']\s*:', p.read_text())]
+        writers = [str(p.relative_to(root)) for p in root.rglob("*.py") if PORTAL_ROLE_WRITE.search(p.read_text())]
         # Brief Z2: both from the caller; Brief Z3: requester_fields; Brief F round 5: curation rows
         # (curation_egeria._enqueue, from the caller, only for the row's own requester)
         assert sorted(writers) == ["architecture_publish.py", "catalogue_commit.py", "curation_egeria.py",
@@ -689,3 +688,14 @@ class TestRound3:
         assert z({"propertyValueMap": {"zoneMembership": None}}) == []
         assert z({"propertyValueMap": {"zoneMembership": {"arrayValues": None}}}) == []
         assert z({"propertyValueMap": {"zoneMembership": {"arrayValues": {"propertiesAsStrings": {}}}}}) == []
+
+
+#: Brief F round 6: a write of `portal_role` in any form, a dict literal key or a subscript assignment.
+PORTAL_ROLE_WRITE = __import__("re").compile(r'["\']portal_role["\']\s*:|\[["\']portal_role["\']\]\s*=')
+
+
+def test_f_r6_the_portal_role_guard_sees_a_subscript_write_too():
+    assert PORTAL_ROLE_WRITE.search('payload["portal_role"] = True')
+    assert PORTAL_ROLE_WRITE.search("target['portal_role']=x")
+    assert PORTAL_ROLE_WRITE.search('{"portal_role": True}')
+    assert not PORTAL_ROLE_WRITE.search('payload.get("portal_role")')

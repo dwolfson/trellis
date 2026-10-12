@@ -93,7 +93,8 @@ def send_with_publish(registry, entity_type: str, slug: str, asset_guid: str, pr
     try:
         res = fe.publish_my_feedback(registry, entity_type, slug, asset_guid, presser)
         out["feedback"] = {"queued": len(res.get("queued") or []), "refused": res.get("refused", ""),
-                           "not_permitted": res.get("not_permitted") or [], "to_send": res.get("to_send", 0)}
+                           "not_permitted": res.get("not_permitted") or [], "unread": res.get("unread") or [],
+                           "to_send": res.get("to_send", 0)}
     except Exception as exc:  # noqa: BLE001
         log.warning("Publish: feedback for %s %s failed: %s", entity_type, slug, exc)
         out["feedback"] = {"error": f"{type(exc).__name__}: {exc}"}

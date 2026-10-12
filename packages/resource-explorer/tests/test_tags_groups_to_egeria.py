@@ -1022,3 +1022,11 @@ def test_f_r5_a_plain_users_row_never_carries_the_curator_role(registry, egeria)
         current_caller.reset(reset)
     (rid,) = out["queued"]
     assert "portal_role" not in json.loads(_row(registry, rid)["payload_json"])
+
+
+def test_f_r6_an_admin_revive_drops_the_curator_role(registry, egeria):
+    rid = registry.enqueue_outbox_element("repo", "p", ce.TAG_LINK, "AttachedTag::x::t",
+                                          {"tag": "t", "by": "carol", "portal_role": True},
+                                          retired=("dead", "busy"))
+    assert registry.retry_outbox_element(rid) is True
+    assert "portal_role" not in json.loads(_row(registry, rid)["payload_json"])

@@ -754,7 +754,9 @@ def _curation_refusal(registry, row: dict) -> str:
             raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {why[len('not permitted · '):]}")
         return why
     # Round 5: a Portal curator/admin seen at the press (from the verified caller, `curation_egeria._enqueue`) is
-    # judged as one here too, as the press judged them; never taken from anything a request sends.
+    # judged as one here too, as the press judged them; never taken from anything a request sends. A pending row
+    # honours the role recorded at its press (round 6); an admin revive of a dead row drops it
+    # (`registry.retry_outbox_element`), so a revived row is re-checked as an ordinary user unless re-pressed.
     try:
         portal = bool((json.loads(row.get("payload_json") or "{}") or {}).get("portal_role"))
     except (TypeError, ValueError):
