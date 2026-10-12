@@ -419,8 +419,13 @@ public/private choice is backlog. `resource_explorer/feedback_egeria.py` owns th
   the database and file system publishes already did).
 - **Confirmed.** Line 1 of the Publish band says "confirmed" only when the publish proof's read-back found the
   report with the same annotation count (`repo_publish.confirmation`, the one "same result" function). While that
-  report's own outbox rows (by the run id the proof records) are still pending, sending or backing off, a lower
-  count reads "not yet confirmed · N sending"; "Egeria shows N" only once they are settled.
+  report's own outbox rows (by the run id the proof records) are still pending, sending or backing off, it reads
+  "not yet confirmed · N sending". Once they are settled the rows decide: none dead and every annotation done is
+  "confirmed"; dead rows read "Egeria shows N" (N = the annotations that landed). A proof with no run rows falls
+  back to the count read at publish time.
+- **Refusals are decided before any row exists** (round 3): a refused tag or group change is recorded as a row
+  born cancelled with its words, so no drain can send it; the drain also re-checks each tag and group row as its
+  requester before sending it. One press per resource runs at a time, gated or not (409 otherwise).
 - **Replaced ratings.** A person's older rating reads "replaced" only once their newer one is in Egeria; until then
   the older one still reads "published MM-DD".
 

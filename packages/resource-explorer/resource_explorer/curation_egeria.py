@@ -340,7 +340,7 @@ def requester_of(identity) -> str:
 
 
 def _enqueue(registry, entity_type: str, slug: str, item: CurationItem, action: str, guid: str, by: str,
-             display: dict) -> int:
+             display: dict, retired: "tuple[str, str] | None" = None) -> int:
     """Queue one row. `by` is THIS row's requester, recorded at queue time and never inferred later."""
     kind = item.kind
     element_kind = _LINK_OF[kind] if action == "link" else _DETACH_OF[kind]
@@ -357,7 +357,7 @@ def _enqueue(registry, entity_type: str, slug: str, item: CurationItem, action: 
         if action == "unlink" and item.egeria_guid:
             payload["folio_guid"] = item.egeria_guid
     return registry.enqueue_outbox_element(entity_type, slug, element_kind, item.key, payload,
-                                           run_id=run_id_for(entity_type, slug))
+                                           run_id=run_id_for(entity_type, slug), retired=retired)
 
 
 def _group_display(registry, group_slug: str) -> dict:
@@ -415,8 +415,11 @@ def sync_curation(registry, entity_type: str, slug: str, *, by: str = "", asset_
     curation access said no (nothing is queued then) and `drain` (the drain summary).
 
     Never raises for an Egeria failure: the rows carry it. `check_access` is the Brief Z decision for the
-    operations the queued actions perform; a publish hook passes False (the tags were checked when they were
-    added, and the inline drain acts as the person who pressed Publish, so Egeria checks them itself).
+    operations the queued actions perform, all or nothing; `per_item_access` (Brief F round 2) checks the person
+    asking per item instead and refuses only those items. The page's Publish passes `check_access=False,
+    per_item_access=True`: other people's saved changes go out under the presser's name, so it is the presser who
+    is checked, item by item; the inline drain runs as the presser, and the drain re-checks each row as its
+    requester (`egeria_outbox._curation_refusal`).
 
     `display_names` maps a tag (RE's lower-case key) to the spelling the person typed, for the InformalTag's
     displayName. Round 2: a cancel that loses to a drain's claim means the plan was stale, so the plan is read
@@ -471,15 +474,16 @@ def sync_curation(registry, entity_type: str, slug: str, *, by: str = "", asset_
         if item.action and not item.cancel_ids:
             display = (_group_display(registry, item.name) if item.kind == "group"
                        else {"display_name": display_names.get(item.name, "")})
-            row_id = _enqueue(registry, entity_type, slug, item, item.action, guid, by, display)
+            # Round 3: the refusal is decided BEFORE any row exists. A refused change is recorded as a row born
+            # cancelled with its words (no drain can ever claim it), so the band reads "not permitted" from a row,
+            # nothing is sent (a destructive unlink included), and the next Publish asks again.
             why = item_refusal(item) if per_item_access else ""
             if why:
-                # Never sent: the row is retired with the refusal as its note, so the band reads "not permitted"
-                # from a row and the next Publish asks again. A destructive unlink refused here was never sent.
-                registry.cancel_outbox_row(row_id, REFUSAL_NOTE + why)
+                _enqueue(registry, entity_type, slug, item, item.action, guid, by, display,
+                         retired=("cancelled", "cancelled: " + REFUSAL_NOTE + why))
                 result["not_permitted"].append({"kind": item.kind, "name": item.name, "reason": why})
                 continue
-            result["queued"].append(row_id)
+            result["queued"].append(_enqueue(registry, entity_type, slug, item, item.action, guid, by, display))
     if drain and result["queued"]:
         result["drain"] = _drain(registry, entity_type, slug, len(result["queued"]), identity)
     after = curation_plan(registry, entity_type, slug, asset_guid=asset_guid)

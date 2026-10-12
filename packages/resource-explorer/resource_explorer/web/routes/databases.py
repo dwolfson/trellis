@@ -1277,12 +1277,8 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
         # than raises per source.
         asset_guid = result.get("asset_guid") or ""
         if asset_guid:
-            try:
-                from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
-                publish_local_doc_sources("database", slug, asset_guid, registry=registry)
-            except Exception:
-                log.warning("Could not publish documentation sources for %s", slug, exc_info=True)
-            # Brief T: tags and the group kept in RE while the database was not in Egeria. Best-effort.
+            # Brief F round 3: the documentation sources go ONCE, inside send_with_publish (it publishes exactly
+            # `single_publish.unpublished_doc_sources`), not here as well.
             # Brief F: the same press sends the tags and group (the presser checked per item) and the PRESSER's own
             # rating and notes, as them (never anyone else's).
             await _send_with_publish(registry, "database", slug, asset_guid)

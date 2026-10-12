@@ -116,60 +116,84 @@ UNCONFIRMED = "unconfirmed"        # published, but no read-back of the count ye
 DIFFERS = "differs"                # the read-back found the report but Egeria shows a different count
 
 
-def confirmation(row: dict, unsettled: int = 0) -> dict:
-    """THE "same result" decision: whether what Egeria answered on the read-back after a publish is what was
-    published. The same report (a `report_published` proof is written only when the report's own GUID was READ
-    BACK among the asset's reports) AND the same annotation count (the count published vs the count that read
-    found). The band's label and every test use this one function.
+def confirmation(row: dict, unsettled: int = 0, run: dict | None = None) -> dict:
+    """THE "same result" decision: whether what Egeria holds after a publish is what was published. The same
+    report (a `report_published` proof is written only when the report's own GUID was READ BACK among the asset's
+    reports) AND the same annotations. The band's label and every test use this one function.
 
-    `unsettled` (round 2): that report's own outbox rows (its annotations and their links, by the publish run id
-    the proof records) still pending, being sent or backing off. While any are, a lower count is NOT a difference
-    yet: "not yet confirmed · N sending". "Egeria shows N" only once the outbox is settled.
+    `run` (round 3) is that report's own outbox run as it stands now (`run_stats`: its annotation rows by the
+    publish run id the proof records). It decides once it has rows:
+      * any row not settled (pending, sending, backing off): "not yet confirmed · N sending";
+      * settled, none dead, every published annotation done: "confirmed" (the rows are the proof; a count read
+        once at publish time is NOT, since rows retried later land after it);
+      * settled with dead rows: "Egeria shows N", N = the annotations that landed.
+    With no run rows (an older proof, or a run that could not be read) the count the publish read back decides,
+    as before. `unsettled` alone is the older form of `run["unsettled"]`.
 
-    Returns {state, word, egeria_count, published_count, read_at, unsettled}; state "" when nothing was published."""
+    Returns {state, word, egeria_count, published_count, read_at, unsettled, basis}; state "" when nothing was
+    published."""
     word = row.get("word")
     read_at = row.get("read_at") or ""
     day = read_at[5:10] if len(read_at) >= 10 else ""
     published = f"published {day}".strip()
+    run = dict(run or {})
+    pending = int(run.get("unsettled", unsettled) or 0)
     out = {"state": "", "word": "", "egeria_count": row.get("annotations_in_egeria"),
-           "published_count": row.get("annotation_count"), "read_at": read_at, "unsettled": int(unsettled or 0)}
-    waiting = f"{published} · not yet confirmed" + (f" · {int(unsettled)} sending" if unsettled else "")
-    if word == "published":
-        sent, seen = row.get("annotation_count"), row.get("annotations_in_egeria")
-        if seen is None or sent is None:
-            return {**out, "state": UNCONFIRMED, "word": waiting}
-        if int(seen) == int(sent):
-            return {**out, "state": CONFIRMED, "word": f"{published} · confirmed"}
-        if unsettled:
-            return {**out, "state": UNCONFIRMED, "word": waiting}
-        return {**out, "state": DIFFERS, "word": f"{published} · Egeria shows {int(seen)}"}
+           "published_count": row.get("annotation_count"), "read_at": read_at, "unsettled": pending,
+           "basis": "read_back"}
+    waiting = f"{published} · not yet confirmed" + (f" · {pending} sending" if pending else "")
     if word == "sent":
         return {**out, "state": UNCONFIRMED, "word": waiting}
-    return out
+    if word != "published":
+        return out
+    sent = row.get("annotation_count")
+    if pending:
+        return {**out, "state": UNCONFIRMED, "word": waiting}
+    if int(run.get("rows") or 0) > 0 and sent is not None:
+        done, dead = int(run.get("done") or 0), int(run.get("dead") or 0)
+        if dead:
+            return {**out, "state": DIFFERS, "egeria_count": done, "basis": "outbox",
+                    "word": f"{published} · Egeria shows {done}"}
+        if done >= int(sent):
+            return {**out, "state": CONFIRMED, "egeria_count": done, "basis": "outbox",
+                    "word": f"{published} · confirmed"}
+    seen = row.get("annotations_in_egeria")
+    if seen is None or sent is None:
+        return {**out, "state": UNCONFIRMED, "word": waiting}
+    if int(seen) == int(sent):
+        return {**out, "state": CONFIRMED, "word": f"{published} · confirmed"}
+    return {**out, "state": DIFFERS, "word": f"{published} · Egeria shows {int(seen)}"}
 
 
 #: Outbox statuses that are not settled yet (the drain may still land them).
 UNSETTLED = ("pending", "running", "failed")
 
 
+def run_stats(registry, slug: str, run_id: str) -> dict | None:
+    """One publish run's outbox as it stands: {rows, done, dead} for its ANNOTATION rows and `unsettled` across
+    them and the `::links` companion. None with no run id; {"unsettled": 1} when the rows cannot be read
+    (unreadable is not settled, so nothing is confirmed from it)."""
+    if not run_id:
+        return None
+    try:
+        ann = registry.list_outbox_elements(run_id=run_id, entity_slug=slug, limit=100000)
+        links = registry.list_outbox_elements(run_id=f"{run_id}::links", entity_slug=slug, limit=100000)
+    except Exception:  # noqa: BLE001
+        return {"rows": 0, "done": 0, "dead": 0, "unsettled": 1}
+    return {"rows": len(ann), "done": sum(1 for r in ann if r.get("status") == "done"),
+            "dead": sum(1 for r in ann if r.get("status") == "dead"),
+            "unsettled": sum(1 for r in ann + links if r.get("status") in UNSETTLED)}
+
+
 def unsettled_rows(registry, slug: str, run_id: str) -> int:
     """How many of one publish run's outbox rows (annotations, and the `::links` companion) are not settled."""
-    if not run_id:
-        return 0
-    n = 0
-    for rid in (run_id, f"{run_id}::links"):
-        try:
-            n += sum(1 for r in registry.list_outbox_elements(run_id=rid, entity_slug=slug, limit=100000)
-                     if r.get("status") in UNSETTLED)
-        except Exception:  # noqa: BLE001 - unreadable is not "settled": say so by not confirming
-            return 1
-    return n
+    return int((run_stats(registry, slug, run_id) or {}).get("unsettled") or 0)
 
 
 def _report_row(last: dict | None, registry=None, slug: str = "") -> dict:
     row = _report_row_words(last)
     run_id = ((last or {}).get("detail") or {}).get("publish_run_id", "") if last else ""
-    row["confirm"] = confirmation(row, unsettled_rows(registry, slug, run_id) if registry is not None else 0)
+    row["confirm"] = confirmation(row, run=run_stats(registry, slug, run_id) if registry is not None else None)
     return row
 
 
@@ -279,43 +303,44 @@ def publish_state(registry, slug: str, viewer: str | None = None) -> dict:
 # ── publish whole (PI-001) ───────────────────────────────────────────────────
 
 def publish_report(registry, slug: str, author: str, *, without_project: bool = False) -> dict:
-    """Publish the kept survey whole, read the report back by its GUID, then write the proof row.
+    """The page's ONE Publish (Brief F): the kept survey whole, read back by its GUID with a proof row, then the rest
+    of the press (`single_publish.send_with_publish`: tags and group, documentation sources, the presser's own
+    rating and notes), as the presser.
 
-    **Never runs a survey** (brief section 1). With no kept survey it returns `{"gate": "no_survey"}`
-    (the route maps it to 409) and nothing is sent; the first survey is never run implicitly.
+    **Never runs a survey** (brief section 1). With no kept survey it returns `{"gate": "no_survey"}` (the route maps
+    it to 409) and no REPORT is sent; the first survey is never run implicitly. `{"gate": "context_required"}` (428)
+    when no project answer exists and the press did not choose "without one". A gate stops the report only: a
+    resource already in Egeria still sends the rest (`sent`), which the band listed as "will publish".
 
-    Returns `{"gate": "context_required"}` (the route maps it to 428) when no project answer exists
-    and the press did not choose "without one". Zones are NEVER a per-press choice: the publisher's
-    own zone rule (RE's draft zone; the CONFIGURED publish zones only, on promotion) applies. A 409
-    on the report's name reuses the report already in Egeria (the publisher does that), recorded as
-    such."""
+    One press per resource at a time, gated or not (round 3): a second is `AlreadyRunning` (409), since the outbox
+    enqueue is not idempotent and two concurrent sends would queue every item twice.
+
+    Zones are NEVER a per-press choice: the publisher's own zone rule applies. A 409 on the report's name reuses the
+    report already in Egeria (the publisher does that), recorded as such."""
     from resource_explorer.single_publish import send_with_publish
 
-    def gated(gate: str, sentence: str) -> dict:
-        """Round 2: a gate stops the REPORT only. A resource already in Egeria still sends the rest of the press
-        (tags and group, documentation sources, the presser's feedback), which `goes_out` listed as "will publish"."""
+    def rest(doc_sources: bool = True) -> dict:
         asset = registry.get_egeria_asset_guid(slug) or ""
-        return {"gate": gate, "sentence": sentence,
-                "sent": send_with_publish(registry, "repo", slug, asset, author) if asset else {}}
-
-    if without_project:
-        registry.set_project_context("repo", slug, status="declined")
-    context = resolve_project_context(registry, slug)
-    if context is None:
-        return gated("context_required", NO_PROJECT_SENTENCE)
-    snapshot = survey_snapshot.latest(registry, slug)
-    if snapshot is None:
-        return gated("no_survey", survey_snapshot.no_kept_survey_sentence(registry, slug))
+        return send_with_publish(registry, "repo", slug, asset, author, doc_sources=doc_sources) if asset else {}
 
     with _running_lock:
         if slug in _running:
             raise AlreadyRunning(f"a publish for {slug} is already running")
         _running.add(slug)
     try:
+        if without_project:
+            registry.set_project_context("repo", slug, status="declined")
+        context = resolve_project_context(registry, slug)
+        if context is None:
+            return {"gate": "context_required", "sentence": NO_PROJECT_SENTENCE, "sent": rest()}
+        snapshot = survey_snapshot.latest(registry, slug)
+        if snapshot is None:
+            return {"gate": "no_survey", "sentence": survey_snapshot.no_kept_survey_sentence(registry, slug),
+                    "sent": rest()}
         out = publish_snapshot(registry, slug, author, context, snapshot)
-        # Brief F: the same press sends the tags and group, the documentation sources and the PRESSER's own
-        # rating and notes, as them, whenever the asset exists (even when the report itself failed this time).
-        sent = send_with_publish(registry, "repo", slug, registry.get_egeria_asset_guid(slug) or "", author)
+        # The rest goes whenever the asset exists (even when the report itself failed this time). The publisher
+        # already sent the documentation sources when it got as far as the asset (EgeriaPublisher.publish).
+        sent = rest(doc_sources=not out.get("asset_guid"))
         return {"ok": out["ok"], "stage": out.get("stage", ""), "report_guid": out.get("report_guid", ""),
                 "reused": out.get("reused", False), "sent": sent, **publish_state(registry, slug, viewer=author)}
     finally:

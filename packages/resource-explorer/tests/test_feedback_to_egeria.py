@@ -561,7 +561,7 @@ def test_documentation_sources_carry_their_published_state_and_the_publish_list_
 
 def test_the_repository_publish_sends_the_rest_after_the_report_as_the_presser():
     src = inspect.getsource(rp.publish_report)
-    assert 'send_with_publish(registry, "repo", slug, registry.get_egeria_asset_guid(slug) or "", author)' in src
+    assert 'send_with_publish(registry, "repo", slug, asset, author, doc_sources=doc_sources)' in src
 
 
 # ── round 2: the reads name their type; a missing createdBy is harmless ───────────────────────────────────
@@ -645,4 +645,72 @@ def test_r2_the_report_row_counts_its_own_runs_unsettled_rows(registry):
     registry.mark_outbox_done(a, "g")
     with registry._conn() as conn:
         conn.execute("UPDATE egeria_outbox SET status='dead' WHERE run_id=?", (f"{run}::links",))
-    assert rp.publish_state(registry, "p")["row"]["confirm"]["state"] == rp.DIFFERS
+    c = rp.publish_state(registry, "p")["row"]["confirm"]
+    assert c["state"] == rp.DIFFERS and c["word"].endswith("Egeria shows 1"), "1 of 3 published landed"
+
+
+def test_r3_rows_retried_and_done_after_the_read_back_confirm_not_egeria_shows_the_old_count(registry):
+    """Round 3: the count read once at publish time (1) is stale once the run's rows land; settled, none dead,
+    every annotation done is "confirmed"; only a dead row says what Egeria shows."""
+    run = "Annotation::p::2026-10-11T01:00:00"
+    registry.append_catalogue_commit_proof("p", proof=rp.P_REPORT, node_kind=rp.NODE_REPORT, element_guid="rep",
+                                           target_guid=ASSET, recorded_by="alice",
+                                           detail={"annotation_count": 3, "annotations_in_egeria": 1,
+                                                   "publish_run_id": run})
+    ids = [registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::{i}", {}, run_id=run)
+           for i in range(3)]
+    for i in ids:
+        registry.mark_outbox_done(i, f"g{i}")
+    c = rp.publish_state(registry, "p")["row"]["confirm"]
+    assert c["state"] == rp.CONFIRMED and c["word"].endswith("· confirmed") and c["basis"] == "outbox"
+    with registry._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET status='dead' WHERE id=?", (ids[2],))
+    c = rp.publish_state(registry, "p")["row"]["confirm"]
+    assert c["state"] == rp.DIFFERS and c["word"].endswith("Egeria shows 2")
+
+
+# ── round 3 ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_r3_a_second_gated_press_while_one_runs_is_already_running(registry, egeria, monkeypatch):
+    """The gated press (no kept survey) takes the same per-resource lock: two presses never queue every item
+    twice."""
+    import threading
+
+    registry.set_project_context("repo", "p", "personal")
+    note(registry, "alice", "Once.")
+    started, release = threading.Event(), threading.Event()
+    real = sp.send_with_publish
+
+    def slow(*a, **k):
+        started.set()
+        release.wait(5)
+        return real(*a, **k)
+    monkeypatch.setattr(sp, "send_with_publish", slow)
+    from resource_explorer.a2a_auth import current_caller
+    errors = []
+
+    def first():
+        reset = caller("alice")
+        try:
+            rp.publish_report(registry, "p", "alice")
+        finally:
+            current_caller.reset(reset)
+    t = threading.Thread(target=first)
+    t.start()
+    assert started.wait(5)
+    try:
+        rp.publish_report(registry, "p", "alice")
+    except rp.AlreadyRunning as exc:
+        errors.append(exc)
+    release.set()
+    t.join(10)
+    assert errors, "the second press is refused while the first runs"
+
+
+def test_r3_the_repository_press_sends_doc_sources_once_when_the_publisher_already_did():
+    src = inspect.getsource(rp.publish_report)
+    assert 'rest(doc_sources=not out.get("asset_guid"))' in src
+    import resource_explorer.web.routes.databases as db
+    import resource_explorer.web.routes.filesystems as fs
+    for mod in (db, fs):
+        assert "publish_local_doc_sources(" not in inspect.getsource(mod), mod.__name__

@@ -51,7 +51,8 @@ def goes_out(registry, entity_type: str, slug: str, viewer: str) -> dict:
             "count": len(findable) + len(mine) + len(docs)}
 
 
-def send_with_publish(registry, entity_type: str, slug: str, asset_guid: str, presser: str) -> dict:
+def send_with_publish(registry, entity_type: str, slug: str, asset_guid: str, presser: str, *,
+                      doc_sources: bool = True) -> dict:
     """Everything after the resource's own publish, as the presser (the request's Caller). Best-effort per part:
     a part that fails says so in its own key and never fails the press; each item's state is read from its rows."""
     out: dict = {}
@@ -77,7 +78,9 @@ def send_with_publish(registry, entity_type: str, slug: str, asset_guid: str, pr
     except Exception as exc:  # noqa: BLE001
         log.warning("Publish: tags/group for %s %s failed: %s", entity_type, slug, exc)
         out["findable"] = {"error": f"{type(exc).__name__}: {exc}"}
-    if unpublished_doc_sources(registry, entity_type, slug):
+    # `doc_sources=False` when the resource's own publish already sent them this press (a repository's
+    # EgeriaPublisher does): a source that failed there is not sent a second time in the same press (round 3).
+    if doc_sources and unpublished_doc_sources(registry, entity_type, slug):
         try:
             from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
 

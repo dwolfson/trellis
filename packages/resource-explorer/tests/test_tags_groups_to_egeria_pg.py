@@ -34,6 +34,9 @@ def db(pg_registry):
 def egeria(monkeypatch):
     from resource_explorer import egeria_outbox as ob
 
+    from tests.zone_fakes import install as install_zones
+
+    install_zones(monkeypatch)       # Brief F round 3: the drain re-checks access; no zone in use here
     fake = FakeEgeria()
     monkeypatch.setattr(ob, "_default_clients",
                         lambda identity=None: (ob.OutboxClients(feedback=fake, collection_manager=fake), lambda qn: ""))

@@ -7956,7 +7956,7 @@ class ProjectRegistry:
     def enqueue_outbox_element(
         self, entity_type: str, entity_slug: str, element_kind: str,
         qualified_name: str, payload: dict, *, run_id: str = "",
-        depends_on_id: int | None = None,
+        depends_on_id: int | None = None, retired: "tuple[str, str] | None" = None,
     ) -> int:
         """Record one pending Egeria element write. Returns its row id.
 
@@ -7974,14 +7974,23 @@ class ProjectRegistry:
         if not qualified_name:
             raise ValueError("qualified_name is the idempotency key and cannot be empty")
         now = datetime.utcnow().isoformat()
+        # Brief F round 3: `retired=(status, note)` records a decision that was NEVER to be sent (a refusal) as a
+        # row that is born terminal ('cancelled' or 'dead', with its words), so no drain can claim it in between.
+        status, note, next_at, completed = "pending", "", now, ""
+        if retired is not None:
+            status, note = retired
+            if status not in ("cancelled", "dead"):
+                raise ValueError(f"a retired outbox row is 'cancelled' or 'dead', not {status!r}")
+            next_at, completed = "", now
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO egeria_outbox "
                 "(entity_type, entity_slug, run_id, element_kind, qualified_name, "
-                " payload_json, depends_on_id, status, attempts, next_attempt_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)",
+                " payload_json, depends_on_id, status, attempts, next_attempt_at, created_at, "
+                " last_error, completed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
                 (entity_type, entity_slug, run_id, element_kind, qualified_name,
-                 json.dumps(payload), depends_on_id, now, now),
+                 json.dumps(payload), depends_on_id, status, next_at, now, note[:2000], completed),
             )
             row_id = getattr(cur, "lastrowid", None)
             if row_id is None:
@@ -12330,9 +12339,13 @@ class ProjectRegistry:
         status: str | None = None,
         since: str | None = None,
         limit: int = 200,
+        exclude_operations: "tuple[str, ...] | list[str] | None" = None,
     ) -> list[dict]:
         filters: list[str] = []
         params: list = []
+        if exclude_operations:
+            filters.append(f"operation NOT IN ({','.join('?' * len(exclude_operations))})")
+            params.extend(exclude_operations)
         if entity_type:
             filters.append("entity_type = ?")
             params.append(entity_type)

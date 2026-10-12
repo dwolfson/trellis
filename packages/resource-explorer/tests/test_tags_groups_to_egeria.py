@@ -854,3 +854,78 @@ def test_f_r2_a_presser_refused_a_tag_gets_that_item_not_permitted_and_the_next_
         "ADD_FEEDBACK": ["allUsers"], "UPDATE_PROPERTIES": ["allUsers"], "DEFAULT": ["salesTeam"]}}
     publish(registry)
     assert item(state(client), "tag", "sales")["state"] == "in_egeria"
+
+
+# ══ Brief F round 3 ═════════════════════════════════════════════════════════════════════════════════════════
+
+def test_f_r3_a_refused_unlink_never_exists_as_a_claimable_row(client, registry, egeria, zoned, monkeypatch):
+    """The refusal is decided BEFORE any row exists: at the moment the access check reads Egeria, no unlink row is
+    pending for a drain to claim, and afterwards the only row is born cancelled."""
+    zoned.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["allUsers"]}}
+    client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    publish(registry)
+    client.delete("/api/curate/tags/repo/p/sales", headers=as_user())
+    zoned.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}   # revoked since
+    from resource_explorer.workflows import curate as wc
+
+    real = wc.curation_access
+    seen = []
+
+    def spy(*a, **k):
+        seen.append([r["status"] for r in rows(registry, ce.TAG_DETACH)])
+        return real(*a, **k)
+    monkeypatch.setattr(wc, "curation_access", spy)
+    publish(registry)
+    assert seen and all(s == [] for s in seen), f"an unlink row existed while access was being read: {seen}"
+    (detach,) = rows(registry, ce.TAG_DETACH)
+    assert detach["status"] == "cancelled" and "not permitted" in detach["last_error"]
+    assert "remove_tag_from_element" not in egeria.names()
+
+
+def test_f_r3_the_drain_re_checks_a_tag_row_as_its_requester_before_sending(registry, egeria, zoned):
+    """A row queued while allowed and drained after the grant went (by the Daemon, or a lapsed claim) is checked
+    again as the person it was queued for: not sent, dead with "not permitted"."""
+    registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+    plan = ce.curation_plan(registry, "repo", "p")
+    (it,) = [i for i in plan["items"] if i.kind == "tag"]
+    rid = ce._enqueue(registry, "repo", "p", it, "link", ASSET, "peterprofile", {"display_name": "sales"})
+    zoned.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
+    with _daemon("peterprofile"):
+        ob.drain_outbox(registry)
+    row = _row(registry, rid)
+    assert row["status"] == "dead" and row["last_error"].startswith("not permitted · ")
+    assert "add_tag_to_element" not in egeria.names()
+
+
+def test_f_r3_a_tag_add_whose_activity_write_fails_still_saves_and_answers_200(client, registry, egeria,
+                                                                              monkeypatch):
+    def boom(entry):
+        raise RuntimeError("activity log down")
+    monkeypatch.setattr(registry, "write_activity", boom)
+    r = client.post("/api/curate/tags/repo/p", json={"tag": "Sales"}, headers=as_user())
+    assert r.status_code == 200 and registry.list_resource_tags("repo", "p") == ["sales"]
+
+
+def test_f_r3_tag_bookkeeping_rows_never_crowd_the_rfa_list(client, registry, egeria):
+    from resource_explorer.registry import ActivityEntry
+
+    registry.write_activity(ActivityEntry(id="rfa1", ts="2026-10-01T00:00:00", operation="survey", intent="assessment",
+                                          entity_type="repo", entity_slug="p",
+                                          annotations=[{"annotation_type": "RequestForAction", "summary": "fix it"}]))
+    for i in range(5):
+        client.post("/api/curate/tags/repo/p", json={"tag": f"t{i}"}, headers=as_user())
+    r = client.get("/api/activity/rfas?entity_slug=p&limit=3", headers=as_user())
+    assert r.status_code == 200, r.text
+    assert any("fix it" in json.dumps(x) for x in r.json()), "the RFA is still inside the newest-N window"
+
+
+def test_f_r3_access_that_cannot_be_read_defers_the_row_unsent_never_kills_it(registry, egeria, zoned):
+    registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+    (it,) = [i for i in ce.curation_plan(registry, "repo", "p")["items"] if i.kind == "tag"]
+    rid = ce._enqueue(registry, "repo", "p", it, "link", ASSET, "peterprofile", {"display_name": "sales"})
+    zoned.fail_element = ASSET
+    with _daemon("peterprofile"):
+        ob.drain_outbox(registry)
+    row = _row(registry, rid)
+    assert row["status"] == "pending" and row["attempts"] == 0 and "re-check access" in row["last_error"]
+    assert "add_tag_to_element" not in egeria.names()

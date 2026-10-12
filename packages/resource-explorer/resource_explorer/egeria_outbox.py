@@ -704,6 +704,44 @@ def _doc_source_refusal(registry, row: dict) -> str:
             current_caller.reset(reset)
 
 
+#: Brief F round 3: the tag and group kinds, and the Egeria operations each checks (curation_egeria.operations_for).
+CURATION_WRITES = {"informal_tag_link": ("tag", "link"), "informal_tag_detach": ("tag", "unlink"),
+                   "group_folio_membership": ("group", "link"),
+                   "group_folio_membership_detach": ("group", "unlink")}
+
+
+def _curation_refusal(registry, row: dict) -> str:
+    """Brief F round 3: the drain-time re-check for a tag or group row, as the person it was queued for (`by`), with
+    the operations Egeria checks for it, on the element the row names: "" = apply it, else "not permitted · <why>".
+    When access cannot be read at all it raises `OutboxNotReadyError` (deferred unsent, never killed by an outage).
+    A refusal is decided before anything is sent (a destructive unlink included). A row with no requester (queued
+    before rows carried one) is not re-checked here; Egeria checks whoever the drain runs as."""
+    write = CURATION_WRITES.get(row.get("element_kind") or "")
+    by = _row_requester(row)
+    if not write or not by:
+        return ""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.curation_egeria import operations_for
+    from resource_explorer.workflows.curate import curation_access
+
+    try:
+        guid = (json.loads(row.get("payload_json") or "{}") or {}).get("element_guid") or ""
+    except (TypeError, ValueError):
+        guid = ""
+    reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run", role="user"))
+    try:
+        d = curation_access(registry, row.get("entity_type") or "", row.get("entity_slug") or "", "",
+                            operations=operations_for(*write), element_guid=guid or None)
+    finally:
+        current_caller.reset(reset)
+    from resource_explorer.workflows.curate import BASIS_UNREADABLE
+
+    if not d.allowed and d.basis == BASIS_UNREADABLE:
+        # Egeria could not be read to decide: not a refusal. The row waits (pending, no attempt burned), unsent.
+        raise OutboxNotReadyError(f"waiting to re-check access: {d.reason}")
+    return "" if d.allowed else f"not permitted · {d.reason}"
+
+
 #: Brief Z3: the membership and ResourceList rows of an investigation's working set and a work list's WorkingSet,
 #: re-checked at drain time as the person they were queued for.
 COLLECTION_ENTITY_TYPES = ("investigation", "work_list")
@@ -753,8 +791,9 @@ def _collection_refusal(registry, row: dict) -> str:
 
 
 def _queued_write_refusal(registry, row: dict) -> str:
-    """Every drain-time re-check (Brief Z2 round 2's documentation sources, Brief Z3's collections)."""
-    return _doc_source_refusal(registry, row) or _collection_refusal(registry, row)
+    """Every drain-time re-check (Brief Z2 round 2's documentation sources, Brief Z3's collections, Brief F's tag
+    and group rows)."""
+    return _doc_source_refusal(registry, row) or _collection_refusal(registry, row) or _curation_refusal(registry, row)
 
 
 def _row_identity(row: dict, drain_identity):

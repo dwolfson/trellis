@@ -344,14 +344,14 @@ def publish_my_feedback(registry, entity_type: str, slug: str, asset_guid: str, 
                                 element_guid="", anchor_guid=guid, reader=reader)
             decisions[item.kind] = "" if d.allowed else (d.reason or "refused")
         kind, key, payload = _payload_for(registry, entity_type, slug, item, guid, presser, feedback, entries)
-        row_id = registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id)
         if decisions[item.kind]:
-            # Nothing is sent: the refusal is a dead row, so the band reads "not permitted" from a row, and the
-            # person's next Publish asks again (a new row).
-            registry.mark_outbox_failed(row_id, NOT_PERMITTED_PREFIX + decisions[item.kind], max_attempts=1)
+            # Nothing is sent: the refusal is a row born dead with its words (round 3: never claimable in between),
+            # so the band reads "not permitted" from a row, and the person's next Publish asks again (a new row).
+            registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id,
+                                            retired=("dead", NOT_PERMITTED_PREFIX + decisions[item.kind]))
             refused.append({"kind": item.kind, "id": item.id, "reason": decisions[item.kind]})
         else:
-            queued.append(row_id)
+            queued.append(registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id))
     summary: dict = {}
     if queued or waiting:
         try:

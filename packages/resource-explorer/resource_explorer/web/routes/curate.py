@@ -218,13 +218,19 @@ def add_tag(entity_type: str, slug: str, body: TagCreate, request: Request) -> d
     import uuid
     from datetime import datetime, timezone
     from resource_explorer.registry import ActivityEntry
-    reg.write_activity(ActivityEntry(
-        id=str(uuid.uuid4()), ts=datetime.now(timezone.utc).isoformat(),
-        operation="curate_tag_added", intent="curate",
-        entity_type=entity_type, entity_slug=slug,
-        summary=f"tag {tag!r} added by {author}",
-        annotations=[{"tag": tag, "typed": typed, "added_by": author}],
-    ))
+    try:
+        reg.write_activity(ActivityEntry(
+            id=str(uuid.uuid4()), ts=datetime.now(timezone.utc).isoformat(),
+            operation="curate_tag_added", intent="curate",
+            entity_type=entity_type, entity_slug=slug,
+            summary=f"tag {tag!r} added by {author}",
+            annotations=[{"tag": tag, "typed": typed, "added_by": author}],
+        ))
+    except Exception:  # noqa: BLE001 - the tag is saved; only its typed spelling is lost (the key is used)
+        import logging
+
+        logging.getLogger(__name__).warning("Could not record the typed spelling of tag %r on %s %s",
+                                            tag, entity_type, slug, exc_info=True)
     return {"status": "success", "tag": tag, "typed": typed, "author": author,
             "egeria": curation_state(reg, entity_type, slug)}
 
