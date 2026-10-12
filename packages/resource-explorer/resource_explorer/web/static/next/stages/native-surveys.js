@@ -27,7 +27,7 @@ import { ago, storedCopyWords } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getNativeSurveys, runNativeSurvey, refreshNativeSurveys, getNativeSurveyReport,
-  registerWithEgeria, checkNativeSurveyPointers,
+  registerWithEgeria, checkNativeSurveyPointers, cancelNativeAction,
 } from '/static/re-api.js';
 import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
@@ -107,6 +107,11 @@ export function nativeSurveyStatusHtml(row) {
             ><span class="tnum">${esc(String(r.annotation_count))}</span> annotation${
               r.annotation_count === 1 ? '' : 's'} ›</button>`;
     case 'failed':
+      // A cancel Egeria read back as CANCELLED is a decision, not a fault: its own words, with the check.
+      if (r.egeria_status === 'CANCELLED') {
+        return `<span class="font-glyph" aria-hidden="true">✓</span> cancelled in Egeria`
+          + ` · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
+      }
       return `<span class="text-state-warn"><span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · ${esc(r.message)}</span> · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
     case 'registered':
@@ -158,6 +163,32 @@ function reachNoteHtml(row) {
     ? `<div class="mt-[2px] text-provenance text-ink-muted" data-native-reach>${esc(row.reach_note)}</div>` : '';
 }
 
+/** Cancel cues that outlive a repaint: a cancel Egeria did not confirm stays on its row until the next try
+ *  (guid -> the words). A cancel that worked needs none: the row's own status then says CANCELLED. */
+const cancelCues = new Map();
+
+/** The cancel control, only while Egeria last said the action is waiting or running (the server's `run.state`
+ *  is 'running' exactly for those statuses). Cue plus short words; the confirm is a state of the control. */
+export function cancelControlHtml(row) {
+  const r = row.run || {};
+  const guid = r.engine_action_guid;
+  const live = r.state === 'running' && ['WAITING', 'IN_PROGRESS', 'REQUESTED', 'APPROVED', 'ACTIVATING'].includes(r.egeria_status);
+  const cue = guid && cancelCues.get(guid);
+  const keep = cue && live
+    ? `<div class="mt-[2px] text-provenance text-state-warn" data-native-cancel-cue><span class="font-glyph" aria-hidden="true">◐</span> ${esc(cue)}</div>` : '';
+  if (!live || !guid) return '';
+  return `<div class="mt-[2px]" data-native-cancel-box="${esc(guid)}">
+    <button type="button" data-native-cancel="${esc(guid)}"
+      class="cursor-pointer border-0 bg-transparent p-0 text-provenance text-accent-ink underline">Cancel</button>
+    <span hidden data-native-cancel-confirm class="text-provenance text-ink">
+      <span class="font-glyph" aria-hidden="true">◌</span> cancel this survey in Egeria?
+      <button type="button" data-native-cancel-yes="${esc(guid)}" class="cursor-pointer rounded-sm border border-state-warn bg-transparent px-2 text-provenance text-state-warn">Yes, cancel</button>
+      <button type="button" data-native-cancel-no class="cursor-pointer border-0 bg-transparent p-0 text-provenance text-ink-muted underline">keep it</button>
+    </span>
+    <span hidden data-native-cancel-ack class="text-provenance text-ink-muted"></span>
+    ${keep}</div>`;
+}
+
 /** One survey row: glyph, name, kind, status, and Run when RE can run it. */
 export function nativeSurveyRowHtml(row) {
   const run = row.run || { state: 'not_run' };
@@ -172,6 +203,7 @@ export function nativeSurveyRowHtml(row) {
         <span class="text-provenance text-ink-muted">Egeria's own survey engine</span>
       </div>
       <div class="mt-[2px] text-provenance text-ink-muted" data-native-status>${nativeSurveyStatusHtml(row)}</div>
+      ${cancelControlHtml(row)}
       ${row.credentials_note ? `<div class="mt-[2px] text-provenance text-ink-muted"><span class="text-ink-muted" title="not confirmed either way">?</span> ${esc(row.credentials_note)}</div>` : ''}
       ${reachNoteHtml(row)}
       ${(row.notes || []).map((n) => `<div class="mt-[2px] text-provenance text-ink-muted" data-native-note>${esc(n)}</div>`).join('')}
@@ -331,6 +363,44 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       () => register(b, b.dataset.nativeRegisterSlug, '')));
     host.querySelectorAll('[data-native-report]').forEach((b) => b.addEventListener('click',
       () => openReport(slug, b.dataset.nativeReport)));
+    host.querySelectorAll('[data-native-cancel]').forEach((b) => b.addEventListener('click', () => {
+      const box = b.closest('[data-native-cancel-box]');
+      b.hidden = true;
+      box.querySelector('[data-native-cancel-confirm]').hidden = false;
+    }));
+    host.querySelectorAll('[data-native-cancel-no]').forEach((b) => b.addEventListener('click', () => {
+      const box = b.closest('[data-native-cancel-box]');
+      box.querySelector('[data-native-cancel-confirm]').hidden = true;
+      box.querySelector('[data-native-cancel]').hidden = false;
+    }));
+    host.querySelectorAll('[data-native-cancel-yes]').forEach((b) => b.addEventListener('click', async () => {
+      const guid = b.dataset.nativeCancelYes;
+      const box = b.closest('[data-native-cancel-box]');
+      const ack = box.querySelector('[data-native-cancel-ack]');
+      box.querySelector('[data-native-cancel-confirm]').hidden = true;
+      cancelCues.delete(guid);
+      ack.hidden = false;
+      ack.innerHTML = '<span class="font-glyph" aria-hidden="true">◔</span> cancelling…';   // acknowledged at once
+      try {
+        const res = await cancelNativeAction(slug, guid, { entityType: apiEntityType(state.resourceType) });
+        if (res.cancelled) {
+          // Validated by the read-back, not by the 200: the repaint below is the server's own rows.
+          paint(res.surveys);          // the row's own status now reads "✓ cancelled in Egeria"
+          return;
+        }
+        const why = res.read_error
+          ? `asked Egeria to cancel; the read-back failed (${res.read_error})`
+          : `asked Egeria to cancel; it still says ${res.egeria_status || 'nothing'}`;
+        cancelCues.set(guid, why);
+        paint(res.surveys);
+        failDialog(why);
+      } catch (err) {
+        const why = `not cancelled: ${err.message}`;
+        cancelCues.set(guid, why);
+        paint(rows);
+        failDialog(why);
+      }
+    }));
   };
 
   // Read the stored pointer back from Egeria, once, ONLY when one is stored (registered rows carry the
@@ -347,6 +417,12 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
   bindRows();
   schedule();
   if (rows.some((r) => r.asset_guid)) checkPointers();
+}
+
+/** A failed cancel: the reason in a pop-up (the persistent cue is on the row). */
+function failDialog(reason) {
+  const d = openDialog('Could not cancel the survey', '');
+  d.querySelector('#wl-detail-body').innerHTML = `<p class="text-state-warn" data-native-cancel-error>${esc(reason)}</p>`;
 }
 
 async function openReport(slug, reportGuid) {

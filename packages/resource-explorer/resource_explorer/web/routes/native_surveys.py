@@ -197,6 +197,64 @@ async def refresh_native_surveys(entity_type: str, slug: str) -> dict:
     return {"technology_type": tech, "surveys": await asyncio.to_thread(_do)}
 
 
+@router.post("/{entity_type}/{slug}/egeria-actions/{engine_action_guid}/cancel")
+async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: str) -> dict:
+    """Cancel one of this resource's waiting or running Egeria survey actions. An Egeria WRITE, and a person's
+    direct act, so it runs as the signed-in CALLER (Brief I; never the daemon): nobody signed in is a 401.
+
+    Order, each step before any Egeria call: sign-in -> the GUID is one RE recorded for THIS resource (404
+    otherwise; an arbitrary GUID is never sent) -> Egeria's access rule for the engine action element
+    (`engine_action_cancel_access`; 403 with the reason) -> the cancel -> a read-back by the same status refresh
+    the poll uses. The answer says `cancelled` only when that read-back says CANCELLED."""
+    from resource_explorer.egeria_clients import Caller, EgeriaRefused, refusal
+    from resource_explorer.workflows.curate import engine_action_cancel_access
+
+    registry = ProjectRegistry()
+    _check(entity_type, slug, registry)
+    Caller()                                  # NoCallerIdentity / CallerTokenExpired -> 401
+    try:
+        run = nsr.own_action_run(registry, entity_type, slug, engine_action_guid)
+    except nsr.NativeActionNotOurs as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(nsr.NATIVE_SURVEY_STEP_PREFIX):]
+    decision = await asyncio.to_thread(engine_action_cancel_access, registry, entity_type, slug, engine_action_guid)
+    if not decision.allowed:
+        _log_activity(registry, entity_type, slug, process_qn, status="error",
+                      summary=f"Cancel of Egeria action {engine_action_guid} refused: {decision.reason}")
+        raise HTTPException(status_code=403, detail=decision.reason)
+
+    def _do() -> dict:
+        with nsr.port_session(_port()) as port:
+            return nsr.cancel_native_action(registry, port, entity_type, slug, engine_action_guid)
+
+    try:
+        out = await asyncio.to_thread(_do)
+    except nsr.NativeActionNotOurs as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except nsr.NativeSurveyCannotRun as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except nsr.NativeSurveyError as exc:
+        _log_activity(registry, entity_type, slug, process_qn, status="error",
+                      summary=f"Egeria did not cancel action {engine_action_guid}: {exc}")
+        refused = refusal(exc.__cause__) if exc.__cause__ is not None else None
+        if isinstance(refused, EgeriaRefused):
+            raise refused
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    _log_activity(
+        registry, entity_type, slug, out["process_qualified_name"] or process_qn,
+        status="ok" if out["cancelled"] else "unconfirmed",
+        summary=(f"Cancelled Egeria action {engine_action_guid} on {slug}: Egeria now says {out['egeria_status']}"
+                 if out["cancelled"] else
+                 f"Asked Egeria to cancel action {engine_action_guid} on {slug}; the read-back says "
+                 f"{out['egeria_status'] or 'nothing'}{' (' + out['read_error'] + ')' if out['read_error'] else ''}"),
+        detail={"engine_action_guid": engine_action_guid, "egeria_status": out["egeria_status"],
+                "access_basis": decision.basis})
+    tech = _technology_type(entity_type)
+    return {**out, "access_basis": decision.basis, "surveys": await asyncio.to_thread(
+        nsr.native_survey_rows, registry, entity_type, slug, tech)}
+
+
 @router.get("/{entity_type}/{slug}/reports/{report_guid}")
 async def native_survey_report(entity_type: str, slug: str, report_guid: str) -> dict:
     """The annotations RE read from one survey report, with the report's time.

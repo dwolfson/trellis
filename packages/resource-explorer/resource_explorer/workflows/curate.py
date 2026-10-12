@@ -342,6 +342,22 @@ def resource_access(registry: ProjectRegistry, entity_type: str, slug: str, writ
                            element_guid=element_guid)
 
 
+def engine_action_cancel_access(registry: ProjectRegistry, entity_type: str, slug: str, engine_action_guid: str, *,
+                                reader=None) -> AccessDecision:
+    """May the caller cancel this engine action? Judged on the ENGINE ACTION element, the way Egeria judges it
+    (EngineActionHandler.cancelEngineAction, egeria af400039c2 `generic-handlers/.../EngineActionHandler.java`
+    :2431-2490): it reads the element first (`getEntityFromRepository` -> validateUserForElementRead,
+    OpenMetadataAPIGenericHandler.java:179) and then updates it (`updateBeanInRepository` :2086 ->
+    validateUserForElementDetailUpdate :2163, connector :1497-1522). So READ and UPDATE_PROPERTIES on that
+    element's zones; an anchored element is judged on its anchor as `curation_access` already does. No other
+    operation is performed: the cancel neither creates, classifies nor links. When the element carries no
+    ZoneMembership, no zone rule applies and the decision's basis says so (`BASIS_NO_ZONES`)."""
+    from resource_explorer.zone_access import READ_OPERATION, UPDATE_OPERATION
+
+    return curation_access(registry, entity_type, slug, "", operations=(READ_OPERATION, UPDATE_OPERATION),
+                           reader=reader, element_guid=engine_action_guid)
+
+
 def require_resource_access(registry: ProjectRegistry, entity_type: str, slug: str, write: str, *,
                             element_guid: str | None = None, reader=None) -> None:
     """`resource_access`, raised as `CurationDenied` (the CLI and A2A form)."""
