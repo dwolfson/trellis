@@ -307,9 +307,12 @@ def _anchor_of(element: dict) -> str:
         strings = cp.get("propertiesAsStrings")
         if isinstance(strings, dict) and isinstance(strings.get("anchorGUID"), str):
             return strings["anchorGUID"]
-        if value is None and "anchorGUID" in cp:
-            return ""                       # an explicit null anchor: no anchor
-        raise AccessUnreadable("an Anchors classification whose anchorGUID RE cannot read")
+        if isinstance(pv, dict) or (isinstance(strings, dict) and "anchorGUID" in strings):
+            raise AccessUnreadable("an Anchors classification whose anchorGUID RE cannot read")
+        # No anchorGUID at all: Egeria leaves it null when the element is its own anchor
+        # (OpenMetadataAPIGenericHandler ~:1736 "A null anchorGUID meant that the element is its own Anchor").
+        # Seen live 2026-10-12 on egeria_git's Asset: Anchors {anchorTypeName, anchorDomainName}, no anchorGUID.
+        return ""
     return ""
 
 
