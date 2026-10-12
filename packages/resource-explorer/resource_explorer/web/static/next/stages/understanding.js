@@ -465,7 +465,7 @@ function databaseParts(slug, { tabbed }) {
     // main's template joined the parts with a newline and four spaces; keep the markup identical
     single: [indexBar, now, time, views, history].join('\n    '),
     indexBar,
-    glance: since + '<div data-glance-slot></div><div class="mt-s3" data-stats-glance></div>',                         // S4b mount 1
+    glance: since + '<div class="mt-s3 text-caveat text-ink-muted" data-glance-slot>reading…</div><div class="mt-s3" data-stats-glance></div>',                         // S4b mount 1
     contents: contentsBar + now + '<div data-stats-schemas-slot></div>' + views,                          // S4b mount 2
     overTime: timeBar + time + history + '<div data-stats-time-slot></div>',                          // S4b mount 3
   };

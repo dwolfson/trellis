@@ -67,13 +67,13 @@ export function nameOf(a) {
 /** The columns a group shows: [label, key, format]. A kind outside the four gets the keys its rows carry. */
 const SPECS = {
   database: [['Schemas', 'schemaCount'], ['Tables', 'tableCount'], ['Views', 'viewCount'],
-    ['Columns', 'columnCount'], ['Size', 'size', 'bytes'], ['Rows fetched', 'rowsFetched']],
+    ['Columns', 'columnCount', '', 'z'], ['Size', 'size', 'bytes'], ['Rows fetched', 'rowsFetched', '', 'c']],
   schema: [['Tables', 'tableCount'], ['Views', 'viewCount'], ['Mat. views', 'materializedViewCount'],
-    ['Columns', 'columnCount'], ['Size', 'totalTableSize', 'bytes']],
-  table: [['Type', 'tableType'], ['Size', 'tableSize', 'bytes'], ['Columns', 'columnCount'],
-    ['Rows added', 'numberOfRowsInserted'], ['Changed', 'numberOfRowsUpdated'],
-    ['Removed', 'numberOfRowsDeleted']],
-  column: [['Type', 'columnDataType'], ['Size', 'columnSize'], ['Not null', 'columnNotNull', 'bool'],
+    ['Columns', 'columnCount', '', 'z'], ['Size', 'totalTableSize', 'bytes', 'z']],
+  table: [['Type', 'tableType'], ['Size', 'tableSize', 'bytes', 'z'], ['Columns', 'columnCount', '', 'z'],
+    ['Rows added', 'numberOfRowsInserted', '', 'c'], ['Changed', 'numberOfRowsUpdated', '', 'c'],
+    ['Removed', 'numberOfRowsDeleted', '', 'c']],
+  column: [['Type', 'columnDataType'], ['Size', 'columnSize', '', 'z'], ['Not null', 'columnNotNull', 'bool'],
     ['Avg width', 'averageColumnWidth'], ['Distinct', 'numberOfDistinctValues']],
 };
 const NAME_KEYS = new Set(['qualifiedColumnName', 'qualifiedTableName', 'qualifiedSchemaName', 'resourceName',
@@ -91,7 +91,12 @@ function genericSpec(anns) {
   return [...seen.entries()].sort((x, y) => y[1] - x[1]).slice(0, 5).map(([k]) => [k, k]);
 }
 
-function cell(v, fmt) {
+/** Per field: flag 'z' = Egeria stores 0 for a figure it did not measure (a table with columns reads columnCount 0),
+ *  so a stored 0 there is "–" with the reason on hover. Counters ('c') keep a real 0. */
+function cell(v, fmt, flag) {
+  if (flag === 'z' && (v === 0 || v === '0')) {
+    return '<span class="text-ink-muted" title="Egeria stored 0 here; it did not measure this">–</span>';
+  }
   if (v === undefined || v === null || v === '') return '<span class="text-ink-muted" title="the annotation carries no value">–</span>';
   if (fmt === 'bytes' && typeof v === 'number') return esc(fmtBytes(v));
   if (fmt === 'bool' || typeof v === 'boolean') return v === true || v === 'true' ? 'yes' : 'no';
@@ -144,7 +149,7 @@ function rowHtml(a, cols, prefix) {
   const p = propsOf(a);
   return `<tr data-report-row><td class="pr-s3 font-mono text-ink" title="${esc(full)}">${
     name ? esc(name) : '<span class="text-ink-muted font-sans" title="the stored annotation carries no element name">no name stored</span>'}</td>${
-    cols.map(([, key, fmt]) => `<td class="pr-s3 tnum text-right text-ink">${cell(p[key], fmt)}</td>`).join('')}</tr>`;
+    cols.map(([, key, fmt, flag]) => `<td class="pr-s3 tnum text-right text-ink">${cell(p[key], fmt, flag)}</td>`).join('')}</tr>`;
 }
 
 function groupRowsHtml(g, cols, prefix, count) {
@@ -164,7 +169,8 @@ function groupHtml(g, prefix, cap) {
       fmtN(unnamed)} of ${fmtN(g.items.length)} stored annotations carry no element name.</div>` : ''}
     <table class="mt-s2 text-caveat">
       <thead><tr><th class="pr-s3 text-left font-normal text-ink-muted">Element</th>${
-  cols.map(([label]) => `<th class="pr-s3 text-right font-normal text-ink-muted">${esc(label)}</th>`).join('')}</tr></thead>
+  cols.map(([label, , , flag]) => `<th class="pr-s3 text-right font-normal text-ink-muted"${flag === 'c'
+    ? ' title="cumulative since the server\'s statistics reset, not this survey"' : ''}>${esc(label)}</th>`).join('')}</tr></thead>
       <tbody data-report-tbody>${groupRowsHtml(g, cols, prefix, cap)}</tbody>
     </table>
     ${more > 0 ? `<button type="button" data-report-show-all class="mt-s2 cursor-pointer border-0 bg-transparent p-0 text-caveat text-accent-ink underline"

@@ -75,8 +75,8 @@ function unreadable(resp, what) {
   const run = resp && resp.run;
   const from = run ? ` the survey of ${monthDay(run.surveyed_at)} (${run.source === 'local' ? "RE's own" : run.source || 'unknown source'})` : ' the survey';
   const reason = (resp && (resp.reasons || []).includes('no_table_activity'))
-    ? `${from} stored no table activity${sees ? ` · credential scope: ${sees}` : ''}` : '';
-  return `<div class="text-caveat text-ink-muted" data-stats-not-measured title="${esc((resp && (resp.notes || [])[0]) || '')}"><span class="font-glyph" aria-hidden="true">?</span> ${
+    ? `${from} stored no table activity${sees ? ` · latest credential probe: ${sees}` : ''}` : '';
+  return `<div class="text-caveat text-ink-muted" data-stats-not-measured title="${esc([sc && sc.partial && sc.probe_note, resp && (resp.notes || [])[0]].filter(Boolean).join(' · '))}"><span class="font-glyph" aria-hidden="true">?</span> ${
     what} not measured${why ? ` · ${esc(why)}` : ''}${reason ? ` ·${esc(reason)}` : ''}</div>`;
 }
 

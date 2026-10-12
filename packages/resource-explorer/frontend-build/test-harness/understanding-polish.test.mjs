@@ -80,7 +80,7 @@ test('"not measured" says why, only from what the stored rows show', async () =>
   const line = text(document.querySelector('[data-stats-not-measured]'));
   assert.match(line, /not measured · no table activity/);
   assert.match(line, /the survey of 10-03 \(RE's own\) stored no table activity/);
-  assert.match(line, /credential scope: sees 6 of 8 schemas, SELECT on 3 of 61 relations/);
+  assert.match(line, /latest credential probe: sees 6 of 8 schemas, SELECT on 3 of 61 relations/);
   const m = await import('/static/next/stages/understanding-stats.js');
   const bare = text({ textContent: m.statsLineHtml({ state: 'not_measured', reasons: ['no_table_activity'], currency: null }).replace(/<[^>]+>/g, '') });
   assert.doesNotMatch(bare, /credential/, 'no probe on record: no cause is named');
@@ -96,4 +96,23 @@ test('glance headline: an unmeasured figure is a dash with an open cue, never ze
   assert.match(h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '), /○ – rows/);
   assert.match(h.replace(/<[^>]+>/g, ' '), /never surveyed/);
   assert.equal(m.surveyedByWords({ source: 'egeria-survey' }), "Egeria's survey");
+});
+
+test('the not-measured reason calls the scope the latest probe, with the probe note on hover', async () => {
+  ensureLoaderRegistered(); makeDomEnvironment();
+  const m = await import('/static/next/stages/understanding-stats.js');
+  const h = m.statsLineHtml({ ...NO_ACTIVITY, notes: ['n'], scope: { ...NO_ACTIVITY.scope, probe_note: 'may not be this run' } });
+  assert.match(h.replace(/<[^>]+>/g, ' '), /latest credential probe: sees 6 of 8 schemas/);
+  assert.doesNotMatch(h, /credential scope:/);
+  assert.match(h, /title="may not be this run · n"/);
+});
+
+test('glance: a complete tables or columns count is measured even when the read is partial; a placeholder shows until it resolves', async () => {
+  ensureLoaderRegistered(); makeDomEnvironment();
+  const g = await import('/static/next/stages/understanding-glance.js');
+  const h = g.databaseHeadlineHtml({ dist: { ...DIST, state: 'partial' }, sizes: { ...SIZES, state: 'partial' }, types: TYPES });
+  const st = (n) => h.match(new RegExp(`data-glance-fig="${n}" data-glance-state="(\\w+)"`))[1];
+  assert.equal(st('tables'), 'measured'); assert.equal(st('columns'), 'measured');
+  const document = await setUp();
+  assert.ok(document.querySelector('[data-glance-slot]'));
 });

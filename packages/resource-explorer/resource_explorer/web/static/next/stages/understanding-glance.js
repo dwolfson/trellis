@@ -61,7 +61,7 @@ export function databaseHeadlineHtml({ dist, sizes, types } = {}) {
   const tot = usable(sizes) || (sizes && sizes.totals) ? sizes.totals : null;
   if (tot && typeof tot.tables === 'number') {
     const views = sizes.views_excluded ? ` (${fmtN(sizes.views_excluded)} views not counted)` : '';
-    out.push(fig('tables', sizes.state === 'not_measured' ? 'partial' : sizes.state, fmtN(tot.tables), tot.tables === 1 ? 'table' : 'tables', `Tables of the latest survey${views}.`));
+    out.push(fig('tables', 'measured', fmtN(tot.tables), tot.tables === 1 ? 'table' : 'tables', `Tables of the latest survey${views}.`));
   } else if (usable(dist)) {
     out.push(fig('tables', dist.state, fmtN(sum(dist.table_counts)), 'tables', 'Tables and views listed per schema.'));
   } else {
@@ -70,7 +70,7 @@ export function databaseHeadlineHtml({ dist, sizes, types } = {}) {
 
   // columns
   const cols = usable(dist) ? sum(dist.column_counts) : null;
-  if (cols !== null) out.push(fig('columns', dist.state, fmtN(cols), 'columns', ''));
+  if (cols !== null) out.push(fig('columns', 'measured', fmtN(cols), 'columns', ''));
   else if (usable(types)) out.push(fig('columns', types.state, fmtN(types.column_count_total), 'columns', ''));
   else out.push(missing('columns', 'columns', why(types)));
 

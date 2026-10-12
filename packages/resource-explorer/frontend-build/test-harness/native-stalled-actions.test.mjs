@@ -47,3 +47,9 @@ test('scope message: no questions for the stage says so and offers no retry', ()
   assert.match(unres, /data-act="rescope"/);
   assert.match(text(app.scopeFallbackHtml({ scoping: 'full-scan' }, 'x')), /stage filter unavailable/, 'older server: the old words');
 });
+
+test('singular units: "1 hour", "1 day"', () => {
+  const h = ns.nativeSurveyStatusHtml(run({ stalled: true, requested_age_s: 3600, stall_after_s: 3600, phase: 'waiting', egeria_status: 'WAITING' }));
+  assert.match(h, /Requested 1 hour ago/); assert.match(h, /Flagged after 1 hour /);
+  assert.match(ns.nativeSurveyStatusHtml(run({ stalled: true, requested_age_s: 86400 })), /Requested 1 day ago/);
+});

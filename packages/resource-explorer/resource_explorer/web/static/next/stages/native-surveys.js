@@ -68,7 +68,7 @@ function guidSpan(guid) {
  *  (what was measured, and the limit) is on hover; the line carries only the cue and the word. */
 function stallCue(r) {
   if (!r.stalled) return '';
-  const hours = (s) => (s >= 86400 ? `${Math.round(s / 3600 / 2.4) / 10} days` : `${Math.round(s / 360) / 10} hours`);
+  const hours = (s) => (s >= 86400 ? (() => { const d = Math.round(s / 3600 / 2.4) / 10; return `${d} ${d === 1 ? 'day' : 'days'}`; })() : (() => { const h = Math.round(s / 360) / 10; return `${h} ${h === 1 ? 'hour' : 'hours'}`; })());
   const tip = `Requested ${hours(r.requested_age_s)} ago and Egeria still says ${r.egeria_status || 'nothing yet'}. `
     + `Flagged after ${hours(r.stall_after_s)} ${r.phase === 'running' ? 'since the request (waiting included)' : 'without starting'}. `
     + 'RE does not cancel or retry on this.';

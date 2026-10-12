@@ -80,3 +80,25 @@ test('a stored row with no element name says so instead of inventing one', () =>
 test('an empty report says so', () => {
   assert.match(text(m.reportViewerHtml({ annotations: [] })), /holds no annotations/);
 });
+
+test('a stored 0 is "–" where Egeria stores 0 for "not measured", and a real 0 for the row counters', () => {
+  const rep = { annotations: [
+    ann(TABLE, 's', { qualifiedTableName: 'db.s.t', tableSize: 0, columnCount: 0, numberOfRowsInserted: 0, numberOfRowsUpdated: 0, numberOfRowsDeleted: 0, tableType: 'Table' }, 'db.s.t'),
+    ann(COLUMN, 's', { qualifiedColumnName: 'db.s.t.c', columnSize: 0, numberOfDistinctValues: 0 }, 'db.s.t.c'),
+    ann('Capture Database Schema Measurements', 's', { qualifiedSchemaName: 'db.s', columnCount: 0, totalTableSize: 0, tableCount: 0 }, 'db.s')] };
+  const root = document.createElement('div'); root.innerHTML = m.reportViewerHtml(rep);
+  const cells = (kind) => [...root.querySelector(`[data-report-kind="${kind}"] [data-report-row]`).querySelectorAll('td')].slice(1).map((td) => td.textContent.trim());
+  assert.deepEqual(cells('table'), ['Table', '–', '–', '0', '0', '0']);
+  assert.deepEqual(cells('column'), ['–', '–', '–', '–', '0'], 'distinct values keeps its stored 0');
+  assert.deepEqual(cells('schema'), ['0', '–', '–', '–', '–'], 'tables keeps its 0; absent and unmeasured are dashes');
+  assert.match(root.innerHTML, /Egeria stored 0 here; it did not measure this/);
+});
+
+test('the row-counter headers say they are cumulative since the statistics reset', () => {
+  const root = document.createElement('div'); root.innerHTML = m.reportViewerHtml(REP);
+  const th = [...root.querySelectorAll('[data-report-kind="table"] th')].filter((t) => /Rows added|Changed|Removed/.test(t.textContent));
+  assert.equal(th.length, 3);
+  assert.ok(th.every((t) => /cumulative since the server's statistics reset, not this survey/.test(t.getAttribute('title'))));
+  const size = [...root.querySelectorAll('[data-report-kind="table"] th')].find((t) => t.textContent === 'Size');
+  assert.equal(size.getAttribute('title'), null);
+});
