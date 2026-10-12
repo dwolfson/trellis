@@ -5,7 +5,7 @@
  * the head of the strip.
  *
  * `STAGE_TABS_KINDS` lists, per stage, the resource kinds ('repo' | 'db' | 'filesystem') that show the tabs.
- * Curate shows them for repositories (S1); the database slice (S2) adds 'db', the file-system slice (S3)
+ * Curate shows them for repositories (S1) and databases (S2); the file-system slice (S3) adds
  * 'filesystem', Understanding's slice (S4) lists its own. A kind not listed keeps the pane it has always had.
  * A test sets the gate with `setStageTabsKinds`.
  *
@@ -13,7 +13,7 @@
  * curate-tabs.js, which imports app.js back. */
 
 /** Per stage, the resource kinds that show the leading tabs. EMPTY = dormant for that stage. */
-export const STAGE_TABS_KINDS = { curate: ['repo'], understanding: ['repo', 'db'] };
+export const STAGE_TABS_KINDS = { curate: ['repo', 'db'], understanding: ['repo', 'db'] };
 
 /** Test hook: set the kinds that show a stage's tabs. */
 export function setStageTabsKinds(stage, kinds) {

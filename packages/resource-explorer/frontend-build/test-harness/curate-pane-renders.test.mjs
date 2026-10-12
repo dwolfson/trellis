@@ -93,7 +93,7 @@ test('Curate on a repo draws the plan view, not an empty body', async () => {
 });
 
 test('Curate host survives the Questions rows blanking (sibling, not child)', async () => {
-  const { document } = await setUp('db');
+  const { document } = await setUp('filesystem');   // a database's Curate is tabbed (Brief S2) and has no Questions frame
   await openCurate(document);
   const rows = document.getElementById('question-rows');
   assert.equal(rows.innerHTML, '');

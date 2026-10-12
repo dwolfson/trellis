@@ -29,6 +29,7 @@ import {
   getEgeriaReports, getEgeriaReportAnnotations, getFileTypeMeasurements, setRepoProjectContext,
 } from '/static/re-api.js';
 import { mountArchitecturePublish } from '/static/next/stages/architecture-publish.js';
+import { commitStateLineHtml } from '/static/next/stages/curate-scope.js';
 import {
   state, esc, $, ensureRailShowing, copyAsEvidence, openCurrentInvestigationStage, openCurate,
 } from '/static/next/app.js';
@@ -585,6 +586,37 @@ export async function renderPublishBand(el, slug, entityType) {
   bindCopy(el);
   const row = resourceRow(slug) || {};
   mountEgeriaReports(el.querySelector('[data-egeria-reports-host]'), { entityType, slug, inEgeria: !!row.is_published });
+}
+
+/** A database's publish band on the Curate tabs (Brief S2). `hosts` = { describe, contents }.
+ *  Describe: the ONE state line (from the scope view's commit header, painted by `paintDbPublishState` as each view
+ *  arrives: never from the registry's `is_published` flag), then the Egeria reports list. There is no press here: a
+ *  database's one press is the commit on Contents. Contents: the asset GUID and its copy control. Never throws. */
+export async function renderPublishDb(hosts, slug) {
+  const { describe: dEl, contents: cEl } = hosts;
+  if (!dEl) throw new Error('Publish band host missing');
+  const row = resourceRow(slug) || {};
+  const note = row.egeria_publish_note
+    ? `<div class="mt-s1 text-provenance text-state-warn">${esc(row.egeria_publish_note)}</div>` : '';
+  dEl.innerHTML = `${head}<div data-publish-status data-db-publish-state-host>${commitStateLineHtml(null)}</div>${note}
+    <div class="mt-s2" data-egeria-reports-host></div>`;
+  paintDbPublishState(dEl, null);
+  if (cEl) {
+    cEl.innerHTML = row.egeria_asset_guid
+      ? `<div data-publish-asset class="text-caveat"><span class="text-provenance text-ink-muted">asset</span> ${guidHtml(row.egeria_asset_guid)}</div>` : '';
+    bindCopy(cEl);
+  }
+  mountEgeriaReports(dEl.querySelector('[data-egeria-reports-host]'), { entityType: 'database', slug, inEgeria: !!row.is_published });
+}
+
+/** Draw (or redraw) the database's one-line state into `root`'s state-line host from a scope view. `view` null =
+ *  still reading; `failed` = the read did not arrive. The "Contents ›" link switches tab in place. */
+export function paintDbPublishState(root, view, failed = false) {
+  const host = root && root.querySelector && root.querySelector('[data-db-publish-state-host]');
+  if (!host) return;
+  host.innerHTML = commitStateLineHtml(view, failed);
+  const b = host.querySelector('[data-db-goto-contents]');
+  if (b) b.onclick = () => openCurate({ tab: 'curate_contents' });
 }
 
 /** A repository's publish state on the Curate tabs. `hosts` = { describe, contents, structure } (elements).

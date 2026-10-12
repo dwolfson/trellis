@@ -91,6 +91,9 @@ async function setUp({ resourceType = 'db', stage = 'understanding', over = {}, 
   document.querySelector(`#intent-nav button[data-stage="${stage}"]`).click();
   await wait();
   await openAllUnderstandingTabs(document, 50);
+  // A database's data-class rules (Curate, Structure tab) are read when that tab is shown (Brief S2).
+  const structureTab = stage === 'curate' ? document.querySelector('[data-subtab="curate_structure"]') : null;
+  if (structureTab) { structureTab.click(); await wait(50); }
   return { document, window, app, ...stub };
 }
 
