@@ -1012,11 +1012,11 @@ def _h_db_description(value: dict, state: str) -> str:
 def _h_db_catalogued(value: dict, state: str) -> str:
     if not value.get("catalogued"):
         note = value.get("note") or ""
-        return note if note else "Not yet cataloged in Egeria."
+        return note if note else "Not yet published to Egeria."
     when = value.get("last_published_at") or ""
     if when and value.get("published_state") == "published_earlier":
-        return f"Cataloged in Egeria, published earlier \u00b7 Egeria was reset ({when})."
-    return f"Cataloged in Egeria, published {when}." if when else "Cataloged in Egeria."
+        return f"Published to Egeria earlier \u00b7 Egeria was reset ({when})."
+    return f"Published to Egeria {when}." if when else "Published to Egeria."
 
 
 def _h_db_existing_use(value: dict, state: str) -> str:

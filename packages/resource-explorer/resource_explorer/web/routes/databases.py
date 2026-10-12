@@ -1206,7 +1206,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
 
         if not resolved_db_user or not resolved_db_pwd:
             raise ValueError(
-                "Database credentials are required to catalog in Egeria. "
+                "Database credentials are required to publish to Egeria. "
                 "Store them at registration or supply db_user/db_pwd in the request."
             )
 
@@ -1257,7 +1257,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
                 entity_name=database.display_name,
                 entity_location=f"{database.host}:{database.port}/{database.database_name}",
                 status="ok",
-                summary=f"Cataloged in Egeria: {database.database_name} on {server_dn}",
+                summary=f"Published to Egeria: {database.database_name} on {server_dn}",
                 items=[
                     {"kind": "PostgreSQLServer", "display_name": server_dn,
                      "qualified_name": f"PostgreSQLServer::{server_dn}",
@@ -1310,7 +1310,7 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
                 entity_name=database.display_name,
                 entity_location=f"{database.host}:{database.port}/{database.database_name}",
                 status="error",
-                summary=f"Egeria catalog failed: {err_str[:200]}",
+                summary=f"Egeria publish failed: {err_str[:200]}",
                 detail=err_str,
             )
         except Exception:

@@ -109,7 +109,7 @@ def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
     if not fs_guid:
         raise RuntimeError(
             f"Filesystem '{fs_entity.slug}' has no stored Egeria asset guid — "
-            "cannot trigger Egeria's native survey for an uncataloged filesystem."
+            "cannot trigger Egeria's native survey for an unpublished filesystem."
         )
     surveyor = EgeriaFileSystemSurveyor()
     triggered_at = datetime.now(timezone.utc)

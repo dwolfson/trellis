@@ -58,23 +58,23 @@ CHOICES = (CATALOGUE, LEAVE_OUT)
 #: screen. `commit_honours` says which depth is what the commit does.
 DEPTHS: tuple[dict, ...] = (
     {"id": "database_only", "label": "the database only", "commit_honours": False,
-     "how": "tree view only: shows the database alone · the commit still catalogs whole schemas"},
+     "how": "tree view only: shows the database alone · the commit still publishes whole schemas"},
     {"id": "schemas", "label": "schemas", "commit_honours": False,
-     "how": "tree view only: shows schemas · the commit still catalogs their tables and columns"},
+     "how": "tree view only: shows schemas · the commit still publishes their tables and columns"},
     {"id": "schemas_and_tables", "label": "schemas and tables", "commit_honours": False,
-     "how": "tree view only: shows schemas and tables · the commit still catalogs their columns"},
+     "how": "tree view only: shows schemas and tables · the commit still publishes their columns"},
     {"id": "tables_and_columns", "label": "tables and columns", "commit_honours": True,
-     "how": "everything: this is what the commit catalogs for each chosen schema"},
+     "how": "everything: this is what the commit publishes for each chosen schema"},
 )
 DEPTH_IDS = tuple(d["id"] for d in DEPTHS)
 DEFAULT_DEPTH = "schemas_and_tables"
-DEPTH_HELP = ("Egeria catalogs whole schemas with their tables and columns, and a shallower depth can't be "
+DEPTH_HELP = ("Egeria adds whole schemas with their tables and columns, and a shallower depth can't be "
               "asked for until Egeria has a depth option (S2), so a depth here changes this tree only.")
 #: Shown beside the depth line, and in the commit's manifest, when the chosen depth is not what the commit does.
-DEPTH_NOT_HONOURED = ("The commit catalogs tables and columns for every chosen schema whatever depth is "
+DEPTH_NOT_HONOURED = ("The commit publishes tables and columns for every chosen schema whatever depth is "
                       "chosen: Egeria has no depth option yet (S2).")
 
-SYSTEM_SENTENCE = "not cataloged: system schemas are never offered"
+SYSTEM_SENTENCE = "not published: system schemas are never offered"
 
 #: Proposal rule ids. They are stored on the event as the confirmed `source`.
 RULE_EMPTY_SCHEMA = "empty_schema"
@@ -108,13 +108,13 @@ def depth_provenance(depth: str, kind: str) -> str:
     """The second line of a row: what this depth's VIEW leaves out. A view claim only:
     the commit still catalogues the level (see `DEPTHS`)."""
     if depth == "database_only":
-        return ("schemas hidden in this view · the commit still catalogs whole schemas"
+        return ("schemas hidden in this view · the commit still publishes whole schemas"
                 if kind == "schema" else
-                "tables hidden in this view · the commit still catalogs them")
+                "tables hidden in this view · the commit still publishes them")
     if depth == "schemas":
-        return "tables hidden in this view · the commit still catalogs them" if kind == "table" else ""
+        return "tables hidden in this view · the commit still publishes them" if kind == "table" else ""
     if depth == "schemas_and_tables":
-        return "columns hidden in this view · the commit still catalogs them" if kind == "table" else ""
+        return "columns hidden in this view · the commit still publishes them" if kind == "table" else ""
     return ""
 
 

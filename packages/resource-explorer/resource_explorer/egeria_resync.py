@@ -301,7 +301,7 @@ class EgeriaResync:
         return Finding(
             key="stale_assets",
             title="Cached asset GUIDs pointing at nothing",
-            detail="These repos render as Published while their catalog entry is gone. "
+            detail="These repos render as Published while their Egeria entry is gone. "
                    "Clearing also drops their survey records and publish claims, which "
                    "are local claims about what Egeria holds.",
             items=stale, repair_step="clear_stale_assets",
@@ -357,7 +357,7 @@ class EgeriaResync:
             key="orphan_publish_claims",
             title="Publish claims with no asset behind them",
             detail="The Analyses cards' Published badge is derived from these. "
-                   "Nothing points at a catalog entry, so the badge is false.",
+                   "Nothing points at an Egeria entry, so the badge is false.",
             items=[{"slug": r["slug"], "claims": r["n"]} for r in rows],
             repair_step="clear_orphan_publish_claims",
         )
@@ -457,7 +457,7 @@ class EgeriaResync:
         return Finding(
             key="stale_dbfs_assets",
             title="Database/filesystem asset GUIDs pointing at nothing",
-            detail="These render as published while their catalog entry is gone. "
+            detail="These render as published while their Egeria entry is gone. "
                    "Flagged stale in the linkage table, never cleared: the GUID "
                    "stays so the history survives, and the flag is removed if the "
                    "element resolves again.",
@@ -686,9 +686,9 @@ class EgeriaResync:
                     # regression caught by the test written for the original
                     # distinction — the counts alone cannot tell a reader that
                     # the repo in front of them never had an asset to lose.
-                    "cause": ("asset lost — it was cataloged before"
+                    "cause": ("asset lost — it was published before"
                               if published_before else
-                              "never cataloged — no publish has run for it"),
+                              "never published — no publish has run for it"),
                 })
 
         # Inheritance is asked OUTSIDE the connection above: it opens its own.
@@ -741,7 +741,7 @@ class EgeriaResync:
         lost = sum(1 for i in items if i["was_published"])
         return Finding(
             key="needs_catalog",
-            title=(f"Repos with no Egeria asset that can be cataloged "
+            title=(f"Repos with no Egeria asset that can be published "
                    f"({lost} lost an asset, {len(items) - lost} never had one)"),
             detail=("Publishes " + "/".join(CATALOG_STEPS) + " for each — enough to "
                     "register the asset, and deliberately nothing that downloads an "
@@ -813,7 +813,7 @@ class EgeriaResync:
         """
         return Finding(
             key="registration_only",
-            title=("Cataloged assets with no survey results published"),
+            title=("Egeria assets with no survey results published"),
             detail=("Runs the FULL survey for each and publishes it as a SurveyReport. "
                     "This is the slow path: it includes steps that download the "
                     "repository archive, so across a large corpus it is minutes and "
@@ -843,7 +843,7 @@ class EgeriaResync:
             items.append(i)
         return Finding(
             key="registration_blocked",
-            title="Cataloged assets with no survey results and no Project to publish under",
+            title="Egeria assets with no survey results and no Project to publish under",
             detail=("Assign an Egeria Project to these, or add them to an investigation "
                     "that has one. No button: the publish is refused (428) until then."),
             items=items, repair_step="", needs_decision=True,
@@ -901,7 +901,7 @@ class EgeriaResync:
             key="local_investigations",
             title="Investigations with no Egeria Project",
             detail="Creating a Project is a write into a shared system and names a real "
-                   "catalog object, so it stays your decision — bind an existing Project "
+                   "Egeria object, so it stays your decision — bind an existing Project "
                    "or create one from the investigation's own card.",
             items=items, repair_step="", needs_decision=True,
         )
@@ -1330,7 +1330,7 @@ class EgeriaResync:
                 intent="enrichment", entity_type="repo", entity_slug=slug,
                 status="error",
                 summary=f"Resync publish failed: {error}",
-                detail="Resync apply (republish/catalog). The repo was not published.",
+                detail="Resync apply (republish). The repo was not published.",
                 items=[{"error": error}],
             ))
         except Exception:

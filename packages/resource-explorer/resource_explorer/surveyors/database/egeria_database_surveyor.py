@@ -958,7 +958,7 @@ class EgeriaDatabaseSurveyor:
             ours = server_name_for(db_entity)
             if held != ours:
                 return (f"The database element in Egeria ({stored}) is named for host {held}; this "
-                        f"registration says host {ours}. Re-catalog the database, or correct the "
+                        f"registration says host {ours}. Re-publish the database, or correct the "
                         "host (Egeria host) on the registration.")
         return base
 

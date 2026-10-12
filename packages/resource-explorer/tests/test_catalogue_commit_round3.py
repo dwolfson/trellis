@@ -259,7 +259,7 @@ def test_no_user_facing_string_on_the_commit_path_says_removed_for_a_soft_delete
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     p = cc.build_preview(world["registry"], "db", view(world), fake)
-    assert p["button"] == "Catalog · 0 schemas · deletes 1 from Egeria" and "will delete" in p["leave_out"][0]["text"]
+    assert p["button"] == "Publish · 0 schemas · deletes 1 from Egeria" and "will delete" in p["leave_out"][0]["text"]
     _, rec = press(world, fake)
     d = derived(world)
     texts = [ln["text"] for ln in p["manifest"]["lines"]] + [r["text"] for r in p["leave_out"]]

@@ -135,5 +135,5 @@ def test_a_host_change_says_which_host_egeria_holds_and_how_to_fix_it(surveyor):
                                           surveyed_at="2026-10-09T00:00:00")
     assert str(err.value) == (
         f"The database element in Egeria ({A_DB}) is named for host host-a:5432; this registration "
-        "says host host-a.internal:5432. Re-catalog the database, or correct the host (Egeria host) "
+        "says host host-a.internal:5432. Re-publish the database, or correct the host (Egeria host) "
         "on the registration.")

@@ -287,7 +287,7 @@ def _trigger_egeria_native_survey(db_entity, registry, step, **_) -> dict:
     if not db_guid:
         raise RuntimeError(
             f"Database '{db_entity.slug}' has no stored Egeria asset guid — "
-            "cannot trigger Egeria's native survey for an uncataloged database."
+            "cannot trigger Egeria's native survey for an unpublished database."
         )
     surveyor = EgeriaDatabaseSurveyor()
     triggered_at = datetime.now(timezone.utc)

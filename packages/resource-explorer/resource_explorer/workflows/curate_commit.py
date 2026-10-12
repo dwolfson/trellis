@@ -166,7 +166,7 @@ def _resurvey_plan(registry: ProjectRegistry, slug: str) -> tuple[list[str] | No
 
     history = registry.get_analysis_last_run("repo", slug)
     if not history:
-        return None, "no run history for this repo yet — running a full survey for the first catalog"
+        return None, "no run history for this repo yet — running a full survey for the first publish"
 
     stale_ids, fresh_ids = [], []
     for analysis_id in sorted(history):
@@ -230,7 +230,7 @@ def execute_curation(registry: ProjectRegistry, curation_id: str) -> dict:
 
         context = repo_publish.resolve_project_context(registry, slug)
         if context is None:
-            raise RuntimeError("no Egeria Project context — decide it on the Scouting pane (or bind the investigation) and press Catalog again")
+            raise RuntimeError("no Egeria Project context — decide it on the Scouting pane (or bind the investigation) and press Publish again")
         snap = survey_snapshot.latest(registry, slug)
         if snap is None:
             raise RuntimeError(survey_snapshot.no_kept_survey_sentence(registry, slug))

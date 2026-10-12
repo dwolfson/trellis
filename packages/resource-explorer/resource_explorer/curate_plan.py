@@ -191,7 +191,7 @@ def _classification_write(key: str, f: dict) -> tuple[str, str, dict]:
                 "stewardPropertyName": "userId", "source": "resource-explorer enrichment",
                 "confidence": 100,
                 "notes": notes if notes is not None else f"{f.get('value','')} — set by {f.get('author','?')} on {(f.get('set_at') or '')[:10]}"
-                         f"{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}"}
+                         f"{' · interim' if f.get('interim') else ''}; copied to Egeria {stamp}"}
 
     if key == "sensitivity":
         return ("set_confidentiality_classification", f"Confidentiality · {f['value']}", {
@@ -210,7 +210,7 @@ def _classification_write(key: str, f: dict) -> tuple[str, str, dict]:
     # (the real key is `statusIdentifier`), and Dr.Egeria's live-confirmed Retention path sends neither.
     label = retention_basis.LABELS[rb["basis"]]
     notes = (f"{label}{' — ' + rb['note'] if rb['note'] else ''} — set by {f.get('author','?')} on "
-             f"{(f.get('set_at') or '')[:10]}{' · interim' if f.get('interim') else ''}; copied to the catalog {stamp}")
+             f"{(f.get('set_at') or '')[:10]}{' · interim' if f.get('interim') else ''}; copied to Egeria {stamp}")
     # common() first, then the two fields this classification owns, so nothing spread can override them
     return ("set_retention_classification", f"Retention · {label}", {
         "class": "NewClassificationRequestBody",
@@ -283,7 +283,7 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
             else:  # "library" -- importable, no deployment evidence
                 what_it_is.append(_row(
                     f"SoftwareComponentCandidate::{name}",
-                    f"Component, not cataloged by default · {name} — importable {ecosystem} "
+                    f"Component, not published by default · {name} — importable {ecosystem} "
                     "distribution, no deployment evidence",
                     evidence=d.get("summary", ""), source="deployment_evidence",
                     state="measured", candidate=False, detail=det))
@@ -398,8 +398,8 @@ def build_plan(registry: ProjectRegistry, slug: str) -> dict:
     deps = _fact(layer, slug, "dependency_analysis")
     n_deps = sum(len(v) for v in ((deps.get("value") or {}).get("by_ecosystem") or {}).values())
     relates = [
-        _row("Dependency", f"{n_deps} dependencies · already-cataloged ones not looked up",
-             evidence="which of these are already assets in the catalog is an Egeria search, not a local fact; not built yet",
+        _row("Dependency", f"{n_deps} dependencies · already-published ones not looked up",
+             evidence="which of these are already assets in Egeria is an Egeria search, not a local fact; not built yet",
              source="dependency_analysis", state=deps.get("state", ""), count=n_deps,
              members={"analysis_id": "dependency_analysis"}, candidate=False),
     ]
@@ -558,7 +558,7 @@ class Curations:
         if not rec:
             raise LookupError(cid)
         if rec.get("layer2_offer"):
-            raise ValueError(f"catalog record {cid} already carries a layer-2 offer outcome")
+            raise ValueError(f"publish record {cid} already carries a layer-2 offer outcome")
         payload = {"outcome": outcome, "decided_by": decided_by, "at": _now()}
         with self._conn() as conn:
             conn.execute("UPDATE resource_curation SET layer2_offer = ? WHERE id = ?",

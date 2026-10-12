@@ -20,7 +20,7 @@ from resource_explorer.surveyors.sub_surveyors.file_inventory import FileInvento
 from resource_explorer.surveyors.survey_snapshot import annotation_from_dict, annotation_to_dict
 
 SENTENCE = ("file types are published as profile annotations in the survey report; "
-            "files are cataloged by selection on Curate")
+            "files are published by selection on Curate")
 FILES = [("LICENSE", 10), ("README.md", 20), ("src/a.py", 5), ("src/b.py", 5), ("src/c.java", 7),
          ("docs/guide.md", 3), ("Dockerfile", 2)]
 

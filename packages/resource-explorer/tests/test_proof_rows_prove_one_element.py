@@ -210,4 +210,4 @@ def test_a_clean_create_still_writes_target_elements_and_report_rows(world, fake
     assert len(rows(world, cc.P_TARGET)) >= 1 and len(rows(world, cc.P_ELEMENTS)) >= 1
     assert len(rows(world, cc.P_REPORT)) == 1 and rows(world, cc.P_ADOPTED) == []
     s = derived(world)["schemas"]["sales"]
-    assert s["state"] == "catalogued" and s["words"].startswith("cataloged · ")
+    assert s["state"] == "catalogued" and s["words"].startswith("published · ")

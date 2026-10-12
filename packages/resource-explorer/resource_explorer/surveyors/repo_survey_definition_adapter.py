@@ -5333,7 +5333,7 @@ def _trigger_egeria_native_survey(project, registry, step, **_) -> dict:
     if not repo_guid:
         raise RuntimeError(
             f"Repository '{project.slug}' has no stored Egeria asset guid — "
-            "cannot trigger Egeria's native survey for an uncataloged repository."
+            "cannot trigger Egeria's native survey for an unpublished repository."
         )
     publisher = EgeriaPublisher(registry=registry)
     triggered_at = datetime.now(timezone.utc)
