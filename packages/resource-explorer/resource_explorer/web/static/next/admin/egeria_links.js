@@ -18,16 +18,11 @@ import {
 } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
+import { LINK_ACTIONS } from '/static/next/link-actions.js';
+import { inPageConfirm, inPageNotice } from '/static/next/confirm-dialog.js';
 
 /** What each choice does, said before it is pressed. Exported so a test can pin that none of them names a delete. */
-export const ACTIONS = [
-  { id: 'republish', label: 'Republish', writes: true,
-    does: 'Clear the broken link, then re-publish the survey results RE already holds. Writes a new SurveyReport to Egeria. Fast, no re-scan.' },
-  { id: 'resurvey', label: 'Re-survey', writes: true,
-    does: 'Clear the broken link, survey the resource from scratch, then publish. Writes to Egeria and can take minutes.' },
-  { id: 'discard', label: 'Discard link', writes: false,
-    does: "Remove RE's local publish records for this resource and stop. Writes nothing to Egeria. Survey results and annotations are kept." },
-];
+export const ACTIONS = LINK_ACTIONS;
 const ACTION = Object.fromEntries(ACTIONS.map((a) => [a.id, a]));
 
 let _host = null;
@@ -133,7 +128,7 @@ async function resolveOne(btn) {
   const row = _rows.find((r) => keyOf(r) === btn.dataset.linkKey);
   if (!row) return;
   const a = ACTION[action];
-  if (!window.confirm(`${a.label} ${row.entity_type}/${row.entity_slug}?\n\n${a.does}`)) return;
+  if (!await inPageConfirm({ title: `${a.label} ${row.entity_type}/${row.entity_slug}?`, message: a.does, confirmLabel: a.label })) return;
   _busy = true;
   const st = [..._host.querySelectorAll('[data-link-state]')].find((e) => e.dataset.linkState === btn.dataset.linkKey);
   const original = btn.textContent;
@@ -150,6 +145,7 @@ async function resolveOne(btn) {
     _busy = false;
     btn.disabled = false; btn.textContent = original;
     if (st) st.innerHTML = `<span class="text-state-warn">Not resolved: ${esc(err.message)}</span>`;
+    inPageNotice({ title: `${a.label} did not finish`, message: `${row.entity_type}/${row.entity_slug}: ${err.message}` });
   }
 }
 
@@ -174,7 +170,7 @@ async function applyBulk() {
   if (!_preview || _busy) return;
   const { action, targets } = _preview;
   const a = ACTION[action];
-  if (!window.confirm(`${a.label} ${targets.length} resource(s)?\n\n${a.does}\n\n${targets.map((t) => `${t.entity_type}/${t.slug}`).join('\n')}`)) return;
+  if (!await inPageConfirm({ title: `${a.label} ${targets.length} resource(s)?`, message: `${a.does}\n\n${targets.map((t) => `${t.entity_type}/${t.slug}`).join('\n')}`, confirmLabel: a.label })) return;
   const st = _host.querySelector('[data-link-bulk-state]');
   _busy = true; refreshToolbar(); st.textContent = 'Applying…';
   try {
@@ -187,6 +183,7 @@ async function applyBulk() {
   } catch (err) {
     _busy = false;
     st.textContent = `Not applied: ${err.message}`;
+    inPageNotice({ title: `${a.label} did not finish`, message: err.message });
     refreshToolbar();
   }
 }

@@ -22,6 +22,7 @@
  * they ask first; discard writes nothing to Egeria.
  */
 import { stateEntry } from '/static/next/glyphs.js';
+import { LINK_ACTIONS } from '/static/next/link-actions.js';
 import { ago, PUBLISHED_EARLIER_WORD, PUBLISHED_EARLIER_SENTENCE } from '/static/next/format.js';
 
 function esc(s) {
@@ -108,17 +109,9 @@ export function scoutingSignalHtml(sig) {
 
 /* ── the stale-link banner ─────────────────────────────────────────────── */
 
-export const REPAIR_CHOICES = [
-  { action: 'republish', label: 'Publish again',
-    sentence: 'Forgets the dead pointer, rebuilds the report from the survey already kept (no re-scan) and publishes a new SurveyReport to Egeria.',
-    writes: true, confirm: true },
-  { action: 'resurvey', label: 'Re-survey, then publish',
-    sentence: 'Forgets the dead pointer, surveys the repository from scratch, then publishes a new SurveyReport to Egeria. Can take minutes.',
-    writes: true, confirm: true },
-  { action: 'discard', label: 'Forget the link',
-    sentence: 'Forgets the dead pointer and the publish history that points at it, in Resource Explorer only. Egeria is not contacted and nothing is written there. Survey results are kept.',
-    writes: false, confirm: true },
-];
+export const REPAIR_CHOICES = LINK_ACTIONS.map((a) => ({
+  action: a.id, label: a.label, sentence: a.does, writes: a.writes, confirm: true,
+}));
 
 /** The banner, or '' when the link is not stale. `ov.published_state === 'published_earlier'` adds the
  *  post-reset word beside the stale cue. */
@@ -132,7 +125,7 @@ export function staleLinkBannerHtml(ov) {
   const buttons = REPAIR_CHOICES.map((c) =>
     `<button type="button" data-link-repair="${c.action}" title="${esc(c.sentence)}" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">${esc(c.label)}</button>`).join(' ');
   return `<div data-stale-link-banner class="mt-s2 flex flex-wrap items-baseline gap-s2 text-caveat">
-    <span class="text-ink-muted" title="Egeria no longer has the element Resource Explorer recorded for this repository. Every choice forgets the dead pointer first."><span class="font-glyph" aria-hidden="true">${e.glyph}</span> link stale${earlier}${guid}</span>
+    <span class="text-ink-muted" title="Egeria no longer has the element Resource Explorer recorded for this resource. Every choice forgets the dead pointer first."><span class="font-glyph" aria-hidden="true">${e.glyph}</span> link stale${earlier}${guid}</span>
     ${buttons}
     <span data-link-repair-status class="text-provenance text-ink-muted" aria-live="polite"></span>
   </div>`;
@@ -148,7 +141,7 @@ export function bindStaleLinkBanner(root, { resolve, confirmWrite, onDone }) {
     const choice = REPAIR_CHOICES.find((c) => c.action === btn.dataset.linkRepair);
     if (!choice || btn.disabled) return;
     // Every choice asks: two write a new report to Egeria, and the third deletes RE's publish history rows.
-    if (choice.confirm && !confirmWrite(choice)) return;
+    if (choice.confirm && !(await confirmWrite(choice))) return;
     host.querySelectorAll('[data-link-repair]').forEach((b) => { b.disabled = true; });
     status.textContent = choice.writes ? 'working…' : 'forgetting…';
     try {

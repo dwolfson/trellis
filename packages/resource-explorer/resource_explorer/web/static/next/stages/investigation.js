@@ -340,10 +340,13 @@ async function renderDetail(slug) {
   if (stale()) return;
   // Link status is a read of what relink recorded; a failed read is "unavailable", never a zero.
   _linkStatus[slug] = null;
+  _linkMembers[slug] = null;
   if (inv.egeria_project_guid) {
     try {
       const ls = await getInvestigationLinkStatus(slug);
       if (ls && ls.counts) _linkStatus[slug] = ls.counts;
+      // The per-member rows come from the SAME response: state (linked | not_linked | could_not_tell) and reason.
+      if (ls && Array.isArray(ls.members)) _linkMembers[slug] = ls.members;
     } catch { /* leaves null: shown as unavailable */ }
     if (stale()) return;
   }
@@ -430,6 +433,20 @@ function btnCls() {
 // failed. `_unlinked` is the fallback from the last promote/relink result. Unknown never shows as "0".
 const _linkStatus = {};
 const _unlinked = {};
+// Per-member link rows from the same /link-status response (null: not read).
+const _linkMembers = {};
+
+/** One member's link cell: a cue and a short word, the reason on hover. Linked / not linked / could not tell; a
+ *  status that was never read is "not read", never "not linked". Exported for the tests. */
+export function memberLinkCellHtml(inv, m, rows) {
+  if (!inv.egeria_project_guid) return '<span data-inv-member-link="unbound" class="text-ink-muted" title="Not bound to an Egeria Project">—</span>';
+  const r = Array.isArray(rows) ? rows.find((x) => x.entity_type === m.entity_type && x.entity_slug === m.entity_slug) : null;
+  if (!r) return `<span data-inv-member-link="unread">${cue('not_established', 'not read', 'The link status could not be read for this member.')}</span>`;
+  const why = r.reason || '';
+  if (r.state === 'linked') return `<span data-inv-member-link="linked">${cue('measured', 'linked', why || 'Attached to the working set in Egeria.')}</span>`;
+  if (r.state === 'not_linked') return `<span data-inv-member-link="not_linked">${cue('unrun', 'not linked', why || 'Not attached yet.')}</span>`;
+  return `<span data-inv-member-link="could_not_tell">${cue('not_established', 'could not tell', why || 'The link could not be established either way.')}</span>`;
+}
 
 function linkStatusHtml(slug) {
   const c = _linkStatus[slug];
@@ -528,6 +545,7 @@ function membersTableHtml(inv, members, dispositions) {
       <th class="pb-s2 pr-s3 font-normal">Type</th>
       <th class="pb-s2 pr-s3 font-normal">Resource</th>
       <th class="pb-s2 pr-s3 font-normal">Disposition</th>
+      <th class="pb-s2 pr-s3 font-normal">In the working set</th>
       <th class="pb-s2 font-normal"></th>
     </tr></thead>
     <tbody>${members.map((m) => {
@@ -544,6 +562,7 @@ function membersTableHtml(inv, members, dispositions) {
               current === d ? 'selected' : ''}>${g} ${d}</option>`).join('')}
           </select>
         </td>
+        <td class="py-s2 pr-s3 text-caveat" data-inv-member-link-cell>${memberLinkCellHtml(inv, m, _linkMembers[inv.slug])}</td>
         <td class="py-s2">
           <button data-remove-member="${esc(m.entity_type)}|${esc(m.entity_slug)}"
             class="cursor-pointer bg-transparent text-caveat text-state-warn underline">Remove</button>
