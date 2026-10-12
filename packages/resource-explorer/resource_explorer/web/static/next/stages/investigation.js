@@ -413,6 +413,14 @@ async function renderDetail(slug) {
   bindDetail(inv, members);
 }
 
+/** A write failed: a pop-up with the reason (Escape or the backdrop closes it). The button carries its own cue. */
+function failurePopup(title, reason) {
+  const el = openDialog(title, '');
+  const body = el.querySelector('#wl-detail-body');
+  body.setAttribute('data-inv-failure-popup', '');
+  body.innerHTML = `<p class="text-state-warn">${esc(reason || 'no reason given')}</p>`;
+}
+
 function btnCls() {
   return 'cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] '
     + 'text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60';
@@ -434,7 +442,9 @@ function linkStatusHtml(slug) {
     if (c.could_not_tell > 0) {
       parts.push(`<span data-inv-link-unknown class="ml-s2 text-ink-muted">could not tell for ${plural(c.could_not_tell)}</span>`);
     }
-    return { html: parts.join(''), n: c.not_linked };
+    // linkable comes from link-status (the members relink would attach); an older server lacks it.
+    const linkable = c.linkable ?? c.not_linked;
+    return { html: parts.join(''), n: linkable, counted: c.linkable != null };
   }
   const n = _unlinked[slug];
   if (n > 0) {
@@ -445,14 +455,14 @@ function linkStatusHtml(slug) {
 
 function egeriaSectionHtml(inv) {
   if (inv.egeria_project_guid) {
-    const { html: notLinked, n } = linkStatusHtml(inv.slug);
+    const { html: notLinked, n, counted } = linkStatusHtml(inv.slug);
     return `<p class="max-w-[70ch] text-caveat text-ink-muted">
         <span data-inv-bound-cue class="text-state-ok" title="bound to an Egeria Project">● bound</span>
         · <span class="font-mono">${esc(inv.egeria_project_qualified_name || inv.egeria_project_guid)}</span>${notLinked}
       </p>
       <div class="flex flex-wrap gap-s2">
         <button data-act="inv-sync" class="${btnCls()}">Publish again</button>
-        <button data-act="inv-relink" class="${btnCls()}">${n > 0 ? 'Link members' : 'Relink members'}</button>
+        <button data-act="inv-relink" class="${btnCls()}">${n > 0 ? `Link members${counted ? ` (${n})` : ''}` : 'Relink members'}</button>
         <button data-act="inv-unbind" class="${btnCls()}">Unbind</button>
       </div>`;
   }
@@ -744,7 +754,23 @@ function bindDetail(inv, members) {
     btn.textContent = 'Creating…';
     const host = $('inv-egeria-form');
     try {
-      const result = await promoteInvestigation(inv.slug);
+      let result;
+      try {
+        result = await promoteInvestigation(inv.slug);
+      } catch (err) {
+        // The write failed: reset the button, keep a cue on it, and say why in a pop-up.
+        btn.disabled = false;
+        if (err.status === 403) btn.innerHTML = cue('no_access', 'not permitted', err.message);
+        else {
+          btn.innerHTML = `Publish to Egeria → ${cue('error', 'not published', err.message)}`;
+          failurePopup('Not published', err.message);
+        }
+        host.innerHTML = `<div class="mt-s2 text-caveat" data-inv-promote-refused>${refusalHtml(err)}</div>`;
+        return;
+      }
+      // The write is done: the button is reset now, whatever the re-read below does.
+      btn.disabled = false;
+      btn.textContent = 'Publish to Egeria →';
       const confirmedLine = result.classification_confirmed === result.classification_requested
         ? `confirmed as ${esc(result.classification_confirmed)}`
         : result.classification_confirmed === null || result.classification_confirmed === undefined
@@ -769,9 +795,10 @@ function bindDetail(inv, members) {
         host2.querySelector('#inv-promote-reload')?.addEventListener('click', () => renderDetail(inv.slug));
       }
     } catch (err) {
+      // Only the re-read after a finished write lands here: the result stays on screen, the button is reset.
       btn.disabled = false;
       btn.textContent = 'Publish to Egeria →';
-      host.innerHTML = `<div class="mt-s2 text-caveat" data-inv-promote-refused>${refusalHtml(err)}</div>`;
+      host.insertAdjacentHTML('beforeend', `<div class="mt-s2 text-caveat" data-inv-promote-refused>${refusalHtml(err)}</div>`);
     }
   });
 
@@ -794,21 +821,32 @@ function bindDetail(inv, members) {
   el.querySelector('[data-act="inv-relink"]')?.addEventListener('click', async () => {
     const btn = el.querySelector('[data-act="inv-relink"]');
     btn.disabled = true;
-    btn.textContent = 'Relinking…';
+    btn.innerHTML = cue('running', 'linking…');
     try {
       const res = await relinkInvestigationMembers(inv.slug);
+      btn.disabled = false;
       if (res && Array.isArray(res.members_unlinkable)) _unlinked[inv.slug] = res.members_unlinkable.length;
+      const linkedN = Array.isArray(res?.members_linked) ? res.members_linked.length : 0;
+      const errs = Array.isArray(res?.errors) ? res.errors : [];
       await renderDetail(inv.slug);
+      const host0 = $('inv-egeria-form');
+      if (host0) {
+        host0.innerHTML = `<div class="mt-s2 text-caveat" data-inv-relink-result>${cue('measured', `${linkedN} linked`)}</div>`;
+      }
+      if (errs.length) failurePopup('Some members were not linked', errs.join('; '));
       // Brief Z3: members the check refused stay named under the button, each with the cue.
       const refused = (res?.members_unlinkable || []).filter((m) => String(m.reason || '').startsWith('not permitted'));
       const host = $('inv-egeria-form');
       if (refused.length && host) {
-        host.innerHTML = `<div class="mt-s2 text-caveat" data-inv-relink-refused>${refused.map(memberLine).join('; ')}</div>`;
+        host.insertAdjacentHTML('beforeend', `<div class="mt-s2 text-caveat" data-inv-relink-refused>${refused.map(memberLine).join('; ')}</div>`);
       }
     } catch (err) {
       btn.disabled = false;
       if (err.status === 403) btn.innerHTML = cue('no_access', 'not permitted', err.message);
-      else btn.textContent = `Not relinked: ${err.message}`;
+      else {
+        btn.innerHTML = `Link members ${cue('error', 'not linked', err.message)}`;
+        failurePopup('Not linked', err.message);
+      }
     }
   });
 

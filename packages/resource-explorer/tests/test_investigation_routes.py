@@ -1969,6 +1969,8 @@ def test_link_status_end_to_end_after_a_promotion_with_stubbed_egeria(client, ma
     body, by = _states(client, slug)
     assert by["lk-ok"]["state"] == "not_linked" and "Link members" in by["lk-ok"]["reason"]
     assert by["lk-none"]["state"] == "not_linked" and "no asset GUID" in by["lk-none"]["reason"]
+    # linkable counts what relink would attach: the two published members, not the one with no asset GUID.
+    assert body["counts"]["linkable"] == 2
 
     pub = EgeriaInvestigationPublisher(reg, project_manager=_StubPM(), collection_manager=FailingForOne())
     pub.relink_members(slug)
@@ -1977,7 +1979,7 @@ def test_link_status_end_to_end_after_a_promotion_with_stubbed_egeria(client, ma
     assert by["lk-ok"]["state"] == "linked"
     assert by["lk-bad"]["state"] == "not_linked" and "attach failed" in by["lk-bad"]["reason"]
     assert by["lk-none"]["state"] == "not_linked"
-    assert body["counts"] == {"linked": 1, "not_linked": 2, "could_not_tell": 0}
+    assert body["counts"] == {"linked": 1, "not_linked": 2, "could_not_tell": 0, "linkable": 1}
 
     # The status agrees with what relink itself reports.
     res = pub.relink_members(slug)
