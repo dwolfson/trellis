@@ -929,3 +929,53 @@ def test_f_r3_access_that_cannot_be_read_defers_the_row_unsent_never_kills_it(re
     row = _row(registry, rid)
     assert row["status"] == "pending" and row["attempts"] == 0 and "re-check access" in row["last_error"]
     assert "add_tag_to_element" not in egeria.names()
+
+
+# ══ Brief F round 4 ═════════════════════════════════════════════════════════════════════════════════════════
+
+def _queued_link(registry, by):
+    registry.add_resource_tag("repo", "p", "sales", author="peterprofile")
+    (it,) = [i for i in ce.curation_plan(registry, "repo", "p")["items"] if i.kind == "tag"]
+    return ce._enqueue(registry, "repo", "p", it, "link", ASSET, by, {"display_name": "sales"})
+
+
+def test_f_r4_a_row_with_no_requester_is_refused_while_a_zone_is_in_use(registry, egeria, zoned):
+    rid = _queued_link(registry, "")
+    with _daemon(None):
+        ob.drain_outbox(registry)
+    row = _row(registry, rid)
+    assert row["status"] == "dead" and "not permitted" in row["last_error"]
+    assert "add_tag_to_element" not in egeria.names()
+
+
+def test_f_r4_a_row_with_no_requester_goes_while_no_zone_is_in_use(registry, egeria):
+    rid = _queued_link(registry, "")
+    with _daemon(None):
+        ob.drain_outbox(registry)
+    assert _row(registry, rid)["status"] == "done"
+
+
+def test_f_r4_an_access_deferral_says_so_and_waits_before_the_next_try(registry, egeria, zoned):
+    rid = _queued_link(registry, "peterprofile")
+    zoned.fail_element = ASSET
+    with _daemon("peterprofile"):
+        ob.drain_outbox(registry)
+    row = _row(registry, rid)
+    from datetime import datetime, timedelta
+    assert datetime.fromisoformat(row["next_attempt_at"]) > datetime.utcnow() + timedelta(seconds=200)
+    i = item(ce.plan_as_dict(ce.curation_plan(registry, "repo", "p")), "tag", "sales")
+    assert i["state"] == "pending" and i["word"] == "waiting to re-check access"
+    with _daemon("peterprofile"):
+        assert ob.drain_outbox(registry)["claimed"] == 0, "not re-read on the next drain"
+
+
+def test_f_r4_unreadable_access_at_the_press_queues_the_row_for_the_drain_to_re_check(client, registry, egeria,
+                                                                                      zoned):
+    zoned.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["allUsers"]}}
+    client.post("/api/curate/tags/repo/p", json={"tag": "sales"}, headers=as_user())
+    zoned.fail_element = ASSET
+    out = publish(registry)
+    assert out["findable"]["queued"] == 1 and not [f for f in out["findable"]["failed"]
+                                                    if f["word"].startswith("not permitted")]
+    (link,) = rows(registry, ce.TAG_LINK)
+    assert link["status"] == "pending" and link["last_error"].startswith("waiting to re-check access")

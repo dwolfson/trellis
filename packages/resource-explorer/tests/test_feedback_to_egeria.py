@@ -646,7 +646,8 @@ def test_r2_the_report_row_counts_its_own_runs_unsettled_rows(registry):
     with registry._conn() as conn:
         conn.execute("UPDATE egeria_outbox SET status='dead' WHERE run_id=?", (f"{run}::links",))
     c = rp.publish_state(registry, "p")["row"]["confirm"]
-    assert c["state"] == rp.DIFFERS and c["word"].endswith("Egeria shows 1"), "1 of 3 published landed"
+    # round 4: judged against what was QUEUED (one annotation row here), so its one landed row confirms
+    assert c["state"] == rp.CONFIRMED and c["published_count"] == 1
 
 
 def test_r3_rows_retried_and_done_after_the_read_back_confirm_not_egeria_shows_the_old_count(registry):
@@ -709,8 +710,73 @@ def test_r3_a_second_gated_press_while_one_runs_is_already_running(registry, ege
 
 def test_r3_the_repository_press_sends_doc_sources_once_when_the_publisher_already_did():
     src = inspect.getsource(rp.publish_report)
-    assert 'rest(doc_sources=not out.get("asset_guid"))' in src
+    assert 'rest(doc_sources=not out.get("doc_sources_sent"))' in src
     import resource_explorer.web.routes.databases as db
     import resource_explorer.web.routes.filesystems as fs
     for mod in (db, fs):
         assert "publish_local_doc_sources(" not in inspect.getsource(mod), mod.__name__
+
+
+# ── round 4 ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def _proof_with_run(registry, run, published=10):
+    registry.append_catalogue_commit_proof("p", proof=rp.P_REPORT, node_kind=rp.NODE_REPORT, element_guid="rep",
+                                           target_guid=ASSET, recorded_by="alice",
+                                           detail={"annotation_count": published, "annotations_in_egeria": 0,
+                                                   "publish_run_id": run})
+
+
+def test_r4_a_second_press_of_the_same_kept_survey_counts_each_annotation_once(registry):
+    """The run id repeats when one kept survey is published twice: the newest row per qualifiedName stands."""
+    run = "Annotation::p::2026-10-11T02:00:00"
+    _proof_with_run(registry, run)
+    first = [registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::{i}", {}, run_id=run)
+             for i in range(10)]
+    for i, rid in enumerate(first):
+        if i < 8:
+            registry.mark_outbox_done(rid, f"g{i}")
+        else:
+            registry.mark_outbox_failed(rid, "busy", max_attempts=1)      # dead in the first press
+    for i in range(10):                                                    # the second press: all land
+        registry.mark_outbox_done(registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::{i}", {},
+                                                                  run_id=run), f"h{i}")
+    c = rp.publish_state(registry, "p")["row"]["confirm"]
+    assert c["state"] == rp.CONFIRMED and c["egeria_count"] == 10, c
+
+
+def test_r4_confirmed_is_judged_against_what_was_queued_not_the_survey_size(registry):
+    run = "Annotation::p::2026-10-11T03:00:00"
+    _proof_with_run(registry, run, published=5)                            # the outbox capped the run at 3
+    for i in range(3):
+        registry.mark_outbox_done(registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::{i}", {},
+                                                                  run_id=run), f"g{i}")
+    c = rp.publish_state(registry, "p")["row"]["confirm"]
+    assert c["state"] == rp.CONFIRMED and c["published_count"] == 3
+
+
+def test_r4_a_refused_feedback_row_is_born_cancelled_and_no_retry_revives_it(registry, egeria, monkeypatch):
+    zones = install_zones(monkeypatch)
+    zones.elements[ASSET] = zoned_element(ASSET, zones=["sales-zone"], owners=["someone-else"])
+    zones.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
+    rid = rate(registry, "alice", 5, "great")
+    press(registry, "alice")
+    (row,) = registry.list_outbox_rows_for_kinds("repo", "p", (fe.RATING_KIND,))
+    assert row["status"] == "cancelled"
+    assert by_id(plan(registry, "alice")["ratings"], rid)["state"] == fe.NOT_PERMITTED
+    assert registry.retry_outbox_element(row["id"]) is False, "an admin retry cannot revive it"
+
+
+def test_r4_documentation_sources_are_not_sent_twice_when_the_report_failed_after_the_publisher_sent_them(
+        registry, monkeypatch):
+    from resource_explorer.surveyors import survey_snapshot
+    from resource_explorer.surveyors.survey_report import ClassificationAnnotation
+
+    registry.set_project_context("repo", "p", "personal")
+    survey_snapshot.record_step(registry, "p", "repo_language", "2026-10-11T00:00:00", [
+        ClassificationAnnotation(summary="a", analysis_step="repo_language", check_name="c", item_key="a")])
+    monkeypatch.setattr(rp, "publish_snapshot", lambda *a, **k: {"ok": False, "stage": "publish",
+                                                                 "error": "x", "doc_sources_sent": True})
+    seen = []
+    monkeypatch.setattr(sp, "send_with_publish", lambda *a, **k: seen.append(k.get("doc_sources")) or {})
+    rp.publish_report(registry, "p", "alice")
+    assert seen == [False]

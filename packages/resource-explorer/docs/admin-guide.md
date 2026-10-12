@@ -423,6 +423,12 @@ public/private choice is backlog. `resource_explorer/feedback_egeria.py` owns th
   "not yet confirmed · N sending". Once they are settled the rows decide: none dead and every annotation done is
   "confirmed"; dead rows read "Egeria shows N" (N = the annotations that landed). A proof with no run rows falls
   back to the count read at publish time.
+- **Counting a run (round 4):** a re-publish of the same kept survey reuses the run id, so the newest row per
+  annotation stands, and "confirmed" is judged against what was queued (the outbox may cap a run), not the survey
+  size. A tag or group row with no recorded requester follows the no-requester rule (open only with no zone in
+  use). An access re-check Egeria cannot answer keeps the row pending ("waiting to re-check access") and is not
+  tried again for five minutes; at press time it is queued, not refused. Refused feedback rows are born cancelled,
+  so no retry or revive brings them back.
 - **Refusals are decided before any row exists** (round 3): a refused tag or group change is recorded as a row
   born cancelled with its words, so no drain can send it; the drain also re-checks each tag and group row as its
   requester before sending it. One press per resource runs at a time, gated or not (409 otherwise).

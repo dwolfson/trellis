@@ -8321,7 +8321,8 @@ class ProjectRegistry:
             )
         return (cur.rowcount or 0) > 0
 
-    def mark_outbox_deferred(self, row_id: int, note: str, *, claimed_at: str | None = None) -> None:
+    def mark_outbox_deferred(self, row_id: int, note: str, *, claimed_at: str | None = None,
+                             delay_seconds: int = 0) -> None:
         """Hand one claimed row back to 'pending' without burning an attempt,
         recording WHY: its referent(s) — another annotation this row's
         `AnnotationExtension` link points at — have not been applied yet.
@@ -8340,9 +8341,17 @@ class ProjectRegistry:
         with self._conn() as conn:
             # Only the claim being handed back (Brief T round 3): a row the lapse rule killed as dead in between, or
             # one a later claimer re-took after the lease, is left exactly as it is. Dead stays terminal.
-            sql = ("UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
-                   "WHERE id=? AND status='running'")
-            params: list = [note[:2000], row_id]
+            # Brief F round 4: `delay_seconds` pushes the next attempt out (an access re-check Egeria could not
+            # answer is not retried on every drain); 0 keeps the row due at once, as before.
+            if delay_seconds:
+                due = (datetime.utcnow() + timedelta(seconds=int(delay_seconds))).isoformat()
+                sql = ("UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=?, next_attempt_at=? "
+                       "WHERE id=? AND status='running'")
+                params: list = [note[:2000], due, row_id]
+            else:
+                sql = ("UPDATE egeria_outbox SET status='pending', claimed_at='', last_error=? "
+                       "WHERE id=? AND status='running'")
+                params = [note[:2000], row_id]
             if claimed_at:
                 sql += " AND claimed_at=?"
                 params.append(claimed_at)

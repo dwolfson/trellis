@@ -149,14 +149,15 @@ def confirmation(row: dict, unsettled: int = 0, run: dict | None = None) -> dict
     sent = row.get("annotation_count")
     if pending:
         return {**out, "state": UNCONFIRMED, "word": waiting}
-    if int(run.get("rows") or 0) > 0 and sent is not None:
+    queued = int(run.get("rows") or 0)
+    if queued > 0:
+        # Round 4: judged against what was QUEUED (the outbox may cap a run), one row per annotation.
         done, dead = int(run.get("done") or 0), int(run.get("dead") or 0)
-        if dead:
-            return {**out, "state": DIFFERS, "egeria_count": done, "basis": "outbox",
+        if dead or done < queued:
+            return {**out, "state": DIFFERS, "egeria_count": done, "published_count": queued, "basis": "outbox",
                     "word": f"{published} · Egeria shows {done}"}
-        if done >= int(sent):
-            return {**out, "state": CONFIRMED, "egeria_count": done, "basis": "outbox",
-                    "word": f"{published} · confirmed"}
+        return {**out, "state": CONFIRMED, "egeria_count": done, "published_count": queued, "basis": "outbox",
+                "word": f"{published} · confirmed"}
     seen = row.get("annotations_in_egeria")
     if seen is None or sent is None:
         return {**out, "state": UNCONFIRMED, "word": waiting}
@@ -169,15 +170,29 @@ def confirmation(row: dict, unsettled: int = 0, run: dict | None = None) -> dict
 UNSETTLED = ("pending", "running", "failed")
 
 
+def _newest_per_key(rows: list[dict]) -> list[dict]:
+    """Round 4: the run id (`Annotation::<slug>::<surveyed_at>`) is the SAME when one kept survey is published
+    again, so a run's rows can be two presses' worth. One row per qualifiedName, the newest, is what stands."""
+    newest: dict[str, dict] = {}
+    for r in rows:
+        if r.get("status") in ("cancelled", "superseded"):
+            continue                       # retired on purpose: not expected in Egeria
+        key = r.get("qualified_name") or f"#{r.get('id')}"
+        if key not in newest or int(r.get("id") or 0) > int(newest[key].get("id") or 0):
+            newest[key] = r
+    return list(newest.values())
+
+
 def run_stats(registry, slug: str, run_id: str) -> dict | None:
-    """One publish run's outbox as it stands: {rows, done, dead} for its ANNOTATION rows and `unsettled` across
-    them and the `::links` companion. None with no run id; {"unsettled": 1} when the rows cannot be read
-    (unreadable is not settled, so nothing is confirmed from it)."""
+    """One publish run's outbox as it stands: {rows, done, dead} for its ANNOTATION rows (the newest row per
+    qualifiedName: `rows` is what was queued) and `unsettled` across them and the `::links` companion. None with
+    no run id; {"unsettled": 1} when the rows cannot be read (unreadable is not settled, nothing is confirmed)."""
     if not run_id:
         return None
     try:
-        ann = registry.list_outbox_elements(run_id=run_id, entity_slug=slug, limit=100000)
-        links = registry.list_outbox_elements(run_id=f"{run_id}::links", entity_slug=slug, limit=100000)
+        ann = _newest_per_key(registry.list_outbox_elements(run_id=run_id, entity_slug=slug, limit=100000))
+        links = _newest_per_key(registry.list_outbox_elements(run_id=f"{run_id}::links", entity_slug=slug,
+                                                              limit=100000))
     except Exception:  # noqa: BLE001
         return {"rows": 0, "done": 0, "dead": 0, "unsettled": 1}
     return {"rows": len(ann), "done": sum(1 for r in ann if r.get("status") == "done"),
@@ -340,7 +355,7 @@ def publish_report(registry, slug: str, author: str, *, without_project: bool = 
         out = publish_snapshot(registry, slug, author, context, snapshot)
         # The rest goes whenever the asset exists (even when the report itself failed this time). The publisher
         # already sent the documentation sources when it got as far as the asset (EgeriaPublisher.publish).
-        sent = rest(doc_sources=not out.get("asset_guid"))
+        sent = rest(doc_sources=not out.get("doc_sources_sent"))
         return {"ok": out["ok"], "stage": out.get("stage", ""), "report_guid": out.get("report_guid", ""),
                 "reused": out.get("reused", False), "sent": sent, **publish_state(registry, slug, viewer=author)}
     finally:
@@ -389,12 +404,15 @@ def publish_snapshot(registry, slug: str, author: str, context: dict, snapshot) 
         result.add(annotation)
     surveyed_at = snapshot.surveyed_at
     publisher = EgeriaPublisher(registry=registry)           # zones: the publisher's own rule only
+    # Brief F round 4: whether the publisher reached the asset and sent the documentation sources itself.
+    docs_sent = lambda: getattr(publisher, "doc_sources_attempted", False) is True  # noqa: E731
     try:
         report_guid = publisher.publish(result)
     except Exception as exc:
         _proof(registry, slug, P_READ_FAILED, recorded_by=author,
                detail={"error": str(exc), "stage": "publish", "surveyed_at": surveyed_at, "project": project})
-        return {"ok": False, "stage": "publish", "error": str(exc), "surveyed_at": surveyed_at}
+        return {"ok": False, "stage": "publish", "error": str(exc), "surveyed_at": surveyed_at,
+                "doc_sources_sent": docs_sent()}
 
     asset_guid = registry.get_egeria_asset_guid(slug) or ""
     reused = bool(getattr(publisher, "report_reused", False))
@@ -424,6 +442,7 @@ def publish_snapshot(registry, slug: str, author: str, context: dict, snapshot) 
                    detail={**common, "note": "sent · waiting for Egeria: the report is not in the asset's reports yet"})
     return {"ok": True, "stage": "", "report_guid": report_guid, "reused": reused, "surveyed_at": surveyed_at,
             "annotation_count": len(result.annotations), "asset_guid": asset_guid,
+            "doc_sources_sent": docs_sent(),
             "read_back": read is not None and match_found(read, report_guid)}
 
 

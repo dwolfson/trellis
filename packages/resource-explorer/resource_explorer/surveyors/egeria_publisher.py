@@ -216,6 +216,9 @@ class EgeriaPublisher:
         #: `published` from "queued" to True (registry.
         #: complete_publish_run_if_done).
         self.publish_run_id: str = ""
+        #: Brief F round 4: whether this publish reached the asset and sent the documentation sources itself, so the
+        #: page's press does not send them a second time (single_publish.send_with_publish(doc_sources=...)).
+        self.doc_sources_attempted: bool = False
         #: True when the SurveyReport create met a 409 on its name and the report Egeria already
         #: held was reused instead (parity slice G1, PI-001: never a second report). Reset per publish.
         self.report_reused = False
@@ -1079,6 +1082,7 @@ class EgeriaPublisher:
     def _publish_local_doc_sources(self, slug: str, asset_guid: str) -> None:
         if not (self._registry and asset_guid):
             return
+        self.doc_sources_attempted = True
         try:
             from resource_explorer.web.routes.doc_sources import publish_local_doc_sources
             publish_local_doc_sources("repo", slug, asset_guid, registry=self._registry)

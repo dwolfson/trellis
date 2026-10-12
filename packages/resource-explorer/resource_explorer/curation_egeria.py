@@ -180,6 +180,8 @@ class CurationItem:
             return f"{word} {self.published_at[5:10]}"
         if self.state in (FAILED, NOT_PERMITTED) and self.reason:
             return f"{word} · {self.reason}"
+        if self.state == PENDING and self.reason.startswith("waiting to re-check access"):
+            return self.reason.split(":", 1)[0]
         return word
 
     def as_dict(self) -> dict:
@@ -223,7 +225,7 @@ def _evaluate(kind: str, desired: bool, rows: list[dict]) -> dict | None:
         if status == "done":
             return {**out, "state": IN_EGERIA}
         if status in ("pending", "running"):
-            return {**out, "state": PENDING}
+            return {**out, "state": PENDING, "reason": _wait_reason(newest)}
         if status == "failed":
             return {**out, "state": RETRYING, "reason": newest.get("last_error") or ""}
         return {**out, "state": FAILED, "reason": newest.get("last_error") or "", "retry": True,
@@ -240,9 +242,17 @@ def _evaluate(kind: str, desired: bool, rows: list[dict]) -> dict | None:
     if status == "done":
         return {**out, "state": UNLINKED}
     if status in ("pending", "running"):
-        return {**out, "state": PENDING, "reason": "unlink"}
+        return {**out, "state": PENDING, "reason": _wait_reason(newest) or "unlink"}
     return {**out, "state": FAILED, "reason": newest.get("last_error") or "", "retry": True,
             "retry_action": "unlink"}
+
+
+def _wait_reason(row: dict) -> str:
+    """Round 4: a pending row deferred because access could not be re-checked says so (not "sending")."""
+    from resource_explorer.egeria_outbox import ACCESS_WAIT_WORDS
+
+    err = str(row.get("last_error") or "")
+    return err if row.get("status") == "pending" and err.startswith(ACCESS_WAIT_WORDS) else ""
 
 
 def _done_link_guid(rows: list[dict], link_kind: str) -> str:
@@ -466,8 +476,12 @@ def sync_curation(registry, entity_type: str, slug: str, *, by: str = "", asset_
         if ops not in decided:
             from resource_explorer.workflows.curate import curation_access
 
+            from resource_explorer.workflows.curate import BASIS_UNREADABLE
+
             d = curation_access(registry, entity_type, slug, "", operations=ops, element_guid=guid)
-            decided[ops] = "" if d.allowed else (d.reason or "refused")
+            # Round 4: access that cannot be READ is not a refusal: the row is queued normally and the drain
+            # re-checks it as its requester (deferring it unsent while Egeria cannot answer).
+            decided[ops] = "" if d.allowed or d.basis == BASIS_UNREADABLE else (d.reason or "refused")
         return decided[ops]
 
     for item in plan["items"]:

@@ -129,6 +129,18 @@ class OutboxNotReadyError(RuntimeError):
     before the annotation row in the same batch)."""
 
 
+class OutboxAccessUnreadable(OutboxNotReadyError):
+    """Brief F round 4: a tag or group row whose requester's access could not be read (Egeria unreachable). Not a
+    refusal and not a failure: the row waits unsent, and is not tried again until `DELAY_SECONDS` later, so each
+    drain does not re-read Egeria for it."""
+
+    DELAY_SECONDS = 300
+
+
+#: The words a deferred row carries while its access cannot be re-checked (the band shows them, not "sending").
+ACCESS_WAIT_WORDS = "waiting to re-check access"
+
+
 #: Egeria's signature for "this qualifiedName is already taken".
 #:
 #: Matched on the message rather than a status code because the client
@@ -717,28 +729,35 @@ def _curation_refusal(registry, row: dict) -> str:
     A refusal is decided before anything is sent (a destructive unlink included). A row with no requester (queued
     before rows carried one) is not re-checked here; Egeria checks whoever the drain runs as."""
     write = CURATION_WRITES.get(row.get("element_kind") or "")
-    by = _row_requester(row)
-    if not write or not by:
+    if not write:
         return ""
+    by = _row_requester(row)
     from resource_explorer.a2a_auth import CallerIdentity, current_caller
     from resource_explorer.curation_egeria import operations_for
-    from resource_explorer.workflows.curate import curation_access
+    from resource_explorer.workflows.curate import BASIS_UNREADABLE, curation_access, person_write_refusal
 
     try:
         guid = (json.loads(row.get("payload_json") or "{}") or {}).get("element_guid") or ""
     except (TypeError, ValueError):
         guid = ""
+    et, slug = row.get("entity_type") or "", row.get("entity_slug") or ""
+    if not by:
+        # Round 4: a row nobody is recorded for (Brief T rows before `by`) is judged by the no-requester rule, as a
+        # documentation-source row is: open only while no zone is in use, refused otherwise or when unreadable.
+        reset = current_caller.set(None)
+        try:
+            return person_write_refusal(registry, et, slug, write[1], element_guid=guid or None)
+        finally:
+            current_caller.reset(reset)
     reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run", role="user"))
     try:
-        d = curation_access(registry, row.get("entity_type") or "", row.get("entity_slug") or "", "",
-                            operations=operations_for(*write), element_guid=guid or None)
+        d = curation_access(registry, et, slug, "", operations=operations_for(*write), element_guid=guid or None)
     finally:
         current_caller.reset(reset)
-    from resource_explorer.workflows.curate import BASIS_UNREADABLE
-
     if not d.allowed and d.basis == BASIS_UNREADABLE:
-        # Egeria could not be read to decide: not a refusal. The row waits (pending, no attempt burned), unsent.
-        raise OutboxNotReadyError(f"waiting to re-check access: {d.reason}")
+        # Egeria could not be read to decide: not a refusal. The row waits (pending, no attempt burned), unsent,
+        # and is not tried again for a while (round 4).
+        raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {d.reason}")
     return "" if d.allowed else f"not permitted · {d.reason}"
 
 
@@ -1087,7 +1106,8 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # landed yet. Hand it back to 'pending' with no attempt burned —
             # see mark_outbox_deferred and OutboxNotReadyError's own
             # docstring for why this is not routed through mark_outbox_failed.
-            registry.mark_outbox_deferred(row["id"], str(exc), claimed_at=row.get("claimed_at"))
+            registry.mark_outbox_deferred(row["id"], str(exc), claimed_at=row.get("claimed_at"),
+                                          delay_seconds=getattr(exc, "DELAY_SECONDS", 0))
             summary["skipped"] += 1
             log.info("Outbox row %s (%s %s) deferred: %s",
                      row["id"], row["element_kind"], row["qualified_name"], exc)

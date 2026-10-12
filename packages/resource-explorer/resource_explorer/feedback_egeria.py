@@ -83,6 +83,8 @@ NOTE_OPERATIONS = ("CREATE",)
 OPERATIONS = {"rating": RATING_OPERATIONS, "note": NOTE_OPERATIONS}
 
 NOT_PERMITTED_PREFIX = "not permitted · "
+#: Round 4: the note a refused (never sent) feedback row is born cancelled with.
+REFUSED_NOTE = "cancelled: " + NOT_PERMITTED_PREFIX
 UNREACHED = "Egeria could not be reached; nothing was sent"
 NOT_AUTHOR = "feedback is written only by its author, in their own Publish"
 
@@ -166,6 +168,8 @@ def _failure(row: dict) -> tuple[str, str]:
     from resource_explorer.egeria_outbox import REFUSED_BY_SECURITY
 
     err = " ".join(str(row.get("last_error") or "").split())
+    if err.startswith(REFUSED_NOTE):
+        return NOT_PERMITTED, err[len(REFUSED_NOTE):]
     if err.startswith(NOT_PERMITTED_PREFIX):
         return NOT_PERMITTED, err[len(NOT_PERMITTED_PREFIX):]
     if err.startswith(REFUSED_BY_SECURITY):
@@ -204,7 +208,8 @@ def feedback_plan(registry, entity_type: str, slug: str, *, viewer: str = "",
     by_note: dict[str, list[dict]] = {}
     if guid:
         for r in registry.list_outbox_rows_for_kinds(entity_type, slug, KINDS):
-            if r["status"] in ("cancelled", "superseded"):
+            refused = r["status"] == "cancelled" and str(r.get("last_error") or "").startswith(REFUSED_NOTE)
+            if r["status"] in ("cancelled", "superseded") and not refused:
                 continue
             p = _payload(r)
             if (p.get("element_guid") or "") != guid:
@@ -347,8 +352,10 @@ def publish_my_feedback(registry, entity_type: str, slug: str, asset_guid: str, 
         if decisions[item.kind]:
             # Nothing is sent: the refusal is a row born dead with its words (round 3: never claimable in between),
             # so the band reads "not permitted" from a row, and the person's next Publish asks again (a new row).
+            # Round 4: born CANCELLED (as curation's refusals are), so no admin retry or dead-row revive can bring
+            # a refused rating or note back to life; the plan reads "not permitted" from the note.
             registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id,
-                                            retired=("dead", NOT_PERMITTED_PREFIX + decisions[item.kind]))
+                                            retired=("cancelled", REFUSED_NOTE + decisions[item.kind]))
             refused.append({"kind": item.kind, "id": item.id, "reason": decisions[item.kind]})
         else:
             queued.append(registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id))
