@@ -1934,7 +1934,7 @@ def test_link_status_unbound_is_could_not_tell_never_zero(client, made):
     body, by = _states(client, inv["slug"])
     assert body["bound"] is False
     assert by["whatever"]["state"] == "could_not_tell"
-    assert body["counts"] == {"linked": 0, "not_linked": 0, "could_not_tell": 1}
+    assert body["counts"] == {"linked": 0, "not_linked": 0, "could_not_tell": 1, "linkable": 0}
 
 
 def test_link_status_bound_without_a_collection_is_could_not_tell(client, made):
