@@ -355,6 +355,10 @@ def _enqueue(registry, entity_type: str, slug: str, item: CurationItem, action: 
     kind = item.kind
     element_kind = _LINK_OF[kind] if action == "link" else _DETACH_OF[kind]
     payload = {"entity_type": entity_type, "entity_slug": slug, "element_guid": guid, "by": by}
+    if by and _caller_is_curator(by):
+        # Round 5: the verified caller's Portal curator/admin role, so the drain re-check judges them as the press
+        # did. From the session's ContextVar only (never a request body), and only for the row's own requester.
+        payload.update({"portal_role": True})
     if kind == "tag":
         payload["tag"] = item.name
         payload["display_name"] = display.get("display_name") or item.name
@@ -368,6 +372,14 @@ def _enqueue(registry, entity_type: str, slug: str, item: CurationItem, action: 
             payload["folio_guid"] = item.egeria_guid
     return registry.enqueue_outbox_element(entity_type, slug, element_kind, item.key, payload,
                                            run_id=run_id_for(entity_type, slug), retired=retired)
+
+
+def _caller_is_curator(by: str) -> bool:
+    from resource_explorer.workflows.curate import CURATOR_ROLES, _caller_identity
+
+    who = _caller_identity()
+    return bool(who is not None and who.auth_source != "anonymous" and (who.user_id or "") == by
+                and (who.role or "").lower() in CURATOR_ROLES)
 
 
 def _group_display(registry, group_slug: str) -> dict:

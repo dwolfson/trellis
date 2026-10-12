@@ -646,8 +646,9 @@ def test_r2_the_report_row_counts_its_own_runs_unsettled_rows(registry):
     with registry._conn() as conn:
         conn.execute("UPDATE egeria_outbox SET status='dead' WHERE run_id=?", (f"{run}::links",))
     c = rp.publish_state(registry, "p")["row"]["confirm"]
-    # round 4: judged against what was QUEUED (one annotation row here), so its one landed row confirms
-    assert c["state"] == rp.CONFIRMED and c["published_count"] == 1
+    # round 5: the one queued annotation landed, and the survey had 3: the cap is said, both counts kept
+    assert c["state"] == rp.CONFIRMED and c["published_count"] == 3 and c["queued_count"] == 1
+    assert c["word"].endswith("· confirmed · 2 not sent (capped)")
 
 
 def test_r3_rows_retried_and_done_after_the_read_back_confirm_not_egeria_shows_the_old_count(registry):
@@ -751,7 +752,8 @@ def test_r4_confirmed_is_judged_against_what_was_queued_not_the_survey_size(regi
         registry.mark_outbox_done(registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::{i}", {},
                                                                   run_id=run), f"g{i}")
     c = rp.publish_state(registry, "p")["row"]["confirm"]
-    assert c["state"] == rp.CONFIRMED and c["published_count"] == 3
+    assert c["state"] == rp.CONFIRMED and c["published_count"] == 5 and c["queued_count"] == 3
+    assert c["word"].endswith("confirmed · 2 not sent (capped)"), "round 5: a capped run never reads plainly confirmed"
 
 
 def test_r4_a_refused_feedback_row_is_born_cancelled_and_no_retry_revives_it(registry, egeria, monkeypatch):
@@ -780,3 +782,35 @@ def test_r4_documentation_sources_are_not_sent_twice_when_the_report_failed_afte
     monkeypatch.setattr(sp, "send_with_publish", lambda *a, **k: seen.append(k.get("doc_sources")) or {})
     rp.publish_report(registry, "p", "alice")
     assert seen == [False]
+
+
+
+# ── round 5 ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_r5_a_lone_cancelled_annotation_is_not_sent_and_done_anywhere_is_done(registry):
+    run = "Annotation::p::2026-10-11T04:00:00"
+    _proof_with_run(registry, run, published=3)
+    a = registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::a", {}, run_id=run)
+    registry.mark_outbox_done(a, "ga")
+    registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::a", {}, run_id=run,
+                                    retired=("dead", "busy"))                # a later re-send of a died: still done
+    b = registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::b", {}, run_id=run)
+    registry.mark_outbox_done(b, "gb")
+    registry.enqueue_outbox_element("repo", "p", "annotation", f"{run}::c", {}, run_id=run,
+                                    retired=("cancelled", "cancelled: by an admin"))   # never sent
+    c = rp.publish_state(registry, "p")["row"]["confirm"]
+    assert c["state"] == rp.DIFFERS and c["egeria_count"] == 2 and c["queued_count"] == 3
+    assert c["word"].endswith("Egeria shows 2 · 1 not sent")
+
+
+def test_r5_unreadable_access_at_the_press_is_not_sent_not_not_permitted(registry, egeria, monkeypatch):
+    zones = install_zones(monkeypatch)
+    zones.fail_element = ASSET
+    rid = rate(registry, "alice", 5, "great")
+    press(registry, "alice")
+    item = by_id(plan(registry, "alice")["ratings"], rid)
+    assert item["state"] == fe.NOT_SENT and item["word"].startswith("not sent · couldn't check access")
+    assert item["action"] == "send" and egeria.ratings == {}
+    zones.fail_element = ""
+    press(registry, "alice")
+    assert by_id(plan(registry, "alice")["ratings"], rid)["state"] == fe.PUBLISHED

@@ -746,10 +746,21 @@ def _curation_refusal(registry, row: dict) -> str:
         # documentation-source row is: open only while no zone is in use, refused otherwise or when unreadable.
         reset = current_caller.set(None)
         try:
-            return person_write_refusal(registry, et, slug, write[1], element_guid=guid or None)
+            why = person_write_refusal(registry, et, slug, write[1], element_guid=guid or None)
         finally:
             current_caller.reset(reset)
-    reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run", role="user"))
+        if why.startswith("not permitted · could not check access"):
+            # Round 5: an outage is not a refusal here either: the row waits unsent, as a requester's row does.
+            raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {why[len('not permitted · '):]}")
+        return why
+    # Round 5: a Portal curator/admin seen at the press (from the verified caller, `curation_egeria._enqueue`) is
+    # judged as one here too, as the press judged them; never taken from anything a request sends.
+    try:
+        portal = bool((json.loads(row.get("payload_json") or "{}") or {}).get("portal_role"))
+    except (TypeError, ValueError):
+        portal = False
+    reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run",
+                                              role="curator" if portal else "user"))
     try:
         d = curation_access(registry, et, slug, "", operations=operations_for(*write), element_guid=guid or None)
     finally:

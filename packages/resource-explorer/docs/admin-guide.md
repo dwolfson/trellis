@@ -429,6 +429,11 @@ public/private choice is backlog. `resource_explorer/feedback_egeria.py` owns th
   use). An access re-check Egeria cannot answer keeps the row pending ("waiting to re-check access") and is not
   tried again for five minutes; at press time it is queued, not refused. Refused feedback rows are born cancelled,
   so no retry or revive brings them back.
+- **Round 5:** per annotation, done anywhere is done (the qualifiedName is the key); a lone cancelled row is "not
+  sent"; a capped run reads "confirmed · N not sent (capped)" with both counts. A no-requester tag/group row waits
+  during an outage like any other. A Portal curator/admin seen at the press is carried on the row (`portal_role`,
+  from the verified caller only) and the drain re-check honours it. Feedback whose access cannot be read at the
+  press reads "not sent · couldn't check access" and goes with the next Publish.
 - **Refusals are decided before any row exists** (round 3): a refused tag or group change is recorded as a row
   born cancelled with its words, so no drain can send it; the drain also re-checks each tag and group row as its
   requester before sending it. One press per resource runs at a time, gated or not (409 otherwise).

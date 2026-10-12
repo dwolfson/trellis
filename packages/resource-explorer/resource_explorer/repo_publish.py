@@ -151,13 +151,16 @@ def confirmation(row: dict, unsettled: int = 0, run: dict | None = None) -> dict
         return {**out, "state": UNCONFIRMED, "word": waiting}
     queued = int(run.get("rows") or 0)
     if queued > 0:
-        # Round 4: judged against what was QUEUED (the outbox may cap a run), one row per annotation.
-        done, dead = int(run.get("done") or 0), int(run.get("dead") or 0)
-        if dead or done < queued:
-            return {**out, "state": DIFFERS, "egeria_count": done, "published_count": queued, "basis": "outbox",
-                    "word": f"{published} · Egeria shows {done}"}
-        return {**out, "state": CONFIRMED, "egeria_count": done, "published_count": queued, "basis": "outbox",
-                "word": f"{published} · confirmed"}
+        # Round 4: judged against what was QUEUED, one per annotation. Round 5: `published_count` stays the
+        # survey's count; when the outbox capped the run (_MAX_ANNOTATIONS_PER_RUN) both counts are said.
+        done, dead, unsent = int(run.get("done") or 0), int(run.get("dead") or 0), int(run.get("not_sent") or 0)
+        capped = max(int(sent) - queued, 0) if sent is not None else 0
+        counts = {"egeria_count": done, "queued_count": queued, "capped": capped, "basis": "outbox"}
+        if dead or unsent or done < queued:
+            return {**out, **counts, "state": DIFFERS, "word": f"{published} · Egeria shows {done}"
+                    + (f" · {unsent} not sent" if unsent else "")}
+        return {**out, **counts, "state": CONFIRMED,
+                "word": f"{published} · confirmed" + (f" · {capped} not sent (capped)" if capped else "")}
     seen = row.get("annotations_in_egeria")
     if seen is None or sent is None:
         return {**out, "state": UNCONFIRMED, "word": waiting}
@@ -170,34 +173,49 @@ def confirmation(row: dict, unsettled: int = 0, run: dict | None = None) -> dict
 UNSETTLED = ("pending", "running", "failed")
 
 
-def _newest_per_key(rows: list[dict]) -> list[dict]:
-    """Round 4: the run id (`Annotation::<slug>::<surveyed_at>`) is the SAME when one kept survey is published
-    again, so a run's rows can be two presses' worth. One row per qualifiedName, the newest, is what stands."""
-    newest: dict[str, dict] = {}
+def _per_annotation(rows: list[dict]) -> dict:
+    """Round 4/5: one verdict per annotation (qualifiedName, the idempotency key). The run id
+    (`Annotation::<slug>::<surveyed_at>`) is the SAME when one kept survey is published again, so a run's rows can be
+    several presses' worth. Per qualifiedName: DONE if any row is done; else its newest row that was not retired
+    decides (unsettled while pending/sending/backing off, dead when dead); a key whose only row was retired
+    (cancelled/superseded, never sent) is NOT SENT; retired rows beside other rows of the same key are ignored."""
+    by_key: dict[str, list[dict]] = {}
     for r in rows:
-        if r.get("status") in ("cancelled", "superseded"):
-            continue                       # retired on purpose: not expected in Egeria
-        key = r.get("qualified_name") or f"#{r.get('id')}"
-        if key not in newest or int(r.get("id") or 0) > int(newest[key].get("id") or 0):
-            newest[key] = r
-    return list(newest.values())
+        by_key.setdefault(r.get("qualified_name") or f"#{r.get('id')}", []).append(r)
+    out = {"rows": 0, "done": 0, "dead": 0, "unsettled": 0, "not_sent": 0}
+    for key_rows in by_key.values():
+        if any(r.get("status") == "done" for r in key_rows):
+            out["rows"] += 1
+            out["done"] += 1
+            continue
+        live = [r for r in key_rows if r.get("status") not in ("cancelled", "superseded")]
+        if not live:
+            if len(key_rows) == 1:
+                out["rows"] += 1
+                out["not_sent"] += 1
+            continue
+        newest = max(live, key=lambda r: int(r.get("id") or 0))
+        out["rows"] += 1
+        if newest.get("status") in UNSETTLED:
+            out["unsettled"] += 1
+        elif newest.get("status") == "dead":
+            out["dead"] += 1
+    return out
 
 
 def run_stats(registry, slug: str, run_id: str) -> dict | None:
-    """One publish run's outbox as it stands: {rows, done, dead} for its ANNOTATION rows (the newest row per
-    qualifiedName: `rows` is what was queued) and `unsettled` across them and the `::links` companion. None with
+    """One publish run's outbox as it stands, one verdict per annotation (`_per_annotation`): {rows (what was
+    queued), done, dead, not_sent} and `unsettled` across the annotations and the `::links` companion. None with
     no run id; {"unsettled": 1} when the rows cannot be read (unreadable is not settled, nothing is confirmed)."""
     if not run_id:
         return None
     try:
-        ann = _newest_per_key(registry.list_outbox_elements(run_id=run_id, entity_slug=slug, limit=100000))
-        links = _newest_per_key(registry.list_outbox_elements(run_id=f"{run_id}::links", entity_slug=slug,
+        ann = _per_annotation(registry.list_outbox_elements(run_id=run_id, entity_slug=slug, limit=100000))
+        links = _per_annotation(registry.list_outbox_elements(run_id=f"{run_id}::links", entity_slug=slug,
                                                               limit=100000))
     except Exception:  # noqa: BLE001
-        return {"rows": 0, "done": 0, "dead": 0, "unsettled": 1}
-    return {"rows": len(ann), "done": sum(1 for r in ann if r.get("status") == "done"),
-            "dead": sum(1 for r in ann if r.get("status") == "dead"),
-            "unsettled": sum(1 for r in ann + links if r.get("status") in UNSETTLED)}
+        return {"rows": 0, "done": 0, "dead": 0, "not_sent": 0, "unsettled": 1}
+    return {**ann, "unsettled": ann["unsettled"] + links["unsettled"]}
 
 
 def unsettled_rows(registry, slug: str, run_id: str) -> int:

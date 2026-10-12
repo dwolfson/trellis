@@ -979,3 +979,46 @@ def test_f_r4_unreadable_access_at_the_press_queues_the_row_for_the_drain_to_re_
                                                     if f["word"].startswith("not permitted")]
     (link,) = rows(registry, ce.TAG_LINK)
     assert link["status"] == "pending" and link["last_error"].startswith("waiting to re-check access")
+
+
+# ══ Brief F round 5 ═════════════════════════════════════════════════════════════════════════════════════════
+
+def test_f_r5_a_no_requester_row_waits_unsent_during_an_outage(registry, egeria, zoned):
+    rid = _queued_link(registry, "")
+    zoned.fail_element = ASSET
+    with _daemon(None):
+        ob.drain_outbox(registry)
+    row = _row(registry, rid)
+    assert row["status"] == "pending" and row["last_error"].startswith("waiting to re-check access")
+    assert "add_tag_to_element" not in egeria.names()
+
+
+def test_f_r5_a_portal_curators_row_is_re_checked_as_a_curator_not_a_plain_user(registry, egeria, zoned):
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    registry.add_resource_tag("repo", "p", "sales", author="carol")
+    reset = current_caller.set(CallerIdentity(user_id="carol", egeria_token="t", auth_source="app-jwt",
+                                              role="curator"))
+    try:
+        out = ce.sync_curation(registry, "repo", "p", by="carol", check_access=False, per_item_access=True,
+                               drain=False)
+    finally:
+        current_caller.reset(reset)
+    (rid,) = out["queued"]
+    assert json.loads(_row(registry, rid)["payload_json"])["portal_role"] is True
+    with _daemon("carol"):
+        ob.drain_outbox(registry)
+    assert _row(registry, rid)["status"] == "done", "the zone refuses a plain user; the curator role carries"
+
+
+def test_f_r5_a_plain_users_row_never_carries_the_curator_role(registry, egeria):
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    registry.add_resource_tag("repo", "p", "sales", author="dan")
+    reset = current_caller.set(CallerIdentity(user_id="dan", egeria_token="t", auth_source="app-jwt", role="user"))
+    try:
+        out = ce.sync_curation(registry, "repo", "p", by="dan", check_access=False, drain=False)
+    finally:
+        current_caller.reset(reset)
+    (rid,) = out["queued"]
+    assert "portal_role" not in json.loads(_row(registry, rid)["payload_json"])

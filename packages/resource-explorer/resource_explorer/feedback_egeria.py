@@ -85,6 +85,9 @@ OPERATIONS = {"rating": RATING_OPERATIONS, "note": NOTE_OPERATIONS}
 NOT_PERMITTED_PREFIX = "not permitted · "
 #: Round 4: the note a refused (never sent) feedback row is born cancelled with.
 REFUSED_NOTE = "cancelled: " + NOT_PERMITTED_PREFIX
+#: Round 5: access could not be READ at the press: not a refusal. Born cancelled (never claimable), read as
+#: "not sent · couldn't check access", and re-sent by the person's next Publish.
+UNREAD_NOTE = "cancelled: not sent · couldn't check access"
 UNREACHED = "Egeria could not be reached; nothing was sent"
 NOT_AUTHOR = "feedback is written only by its author, in their own Publish"
 
@@ -170,6 +173,8 @@ def _failure(row: dict) -> tuple[str, str]:
     err = " ".join(str(row.get("last_error") or "").split())
     if err.startswith(REFUSED_NOTE):
         return NOT_PERMITTED, err[len(REFUSED_NOTE):]
+    if err.startswith(UNREAD_NOTE):
+        return NOT_SENT, err[len("cancelled: not sent · "):]
     if err.startswith(NOT_PERMITTED_PREFIX):
         return NOT_PERMITTED, err[len(NOT_PERMITTED_PREFIX):]
     if err.startswith(REFUSED_BY_SECURITY):
@@ -208,7 +213,8 @@ def feedback_plan(registry, entity_type: str, slug: str, *, viewer: str = "",
     by_note: dict[str, list[dict]] = {}
     if guid:
         for r in registry.list_outbox_rows_for_kinds(entity_type, slug, KINDS):
-            refused = r["status"] == "cancelled" and str(r.get("last_error") or "").startswith(REFUSED_NOTE)
+            refused = r["status"] == "cancelled" and str(r.get("last_error") or "").startswith((REFUSED_NOTE,
+                                                                                                UNREAD_NOTE))
             if r["status"] in ("cancelled", "superseded") and not refused:
                 continue
             p = _payload(r)
@@ -345,9 +351,13 @@ def publish_my_feedback(registry, entity_type: str, slug: str, asset_guid: str, 
     refused: list[dict] = []
     for item in items:
         if item.kind not in decisions:
+            from resource_explorer.workflows.curate import BASIS_UNREADABLE
+
             d = curation_access(registry, entity_type, slug, "", operations=OPERATIONS[item.kind],
                                 element_guid="", anchor_guid=guid, reader=reader)
-            decisions[item.kind] = "" if d.allowed else (d.reason or "refused")
+            decisions[item.kind] = ("" if d.allowed
+                                    else f"{UNREAD_NOTE} ({d.reason})" if d.basis == BASIS_UNREADABLE
+                                    else REFUSED_NOTE + (d.reason or "refused"))
         kind, key, payload = _payload_for(registry, entity_type, slug, item, guid, presser, feedback, entries)
         if decisions[item.kind]:
             # Nothing is sent: the refusal is a row born dead with its words (round 3: never claimable in between),
@@ -355,8 +365,9 @@ def publish_my_feedback(registry, entity_type: str, slug: str, asset_guid: str, 
             # Round 4: born CANCELLED (as curation's refusals are), so no admin retry or dead-row revive can bring
             # a refused rating or note back to life; the plan reads "not permitted" from the note.
             registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id,
-                                            retired=("cancelled", REFUSED_NOTE + decisions[item.kind]))
-            refused.append({"kind": item.kind, "id": item.id, "reason": decisions[item.kind]})
+                                            retired=("cancelled", decisions[item.kind]))
+            refused.append({"kind": item.kind, "id": item.id,
+                            "reason": decisions[item.kind][len("cancelled: "):]})
         else:
             queued.append(registry.enqueue_outbox_element(entity_type, slug, kind, key, payload, run_id=run_id))
     summary: dict = {}
