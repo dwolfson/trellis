@@ -44,9 +44,9 @@ home, search ranked by use, one page per resource, browse.
 
 | Flavour | Meaning | How the app recognises it | Badge and next action |
 |---|---|---|---|
-| (a) Known | An asset Egeria knows about, curated or not | Any asset without (b) or (c) below | "Known" · next: ask about it (link to the owner, comments, RFA where the Portal has it) |
+| (a) Known | An asset Egeria knows about, curated or not | Any asset without (b) or (c) below | "Known" · next: ask about it (the owner, comments, a Data Sharing Request to the party that holds it) |
 | (b) Data product | Curated and prepared to be subscribed to | Membership of, or being, a digital product: Egeria's `DigitalProduct` (model 0710) or its product collection, with a subscription available | "Product" · next: subscribe (the product's subscription path) |
-| (c) Hub asset | Added to a data hub as a reusable, actively managed asset | Membership of the hub's collection; the exact type or classification to be confirmed with the Egeria lead before build | "Hub" · next: use now (connection details the hub exposes) |
+| (c) Hub asset | Added to a data sharing hub as authoritative, actively maintained data available for sharing | `CollectionMembership` in a collection of type `DataSharingHub` (model 0705, a subtype of Collection; [concept page](https://egeria-project.org/concepts/data-sharing-hub)) | "Hub" · next: use now, under the hub's access conditions, or raise a Data Sharing Request (Egeria's to-do type) where access is not yet granted |
 
 Precedence when more than one applies: (c), then (b), then (a); the badge
 shows the highest and the page lists the others. The recognition rules
@@ -157,8 +157,10 @@ The owner walks these on a Portal build against the dev platform:
 
 ## 9. Open items before build
 
-- [ ] The type or classification that marks a hub asset (c), from the
-      Egeria lead.
+- [x] The type that marks a hub asset (c): `DataSharingHub` (0705), a
+      Collection subtype; membership by `CollectionMembership` (owner,
+      2026-10-12). A hub also carries a data dictionary of its members'
+      fields, which the Resource page can show when present.
 - [ ] Where the reinstated usage measure lives and its shape, so Home and
       Search can read it; until then, the fallbacks above.
 - [ ] Whether the Portal's existing resource view can become the shared
