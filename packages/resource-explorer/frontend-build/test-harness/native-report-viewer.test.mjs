@@ -91,7 +91,7 @@ test('a stored 0 is "–" where Egeria stores 0 for "not measured", and a real 0
   assert.deepEqual(cells('table'), ['Table', '–', '–', '0', '0', '0']);
   assert.deepEqual(cells('column'), ['–', '–', '–', '–', '0'], 'distinct values keeps its stored 0');
   assert.deepEqual(cells('schema'), ['0', '–', '–', '–', '–'], 'tables keeps its 0; absent and unmeasured are dashes');
-  assert.match(root.innerHTML, /Egeria stored 0 here; it did not measure this/);
+  assert.match(root.innerHTML, /Egeria stored 0 here: not visible to the survey's user/);
 });
 
 test('the row-counter headers say they are cumulative since the statistics reset', () => {
@@ -101,4 +101,20 @@ test('the row-counter headers say they are cumulative since the statistics reset
   assert.ok(th.every((t) => /cumulative since the server's statistics reset, not this survey/.test(t.getAttribute('title'))));
   const size = [...root.querySelectorAll('[data-report-kind="table"] th')].find((t) => t.textContent === 'Size');
   assert.equal(size.getAttribute('title'), null);
+});
+
+test('coco_pharma shape: one visible table, the rest owned by another user read 0, views read "view"', () => {
+  const t = (n, o) => ann(TABLE, 's', { qualifiedTableName: `db.s.${n}`, tableType: o.type || 'Table', tableOwner: o.owner,
+    tableSize: o.size ?? 0, columnCount: o.cols ?? 0, numberOfRowsInserted: 0, isPopulated: true }, `db.s.${n}`);
+  const rep = { annotations: [t('seen', { owner: 'egeria_user', size: 147456, cols: 11 }), t('a', { owner: 'egeria_admin' }),
+    t('b', { owner: 'egeria_admin' }), t('v', { owner: 'egeria_admin', type: 'View' })] };
+  const root = document.createElement('div'); root.innerHTML = m.reportViewerHtml(rep);
+  assert.match(text(root.querySelector('[data-report-unseen]').innerHTML), /2 of 3 tables not visible to the survey's user/);
+  const rows = Object.fromEntries([...root.querySelectorAll('[data-report-row]')].map((r) => [r.querySelector('td').textContent.trim(), r]));
+  const tds = (n) => [...rows['db.s.' + n].querySelectorAll('td')].slice(1);
+  assert.equal(tds('seen')[1].textContent.trim(), '144 KB');
+  assert.equal(tds('a')[1].textContent.trim(), '–');
+  assert.equal(tds('a')[1].querySelector('span').getAttribute('title'), "Egeria stored 0 here: not visible to the survey's user (owner egeria_admin)");
+  assert.equal(tds('v')[1].textContent.trim(), 'view');
+  assert.equal(tds('a')[3].textContent.trim(), '0', 'a row counter keeps its real 0');
 });

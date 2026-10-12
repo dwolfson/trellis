@@ -93,9 +93,19 @@ function genericSpec(anns) {
 
 /** Per field: flag 'z' = Egeria stores 0 for a figure it did not measure (a table with columns reads columnCount 0),
  *  so a stored 0 there is "–" with the reason on hover. Counters ('c') keep a real 0. */
-function cell(v, fmt, flag) {
+const isView = (p) => /view/i.test(String(p.tableType || ''));
+/** A table annotation whose size AND column count are both 0, on a real table: not visible to the survey's user. */
+const unseen = (a) => { const p = propsOf(a); return kindOf(a) === 'table' && !isView(p)
+  && (p.tableSize === 0 || p.tableSize === '0') && (p.columnCount === 0 || p.columnCount === '0'); };
+
+function cell(v, fmt, flag, p = {}) {
   if (flag === 'z' && (v === 0 || v === '0')) {
-    return '<span class="text-ink-muted" title="Egeria stored 0 here; it did not measure this">–</span>';
+    // A view has no size or column list to measure: its 0 is a plain fact, shown as "view".
+    if (isView(p)) return '<span class="text-ink-muted" title="a view: Egeria stores no size or column count for it">view</span>';
+    // Otherwise the 0 is what Egeria's survey user could SEE: PostgreSQL hides the columns and size of a
+    // relation it has no privileges on. So it is a dash, with the owner (the annotation's own) on hover.
+    const owner = p.tableOwner ? ` (owner ${p.tableOwner})` : '';
+    return `<span class="text-ink-muted" title="${esc(`Egeria stored 0 here: not visible to the survey's user${owner}`)}">–</span>`;
   }
   if (v === undefined || v === null || v === '') return '<span class="text-ink-muted" title="the annotation carries no value">–</span>';
   if (fmt === 'bytes' && typeof v === 'number') return esc(fmtBytes(v));
@@ -149,7 +159,7 @@ function rowHtml(a, cols, prefix) {
   const p = propsOf(a);
   return `<tr data-report-row><td class="pr-s3 font-mono text-ink" title="${esc(full)}">${
     name ? esc(name) : '<span class="text-ink-muted font-sans" title="the stored annotation carries no element name">no name stored</span>'}</td>${
-    cols.map(([, key, fmt, flag]) => `<td class="pr-s3 tnum text-right text-ink">${cell(p[key], fmt, flag)}</td>`).join('')}</tr>`;
+    cols.map(([, key, fmt, flag]) => `<td class="pr-s3 tnum text-right text-ink">${cell(p[key], fmt, flag, p)}</td>`).join('')}</tr>`;
 }
 
 function groupRowsHtml(g, cols, prefix, count) {
@@ -158,6 +168,15 @@ function groupRowsHtml(g, cols, prefix, count) {
 }
 
 /** One group: collapsed by default; the generic type description is the summary's hover title, once. */
+/** The honest rollup on the table group: how many real tables the survey's user could not see into. */
+function rollup(g) {
+  if (g.kind !== 'table') return '';
+  const real = g.items.filter((a) => !isView(propsOf(a))).length;
+  const n = g.items.filter(unseen).length;
+  return n ? `<div class="mt-[2px] text-provenance text-state-warn" data-report-unseen><span class="font-glyph" aria-hidden="true">◐</span> ${
+    fmtN(n)} of ${fmtN(real)} tables not visible to the survey's user</div>` : '';
+}
+
 function groupHtml(g, prefix, cap) {
   const cols = SPECS[g.kind] || genericSpec(g.items);
   const unnamed = g.items.filter((a) => !nameOf(a)).length;
@@ -165,6 +184,7 @@ function groupHtml(g, prefix, cap) {
   return `<details class="mt-s2 border-b border-rule pb-s2" data-report-group="${esc(g.type)}" data-report-kind="${g.kind}">
     <summary class="cursor-pointer text-answer text-ink" title="${esc(g.description)}">${esc(g.type)}
       <span class="tnum text-ink-muted">· ${fmtN(g.items.length)}</span></summary>
+    ${rollup(g)}
     ${unnamed ? `<div class="mt-[2px] text-provenance text-state-warn" data-report-unnamed>${
       fmtN(unnamed)} of ${fmtN(g.items.length)} stored annotations carry no element name.</div>` : ''}
     <table class="mt-s2 text-caveat">
