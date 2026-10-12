@@ -13,11 +13,16 @@ dependencies = [
 [project.optional-dependencies]
 postgres = ["psycopg2-binary"]
 dotenv = ["python-dotenv"]
+# curation_coverage counts against RE's own node set (catalogue_scope.resolve_node_set), so it needs RE.
+re = ["resource-explorer"]
 dev = ["pytest>=8.3.0"]
 
 # Installation is registration: every manifest the library ships is an entry point.
 [project.entry-points."trellis.analytics"]
 curation_coverage = "trellis_analytics.manifests:CURATION_COVERAGE"
+
+[tool.uv.sources]
+resource-explorer = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

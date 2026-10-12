@@ -21,37 +21,76 @@ def entry_point_dist(tmp_path, monkeypatch):
     return tmp_path
 
 
-DDL = """
-CREATE TABLE database_tables (id INTEGER PRIMARY KEY, database_slug TEXT, surveyed_at TEXT, schema_name TEXT, table_name TEXT);
-CREATE TABLE catalogue_commit_proofs (id INTEGER PRIMARY KEY, database_slug TEXT, node_kind TEXT, schema_name TEXT,
-  table_name TEXT, proof TEXT, element_guid TEXT, read_at TEXT, detail_json TEXT);
-CREATE TABLE catalogue_scope_events (id INTEGER PRIMARY KEY, database_slug TEXT, node_kind TEXT, schema_name TEXT,
-  table_name TEXT, choice TEXT, action TEXT, source TEXT, proposal_rule TEXT, changed_at TEXT);
-CREATE TABLE resource_scope_events (id INTEGER PRIMARY KEY, resource_type TEXT, resource_slug TEXT, locator TEXT,
-  kind TEXT, choice TEXT, action TEXT, source TEXT, proposal_rule TEXT, changed_at TEXT);
-CREATE TABLE egeria_outbox (id INTEGER PRIMARY KEY, entity_type TEXT, entity_slug TEXT, status TEXT);
-"""
+@pytest.fixture
+def make_registry(tmp_path):
+    """A real ProjectRegistry over a scratch SQLite file (never the shared registry: the constructor migrates).
+    Returns (registry, url). Skips when Resource Explorer is not installed."""
+    pytest.importorskip("resource_explorer")
+    from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+
+    def build(slug="demo", name="ods"):
+        db = str(tmp_path / f"{name}.sqlite")
+        reg = ProjectRegistry(db_path=db)
+        assert reg.database_url == f"sqlite:///{db}" and str(tmp_path) in reg.database_url
+        reg.register_database(DatabaseEntity(
+            slug=slug, display_name=slug, db_type="postgresql", host="localhost", port=5442,
+            database_name=slug, egeria_asset_guid="abcdef12-0000-0000-0000-000000000000"))
+        return reg, reg.database_url
+    return build
+
+
+def write_local_survey(reg, slug, schemas, at="2026-10-01T00:00:00Z", tables=("t",)):
+    """The local survey rows (database_tables), one table per name in `tables` for each schema."""
+    reg.write_detail_rows("database_tables", slug, at, rows=[
+        {"schema_name": s, "table_name": t, "table_type": "BASE TABLE", "row_count": 10, "column_count": 1}
+        for s in schemas for t in tables])
+
+
+def write_native_survey(reg, slug, schemas, tables_per=2, at="2026-10-04T06:00:00", guid="rep-1", extra=()):
+    """A stored, complete Egeria native survey (step_runs + native_survey_annotations) naming `schemas`."""
+    import json
+    proc = f"survey-postgres-database:{slug}"
+    def ann(n, kind, props):
+        return {"guid": f"a-{n}", "annotation_type": kind, "summary": f"{kind} {n}", "analysis_step": "x",
+                "explanation": "", "confidence": 100, "detail": {"json_properties": json.dumps(props)}}
+    anns, n = [ann(0, "Capture Database Measurements", {})], 0
+    for sname in schemas:
+        anns.append(ann(n := n + 1, "Capture Database Schema Measurements",
+                        {"schemaName": sname, "qualifiedSchemaName": f"{slug}.{sname}", "tableCount": str(tables_per)}))
+        for j in range(tables_per):
+            anns.append(ann(n := n + 1, "Capture Database Table Measurements",
+                            {"tableName": f"t{j}", "qualifiedTableName": f"{slug}.{sname}.t{j}", "tableSize": "8192",
+                             "tableType": "BASE TABLE"}))
+    anns += list(extra)
+    reg.record_native_survey_submission("database", slug, proc, at, engine_action_guid="ea-1")
+    reg.record_native_survey_report("ea-1", entity_type="database", slug=slug, process_qualified_name=proc,
+                                    report_guid=guid, report_at=at, read_at=at, annotations=anns)
+
+
+def add_curation_rows(url, slug, proofs=(), events=(), outbox=()):
+    """Curation rows in the real tables. proofs: (node_kind, schema, proof, read_at, detail_json);
+    events: (schema, choice, source); outbox: statuses."""
+    c = sqlite3.connect(url.removeprefix("sqlite:///"))
+    for p in proofs:
+        c.execute("INSERT INTO catalogue_commit_proofs (database_slug,node_kind,schema_name,table_name,proof,element_guid,read_at,detail_json)"
+                  " VALUES (?,?,?,?,?,?,?,?)", (slug, p[0], p[1], "", p[2], "g", p[3], p[4]))
+    for e in events:
+        c.execute("INSERT INTO catalogue_scope_events (database_slug,node_kind,schema_name,table_name,choice,action,source,proposal_rule,author,changed_at)"
+                  " VALUES (?,?,?,?,?,?,?,?,?,?)", (slug, "schema", e[0], "", e[1], "set", e[2], "", "tester", "2026-10-02T00:00:00Z"))
+    for st in outbox:
+        c.execute("INSERT INTO egeria_outbox (entity_type, entity_slug, element_kind, qualified_name, payload_json, status, created_at)"
+                  " VALUES ('database',?,'x','q','{}',?,'2026-10-02T00:00:00Z')", (slug, st))
+    c.commit()
+    c.close()
 
 
 @pytest.fixture
-def make_ods(tmp_path):
-    """Build a scratch SQLite registry (never the real one) and return its path."""
+def make_ods(make_registry):
+    """A scratch registry holding the given local survey and curation rows; returns its url."""
     def build(slug="demo", schemas=(), proofs=(), events=(), outbox=()):
-        path = tmp_path / "ods.sqlite"
-        c = sqlite3.connect(path)
-        c.executescript(DDL)
-        for s in schemas:
-            c.execute("INSERT INTO database_tables (database_slug, surveyed_at, schema_name, table_name) VALUES (?,?,?,?)",
-                      (slug, "2026-10-01T00:00:00Z", s, "t"))
-        for p in proofs:   # (node_kind, schema, proof, read_at, detail_json)
-            c.execute("INSERT INTO catalogue_commit_proofs (database_slug,node_kind,schema_name,table_name,proof,element_guid,read_at,detail_json)"
-                      " VALUES (?,?,?,?,?,?,?,?)", (slug, p[0], p[1], "", p[2], "g", p[3], p[4]))
-        for e in events:   # (schema, choice, source)
-            c.execute("INSERT INTO catalogue_scope_events (database_slug,node_kind,schema_name,table_name,choice,action,source,proposal_rule,changed_at)"
-                      " VALUES (?,?,?,?,?,?,?,?,?)", (slug, "schema", e[0], "", e[1], "set", e[2], "", "2026-10-02T00:00:00Z"))
-        for st in outbox:
-            c.execute("INSERT INTO egeria_outbox (entity_type, entity_slug, status) VALUES ('database',?,?)", (slug, st))
-        c.commit()
-        c.close()
-        return f"sqlite:///{path}"
+        reg, url = make_registry(slug)
+        if schemas:
+            write_local_survey(reg, slug, schemas)
+        add_curation_rows(url, slug, proofs, events, outbox)
+        return url
     return build

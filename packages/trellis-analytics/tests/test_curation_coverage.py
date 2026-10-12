@@ -98,3 +98,101 @@ def test_mixed_timestamp_shapes_order_correctly_around_a_reset(make_ods):
                            ("database", "", "egeria_reset", "2026-10-08T22:07:59", "{}")])
     r = curation_coverage(OdsReader(url), "database", "demo")
     assert r.count("published", "schemas") == 0
+
+
+# ── one source for the schema list: the universe is Curate's node set ──
+
+def _curate_schemas(url, slug="demo"):
+    """What Curate shows: the non-system schemas of resolve_node_set over a REAL registry on the same file."""
+    from resource_explorer.catalogue_scope import resolve_node_set
+    from resource_explorer.registry import ProjectRegistry
+    node_set = resolve_node_set(ProjectRegistry(db_path=url.removeprefix("sqlite:///")), slug)
+    return sorted(s["schema"] for s in node_set["schemas"] if s.get("schema") and s.get("classification") != "system"), node_set
+
+
+def test_universe_is_curates_node_set_when_a_native_survey_and_a_local_tree_disagree(make_registry):
+    from conftest import add_curation_rows, write_local_survey, write_native_survey
+    reg, url = make_registry("demo")
+    # local (older): 3 schemas + a system one; native (newer, fuller): 5 schemas, one only it knows
+    write_local_survey(reg, "demo", ["loc_a", "loc_b", "shared", "information_schema"], at="2026-10-01T00:00:00Z")
+    write_native_survey(reg, "demo", ["shared", "nat_a", "nat_b", "nat_c", "nat_d"], tables_per=3, at="2026-10-04T06:00:00")
+    add_curation_rows(url, "demo", proofs=[("schema", "shared", "elements_read_back", "2026-10-05T10:00:00Z", els("t0"))],
+                      events=[("nat_a", "catalogue", "person")])
+    curate, node_set = _curate_schemas(url)
+    old_universe = {"loc_a", "loc_b", "shared"}          # what the routine used to count: the local survey alone
+    assert set(curate) != old_universe and "nat_a" in curate and node_set["chosen"]["kind"] == "egeria"
+    r = curation_coverage(OdsReader(url), "database", "demo")
+    assert r.envelope.result_state is ResultState.MEASURED
+    assert r.known == curate and r.known_schemas == len(curate)
+    assert r.counted_against["chosen"]["kind"] == "egeria" and r.counted_against["disagree"] is True
+    assert r.count("published", "schemas") == 1 and r.count("not_yet", "chosen") == 1
+    assert "information_schema" not in r.known
+    # every Curate schema lands in exactly one group
+    ny = sum(l.count for l in r.group("not_yet").lines)
+    assert r.count("published", "schemas") + ny + r.count("blocked", "blocked") == len(curate)
+
+
+def test_universe_is_curates_node_set_when_only_a_local_tree_exists(make_registry):
+    from conftest import write_local_survey
+    reg, url = make_registry("demo")
+    write_local_survey(reg, "demo", ["a", "b", "pg_catalog"])
+    curate, _ = _curate_schemas(url)
+    r = curation_coverage(OdsReader(url), "database", "demo")
+    assert r.known == curate == ["a", "b"] and r.counted_against["chosen"]["kind"] == "local"
+
+
+def test_a_newer_local_node_the_native_survey_never_saw_is_counted_because_curate_shows_it(make_registry):
+    from conftest import write_local_survey, write_native_survey
+    reg, url = make_registry("demo")
+    write_native_survey(reg, "demo", ["n1", "n2", "n3"], tables_per=3, at="2026-10-01T06:00:00")
+    write_local_survey(reg, "demo", ["n1", "fresh"], at="2026-10-05T00:00:00Z")
+    curate, _ = _curate_schemas(url)
+    assert "fresh" in curate
+    assert curation_coverage(OdsReader(url), "database", "demo").known == curate
+
+
+def test_a_choice_for_a_schema_curate_does_not_show_is_reported_not_counted(make_registry):
+    from conftest import add_curation_rows, write_local_survey
+    reg, url = make_registry("demo")
+    write_local_survey(reg, "demo", ["a"])
+    add_curation_rows(url, "demo", events=[("ghost", "catalogue", "person")])
+    r = curation_coverage(OdsReader(url), "database", "demo")
+    assert r.known == ["a"] and r.outside_node_set == ["ghost"]
+    assert r.count("not_yet", "chosen") == 0
+
+
+def test_without_resource_explorer_the_result_is_not_applicable_not_a_private_universe(make_ods, monkeypatch):
+    url = make_ods(schemas=["a", "b"])
+    import sys
+    monkeypatch.setitem(sys.modules, "resource_explorer", None)
+    monkeypatch.setitem(sys.modules, "resource_explorer.registry", None)
+    monkeypatch.setitem(sys.modules, "resource_explorer.catalogue_scope", None)
+    r = curation_coverage(OdsReader(url), "database", "demo")
+    assert r.envelope.result_state is ResultState.NOT_APPLICABLE
+    assert "trellis-analytics[re]" in r.envelope.result_state_reason and r.known == [] and r.groups == []
+
+
+def test_removal_alone_unpublishes_and_restoring_republishes(make_ods):
+    # no reset here: the earlier removal test is masked by its reset, so this pins `removed` / `archived` / `restored`
+    url = make_ods(schemas=["s1", "s2", "s3"],
+                   proofs=[("schema", "s1", "elements_read_back", "2026-10-01T00:00:00Z", els("a")),
+                           ("schema", "s1", "removed", "2026-10-02T00:00:00Z", "{}"),
+                           ("schema", "s2", "elements_read_back", "2026-10-01T00:00:00Z", els("b")),
+                           ("schema", "s2", "archived", "2026-10-02T00:00:00Z", "{}"),
+                           ("schema", "s3", "removed", "2026-10-01T00:00:00Z", "{}"),
+                           ("schema", "s3", "restored", "2026-10-02T00:00:00Z", "{}")])
+    r = curation_coverage(OdsReader(url), "database", "demo")
+    assert r.group("published").lines[0].names == ["s3"]
+    assert r.count("not_yet", "undecided") == 2
+
+
+def test_a_system_classified_node_is_never_counted_even_with_a_name(make_ods, monkeypatch):
+    import resource_explorer.catalogue_scope as cs
+    real = cs.resolve_node_set
+    def with_named_system(reg, slug, tree=None):
+        ns = real(reg, slug, tree)
+        ns["schemas"].append({"schema": "odd_system", "classification": "system"})
+        return ns
+    monkeypatch.setattr(cs, "resolve_node_set", with_named_system)
+    r = curation_coverage(OdsReader(make_ods(schemas=["a"])), "database", "demo")
+    assert r.known == ["a"]

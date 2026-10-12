@@ -95,20 +95,7 @@ class OdsReader:
             out.setdefault(r["status"], []).append(r["id"])
         return out
 
-    def known_schemas(self, slug: str) -> list[str]:
-        """Schemas in the newest survey of the database (names only; system schemas excluded)."""
-        s = normalize_slug(slug)
-        newest = self.query("SELECT MAX(surveyed_at) AS latest FROM database_tables WHERE database_slug = ?", (s,))
-        latest = newest[0]["latest"] if newest else None
-        if not latest:
-            return []
-        rows = self.query("SELECT DISTINCT schema_name FROM database_tables WHERE database_slug = ? AND surveyed_at = ? "
-                          "ORDER BY schema_name", (s, latest))
-        return [r["schema_name"] for r in rows if not _is_system(r["schema_name"])]
-
-
-_SYSTEM = ("information_schema", "pg_catalog", "pg_toast")
-
-
-def _is_system(name: str) -> bool:
-    return name in _SYSTEM or name.startswith("pg_temp") or name.startswith("pg_toast")
+    def registry_view(self):
+        """A read-only stand-in for ProjectRegistry (needs the optional `re` extra; see registry_view.py)."""
+        from trellis_analytics.readers.registry_view import RegistryReadView
+        return RegistryReadView(self.url)

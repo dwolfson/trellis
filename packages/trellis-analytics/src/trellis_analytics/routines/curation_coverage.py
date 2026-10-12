@@ -8,6 +8,9 @@ Definitions (a database), all derived from persisted rows, never from the branch
 - *published*: a schema whose newest state proof is `elements_read_back` (its tables are the ones that
   read-back listed) or `restored`; plus the newest `report_published` proof (a read-back row only).
 - *blocked*: a schema whose newest state-or-blocked proof is `leave_out_blocked` (ISSUE-117, kept not sent).
+- *known schemas* (the universe) are the non-system schemas of `resolve_node_set(registry, slug)`, the same
+  function Curate's scope tree takes its nodes from, so this counts what Curate shows. `counted_against`
+  says which source that was. Needs the optional `re` extra; without it the result is `not_applicable`.
 - *not yet*: every other known schema, partitioned by its newest scope choice, so the counts add up:
   undecided; chosen by a person; chosen by a rule a person confirmed; left out by a person; left out by a
   rule a person confirmed.
@@ -20,6 +23,7 @@ from pydantic import BaseModel, Field
 from trellis_analytics import __version__
 from trellis_analytics.envelope import Envelope, ResultState
 from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
+from trellis_analytics.readers.registry_view import ResourceExplorerMissing
 
 _DB_NODES = {"database", "schema", "table", "column"}
 _PUBLISHED = ("elements_read_back", "restored")
@@ -49,6 +53,9 @@ class CoverageResult(BaseModel):
     envelope: Envelope
     as_of: str = ""             # when Egeria was last read back for this resource ('' when never)
     known_schemas: int = 0
+    known: list[str] = Field(default_factory=list)      # the schema names counted: Curate's non-system schemas
+    counted_against: dict = Field(default_factory=dict)   # resolve_node_set's chosen / egeria / local headers
+    outside_node_set: list[str] = Field(default_factory=list)   # have a choice or proof but are not in the node set
     groups: list[Group] = Field(default_factory=list)
     summary: str = ""
 
@@ -81,6 +88,19 @@ def _result(resource_type, slug, state, reason, **kw) -> CoverageResult:
     return CoverageResult(resource_type=resource_type, slug=slug, envelope=env, **kw)
 
 
+def _node_set(ods: OdsReader, slug: str) -> dict:
+    """Curate's node set for this database, read-only. Raises ResourceExplorerMissing, or OdsUnreadable."""
+    view = ods.registry_view()
+    try:
+        from resource_explorer.catalogue_scope import resolve_node_set    # lazy: RE is an optional dependency
+    except ImportError as exc:
+        raise ResourceExplorerMissing(str(exc)) from exc
+    try:
+        return resolve_node_set(view, slug)
+    except Exception as exc:  # noqa: BLE001  the registry could not answer: not "no schemas"
+        raise OdsUnreadable(f"the node set could not be read: {type(exc).__name__}: {exc}") from exc
+
+
 def curation_coverage(ods: OdsReader, resource_type: str, slug: str) -> CoverageResult:
     if resource_type != "database":
         return _result(resource_type, slug, ResultState.NOT_APPLICABLE,
@@ -88,10 +108,17 @@ def curation_coverage(ods: OdsReader, resource_type: str, slug: str) -> Coverage
     try:
         proofs_all = [p for p in ods.commit_proofs(slug) if p["node_kind"] in _DB_NODES or p["proof"] == _RESET]
         events = ods.catalogue_scope_events(slug)
-        surveyed = ods.known_schemas(slug)
         outbox = ods.outbox_status_counts("database", slug)
+        node_set = _node_set(ods, slug)
     except OdsUnreadable as exc:
         return _result(resource_type, slug, ResultState.NOT_ESTABLISHED, str(exc))
+    except ResourceExplorerMissing as exc:
+        return _result(resource_type, slug, ResultState.NOT_APPLICABLE,
+                       f"curation coverage counts against Resource Explorer's node set and it is not installed "
+                       f"(install trellis-analytics[re]): {exc}")
+    surveyed = sorted({s["schema"] for s in node_set["schemas"]
+                       if s.get("schema") and s.get("classification") != "system"})
+    counted_against = {k: node_set.get(k) for k in ("chosen", "egeria", "local", "disagree")}
 
     resets = [p for p in proofs_all if p["proof"] == _RESET]
     cutoff = max((t for t in (_ts(p["read_at"]) for p in resets) if t), default=None)
@@ -112,7 +139,8 @@ def curation_coverage(ods: OdsReader, resource_type: str, slug: str) -> Coverage
         if p["node_kind"] == "schema":
             schema_proofs.setdefault(p["schema_name"], []).append(p)
 
-    universe = sorted(set(surveyed) | set(choice) | set(schema_proofs))
+    universe = surveyed     # exactly Curate's schemas; a choice or proof for any other name is reported, not counted
+    outside = sorted((set(choice) | set(schema_proofs)) - set(universe))
 
     published, blocked = {}, {}
     for name in universe:
@@ -130,7 +158,8 @@ def curation_coverage(ods: OdsReader, resource_type: str, slug: str) -> Coverage
             p["proof"] in _STATE for p in proofs):
         return _result(resource_type, slug, ResultState.NOTHING_FOUND,
                        f"nothing published yet; {len(universe)} schema(s) known to RE and no choice made",
-                       known_schemas=len(universe), as_of="",
+                       known_schemas=len(universe), as_of="", counted_against=counted_against, known=universe,
+                       outside_node_set=outside,
                        summary=f"nothing published yet · {len(universe)} known to RE",
                        groups=[Group(key="published", words="nothing published yet"),
                                Group(key="not_yet", words=f"{len(universe)} known to RE · no choice made"),
@@ -188,6 +217,7 @@ def curation_coverage(ods: OdsReader, resource_type: str, slug: str) -> Coverage
     bl_words = f"blocked · {len(blocked)}" if blocked else "blocked · none"
 
     return _result(resource_type, slug, ResultState.MEASURED, "", known_schemas=len(universe), as_of=as_of,
+                   counted_against=counted_against, known=universe, outside_node_set=outside,
                    summary=" | ".join([pub_words, ny_words, bl_words]),
                    groups=[Group(key="published", words=pub_words, lines=pub_lines),
                            Group(key="not_yet", words=ny_words, lines=not_yet_lines),
