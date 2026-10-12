@@ -156,6 +156,12 @@ def curation_coverage(ods: OdsReader, resource_type: str, slug: str) -> Coverage
 
     if not published and not blocked and report is None and not choice and not any(
             p["proof"] in _STATE for p in proofs):
+        if not universe:
+            # No survey has told RE of any schema: nothing was looked at, so "nothing found" would be a guess.
+            return _result(resource_type, slug, ResultState.NOT_ESTABLISHED,
+                           "no survey of this database: RE knows none of its schemas",
+                           counted_against=counted_against, outside_node_set=outside,
+                           summary="not surveyed · no schemas known to RE")
         return _result(resource_type, slug, ResultState.NOTHING_FOUND,
                        f"nothing published yet; {len(universe)} schema(s) known to RE and no choice made",
                        known_schemas=len(universe), as_of="", counted_against=counted_against, known=universe,
@@ -212,7 +218,7 @@ def curation_coverage(ods: OdsReader, resource_type: str, slug: str) -> Coverage
 
     pub_words = ("published · " + " · ".join(f"{l.count} {l.label}" for l in pub_lines if l.count)
                  + (f" · read back {as_of}" if as_of else "")) if published or report else "nothing published yet"
-    ny_words = f"not yet published · {not_yet_total} " + " · ".join(
+    ny_words = f"not yet published · {not_yet_total}: " + " · ".join(
         f"{l.count} {l.label}" for l in not_yet_lines if l.count) if not_yet_total else "not yet published · none"
     bl_words = f"blocked · {len(blocked)}" if blocked else "blocked · none"
 

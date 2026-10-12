@@ -196,3 +196,19 @@ def test_a_system_classified_node_is_never_counted_even_with_a_name(make_ods, mo
     monkeypatch.setattr(cs, "resolve_node_set", with_named_system)
     r = curation_coverage(OdsReader(make_ods(schemas=["a"])), "database", "demo")
     assert r.known == ["a"]
+
+
+def test_an_unsurveyed_database_is_not_established_not_nothing_found(make_ods):
+    # No survey told RE of any schema: nothing was looked at, so "nothing found" would be a confident guess.
+    r = curation_coverage(OdsReader(make_ods()), "database", "demo")
+    assert r.envelope.result_state is ResultState.NOT_ESTABLISHED
+    assert "no survey" in r.envelope.result_state_reason
+    assert r.summary == "not surveyed · no schemas known to RE" and r.known_schemas == 0
+
+
+def test_not_yet_words_separate_the_total_from_its_parts(make_ods):
+    url = make_ods(schemas=["a", "b", "c", "d"],
+                   proofs=[("schema", "a", "elements_read_back", "2026-10-05T10:00:00Z", els("t"))],
+                   events=[("a", "catalogue", "person"), ("d", "leave_out", "rule-1")])
+    r = curation_coverage(OdsReader(url), "database", "demo")
+    assert r.group("not_yet").words == "not yet published · 3: 2 undecided · 1 left out by a confirmed proposal"

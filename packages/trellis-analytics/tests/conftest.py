@@ -24,8 +24,7 @@ def entry_point_dist(tmp_path, monkeypatch):
 @pytest.fixture
 def make_registry(tmp_path):
     """A real ProjectRegistry over a scratch SQLite file (never the shared registry: the constructor migrates).
-    Returns (registry, url). Skips when Resource Explorer is not installed."""
-    pytest.importorskip("resource_explorer")
+    Returns (registry, url). Resource Explorer must be installed: a skip here once hid 17 tests."""
     from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 
     def build(slug="demo", name="ods"):
