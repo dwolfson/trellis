@@ -24,12 +24,13 @@ import {
 import {
   state, esc, $, paneMessage, bindSubTabs, resourceHeaderHtml, bindResourceHeader,
   asFigure, allPointDates, chartIsStale, drawChart, apiEntityType,
-  chartLayout, loadScript,
+  chartLayout, loadScript, switchUnderstandingTab,
 } from '/static/next/app.js';
 import { provenanceFromResponse, saveChartImage } from '/static/next/chart-export.js';
 import { mountRepoReport } from '/static/next/stages/repo-report.js';
 import { fitFigure, annotateTicks } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
+import { statsLineHtml, schemaRollupsHtml, statsOverTimeHtml } from '/static/next/stages/understanding-stats.js';
 import {
   surveyHistoryHtml, readShowInvalid, writeShowInvalid, rankedTablesHtml, viewsSectionHtml,
   viewFlowchartSource,
@@ -395,6 +396,9 @@ function gotoTarget(host, control, target) {
   host.querySelectorAll('[data-section-index] button, [data-chart-index] button').forEach((b) =>
     b.setAttribute('aria-pressed', b === control ? 'true' : 'false'));
   if (!target) return;
+  // On the tabbed pane the target may sit on a tab that is not showing: open that tab first.
+  const panel = target.closest('[data-understanding-tab-panel]');
+  if (panel && panel.hidden) switchUnderstandingTab(`understanding_${panel.dataset.understandingTabPanel}`);
   const sec = target.closest('details[data-collapsible]');
   if (sec && !sec.open) {
     sec.open = true;
@@ -405,157 +409,231 @@ function gotoTarget(host, control, target) {
   if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-/** Understanding on a database. Draws into `#understanding-host`; a missing
- *  host throws (the caller writes the message), it never returns silently. */
+const h3 = (t) => `<h3 class="m-0 font-heading text-name font-normal">${t}</h3>`;
+
+/** A database's Understanding, mounted into `host` but not yet read. Returns the section markup for each place
+ *  it can go and three `start` functions, one per group of reads:
+ *    glance    the since-last-run diff
+ *    contents  the three "now" charts, the views (and the diff again, from the same memo)
+ *    overTime  the two "over time" charts and the survey history
+ *  `tabbed: false` is the single-page layout (the sentence inside "Over time", every group read at once);
+ *  `tabbed: true` puts the sentence in its own section for At a glance. The sections themselves are the same. */
+function databaseParts(slug, { tabbed }) {
+  const slot = (c) => `<div data-slot="${c.kind}"></div>`;
+  const grid = 'style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))"';
+  const sections = tabbed ? [['db-since', 'Since the last run'], ...DB_SECTIONS] : DB_SECTIONS;
+  const indexBar = `
+    <div class="mb-s3" data-index-bar>
+      <div class="flex flex-wrap items-baseline gap-s2" data-section-index aria-label="Sections on this page">${
+  sections.map(([id, label]) => `<button type="button" data-goto="${id}" aria-pressed="false"
+        class="wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink">${esc(label)}</button>`).join('')}</div>
+      <div id="chart-index" class="mt-s2 flex flex-wrap items-baseline gap-s2" data-chart-index aria-label="Charts on this page"></div>
+    </div>`;
+  const now = collapsibleSectionHtml('db-now', h3('Now'),
+    '<span class="text-caveat text-ink-muted" data-now-header>reading the latest survey…</span>',
+    `<div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'now').map(slot).join('')}</div>`,
+    { attrs: 'data-section="now"' });
+  const time = collapsibleSectionHtml('db-time', h3('Over time'),
+    '<span class="text-caveat text-ink-muted" data-time-header></span>',
+    `${tabbed ? '' : sinceLastRunBannerHtml('Comparing the last two runs…')}
+      <div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'time').map(slot).join('')}</div>`,
+    { attrs: tabbed ? 'data-section="time"' : 'data-section="time" class="mt-s6"' });
+  const since = collapsibleSectionHtml('db-since', h3('Since the last run'), '',
+    sinceLastRunBannerHtml('Comparing the last two runs…'));
+  const views = collapsibleSectionHtml('db-views', h3('Views'), '',
+    '<div data-views-body><div class="text-caveat text-ink-muted">Reading the views…</div></div>',
+    { attrs: 'data-section-views class="mt-s6"' });
+  const history = collapsibleSectionHtml('db-survey-history', h3('Survey history'), '',
+    '<div data-survey-history-body><div class="text-caveat text-ink-muted">Reading the survey history…</div></div>',
+    { attrs: 'data-survey-history class="mt-s6"' });
+
+  // Placement (tabbed): the sentence leads At a glance; the three "now" charts (what is inside, how it is
+  // distributed) and the views are Contents; the two series over runs and the survey history are Over time.
+  const html = {
+    // main's template joined the parts with a newline and four spaces; keep the markup identical
+    single: [indexBar, now, time, views, history].join('\n    '),
+    indexBar,
+    glance: since + '<div class="mt-s3" data-stats-glance></div>',                         // S4b mount 1
+    contents: now + '<div data-stats-schemas-slot></div>' + views,                          // S4b mount 2
+    overTime: time + history + '<div data-stats-time-slot></div>',                          // S4b mount 3
+  };
+
+  const mount = (host, { lazy }) => {
+    const stale = () => slug !== state.selectedSlug || state.stage !== 'understanding';
+    bindNamesToggles(host);
+    bindCollapsibles(host);
+    const cards = {};
+    const chips = {};
+    host.querySelectorAll('[data-section-index] button[data-goto]').forEach((b) => {
+      b.addEventListener('click', () => gotoTarget(host, b,
+        host.querySelector(`details[data-collapsible="${b.dataset.goto}"]`)));
+    });
+    const chipsEl = host.querySelector('[data-chart-index]');
+    for (const spec of DB_CHARTS) {
+      const card = cardShell(spec);
+      host.querySelector(`[data-slot="${spec.kind}"]`).replaceWith(card);
+      cards[spec.kind] = card;
+      // The per-kind list: every chart this database has, each with the state
+      // word the server gave it. A kind with no route says so in its entry.
+      // A wired chart is a real control (same look as the repo page's index); one with no route
+      // is muted text with no border, so it cannot be mistaken for something that responds.
+      const wired = !!spec.route;
+      const chip = document.createElement(wired ? 'button' : 'span');
+      chip.dataset.chartChip = spec.kind;
+      if (wired) {
+        chip.type = 'button';
+        chip.setAttribute('aria-pressed', 'false');
+        chip.className = 'wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink';
+        chip.addEventListener('click', () => gotoTarget(host, chip, card));
+      } else {
+        chip.className = 'px-2 py-[3px] text-caveat text-ink-muted';
+        chip.title = 'Activity per table has no series serving it to this screen yet. It is not a statement about this database.';
+      }
+      // A chart on a tab that has not opened has not been read: say so, never the "…" of a read in flight.
+      chip.textContent = `${spec.title} · ${spec.route ? (lazy ? 'not read yet' : '…') : 'not wired up yet'}`;
+      chipsEl.appendChild(chip);
+      chips[spec.kind] = chip;
+    }
+    const setChip = (spec, text) => { chips[spec.kind].textContent = `${spec.title} · ${text}`; };
+    const specOf = (k) => DB_CHARTS.find((c) => c.kind === k);
+    const reading = (section) => DB_CHARTS.filter((c) => c.section === section && c.route).forEach((c) => setChip(c, '…'));
+
+    // Activity per table has no route: present and explained in its own slot.
+    const act = cards.table_activity;
+    act.querySelector('[data-card-state]').innerHTML =
+      '<span data-state="not_wired" class="text-state-gap">○ not wired up yet</span>';
+    act.querySelector('[data-card-body]').innerHTML =
+      `<div class="mt-s2 text-answer text-ink" data-not-wired>Activity per table needs the
+      table-activity series (<span class="font-diagram">db_change_rates</span>), which no
+      route serves to this screen yet. It is not a statement about this database.</div>`;
+    act.querySelector('[data-card-provenance]').textContent = `${slug} · no run read`;
+
+    const grab = (kind, params) => getDbChart(slug, kind, params)
+      .catch((err) => ({ __error: err.message }));
+    // The diff feeds the sentence (At a glance) AND the ranked-tables extra (Contents): one read, shared.
+    let diffRead = null;
+    const readDiff = () => {
+      if (!diffRead) diffRead = getDatabaseDiff(slug).catch((err) => ({ __error: err.message }));
+      return diffRead;
+    };
+    const ok = (r) => r && !r.__error;
+    // S4b: statistics currency, ONE read shared by the three tabs that show it (each reads only when opened).
+    let currencyRead = null;
+    const readCurrency = () => {
+      if (!currencyRead) currencyRead = grab('statistics_currency');
+      return currencyRead;
+    };
+    const drawStats = async (selector, render) => {
+      const slotEl = host.querySelector(selector);
+      if (!slotEl) return;
+      const resp = await readCurrency();
+      if (stale()) return;
+      slotEl.innerHTML = render(resp);
+    };
+
+    const settle = async (spec, resp, opts) => {
+      const card = cards[spec.kind];
+      if (resp && resp.__error) {
+        card.dataset.cardState = 'error';
+        card.querySelector('[data-card-state]').innerHTML =
+          '<span data-state="error" class="text-state-warn">could not be read</span>';
+        card.querySelector('[data-card-body]').innerHTML =
+          `<div class="mt-s2 text-answer text-state-warn">${esc(spec.title)} could not be read: ${esc(resp.__error)}</div>`;
+        card.querySelector('[data-card-provenance]').textContent = `${slug} · no run read`;
+        setChip(spec, 'could not be read');
+        return;
+      }
+      await drawCard(card, spec, slug, resp, opts);
+      setChip(spec, STATE_WORD[resp.state] || 'state not reported');
+    };
+
+    const start = {
+      async glance() {
+        const diff = await readDiff();
+        if (stale()) return;
+        host.querySelector('[data-since-last-run]').innerHTML = diff && diff.__error
+          ? `The comparison with the previous run could not be read: ${esc(diff.__error)}`
+          : sinceLastRunHtml(diff);
+        await drawStats('[data-stats-glance]', statsLineHtml);
+      },
+
+      async contents() {
+        reading('now');
+        const [dist, sizes, types, views, diff] = await Promise.all([
+          grab('schema_distribution'), grab('table_sizes', { measure: 'rows' }), grab('column_types'),
+          getDatabaseViews(slug).catch((err) => ({ __error: err.message })),
+          readDiff(),
+        ]);
+        if (stale()) return;
+
+        await settle(specOf('schema_distribution'), dist, { extraHtml: ok(dist) ? schemaScopeExtra(dist) : '' });
+        const drawSizes = async (resp, measure) => {
+          await settle(specOf('table_sizes'), resp, {
+            counts: ok(resp) ? resp.provenance || '' : '',
+            extraHtml: ok(resp) ? tableSizesExtra(resp, measure) + rankedTablesHtml(resp, diff) : '',
+          });
+          attachGrids(cards.table_sizes, () => RANKED_COLS);
+          cards.table_sizes.querySelector('[data-card-title]').textContent =
+            measure === 'size' ? 'Largest tables, by size' : 'Largest tables, by rows';
+          const sw = cards.table_sizes.querySelector('[data-measure]');
+          if (sw) {
+            sw.addEventListener('click', async () => {
+              const next = sw.dataset.measure;
+              const r = await grab('table_sizes', { measure: next });
+              if (!stale()) await drawSizes(r, next);
+            });
+          }
+        };
+        await drawSizes(sizes, 'rows');
+        await settle(specOf('column_types'), types, { extraHtml: ok(types) ? columnTypesExtra(types) : '' });
+
+        // The header comes from the responses' own run / scope fields.
+        const withRun = [dist, sizes, types].find((r) => ok(r) && r.run);
+        const nowHeader = host.querySelector('[data-now-header]');
+        if (withRun) {
+          const scope = [dist, sizes, types].map((r) => ok(r) && r.scope).find((sc) => sc && sc.partial);
+          nowHeader.innerHTML = `from the survey of <span class="tnum" title="${esc(withRun.run.surveyed_at)}">${
+            esc(runLabel(withRun.run))}</span> · ${esc(withRun.run.source || 'unknown source')}${
+            scope ? ` · ◐ credential scope: ${esc(scope.schema_fraction || scope.fraction || 'partial')} readable` : ''}`;
+        } else {
+          nowHeader.textContent = 'no survey has run for this database';
+        }
+        drawViews(host.querySelector('[data-views-body]'), views);
+        await drawStats('[data-stats-schemas-slot]', schemaRollupsHtml);
+      },
+
+      async overTime() {
+        reading('time');
+        const [hist, growth, surveys] = await Promise.all([
+          grab('survey_history'), grab('table_growth'),
+          getDatabaseSurveys(slug).catch((err) => ({ __error: err.message })),
+        ]);
+        if (stale()) return;
+        await settle(specOf('survey_history'), hist);
+        await settle(specOf('table_growth'), growth);
+        setChip(specOf('table_activity'), 'not wired up yet');
+        const pts = ok(hist) ? hist.points || [] : [];
+        host.querySelector('[data-time-header]').textContent = pts.length
+          ? `${pts.length} run${pts.length === 1 ? '' : 's'} since ${runLabel(pts[0].run)}` : '';
+        drawSurveyHistory(host.querySelector('[data-survey-history-body]'), surveys);
+        await drawStats('[data-stats-time-slot]', statsOverTimeHtml);
+      },
+    };
+    return start;
+  };
+  return { html, mount };
+}
+
+/** Understanding on a database, single page (the layout without the leading tabs). Draws into
+ *  `#understanding-host`; a missing host throws (the caller writes the message), it never returns silently. */
 export async function renderDatabaseUnderstanding(slug) {
   const host = $('understanding-host');
   if (!host) throw new Error('Understanding pane host missing: #understanding-host');
-  const stale = () => slug !== state.selectedSlug || state.stage !== 'understanding';
-  bindNamesToggles(host);
-
-  const slot = (c) => `<div data-slot="${c.kind}"></div>`;
-  const grid = 'style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))"';
-  const h3 = (t) => `<h3 class="m-0 font-heading text-name font-normal">${t}</h3>`;
   // Order: Now, Over time, Views, and the survey history LAST. Each folds.
-  host.innerHTML = `
-    <div class="mb-s3" data-index-bar>
-      <div class="flex flex-wrap items-baseline gap-s2" data-section-index aria-label="Sections on this page">${
-  DB_SECTIONS.map(([id, label]) => `<button type="button" data-goto="${id}" aria-pressed="false"
-        class="wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink">${esc(label)}</button>`).join('')}</div>
-      <div id="chart-index" class="mt-s2 flex flex-wrap items-baseline gap-s2" data-chart-index aria-label="Charts on this page"></div>
-    </div>
-    ${collapsibleSectionHtml('db-now', h3('Now'),
-    '<span class="text-caveat text-ink-muted" data-now-header>reading the latest survey…</span>',
-    `<div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'now').map(slot).join('')}</div>`,
-    { attrs: 'data-section="now"' })}
-    ${collapsibleSectionHtml('db-time', h3('Over time'),
-    '<span class="text-caveat text-ink-muted" data-time-header></span>',
-    `${sinceLastRunBannerHtml('Comparing the last two runs…')}
-      <div class="mt-s2 grid gap-s3" ${grid}>${DB_CHARTS.filter((c) => c.section === 'time').map(slot).join('')}</div>`,
-    { attrs: 'data-section="time" class="mt-s6"' })}
-    ${collapsibleSectionHtml('db-views', h3('Views'), '',
-    '<div data-views-body><div class="text-caveat text-ink-muted">Reading the views…</div></div>',
-    { attrs: 'data-section-views class="mt-s6"' })}
-    ${collapsibleSectionHtml('db-survey-history', h3('Survey history'), '',
-    '<div data-survey-history-body><div class="text-caveat text-ink-muted">Reading the survey history…</div></div>',
-    { attrs: 'data-survey-history class="mt-s6"' })}`;
-  bindCollapsibles(host);
-  const cards = {};
-  const chips = {};
-  host.querySelectorAll('[data-section-index] button[data-goto]').forEach((b) => {
-    b.addEventListener('click', () => gotoTarget(host, b,
-      host.querySelector(`details[data-collapsible="${b.dataset.goto}"]`)));
-  });
-  const chipsEl = host.querySelector('[data-chart-index]');
-  for (const spec of DB_CHARTS) {
-    const card = cardShell(spec);
-    host.querySelector(`[data-slot="${spec.kind}"]`).replaceWith(card);
-    cards[spec.kind] = card;
-    // The per-kind list: every chart this database has, each with the state
-    // word the server gave it. A kind with no route says so in its entry.
-    // A wired chart is a real control (same look as the repo page's index); one with no route
-    // is muted text with no border, so it cannot be mistaken for something that responds.
-    const wired = !!spec.route;
-    const chip = document.createElement(wired ? 'button' : 'span');
-    chip.dataset.chartChip = spec.kind;
-    if (wired) {
-      chip.type = 'button';
-      chip.setAttribute('aria-pressed', 'false');
-      chip.className = 'wl-chartchip cursor-pointer border-0 bg-transparent px-2 py-[3px] text-caveat text-ink-muted hover:text-ink';
-      chip.addEventListener('click', () => gotoTarget(host, chip, card));
-    } else {
-      chip.className = 'px-2 py-[3px] text-caveat text-ink-muted';
-      chip.title = 'Activity per table has no series serving it to this screen yet. It is not a statement about this database.';
-    }
-    chip.textContent = `${spec.title} · ${spec.route ? '…' : 'not wired up yet'}`;
-    chipsEl.appendChild(chip);
-    chips[spec.kind] = chip;
-  }
-  const setChip = (spec, text) => { chips[spec.kind].textContent = `${spec.title} · ${text}`; };
-  const specOf = (k) => DB_CHARTS.find((c) => c.kind === k);
-
-  // Activity per table has no route: present and explained in its own slot.
-  const act = cards.table_activity;
-  act.querySelector('[data-card-state]').innerHTML =
-    '<span data-state="not_wired" class="text-state-gap">○ not wired up yet</span>';
-  act.querySelector('[data-card-body]').innerHTML =
-    `<div class="mt-s2 text-answer text-ink" data-not-wired>Activity per table needs the
-      table-activity series (<span class="font-diagram">db_change_rates</span>), which no
-      route serves to this screen yet. It is not a statement about this database.</div>`;
-  act.querySelector('[data-card-provenance]').textContent = `${slug} · no run read`;
-
-  const grab = (kind, params) => getDbChart(slug, kind, params)
-    .catch((err) => ({ __error: err.message }));
-  const [dist, sizes, types, hist, growth, diff, surveys, views] = await Promise.all([
-    grab('schema_distribution'), grab('table_sizes', { measure: 'rows' }), grab('column_types'),
-    grab('survey_history'), grab('table_growth'),
-    getDatabaseDiff(slug).catch((err) => ({ __error: err.message })),
-    getDatabaseSurveys(slug).catch((err) => ({ __error: err.message })),
-    getDatabaseViews(slug).catch((err) => ({ __error: err.message })),
-  ]);
-  if (stale()) return;
-
-  const settle = async (spec, resp, opts) => {
-    const card = cards[spec.kind];
-    if (resp && resp.__error) {
-      card.dataset.cardState = 'error';
-      card.querySelector('[data-card-state]').innerHTML =
-        '<span data-state="error" class="text-state-warn">could not be read</span>';
-      card.querySelector('[data-card-body]').innerHTML =
-        `<div class="mt-s2 text-answer text-state-warn">${esc(spec.title)} could not be read: ${esc(resp.__error)}</div>`;
-      card.querySelector('[data-card-provenance]').textContent = `${slug} · no run read`;
-      setChip(spec, 'could not be read');
-      return;
-    }
-    await drawCard(card, spec, slug, resp, opts);
-    setChip(spec, STATE_WORD[resp.state] || 'state not reported');
-  };
-  const ok = (r) => r && !r.__error;
-
-  await settle(specOf('schema_distribution'), dist, { extraHtml: ok(dist) ? schemaScopeExtra(dist) : '' });
-  const drawSizes = async (resp, measure) => {
-    await settle(specOf('table_sizes'), resp, {
-      counts: ok(resp) ? resp.provenance || '' : '',
-      extraHtml: ok(resp) ? tableSizesExtra(resp, measure) + rankedTablesHtml(resp, diff) : '',
-    });
-    attachGrids(cards.table_sizes, () => RANKED_COLS);
-    cards.table_sizes.querySelector('[data-card-title]').textContent =
-      measure === 'size' ? 'Largest tables, by size' : 'Largest tables, by rows';
-    const sw = cards.table_sizes.querySelector('[data-measure]');
-    if (sw) {
-      sw.addEventListener('click', async () => {
-        const next = sw.dataset.measure;
-        const r = await grab('table_sizes', { measure: next });
-        if (!stale()) await drawSizes(r, next);
-      });
-    }
-  };
-  await drawSizes(sizes, 'rows');
-  await settle(specOf('column_types'), types, { extraHtml: ok(types) ? columnTypesExtra(types) : '' });
-  await settle(specOf('survey_history'), hist);
-  await settle(specOf('table_growth'), growth);
-  setChip(specOf('table_activity'), 'not wired up yet');
-
-  // Section headers come from the responses' own run / scope fields.
-  const withRun = [dist, sizes, types].find((r) => ok(r) && r.run);
-  const nowHeader = host.querySelector('[data-now-header]');
-  if (withRun) {
-    const scope = [dist, sizes, types].map((r) => ok(r) && r.scope).find((sc) => sc && sc.partial);
-    nowHeader.innerHTML = `from the survey of <span class="tnum" title="${esc(withRun.run.surveyed_at)}">${
-      esc(runLabel(withRun.run))}</span> · ${esc(withRun.run.source || 'unknown source')}${
-      scope ? ` · ◐ credential scope: ${esc(scope.schema_fraction || scope.fraction || 'partial')} readable` : ''}`;
-  } else {
-    nowHeader.textContent = 'no survey has run for this database';
-  }
-  const pts = ok(hist) ? hist.points || [] : [];
-  host.querySelector('[data-time-header]').textContent = pts.length
-    ? `${pts.length} run${pts.length === 1 ? '' : 's'} since ${runLabel(pts[0].run)}` : '';
-  host.querySelector('[data-since-last-run]').innerHTML = diff && diff.__error
-    ? `The comparison with the previous run could not be read: ${esc(diff.__error)}`
-    : sinceLastRunHtml(diff);
-
-  drawSurveyHistory(host.querySelector('[data-survey-history-body]'), surveys);
-  drawViews(host.querySelector('[data-views-body]'), views);
+  const parts = databaseParts(slug, { tabbed: false });
+  host.innerHTML = parts.html.single;
+  const start = parts.mount(host, { lazy: false });
+  await Promise.all([start.glance(), start.contents(), start.overTime()]);
 }
 
 /** PI-037: the survey history table and its "show invalid" toggle. The list was read once; the
@@ -607,43 +685,26 @@ function drawViews(slot, resp) {
   });
 }
 
-export async function loadChartsPane() {
-  const el = $('content');
-  if (!el) throw new Error('Understanding pane host missing: #content');
-  const slug = state.selectedSlug;
+/* ── Understanding for a repository ───────────────────────────────────────
+ * Three sections: since the last run, the charts, the survey report. The single-page layout stacks them; the
+ * tabbed layout puts the sentence on At a glance, the report on Contents, the charts on Over time. */
+function repoParts(slug) {
+  const since = collapsibleSectionHtml('repo-since', h3('Since the last run'), '',
+    `<div id="repo-diff-banner">${sinceLastRunBannerHtml('Comparing the last two runs…')}</div>`);
+  const charts = collapsibleSectionHtml('repo-charts', h3('Charts'), '',
+    `<div id="chart-index" class="mt-s2 flex flex-wrap gap-s2"></div>
+    <div id="chart-body" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' });
+  // Tabbed layout only: the three distribution charts are their own section on Contents (what it is made of,
+  // how it is spread); `charts` then holds the series over time. Same chart machinery, own index and body.
+  const distribution = collapsibleSectionHtml('repo-distribution', h3('Distribution'), '',
+    `<div id="chart-index-distribution" class="mt-s2 flex flex-wrap gap-s2"></div>
+    <div id="chart-body-distribution" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' });
+  const report = collapsibleSectionHtml('repo-report', h3('Survey report'), '',
+    '<div id="repo-report-body"></div>', { attrs: 'class="mt-s4" data-repo-report' });
 
-  if (!slug) {
-    el.innerHTML = paneMessage('Select a resource',
-      'Pick a repository from the sidebar to see its charts.');
-    bindSubTabs();
-    return;
-  }
-
-
-  // NO sub-tab row here. Understanding has no Search/Survey/Dashboard/
-  // Questions/Disposition — rendering the strip with "Questions" underlined
-  // while a chart is on screen says this pane is something it is not.
-  const entityType = apiEntityType(state.resourceType);
-  el.innerHTML = `
-    <div class="mb-s4 font-heading text-subtab text-ink">
-      <span class="border-b border-accent pb-[2px]">Charts</span>
-      <span class="ml-s3 text-caps uppercase tracking-caps text-ink-muted">Understanding has one pane</span>
-    </div>
-    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
-    <div class="my-s3 h-px bg-rule"></div>${entityType === 'repo'
-    ? `${collapsibleSectionHtml('repo-since', '<h3 class="m-0 font-heading text-name font-normal">Since the last run</h3>', '',
-      `<div id="repo-diff-banner">${sinceLastRunBannerHtml('Comparing the last two runs…')}</div>`)}
-    ${collapsibleSectionHtml('repo-charts', '<h3 class="m-0 font-heading text-name font-normal">Charts</h3>', '',
-      `<div id="chart-index" class="mt-s2 flex flex-wrap gap-s2"></div>
-    <div id="chart-body" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' })}
-    ${collapsibleSectionHtml('repo-report', '<h3 class="m-0 font-heading text-name font-normal">Survey report</h3>', '',
-      '<div id="repo-report-body"></div>', { attrs: 'class="mt-s4" data-repo-report' })}`
-    : '<div id="understanding-host"></div>'}`;
-  bindResourceHeader();
-  bindCollapsibles(el);
-  // PI-053: the full survey report, read when its section is open (and the first time it is opened).
-  const reportSection = el.querySelector('details[data-repo-report]');
-  if (reportSection) {
+  const mount = (root, { canRead = () => true, split = false } = {}) => {
+    // PI-053: the full survey report, read when its section is open (and the first time it is opened).
+    const reportSection = root.querySelector('details[data-repo-report]');
     let reportRead = false;
     const readReport = () => {
       if (reportRead) return;
@@ -652,52 +713,46 @@ export async function loadChartsPane() {
         fetchReport: getSurveyReport, stale: () => slug !== state.selectedSlug || !reportSection.isConnected,
       });
     };
-    if (reportSection.open) readReport();
-    else reportSection.addEventListener('toggle', () => { if (reportSection.open) readReport(); });
-  }
+    reportSection.addEventListener('toggle', () => { if (reportSection.open && canRead()) readReport(); });
 
-  // A database has its own six charts (module section above); a file system
-  // has none yet and says so. Neither goes through the repo probe.
-  if (entityType !== 'repo') {
-    if (entityType === 'database') {
-      try {
-        await renderDatabaseUnderstanding(slug);
-      } catch (err) {
-        // A renderer that cannot draw says so in the pane, never nothing.
-        const host = $('understanding-host') || el;
-        host.insertAdjacentHTML('beforeend', `<p class="max-w-[70ch] text-answer text-state-warn"
-          data-understanding-error>Understanding could not be drawn: ${esc(err.message)}</p>`);
-      }
-    } else {
-      $('understanding-host').innerHTML = `<p class="max-w-[70ch] text-answer text-ink"
-        data-understanding-not-charted>${esc(FILE_SHARE_SENTENCE)}</p>`;
-    }
-    return;
-  }
-
-  // PI-049: the same banner as a database, read from this repository's own diff route.
-  const repoBanner = $('repo-diff-banner');
-  const paintRepoBanner = async () => {
-    let inner;
-    try {
-      inner = repoSinceLastRunHtml(await getRepoDiff(slug));
-    } catch (err) {
-      inner = `The comparison with the previous run could not be read: ${esc(err.message)}`;
-    }
-    if (slug !== state.selectedSlug || !repoBanner.isConnected) return;
-    repoBanner.querySelector('[data-since-last-run]').innerHTML = inner;
+    return {
+      async glance() {
+        // PI-049: the same banner as a database, read from this repository's own diff route.
+        const repoBanner = $('repo-diff-banner');
+        bindNamesToggles(repoBanner);
+        let inner;
+        try {
+          inner = repoSinceLastRunHtml(await getRepoDiff(slug));
+        } catch (err) {
+          inner = `The comparison with the previous run could not be read: ${esc(err.message)}`;
+        }
+        if (slug !== state.selectedSlug || !repoBanner.isConnected) return;
+        repoBanner.querySelector('[data-since-last-run]').innerHTML = inner;
+      },
+      // `split`: the tabbed layout. Contents reads the distribution charts and the report, Over time the rest.
+      async contents() {
+        if (reportSection.open) readReport();
+        if (split) await drawRepoCharts(slug, { kinds: REPO_DISTRIBUTION_KINDS, indexId: 'chart-index-distribution', bodyId: 'chart-body-distribution' });
+      },
+      overTime: () => drawRepoCharts(slug, split ? { kinds: REPO_TIME_KINDS } : {}),
+    };
   };
-  bindNamesToggles(repoBanner);
-  paintRepoBanner();
+  return { html: { since, charts, distribution, report }, mount };
+}
 
-  const index = $('chart-index');
-  index.innerHTML = REPO_CHARTS.map(([kind, label]) =>
+const REPO_DISTRIBUTION_KINDS = ['languages', 'file_types', 'top_committers'];
+const REPO_TIME_KINDS = REPO_CHARTS.map(([k]) => k).filter((k) => !REPO_DISTRIBUTION_KINDS.includes(k));
+
+async function drawRepoCharts(slug, { kinds = null, indexId = 'chart-index', bodyId = 'chart-body' } = {}) {
+  const index = $(indexId);
+  const wanted = kinds ? REPO_CHARTS.filter(([k]) => kinds.includes(k)) : REPO_CHARTS;
+  index.innerHTML = wanted.map(([kind, label]) =>
     `<button data-chart="${kind}" disabled
       class="cursor-wait rounded-sm border border-rule-strong bg-transparent px-2 py-[3px]
              text-caveat text-ink-muted">${esc(label)}…</button>`).join('');
 
   // Probe each kind so the index never offers a chart with nothing in it.
-  const results = await Promise.all(REPO_CHARTS.map(async ([kind, label]) => {
+  const results = await Promise.all(wanted.map(async ([kind, label]) => {
     try {
       const fig = asFigure(await getChart(slug, kind));
       // POINTS, NOT TRACES. `fig.data.length` counts series, so a trace
@@ -721,7 +776,7 @@ export async function loadChartsPane() {
     }
   }));
   if (slug !== state.selectedSlug) return;
-  state.charts = results;
+  state.charts = kinds ? [...(state.charts || []).filter((c) => !kinds.includes(c.kind)), ...results] : results;
 
   index.innerHTML = results.map((r) => {
     if (r.error) {
@@ -756,7 +811,7 @@ export async function loadChartsPane() {
   const select = (kind) => {
     index.querySelectorAll('[data-chart]').forEach((o) =>
       o.setAttribute('aria-pressed', o.dataset.chart === kind ? 'true' : 'false'));
-    drawChart(results.find((r) => r.kind === kind));
+    drawChart(results.find((r) => r.kind === kind), { bodyId });
   };
   index.querySelectorAll('[data-chart]').forEach((b) =>
     b.addEventListener('click', () => select(b.dataset.chart)));
@@ -765,8 +820,124 @@ export async function loadChartsPane() {
   if (first) {
     select(first.kind);
   } else {
-    $('chart-body').innerHTML = `<div class="text-answer text-ink">
+    $(bodyId).innerHTML = `<div class="text-answer text-ink">
       Nothing has been recorded for any of this resource's charts yet. That is
       a statement about the history collected so far, not about the resource.</div>`;
   }
+}
+
+/** Understanding's leading tabs (At a glance / Contents / Over time) for a repository or a database. Draws the
+ *  three panels into `#understanding-tabs-host`, all in the document (the inactive ones `hidden`), and reads
+ *  only what the shown tab owns, once. A tab click between them is in place (app.js switchUnderstandingTab):
+ *  nothing is read again, and a hidden tab's sections read nothing until it opens.
+ *
+ *  Placement of the existing sections (nothing inside them changed):
+ *    repository  glance: since the last run · contents: distribution charts (languages, file types, top
+ *                committers) and the survey report · over time: the other charts
+ *    database    glance: since the last run (the sentence that used to sit inside "Over time")
+ *                contents: Now (the three distribution charts), Views
+ *                over time: Over time (the two series), Survey history */
+export async function renderUnderstandingTabs(slug, kind) {
+  const host = $('understanding-tabs-host');
+  if (!host) throw new Error('Understanding pane host missing: #understanding-tabs-host');
+  const stale = () => slug !== state.selectedSlug || state.stage !== 'understanding';
+  const started = new Set();
+  let start;
+  let html;
+  let beforePanels = '';
+  if (kind === 'database') {
+    const parts = databaseParts(slug, { tabbed: true });
+    html = { glance: parts.html.glance, contents: parts.html.contents, over_time: parts.html.overTime };
+    beforePanels = parts.html.indexBar;
+    host.innerHTML = '';
+    host.insertAdjacentHTML('beforeend', beforePanels + panelsHtml(html));
+    start = parts.mount(host, { lazy: true });
+  } else {
+    const parts = repoParts(slug);
+    html = { glance: parts.html.since, contents: parts.html.distribution + parts.html.report, over_time: parts.html.charts };
+    host.innerHTML = panelsHtml(html);
+    bindCollapsibles(host);
+    state.charts = [];
+    start = parts.mount(host, { canRead: () => started.has('contents'), split: true });
+  }
+  const run = {
+    glance: start.glance, contents: start.contents, over_time: start.overTime,
+  };
+  const fire = (tab) => {
+    if (started.has(tab) || stale()) return Promise.resolve();
+    started.add(tab);
+    return Promise.resolve(run[tab]()).catch((err) => {
+      const panel = host.querySelector(`[data-understanding-tab-panel="${tab}"]`);
+      if (panel) panel.insertAdjacentHTML('beforeend', `<p class="max-w-[70ch] text-answer text-state-warn"
+        data-understanding-error>Understanding could not be drawn: ${esc(err.message)}</p>`);
+    });
+  };
+  state.understandingTabs = { onTabShown: fire };
+  const shown = String(state.subTab || '').replace(/^understanding_/, '');
+  await fire(run[shown] ? shown : 'glance');
+}
+
+const PANEL_TABS = ['glance', 'contents', 'over_time'];
+function panelsHtml(html) {
+  const shown = String(state.subTab || '').replace(/^understanding_/, '');
+  const active = PANEL_TABS.includes(shown) ? shown : 'glance';
+  return PANEL_TABS.map((t) => `<div data-understanding-tab-panel="${t}"${t === active ? '' : ' hidden'}>${html[t]}</div>`).join('');
+}
+
+export async function loadChartsPane() {
+  const el = $('content');
+  if (!el) throw new Error('Understanding pane host missing: #content');
+  const slug = state.selectedSlug;
+
+  if (!slug) {
+    el.innerHTML = paneMessage('Select a resource',
+      'Pick a repository from the sidebar to see its charts.');
+    bindSubTabs();
+    return;
+  }
+
+
+  // NO sub-tab row here: this is the layout without the leading tabs (a file system, or the tabs switched off
+  // in stage-tabs.js). Understanding has no Search/Survey/Dashboard/
+  // Questions/Disposition — rendering the strip with "Questions" underlined
+  // while a chart is on screen says this pane is something it is not.
+  const entityType = apiEntityType(state.resourceType);
+  const repo = entityType === 'repo' ? repoParts(slug) : null;
+  el.innerHTML = `
+    <div class="mb-s4 font-heading text-subtab text-ink">
+      <span class="border-b border-accent pb-[2px]">Charts</span>
+      <span class="ml-s3 text-caps uppercase tracking-caps text-ink-muted">Understanding has one pane</span>
+    </div>
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>${repo
+    ? `${repo.html.since}
+    ${repo.html.charts}
+    ${repo.html.report}`
+    : '<div id="understanding-host"></div>'}`;
+  bindResourceHeader();
+  bindCollapsibles(el);
+  const repoStart = repo ? repo.mount(el) : null;
+  if (repoStart) repoStart.contents();
+
+  // A database has its own six charts (module section above); a file system
+  // has none yet and says so. Neither goes through the repo probe.
+  if (entityType !== 'repo') {
+    if (entityType === 'database') {
+      try {
+        await renderDatabaseUnderstanding(slug);
+      } catch (err) {
+        // A renderer that cannot draw says so in the pane, never nothing.
+        const host = $('understanding-host') || el;
+        host.insertAdjacentHTML('beforeend', `<p class="max-w-[70ch] text-answer text-state-warn"
+          data-understanding-error>Understanding could not be drawn: ${esc(err.message)}</p>`);
+      }
+    } else {
+      $('understanding-host').innerHTML = `<p class="max-w-[70ch] text-answer text-ink"
+        data-understanding-not-charted>${esc(FILE_SHARE_SENTENCE)}</p>`;
+    }
+    return;
+  }
+
+  repoStart.glance();   // PI-049 (not awaited, as before)
+  await repoStart.overTime();
 }

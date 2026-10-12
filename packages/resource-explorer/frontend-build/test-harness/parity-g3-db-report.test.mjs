@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { openAllUnderstandingTabs } from './understanding-tabs-kit.mjs';
 
 const SLUG = 'coco_pharma';
 const wait = (ms = 400) => new Promise((r) => setTimeout(r, ms));
@@ -89,6 +90,7 @@ async function setUp({ resourceType = 'db', stage = 'understanding', over = {}, 
   app.renderIntentNav();
   document.querySelector(`#intent-nav button[data-stage="${stage}"]`).click();
   await wait();
+  await openAllUnderstandingTabs(document, 50);
   return { document, window, app, ...stub };
 }
 
@@ -131,6 +133,7 @@ test('PI-037: the toggle is remembered in this browser and a throwing storage st
   // a fresh draw starts with the remembered state
   first.document.querySelector('#intent-nav button[data-stage="understanding"]').click();
   await wait();
+  await openAllUnderstandingTabs(first.document, 50);
   assert.equal(first.document.querySelector('[data-show-invalid]').checked, true);
   assert.equal(first.document.querySelectorAll('[data-survey-row]').length, 2);
 

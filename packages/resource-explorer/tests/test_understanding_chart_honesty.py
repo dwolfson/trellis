@@ -41,5 +41,6 @@ class TestNonRepoChartsAreHandledHonestly:
         """The repo branch must still probe every chart kind exactly as
         before -- this fix must not touch working behaviour for repos."""
         src = _source()
-        assert "REPO_CHARTS.map(async ([kind, label])" in src
+        assert "wanted.map(async ([kind, label])" in src
+        assert ": REPO_CHARTS;" in src  # with no kinds named, every chart kind is probed
         assert "await getChart(slug, kind)" in src

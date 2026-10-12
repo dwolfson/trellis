@@ -13,7 +13,7 @@
  * curate-tabs.js, which imports app.js back. */
 
 /** Per stage, the resource kinds that show the leading tabs. EMPTY = dormant for that stage. */
-export const STAGE_TABS_KINDS = { curate: ['repo'], understanding: [] };
+export const STAGE_TABS_KINDS = { curate: ['repo'], understanding: ['repo', 'db'] };
 
 /** Test hook: set the kinds that show a stage's tabs. */
 export function setStageTabsKinds(stage, kinds) {

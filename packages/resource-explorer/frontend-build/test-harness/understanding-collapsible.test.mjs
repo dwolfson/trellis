@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { openAllUnderstandingTabs } from './understanding-tabs-kit.mjs';
 
 const RUN = { run_id: 7, surveyed_at: '2026-09-28T14:02:00', source: 'local', surveyed_as: 'u' };
 const env = (x = {}) => ({ database: 'db1', run: RUN, state: 'measured', reasons: [], notes: [], scope: { checked: true, partial: false }, figure: null, ...x });
@@ -40,27 +41,29 @@ async function setUp({ storage } = {}) {
   app.renderIntentNav();
   document.querySelector('#intent-nav button[data-stage="understanding"]').click();
   await new Promise((r) => setTimeout(r, 500));
+  await openAllUnderstandingTabs(document);
   return { document, window };
 }
-const sections = (d) => [...d.querySelectorAll('#understanding-host > details[data-collapsible]')];
+const sections = (d) => [...d.querySelectorAll('#understanding-tabs-host [data-understanding-tab-panel] > details[data-collapsible]')];
 const norm = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
 test('every database section is collapsible, open by default, and the survey history is last', async () => {
   const { document } = await setUp();
   const ids = sections(document).map((d) => d.dataset.collapsible);
-  assert.deepEqual(ids, ['db-now', 'db-time', 'db-views', 'db-survey-history']);
+  // Page order across the three panels: At a glance, Contents (Now, Views), Over time (Over time, Survey history).
+  assert.deepEqual(ids, ['db-since', 'db-now', 'db-views', 'db-time', 'db-survey-history']);
   for (const d of sections(document)) {
     assert.ok(d.open, `${d.dataset.collapsible} defaults open`);
     assert.match(norm(d.querySelector(':scope > summary [data-collapse-cue]')), /▾ hide/);
   }
   assert.ok(sections(document).at(-1).hasAttribute('data-survey-history'));
   assert.match(norm(sections(document).at(-1)), /Survey history/);
-  assert.equal(document.querySelectorAll('#understanding-host h3').length, 4, 'one heading per section, none doubled');
+  assert.equal(document.querySelectorAll('#understanding-tabs-host h3').length, 5, 'one heading per section, none doubled');
 });
 
 test('folding a section changes its cue to "show" and is remembered in localStorage', async () => {
   const { document, window } = await setUp();
-  const d = sections(document)[1];
+  const d = document.querySelector('details[data-collapsible="db-time"]');
   d.open = false;
   d.dispatchEvent(new window.Event('toggle'));
   assert.match(norm(d.querySelector(':scope > summary [data-collapse-cue]')), /▸ show/);
@@ -77,6 +80,7 @@ test('a remembered closed section is closed on the next visit', async () => {
   await new Promise((r) => setTimeout(r, 200));
   document.querySelector('#intent-nav button[data-stage="understanding"]').click();
   await new Promise((r) => setTimeout(r, 500));
+  await openAllUnderstandingTabs(document);
   const byId = Object.fromEntries(sections(document).map((d) => [d.dataset.collapsible, d]));
   assert.equal(byId['db-views'].open, false);
   assert.match(norm(byId['db-views'].querySelector(':scope > summary [data-collapse-cue]')), /▸ show/);
@@ -85,7 +89,7 @@ test('a remembered closed section is closed on the next visit', async () => {
 
 test('KNOWN-NEGATIVE: with localStorage throwing, the page still draws, every section open', async () => {
   const { document, window } = await setUp({ storage: () => { throw new Error('blocked'); } });
-  assert.equal(sections(document).length, 4);
+  assert.equal(sections(document).length, 5);
   assert.ok(sections(document).every((d) => d.open));
   const d = sections(document)[0];
   d.open = false;

@@ -77,7 +77,7 @@ import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation, openCreateDialog as openNewInvestigationDialog } from '/static/next/stages/investigation.js';
 import { openInvestigationPicker, scopeActWording } from '/static/next/investigation-picker.js';
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
-import { loadChartsPane } from '/static/next/stages/understanding.js';
+import { loadChartsPane, renderUnderstandingTabs } from '/static/next/stages/understanding.js';
 import { renderCurate, jumpToCurateSection } from '/static/next/stages/curate.js';
 // Stage-specific leading tabs (Brief S0, dormant): the gate and ids are a leaf module, the label counts and the
 // running-commit line need `state`.
@@ -1516,13 +1516,14 @@ export function chartIsStale(dateStr) {
 // Part 2 §1) — imported below, alongside the other stage modules.
 
 /** Render one figure into the pane, themed from the token layer. */
-export async function drawChart(entry) {
-  const body = $('chart-body');
+export async function drawChart(entry, { bodyId = 'chart-body' } = {}) {
+  const body = $(bodyId);
+  const canvasId = bodyId === 'chart-body' ? 'chart-canvas' : `${bodyId}-canvas`;
   if (!body || !entry) return;
   body.innerHTML = `<div class="text-caveat text-ink-muted">Drawing ${esc(entry.label)}…</div>`;
   try {
     await loadScript('/static/vendor/plotly.min.js');
-    body.innerHTML = `<div id="chart-canvas" style="height:min(62vh,560px)"></div>
+    body.innerHTML = `<div id="${canvasId}" style="height:min(62vh,560px)"></div>
       <div class="mt-s2 text-provenance text-ink-muted">${esc(entry.label)} ·
         <span class="tnum">${entry.points}</span> observation(s) in
         <span class="tnum">${entry.traces}</span> series${
@@ -1535,7 +1536,7 @@ export async function drawChart(entry) {
       ${CHART_CAVEATS[entry.kind]
         ? `<div class="mt-s1 max-w-[70ch] text-caveat text-accent-ink">${esc(CHART_CAVEATS[entry.kind])}</div>`
         : ''}`;
-    await window.Plotly.newPlot($('chart-canvas'), timeAxisData(entry),
+    await window.Plotly.newPlot($(canvasId), timeAxisData(entry),
                                 chartLayout(chartAxes(entry)),
                                 { displaylogo: false, responsive: true });
   } catch (err) {
@@ -4001,6 +4002,24 @@ function curatePanelsMounted() {
     && isStageTabId(state.subTab) && !!$('content')?.querySelector('[data-curate-tab-panel]');
 }
 
+/** Is Understanding's tabbed pane on screen (its three panels in the document)? */
+function understandingPanelsMounted() {
+  return state.stage === 'understanding' && stageTabsOn('understanding', state.resourceType)
+    && isStageTabId(state.subTab) && !!$('content')?.querySelector('[data-understanding-tab-panel]');
+}
+
+/** Show one of Understanding's tabs: swap which panel is hidden, redraw the rail, and let the pane start the
+ *  reads that tab owns (once). Nothing already read is read again. Exported so a link inside the pane (the
+ *  section index) can reveal the tab that holds its target. */
+export function switchUnderstandingTab(tab) {
+  state.subTab = tab;
+  writeUrl();
+  const want = tab.replace(/^understanding_/, '');
+  $('content').querySelectorAll('[data-understanding-tab-panel]').forEach((p) => { p.hidden = p.dataset.understandingTabPanel !== want; });
+  refreshStageRail();
+  if (state.understandingTabs && state.understandingTabs.onTabShown) state.understandingTabs.onTabShown(want);
+}
+
 /** Redraw the rail (labels, counts, the running-commit line) in place. A no-op when the tabbed pane is not
  *  what is on screen. */
 export function refreshStageRail() {
@@ -4030,6 +4049,7 @@ export function bindSubTabs() {
 function bindSubTabsIn(el) {
   el.querySelectorAll('[data-subtab]').forEach((b) => { b.onclick = () => {
     if (curatePanelsMounted() && STAGE_TAB_IDS.curate.includes(b.dataset.subtab)) { switchCurateTab(b.dataset.subtab); return; }
+    if (understandingPanelsMounted() && STAGE_TAB_IDS.understanding.includes(b.dataset.subtab)) { switchUnderstandingTab(b.dataset.subtab); return; }
     state.subTab = b.dataset.subtab;
     writeUrl();
     loadPane();
@@ -5069,6 +5089,21 @@ async function loadStageTabPane() {
       const box = $('curate-host');
       if (box) box.innerHTML = `<div class="py-s3 text-answer text-accent-ink">Curate could not be drawn: ${esc(err.message)}</div>`;
     });
+    return;
+  }
+  if (state.stage === 'understanding' && slug && (state.resourceType === 'repo' || state.resourceType === 'db')) {
+    el.innerHTML = `<div data-rail-host>${subTabsHtml()}</div>
+      <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+      <div class="my-s3 h-px bg-rule"></div>
+      <div id="understanding-tabs-host"></div>`;
+    bindSubTabs();
+    bindResourceHeader();
+    await renderUnderstandingTabs(slug, state.resourceType === 'db' ? 'database' : 'repo');
+    return;
+  }
+  if (state.stage === 'understanding' && !slug) {
+    el.innerHTML = `${subTabsHtml()}${paneMessage('Select a resource', 'Pick a resource from the sidebar to see what it holds and how it has changed.')}`;
+    bindSubTabs();
     return;
   }
   el.innerHTML = `${subTabsHtml()}
@@ -8220,9 +8255,13 @@ async function loadPane() {
   // absent while its data sat one GET away.
   if (state.stage === 'understanding') {
     if (isStageTabActive(state.subTab)) { await loadStageTabPane(); renderPerspectiveRow(); return; }
-    await loadChartsPane();
-    renderPerspectiveRow();
-    return;
+    // With the leading tabs on for this kind, a shared tab (Questions, Survey & analyses, ...) is a real pane
+    // on the same rail and falls through to the sub-tab branches below, as on Curate.
+    if (!stageTabsOn('understanding', state.resourceType)) {
+      await loadChartsPane();
+      renderPerspectiveRow();
+      return;
+    }
   }
 
   // Automate is subscriptions/schedules, not questions -- its own two-tab

@@ -283,10 +283,12 @@ def _ranked_with_activity(registry, slug: str, run: dict, top: list[dict]) -> li
             activity[_qualified(a)] = a
     except Exception:  # an unreadable activity table is "not collected", not a failure of the chart
         activity = {}
+    from resource_explorer.statistics_currency import table_currency
     out = []
     for t in top:
         a = activity.get(_qualified(t))
         out.append({
+            "statistics": table_currency(a, run["surveyed_at"], table=t),
             "name": _qualified(t),
             "row_count": t.get("row_count"),
             "size_bytes": t.get("size_bytes"),
@@ -582,3 +584,58 @@ def table_growth(registry, slug: str, top: int = 10, limit: int = 30) -> dict:
         "layout": {"title": {"text": "Rows per table over runs"}, "xaxis": {"type": "date"}},
     }
     return env
+
+
+# ── statistics_currency (S4b: how current are the planner statistics) ───────
+
+
+def _currency_for_run(registry, slug: str, run: dict) -> tuple[dict | None, int]:
+    """(derived currency, activity-row count) for one run, from stored rows."""
+    from resource_explorer.statistics_currency import derive_statistics_currency
+    src = run.get("source") or None
+    tables = _table_rows(registry, slug, run)
+    activity = registry.query_detail_rows("database_table_activity", slug, run["surveyed_at"], src)
+    schemas = [s.get("schema_name") or "" for s in
+               registry.query_detail_rows("database_schemas", slug, run["surveyed_at"], src)]
+    if not tables:
+        return None, len(activity)
+    return derive_statistics_currency(tables, activity, run["surveyed_at"], schemas), len(activity)
+
+
+def statistics_currency(registry, slug: str, limit: int = 12) -> dict:
+    """Statistics currency of the latest run, and its counts across earlier runs.
+
+    Read-only, from `database_tables` / `database_table_activity` /
+    `database_schemas` rows already stored. A run with no activity rows is a
+    point with `measured: false`, never a count of zero.
+    """
+    runs = valid_runs(registry, slug, limit=limit)
+    env = _envelope(registry, slug, runs[0] if runs else None)
+    env.update({"currency": None, "history": []})
+    if not runs:
+        return _not_run(env, "never_surveyed", "No survey has run for this database.")
+    cur, n_act = _currency_for_run(registry, slug, runs[0])
+    if cur is None:
+        tables = _table_rows(registry, slug, runs[0])
+        t_state, t_note = section_state(registry, slug, runs[0], "tables", len(tables))
+        return _not_run(env, t_state if not _is_measured(t_state) else "no_tables", t_note)
+    if not n_act:
+        return _not_run(env, "no_table_activity",
+                        "The latest survey stored no table-activity rows, so statistics "
+                        "currency was not measured. This is not a finding that it is current.")
+    env["currency"] = cur
+    history = []
+    for run in reversed(runs):                       # oldest first
+        c, n = _currency_for_run(registry, slug, run)
+        point = {"run": run_ref(run), "measured": bool(c and n)}
+        if point["measured"]:
+            d = c["database"]
+            point.update({"tables": d["total"], "behind": d["behind"], "never": d["never"],
+                          "stale": d["stale"], "reset_tables": d["reset_tables"],
+                          "counters_reset": d["counters_reset"]})
+        history.append(point)
+    env["history"] = history
+    env["notes"].append(
+        f"Ages are measured at the survey time, not today. Stale means analyzed more than "
+        f"{cur['stale_days']} days before the survey.")
+    return _finish(registry, slug, env, True, [])
