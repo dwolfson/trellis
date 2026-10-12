@@ -196,7 +196,7 @@ def note_divergence(
             entity_slug=entity_slug,
             entity_name=entity_name or entity_slug,
             status="error",
-            summary=f"Egeria catalog link for '{entity_name or entity_slug}' is stale",
+            summary=f"Egeria link for '{entity_name or entity_slug}' is stale",
             detail=(
                 f"RE's stored Egeria GUID ({stale_guid or 'unknown'}) is not known to "
                 "the repository, so surveys and publishes for this resource will keep "
@@ -440,9 +440,9 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
                 registry=registry,
                 entity_type="repo",
                 entity_slug="",
-                entity_name="Egeria catalog links",
+                entity_name="Egeria links",
                 status="error",
-                summary=(f"{counts['stale']} Egeria catalog link(s) are stale "
+                summary=(f"{counts['stale']} Egeria link(s) are stale "
                          f"— Egeria was most likely reset"),
                 detail=(
                     f"A recheck sweep found {counts['stale']} of {counts['checked']} "

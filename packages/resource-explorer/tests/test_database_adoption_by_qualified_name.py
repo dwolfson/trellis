@@ -96,7 +96,7 @@ def test_host_a_sales_is_still_adopted_on_host_a(surveyor, egeria):
 
 
 def test_publishing_step_results_for_host_b_does_not_attach_to_host_a_sales(surveyor):
-    with pytest.raises(EgeriaDatabaseSurveyorError, match="not yet cataloged"):
+    with pytest.raises(EgeriaDatabaseSurveyorError, match="not yet published to Egeria"):
         surveyor.publish_step_annotations(_host_b_sales(), schema_info={}, statistics=None,
                                           surveyed_at="2026-10-09T00:00:00")
 
@@ -135,5 +135,5 @@ def test_a_host_change_says_which_host_egeria_holds_and_how_to_fix_it(surveyor):
                                           surveyed_at="2026-10-09T00:00:00")
     assert str(err.value) == (
         f"The database element in Egeria ({A_DB}) is named for host host-a:5432; this registration "
-        "says host host-a.internal:5432. Re-catalog the database, or correct the host (Egeria host) "
+        "says host host-a.internal:5432. Re-publish the database, or correct the host (Egeria host) "
         "on the registration.")

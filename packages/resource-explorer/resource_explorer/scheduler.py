@@ -800,8 +800,8 @@ def _run_local_db_survey(db, registry, analysis_id: str = "") -> tuple[str, str,
 def _run_egeria_native_db_survey(db, next_run: str) -> tuple[str, str, list[str]]:
     if not db.egeria_asset_guid:
         return (db.display_name, db.host, [
-            "Database is not yet cataloged in Egeria (no stored egeria_asset_guid) — "
-            "catalog/publish it first (Scouting's survey report or Curate), or run this "
+            "Database is not yet published to Egeria (no stored egeria_asset_guid) — "
+            "publish it first (Scouting's survey report or Curate), or run this "
             "survey manually, before scheduling the native re-survey."
         ])
 

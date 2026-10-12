@@ -599,7 +599,7 @@ def derive_native_state(run: dict | None, *, stored_annotation_count: int | None
 # ── the rows a resource shows ───────────────────────────────────────────────
 
 _NEEDS_CATALOGUING = (
-    "Not cataloged in Egeria yet -- the survey acts on the resource's Egeria "
+    "Not published to Egeria yet -- the survey acts on the resource's Egeria "
     "asset, and this resource has none. Publish it to Egeria first.")
 
 

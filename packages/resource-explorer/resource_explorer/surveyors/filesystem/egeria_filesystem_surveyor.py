@@ -302,7 +302,7 @@ class EgeriaFileSystemSurveyor:
         fs_guid = fs_entity.egeria_asset_guid or self._find_element_guid(canonical_mount)
         if not fs_guid:
             raise EgeriaFileSystemSurveyorError(
-                f"FileSystem '{fs_name}' is not yet cataloged in Egeria — cannot "
+                f"FileSystem '{fs_name}' is not yet published to Egeria — cannot "
                 "publish a Survey Definition step's results without an existing "
                 "asset to attach the SurveyReport to."
             )

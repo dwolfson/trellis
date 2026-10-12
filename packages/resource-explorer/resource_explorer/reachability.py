@@ -313,7 +313,7 @@ def check_filesystem_reachability(
             outcome="unknown",
             error_code="NOT_CATALOGED",
             error_detail=(
-                "This filesystem has not been cataloged in Egeria yet (no "
+                "This filesystem has not been published to Egeria yet (no "
                 "egeria_asset_guid) -- there is no Asset to run CHECK_ASSET "
                 "against."
             ),

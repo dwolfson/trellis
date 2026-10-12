@@ -159,7 +159,7 @@ def test_a_failed_outbox_row_does_not_outrank_a_newer_catalogued_proof(world, fa
         reg.mark_outbox_failed(ob["id"], "OutboxApplyError: stale failure")      # the read-back proof is newer than their creation
     d = derived(world)
     assert [d["schemas"][n]["state"] for n in ("sales", "archive")] == ["catalogued", "catalogued"]
-    assert "failed" not in d["header"]["text"] and "2 cataloged" in d["header"]["text"]
+    assert "failed" not in d["header"]["text"] and "2 published" in d["header"]["text"]
     assert d["tables"]["sales.orders"]["state"] == "catalogued"
 
 
@@ -180,7 +180,7 @@ def test_header_counts_agree_with_the_rows_catalogued_next_to_failed_is_impossib
     d = derived(world)
     states = [d["schemas"][n]["state"] for n in ("sales", "archive")]
     text = d["header"]["text"]
-    for st, word in (("catalogued", "cataloged"), ("failed", "failed")):
+    for st, word in (("catalogued", "published"), ("failed", "failed")):
         assert (f"{states.count(st)} {word}" in text) == (st in states)
 
 
@@ -544,7 +544,7 @@ def test_a_cataloged_schema_always_archives_even_with_nothing_asserted_on_it(wor
     _cataloged(world, fake, "sales")
     choose(world, "sales", "leave_out")
     row = cc.build_preview(world["registry"], "db", view(world), fake)["leave_out"][0]
-    assert row["form"] == gw.ARCHIVE and "2 cataloged tables hang off it" in row["text"]
+    assert row["form"] == gw.ARCHIVE and "2 published tables hang off it" in row["text"]
     assert row["hangs_off"]["by_type"] == {}                                                  # no steward link at all
 
 

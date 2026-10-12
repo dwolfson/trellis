@@ -28,7 +28,7 @@ def _require_author(request: Request, action: str) -> str:
     if not author:
         raise HTTPException(
             status_code=401,
-            detail=f"Sign in to {action}: a catalog scope choice needs an author.",
+            detail=f"Sign in to {action}: a scope choice needs an author.",
         )
     return author
 
@@ -90,7 +90,7 @@ async def read_scope(slug: str) -> dict:
     entity = registry.get_database(slug, allow_unreadable=True)
     guid = getattr(entity, "egeria_asset_guid", "") or ""
     view["egeria_element"] = {"guid": guid, "short": guid[:8],
-                              "text": guid[:8] if guid else "not cataloged in Egeria"}
+                              "text": guid[:8] if guid else "not published to Egeria"}
     return view
 
 
@@ -187,7 +187,7 @@ async def read_commit(slug: str, curation_id: str) -> dict:
     registry = _registry_for(slug)
     rec = Curations(registry).get(curation_id)
     if not rec or rec["entity_slug"] != slug:
-        raise HTTPException(status_code=404, detail="No such catalog commit")
+        raise HTTPException(status_code=404, detail="No such publish commit")
     return rec
 
 
@@ -234,7 +234,7 @@ async def put_depth(slug: str, body: DepthBody, request: Request) -> dict:
 
 @router.put("/{slug}/node")
 async def put_node(slug: str, body: NodeBody, request: Request) -> dict:
-    author = _require_author(request, "choose what gets cataloged")
+    author = _require_author(request, "choose what gets published")
     registry = _registry_for(slug)
     await _authorize(registry, slug)
     return await _run(scope.set_node_choice, registry, slug, author,
@@ -243,7 +243,7 @@ async def put_node(slug: str, body: NodeBody, request: Request) -> dict:
 
 @router.post("/{slug}/nodes")
 async def post_nodes(slug: str, body: BulkBody, request: Request) -> dict:
-    author = _require_author(request, "choose what gets cataloged")
+    author = _require_author(request, "choose what gets published")
     registry = _registry_for(slug)
     await _authorize(registry, slug)
     return await _run(scope.set_nodes_choice, registry, slug, author,

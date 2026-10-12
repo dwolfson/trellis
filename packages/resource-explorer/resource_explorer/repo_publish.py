@@ -596,7 +596,7 @@ def forget_links(registry, slug: str, author: str) -> dict:
 
 #: The one sentence the retired routes answer (HTTP 410). From DESIGN-FILE-TYPES-AS-ANNOTATIONS.md.
 FILE_TYPES_RETIRED_SENTENCE = ("file types are published as profile annotations in the survey report; "
-                               "files are cataloged by selection on Curate")
+                               "files are published by selection on Curate")
 
 #: What an earlier DataSet reads as. They stay in Egeria; nothing here deletes or archives one.
 RETIRED_DATASET_WORD = "retired mechanism · kept in Egeria"

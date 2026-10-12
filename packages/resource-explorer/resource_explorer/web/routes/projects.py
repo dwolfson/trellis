@@ -1138,7 +1138,7 @@ async def record_catalogue_depth_offer(slug: str, cid: str, body: CatalogueDepth
     curations = Curations(registry)
     rec = curations.get(cid)
     if not rec or rec.get("entity_slug") != slug:
-        raise HTTPException(status_code=404, detail=f"Catalog record {cid!r} not found for {slug!r}")
+        raise HTTPException(status_code=404, detail=f"Publish record {cid!r} not found for {slug!r}")
     try:
         return curations.record_layer2_offer(cid, body.outcome, decided_by)
     except ValueError as exc:
@@ -1705,8 +1705,8 @@ async def run_scoped_analysis(slug: str, analysis_id: str, body: ScopedAnalysisR
     if not sub_resource:
         raise HTTPException(
             status_code=404,
-            detail=f"'{body.locator}' is not a cataloged sub-resource of '{slug}' — "
-                   "catalog it first via POST /sub-resources/catalog.",
+            detail=f"'{body.locator}' is not a published sub-resource of '{slug}' — "
+                   "publish it first via POST /sub-resources/catalog.",
         )
 
     catalog_entry = next(
@@ -2082,7 +2082,7 @@ def curate_commit(slug: str, body: CurateSelection, request: Request) -> dict:
     user = get_current_user(request)
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
     if not author:
-        raise HTTPException(status_code=401, detail="Sign in to catalog — the record needs an author, and the asset an owner.")
+        raise HTTPException(status_code=401, detail="Sign in to publish — the record needs an author, and the asset an owner.")
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
