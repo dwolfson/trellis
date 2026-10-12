@@ -43,13 +43,18 @@ def kpi_counts(data: dict) -> dict:
     return {k["key"]: (k["value"], k["rows"]) for k in data["kpis"]}
 
 
-def test_tile_counts_and_subtitle_come_from_the_routine(tile, measured_url):
+def test_tile_counts_and_subtitle_come_from_the_routine(tile, measured_url, monkeypatch):
+    import trellis_analytics.portal as portal
+    rendered = []                       # the result the tile itself rendered, so the clock cannot tick between two runs
+    real = portal.curation_coverage
+    monkeypatch.setattr(portal, "curation_coverage", lambda *a, **k: rendered.append(real(*a, **k)) or rendered[-1])
     from trellis_analytics.readers.ods import OdsReader
     from trellis_analytics.routines import curation_coverage
     routine = curation_coverage(OdsReader(measured_url), "database", SLUG)
     out = tile(measured_url)
-    assert out["kind"] == "json"
+    assert out["kind"] == "json" and len(rendered) == 1
     data = out["data"]
+    assert data["manifest"]["as_of"] == rendered[0].envelope.measured_at      # from the envelope, not the clock
     assert kpi_counts(data) == counts_of(routine.to_dict())      # same counts and the same ids
     assert data["subtitle"].startswith("measured")
     assert data["provenance"].startswith(f"from trellis-analytics {__version__} · curation coverage · as of ")
