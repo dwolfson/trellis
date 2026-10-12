@@ -174,7 +174,9 @@ const cancelling = new Set();
 export function cancelControlHtml(row) {
   const r = row.run || {};
   const guid = r.engine_action_guid;
-  const live = r.state === 'running' && ['WAITING', 'IN_PROGRESS', 'REQUESTED', 'APPROVED', 'ACTIVATING'].includes(r.egeria_status);
+  // The server decides (`cancellable`: a single-action survey, Egeria's last read succeeded and said waiting or
+  // running). A process run, a registration or a failed last read never offers it.
+  const live = row.cancellable === true && r.state === 'running' && !r.error;
   const cue = guid && cancelCues.get(guid);
   const keep = cue && live
     ? `<div class="mt-[2px] text-provenance text-state-warn" data-native-cancel-cue><span class="font-glyph" aria-hidden="true">◐</span> ${esc(cue)}</div>` : '';
@@ -395,6 +397,10 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
         if (res.cancelled) {
           // Validated by the read-back, not by the 200: the repaint below is the server's own rows.
           paint(res.surveys);          // the row's own status now reads "✓ cancelled in Egeria"
+          if (res.note) {
+            const d = openDialog('Cancelled in Egeria', '');
+            d.querySelector('#wl-detail-body').innerHTML = `<p class="text-ink" data-native-cancel-note>${esc(res.note)}</p>`;
+          }
           return;
         }
         const why = res.read_error

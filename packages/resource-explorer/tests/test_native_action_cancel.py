@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from resource_explorer import native_survey_run as nsr
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -55,6 +56,8 @@ class Egeria:
         self.cancel_calls: list[tuple] = []         # (guid, user, token)
         self.reads: list[str] = []
         self.cancel_error: Exception | None = None
+        self.read_error: Exception | None = None     # every status read fails
+        self.reports: dict[str, str] = {}            # action guid -> report guid (ReportOriginator link)
         self.ignore_cancel = False                  # Egeria accepts the call and the action keeps going
 
     def classes(self):
@@ -82,9 +85,17 @@ class Egeria:
                 REAL_READ.bind(self, *a, **k)
                 guid = (a or [k.get("guid")])[0]
                 eg.reads.append(guid)
+                if eg.read_error:
+                    raise eg.read_error
                 return {"elementProperties": {"propertyValueMap": {
                     "activityStatus": {"symbolicName": eg.status[guid]},
                     "completionMessage": {"primitiveValue": ""}}}}
+
+            def get_related_metadata_elements(self, *a, **k):
+                guid = a[0]
+                if guid in eg.reports:
+                    return {"elementList": [{"element": {"elementGUID": eg.reports[guid]}}]}
+                return "No elements found"
 
         return AutomatedCuration, MetadataExpert
 
@@ -149,6 +160,17 @@ def _activity(registry):
     return rows
 
 
+G_PROC = "44444444-4444-4444-4444-444444444444"       # a process INSTANCE under a name no one configured
+G_REG = "55555555-5555-5555-5555-555555555555"        # the registration (Catalog and Survey) process
+CATALOG = "PostgreSQLDatabase:CreateAndSurveyGovernanceActionProcess"
+
+
+def _add_row(registry, guid, process_qn, started_as="", status="IN_PROGRESS"):
+    registry.record_native_survey_submission("database", "d", process_qn, "2026-10-02T01:41:00",
+                                             engine_action_guid=guid, submitted_by=USER, started_as=started_as)
+    registry.record_native_survey_readback(guid, read_at="2026-10-11T12:00:00", status=status)
+
+
 def _status(client, guid=G_OURS):
     rows = client.get("/api/native-surveys/database/d").json()["surveys"]
     return next(r for r in rows if r["qualified_name"] == SURVEY)["run"]
@@ -163,7 +185,7 @@ def test_success_cancels_as_the_caller_and_the_read_back_says_cancelled(web, ege
     # the write reached Egeria once, for this GUID, as THE PERSON (their token), never the daemon
     assert egeria.cancel_calls == [(G_OURS, USER, f"tok-{USER}")]
     # the read-back is the status refresh: it read the action and RE's row now carries what Egeria said
-    assert egeria.reads == [G_OURS, G_OURS]          # the liveness gate's fresh read, then the read-back
+    assert egeria.reads == [G_OURS] * 3              # the gate's fresh read, the read right before the write, the read-back
     row = next(x for x in registry.list_native_survey_runs("database", "d") if x["engine_action_guid"] == G_OURS)
     assert row["engine_action_status"] == "CANCELLED" and row["engine_action_read_at"] > "2026-10-11T12:00:01"
     run = next(s for s in body["surveys"] if s["qualified_name"] == SURVEY)["run"]
@@ -280,3 +302,119 @@ def test_a_guid_that_is_not_ours_is_logged_as_refused_with_the_person(web, egeri
     assert client.post(URL.format(G_OTHER)).status_code == 404
     last = _activity(registry)[-1]
     assert last["status"] == "error" and "refused" in last["summary"] and last["detail"]["cancelled_by"] == USER
+
+
+# ── round 3: fail closed everywhere (Egeria's cancel has no status guard) ──────────────────────────────
+
+def test_a_failed_fresh_read_refuses_even_though_egeria_says_completed(web, egeria, access, registry):
+    client, _ = web
+    egeria.status[G_OURS] = "COMPLETED"
+    egeria.read_error = RuntimeError("platform unreachable")
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 502 and "could not read Egeria's current status · not cancelled" in r.json()["detail"]
+    assert egeria.cancel_calls == []
+    last = _activity(registry)[-1]
+    assert last["status"] == "error" and last["detail"]["cancelled_by"] == USER
+
+
+def test_the_gate_itself_refuses_on_a_failed_read(registry):
+    """Unit: remove the gate's read-error check and this fails (the route test above is also covered by the
+    second read, so it cannot pin the gate alone)."""
+    from tests.test_native_survey_run import FakePort
+
+    port = FakePort()
+    port.actions[G_OURS] = ("IN_PROGRESS", "")
+    port.read_action_error = RuntimeError("down")
+    with pytest.raises(nsr.NativeStatusUnreadable):
+        nsr.cancel_gate(registry, port, "database", "d", G_OURS)
+
+
+def test_the_second_read_right_before_the_write_refuses_an_action_that_just_finished(registry):
+    from tests.test_native_survey_run import FakePort
+
+    class Racy(FakePort):
+        def __init__(self):
+            super().__init__()
+            self.cancelled = []
+
+        def read_action(self, guid):
+            r = super().read_action(guid)
+            if len([c for c in self.calls if c[0] == "read_action"]) == 1:
+                self.actions[guid] = ("COMPLETED", "done")     # finishes after the gate's read
+            return r
+
+        def cancel(self, guid):
+            self.cancelled.append(guid)
+
+    port = Racy()
+    port.actions[G_OURS] = ("IN_PROGRESS", "")
+    with pytest.raises(nsr.NativeSurveyCannotRun):
+        nsr.cancel_native_action(registry, port, "database", "d", G_OURS)
+    assert port.cancelled == []
+    port2 = Racy(); port2.actions[G_OURS] = ("IN_PROGRESS", "")
+    port2.read_action_error = None
+    # and a failed second read refuses too
+    calls = {"n": 0}
+    real = port2.read_action
+
+    def flaky(guid):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("down")
+        return real(guid)
+    port2.read_action = flaky
+    with pytest.raises(nsr.NativeStatusUnreadable):
+        nsr.cancel_native_action(registry, port2, "database", "d", G_OURS)
+    assert port2.cancelled == []
+
+
+@pytest.mark.parametrize("guid,name,stamp", [
+    (G_PROC, "SomeDiscoveredProcess::unlisted", "process"),      # stamped as a process instance
+    (G_PROC, "SomeDiscoveredProcess::unlisted", ""),             # an old row: the allowlist, not the denylist
+    (G_PROC, SURVEY, "process"),                                 # even under a listed name, the stamp wins
+    (G_REG, CATALOG, "process"),                                 # the registration
+    (G_REG, CATALOG, ""),
+])
+def test_only_a_single_action_survey_is_ever_sent_to_egeria(web, egeria, access, registry, guid, name, stamp):
+    client, _ = web
+    egeria.status[guid] = "IN_PROGRESS"
+    _add_row(registry, guid, name, stamp)
+    r = client.post(URL.format(guid))
+    assert r.status_code == 409, r.text
+    assert egeria.cancel_calls == [] and egeria.reads == []
+    assert _activity(registry)[-1]["detail"]["cancelled_by"] == USER
+
+
+def test_a_row_stamped_as_an_action_type_is_allowed_even_under_an_unlisted_name(web, egeria, access, registry):
+    client, _ = web
+    egeria.status[G_PROC] = "IN_PROGRESS"
+    _add_row(registry, G_PROC, "SomeDiscoveredSurvey::unlisted", "gov_action_type")
+    assert client.post(URL.format(G_PROC)).status_code == 200
+    assert egeria.cancel_calls[0][0] == G_PROC
+
+
+def test_each_row_says_whether_it_is_cancellable(web, egeria, access, registry):
+    client, _ = web
+    _add_row(registry, G_REG, CATALOG, "process")
+    rows = {r["qualified_name"]: r for r in client.get("/api/native-surveys/database/d").json()["surveys"]}
+    assert rows[SURVEY]["cancellable"] is True
+    assert rows[CATALOG]["cancellable"] is False
+    registry.record_native_survey_readback(G_OURS, read_at="2026-10-11T13:00:00", error="connection refused")
+    rows = {r["qualified_name"]: r for r in client.get("/api/native-surveys/database/d").json()["surveys"]}
+    assert rows[SURVEY]["cancellable"] is False              # the last read failed: not offered
+
+
+def test_a_cancel_that_lands_on_an_action_with_a_report_says_egeria_may_have_finished(web, egeria, access):
+    client, _ = web
+    egeria.reports[G_OURS] = "rep-9"
+    body = client.post(URL.format(G_OURS)).json()
+    assert body["cancelled"] is True and body["note"] == "Egeria may already have finished · the report may exist"
+
+
+def test_a_submitted_survey_is_stamped_as_started_by_an_action_type(registry):
+    import json
+
+    registry.record_native_survey_submission("database", "d", SURVEY, "2026-10-03T00:00:00", engine_action_guid="g9",
+                                             started_as=nsr.STARTED_AS_ACTION_TYPE)
+    row = next(r for r in registry.list_native_survey_runs("database", "d") if r["engine_action_guid"] == "g9")
+    assert json.loads(row["declared"]) == {"started_as": "gov_action_type"}

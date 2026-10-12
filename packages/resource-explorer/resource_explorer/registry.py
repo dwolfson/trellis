@@ -7221,7 +7221,7 @@ class ProjectRegistry:
     def record_native_survey_submission(
         self, entity_type: str, slug: str, process_qualified_name: str,
         surveyed_at: str, *, engine_action_guid: str = "", submit_error: str = "",
-        submitted_by: str = "",
+        submitted_by: str = "", started_as: str = "",
     ) -> None:
         """One step_runs row per SUBMISSION attempt. With a GUID it is proof
         Egeria accepted the action; without one it records that the attempt
@@ -7232,10 +7232,11 @@ class ProjectRegistry:
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, metrics, declared, "
                 "engine_action_guid, submit_error, submitted_by) "
-                "VALUES (?, ?, ?, ?, 'egeria', 'egeria', ?, '{}', '{}', ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, 'egeria', 'egeria', ?, '{}', ?, ?, ?, ?)",
                 (self._normalize_slug(slug), entity_type,
                  NATIVE_SURVEY_STEP_PREFIX + process_qualified_name, surveyed_at,
-                 process_qualified_name, engine_action_guid or "",
+                 process_qualified_name, json.dumps({"started_as": started_as}) if started_as else "{}",
+                 engine_action_guid or "",
                  submit_error or "", submitted_by or ""),
             )
 

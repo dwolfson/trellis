@@ -167,7 +167,6 @@ function groupRowsHtml(g, cols, prefix, count) {
   return sorted.slice(0, count).map((a) => rowHtml(a, cols, prefix)).join('');
 }
 
-/** One group: collapsed by default; the generic type description is the summary's hover title, once. */
 /** The honest rollup on the table group: how many real tables the survey's user could not see into. */
 function rollup(g) {
   if (g.kind !== 'table') return '';
@@ -177,6 +176,7 @@ function rollup(g) {
     fmtN(n)} of ${fmtN(real)} tables not visible to the survey's user</div>` : '';
 }
 
+/** One group: collapsed by default; the generic type description is the summary's hover title, once. */
 function groupHtml(g, prefix, cap) {
   const cols = SPECS[g.kind] || genericSpec(g.items);
   const unnamed = g.items.filter((a) => !nameOf(a)).length;

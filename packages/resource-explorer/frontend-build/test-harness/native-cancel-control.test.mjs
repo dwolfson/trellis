@@ -8,11 +8,13 @@ import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
 const SURVEY = 'PostgreSQLSurvey::survey-postgres-database';
 const GUID = 'eeeeeeee-1111-2222-3333-444444444444';
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
-const row = (run) => ({
+const row = (run, extra = {}) => ({
+  cancellable: ['IN_PROGRESS', 'WAITING', 'REQUESTED', 'APPROVED', 'ACTIVATING'].includes(run.egeria_status) && !run.error,
   qualified_name: SURVEY, display_name: 'Survey PostgreSQL Database', kind: 'survey_existing', description: '',
   runnable: true, cannot_run_reason: '', in_flight: ['running', 'submitted'].includes(run.state),
   run: { state: 'not_run', egeria_status: '', message: '', submitted_at: ago(3600e3), read_at: ago(60e3), report_at: '',
     report_guid: '', engine_action_guid: GUID, annotation_count: null, error: '', phase: '', stalled: false, ...run },
+  ...extra,
 });
 const RUNNING = row({ state: 'running', egeria_status: 'IN_PROGRESS', phase: 'running' });
 const CANCELLED = row({ state: 'failed', egeria_status: 'CANCELLED', message: 'cancelled in Egeria' });
@@ -65,9 +67,26 @@ test('the control shows while Egeria says waiting or running, and for nothing el
   assert.equal(ns.cancelControlHtml({ ...RUNNING, run: { ...RUNNING.run, engine_action_guid: '' } }), '');
 });
 
-test('Cancel stays offered when the last read failed but the stored status is live', async () => {
+test('Cancel is never offered when the server says the row is not cancellable, or the last read failed', async () => {
   const { ns } = await setUp();
-  assert.match(ns.cancelControlHtml(row({ state: 'running', egeria_status: 'IN_PROGRESS', error: 'connection refused' })), /data-native-cancel="/);
+  // a process run or the registration row: live status, but the server's allowlist says no
+  assert.equal(ns.cancelControlHtml(row({ state: 'running', egeria_status: 'IN_PROGRESS' }, { cancellable: false })), '');
+  // the last read failed: not offered even with a live stored status
+  assert.equal(ns.cancelControlHtml(row({ state: 'running', egeria_status: 'IN_PROGRESS', error: 'connection refused' })), '');
+  // and the control follows the server flag only
+  assert.equal(ns.cancelControlHtml({ ...RUNNING, cancellable: undefined }), '');
+  const reg = ns.nativeSurveyRowHtml({ ...RUNNING, kind: 'catalog_and_survey', cancellable: false });
+  assert.doesNotMatch(reg, /data-native-cancel/);
+});
+
+test('a cancel that lands on an action with a report tells the person Egeria may have finished', async () => {
+  const { document, ns, content } = await setUp();
+  stub({ [CANCEL_URL]: { cancelled: true, egeria_status: 'CANCELLED', note: 'Egeria may already have finished · the report may exist', surveys: [CANCELLED] } });
+  mount(ns, content, [RUNNING]);
+  content.querySelector('[data-native-cancel]').click();
+  content.querySelector('[data-native-cancel-yes]').click();
+  await wait(40);
+  assert.match(text(document.getElementById('wl-detail')), /Egeria may already have finished · the report may exist/);
 });
 
 test('"cancelling…" survives a poll repaint while the request is in flight', async () => {

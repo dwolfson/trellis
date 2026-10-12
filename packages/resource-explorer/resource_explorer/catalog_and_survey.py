@@ -774,7 +774,7 @@ def _register_steps(registry, port, entity_type, slug, technology_type, submitte
                 f"not be created. RE will not submit it again until you press {START_AGAIN_LABEL!r}.") from exc
         registry.record_native_survey_submission(
             entity_type, slug, process.qualified_name, submitted_at,
-            engine_action_guid=process_guid, submitted_by=submitted_by)
+            engine_action_guid=process_guid, submitted_by=submitted_by, started_as="process")
         _log_write(f"submitted {process.qualified_name} for {slug}: process instance {process_guid}")
         out["database"] = {"how": "submitted", "process_instance_guid": process_guid}
         run = registry.list_native_survey_runs(entity_type, slug, process.qualified_name)[0]
@@ -846,7 +846,7 @@ def _record_survey_action(registry, port, entity_type: str, slug: str, database_
         return
     registry.record_native_survey_submission(
         entity_type, slug, DATABASE_SURVEY_QN, _now(), engine_action_guid=guid,
-        submitted_by=submitted_by)
+        submitted_by=submitted_by, started_as="process")
 
 
 def refresh_registration_run(registry, port: RegistrationPort, run: dict, *, entity_type: str,

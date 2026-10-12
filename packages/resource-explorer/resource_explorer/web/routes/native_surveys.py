@@ -202,9 +202,9 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
     """Cancel one of this resource's waiting or running Egeria survey actions. An Egeria WRITE, and a person's
     direct act, so it runs as the signed-in CALLER (Brief I; never the daemon): nobody signed in is a 401.
 
-    Order, each step before the write: sign-in -> the GUID is one RE recorded for THIS resource (404
+    Fails CLOSED (Egeria's cancel has no status guard). Order, each step before the write: sign-in -> the GUID is one RE recorded for THIS resource (404
     otherwise; an arbitrary GUID is never sent) -> a fresh read: only a waiting or running action (409) -> Egeria's access rule for the engine action element
-    (`engine_action_cancel_access`; 403 with the reason) -> the cancel -> a read-back by the same status refresh
+    (`engine_action_cancel_access`; 403 with the reason) -> (a failed or unadvanced read is a 502, not a guess; a process or registration GUID is a 409) -> a second read right before the write -> the cancel (the sub-second window between that read and the write cannot be closed) -> a read-back by the same status refresh
     the poll uses. The answer says `cancelled` only when that read-back says CANCELLED."""
     from resource_explorer.egeria_clients import Caller, EgeriaRefused, refusal
     from resource_explorer.workflows.curate import engine_action_cancel_access
@@ -238,6 +238,9 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
     except nsr.NativeSurveyCannotRun as exc:
         refuse(process_qn, str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
+    except nsr.NativeStatusUnreadable as exc:
+        refuse(process_qn, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
     decision = await asyncio.to_thread(engine_action_cancel_access, registry, entity_type, slug, engine_action_guid)
     if not decision.allowed:
         refuse(process_qn, decision.reason)
@@ -254,6 +257,9 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
     except nsr.NativeSurveyCannotRun as exc:
         refuse(process_qn, str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
+    except nsr.NativeStatusUnreadable as exc:
+        refuse(process_qn, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
     except nsr.NativeSurveyError as exc:
         _log_activity(registry, entity_type, slug, process_qn, status="error",
                       summary=f"Egeria did not cancel action {engine_action_guid}: {exc}",
@@ -269,7 +275,8 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
         summary=(f"Cancelled Egeria action {engine_action_guid} on {slug}: Egeria now says {out['egeria_status']}"
                  if out["cancelled"] else
                  f"Asked Egeria to cancel action {engine_action_guid} on {slug}; the read-back says "
-                 f"{out['egeria_status'] or 'nothing'}{' (' + out['read_error'] + ')' if out['read_error'] else ''}"),
+                 f"{out['egeria_status'] or 'nothing'}{' (' + out['read_error'] + ')' if out['read_error'] else ''}")
+        + (f" · {out['note']}" if out["note"] else ""),
         detail={"engine_action_guid": engine_action_guid, "egeria_status": out["egeria_status"],
                 "access_basis": decision.basis, "cancelled_by": person})
     tech = _technology_type(entity_type)

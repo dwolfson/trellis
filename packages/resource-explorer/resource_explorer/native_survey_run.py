@@ -110,6 +110,47 @@ class NativeSurveyStale(NativeSurveyCannotRun):
     plainly; the row offers to register the server again."""
 
 
+class NativeStatusUnreadable(NativeSurveyError):
+    """Egeria's current status could not be read just now, so nothing is cancelled (fail closed). Route: 502."""
+
+
+#: How a run was started, stamped on its step_runs row (`declared` JSON; no column). Only an action started by
+#: `initiate_gov_action_type` is a single engine action that `cancelEngineAction` may be pointed at; a
+#: governance-action PROCESS returns a process-instance GUID, which is not an engine action.
+STARTED_AS_ACTION_TYPE = "gov_action_type"
+STARTED_AS_PROCESS = "process"
+
+
+def cancellable_kind(run: dict) -> bool:
+    """ALLOWLIST: may this row's GUID be handed to Egeria's engine-action cancel? Yes only for a single-action
+    survey: the row is stamped as started by a governance action type, or (an old row with no stamp) its process
+    is configured as KIND_SURVEY_EXISTING. Anything else -- a process instance, a registration, an unknown
+    process name -- is no."""
+    import json
+
+    from resource_explorer.surveyors.technology_type_processes import kind_of
+
+    try:
+        declared = json.loads(run.get("declared") or "{}")
+    except (ValueError, TypeError):
+        declared = {}
+    how = declared.get("started_as") if isinstance(declared, dict) else None
+    process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(NATIVE_SURVEY_STEP_PREFIX):]
+    kind = kind_of(process_qn)
+    if kind == KIND_CATALOG_AND_SURVEY:
+        return False
+    if how:
+        return how == STARTED_AS_ACTION_TYPE
+    return kind == KIND_SURVEY_EXISTING
+
+
+def cancel_offered(run: dict) -> bool:
+    """The row's `cancellable`: the allowlist AND Egeria's last read succeeded and said waiting or running."""
+    return bool(run.get("engine_action_guid")) and cancellable_kind(run) \
+        and (run.get("engine_action_status") or "") in ACTIVE_STATUSES \
+        and not (run.get("engine_action_read_error") or "")
+
+
 class NativeActionNotOurs(NativeSurveyError):
     """The engine action GUID is not one RE recorded for this resource. Nothing was sent to Egeria."""
 
@@ -663,6 +704,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "credentials": creds,
             "credentials_note": UNCONFIRMED_CREDENTIALS if creds == NOT_CONFIGURED else "",
             "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
+            "cancellable": bool(latest) and cancel_offered(latest),
             "run": derived,
             "reach_note": cas.reach_note_for(derived),
             "notes": (cas.server_credential_notes(registry, entity)
@@ -694,6 +736,7 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
     in_flight = cas.catalog_in_flight(derived, latest)
     live = entity is not None and hasattr(entity, "db_type") and not wiring
     return {
+        "cancellable": False,        # a registration is a process; its identifier is never an engine action
         "qualified_name": process.qualified_name,
         "display_name": process.display_name,
         "kind": process.kind,
@@ -870,12 +913,12 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
         error = scrub_secret(_short_error(exc), entity)
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
-            submit_error=error, submitted_by=submitted_by)
+            submit_error=error, submitted_by=submitted_by, started_as=STARTED_AS_ACTION_TYPE)
         raise NativeSurveyError(error) from exc
 
     registry.record_native_survey_submission(
         entity_type, slug, process_qualified_name, submitted_at,
-        engine_action_guid=engine_action_guid, submitted_by=submitted_by)
+        engine_action_guid=engine_action_guid, submitted_by=submitted_by, started_as=STARTED_AS_ACTION_TYPE)
     log.info("submitted native survey %s for %s/%s: engine action %s",
              process_qualified_name, entity_type, slug, engine_action_guid)
 
@@ -899,20 +942,33 @@ def own_action_run(registry, entity_type: str, slug: str, engine_action_guid: st
 
 
 def cancel_gate(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, engine_action_guid: str) -> dict:
-    """May this action still be cancelled? Ownership, then a FRESH read of Egeria's status (the poll's own
-    `refresh_run`), then the gate on that fresh status. Egeria's cancel writes CANCELLED with no status guard
-    (EngineActionHandler.cancelEngineAction :2431-2490), so a cancel sent for an action that finished since
-    the last poll would turn COMPLETED into CANCELLED and RE would never read in the report. A failed read
-    leaves the stored status, which is then all there is to go on. Returns the refreshed row."""
-    from resource_explorer.surveyors.technology_type_processes import kind_of
+    """May this action still be cancelled? FAIL CLOSED, because Egeria's cancel has no status guard
+    (EngineActionHandler.cancelEngineAction :2431-2490 writes CANCELLED unconditionally, so a cancel sent for an
+    action that finished would turn COMPLETED into CANCELLED and RE would never read in the report).
 
+    1. Ownership, then the allowlist (`cancellable_kind`): a single-action survey only; a process instance or a
+       registration is `NativeSurveyCannotRun` (409) with nothing read or sent.
+    2. A FRESH read (the poll's own `refresh_run`). If it failed, or the row's read time did not advance, the
+       current status is unknown: `NativeStatusUnreadable` (502, "could not read Egeria's current status ·
+       not cancelled"). The stored status is never trusted instead.
+    3. Only an action Egeria NOW reports as waiting or running passes (else 409).
+
+    Returns the refreshed row. A window remains between this read and the write (see `cancel_native_action`'s
+    second read, which narrows it to the round trip of one call; it cannot be closed, as Egeria offers no
+    conditional cancel)."""
     run = own_action_run(registry, entity_type, slug, engine_action_guid)
-    process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(NATIVE_SURVEY_STEP_PREFIX):]
-    if kind_of(process_qn) == KIND_CATALOG_AND_SURVEY:
-        raise NativeSurveyCannotRun("A registration is not cancelled from here: it is the optional step of "
-                                    "giving Egeria this database.")
+    if not cancellable_kind(run):
+        raise NativeSurveyCannotRun(
+            "Only a single-action survey can be cancelled from here; this one was started as a process or a "
+            "registration, whose identifier is not an engine action.")
+    before = run.get("engine_action_read_at") or ""
     refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
     fresh = own_action_run(registry, entity_type, slug, engine_action_guid)
+    err = fresh.get("engine_action_read_error") or ""
+    # "report read failed" is recorded only AFTER a successful status read of a finished action: the status is
+    # known. Any other read error means the status is not.
+    if (err and not err.startswith("report read failed")) or (fresh.get("engine_action_read_at") or "") <= before:
+        raise NativeStatusUnreadable(UNREADABLE_STATUS_WORDS)
     status = fresh.get("engine_action_status") or ""
     if status not in ACTIVE_STATUSES:
         raise NativeSurveyCannotRun(
@@ -920,23 +976,39 @@ def cancel_gate(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, e
     return fresh
 
 
+UNREADABLE_STATUS_WORDS = "could not read Egeria's current status · not cancelled"
+FINISHED_MAYBE_WORDS = "Egeria may already have finished · the report may exist"
+
+
 def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slug: str,
                          engine_action_guid: str, *, gated: bool = False) -> dict:
     """Cancel one of this resource's Egeria survey actions, and say what Egeria then reports.
 
-    1. Ownership, from RE's own step_runs (`own_action_run`): nothing else is ever sent.
-    2. `cancel_gate`: a fresh read, and only an action Egeria NOW reports as waiting or running can be
-       cancelled; anything else is `NativeSurveyCannotRun`. (`gated=True`: the caller already ran it.)
+    1. `cancel_gate` (ownership, allowlist, a fresh successful read, live): unless `gated=True`, the caller
+       already ran it.
+    2. A SECOND status read immediately before the write, in this same session: anything not live, or a failed
+       read, refuses (`NativeSurveyCannotRun` / `NativeStatusUnreadable`). The remaining window is one round
+       trip; Egeria has no conditional cancel, so it is narrowed, not closed.
     3. `port.cancel` (the write), as whoever the port acts as.
-    4. The read-back is the SAME status refresh the poll uses (`refresh_run`: read the action, record
-       status and time on the row). The result says `cancelled` only when that read says CANCELLED; an
-       accepted cancel that Egeria does not yet report is `cancelled: False` with Egeria's own word.
+    4. The read-back is the SAME status refresh the poll uses. `cancelled` only when it says CANCELLED. If it
+       does and the action already has a report, `note` says Egeria may have finished first.
 
-    Returns {cancelled, egeria_status, read_error, process_qualified_name}."""
+    Returns {cancelled, egeria_status, read_error, process_qualified_name, note}."""
     run = own_action_run(registry, entity_type, slug, engine_action_guid)
     process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(NATIVE_SURVEY_STEP_PREFIX):]
     if not gated:
         run = cancel_gate(registry, port, entity_type, slug, engine_action_guid)
+    elif not cancellable_kind(run):
+        raise NativeSurveyCannotRun("Only a single-action survey can be cancelled from here.")
+    try:
+        last = port.read_action(engine_action_guid)
+    except Exception as exc:  # noqa: BLE001
+        raise NativeStatusUnreadable(UNREADABLE_STATUS_WORDS) from exc
+    registry.record_native_survey_readback(engine_action_guid, read_at=_now(), status=last.status,
+                                           message=last.message)
+    if last.status not in ACTIVE_STATUSES:
+        raise NativeSurveyCannotRun(
+            f"Only a waiting or running action can be cancelled; Egeria now says {last.status}.")
     try:
         port.cancel(engine_action_guid)
     except Exception as exc:  # noqa: BLE001 -- the route reads __cause__ for an Egeria security refusal
@@ -946,9 +1018,16 @@ def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slu
     refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
     after = own_action_run(registry, entity_type, slug, engine_action_guid)      # THIS action's stored row
     now_status = after.get("engine_action_status") or ""
+    note = ""
+    if now_status == "CANCELLED":
+        try:
+            if port.report_guid_for_action(engine_action_guid):
+                note = FINISHED_MAYBE_WORDS
+        except Exception:  # noqa: BLE001 -- an unreadable report check adds no claim either way
+            pass
     return {"cancelled": now_status == "CANCELLED", "egeria_status": now_status,
             "read_error": after.get("engine_action_read_error") or "",
-            "process_qualified_name": process_qn}
+            "process_qualified_name": process_qn, "note": note}
 
 
 def refresh_resource(registry, port: EgeriaSurveyPort, entity_type: str, slug: str) -> int:
