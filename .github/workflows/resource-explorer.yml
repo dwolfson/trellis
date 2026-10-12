@@ -196,3 +196,9 @@ jobs:
         # platform is not something a job can stand up — so those stay skipped,
         # and their reasons are now printed by the run that already happened.
         run: uv run pytest tests/ -q --no-header -rs
+
+      - name: Analytic Library tests (trellis-analytics)
+        # Its routines read RE's registry through resolve_node_set, so its tests need resource_explorer installed;
+        # `--with-editable` layers the library on this job's environment without re-syncing it. Its scratch
+        # registries are temp SQLite (ProjectRegistry(db_path=...)), never this job's Postgres.
+        run: uv run --with-editable ../trellis-analytics pytest ../trellis-analytics/tests -q --no-header -rs
