@@ -97,6 +97,7 @@ import { mountSubResourcePanel } from '/static/next/stages/analysis.js';
 // comment for why it lives at this level rather than under stages/.
 import { toggleRfaDrawer } from '/static/next/rfa.js';
 import { openActivityPanel } from '/static/next/stages/activity.js';
+import { noticeActivity } from '/static/next/stages/activity.js';
 import { startActivityWatch } from '/static/next/activity-unread.js';
 import { installHealthBanner, installBootstrapBanner, openConnectionPopover } from '/static/next/shell-status.js';
 import { renderAutomate } from '/static/next/stages/automate.js';
@@ -6491,6 +6492,7 @@ export function stepPublishHtml(s) {
   let word = 'not published';
   if (/^published\b/i.test(state)) { kind = 'measured'; word = 'published'; }
   else if (/^publish failed\b/i.test(state)) { kind = 'error'; word = 'publish failed'; }
+  else if (/^publish queued\b/i.test(state)) { kind = 'queued'; word = 'publish queued'; }
   const g = GLYPH_STATES[kind];
   const title = `title="${esc(state)}"`;
   const glyph = esc(g.glyph);
@@ -6504,7 +6506,7 @@ export function stepPublishHtml(s) {
       + `<span class="text-state-ok font-glyph" aria-hidden="true">${glyph}</span> `
       + `<span class="text-ink-muted">${esc(word)}</span></span>`;
   }
-  return `<span class="text-provenance" data-step-publish="unclassified" ${title}>`
+  return `<span class="text-provenance" data-step-publish="${kind === 'queued' ? 'queued' : 'unclassified'}" ${title}>`
     + `<span class="text-ink-muted font-glyph" aria-hidden="true">${glyph}</span> `
     + `<span class="text-ink-muted">${esc(word)}</span></span>`;
 }
@@ -6526,9 +6528,14 @@ export async function openRunsList(slug) {
   }
   body.innerHTML = runs.slice(0, 12).map((r) => {
     let steps = [];
+    let runPublish = '';
     try {
       const d = typeof r.detail === 'string' ? JSON.parse(r.detail) : (r.detail || {});
       steps = d.steps || [];
+      // Backlog 7f.8: a database run publishes once, after its steps, so the
+      // word is the run's (`publish_state` in its detail), drawn beside the
+      // step count. A run that recorded none draws nothing.
+      runPublish = stepPublishHtml({ publish_state: d.publish_state });
     } catch (_) { /* a detail we cannot parse is a run with no step list */ }
     const ok = steps.filter((s) => s.status === 'ok').length;
     const bad = steps.filter((s) => s.status && s.status !== 'ok');
@@ -6540,7 +6547,8 @@ export async function openRunsList(slug) {
       ${steps.length ? `
         <div class="mt-s1 text-provenance text-ink-muted">
           <span class="text-state-ok">${ok} ran</span>${
-          bad.length ? ` · <span class="text-state-warn">${bad.length} did not</span>` : ''}</div>
+          bad.length ? ` · <span class="text-state-warn">${bad.length} did not</span>` : ''}${
+          runPublish ? ` · <span data-run-publish>${runPublish}</span>` : ''}</div>
         <ul class="m-0 mt-s1 list-none p-0 text-caveat">
           ${steps.map((s) => {
             // A step that did not complete `ok` FAILED -- that is `✕`
@@ -10201,7 +10209,12 @@ async function start() {
   startActivityWatch({
     doc: document,
     first: activity.status === 'fulfilled' && Array.isArray(activity.value) ? activity.value : [],
-    fetchEntries: () => listActivity(50),
+    // Backlog 7f.6: the same page also tells an open, idle Activity list that something new started or ended.
+    fetchEntries: async () => {
+      const entries = await listActivity(50);
+      noticeActivity(entries).catch(() => { /* the list keeps what it shows */ });
+      return entries;
+    },
     openPanel: (opts) => openActivityPanel(opts),
   });
   await loadPane();

@@ -31,6 +31,8 @@ import logging
 from datetime import datetime, timezone
 
 from resource_explorer.surveyors.survey_definition_executor import (
+    PUBLISH_NOT_CHOSEN,
+    PUBLISHED,
     ResourceTypeAdapter,
     register_adapter,
 )
@@ -129,9 +131,9 @@ def _trigger_egeria_native_survey(fs_entity, registry, step, **_) -> dict:
 
 
 #: The words a run's outcome carries about Egeria (Brief I round 5): a run that did not publish
-#: must never read like one whose publish failed.
-PUBLISH_NOT_CHOSEN = "local only · publish not chosen"
-PUBLISHED = "published to Egeria"
+#: must never read like one whose publish failed. `PUBLISH_NOT_CHOSEN` and `PUBLISHED` now live in
+#: survey_definition_executor (imported above, still importable from here), so the database run's
+#: publish word is the same vocabulary.
 
 
 def _run_egeria_adaptive(

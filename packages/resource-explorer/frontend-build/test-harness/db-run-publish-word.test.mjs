@@ -14,9 +14,9 @@ import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const dlgOf = (document) => document.getElementById('wl-detail');
 
-async function setUp(steps) {
+async function setUp(steps, extra = {}) {
   const { document, window } = makeDomEnvironment();
-  const detail = JSON.stringify({ steps });
+  const detail = JSON.stringify({ steps, ...extra });
   const runs = [{ id: 'r1', operation: 'survey', ts: new Date().toISOString(), status: 'ok', summary: 'Done', detail }];
   globalThis.fetch = async (url) => {
     const u = String(url);
@@ -104,4 +104,38 @@ test('a table line shows its index size, and "index not read" for a NULL, never 
   assert.match(flat(unread), /index not read/);
   assert.doesNotMatch(flat(unread), /index 0/);
   assert.doesNotMatch(flat(oldPayload), /index/);
+});
+
+/* Backlog 7f.8, the database run: its steps record no publish word (the run
+ * publishes once, after them), so the word is the run's own `publish_state`,
+ * drawn beside the step count. The Database Scouting Scan's steps say
+ * "answered by Prefect"; before this nothing on the run said the publish failed. */
+const scoutingSteps = ['postgres_schema_and_stats', 'postgres_operations', 'credential_capability']
+  .map((k) => ({ step: `GovActionProcessStep::DatabaseScoutingSurvey::${k}`, status: 'ok', answered_by: 'prefect' }));
+const runWord = (document) => dlgOf(document).querySelector('[data-run-publish] [data-step-publish]');
+
+test('a database run draws its own publish word: failed, not chosen, published', async () => {
+  const cases = [
+    ['publish failed · EGERIA_PLATFORM_URL is not set', 'error', /^✕ publish failed$/],
+    ['local only · publish not chosen', 'unclassified', /^· not published$/],
+    ['published to Egeria', 'measured', /^✓ published$/],
+    ['publish queued · the outbox sends it', 'queued', /^◔ publish queued$/],
+  ];
+  for (const [state, kind, shown] of cases) {
+    const { document, app } = await setUp(scoutingSteps, { publish_state: state, published: false });
+    await app.openRunsList('advisor');
+    const w = runWord(document);
+    assert.ok(w, `no run publish word for ${state}`);
+    assert.equal(w.dataset.stepPublish, kind);
+    assert.match(text(w), shown);
+    assert.equal(w.getAttribute('title'), state);
+    // the run word is the run's, not repeated on each step
+    assert.equal(dlgOf(document).querySelectorAll('[data-step-publish]').length, 1);
+  }
+});
+
+test('a run that recorded no publish_state draws no run word', async () => {
+  const { document, app } = await setUp(scoutingSteps, { published: false, errors: ['Failed to publish'] });
+  await app.openRunsList('advisor');
+  assert.equal(dlgOf(document).querySelectorAll('[data-run-publish]').length, 0);
 });

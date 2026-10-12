@@ -192,6 +192,37 @@ def _redactable(password, credential_scope: str) -> str:
 #: `answered_by` words an `egeria-adaptive` handler reports as `source`.
 _LOCAL_SOURCES = ("custom", "egeria-custom", "local")
 
+#: The words a run's outcome carries about Egeria (Brief I round 5; moved here
+#: from the filesystem adapter, which re-exports them, so the database run's
+#: word and the filesystem step's word are one vocabulary): a run that did not
+#: publish must never read like one whose publish failed. /next's
+#: `stepPublishHtml` classifies them by these leading words.
+PUBLISH_NOT_CHOSEN = "local only · publish not chosen"
+PUBLISHED = "published to Egeria"
+PUBLISH_FAILED = "publish failed"
+PUBLISH_QUEUED = "publish queued · the outbox sends it"
+NOTHING_TO_PUBLISH = "local only · no step produced results to publish"
+
+
+def run_publish_state(*, chosen: bool, had_outputs: bool, refusal: str,
+                      published: "bool | str", report_guid: str, error: str) -> str:
+    """The run's publish word, from the same variables `_execute`'s publish
+    block decided with (backlog 7f.8). `chosen` is "the resource has an
+    assigned Egeria project", which is what makes a run publish at all."""
+    if not chosen:
+        return PUBLISH_NOT_CHOSEN
+    if not had_outputs:
+        return NOTHING_TO_PUBLISH
+    if refusal:
+        return f"{PUBLISH_FAILED} · {refusal}"
+    if error:
+        return f"{PUBLISH_FAILED} · {error}"
+    if published == "queued":
+        return PUBLISH_QUEUED
+    if published is True and report_guid:
+        return PUBLISHED
+    return f"{PUBLISH_FAILED} · Egeria returned no report"
+
 
 def _annotate_step_provenance(steps_report: list, survey_def, user: str, credential_scope: str) -> None:
     """Add `answered_by` to every step entry, and `ran_as` to those that
@@ -1068,14 +1099,16 @@ class SurveyDefinitionExecutor:
         report_guid = ""
         published: bool | str = False
         refusal = ""
-        if step_outputs and self.registry.has_assigned_egeria_project(entity_type, slug):
+        publish_error = ""
+        publish_chosen = bool(self.registry.has_assigned_egeria_project(entity_type, slug))
+        if step_outputs and publish_chosen:
             # Brief Z2: the requester must be allowed to publish this resource, re-checked right before the write.
             from resource_explorer.workflows.curate import person_write_refusal
 
             refusal = person_write_refusal(self.registry, entity_type, slug)
             if refusal:
                 errors.append(f"Not published to Egeria: {refusal}")
-        if step_outputs and not refusal and self.registry.has_assigned_egeria_project(entity_type, slug):
+        if step_outputs and not refusal and publish_chosen:
             # Same per-run choice run_analysis() honours (project owner,
             # 2026-09-13) — "wait"/"background" from the caller override
             # RunsConfig.publish_inline for this run only; not asked (None,
@@ -1110,6 +1143,15 @@ class SurveyDefinitionExecutor:
                 msg = f"Failed to publish results to Egeria: {exc}"
                 log.exception(msg)
                 errors.append(msg)
+                publish_error = str(exc) or type(exc).__name__
+        # Backlog 7f.8: a database run says what happened to its publish as one
+        # word, from the variables above. Database only: a filesystem step
+        # already carries its own `publish_state` (its adaptive step publishes),
+        # and a second, run-level word could contradict it.
+        publish_state = run_publish_state(
+            chosen=publish_chosen, had_outputs=bool(step_outputs), refusal=refusal,
+            published=published, report_guid=report_guid, error=publish_error,
+        ) if entity_type == "database" else ""
 
         # Parity G2 (PI-016/PI-018): say which source answered each step, and
         # for a credential override say which steps ran as that user; then
@@ -1123,6 +1165,7 @@ class SurveyDefinitionExecutor:
 
             steps_report[:] = scrub(steps_report, _secret)
             errors[:] = scrub(errors, _secret)
+            publish_state = scrub(publish_state, _secret)
 
         # Record that this Survey Definition ran.
         #
@@ -1152,6 +1195,7 @@ class SurveyDefinitionExecutor:
                     "errors": errors,
                     "published": published,
                     "egeria_report_guid": report_guid,
+                    **({"publish_state": publish_state} if publish_state else {}),
                     # Whole-definition Prefect default (2026-09-28) — the
                     # /next pane's launchSurvey() status line names this
                     # directly, success or fallback, so a default run's
@@ -1187,6 +1231,7 @@ class SurveyDefinitionExecutor:
             "egeria_report_guid": report_guid,
             "engine_note": engine_note,
             "published": published,
+            **({"publish_state": publish_state} if publish_state else {}),
             # False when the run happened but could not be written to the
             # activity log — the card will say "Never run" and be wrong.
             "run_recorded": run_recorded,
