@@ -158,7 +158,8 @@ def confirmation(row: dict, unsettled: int = 0, run: dict | None = None) -> dict
         counts = {"egeria_count": done, "queued_count": queued, "capped": capped, "basis": "outbox"}
         if dead or unsent or done < queued:
             return {**out, **counts, "state": DIFFERS, "word": f"{published} · Egeria shows {done}"
-                    + (f" · {unsent} not sent" if unsent else "")}
+                    + (f" · {unsent} not sent" if unsent else "")
+                    + (f" · {capped} not sent (capped)" if capped else "")}
         return {**out, **counts, "state": CONFIRMED,
                 "word": f"{published} · confirmed" + (f" · {capped} not sent (capped)" if capped else "")}
     seen = row.get("annotations_in_egeria")

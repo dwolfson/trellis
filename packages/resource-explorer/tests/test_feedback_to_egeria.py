@@ -838,3 +838,9 @@ def test_r6_unreadable_items_are_said_apart_from_refusals(registry, egeria, monk
     out = press(registry, "alice")["feedback"]
     assert out["not_permitted"] == [] and len(out["unread"]) == 1
     assert out["unread"][0]["reason"].startswith("not sent · couldn't check access")
+
+
+def test_r7_a_capped_run_that_also_differs_says_both():
+    c = rp.confirmation({"word": "published", "read_at": "2026-10-11T16:36:00", "annotation_count": 5},
+                        run={"rows": 3, "done": 2, "dead": 1, "not_sent": 0, "unsettled": 0})
+    assert c["state"] == rp.DIFFERS and c["word"] == "published 10-11 · Egeria shows 2 · 2 not sent (capped)"

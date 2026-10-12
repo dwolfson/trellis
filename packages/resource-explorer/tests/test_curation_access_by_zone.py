@@ -691,7 +691,8 @@ class TestRound3:
 
 
 #: Brief F round 6: a write of `portal_role` in any form, a dict literal key or a subscript assignment.
-PORTAL_ROLE_WRITE = __import__("re").compile(r'["\']portal_role["\']\s*:|\[["\']portal_role["\']\]\s*=')
+PORTAL_ROLE_WRITE = __import__("re").compile(
+    r'["\']portal_role["\']\s*:|\[["\']portal_role["\']\]\s*=|\bportal_role\s*=(?!=)|setdefault\(\s*["\']portal_role')
 
 
 def test_f_r6_the_portal_role_guard_sees_a_subscript_write_too():
@@ -699,3 +700,6 @@ def test_f_r6_the_portal_role_guard_sees_a_subscript_write_too():
     assert PORTAL_ROLE_WRITE.search("target['portal_role']=x")
     assert PORTAL_ROLE_WRITE.search('{"portal_role": True}')
     assert not PORTAL_ROLE_WRITE.search('payload.get("portal_role")')
+    assert PORTAL_ROLE_WRITE.search('enqueue(portal_role=True)')
+    assert PORTAL_ROLE_WRITE.search('target.setdefault("portal_role", True)')
+    assert not PORTAL_ROLE_WRITE.search('if portal_role == True:')
