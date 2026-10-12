@@ -293,6 +293,8 @@ def test_egeria_accepted_but_not_recorded_locally_still_says_published(registry,
     accepted the report must not turn into "publish failed"."""
     registry.set_project_context("database", "advisor", status="linked", egeria_project_guid="p-1")
 
+    # Deliberate fault injection on a registry method (not a client fake): the
+    # local bookkeeping after an accepted publish is what must fail here.
     def broken(*_a, **_k):
         raise RuntimeError("registry write failed")
 
@@ -304,3 +306,35 @@ def test_egeria_accepted_but_not_recorded_locally_still_says_published(registry,
     assert stored["publish_state"].startswith(PUBLISHED_NOT_RECORDED), stored["publish_state"]
     assert stored["egeria_report_guid"] == "r-9"
     assert stored["published"] is True and result["published"] is True
+
+
+def _register_with_password(registry, password):
+    registry.register_database(DatabaseEntity(
+        slug="advisor", display_name="Advisor", db_type="postgresql",
+        host="localhost", port=5442, database_name="advisor",
+        db_user="surveyor", db_password=password))
+    registry.set_project_context("database", "advisor", status="linked", egeria_project_guid="p-1")
+    return registry.get_database("advisor")
+
+
+@pytest.mark.parametrize("password", ["e", "ish"])
+def test_a_short_password_inside_the_vocabulary_does_not_corrupt_published(registry, password):
+    entity = _register_with_password(registry, password)
+    with patch.object(EgeriaDatabaseSurveyor, "publish_step_annotations", autospec=True,
+                      return_value={"asset_guid": "a-1", "report_guid": "r-1", "annotation_count": 1}):
+        result = run_scouting_scan(registry, entity, runner_kwargs={})
+    assert result["publish_state"] == PUBLISHED
+    assert run_detail(registry)["publish_state"] == PUBLISHED
+
+
+@pytest.mark.parametrize("password", ["e", "ish"])
+def test_a_short_password_keeps_publish_failed_and_stays_masked_in_the_reason(registry, password):
+    entity = _register_with_password(registry, password)
+    with patch.object(EgeriaDatabaseSurveyor, "publish_step_annotations", autospec=True,
+                      side_effect=EgeriaDatabaseSurveyorError(f"login [{password}] refused")):
+        result = run_scouting_scan(registry, entity, runner_kwargs={})
+    word = run_detail(registry)["publish_state"]
+    assert word == result["publish_state"]
+    assert word.startswith("publish failed · "), word
+    reason = word[len("publish failed · "):]
+    assert f"[{password}]" not in reason and "[***]" in reason, reason

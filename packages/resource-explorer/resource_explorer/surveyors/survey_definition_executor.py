@@ -1189,12 +1189,13 @@ class SurveyDefinitionExecutor:
                             slug, report_guid, not_recorded)
                 errors.append(f"Published to Egeria ({report_guid}) but not recorded locally: {not_recorded}")
             except Exception as exc:
-                log.exception("Failed to publish results to Egeria")
                 if entity_type == "database":
                     publish_error = safe_publish_text(
                         str(exc) or type(exc).__name__, self._run_secrets(entity, runner_kwargs))
+                    log.error("Failed to publish results to Egeria: %s", publish_error)
                     errors.append(f"Failed to publish results to Egeria: {publish_error}")
                 else:
+                    log.exception("Failed to publish results to Egeria")
                     errors.append(f"Failed to publish results to Egeria: {exc}")
         # Backlog 7f.8: a database run says what happened to its publish as one
         # word, from the variables above. Database only: a filesystem step
@@ -1202,11 +1203,15 @@ class SurveyDefinitionExecutor:
         # and a second, run-level word could contradict it.
         publish_state = ""
         if entity_type == "database":
+            # The variable parts (refusal, error, not_recorded) were masked on
+            # the way in; masking the run's passwords over the WHOLE word would
+            # corrupt the fixed vocabulary when a short password is a substring
+            # of it ("e" in "published to Egeria"). Shape scrub + bound only.
             publish_state = safe_publish_text(run_publish_state(
                 chosen=publish_chosen, had_outputs=bool(step_outputs), refusal=refusal,
                 published=published, report_guid=report_guid, error=publish_error,
                 not_recorded=not_recorded,
-            ), self._run_secrets(entity, runner_kwargs))
+            ))
             # The stored flag agrees with the proof: no report guid, not published.
             published = bool(report_guid)
 
@@ -1222,7 +1227,7 @@ class SurveyDefinitionExecutor:
 
             steps_report[:] = scrub(steps_report, _secret)
             errors[:] = scrub(errors, _secret)
-            publish_state = scrub(publish_state, _secret)
+            # publish_state: its variable parts were masked with this password already.
 
         # Record that this Survey Definition ran.
         #
