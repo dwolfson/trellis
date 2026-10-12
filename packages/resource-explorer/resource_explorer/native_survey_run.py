@@ -1023,8 +1023,8 @@ def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slu
         try:
             if port.report_guid_for_action(engine_action_guid):
                 note = FINISHED_MAYBE_WORDS
-        except Exception:  # noqa: BLE001 -- an unreadable report check adds no claim either way
-            pass
+        except Exception as exc:  # noqa: BLE001 -- an unreadable report check adds no claim either way, but says so
+            note = f"couldn't check for a report ({type(exc).__name__})"
     return {"cancelled": now_status == "CANCELLED", "egeria_status": now_status,
             "read_error": after.get("engine_action_read_error") or "",
             "process_qualified_name": process_qn, "note": note}
