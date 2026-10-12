@@ -40,20 +40,20 @@ export function baseView(over = {}) {
     declared: { declared: false, by: '', at: '', kind: '', baseline_survey_at: '' },
     depth: {
       value: 'schemas_and_tables', declared: false, by: '', at: '',
-      help: "Egeria catalogues whole schemas with their tables and columns, and a shallower depth can't be asked for until Egeria has a depth option (S2), so a depth here changes this tree only.",
-      commit_note: 'The commit catalogues tables and columns for every chosen schema whatever depth is chosen: Egeria has no depth option yet (S2).',
+      help: "Egeria adds whole schemas with their tables and columns, and a shallower depth can't be asked for until Egeria has a depth option (S2), so a depth here changes this tree only.",
+      commit_note: 'The commit publishes tables and columns for every chosen schema whatever depth is chosen: Egeria has no depth option yet (S2).',
       options: [
-        { id: 'database_only', label: 'the database only', how: 'tree view only: shows the database alone · the commit still catalogues whole schemas' },
-        { id: 'schemas', label: 'schemas', how: 'tree view only: shows schemas · the commit still catalogues their tables and columns' },
-        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'tree view only: shows schemas and tables · the commit still catalogues their columns' },
-        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything: this is what the commit catalogues for each chosen schema' },
+        { id: 'database_only', label: 'the database only', how: 'tree view only: shows the database alone · the commit still publishes whole schemas' },
+        { id: 'schemas', label: 'schemas', how: 'tree view only: shows schemas · the commit still publishes their tables and columns' },
+        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'tree view only: shows schemas and tables · the commit still publishes their columns' },
+        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything: this is what the commit publishes for each chosen schema' },
       ],
     },
-    system: { folded: 3, text: 'not catalogued: system schemas are never offered' },
+    system: { folded: 3, text: 'not published: system schemas are never offered' },
     counts: { schemas_offered: 3, schemas_catalogue: 0, schemas_leave_out: 0, schemas_undecided: 3 },
     new_since: { declared: false, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' },
     // what the server derives from proof rows when nothing has been committed
-    commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet catalogued in Egeria' },
+    commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet published to Egeria' },
       database: null, collisions: [], schemas: {}, tables: {} },
     schemas: [
       schema('sales', [table('sales', 'orders'), table('sales', 'customers')]),
@@ -83,7 +83,7 @@ export function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/api/catalogue-scope/')) {
       if (method === 'POST' && u.endsWith('/commit')) {
-        if (!s.signedIn) return err(401, 'Sign in to catalog');
+        if (!s.signedIn) return err(401, 'Sign in to publish');
         if (s.holdCommit) await s.holdCommit;
         return ok({ curation: s.record || { id: 'cafe0123', state: 'queued', author: 'me', steps: [] }, run_id: 'r0000001' });
       }
@@ -97,7 +97,7 @@ export function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
       if (method === 'POST' && u.endsWith('/nodes') && s.holdPut) await s.holdPut;
       if (method === 'PUT' && s.failPut) return err(500, s.failPut);
       if (method === 'GET' && s.holdGet && !u.endsWith('/commit-preview')) await s.holdGet;
-      if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalogue'], button: 'Catalogue · 0 schemas', leave_out: [], refused: [], collisions: [] });
+      if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to publish'], button: 'Publish · 0 schemas', leave_out: [], refused: [], collisions: [] });
       if (method === 'GET') return ok(s.view);
       if (!s.signedIn) return err(401, 'Sign in to change the scope');
       if (!s.dropWrites) {

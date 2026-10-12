@@ -13,7 +13,7 @@ const { commitPanelHtml, commitWhyNot } = await import('/static/next/stages/cura
 const REASON = 'zone finance-zone does not grant dana attach in Egeria';
 const L = (id, mechanism, text) => ({ id, mechanism, text });
 const base = (over = {}) => ({
-  can_commit: true, button: 'Catalog · 1 schema', blockers: [], attach: ['archive'], refused: [], collisions: [],
+  can_commit: true, button: 'Publish · 1 schema', blockers: [], attach: ['archive'], refused: [], collisions: [],
   not_permitted: [
     { schema: 'sales', write: 'attach', reason: REASON, words: `not permitted · ${REASON}`, text: `sales: not permitted · ${REASON}` },
     { schema: 'hr', write: 'leave out', reason: REASON, words: `not permitted · ${REASON}`, text: `hr: not permitted · ${REASON}` },

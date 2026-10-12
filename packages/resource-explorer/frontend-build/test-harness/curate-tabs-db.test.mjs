@@ -18,9 +18,9 @@ import { baseView, schema, table, person, wait, flat } from './scope-test-kit.mj
 
 globalThis.CSS = globalThis.CSS || { escape: (v) => String(v).replace(/(["\\\]\[])/g, '\\$1') };
 
-const COMMITTED_TEXT = 'Database element d0000001 in Egeria · published 10-05 09:00 · 1 schema chosen: 1 cataloged';
+const COMMITTED_TEXT = 'Database element d0000001 in Egeria · published 10-05 09:00 · 1 schema chosen: 1 published';
 const preview = () => ({
-  can_commit: true, button: 'Catalog · 1 schema', blockers: [], blocked_schemas: [], blocked_notes: [],
+  can_commit: true, button: 'Publish · 1 schema', blockers: [], blocked_schemas: [], blocked_notes: [],
   attach: ['sales'], refused: [], leave_out: [], collisions: [],
   survey: { schemas: ['sales'], not_scopable: [], line: "Egeria's survey is limited to your chosen schemas" },
   manifest: { lines: [], schema_targets: 1, new_targets: 1, survey_schemas: ['sales'], zones: [], owner: '', whole_schemas_line: 'whole schemas' },

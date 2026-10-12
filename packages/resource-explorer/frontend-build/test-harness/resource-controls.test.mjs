@@ -670,7 +670,7 @@ test('source scan: no resource-removal label or tooltip in static/next says "del
     /\bdelete [\w$]+(\.[\w$]+|\[[^\]]+\])+\s*;/,   // the JS `delete` OPERATOR on a property: `delete a.b[c];` (a label has no `.`/`[` after its first word)
     /\.delete\(/,                              // Map/Set methods
     /data-delete[\w-]*/,                       // attribute names
-    /delete: 'deletes a catalog entry'/,       // Egeria process-kind label (a different object)
+    /delete: 'deletes an Egeria entry'/,       // Egeria process-kind label (a different object)
     /nothing (is|was) deleted|Nothing is deleted|does not delete|is not deleted|never deletes/i,  // effect sentences
     /delete its local survey records|delete their local survey records|delete all (its|their) local survey data/, // removeConfirmationHtml
     /window\.confirm\(`Close /,                // investigation close: "Nothing is deleted"

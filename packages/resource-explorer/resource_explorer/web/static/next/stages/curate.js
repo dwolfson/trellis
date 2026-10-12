@@ -73,7 +73,7 @@ export const CATALOG_SENTENCE =
   + 'tick the box under the button to re-survey the stale steps first.';
 
 const CURATE_COLUMNS = [
-  { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in the catalog', pick: true },
+  { key: 'what_it_is',    title: 'what it is',      sub: 'each confirmed line becomes an entity in Egeria', pick: true },
   { key: 'what_it_holds', title: "what's in it",    sub: 'each becomes its own asset, related to this one' },
   { key: 'made_of',       title: "what it's made of", sub: 'components, with ports and wires derived — review stays on Architecture verdicts' },
   { key: 'relates',       title: 'how it relates',  sub: '' },
@@ -397,7 +397,7 @@ export function curateWritesHtml(plan, picks, subCount, containers = 0) {
     : `no authored classifications — nothing set on the Enrichment pane yet`);
   lines.push(w.owner?.value
     ? `Owner · ${esc(w.owner.value)}${w.owner.interim ? ' · interim' : ''}`
-    : `Owner · the person who catalogs, as interim`);
+    : `Owner · the person who publishes, as interim`);
   lines.push(w.licence ? `License · ${esc(w.licence)}` : `License · not confirmed on the Enrichment pane`);
   lines.push(`<span class="tnum">${w.survey_reports_linked || 0}</span> survey report${w.survey_reports_linked === 1 ? '' : 's'} already linked, not copied${
     w.last_published_at ? ` · last <span class="tnum">${esc(ago(w.last_published_at))}</span>${
@@ -427,7 +427,7 @@ function curateRecordHtml(rec, open = false) {
     ${commitResultHtml(rec, rec.proof_summary || null)}
     <details class="mt-s1" data-commit-details ${open ? 'open' : ''}><summary class="cursor-pointer text-provenance text-ink-muted">details ▸</summary>
     ${commitHeaderHtml(rec)}
-    <div class="text-provenance text-ink-muted">cataloged by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
+    <div class="text-provenance text-ink-muted">published by ${esc(rec.author)} · <span class="tnum">${esc(ago(rec.requested_at))}</span>
       · ${esc(rec.state)}${rec.state === 'running' || rec.state === 'queued' ? ' · runs in the worker, not here' : ''}</div>
     <ol class="list-none pl-0">${(rec.steps || []).map((st, i) => `<li class="flex items-baseline gap-s2 text-caveat" data-commit-step="${esc(st.name)}" data-state="${esc(st.state)}">
       <span class="tnum text-ink-muted">${i + 1}.</span>
@@ -637,7 +637,7 @@ export async function renderCurate(slug) {
     };
     if (activeCurateTab() === 'curate_structure') startRules();
     bands.push(renderCatalogueScope(scopeEl, slug).catch((err) => {
-      if (scopeEl && scopeEl.isConnected) scopeEl.innerHTML = `<div class="text-caveat text-state-warn">The catalog scope could not be drawn: ${esc(err.message)}</div>`;
+      if (scopeEl && scopeEl.isConnected) scopeEl.innerHTML = `<div class="text-caveat text-state-warn">The scope could not be drawn: ${esc(err.message)}</div>`;
     }));
     await Promise.all(bands);
   }
@@ -657,7 +657,7 @@ export async function renderCurate(slug) {
       bands.push(renderCatalogueScope(host.querySelector('[data-curate-scope]'), slug)
         .catch((err) => {
           const slot = host.querySelector('[data-curate-scope]');
-          if (slot && slot.isConnected) slot.innerHTML = `<div class="text-caveat text-state-warn">The catalog scope could not be drawn: ${esc(err.message)}</div>`;
+          if (slot && slot.isConnected) slot.innerHTML = `<div class="text-caveat text-state-warn">The scope could not be drawn: ${esc(err.message)}</div>`;
         }));
     }
     await Promise.all(bands);
@@ -772,7 +772,7 @@ export async function renderCurate(slug) {
     const keepScroll = host.querySelector('[data-scope-rows]')?.scrollTop || 0;
     const populationSentence = `Only worthy things get curated. Curate's population is
         disposition <em>tracking</em> or <em>using</em>; this one is <em>${esc(plan.disposition)}</em>. Set its disposition (header, or the Disposition
-        sub-tab) and this screen commits. Everything below still shows what the catalog would learn.`;
+        sub-tab) and this screen commits. Everything below still shows what Egeria would learn.`;
     // Describe and publish: the header line, and the population as a cue and a short word (the sentence on demand).
     hosts.describe.innerHTML = `
       <div class="mb-s2 text-caveat text-ink-muted">
@@ -796,7 +796,7 @@ export async function renderCurate(slug) {
         `<span class="text-provenance text-ink-muted">testimony copied · measurements linked · unresolved things travel</span>`,
         `${curateWritesHtml(plan, [...picks], (scope.view?.manifest?.files || 0) + (scope.view?.manifest?.folders || 0), scope.view?.manifest?.containers || 0)}
       <div class="mt-s3 max-w-[70ch] text-caveat text-ink-muted">What keeps it current: ${esc(plan.keeps_current)}</div>
-      <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On cataloging, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
+      <div class="mt-s1 max-w-[70ch] text-caveat text-ink-muted">On publishing, this repository becomes an asset the rest of Egeria can see. Reversing this needs a correction, which stays on the record.</div>
       <div class="mt-s3">${repoCommitPanelHtml({
         plan, picks, scope: scope.view, fileTypePicks: curateFileTypePicks(), me,
         resurvey: !!state.curate.resurvey, sentence: CATALOG_SENTENCE, rec: current, ps: current ? (current.proof_summary || null) : null })}</div>
@@ -1078,10 +1078,10 @@ async function renderCatalogueDepthOffer(slug, host) {
   slot.innerHTML = `
     <div data-catalogue-depth-offer class="mt-s3 border-t border-rule pt-s2">
       <div class="text-caveat text-ink"><span class="tnum">${offer.total_components}</span> component${offer.total_components === 1 ? '' : 's'} recovered ·
-        <span class="tnum">${offer.remaining_components}</span> not cataloged.</div>
+        <span class="tnum">${offer.remaining_components}</span> not published.</div>
       <div class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat">
         <button data-catalogue-depth="accepted" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
-          >catalog the next layer · <span class="tnum">${offer.remaining_components}</span> component${offer.remaining_components === 1 ? '' : 's'} · ${priceLine()} ›</button>
+          >publish the next layer · <span class="tnum">${offer.remaining_components}</span> component${offer.remaining_components === 1 ? '' : 's'} · ${priceLine()} ›</button>
         <button data-catalogue-depth="declined" class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">Not now</button>
         <span data-catalogue-depth-status class="text-provenance text-ink-muted"></span>
       </div>
@@ -1097,7 +1097,7 @@ async function renderCatalogueDepthOffer(slug, host) {
       return;
     }
     if (outcome === 'declined') {
-      box.innerHTML = `<div class="text-provenance text-ink-muted">not now · on the catalog record</div>`;
+      box.innerHTML = `<div class="text-provenance text-ink-muted">not now · on the publish record</div>`;
     } else {
       box.remove();
       document.getElementById('component-tree')?.scrollIntoView({ behavior: 'smooth', block: 'start' });

@@ -54,20 +54,20 @@ function baseView(over = {}) {
     declared: { declared: false, by: '', at: '', kind: '', baseline_survey_at: '' },
     depth: {
       value: 'schemas_and_tables', declared: false, by: '', at: '',
-      help: "Egeria catalogs whole schemas with their tables and columns, and a shallower depth can't be asked for until Egeria has a depth option (S2), so a depth here changes this tree only.",
-      commit_note: 'The commit catalogs tables and columns for every chosen schema whatever depth is chosen: Egeria has no depth option yet (S2).',
+      help: "Egeria adds whole schemas with their tables and columns, and a shallower depth can't be asked for until Egeria has a depth option (S2), so a depth here changes this tree only.",
+      commit_note: 'The commit publishes tables and columns for every chosen schema whatever depth is chosen: Egeria has no depth option yet (S2).',
       options: [
-        { id: 'database_only', label: 'the database only', how: 'tree view only: shows the database alone · the commit still catalogs whole schemas' },
-        { id: 'schemas', label: 'schemas', how: 'tree view only: shows schemas · the commit still catalogs their tables and columns' },
-        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'tree view only: shows schemas and tables · the commit still catalogs their columns' },
-        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything: this is what the commit catalogs for each chosen schema' },
+        { id: 'database_only', label: 'the database only', how: 'tree view only: shows the database alone · the commit still publishes whole schemas' },
+        { id: 'schemas', label: 'schemas', how: 'tree view only: shows schemas · the commit still publishes their tables and columns' },
+        { id: 'schemas_and_tables', label: 'schemas and tables', how: 'tree view only: shows schemas and tables · the commit still publishes their columns' },
+        { id: 'tables_and_columns', label: 'tables and columns', how: 'everything: this is what the commit publishes for each chosen schema' },
       ],
     },
-    system: { folded: 3, text: 'not cataloged: system schemas are never offered' },
+    system: { folded: 3, text: 'not published: system schemas are never offered' },
     counts: { schemas_offered: 3, schemas_catalogue: 0, schemas_leave_out: 0, schemas_undecided: 3 },
     new_since: { declared: false, schemas: 0, tables: 0, tables_in_known_schemas: 0, schema_names: [], text: '' },
     // what the server derives from proof rows when nothing has been committed
-    commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet cataloged in Egeria' },
+    commit: { header: { state: 'not_committed', text: 'Saved in Resource Explorer · not yet published to Egeria' },
       database: null, collisions: [], schemas: {}, tables: {} },
     schemas: [
       schema('sales', [table('sales', 'orders'), table('sales', 'customers')]),
@@ -97,7 +97,7 @@ function makeServer(view, { signedIn = true, dropWrites = false } = {}) {
     const err = (status, detail) => ({ ok: false, status, statusText: detail, json: async () => ({ detail }) });
     if (u.includes('/api/catalogue-scope/')) {
       if (method === 'GET' && u.endsWith('/commits/latest')) return ok({ commit: null, terminal: null, age_hours: null, stale_unfinished: false, states: {} });
-      if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalog'], button: 'Catalog · 0 schemas', leave_out: [], refused: [], collisions: [] });
+      if (method === 'GET' && u.endsWith('/commit-preview')) return ok(s.preview || { manifest: { lines: [] }, can_commit: false, blockers: ['nothing to commit: choose at least one schema to publish'], button: 'Publish · 0 schemas', leave_out: [], refused: [], collisions: [] });
       if (method === 'GET') return ok(s.view);
       if (!s.signedIn) return err(401, 'Sign in to change the scope');
       if (!s.dropWrites) {
@@ -196,9 +196,9 @@ test('the scope is on Contents; the two waiting sections and the dependencies li
   const structure = document.querySelector('[data-curate-tab-panel="structure"]');
   assert.deepEqual([...contents.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['scope']);
   assert.deepEqual([...structure.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['glossary', 'schema-match', 'dependencies']);
-  assert.match(flat(contents.querySelector('[data-curate-work="scope"]')), /^What gets cataloged/);
-  assert.match(flat(structure.querySelector('[data-curate-work="glossary"]')), /and the tables to be cataloged first \(on Contents\)/);
-  assert.match(flat(structure.querySelector('[data-curate-work="schema-match"]')), /and the tables to be cataloged first \(on Contents\)/);
+  assert.match(flat(contents.querySelector('[data-curate-work="scope"]')), /^What gets published/);
+  assert.match(flat(structure.querySelector('[data-curate-work="glossary"]')), /and the tables to be published first \(on Contents\)/);
+  assert.match(flat(structure.querySelector('[data-curate-work="schema-match"]')), /and the tables to be published first \(on Contents\)/);
   assert.equal(document.querySelectorAll('#curate-host table').length, 0, 'never a <table>');
 });
 
@@ -236,11 +236,11 @@ test('header, undeclared and never measured: says not measured yet, and an uncat
     survey: { state: 'not_measured', schema_count: null, table_count: null, surveyed_at: '', report_guid: '' },
     sources: { chosen: { kind: 'local', as_of: '', schemas: 0, tables: 0, merged: false },
       egeria: { state: 'not_measured' }, local: { state: 'not_measured' }, disagree: false, unreadable: 0 },
-    egeria_element: { guid: '', short: '', text: 'not cataloged in Egeria' },
+    egeria_element: { guid: '', short: '', text: 'not published to Egeria' },
   }));
   assert.equal(flat(document.querySelector('[data-scope-header]')),
     "Your scope: none declared yet · Egeria's latest survey: not measured yet");
-  assert.match(flat(document.querySelector('[data-scope-tree-header]')), /not cataloged in Egeria/);
+  assert.match(flat(document.querySelector('[data-scope-tree-header]')), /not published to Egeria/);
 });
 
 const declaredView = () => baseView({
@@ -258,7 +258,7 @@ test('header, declared: collapsed by default to one line of essentials, a real b
   assert.equal(document.querySelector('[data-scope-body]').hidden, true);
   // the marker is the server's derived state (curate-catalogue-commit.test.mjs covers its changes)
   assert.equal(flat(document.querySelector('[data-scope-saved-marker]')),
-    'Saved in Resource Explorer · not yet cataloged in Egeria');
+    'Saved in Resource Explorer · not yet published to Egeria');
 });
 
 test('header, declared: a click expands to the whole scope and the header is the full sentence', async () => {
@@ -285,7 +285,7 @@ test('depth line: four depths, each honest that a depth is a tree view and the c
   assert.deepEqual(radios.map((r) => r.dataset.scopeDepthRadio), ['database_only', 'schemas', 'schemas_and_tables', 'tables_and_columns']);
   assert.equal(radios.find((r) => r.checked).dataset.scopeDepthRadio, 'schemas_and_tables');
   assert.match(flat(document.querySelector('[data-scope-depth]')), /the database only.*schemas.*schemas and tables.*tables and columns/);
-  assert.match(flat(document.querySelector('[data-scope-depth-how]')), /the commit still catalogs their columns/);
+  assert.match(flat(document.querySelector('[data-scope-depth-how]')), /the commit still publishes their columns/);
   assert.match(flat(document.querySelector('[data-scope-depth-help]')), /changes this tree only/);
   assert.match(flat(document.querySelector('[data-scope-depth-commit-note]')), /whatever depth is chosen: Egeria has no depth option yet \(S2\)/);
   // the Catalogue button lives in its own panel under the tree, never inside it
@@ -311,11 +311,11 @@ test('column depth: column rows appear under an opened table', async () => {
 
 test('shallower depth: no column rows, and a table says which level the depth excludes', async () => {
   const shallow = baseView();
-  shallow.schemas[0].tables.forEach((t) => { t.provenance = 'columns hidden in this view · the commit still catalogs them'; });
+  shallow.schemas[0].tables.forEach((t) => { t.provenance = 'columns hidden in this view · the commit still publishes them'; });
   const { document } = await setUp(shallow);
   document.querySelector('[data-scope-toggle="sales"]').click();
   assert.equal(document.querySelector('[data-scope-column]'), null);
-  assert.match(flat(row(document, 'table:sales.orders')), /columns hidden in this view · the commit still catalogs them/);
+  assert.match(flat(row(document, 'table:sales.orders')), /columns hidden in this view · the commit still publishes them/);
 });
 
 /* ── proposals ─────────────────────────────────────────────────────────── */
@@ -460,7 +460,7 @@ test('PII is a mark, staging a note, no access is "not established": none of the
 test('system schemas are folded with their sentence and never offered a control', async () => {
   const { document } = await setUp(baseView());
   const sys = document.querySelector('[data-scope-system]');
-  assert.match(flat(sys), /3 system schemas folded · not cataloged: system schemas are never offered/);
+  assert.match(flat(sys), /3 system schemas folded · not published: system schemas are never offered/);
   assert.equal(sys.querySelector('button'), null);
   assert.equal(document.querySelector('[data-scope-row*="pg_catalog"]'), null);
 });
@@ -475,12 +475,12 @@ test('a database with no stored rows says so in words, not an empty table', asyn
 
 test('signed out: the tree reads, every control is disabled with the reason, and no write is attempted', async () => {
   const { document, server } = await setUp(withProposal(), { signedIn: false });
-  assert.match(flat(document.querySelector('[data-scope-signed-out]')), /You can read the scope as it stands\. sign in to change what gets cataloged/);
+  assert.match(flat(document.querySelector('[data-scope-signed-out]')), /You can read the scope as it stands\. sign in to change what gets published/);
   const controls = [...scopeEl(document).querySelectorAll('button[data-scope-act], input[data-scope-depth-radio]')];
   assert.ok(controls.length > 4);
   for (const c of controls) {
     assert.ok(c.disabled, 'control is disabled');
-    assert.match(c.title, /sign in to change what gets cataloged/);
+    assert.match(c.title, /sign in to change what gets published/);
   }
   row(document, 'schema:empty_one').querySelector('[data-scope-act="confirm"]').click();
   await wait(50);
@@ -553,7 +553,7 @@ test('activity is a word with its window: active, dormant, or can\'t tell with t
 test('columns, left to right: choice, Schema / table, Rows, Size, Activity, Classification, In Egeria (full names in the titles)', async () => {
   const { document } = await setUp(baseView());
   const headEls = [...document.querySelector('[data-scope-tree-head]').children].filter((c) => flat(c));
-  assert.deepEqual(headEls.map(flat), ['Include in catalog?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
+  assert.deepEqual(headEls.map(flat), ['Include in Egeria?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
   // every shortened header keeps its meaning on hover
   const byText = Object.fromEntries(headEls.map((c) => [flat(c), c.title]));
   assert.match(byText.Rows, /Row count/);
@@ -707,7 +707,7 @@ test('bulk, signed out: every bulk control is disabled with the reason and nothi
   assert.ok(controls.length >= 7);
   for (const c of controls) {
     assert.ok(c.disabled, 'disabled');
-    assert.match(c.title, /sign in to change what gets cataloged/);
+    assert.match(c.title, /sign in to change what gets published/);
   }
   document.querySelector('[data-scope-catalogue-all]').click();
   await wait(50);

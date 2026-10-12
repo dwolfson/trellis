@@ -9169,7 +9169,7 @@ async function submitSurveyDefinitionRun() {
       ? `<div class="mt-2"><div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Annotations</div><div id="survey-def-run-annotations" class="text-xs">Loading…</div></div>`
       : '';
     const notCataloged = entityType === 'database' && (data.errors || []).some(e =>
-      e.includes('no stored Egeria asset guid') || e.includes('is not yet cataloged in Egeria'));
+      e.includes('no stored Egeria asset guid') || e.includes('is not yet cataloged in Egeria') || e.includes('is not yet published to Egeria'));
     const catalogPromptHtml = notCataloged
       ? `<div class="mt-2 p-2 rounded bg-amber-900/30 border border-amber-800/50">
           <div class="text-amber-300">This database isn't cataloged in Egeria yet, so its Egeria-side step(s) couldn't run.</div>

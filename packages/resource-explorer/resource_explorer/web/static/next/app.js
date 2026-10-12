@@ -1971,7 +1971,7 @@ function markKeyHtml() {
     <div class="mb-[4px] uppercase tracking-caps text-chrome-muted">Lifecycle</div>
     ${row('sparkles', 'new', 'registered, not surveyed')}
     ${row('bar-chart-2', 'surveyed', 'has survey results')}
-    ${row('cloud', 'published', 'in the Egeria catalog')}
+    ${row('cloud', 'published', 'in Egeria')}
     <div class="mb-[4px] mt-s2 uppercase tracking-caps text-chrome-muted">Disposition</div>
     ${Object.entries(DISPOSITION_ICON).map(([d, ic]) => row(ic, d, '')).join('')}
     <div class="mt-[3px] text-chrome-muted">undecided has no mark</div>
@@ -3215,14 +3215,21 @@ function writeUrl() {
 }
 
 /** Read the URL into state. Returns true if it named a resource. */
-function readUrl() {
+export function readUrl() {
   const p = new URLSearchParams(location.search);
+  let rewriteUrl = false;
   _restoringUrl = true;
   try {
     if (p.get('type')) state.resourceType = p.get('type');
     if (p.get('resource')) state.selectedSlug = p.get('resource');
     if (p.get('stage')) state.stage = p.get('stage');
-    if (p.get('tab')) state.subTab = p.get('tab');
+    // A `tab=` is kept only when the strip for THIS stage and kind offers it (visibleSubTabs()); a hand-edited
+    // or stale id falls to the stage's landing tab, same as no `tab=`. 'dashboard' is the retired id loadPane()
+    // aliases to By analysis. The URL is rewritten below so the bad id does not stick.
+    const wantTab = p.get('tab');
+    const tabOk = Boolean(wantTab) && (wantTab === 'dashboard' || visibleSubTabs().some((t) => t.id === wantTab));
+    if (tabOk) state.subTab = wantTab;
+    else if (wantTab) { state.subTab = stageDefaultSubTab(); rewriteUrl = true; }
     // A bookmarked/shared `?stage=enrichment` with no `?tab=` should open on
     // Context, same as clicking into Enrichment from the nav (see that
     // click handler's own comment) — the URL restore path was the one place
@@ -3235,6 +3242,7 @@ function readUrl() {
   } finally {
     _restoringUrl = false;
   }
+  if (rewriteUrl) writeUrl();
   return Boolean(p.get('resource'));
 }
 
@@ -3322,7 +3330,7 @@ export function resourceHeaderHtml(slug) {
   }
   if (ov?.egeria_link_stale) {
     published = `<span class="text-accent-ink">published, but the Egeria link is stale —`
-      + ` the catalog entry cannot be reached</span>`;
+      + ` the Egeria entry cannot be reached</span>`;
   }
   // Fourth publish state (PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md /
   // REPLY-PUBLISH-STATE-GO-AHEAD.md §4): the DATE stays — the row is the only
@@ -3332,7 +3340,7 @@ export function resourceHeaderHtml(slug) {
   // publish trigger of its own yet to wire it to, and its Analysis pane has
   // no publish control either, so the sentence below must not point there.
   if (ov?.publish_uncatalogued) {
-    published += ` <span class="text-accent-ink">⚠ not cataloged, publish needed</span>`;
+    published += ` <span class="text-accent-ink">⚠ not published, publish needed</span>`;
   }
   if (ov?.publish_stale) {
     published += ` <span class="text-accent-ink">⚠ these elements are no longer in the store —`
@@ -3976,17 +3984,7 @@ export function subTabsHtml() {
       if (t.id === state.subTab) {
         return `<span class="border-b border-accent pb-[2px] text-ink">${labelOf(t)}</span>`;
       }
-      // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: a sub-tab's own `built`
-      // flag said nothing about whether the STAGE it's shown under is
-      // built, so all four module-level built:true SUB_TABS advertised
-      // working panes on all six unbuilt stages too. Live only when the tab
-      // AND the current stage are built.
-      const stageDef = STAGES.find((s) => s.id === state.stage);
-      if (stageDef?.built && (t.id === 'questions' || t.built)) {
-        return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${labelOf(t)}</button>`;
-      }
-      return `<button data-deferred="${t.id}"${deferredAttrs(false, { title: `${t.does} — not built in /next`, extraStyle: 'padding-bottom:1px' })}
-        class="cursor-pointer bg-transparent text-ink-muted">${labelOf(t)}</button>`;
+      return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${labelOf(t)}</button>`;
     }).join('')}
   </div>${commitLine}`;
 }
@@ -4040,7 +4038,7 @@ function switchCurateTab(tab) {
   if (state.curate && state.curate.onTabShown) state.curate.onTabShown();
 }
 
-/** Sub-tab clicks: the real one switches, a deferred one says it is deferred. Between Curate's own tabs the
+/** Sub-tab clicks: a click switches. Between Curate's own tabs the
  *  switch is in place. */
 export function bindSubTabs() {
   bindSubTabsIn($('content'));
@@ -4054,11 +4052,6 @@ function bindSubTabsIn(el) {
     writeUrl();
     loadPane();
   }; });
-  el.querySelectorAll('[data-deferred]').forEach((b) => b.addEventListener('click', () => {
-    state.subTab = b.dataset.deferred;
-    writeUrl();
-    loadPane();
-  }));
   bindCommitLine(el);
 }
 
@@ -4116,9 +4109,8 @@ function bindSubTabsIn(el) {
 async function loadSchemaInventoryPane() {
   const el = $('content');
   if (state.resourceType !== 'db') {
-    el.innerHTML = deferredPaneHtml(
-      { label: 'Schema Inventory', does: 'Only databases have a schema tree to show' });
-    bindSubTabs();
+    // Unreachable through loadPane() (reconcileSubTabForStage() reverts it first); kept as a safe landing.
+    state.subTab = stageDefaultSubTab(); writeUrl(); await loadPane();
     return;
   }
   const slug = state.selectedSlug;
@@ -4378,7 +4370,7 @@ async function loadDispositionPane() {
     <div id="depth-offer" class="mb-s4"></div>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="text-caps uppercase tracking-caps text-ink">Records</span>
-      <span class="text-provenance text-ink-muted">what was cataloged, and what was written down · a snapshot, not a query</span>
+      <span class="text-provenance text-ink-muted">what was published, and what was written down · a snapshot, not a query</span>
     </div>
     <div id="records" class="mb-s4 text-caveat text-ink-muted">Reading the records…</div>
     <div class="mb-s1 flex items-baseline gap-s2">
@@ -4437,7 +4429,7 @@ export async function renderRecords(slug, entityType) {
   try { recs = (await listRecords(slug, entityType)).records || []; }
   catch (err) { host.innerHTML = `<span class="text-state-warn">The records could not be read: ${esc(err.message)}</span>`; return; }
   if (slug !== state.selectedSlug) return;
-  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing cataloged, nothing written down.'; return; }
+  if (!recs.length) { host.textContent = 'No record has been written for this resource yet — nothing published, nothing written down.'; return; }
   const scopeAct = await scopeActState(entityType, slug);
   if (slug !== state.selectedSlug) return;
   host.innerHTML = recs.map((r) => {
@@ -4465,7 +4457,7 @@ export async function renderRecords(slug, entityType) {
     }
     // curateRecordHtml carries the author, date and state line itself.
     return `<div class="border-t border-rule py-s2" data-record="${esc(r.id)}">
-      <div class="text-answer text-ink">cataloged${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
+      <div class="text-answer text-ink">published${r.manifest?.entities?.length ? ` · ${esc(r.manifest.entities.join(', '))}` : ''}</div>
       ${curateRecordHtml(r)}
     </div>`;
   }).join('');
@@ -4882,7 +4874,7 @@ function producesTypes(c) {
 
 /** A run that failed because the database is not cataloged in Egeria (the
  *  executor's own two sentences, the same ones Classic matched). */
-const NOT_CATALOGED_RE = /no stored Egeria asset guid|is not yet cataloged in Egeria|uncataloged database/i;
+const NOT_CATALOGED_RE = /no stored Egeria asset guid|is not yet cataloged in Egeria|is not yet published to Egeria|uncataloged database|unpublished database/i;
 
 /** Parity G2, PI-019. On a database definition whose last run failed because
  *  the database is not cataloged: "Catalog now →" (Curate's own Catalog button
@@ -4900,7 +4892,7 @@ function catalogRetryHtml(c) {
         >Retry →</button>`
     : `<button type="button" data-catalog-now="${esc(c.qualified_name || c.guid)}"
         class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-        title="not cataloged in Egeria · the Catalog button on Curate writes it">Catalog now →</button>`;
+        title="not published to Egeria · the Publish button on Curate writes it">Publish now →</button>`;
 }
 
 /** The run buttons of the survey pane's rows: plan a run, retry, catalog now. */
@@ -4976,9 +4968,9 @@ export function surveyRowHtml(c) {
 // fallback keeps an unmapped or future kind from disappearing rather than
 // crashing the render.
 const NATIVE_PROCESS_KIND_LABELS = {
-  survey_existing: 'surveys an existing catalog entry',
-  catalog_and_survey: 'catalogs, then surveys',
-  delete: 'deletes a catalog entry',
+  survey_existing: 'surveys an existing Egeria entry',
+  catalog_and_survey: 'publishes, then surveys',
+  delete: 'deletes an Egeria entry',
 };
 function nativeProcessKindLabel(kind) {
   return NATIVE_PROCESS_KIND_LABELS[kind] || `Egeria process kind: ${kind}`;
@@ -5629,7 +5621,7 @@ export function analysisIndexRowHtml(row) {
     </div>
     ${isSubRes ? `<button type="button" data-subres-toggle aria-expanded="false"
       class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
-      >🗂 select &amp; catalog</button>` : ''}
+      >🗂 select &amp; publish</button>` : ''}
     ${analysisCredentialHtml(row)}
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
@@ -5750,7 +5742,7 @@ async function renderAnalysesIndexSection(slug, stage) {
     const opening = subresPanel.classList.contains('hidden');
     subresPanel.classList.toggle('hidden', !opening);
     subresToggle.setAttribute('aria-expanded', String(opening));
-    subresToggle.textContent = opening ? '🗂 select & catalog ▲' : '🗂 select & catalog';
+    subresToggle.textContent = opening ? '🗂 select & publish ▲' : '🗂 select & publish';
     if (opening) await mountSubResourcePanel(slug, subresPanel);
   });
   const startRun = async (b, aid, credential = null, force = false) => {
@@ -5965,9 +5957,9 @@ function bindRunOptions(body, slug) {
 
   const sayHybrid = () => {
     hybridNote.textContent = !cataloged
-      ? 'not cataloged in Egeria · catalog it on Curate first'
+      ? 'not published to Egeria · publish it on Curate first'
       : hybrid.checked
-        ? 'Egeria is tried first. The run publishes to Egeria when it finishes (a SurveyReport is written to the catalog). Untick for a local-only run.'
+        ? 'Egeria is tried first. The run publishes to Egeria when it finishes (a SurveyReport is written to Egeria). Untick for a local-only run.'
         : 'Local only: nothing is asked of Egeria in the steps that would try it first.';
   };
   hybrid.addEventListener('change', sayHybrid);
@@ -8036,7 +8028,6 @@ function fmtBytes(n) {
   return `${n < 0 ? '-' : ''}${shown} ${units[i]}`;
 }
 
-/** What a deferred sub-tab shows when you click it. */
 /** A link into the Classic UI (`/classic`), on the same resource.
  *
  *  `index.html` gained a `?resource=` reader for this — it had no deep link
@@ -8047,18 +8038,6 @@ export function oldUiHref() {
   return state.selectedSlug
     ? `/classic?resource=${encodeURIComponent(state.selectedSlug)}`
     : '/classic';
-}
-
-function deferredPaneHtml(tab) {
-  return `${subTabsHtml()}
-    <h3 class="m-0 font-heading text-name font-normal">${esc(tab.label)} · not built in /next</h3>
-    <div class="my-s3 h-px bg-rule"></div>
-    <p class="max-w-[70ch] text-answer text-ink">${esc(tab.does)}.</p>
-    <p class="max-w-[70ch] text-answer text-ink">
-      <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
-        >Open ${state.selectedSlug ? `<span class="font-mono">${esc(state.selectedSlug)}</span>` : 'this'}
-        in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
-    </p>`;
 }
 
 /**
@@ -8332,10 +8311,8 @@ async function loadPane() {
   if (state.subTab === 'disposition') { await loadDispositionPane(); return; }
 
   if (state.subTab !== 'questions') {
-    const tab = SUB_TABS.find((t) => t.id === state.subTab)
-      || { id: state.subTab, label: state.subTab, does: 'Not a pane /next knows about' };
-    el.innerHTML = deferredPaneHtml(tab);
-    bindSubTabs();
+    // readUrl() keeps only ids the strip offers, so this is a safe landing, not a stub pane.
+    state.subTab = stageDefaultSubTab(); writeUrl(); await loadPane();
     return;
   }
 
@@ -8490,7 +8467,7 @@ async function loadPane() {
   // level note (RULING-SUBRESOURCES-PLACEMENT.md; next/stages/analysis.js).
   if (!state.questions.length) {
     rows.innerHTML = curateInFrame ? '' : `<div class="py-s3 text-answer text-ink">
-      No cataloged questions match this stage and this perspective set.
+      No questions match this stage and this perspective set.
       That is a fact about the filter, not about the repository.</div>`;
     $('answered-count').textContent = curateInFrame ? 'review and commit · Curate' : `0 questions · ${stageLabel()}`;
     return;

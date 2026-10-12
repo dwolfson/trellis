@@ -155,7 +155,7 @@ export async function openAdminPanel() {
       <div class="flex items-start justify-between gap-s3">
         <div>
           <div class="font-heading text-name text-ink">⚙ Admin</div>
-          <div class="mt-[2px] text-caveat text-ink-muted">System and catalog configuration — not
+          <div class="mt-[2px] text-caveat text-ink-muted">System configuration — not
             something a user does to curate a specific resource, so it lives here rather than
             under one of the eight intents.</div>
         </div>

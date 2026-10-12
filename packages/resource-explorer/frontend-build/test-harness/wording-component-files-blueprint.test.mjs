@@ -23,12 +23,6 @@ const CATALOG = /\bCatalog(s|ed|ing)?\b/;
 const ALLOW = [
   // A different object: the catalogue of QUESTIONS and the annotation-type registry's catalog bindings.
   { file: /^admin\//, why: 'the Question Catalog and annotation-type catalog bindings are other objects' },
-  // Database cataloguing: the control's label comes from the server (catalogue_commit.py: "Catalog · N schemas")
-  // and the harness pins it. Brief A leaves "Database and schema Publish wording beyond the sweep" out of scope;
-  // the server label and these strings change together, in one later piece of work.
-  { file: /^stages\/curate-scope\.js$/, why: 'database cataloguing wording, with the server label' },
-  { file: /^app\.js$/, line: /Catalog now →|the Catalog button on Curate/, why: 'database cataloguing wording, with the server label' },
-  { file: /^stages\/publish\.js$/, line: /through Catalog → above/, why: 'database cataloguing wording, with the server label' },
   // Code that merely names Egeria's cataloguer or a module (an identifier, an error message nobody reads).
   { line: /Catalogue|getCatalog|setCatalog|_catalog|QuestionCatalog|AnalysisCatalog/, why: 'identifier or Egeria\'s cataloguer' },
 ];

@@ -76,12 +76,12 @@ const DB_WORK_SECTIONS = [
   {
     id: 'glossary',
     title: 'Glossary terms on tables and columns',
-    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against, and the tables to be cataloged first (on Contents).',
+    waits: 'No proposals yet: needs data classes per column (data_class_match) and a glossary to match against, and the tables to be published first (on Contents).',
   },
   {
     id: 'schema-match',
     title: 'Logical schema match',
-    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read, and the tables to be cataloged first (on Contents). Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
+    waits: 'No proposals yet: needs the logical schemas Egeria knows to be read, and the tables to be published first (on Contents). Rows will be proposed, then confirmed, overridden, or flagged when a later survey disagrees.',
   },
 ];
 
@@ -90,8 +90,8 @@ const DB_WORK_SECTIONS = [
  *  because the two sections below act on its output. */
 export function databaseScopeHtml() {
   return `<div data-curate-work="scope" class="mb-s3 min-w-0">
-    <div class="text-answer text-ink">What gets cataloged</div>
-    <div data-curate-scope class="mt-s1 min-w-0 max-w-full text-caveat text-ink-muted">Reading the catalog scope…</div></div>`;
+    <div class="text-answer text-ink">What gets published</div>
+    <div data-curate-scope class="mt-s1 min-w-0 max-w-full text-caveat text-ink-muted">Reading the scope…</div></div>`;
 }
 
 /** A database's Structure tab (Brief S2): the term and logical-schema proposals (placeholders until their readers

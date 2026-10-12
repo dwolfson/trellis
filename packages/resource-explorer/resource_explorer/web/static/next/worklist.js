@@ -390,7 +390,7 @@ function renderActions(ctx) {
     <span class="text-ink-muted">${
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
-      : !runnable ? `<span class="text-accent-ink">No analyses are cataloged for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
+      : !runnable ? `<span class="text-accent-ink">No analyses are listed for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
       : n ? `${n} selected` : 'all rows'}</span>
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
       <select id="wl-disposition" ${n ? '' : 'disabled'}

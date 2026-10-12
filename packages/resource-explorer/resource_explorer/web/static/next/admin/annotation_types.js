@@ -96,7 +96,7 @@ function detailHtml(a) {
       <div class="mt-[6px]">${props}</div>
     </div>
     <div>
-      <div class="text-caps uppercase tracking-caps text-ink-muted">Catalog bindings</div>
+      <div class="text-caps uppercase tracking-caps text-ink-muted">Bindings</div>
       <div class="mt-[6px] text-caveat text-ink-muted">Egeria property class</div>
       <div class="font-mono text-caveat text-ink">${esc(a.egeria_type || '—')}</div>
       <div class="mt-[6px] text-caveat text-ink-muted">Python representation class</div>

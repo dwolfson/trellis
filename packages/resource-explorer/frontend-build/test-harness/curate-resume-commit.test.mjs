@@ -14,7 +14,7 @@ import { baseView, setUp, flat, wait } from './scope-test-kit.mjs';
 
 const PREVIEW = {
   manifest: { lines: [{ id: 're_publishes', mechanism: 1, text: 'RE publishes.' }] },
-  can_commit: true, button: 'Catalog · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], attach: ['sales', 'archive'], survey: { schemas: ['sales', 'archive'] },
+  can_commit: true, button: 'Publish · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], attach: ['sales', 'archive'], survey: { schemas: ['sales', 'archive'] },
 };
 const STEPS = (over = {}) => [
   ['publish_elements', 'done', 'published'], ['owner', 'done', 'owner set'], ['schema_targets', 'done', '2 attached'],
@@ -64,7 +64,7 @@ test('load with a commit still running: the stepper is drawn from the registry a
   const ctx = await open(LATEST(REC(STEPS())));
   const { document, server, clock } = ctx;
   assert.ok(stepsEl(document), 'Panel B is drawn for the running commit');
-  assert.match(flat(document.querySelector('[data-scope-steps-head]')), /^Catalog · commit a3f2c001 · step 6 of 9 · running: Egeria survey/);
+  assert.match(flat(document.querySelector('[data-scope-steps-head]')), /^Publish · commit a3f2c001 · step 6 of 9 · running: Egeria survey/);
   assert.equal(document.querySelector('[data-scope-last-commit]'), null);
   assert.ok(server.calls.some((c) => c.method === 'GET' && c.url.endsWith('/commits/latest')), 'it read the newest commit from the registry');
   assert.deepEqual(posts(server), [], 'no write on load');

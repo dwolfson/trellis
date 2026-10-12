@@ -6,7 +6,7 @@
  *  - a press shows a visible change at once ("registering…", disabled) and the result is the server's rows;
  *  - a refused connection shows Egeria's sentence verbatim plus the one RE-can-still line;
  *  - RE's own survey control (data-run-survey) is unaffected in every one of those cases;
- *  - the databases a server survey found are listed as Egeria reported them, with "found, not yet cataloged".
+ *  - the databases a server survey found are listed as Egeria reported them, with "found, not yet published".
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -208,8 +208,8 @@ test('the databases a server survey found are listed as Egeria reported them, wi
       { name: 'sibling', re_slug: 'sibling', state: 'found', control: REGISTER },
       { name: 'unknown_db', re_slug: '', state: 'found', control: '' }] });
   const text = host.textContent.replace(/\s+/g, ' ');
-  assert.match(text, /adventureworks cataloged in Egeria/);
-  assert.match(text, /sibling found, not yet cataloged/);
+  assert.match(text, /adventureworks published in Egeria/);
+  assert.match(text, /sibling found, not yet published/);
   assert.match(text, /unknown_db found · not registered in RE/);
   const buttons = host.querySelectorAll('[data-native-register-slug]');
   assert.equal(buttons.length, 1);

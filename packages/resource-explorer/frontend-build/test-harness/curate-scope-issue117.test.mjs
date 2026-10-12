@@ -7,7 +7,7 @@ import { baseView, setUp, row, flat, person } from './scope-test-kit.mjs';
 test('a left-out schema cataloged in Egeria says "kept · not sent" on its row, with the reason on hover', async () => {
   const v = baseView();
   v.schemas[0].explicit = person('leave_out'); v.schemas[0].effective = 'leave_out'; v.schemas[0].state = 'chosen';
-  v.commit.schemas.sales = { state: 'catalogued', words: 'cataloged · 2 tables', second: '' };
+  v.commit.schemas.sales = { state: 'catalogued', words: 'published · 2 tables', second: '' };
   const { document } = await setUp(v);
   const b = row(document, 'schema:sales').querySelector('[data-scope-blocked]');
   assert.ok(b, 'the blocked state is on the row');
@@ -18,7 +18,7 @@ test('a left-out schema cataloged in Egeria says "kept · not sent" on its row, 
 test('no blocked mark for an included schema, a never-cataloged one, or a table', async () => {
   const v = baseView();
   v.schemas[1].explicit = person('leave_out'); v.schemas[1].effective = 'leave_out'; v.schemas[1].state = 'chosen';
-  v.commit.schemas.sales = { state: 'catalogued', words: 'cataloged', second: '' };   // included, cataloged
+  v.commit.schemas.sales = { state: 'catalogued', words: 'published', second: '' };   // included, cataloged
   const { document } = await setUp(v);
   assert.equal(document.querySelectorAll('[data-scope-blocked]').length, 0);
 });

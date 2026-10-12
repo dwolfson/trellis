@@ -253,7 +253,7 @@ test('Publish band: the file types section comes before the Publish controls and
   ft.dispatchEvent(new document.defaultView.Event('toggle'));
   await wait();
   assert.equal(ft.querySelector('[data-file-types-go]'), null);
-  assert.match(norm(ft), /Files are cataloged by selection on Curate/);
+  assert.match(norm(ft), /Files are published by selection on Curate/);
 });
 
 test('Publish: idle words say it publishes the kept survey (it never surveys); the press is acknowledged at once', async () => {

@@ -371,7 +371,7 @@ function renderEnrichmentForm(slug) {
 
   const setJ = JUDGEMENTS.filter((d) => state.enrichment?.[d.key]?.value).length;
   host.innerHTML = `
-    <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here is written to the catalog until you catalog it (Curate).
+    <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Nothing here reaches Egeria until you publish it (Curate).
       What you set here is testimony — yours, dated — and the surveys' findings in the rail are material to read, not answers to accept.</p>
     <div class="mb-s1 flex items-baseline gap-s2">
       <span class="font-heading text-question text-ink">What we judge</span>
@@ -542,10 +542,10 @@ function probeWording(src) {
 // the header note) — see `derive_doc_source_egeria_state` (backend) for the
 // exact rule.
 const EGERIA_STATE_TEXT = {
-  catalogued: () => 'cataloged in Egeria',
+  catalogued: () => 'published in Egeria',
   publishing: () => 'local — publishing…',
   publish_failed: (src) => `local — publish failed: ${src.egeria_state_detail || 'unknown error'}, retrying`,
-  not_catalogued: () => 'local — not cataloged (publish needed)',
+  not_catalogued: () => 'local — not published (publish needed)',
   local_only: () => 'local only — resource not published',
 };
 const EGERIA_STATE_TONE = {
@@ -787,7 +787,7 @@ export function renderEnrichmentEvidence(slug) {
   const none = !applicable
     ? `Could not read which analyses apply to ${esc(kindNoun())}.`
     : !ENRICHMENT_EVIDENCE.some((id) => applicable.has(id))
-      ? `no enrichment evidence is cataloged for ${esc(kindNoun())} yet`
+      ? `no enrichment evidence is listed for ${esc(kindNoun())} yet`
       : 'No measurements to show yet.';
   out.innerHTML = `
     <div class="mb-s1 flex items-baseline gap-s2">

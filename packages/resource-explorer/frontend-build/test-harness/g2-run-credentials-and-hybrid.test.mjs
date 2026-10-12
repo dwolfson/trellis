@@ -185,7 +185,7 @@ test('hybrid is disabled with its reason when the database is not cataloged in E
   const h = d.querySelector('[data-run-hybrid]');
   assert.equal(h.disabled, true);
   assert.equal(h.checked, false);
-  assert.match(text(d), /not cataloged in Egeria · catalog it on Curate first/);
+  assert.match(text(d), /not published to Egeria · publish it on Curate first/);
   d.querySelector('[data-act="go"]').click();
   await tick(80);
   assert.equal(post(ctx.calls).body.force_custom, true, 'no Egeria-first for a database Egeria does not hold');
@@ -255,20 +255,20 @@ test('a failing credential shows its first sentence on the launch note at once, 
 
 const NOT_CATALOGED = CAND({
   last_run_at: new Date().toISOString(), last_run_status: 'error',
-  last_run_errors: ["Step 'x' failed: Database 'coco' has no stored Egeria asset guid — cannot trigger Egeria's native survey for an uncataloged database."],
+  last_run_errors: ["Step 'x' failed: Database 'coco' has no stored Egeria asset guid — cannot trigger Egeria's native survey for an unpublished database."],
 });
 
-test('a run that failed because the database is not cataloged offers "Catalog now →" which goes to Curate, with no Retry yet', async () => {
+test('a run that failed because the database is not cataloged offers "Publish now →" which goes to Curate, with no Retry yet', async () => {
   const ctx = await setUp({}, { published: false });
   ctx.content.innerHTML = ctx.app.surveyRowHtml(NOT_CATALOGED);
   const catalog = ctx.content.querySelector('[data-catalog-now]');
   assert.ok(catalog);
-  assert.match(text(catalog), /Catalog now →/);
+  assert.match(text(catalog), /Publish now →/);
   assert.equal(ctx.content.querySelector('[data-retry-run]'), null);
   assert.equal(ctx.calls.filter((c) => c.method === 'POST').length, 0, 'no automatic anything');
 });
 
-test('Catalog now → routes to the Curate stage; once the database reads cataloged the same row offers Retry →, which plans, never runs', async () => {
+test('Publish now → routes to the Curate stage; once the database reads cataloged the same row offers Retry →, which plans, never runs', async () => {
   const ctx = await setUp({}, { published: false });
   ctx.content.innerHTML = ctx.app.surveyRowHtml(NOT_CATALOGED);
   ctx.app.bindSurveyRowActions(ctx.content, [NOT_CATALOGED], 'coco');
@@ -315,4 +315,14 @@ test('running with the override box unticked forgets what was remembered', async
   await tick(80);
   ctx.app.planSurveyRun(CAND(), 'coco');
   assert.equal(dlgOf(ctx.document).querySelector('[data-run-override]').checked, false);
+});
+
+test('both wordings of the surveyor error offer "Publish now →": the server now says "not yet published to Egeria"', async () => {
+  // The server text changed (owner, 2026-10-12); the old text stays matched so either PR can merge first.
+  for (const e of ["Database 'coco' is not yet published to Egeria under qualified name x — cannot survey it",
+                   "Database 'coco' is not yet cataloged in Egeria under qualified name x — cannot survey it"]) {
+    const ctx = await setUp({}, { published: false });
+    ctx.content.innerHTML = ctx.app.surveyRowHtml(CAND({ last_run_at: new Date().toISOString(), last_run_status: 'error', last_run_errors: [e] }));
+    assert.ok(ctx.content.querySelector('[data-catalog-now]'), e);
+  }
 });

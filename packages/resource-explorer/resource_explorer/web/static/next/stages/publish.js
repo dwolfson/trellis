@@ -320,7 +320,7 @@ function nonRepoStatusHtml(entityType, slug) {
   const note = row.egeria_publish_note
     ? ` <span class="text-provenance text-state-warn">${esc(row.egeria_publish_note)}</span>` : '';
   const how = entityType === 'database'
-    ? 'A database reaches Egeria through Catalog → above (its survey report is published with it).'
+    ? 'A database reaches Egeria through Publish → above (its survey report is published with it).'
     : 'A file system has no publish control here yet.';
   return `<div class="text-caveat" data-publish-status>${row.is_published
     ? cue('measured', 'in Egeria') + ` <span class="text-provenance text-ink-muted">· asset</span> ${guidHtml(guid)}`
@@ -572,7 +572,7 @@ async function renderFileTypeMeasurements(host, slug) {
       <span class="text-ink">${esc(r.label)}</span>
       <span class="text-provenance text-ink-muted">· ${esc(r.word)}</span> ${guidHtml(r.dataset_guid)}</div>`).join('')}` : '';
   host.innerHTML = `
-    <div class="text-provenance text-ink-muted">Sent with the survey report, as profile annotations. Files are cataloged by selection on Curate.</div>
+    <div class="text-provenance text-ink-muted">Sent with the survey report, as profile annotations. Files are published by selection on Curate.</div>
     <div class="mt-s1">${profiles}</div>${retired}`;
   bindCopy(host);
 }

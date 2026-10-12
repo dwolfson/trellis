@@ -52,7 +52,7 @@ import {
  *  `OBSERVATIONS`, E0-era) rather than a fabricated cross-reference. */
 function fixedFieldFeedsLine(def) {
   if (def.feeds) return `<div class="text-provenance text-ink-muted">feeds → ${esc(def.feeds)}</div>`;
-  const parts = ['Curate (catalog record)'];
+  const parts = ['Curate (publish record)'];
   if (def.fromAnalysis) parts.push(`sourced from ${def.fromAnalysis}`);
   return `<div class="text-provenance text-ink-muted">feeds → ${esc(parts.join(' · '))}</div>`;
 }
@@ -206,7 +206,7 @@ function renderHumanQuestions(slug) {
   if (!host) return;
   host.innerHTML = _humanQuestions.length
     ? _humanQuestions.map(humanQuestionRowHtml).join('')
-    : `<div class="text-caveat text-ink-muted">No cataloged human questions for this stage.</div>`;
+    : `<div class="text-caveat text-ink-muted">No human questions for this stage.</div>`;
   wireHumanQuestionControls(host, slug);
 }
 
@@ -302,7 +302,7 @@ export async function renderContext(slug) {
   host.innerHTML = `
     <p class="mb-s3 max-w-[70ch] text-caveat text-ink-muted">Everything a person has supplied about this
       resource — each row signed and dated, and each saying what it feeds. Nothing here is written to the
-      catalog until you catalog it (Curate).</p>
+      Egeria until you publish it (Curate).</p>
 
     <div class="mb-s1 flex items-baseline gap-s2">
       <h3 class="m-0 mb-s1 mt-s4 font-heading text-name font-normal text-ink">What we judge</h3>

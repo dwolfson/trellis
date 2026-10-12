@@ -20,7 +20,7 @@ test('every header is a full word on ONE line (ellipsis + full title if narrowed
   const { document } = await setUp(baseView());
   const head = scopeEl(document).querySelector('[data-scope-tree-head]');
   const words = [...head.children].map((c) => flat(c)).filter(Boolean);
-  assert.deepEqual(words, ['Include in catalog?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
+  assert.deepEqual(words, ['Include in Egeria?', 'Schema / table', 'Rows', 'Size', 'Activity', 'Classification', 'In Egeria']);
   for (const c of [...head.children].filter((x) => flat(x))) {
     const st = c.getAttribute('style');
     assert.match(st, /white-space:nowrap/, `${flat(c)}: no line break inside a header`);
