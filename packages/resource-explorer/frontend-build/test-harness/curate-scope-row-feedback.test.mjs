@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { baseView, setUp, row, flat, wait, calls, person } from './scope-test-kit.mjs';
 
-const PREVIEW = { manifest: { lines: [] }, can_commit: false, blockers: [], button: 'Catalog · 0 schemas', leave_out: [], refused: [], collisions: [] };
+const PREVIEW = { manifest: { lines: [] }, can_commit: false, blockers: [], button: 'Publish · 0 schemas', leave_out: [], refused: [], collisions: [] };
 async function open(view, opts) {
   const ctx = await setUp(view, opts);
   ctx.server.preview = PREVIEW;

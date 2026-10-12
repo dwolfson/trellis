@@ -14,7 +14,7 @@ import { baseView, setUp, flat, wait } from './scope-test-kit.mjs';
 
 const PREVIEW = {
   manifest: { lines: [{ id: 're_publishes', mechanism: 1, text: 'RE publishes.' }] },
-  can_commit: true, button: 'Catalog · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], attach: ['sales', 'archive'], survey: { schemas: ['sales', 'archive'] },
+  can_commit: true, button: 'Publish · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], attach: ['sales', 'archive'], survey: { schemas: ['sales', 'archive'] },
 };
 const STEPS = (over = {}) => [
   ['publish_elements', 'done', 'published'], ['owner', 'done', 'owner set'], ['schema_targets', 'done', '2 attached'],

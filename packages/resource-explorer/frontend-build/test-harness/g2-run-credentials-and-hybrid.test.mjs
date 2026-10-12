@@ -255,7 +255,7 @@ test('a failing credential shows its first sentence on the launch note at once, 
 
 const NOT_CATALOGED = CAND({
   last_run_at: new Date().toISOString(), last_run_status: 'error',
-  last_run_errors: ["Step 'x' failed: Database 'coco' has no stored Egeria asset guid — cannot trigger Egeria's native survey for an uncataloged database."],
+  last_run_errors: ["Step 'x' failed: Database 'coco' has no stored Egeria asset guid — cannot trigger Egeria's native survey for an unpublished database."],
 });
 
 test('a run that failed because the database is not cataloged offers "Publish now →" which goes to Curate, with no Retry yet', async () => {

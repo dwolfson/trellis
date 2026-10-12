@@ -18,7 +18,7 @@ const { attachColumnResize } = await import('/static/next/colresize.js');
 
 const L = (id, mechanism, text) => ({ id, mechanism, text });
 const preview = {
-  can_commit: true, button: 'Catalog · 2 schemas', blockers: [], attach: ['sales', 'archive'], refused: [],
+  can_commit: true, button: 'Publish · 2 schemas', blockers: [], attach: ['sales', 'archive'], refused: [],
   leave_out: [{ schema: 'eu_sales', form: 'none', blocked: false, text: 'eu_sales: nothing to remove · not in Egeria yet' }], collisions: [],
   survey: { schemas: ['sales', 'archive'] },
   manifest: { lines: [L('re_publishes', 1, 'RE publishes.'), L('cataloguer_creates', 2, 'Creates.'), L('survey_measures', 3, 'Survey.'), L('whole_schemas', 0, 'Whole.')] },

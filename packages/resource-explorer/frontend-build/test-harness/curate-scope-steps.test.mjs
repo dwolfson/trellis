@@ -6,7 +6,7 @@ import { baseView, setUp, row, flat, wait, calls } from './scope-test-kit.mjs';
 
 const PREVIEW = {
   manifest: { lines: [{ id: 're_publishes', mechanism: 1, text: 'RE publishes.' }] },
-  can_commit: true, button: 'Catalog · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], attach: ['sales', 'archive'], survey: { schemas: ['sales', 'archive'] },
+  can_commit: true, button: 'Publish · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], attach: ['sales', 'archive'], survey: { schemas: ['sales', 'archive'] },
 };
 const STEPS = (over = {}) => [
   ['publish_elements', 'done', 'published'], ['owner', 'done', 'owner set'], ['schema_targets', 'done', '1 attached · 2 already attached'],
@@ -85,12 +85,12 @@ test('a step changing state makes the page read the scope again, so a row is nev
   assert.equal(document.querySelector('[data-scope-commit-step="schema_targets"]').dataset.state, 'running');
   assert.match(flat(document.querySelector('[data-scope-row="schema:sales"]')), /undecided/);
   // the attach lands: the server's row now says so, and the step changes state
-  server.view.commit.schemas.sales = { state: 'catalogued', words: 'cataloged · 2 tables', second: 'read back 13:26' };
+  server.view.commit.schemas.sales = { state: 'catalogued', words: 'published · 2 tables', second: 'read back 13:26' };
   server.record = REC(STEPS({ schema_targets: { state: 'done', detail: '2 of 2 attached' } }));
   const before = calls(server, 'GET', '/api/catalogue-scope/adventureworks').filter((c) => !c.url.includes('/commit')).length;
   await wait(120);
   assert.equal(document.querySelector('[data-scope-commit-step="schema_targets"]').dataset.state, 'done');
-  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-state-cell]')), /cataloged · 2 tables/, 'the row is as new as the step');
+  assert.match(flat(row(document, 'schema:sales').querySelector('[data-scope-state-cell]')), /published · 2 tables/, 'the row is as new as the step');
   const after = calls(server, 'GET', '/api/catalogue-scope/adventureworks').filter((c) => !c.url.includes('/commit')).length;
   assert.ok(after - before >= 1 && after - before <= 3, `one read per change, not per tick (${after - before})`);
   await finish(ctx);
@@ -156,7 +156,7 @@ test('a 401 on the commit press: the button returns, says the session expired an
   ctx.document.querySelector('[data-scope-commit-btn]').click();
   await wait(60);
   const b = ctx.document.querySelector('[data-scope-commit-btn]');
-  assert.equal(flat(b), 'Catalog · 2 schemas');
+  assert.equal(flat(b), 'Publish · 2 schemas');
   assert.equal(b.disabled, false, 'it can be pressed again after signing in');
   assert.match(flat(ctx.document.querySelector('[data-scope-commit-why]')), /^⚠ your session expired · sign in again/);
   assert.ok(ctx.document.querySelector('[data-scope-commit-status] [data-scope-sign-in]'));

@@ -6,8 +6,8 @@ import { baseView, setUp, row, flat, wait } from './scope-test-kit.mjs';
 
 const PREVIEW = (over = {}) => ({
   manifest: { lines: [{ id: 're_publishes', mechanism: 1, text: 'RE publishes the server and database assets.' },
-    { id: 'whole_schemas', mechanism: 0, text: 'Egeria catalogs whole schemas' }] },
-  can_commit: true, button: 'Catalog · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], ...over,
+    { id: 'whole_schemas', mechanism: 0, text: 'Egeria adds whole schemas' }] },
+  can_commit: true, button: 'Publish · 2 schemas', blockers: [], leave_out: [], refused: [], collisions: [], ...over,
 });
 const declaredView = () => baseView({ declared: { declared: true, by: 'me', at: '2026-10-04T08:00:00', kind: 'declare', baseline_survey_at: '' } });
 async function open(view, preview, opts) {
@@ -23,7 +23,7 @@ test('the commit control is a filled primary button at the top right of the mani
   const { document } = await open(declaredView(), PREVIEW());
   const b = btn(document);
   assert.equal(b.tagName, 'BUTTON');
-  assert.equal(flat(b), 'Catalog · 2 schemas');
+  assert.equal(flat(b), 'Publish · 2 schemas');
   assert.ok(b.className.includes('bg-accent') && b.className.includes('font-semibold'), 'filled, not link-styled text');
   assert.ok(!b.className.includes('underline'));
   const rowEl = b.closest('[data-scope-commit-row]');
@@ -37,13 +37,13 @@ test('the commit control is a filled primary button at the top right of the mani
 });
 
 test('a disabled commit button says why, with a warning word, directly under it', async () => {
-  const nothing = await open(declaredView(), PREVIEW({ can_commit: false, button: 'Catalog · 0 schemas', blockers: ['nothing to commit: choose at least one schema to catalog'] }));
+  const nothing = await open(declaredView(), PREVIEW({ can_commit: false, button: 'Publish · 0 schemas', blockers: ['nothing to commit: choose at least one schema to publish'] }));
   assert.equal(btn(nothing.document).disabled, true);
   assert.match(flat(nothing.document.querySelector('[data-scope-commit-why]')), /^⚠ nothing chosen/);
   assert.ok(btn(nothing.document).closest('[data-scope-commit-row]').contains(nothing.document.querySelector('[data-scope-commit-why]')));
   const coll = await open(declaredView(), PREVIEW({ can_commit: false, blockers: ["1 name collision Egeria's listing can't tell apart: leave the schema out, or rename it in the database"] }));
   assert.match(flat(coll.document.querySelector('[data-scope-commit-why]')), /^⚠ name collisions: /);
-  const undeclared = await open(baseView(), PREVIEW({ can_commit: false, blockers: ['nothing to commit: choose at least one schema to catalog'] }));
+  const undeclared = await open(baseView(), PREVIEW({ can_commit: false, blockers: ['nothing to commit: choose at least one schema to publish'] }));
   assert.match(flat(undeclared.document.querySelector('[data-scope-commit-why]')), /^⚠ no scope declared/);
   const out = await open(declaredView(), PREVIEW(), { signedIn: false });
   assert.match(flat(out.document.querySelector('[data-scope-commit-why]')), /sign in/);
