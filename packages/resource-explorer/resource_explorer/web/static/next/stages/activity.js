@@ -166,6 +166,23 @@ function stopRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = null;
 }
+/** Re-read the open list with its filters and redraw, keeping opened details open. False when the panel closed
+ *  meanwhile; a failed read keeps the last list (the next tick tries again). */
+async function refreshOnce() {
+  try {
+    const fresh = await listActivity(FETCH_LIMIT, serverFilters());
+    if (!document.getElementById(PANEL_ID)) return false;
+    panel.entries = fresh;
+    panel.error = null;
+    markSeen(document, fresh);
+    // Keep the details the reader has opened open across the redraw.
+    const open = [...document.querySelectorAll('#activity-panel-body [id^="activity-d-"]')]
+      .filter((d) => !d.classList.contains('hidden')).map((d) => d.id);
+    renderList();
+    open.forEach((id) => document.getElementById(id)?.classList.remove('hidden'));
+  } catch { /* keep the last list */ }
+  return !!document.getElementById(PANEL_ID);
+}
 function scheduleRefresh() {
   stopRefresh();
   if (!document.getElementById(PANEL_ID) || !anyRunning(panel.entries)) { refreshTicks = 0; return; }
@@ -173,25 +190,40 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(async () => {
     refreshTimer = null;
     refreshTicks += 1;
-    try {
-      const fresh = await listActivity(FETCH_LIMIT, serverFilters());
-      if (!document.getElementById(PANEL_ID)) return;
-      panel.entries = fresh;
-      panel.error = null;
-      markSeen(document, fresh);
-      // Keep the details the reader has opened open across the redraw.
-      const open = [...document.querySelectorAll('#activity-panel-body [id^="activity-d-"]')]
-        .filter((d) => !d.classList.contains('hidden')).map((d) => d.id);
-      renderList();
-      open.forEach((id) => document.getElementById(id)?.classList.remove('hidden'));
-    } catch { /* keep the last list; the next tick tries again */ }
+    if (!(await refreshOnce())) return;
     scheduleRefresh();
   }, refreshConfig.intervalMs);
+}
+
+const noticed = new Set();  // `id:status` pairs already acted on, so a filtered-out entry costs one re-read, not one per tick
+/** Backlog 7f.6, the cases the running-row poll cannot see: the list was opened while nothing ran (so it is not
+ *  polling) and a scan started afterwards; or the poll's budget ran out while a row still showed running. The
+ *  header's activity watch (activity-unread.js, every 30 s) hands each page it reads here. The open, not-polling
+ *  list re-reads once when that page has an entry the list lacks, or an entry whose running-ness differs from the
+ *  list's (running there and finished here, or finished there and still running here); the bounded running-row
+ *  poll then takes over if anything runs. Keyed on id:status, so each change costs one re-read. Does nothing when
+ *  the panel is closed or already polling. Returns whether it refreshed. */
+export async function noticeActivity(entries) {
+  if (!document.getElementById(PANEL_ID) || refreshTimer || !Array.isArray(panel.entries)) return false;
+  const shown = new Map(panel.entries.map((e) => [e?.id, String(e?.status || '').toLowerCase()]));
+  const fresh = (entries || []).filter((e) => {
+    if (!e?.id) return false;
+    const st = String(e.status || '').toLowerCase();
+    const changed = !shown.has(e.id) || RUNNING.has(st) !== RUNNING.has(shown.get(e.id));
+    return changed && !noticed.has(`${e.id}:${st}`);
+  });
+  if (!fresh.length) return false;
+  fresh.forEach((e) => noticed.add(`${e.id}:${String(e.status || '').toLowerCase()}`));
+  refreshTicks = 0;
+  if (!(await refreshOnce())) return false;
+  scheduleRefresh();
+  return true;
 }
 
 function closeActivityPanel() {
   stopRefresh();
   refreshTicks = 0;
+  noticed.clear();
   document.getElementById(PANEL_ID)?.remove();
   document.removeEventListener('keydown', onPanelKeydown);
 }
