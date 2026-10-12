@@ -174,7 +174,9 @@ class TestDeferredStylingComesFromOneHelper:
         nav_body = app[app.index("function navItemHtml("):app.index("/** The list OF work lists")]
         assert "deferredAttrs(false" in nav_body
         subtab_body = app[app.index("function subTabsHtml("):app.index("export function bindSubTabs(")]
-        assert "deferredAttrs(false" in subtab_body
+        # Every stage with a sub-tab strip is built, so the strip has no dashed/deferred tab branch any more.
+        assert "deferredAttrs(" not in subtab_body
+        assert "data-deferred" not in subtab_body
         # Neither site should carry its own independent dashed-style literal
         # any more -- that duplication is exactly what #130 had to fix twice.
         assert "border-bottom:1px dashed currentColor" not in nav_body

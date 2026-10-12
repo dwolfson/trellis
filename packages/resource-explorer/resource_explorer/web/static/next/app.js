@@ -3215,14 +3215,21 @@ function writeUrl() {
 }
 
 /** Read the URL into state. Returns true if it named a resource. */
-function readUrl() {
+export function readUrl() {
   const p = new URLSearchParams(location.search);
+  let rewriteUrl = false;
   _restoringUrl = true;
   try {
     if (p.get('type')) state.resourceType = p.get('type');
     if (p.get('resource')) state.selectedSlug = p.get('resource');
     if (p.get('stage')) state.stage = p.get('stage');
-    if (p.get('tab')) state.subTab = p.get('tab');
+    // A `tab=` is kept only when the strip for THIS stage and kind offers it (visibleSubTabs()); a hand-edited
+    // or stale id falls to the stage's landing tab, same as no `tab=`. 'dashboard' is the retired id loadPane()
+    // aliases to By analysis. The URL is rewritten below so the bad id does not stick.
+    const wantTab = p.get('tab');
+    const tabOk = Boolean(wantTab) && (wantTab === 'dashboard' || visibleSubTabs().some((t) => t.id === wantTab));
+    if (tabOk) state.subTab = wantTab;
+    else if (wantTab) { state.subTab = stageDefaultSubTab(); rewriteUrl = true; }
     // A bookmarked/shared `?stage=enrichment` with no `?tab=` should open on
     // Context, same as clicking into Enrichment from the nav (see that
     // click handler's own comment) — the URL restore path was the one place
@@ -3235,6 +3242,7 @@ function readUrl() {
   } finally {
     _restoringUrl = false;
   }
+  if (rewriteUrl) writeUrl();
   return Boolean(p.get('resource'));
 }
 
@@ -3976,17 +3984,7 @@ export function subTabsHtml() {
       if (t.id === state.subTab) {
         return `<span class="border-b border-accent pb-[2px] text-ink">${labelOf(t)}</span>`;
       }
-      // DEFECT-UNBUILT-STAGES-RENDER-AS-BUILT.md §3: a sub-tab's own `built`
-      // flag said nothing about whether the STAGE it's shown under is
-      // built, so all four module-level built:true SUB_TABS advertised
-      // working panes on all six unbuilt stages too. Live only when the tab
-      // AND the current stage are built.
-      const stageDef = STAGES.find((s) => s.id === state.stage);
-      if (stageDef?.built && (t.id === 'questions' || t.built)) {
-        return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${labelOf(t)}</button>`;
-      }
-      return `<button data-deferred="${t.id}"${deferredAttrs(false, { title: `${t.does} — not built in /next`, extraStyle: 'padding-bottom:1px' })}
-        class="cursor-pointer bg-transparent text-ink-muted">${labelOf(t)}</button>`;
+      return `<button data-subtab="${t.id}" class="cursor-pointer bg-transparent text-ink hover:text-accent-ink">${labelOf(t)}</button>`;
     }).join('')}
   </div>${commitLine}`;
 }
@@ -4040,7 +4038,7 @@ function switchCurateTab(tab) {
   if (state.curate && state.curate.onTabShown) state.curate.onTabShown();
 }
 
-/** Sub-tab clicks: the real one switches, a deferred one says it is deferred. Between Curate's own tabs the
+/** Sub-tab clicks: a click switches. Between Curate's own tabs the
  *  switch is in place. */
 export function bindSubTabs() {
   bindSubTabsIn($('content'));
@@ -4054,11 +4052,6 @@ function bindSubTabsIn(el) {
     writeUrl();
     loadPane();
   }; });
-  el.querySelectorAll('[data-deferred]').forEach((b) => b.addEventListener('click', () => {
-    state.subTab = b.dataset.deferred;
-    writeUrl();
-    loadPane();
-  }));
   bindCommitLine(el);
 }
 
@@ -4116,9 +4109,8 @@ function bindSubTabsIn(el) {
 async function loadSchemaInventoryPane() {
   const el = $('content');
   if (state.resourceType !== 'db') {
-    el.innerHTML = deferredPaneHtml(
-      { label: 'Schema Inventory', does: 'Only databases have a schema tree to show' });
-    bindSubTabs();
+    // Unreachable through loadPane() (reconcileSubTabForStage() reverts it first); kept as a safe landing.
+    state.subTab = stageDefaultSubTab(); writeUrl(); await loadPane();
     return;
   }
   const slug = state.selectedSlug;
@@ -8036,7 +8028,6 @@ function fmtBytes(n) {
   return `${n < 0 ? '-' : ''}${shown} ${units[i]}`;
 }
 
-/** What a deferred sub-tab shows when you click it. */
 /** A link into the Classic UI (`/classic`), on the same resource.
  *
  *  `index.html` gained a `?resource=` reader for this — it had no deep link
@@ -8047,18 +8038,6 @@ export function oldUiHref() {
   return state.selectedSlug
     ? `/classic?resource=${encodeURIComponent(state.selectedSlug)}`
     : '/classic';
-}
-
-function deferredPaneHtml(tab) {
-  return `${subTabsHtml()}
-    <h3 class="m-0 font-heading text-name font-normal">${esc(tab.label)} · not built in /next</h3>
-    <div class="my-s3 h-px bg-rule"></div>
-    <p class="max-w-[70ch] text-answer text-ink">${esc(tab.does)}.</p>
-    <p class="max-w-[70ch] text-answer text-ink">
-      <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
-        >Open ${state.selectedSlug ? `<span class="font-mono">${esc(state.selectedSlug)}</span>` : 'this'}
-        in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
-    </p>`;
 }
 
 /**
@@ -8332,10 +8311,8 @@ async function loadPane() {
   if (state.subTab === 'disposition') { await loadDispositionPane(); return; }
 
   if (state.subTab !== 'questions') {
-    const tab = SUB_TABS.find((t) => t.id === state.subTab)
-      || { id: state.subTab, label: state.subTab, does: 'Not a pane /next knows about' };
-    el.innerHTML = deferredPaneHtml(tab);
-    bindSubTabs();
+    // readUrl() keeps only ids the strip offers, so this is a safe landing, not a stub pane.
+    state.subTab = stageDefaultSubTab(); writeUrl(); await loadPane();
     return;
   }
 
