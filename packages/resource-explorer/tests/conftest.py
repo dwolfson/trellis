@@ -488,6 +488,17 @@ os.environ.setdefault("EXPLORER_REQUIRE_LOGIN", "false")
 # hostname and logs a warning per process — correct behaviour, noisy here.
 os.environ.setdefault("RE_JWT_SECRET", "resource-explorer-test-secret")
 
+# Import the app ONCE, here, before any test has patched anything. Route modules
+# bind `get_current_user` by name (`from ..auth import get_current_user`) at their
+# FIRST import, and the first import used to happen inside whichever test fixture
+# got there first — several of which monkeypatch `resource_explorer.auth.get_current_user`
+# just before `from resource_explorer.web.app import app`. The route modules then kept
+# that fixture's lambda for the rest of the process (tests/test_curate.py's
+# "peterprofile" answered a later test that expected the signed-in "dan").
+# Importing here makes every route module bind the real function; a test that
+# wants a different caller patches it with monkeypatch, which is undone at teardown.
+import resource_explorer.web.app  # noqa: E402,F401
+
 
 @pytest.fixture(autouse=True)
 def issue_117_block_off_for_legacy_delete_path_tests(request, monkeypatch):
