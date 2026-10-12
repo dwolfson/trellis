@@ -140,11 +140,16 @@ Proposal for v1, for the owner to decide:
   with the same rationale property. RE may later pull Portal lists
   (option (b), its own design note) with a stated rule for which copy
   wins; until then neither app edits the other's.
-- **Team sharing** is undefined in both apps and needs its Egeria
-  relationship named. Proposal: a team list is a WorkingSet linked from
-  the team's `ActorProfile` by `ResourceList`, and "my lists" shows the
-  lists of every team the user is a member of. To confirm with the
-  Egeria lead; until then lists are personal.
+- **Team sharing** follows the pattern RE's investigations already use
+  (owner, 2026-10-12): a list is shared with a **Community or a Team**,
+  both Egeria actor profiles, and "my lists" shows the lists of every
+  community and team the user belongs to. The browser reuses the same
+  relationship the investigation publish writes between a project and
+  its community or team, so the two apps agree; the builder reads it
+  from RE's investigation publish path rather than choosing one.
+- **The type is right.** RE's work lists are already Egeria's
+  `WorkingSet` (the official type; RE's module says so in its first
+  lines). Only the qualifiedName prefix is RE's own. Nothing to correct.
 - **Hand to a steward** is unresolved: request for action versus to-do,
   with several mechanisms; the owner is working it out with the Egeria
   lead. Until then the control is absent, not stubbed.
@@ -158,10 +163,23 @@ Proposal for v1, for the owner to decide:
   conditions, relevance order, source labelled on every response. The
   "source on every response" field is the seam that lets a later layer
   replace L0 without changing the page.
-- **L1:** computed fields written back into Egeria as `SearchKeyword`
-  through `search_keywords_handler.py`, never as `InformalTag`, which is
-  user-facing. The owner is unsure this is wise; it is an option, not a
-  plan.
+- **L1, buckets as search keywords (owner's direction, 2026-10-12):**
+  rather than ordering by discrete counts, which Egeria's find cannot
+  do, the popularity measure is turned into a small set of **buckets**
+  ("Very popular", "Popular", "Rarely used", "No usage recorded") and
+  each written to the asset as a `SearchKeyword` through
+  `search_keywords_handler.py`, never as an `InformalTag`, which is
+  user-facing. A bucket is a filter and a coarse sort tier that find can
+  apply; the exact figure stays on the measure annotation and shows on
+  the row with its as-of date. Rules: the bucket names are a valid value
+  set; the boundaries are quantiles recomputed on a schedule and stored
+  with the set, so "Very popular" means the same thing on every row of
+  one run; the keyword carries the run's as-of; a resource with no usage
+  measure gets "No usage recorded", never the lowest bucket. The same
+  pattern serves ratings ("Highly rated") and recency. It is cheap to
+  maintain, re-keyed only when a bucket changes, and gives the Home and
+  Search pages a ranking without an index. Fine ordering inside a bucket
+  is relevance at L0, or an index at L2.
 - **L2:** an external search index fed by Egeria events, rebuildable,
   Egeria the master copy, with the app falling back to L0 whenever the
   index is unavailable. Allowed under §2 only with that fallback.
@@ -206,9 +224,11 @@ chosen. Phases 1 and 2 are enough for gates 2 and 5.
 
 - [x] Hub flavour type: `DataSharingHub` (owner, 2026-10-12).
 - [ ] Work lists v1: option (a) two prefixes, one direction each (owner).
-- [ ] Team sharing: the relationship (proposal `ResourceList` from the
-      team's ActorProfile), with the Egeria lead.
+- [ ] Team sharing: Community or Team as investigations do (owner);
+      the builder names the relationship from RE's investigation publish.
 - [ ] Hand to a steward: RFA versus to-do (owner with the Egeria lead).
-- [ ] Search beyond L0: L1, L2 or neither (owner).
+- [ ] Search beyond L0: L1 buckets as search keywords is the owner's
+      direction; bucket names and quantile schedule to be set; L2 later
+      if fine ordering is wanted.
 - [ ] Where the reinstated usage measure lives and its shape.
 - [ ] Portal app or trellis app: this spec assumes the Portal.
