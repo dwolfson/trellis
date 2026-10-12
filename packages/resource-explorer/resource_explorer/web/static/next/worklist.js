@@ -48,6 +48,18 @@ import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { shortName } from '/static/next/investigation-picker.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
+import { cue } from '/static/next/stages/repo-manifest.js';
+
+/** Brief Z3: the members the zone check refused (a publish or a batch), each with the no_access cue, the reason
+ *  on hover; the rest went ahead. '' when none. */
+function notPermittedHtml(rows) {
+  if (!rows?.length) return '';
+  return `<span data-not-permitted>${rows.map((r) => `<span data-member-not-permitted="${esc(r.entity_slug)}">${
+    cue('no_access', 'not permitted', String(r.words || '').replace(/^not permitted · /, ''))} ${esc(r.entity_slug)}</span>`).join('; ')}</span>`;
+}
+
+/** A whole refusal (403: nothing was permitted) as the cue, the reason on hover. */
+const refusedCue = (err) => cue('no_access', 'not permitted', err.message);
 
 /* ── Cell state ─────────────────────────────────────────────────────────
  *
@@ -1648,18 +1660,19 @@ async function runRefresh(byAnalysis, ctx) {
     try {
       last = await enqueueBatch(aid, ss, grid.workList.slug, kindOf(grid.workList));
       done.push(`${aid} \u00d7 ${ss.length}`);
+      if (last?.not_permitted?.length) done.push(notPermittedHtml(last.not_permitted));
     } catch (err) {
       // Report what DID get queued. A failure on the fourth analysis does not
       // un-queue the first three, and "it failed" would leave three batches
       // running that nobody was told about.
-      note(`<span class="text-state-warn">Queued ${done.length ? esc(done.join(', ')) : 'nothing'},
+      note(`<span class="text-state-warn">Queued ${done.length ? done.map((d) => (d.startsWith('<') ? d : esc(d))).join(', ') : 'nothing'},
         then <span class="font-mono">${esc(aid)}</span> was refused:
-        ${esc(err.message)}</span>`);
+        ${err.status === 403 ? refusedCue(err) : esc(err.message)}</span>`);
       if (last?.set_id) watchBatch(ctx, last.set_id);
       return;
     }
   }
-  note(`Queued ${esc(done.join(', '))}. Watching the last batch.`);
+  note(`Queued ${done.map((d) => (d.startsWith('<') ? d : esc(d))).join(', ')}. Watching the last batch.`);
   if (last?.set_id) watchBatch(ctx, last.set_id);
 }
 
@@ -1809,7 +1822,8 @@ async function rerunOne(slug, ids, ctx) {
     note(networkish
       ? `<span class="text-state-warn">The server could not be reached, so nothing was
          enqueued (${esc(err.message)}). If it was restarting, try again.</span>`
-      : `<span class="text-state-warn">The re-run was refused: ${esc(err.message)}</span>`);
+      : err.status === 403 ? refusedCue(err)
+        : `<span class="text-state-warn">The re-run was refused: ${esc(err.message)}</span>`);
     return;
   }
   note(`Queued <span class="font-mono">${esc(ids.join(', '))}</span> for
@@ -1898,11 +1912,13 @@ async function enqueueRun(ctx, analysisId, slugs) {
     note(networkish
       ? `<span class="text-state-warn">The server could not be reached, so nothing was
          enqueued (${esc(err.message)}). If it was restarting, try again.</span>`
-      : `<span class="text-state-warn">The batch was refused: ${esc(err.message)}</span>`);
+      : err.status === 403 ? refusedCue(err)
+        : `<span class="text-state-warn">The batch was refused: ${esc(err.message)}</span>`);
     return;
   }
   note(`Batch <span class="font-mono">${esc(started.set_id)}</span> ·
-        <span class="tnum">${started.runs.length}</span> run(s) across the set.`);
+        <span class="tnum">${started.runs.length}</span> run(s) across the set.${
+        started.not_permitted?.length ? ` ${notPermittedHtml(started.not_permitted)}` : ''}`);
   watchBatch(ctx, started.set_id);
 }
 
@@ -2063,10 +2079,12 @@ async function publish(ctx) {
         member(s) have no Egeria asset and were not attached:
         ${esc(res.members_without_an_egeria_asset.join(', '))}</span>`);
     }
+    if (res.not_permitted?.length) bits.push(notPermittedHtml(res.not_permitted));
     note(bits.join(' '));
     renderActions(ctx);
   } catch (err) {
-    note(`<span class="text-state-warn">Publish failed: ${esc(err.message)}</span>`);
+    note(err.status === 403 ? `<span data-publish-refused>${refusedCue(err)}</span>`
+      : `<span class="text-state-warn">Publish failed: ${esc(err.message)}</span>`);
   }
 }
 

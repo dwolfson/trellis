@@ -7994,6 +7994,9 @@ class ProjectRegistry:
     #: States in which a row for the same (entity, kind, qualified_name) already stands for the intent.
     OUTBOX_LIVE_OR_DONE = ("pending", "failed", "running", "done")
 
+    #: The payload keys that name who asked for a queued write (Brief Z2/Z3: `egeria_outbox.requester_fields`).
+    OUTBOX_REQUESTER_KEYS = ("by", "portal_role")
+
     def enqueue_outbox_element_once(
         self, entity_type: str, entity_slug: str, element_kind: str,
         qualified_name: str, payload: dict, *, run_id: str = "",
@@ -8027,10 +8030,25 @@ class ProjectRegistry:
                 if r["status"] in self.OUTBOX_LIVE_OR_DONE:
                     return int(r["id"])
             if rows and rows[0]["status"] == "dead":
+                # Brief Z3 round 2: a revived row is now THIS request's write. Its requester (`by`, and a
+                # `portal_role` recorded from the verified caller) is the reviver's, never the old one's, so the
+                # drain re-checks and stamps the person who asked again. Other payload keys are kept.
+                old = conn.execute("SELECT payload_json FROM egeria_outbox WHERE id=?",
+                                   (rows[0]["id"],)).fetchone()
+                try:
+                    merged = json.loads((old["payload_json"] if old else "") or "{}")
+                except (TypeError, ValueError):
+                    merged = {}
+                if not isinstance(merged, dict):
+                    merged = {}
+                for key in self.OUTBOX_REQUESTER_KEYS:
+                    merged.pop(key, None)
+                    if key in payload:
+                        merged[key] = payload[key]
                 conn.execute(
                     "UPDATE egeria_outbox SET status='pending', claimed_at='', attempts=0, "
-                    "next_attempt_at=?, last_error='' WHERE id=? AND status='dead'",
-                    (now, rows[0]["id"]),
+                    "next_attempt_at=?, last_error='', payload_json=? WHERE id=? AND status='dead'",
+                    (now, json.dumps(merged), rows[0]["id"]),
                 )
                 return int(rows[0]["id"])
             cur = conn.execute(

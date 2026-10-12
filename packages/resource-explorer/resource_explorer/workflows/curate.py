@@ -126,7 +126,8 @@ def _caller_identity():
 
 def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scope_locator: str, *,
                     operations=None, reader=None, element_guid: str | None = None,
-                    anchor_guid: str = "") -> AccessDecision:
+                    anchor_guid: str = "", creation_zones: list[str] | None = None,
+                    zones_after: list[str] | None = None, foreign_after: tuple[str, ...] = ()) -> AccessDecision:
     """THE curation-rights decision (Brief Z). Every verdict route, Publish, the database commit and publish,
     the CLI and A2A call this.
 
@@ -154,6 +155,16 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
     the user), so with no element yet and an anchor in Egeria, the anchor's zones decide; RE's configured zones
     are the answer only when there is no anchor in Egeria either.
 
+    `creation_zones` (Brief Z3): the zones a NEW element that is neither a resource asset nor anchored is created
+    in, when the caller knows them (an investigation's Project: its private zones, or none). Without it a new
+    element is judged on `configured_zones_for` the resource.
+
+    `zones_after` (Brief Z3 round 2): judge the EXISTING element `element_guid` on the zones an earlier write of
+    the same press moves it to (Egeria checks a reclassify's CLASSIFY/DECLASSIFY after the zone move, on the new
+    zones), with its own owners and maintainers. `[]` with `foreign_after` = "RE's own zones are cleared": the
+    element keeps those of its current zones that are not in `foreign_after` (RE's), as
+    `InvestigationReclassifier._clear_zones` does.
+
     `element_guid` checks a resolved element instead of the scope's cache row (Publish's run-time re-check of
     an element the write adopted). `decided_by` on a verdict is attribution only; it is not read here.
     `reader` is a `zone_access.EgeriaAccessReader` shared across one press so each read happens once.
@@ -177,7 +188,14 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
     reader = reader or EgeriaAccessReader()
     try:
         guid = element_guid if element_guid is not None else element_guid_for(registry, entity_type, slug, scope_locator)
-        if guid:
+        if guid and zones_after is not None:
+            facts = reader.element(guid)
+            zones = list(zones_after) or [z for z in facts.zones if z not in set(foreign_after)]
+            if not zones:
+                return AccessDecision(True, "", BASIS_NO_ZONES)
+            verdict = zone_grants(user, zones, control_for=reader.control, account_for=lambda: reader.account(user),
+                                  owners=facts.owners, maintainers=facts.maintainers, operations=ops)
+        elif guid:
             verdict, zones = _existing_element_verdict(user, guid, ops, reader)
             if verdict is None:
                 return AccessDecision(True, "", BASIS_NO_ZONES)
@@ -186,7 +204,8 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
             if verdict is None:
                 return AccessDecision(True, "", BASIS_NO_ZONES)
         else:
-            zones = configured_zones_for(registry, entity_type, slug)
+            zones = (list(creation_zones) if creation_zones is not None
+                     else configured_zones_for(registry, entity_type, slug))
             if not zones:
                 return AccessDecision(True, "", BASIS_NO_ZONES)
             verdict = zone_grants(user, zones, control_for=reader.control, account_for=lambda: reader.account(user),

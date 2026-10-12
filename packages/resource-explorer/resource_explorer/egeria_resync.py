@@ -1442,13 +1442,17 @@ class EgeriaResync:
             EgeriaInvestigationPublisher,
         )
 
+        from resource_explorer.workflows.egeria_work_access import investigation_member_refusal
+
         pub = EgeriaInvestigationPublisher(self._registry)
         linked, unlinkable, per_inv = 0, 0, {}
         for inv in self._registry.list_investigations():
             if not inv.get("egeria_project_guid"):
                 continue
-            r = pub.relink_members(
-                inv["slug"], refusal=lambda m: self._refusal(m["entity_type"], m["entity_slug"], "link"))
+            # Brief Z3: the same per-member check the relink route asks, both ends (the member's asset and the
+            # Folio, judged on its Project), as the person who pressed Apply or, unattended, the no-requester rule.
+            r = pub.relink_members(inv["slug"], refusal=investigation_member_refusal(
+                self._registry, inv["slug"], unattended=True))
             linked += len(r.members_linked)
             unlinkable += len(r.members_unlinkable)
             per_inv[inv["slug"]] = {

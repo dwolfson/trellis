@@ -217,6 +217,29 @@ def _apply_investigation_marker(pm, project_guid: str) -> tuple[bool, str]:
     return True, ""
 
 
+def is_private_investigation(inv: dict) -> bool:
+    """Whether this investigation's Egeria elements must be zoned private: see
+    `EgeriaInvestigationPublisher._is_private`, which delegates here (Brief Z3: the access check asks the same
+    rule without needing the publisher class)."""
+    from resource_explorer.registry import ProjectRegistry
+
+    return bool(
+        (inv.get("project_classification") or "") in ProjectRegistry.PRIVATE_CLASSIFICATIONS
+        and (inv.get("created_by") or "").strip()
+    )
+
+
+def _unattached_reason(row: dict, unknown: str = "unknown error") -> str:
+    """Why a membership row is not attached, decided by the row's STATUS (Brief Z3 round 3): a dead row is never
+    retried (the access check's "not permitted · ...", Egeria's own security refusal, a destructive kind, or its
+    attempts used up), so it says its last error and nothing more; only a row the outbox will still attempt
+    carries the retry clause."""
+    error = str(row.get("last_error") or "")
+    if row.get("status") == "dead":
+        return error or "not attached (no error recorded) — not retried"
+    return f"attach failed ({error or unknown}) — queued for retry, see Admin → Publish Queue"
+
+
 @dataclass
 class PromotionResult:
     """What actually happened, step by step."""
@@ -285,12 +308,7 @@ class EgeriaInvestigationPublisher:
         zoning to an empty owner would produce `[private_zone]` alone, which is
         readable by nobody at all, including the person it belongs to.
         """
-        from resource_explorer.registry import ProjectRegistry
-
-        return bool(
-            (inv.get("project_classification") or "") in ProjectRegistry.PRIVATE_CLASSIFICATIONS
-            and (inv.get("created_by") or "").strip()
-        )
+        return is_private_investigation(inv)
 
     def _managers(self):
         if self._pm is not None and self._cm is not None:
@@ -305,7 +323,10 @@ class EgeriaInvestigationPublisher:
         self._pm, self._cm = pm, cm
         return pm, cm
 
-    def promote(self, investigation_slug: str) -> PromotionResult:
+    def promote(self, investigation_slug: str, *, refusal=None) -> PromotionResult:
+        """`refusal(member) -> str` (Brief Z3): each member's end of its CollectionMembership, checked before it
+        is queued; a member it refuses is reported unlinkable with those words ("not permitted · <reason>") and
+        the rest are linked. The Project's own writes are checked by the caller before this runs."""
         res = PromotionResult()
         inv = self._registry.get_investigation(investigation_slug)
         if not inv:
@@ -537,11 +558,11 @@ class EgeriaInvestigationPublisher:
         # 4. CollectionMembership per member, where the resource actually exists
         #    in Egeria. A member whose repo was never published has no asset to
         #    link — reported, never invented.
-        self._link_members(cm, res, members, investigation_slug)
+        self._link_members(cm, res, members, investigation_slug, refusal=refusal)
         return res
 
     def _link_members(self, cm, res: "PromotionResult", members: list,
-                      investigation_slug: str) -> None:
+                      investigation_slug: str, *, refusal=None) -> None:
         """Attach every member that HAS an asset to the working set, via the outbox.
 
         CollectionMembership is uni-link, so add_to_collection is an upsert:
@@ -586,6 +607,11 @@ class EgeriaInvestigationPublisher:
                     **m, "reason": "not published to Egeria yet — no asset GUID",
                 })
                 continue
+            # Brief Z2 round 2 / Z3: a member the access check refuses is not queued; its words are its reason.
+            why = refusal({**m, "member_guid": asset_guid}) if refusal is not None else ""
+            if why:
+                res.members_unlinkable.append({**m, "reason": why})
+                continue
             linkable.append({**m, "member_guid": asset_guid})
 
         if not linkable:
@@ -619,10 +645,7 @@ class EgeriaInvestigationPublisher:
             else:
                 res.members_unlinkable.append({
                     **{k: v for k, v in m.items() if k != "member_guid"},
-                    "reason": (
-                        f"attach failed ({row['last_error'] or 'unknown error'}) — "
-                        f"queued for retry, see Admin → Publish Queue"
-                    ),
+                    "reason": _unattached_reason(row),
                 })
         if summary.get("failed") or summary.get("dead"):
             log.warning("Investigation %s: %d membership(s) queued for retry",
@@ -644,8 +667,9 @@ class EgeriaInvestigationPublisher:
 
         Idempotent: add_to_collection upserts on a uni-link relationship.
 
-        `refusal(member) -> str` (Brief Z2 round 2, resync's per-resource access check): a member it refuses is
-        not attached and is reported unlinkable with those words ("not permitted · <reason>").
+        `refusal(member) -> str` (Brief Z2 round 2, resync's per-resource access check; Brief Z3 the route's): a
+        member it refuses is not attached and is reported unlinkable with those words ("not permitted · <reason>").
+        It is asked only for a member that has an asset to attach, and the member dict carries `member_guid`.
         """
         res = PromotionResult()
         inv = self._registry.get_investigation(investigation_slug)
@@ -673,16 +697,7 @@ class EgeriaInvestigationPublisher:
             return res
 
         members = self._registry.list_investigation_members(investigation_slug)
-        if refusal is not None:
-            allowed = []
-            for m in members:
-                why = refusal(m)
-                if why:
-                    res.members_unlinkable.append({**m, "reason": why})
-                else:
-                    allowed.append(m)
-            members = allowed
-        self._link_members(cm, res, members, investigation_slug)
+        self._link_members(cm, res, members, investigation_slug, refusal=refusal)
         return res
 
     def link_status(self, investigation_slug: str) -> dict:
@@ -744,9 +759,7 @@ class EgeriaInvestigationPublisher:
                 out.append({**base, "state": "not_linked",
                             "reason": "not attached — use Link members"})
             else:
-                out.append({**base, "state": "not_linked", "reason": (
-                    f"attach failed ({row.get('last_error') or 'pending'}) — "
-                    "queued for retry, see Admin → Publish Queue")})
+                out.append({**base, "state": "not_linked", "reason": _unattached_reason(row, "pending")})
         counts = {s: sum(1 for o in out if o["state"] == s)
                   for s in ("linked", "not_linked", "could_not_tell")}
         return {"slug": investigation_slug, "bound": bound, "members": out, "counts": counts}

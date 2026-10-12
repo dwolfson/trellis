@@ -88,6 +88,9 @@ class ReclassificationResult:
     #: failure during a tightening — see the module docstring on ordering.
     local_applied: bool = False
     errors: list[str] = field(default_factory=list)
+    #: Brief Z3: the caller may not move the investigation Project ("not permitted · <reason>"); nothing was
+    #: changed. The route answers 403 with the reason.
+    not_permitted: str = ""
 
     @property
     def ok(self) -> bool:
@@ -123,6 +126,7 @@ class ReclassificationResult:
             "local_applied": self.local_applied,
             "errors": self.errors,
             "still_public": self.still_public,
+            "not_permitted": self.not_permitted,
             "ok": self.ok,
         }
 
@@ -382,7 +386,7 @@ class InvestigationReclassifier:
     # ── the flow ──────────────────────────────────────────────────────────
 
     def reclassify(self, slug: str, to_classification: str,
-                   hypothesis: str = "") -> ReclassificationResult:
+                   hypothesis: str = "", *, access=None) -> ReclassificationResult:
         from resource_explorer.registry import ProjectRegistry
 
         res = ReclassificationResult(slug=slug, to_classification=to_classification)
@@ -430,6 +434,45 @@ class InvestigationReclassifier:
         if not project_guid:
             return self._apply_locally(res, to_classification, hypothesis)
 
+        if res.direction == LATERAL:
+            # Nothing moves. Task -> Campaign is a real change with no visibility
+            # consequence, and pretending otherwise would re-zone elements for no
+            # reason — which the connector rejects as a no-op anyway.
+            return self._apply_locally(res, to_classification, hypothesis)
+
+        # Brief Z3: every element this moves is checked first, before anything else is asked of Egeria (even the
+        # private zone's set-up below) (`access(writes) -> words`, the caller's
+        # `egeria_work_access.access_words`), from the same list the moves below walk. A refused Project changes
+        # nothing (`not_permitted`, the route's 403). A refused SurveyReport: on a tightening nothing moves (it
+        # would stay readable by everyone while RE showed the investigation private, the case this refuses
+        # anyway after the fact); on a loosening it is unmovable with its words and the rest move.
+        guids, unreadable = self._report_guids(slug)
+        refused_reports: dict[str, str] = {}
+        if access is not None:
+            from resource_explorer.egeria_identity import draft_zones, private_zone
+            from resource_explorer.workflows.egeria_work_access import (
+                reclassify_kind_after_move, reclassify_project_write, report_write,
+            )
+
+            # Round 2 (F6): the kind change is also judged on the zones the move puts the Project in, which is
+            # where Egeria checks it; a non-owner's tightening is refused here, before anything moves.
+            target_after = self._target_zones(res.direction, owner)
+            own = (private_zone(), *draft_zones(), *([owner] if owner else []))
+            why = access([reclassify_project_write(project_guid, res.from_classification),
+                          reclassify_kind_after_move(project_guid, res.from_classification, target_after, own)])
+            if why:
+                res.not_permitted = why
+                res.errors.append(f"the investigation Project: {why}. Nothing was changed.")
+                return res
+            refused_reports = {g: w for g in guids if (w := access([report_write(g)]))}
+            if refused_reports and res.direction == TIGHTEN:
+                res.reports_unmovable += [{"guid": g, "reason": w} for g, w in refused_reports.items()]
+                res.errors.append(
+                    "the classification was NOT changed and nothing was moved: you may not move "
+                    f"{len(refused_reports)} of this investigation's reports, which would stay readable "
+                    "by everyone.")
+                return res
+
         if res.direction == TIGHTEN:
             from resource_explorer.egeria_identity import (
                 ensure_private_zone_exists, private_zone, private_zone_is_enforced,
@@ -457,18 +500,11 @@ class InvestigationReclassifier:
 
         target = self._target_zones(res.direction, owner)
 
-        if res.direction == LATERAL:
-            # Nothing moves. Task -> Campaign is a real change with no visibility
-            # consequence, and pretending otherwise would re-zone elements for no
-            # reason — which the connector rejects as a no-op anyway.
-            return self._apply_locally(res, to_classification, hypothesis)
-
         moved, reason = self._move_zones(project_guid, target, owner)
         res.project_rezoned = moved
         if not moved:
             res.errors.append(f"could not move the investigation Project: {reason}")
 
-        guids, unreadable = self._report_guids(slug)
         for member_slug in unreadable:
             # Recorded as unmovable rather than ignored: we do not know what this
             # member has published, so on a tightening we cannot claim it is
@@ -480,6 +516,9 @@ class InvestigationReclassifier:
                            "reports were never checked or moved"),
             })
         for guid in guids:
+            if guid in refused_reports:
+                res.reports_unmovable.append({"guid": guid, "reason": refused_reports[guid]})
+                continue
             ok, why = self._move_zones(guid, target, owner)
             if ok:
                 res.reports_moved.append(guid)

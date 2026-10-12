@@ -261,6 +261,10 @@ class TestEgeriaFlow:
             "regression: mapping members_unlinkable straight through esc() "
             "renders '[object Object]' for each entry"
         )
+        if "members_unlinkable.map(memberLine)" in unlinkable_line:
+            # Brief Z3: one helper renders a member line (with the not-permitted cue); it reads the fields.
+            helper = src[src.index("const memberLine"):]
+            unlinkable_line = helper[:helper.index("};")]
         assert "entity_slug" in unlinkable_line
         assert "reason" in unlinkable_line
 

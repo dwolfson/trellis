@@ -267,8 +267,14 @@ def test_resync_relink_skips_a_refused_member(registry, access, signed_in_caller
     monkeypatch.setattr(registry, "list_investigation_members", lambda slug: [
         {"entity_type": "repo", "entity_slug": "p"}, {"entity_type": "repo", "entity_slug": "q"}])
     monkeypatch.setattr(eip.EgeriaInvestigationPublisher, "_managers", lambda self: (None, None))
-    monkeypatch.setattr(eip.EgeriaInvestigationPublisher, "_link_members",
-                        lambda self, cm, res, members, slug: seen.setdefault("members", members))
+    # Brief Z3: the refusal is asked inside _link_members (for a member with an asset), so the real one runs; only
+    # the queue boundary is faked (what is enqueued is what would be attached).
+    monkeypatch.setattr(eip.EgeriaInvestigationPublisher, "_asset_guid", lambda self, et, s: f"g-{s}")
+    monkeypatch.setattr("resource_explorer.egeria_outbox.enqueue_collection_members",
+                        lambda reg, slug, cg, members, run_id="": seen.setdefault("members", members) and [])
+    monkeypatch.setattr("resource_explorer.egeria_outbox.drain_outbox", lambda *a, **k: {})
+    monkeypatch.setattr(registry, "investigation_working_set_slug", lambda slug: "ws-i")
+    monkeypatch.setattr(registry, "get_working_set", lambda ws: {"egeria_collection_guid": "cg"})
     out = EgeriaResync(registry=registry)._do_relink_investigation_members()
     assert [m["entity_slug"] for m in seen["members"]] == ["q"]
     assert out["per_investigation"]["i"]["not_permitted"] == [

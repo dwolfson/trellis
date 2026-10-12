@@ -662,14 +662,16 @@ class TestRound3:
         assert registry.list_runs(kind=kind, limit=5) == []
 
     def test_the_only_portal_role_in_a_target_comes_from_the_verified_caller(self):
-        """`portal_role` is written in exactly one place: enqueue_publish, from the caller ContextVar."""
+        """`portal_role` is written only from the caller ContextVar: enqueue_publish, the database commit's
+        selection (Brief Z2) and a queued investigation/work-list row (Brief Z3, `egeria_outbox.requester_fields`)."""
         import pathlib
         import re
 
         root = pathlib.Path(__file__).resolve().parents[1] / "resource_explorer"
         writers = [str(p.relative_to(root)) for p in root.rglob("*.py")
                    if re.search(r'["\']portal_role["\']\s*:', p.read_text())]
-        assert sorted(writers) == ["architecture_publish.py", "catalogue_commit.py"]   # Brief Z2: both from the caller
+        assert sorted(writers) == ["architecture_publish.py", "catalogue_commit.py",   # Brief Z2: both from the caller
+                                   "egeria_outbox.py"]                                # Brief Z3: requester_fields
 
     def test_an_empty_or_null_zone_array_is_unzoned_not_unreadable(self):
         """LOW: Egeria treats a ZoneMembership with a null or empty array as unzoned (only propertiesAsStrings

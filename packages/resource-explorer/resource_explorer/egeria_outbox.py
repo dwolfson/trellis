@@ -675,6 +675,59 @@ def _doc_source_refusal(registry, row: dict) -> str:
             current_caller.reset(reset)
 
 
+#: Brief Z3: the membership and ResourceList rows of an investigation's working set and a work list's WorkingSet,
+#: re-checked at drain time as the person they were queued for.
+COLLECTION_ENTITY_TYPES = ("investigation", "work_list")
+COLLECTION_KINDS = ("collection_membership", "resource_list")
+
+
+def _row_payload(row: dict) -> dict:
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _collection_refusal(registry, row: dict) -> str:
+    """Brief Z3: the drain-time re-check for an investigation's or a work list's link (a CollectionMembership,
+    or the ResourceList from the Project to its Folio): ATTACH on BOTH ends (`validateUserForElementAttach`
+    :1582-1620; an anchored end on its anchor), as the person the row was queued for (`by`, with the Portal
+    curator/admin override only when the row recorded it from the verified caller), by the same rule every
+    queued write uses (`workflows.egeria_work_access.writes_refusal`): with nobody recorded and nobody signed in,
+    open only while no zone is in use. "" = apply it. Rows of other entities (a blueprint's members) are not
+    this check's."""
+    kind = row.get("element_kind")
+    if kind not in COLLECTION_KINDS or row.get("entity_type") not in COLLECTION_ENTITY_TYPES:
+        return ""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.workflows.egeria_work_access import collection_write, member_write, writes_refusal
+
+    payload = _row_payload(row)
+    if kind == "collection_membership":
+        writes = [collection_write(str(payload.get("collection_guid") or ""), "the collection"),
+                  member_write(str(payload.get("member_guid") or ""))]
+    else:
+        writes = [collection_write(str(payload.get("parent_guid") or "")),
+                  collection_write(str(payload.get("collection_guid") or ""), "the working set")]
+    writes = [w for w in writes if w.guid]
+    by = _row_requester(row) or _run_requester(registry, row)
+    role = "curator" if by and payload.get("portal_role") is True else "user"
+    reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run",
+                                              role=role)) if by else None
+    try:
+        return writes_refusal(registry, writes, entity_type=row.get("entity_type") or "",
+                              slug=row.get("entity_slug") or "")
+    finally:
+        if reset is not None:
+            current_caller.reset(reset)
+
+
+def _queued_write_refusal(registry, row: dict) -> str:
+    """Every drain-time re-check (Brief Z2 round 2's documentation sources, Brief Z3's collections)."""
+    return _doc_source_refusal(registry, row) or _collection_refusal(registry, row)
+
+
 def _row_identity(row: dict, drain_identity):
     """Brief I round 4: in the background loop (a Daemon drain) a row enqueued for a person is
     applied as `Daemon(OUTBOX, requested_by=<that person>)`, so a retry stamps the original author,
@@ -929,7 +982,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # (annotation/collection_membership/resource_list/annotation_
             # link), the same per-call-name granularity the layer-2
             # catalogue-depth offer needs and nothing before this recorded.
-            refused = _doc_source_refusal(registry, row)
+            refused = _queued_write_refusal(registry, row)
             if refused:
                 raise OutboxNotPermitted(refused)
             with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"), \
@@ -1244,7 +1297,7 @@ def enqueue_resource_list(
     return registry.enqueue_outbox_element(
         "investigation", entity_slug, "resource_list",
         f"ResourceList::{parent_guid}::{collection_guid}",
-        {"parent_guid": parent_guid, "collection_guid": collection_guid},
+        {"parent_guid": parent_guid, "collection_guid": collection_guid, **requester_fields()},
         run_id=run_id,
     )
 
@@ -1287,7 +1340,8 @@ def enqueue_collection_members(
         row_ids.append(registry.enqueue_outbox_element_once(
             "investigation", entity_slug, "collection_membership", qualified_name,
             {"collection_guid": collection_guid, "member_guid": m["member_guid"],
-             "member_entity_type": m.get("entity_type", ""), "member_entity_slug": member_slug},
+             "member_entity_type": m.get("entity_type", ""), "member_entity_slug": member_slug,
+             **requester_fields()},
             run_id=run_id,
         ))
     return row_ids
@@ -1330,6 +1384,20 @@ def enqueue_blueprint_members(
             run_id=run_id,
         ))
     return row_ids
+
+
+def requester_fields() -> dict:
+    """What a queued investigation or work-list row records about who asked (Brief Z3), so the drain re-checks
+    THEM: `by`, and `portal_role` only when the verified caller (the ContextVar) holds a Portal curator/admin
+    role. Empty for a row nobody asked for (the no-requester rule then applies at drain time)."""
+    by = _requester_now()
+    if not by:
+        return {}
+    from resource_explorer.workflows.curate import CURATOR_ROLES, _caller_identity
+
+    ident = _caller_identity()
+    override = bool(ident and ident.user_id == by and (ident.role or "").lower() in CURATOR_ROLES)
+    return {"by": by, **({"portal_role": True} if override else {})}
 
 
 def _requester_now() -> str:

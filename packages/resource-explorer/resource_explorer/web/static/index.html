@@ -2399,9 +2399,15 @@ async function _postEgeriaProjectContext(body) {
     // The binding belongs to the investigation record, not to the browser.
     const slug = _currentInvestigation();
     if (slug) {
-      await fetch(`/api/investigations/${encodeURIComponent(slug)}/egeria-project`, {
+      const bound = await fetch(`/api/investigations/${encodeURIComponent(slug)}/egeria-project`, {
         method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
       });
+      if (bound.status === 403) {
+        // Brief Z3: refused by the zone check; nothing was recorded.
+        const detail = (await bound.json().catch(() => ({}))).detail || '';
+        showToast('error', `⊘ not permitted · ${_esc(detail)}`, 8000);
+        return;
+      }
     }
     _setSessionEgeriaProjectContext(body);
     closeEgeriaProjectModal();
@@ -7873,6 +7879,11 @@ async function submitRfaAction(rfaId, status, extra, containerId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status, ...extra }),
     });
+    if (res.status === 403) {
+      // Brief Z3: its Egeria ToDo write was refused by the zone check; nothing was recorded.
+      const detail = (await res.json().catch(() => ({}))).detail || '';
+      throw new Error(`⊘ not permitted · ${detail}`);
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     showToast('success', `RFA marked ${_esc(status)}.`, 3000);
     loadRfaPanel(containerId);
@@ -11010,6 +11021,11 @@ async function _promoteInvestigation(slug) {
   try {
     const res = await fetch(`/api/investigations/${encodeURIComponent(slug)}/promote`, {method: 'POST'});
     const r = await res.json();
+    if (res.status === 403) {
+      // Brief Z3: refused by the zone check before anything was written.
+      showToast('error', `⊘ not permitted · ${_esc(r.detail || '')}`, 8000);
+      return;
+    }
     if (!r.ok && !r.project_guid) {
       showToast('error', `Could not create: ${(r.errors || ['unknown']).join('; ')}`, 8000);
       return;

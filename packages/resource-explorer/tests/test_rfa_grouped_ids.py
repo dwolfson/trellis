@@ -25,8 +25,16 @@ def registry(tmp_path):
 
 @pytest.fixture
 def client(registry, monkeypatch):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from tests.zone_fakes import open_access
+
     from resource_explorer.web.app import app
     monkeypatch.setattr("resource_explorer.web.routes.activity._registry", lambda: registry)
+    # Brief Z3: a status change checks its Egeria ToDo write; no zone in use, a signed-in caller.
+    open_access(monkeypatch, caller_if_none="tester")
     return TestClient(app)
 
 

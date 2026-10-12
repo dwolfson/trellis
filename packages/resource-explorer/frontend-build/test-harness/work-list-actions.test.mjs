@@ -32,8 +32,11 @@ const wlRow = (slug, over = {}) => ({
   derived_from: '', ...over,
 });
 let WORK_LISTS; let SCOPE; let CALLS;
+//: Brief Z3: how the publish route answers ('' = as before; 'refused' = 403; 'one-member' = one member refused).
+let PUBLISH_MODE = '';
 
 function reset() {
+  PUBLISH_MODE = '';
   WORK_LISTS = [
     wlRow('sales-databases', { display_name: 'Sales databases', investigation: 'c360' }),
     wlRow('old-postgres', { display_name: 'Old Postgres', description: 'Legacy boxes to look at', member_count: 4 }),
@@ -90,6 +93,15 @@ function stubBackend() {
       return ok({ investigation: body.investigation, investigation_name: inv.display_name, added, already_in_scope: already });
     }
     m = u.match(/^\/api\/work-lists\/([^/?]+)\/publish$/);
+    if (m && method === 'POST' && PUBLISH_MODE === 'refused') {
+      return { ok: false, status: 403, statusText: 'Forbidden', json: async () => ({ detail: 'zone sales-zone does not grant garygeeke attach in Egeria' }) };
+    }
+    if (m && method === 'POST' && PUBLISH_MODE === 'one-member') {
+      WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
+      return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 1,
+        members_without_an_egeria_asset: [],
+        not_permitted: [{ entity_slug: 'sales-databases-0', words: 'not permitted · zone sales-zone does not grant garygeeke attach in Egeria' }] });
+    }
     if (m && method === 'POST') {
       WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
       return ok({ type_name: 'WorkList', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 2, members_without_an_egeria_asset: [] });
@@ -399,4 +411,30 @@ test('the work list send reads "Publish to Egeria", then "Publish again"; the li
   assert.match(note(document), /^published · read back \d\d:\d\d/);
   assert.equal(act(document, 'publish').textContent.trim(), 'Publish again');
   assert.doesNotMatch(text(document.getElementById('wl-actions')), /re-publish|\bpublish to Egeria/);
+});
+
+/* ── Brief Z3: a refusal by the zone check ─────────────────────────────── */
+
+test('a refused publish shows the no_access cue and "not permitted", the reason on hover', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'refused';
+  act(document, 'publish').click();
+  await tick(200);
+  const cue = document.querySelector('#wl-note [data-publish-refused] [data-cue="no_access"]');
+  assert.ok(cue);
+  assert.match(text(cue), /not permitted/);
+  assert.equal(cue.getAttribute('title'), 'zone sales-zone does not grant garygeeke attach in Egeria');
+  assert.doesNotMatch(note(document), /Publish failed/);
+});
+
+test('a publish with one refused member names it with the cue; the rest are queued', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'one-member';
+  act(document, 'publish').click();
+  await tick(200);
+  const row = document.querySelector('#wl-note [data-member-not-permitted="sales-databases-0"]');
+  assert.ok(row);
+  assert.equal(row.querySelector('[data-cue="no_access"]').getAttribute('title'),
+    'zone sales-zone does not grant garygeeke attach in Egeria');
+  assert.match(note(document), /1 membership\(s\) queued/);
 });

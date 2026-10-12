@@ -150,10 +150,24 @@ async def enqueue_batch(body: BatchRunRequest) -> dict:
             status_code=400,
             detail=f"unknown analysis {body.analysis_id!r}: {exc}") from exc
 
-    return wls.enqueue_batch(
-        body.analysis_id, slugs,
-        work_list_slug=body.work_list_slug, requested_by=_requested_by(),
-        entity_type=entity_type)
+    # Brief Z3: each member's Egeria write is checked as the caller (`egeria_work_access.batch_refusal`, the one
+    # decision); a refused member gets no run and comes back in `not_permitted` with its words, the rest run.
+    # Nothing permitted at all is a 403. Off the event loop: the check may read Egeria (bounded).
+    import asyncio
+
+    from resource_explorer.workflows.curate import CurationDenied
+    from resource_explorer.workflows.egeria_work_access import batch_refusal
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    registry = wls.registry
+    reader = EgeriaAccessReader()      # one batch: controls and accounts read once
+    try:
+        return await asyncio.to_thread(
+            wls.enqueue_batch, body.analysis_id, slugs,
+            work_list_slug=body.work_list_slug, requested_by=_requested_by(),
+            entity_type=entity_type, refusal=lambda s: batch_refusal(registry, entity_type, s, reader=reader))
+    except CurationDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.get("/runs/sets/{set_id}")
@@ -318,11 +332,21 @@ async def publish(slug: str) -> dict:
     GUID is needed to attach anything); the memberships are queued to the
     outbox and applied by whichever worker drains it, each carrying its
     `membershipRationale`.
+
+    Brief Z3: the collection and each member are checked as the caller first
+    (`WorkLists.publish`); a refused member is in `not_permitted` with its
+    words and the rest are queued; 403 when nothing is permitted.
     """
+    import asyncio
+
+    from resource_explorer.workflows.curate import CurationDenied
+
     try:
-        return WorkLists().publish(slug)
+        return await asyncio.to_thread(WorkLists().publish, slug)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    except CurationDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except Exception as exc:
         log.exception("publishing work list %s failed", slug)
         raise HTTPException(status_code=502,

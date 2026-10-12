@@ -1025,6 +1025,13 @@ class TestRfaRouter:
         with patch("resource_explorer.rfa_egeria_sync.sync_rfa_action") as mock_sync:
             yield mock_sync
 
+    @pytest.fixture(autouse=True)
+    def _open_access(self, monkeypatch):
+        """Brief Z3: a status PATCH checks its Egeria ToDo write first; no zone in use, a signed-in caller."""
+        from tests.zone_fakes import open_access
+
+        open_access(monkeypatch, caller_if_none="tester")
+
     def test_list_rfas_defaults_to_open(self, client, registry):
         _write_rfa_activity_entry(registry)
         resp = client.get("/api/activity/rfas")
@@ -1119,6 +1126,13 @@ class TestRfaNotesRouter:
         with patch("resource_explorer.rfa_egeria_sync.sync_rfa_action"), \
              patch("resource_explorer.rfa_egeria_sync.sync_rfa_note"):
             yield
+
+    @pytest.fixture(autouse=True)
+    def _open_access(self, monkeypatch):
+        """Brief Z3: a status PATCH checks its Egeria ToDo write first; no zone in use, a signed-in caller."""
+        from tests.zone_fakes import open_access
+
+        open_access(monkeypatch, caller_if_none="tester")
 
     def test_defaults_to_empty(self, client, registry):
         _write_rfa_activity_entry(registry)

@@ -290,6 +290,22 @@ def clear_rfa_dismissal(dismissal_id: str, body: RfaDismissalClearRequest, reque
     return {"status": "success", "dismissal": row}
 
 
+def _todo_write_check(registry, writes) -> str:
+    """Brief Z3: the zone check for an RFA's ToDo write, as the caller. A refusal is a 403 before anything is
+    recorded. Round 2 (F2, prepared): when the check could not be READ (Egeria down), the route stays local-first
+    as its docstring promises: "" is not returned; the words come back so the caller records the local change,
+    skips the sync and keeps the words as the row's sync error (the reconcile pass retries it later)."""
+    from resource_explorer.workflows.curate import BASIS_UNREADABLE
+    from resource_explorer.workflows.egeria_work_access import writes_access
+
+    d = writes_access(registry, writes)
+    if d.allowed:
+        return ""
+    if d.basis == BASIS_UNREADABLE:
+        return f"not permitted · {d.reason}"
+    raise HTTPException(status_code=403, detail=d.reason)
+
+
 @router.patch("/rfas/{rfa_id}")
 def update_rfa_action(rfa_id: str, body: RfaActionUpdateRequest) -> dict:
     """Record a response action (defer / reassign / complete / reopen) against
@@ -307,6 +323,13 @@ def update_rfa_action(rfa_id: str, body: RfaActionUpdateRequest) -> dict:
     if registry.get_activity(entry_id) is None:
         raise HTTPException(status_code=404, detail="No activity entry backs this RFA id")
 
+    # Brief Z3: the Egeria ToDo this creates (CREATE) or updates (UPDATE_PROPERTIES on its own zones), checked as
+    # the caller BEFORE the local write, so a refusal changes nothing in either place (RE and Egeria would
+    # otherwise disagree, and the reconciliation pass would pull Egeria's state back over RE's).
+    from resource_explorer.workflows.egeria_work_access import todo_writes
+
+    unchecked = _todo_write_check(registry, todo_writes(registry.get_rfa_action(rfa_id)))
+
     registry.upsert_rfa_action(
         rfa_id=rfa_id,
         entry_id=entry_id,
@@ -317,6 +340,11 @@ def update_rfa_action(rfa_id: str, body: RfaActionUpdateRequest) -> dict:
         defer_until=body.defer_until,
         resolution_note=body.resolution_note,
     )
+
+    if unchecked:
+        # Egeria could not be asked: recorded locally, not synced, the words kept as the row's sync error.
+        registry.mark_rfa_sync_error(rfa_id, unchecked)
+        return {"status": "success", "id": rfa_id, "rfa_status": body.status, "egeria_sync": unchecked}
 
     try:
         from resource_explorer.rfa_egeria_sync import sync_rfa_action
@@ -346,7 +374,17 @@ def update_rfa_note(rfa_id: str, body: RfaNoteRequest) -> dict:
     if registry.get_activity(entry_id) is None:
         raise HTTPException(status_code=404, detail="No activity entry backs this RFA id")
 
+    # Brief Z3 round 2 (F3): the NoteLog and Note this creates on the RFA's ToDo (CREATE, judged on the ToDo as
+    # their anchor), checked as the caller before the local write, the same shape as the status route.
+    from resource_explorer.workflows.egeria_work_access import note_writes
+
+    unchecked = _todo_write_check(registry, note_writes(registry.get_rfa_action(rfa_id)))
+
     registry.upsert_rfa_note(rfa_id=rfa_id, entry_id=entry_id, annotation_index=annotation_index, notes=body.notes)
+
+    if unchecked:
+        registry.mark_rfa_note_sync_error(rfa_id, unchecked)
+        return {"status": "success", "id": rfa_id, "notes": body.notes, "egeria_sync": unchecked}
 
     try:
         from resource_explorer.rfa_egeria_sync import sync_rfa_note
