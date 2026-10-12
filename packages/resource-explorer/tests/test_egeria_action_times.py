@@ -91,6 +91,8 @@ def test_an_old_table_is_altered_on_postgres_and_a_blind_second_process_does_not
 def test_epoch_ms_become_naive_utc_iso_and_missing_stays_none():
     assert nsr.epoch_ms_to_iso(1791723341925) == "2026-10-11T12:55:41.925000"
     assert nsr.epoch_ms_to_iso({"primitiveValue": 1791723341925}) == "2026-10-11T12:55:41.925000"
+    assert nsr.epoch_ms_to_iso(1791723341) is None            # seconds, not milliseconds: unknown, never 1970
+    assert nsr.epoch_ms_to_iso(99_999_999_999) is None and nsr.epoch_ms_to_iso(-5) is None
     for missing in (None, "", 0, "x", {}, {"primitiveValue": None}, True):
         assert nsr.epoch_ms_to_iso(missing) is None
 

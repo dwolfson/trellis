@@ -80,7 +80,8 @@ function brief(s) {
   const round = (n) => Math.round(n * 10) / 10;
   if (s >= 86400) return `${round(s / 86400)}d`;
   if (s >= 3600) return `${round(s / 3600)}h`;
-  return `${Math.max(1, Math.round(s / 60))}m`;
+  if (s < 60) return '<1m';
+  return `${Math.round(s / 60)}m`;
 }
 
 /** When Egeria's own start time is stored: "◌ queued 2.5d before start · running 11h" (queued = requested →
@@ -88,10 +89,10 @@ function brief(s) {
  *  caller falls back to "requested Xd ago". */
 function timingCue(r) {
   if (!r.started_at || r.running_s == null) return '';
-  const queued = r.queued_s != null ? `<span class="font-glyph" aria-hidden="true">◌</span> queued ${brief(r.queued_s)} before start · ` : '';
+  const queued = r.queued_s != null ? `<span class="font-glyph" aria-hidden="true">◌</span> queued ${esc(brief(r.queued_s))} before start · ` : '';
   const tip = `${r.queued_s != null ? `Egeria queued the action ${brief(r.queued_s)} (requested ${r.requested_at} UTC, started ${r.started_at} UTC). ` : `Egeria started it at ${r.started_at} UTC. `}`
-    + `It has run ${brief(r.running_s)} since the start, as of this read.`;
-  return `<span data-native-timing title="${esc(tip)}">${queued}running ${brief(r.running_s)}</span>`;
+    + `It has run ${brief(r.running_s)} since the start, as of now.`;
+  return `<span data-native-timing title="${esc(tip)}">${queued}running ${esc(brief(r.running_s))}</span>`;
 }
 
 /** The one line of status. Pure over `row.run`. */

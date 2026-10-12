@@ -181,7 +181,7 @@ def epoch_ms_to_iso(value) -> str | None:
         ms = float(value)
     except (TypeError, ValueError):
         return None
-    if ms <= 0:
+    if ms < 1e11:                 # below 1e11 is seconds (or nonsense), not epoch milliseconds: unknown, not 1970
         return None
     try:
         return datetime.fromtimestamp(ms / 1000, timezone.utc).replace(tzinfo=None).isoformat()

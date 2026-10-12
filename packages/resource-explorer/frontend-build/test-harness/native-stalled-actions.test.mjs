@@ -43,6 +43,14 @@ test('a start time without a request time says running only; none stored falls b
   assert.match(none, /^running · requested /); assert.doesNotMatch(none, /queued/);
 });
 
+test('a zero or sub-minute gap reads "<1m", and the hover says "as of now"', () => {
+  const o = { requested_at: '2026-10-11T13:00:00', started_at: '2026-10-11T13:00:00', queued_s: 0, running_s: 30 };
+  const t = text(ns.nativeSurveyStatusHtml(run(o)));
+  assert.match(t, /^◌ queued &lt;1m before start · running &lt;1m/);
+  assert.match(ns.nativeSurveyStatusHtml(run(o)), /as of now\./);
+  assert.match(text(ns.nativeSurveyStatusHtml(run({ ...o, queued_s: 60, running_s: 90 }))), /queued 1m before start · running 2m/);
+});
+
 test('waiting to start keeps "requested" (nothing has started)', () => {
   const t = text(ns.nativeSurveyStatusHtml(run({ egeria_status: 'WAITING', phase: 'waiting', started_at: '', queued_s: null, running_s: null })));
   assert.match(t, /^◌ waiting to start · requested /);
