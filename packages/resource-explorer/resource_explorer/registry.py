@@ -12695,6 +12695,14 @@ class ProjectRegistry:
                 (entity_type, entity_slug, limit),
             ).fetchall()
 
+        # step_runs: one row per step EXECUTION, written by the step-cost
+        # observer on every path (survey, Run button, Prefect or local). It is
+        # the record that exists when the activity_log survey row carries no
+        # `steps` (measured 2026-10-13 on marquez: both 2026-10-11 surveys had
+        # empty detail, so the card said "never run" / "predate per-step
+        # recording" for cve_scan and dependency_support while the compile --
+        # which reads the stored findings -- packed their real results).
+        step_runs = self._step_run_times(entity_type, entity_slug)
         unattributable = 0
         for row in rows:
             try:
@@ -12704,9 +12712,12 @@ class ProjectRegistry:
             if not isinstance(detail, dict):
                 detail = {}
             if row["operation"] == "survey" and not (detail.get("steps") or []):
-                # A real survey happened; it just predates step recording. That
-                # is "we cannot say which analyses ran", not "none did".
-                unattributable += 1
+                # A real survey happened; its row names no steps. That is "we
+                # cannot say which analyses ran", not "none did" -- UNLESS
+                # step_runs recorded steps starting shortly before it ended,
+                # in which case step_runs is the attribution (credited below).
+                if not self._covered_by_step_runs(row["ts"], step_runs):
+                    unattributable += 1
                 continue
 
             if row["operation"] == "analysis_run":
@@ -12773,6 +12784,27 @@ class ProjectRegistry:
                     "last_run_via": "survey",
                     "last_run_partial": len(statuses) < owned_counts.get(analysis_id, 0),
                 }
+        # Credit analyses whose steps have a step_runs row newer than (or
+        # missing from) what the activity_log gave. Same ownership map, same
+        # "any owned step ran counts" rule as the survey branch above.
+        newest: dict[str, str] = {}
+        for step_key, ts in step_runs:
+            for owner in step_owner.get(step_key, []):
+                newest.setdefault(owner, ts)   # step_runs is newest-first
+        for analysis_id, ts in newest.items():
+            have = result.get(analysis_id)
+            if have and str(have.get("last_run_at") or "")[:19] >= ts[:19]:
+                continue
+            ran_keys = {k for k, t in step_runs
+                        if t == ts and analysis_id in step_owner.get(k, [])}
+            result[analysis_id] = {
+                "last_run_at": ts,
+                # step_runs rows are written when a step finishes; they do not
+                # carry a status, so none is claimed beyond "recorded".
+                "last_run_status": "ok",
+                "last_run_via": "step_runs",
+                "last_run_partial": len(ran_keys) < owned_counts.get(analysis_id, 0),
+            }
         if unattributable:
             # Recorded against a reserved key rather than spread across every
             # analysis: the point is that we do not know which ones ran, and
@@ -12784,6 +12816,46 @@ class ProjectRegistry:
                 "last_run_via": "", "last_run_partial": False,
             }
         return result
+
+    def _step_run_times(self, entity_type: str, slug: str,
+                        limit: int = 3000) -> list[tuple[str, str]]:
+        """[(step_key, surveyed_at)] newest first from step_runs, [] if the
+        table cannot be read (an older registry): absence of this source must
+        fall back to the activity_log, never raise."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT step_key, surveyed_at FROM step_runs "
+                    "WHERE entity_type = ? AND slug = ? "
+                    "ORDER BY surveyed_at DESC LIMIT ?",
+                    (entity_type, slug, limit),
+                ).fetchall()
+        except Exception:
+            return []
+        return [(r["step_key"], str(r["surveyed_at"])) for r in rows if r["surveyed_at"]]
+
+    @staticmethod
+    def _covered_by_step_runs(survey_ts: str, step_runs: list[tuple[str, str]],
+                              window_s: int = 7200) -> bool:
+        """Whether some step_runs snapshot started within `window_s` before this
+        survey row was written -- i.e. the survey's steps are on record."""
+        from datetime import datetime, timezone
+
+        def _t(v: str):
+            try:
+                d = datetime.fromisoformat(v)
+            except ValueError:
+                return None
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+        end = _t(str(survey_ts))
+        if end is None:
+            return False
+        for _, ts in step_runs:
+            start = _t(ts)
+            if start is not None and 0 <= (end - start).total_seconds() <= window_s:
+                return True
+        return False
 
     def analysis_run_activity_seconds(
         self, analysis_ids: list[str], *, status: str = "ok", limit: int = 2000,
