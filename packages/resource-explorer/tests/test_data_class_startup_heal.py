@@ -3,8 +3,9 @@
 End to end through the monitor's own pass (`bootstrap._data_class_pass`, which `bootstrap._loop`
 calls after the Dr.Egeria batch heal): RE's real client factory, real registry (temp SQLite), real
 seed file. Only the Egeria client boundary is faked, and every fake method binds pyegeria's REAL
-signature. The fake Egeria holds elements by (type, qualifiedName); an untyped lookup of a plain
-ValidValueDefinition misses it, the way the Reference Data view's default type hides one.
+signature. The fake Egeria holds elements by (type, qualifiedName) and relationships by
+(type, end1, end2). An untyped by-name lookup RESOLVES a plain ValidValueDefinition, as the live
+classification-explorer route does; the Reference Data view's FIND refuses an untyped call.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from pyegeria.omvs.data_designer import DataDesigner as _RealDD
+from pyegeria.omvs.metadata_expert import MetadataExpert as _RealMX
 from pyegeria.omvs.reference_data import ReferenceDataManager as _RealRef
 
 from resource_explorer import bootstrap
@@ -36,6 +38,21 @@ class FakeEgeria:
         self.writes: list[tuple] = []
         self.fail_lookups = False
         self.refuse_creates = ""
+        self.refuse_links = 0                 # refuse the next N member links
+        self.fail_after_creates = 0           # raise a bare error after N creates
+        self.relationships: set[tuple[str, str, str]] = set()
+        self.member_bodies: list[dict] = []
+
+    def create(self, type_name, qn):
+        self.writes.append(("create", type_name, qn))
+        creates = len([w for w in self.writes if w[0] == "create"])
+        if self.fail_after_creates and creates > self.fail_after_creates:
+            raise KeyError("unexpected")
+        return self.add(type_name, qn)
+
+    def link(self, rel, end1, end2):
+        self.writes.append(("link", rel, end1, end2))
+        self.relationships.add((rel, end1, end2))
 
     def add(self, type_name, qn):
         guid = f"g{len(self.elements) + 1:04d}"
@@ -69,8 +86,6 @@ class _Client:
         if not found:
             return NONE_FOUND
         type_name, guid = found
-        if type_name == VVD and a["type_name"] != VVD:
-            return NONE_FOUND                       # the view's default type hides a plain VVD
         if a["type_name"] and a["type_name"] != type_name:
             return NONE_FOUND
         return guid
@@ -84,12 +99,11 @@ class FakeDesigner(_Client):
         qn = body["properties"]["qualifiedName"]
         if self.egeria.refuse_creates and self.egeria.refuse_creates in qn:
             raise RuntimeError("OMAG-REPOSITORY-HANDLER-400-001 The DataClass create was refused")
-        self.egeria.writes.append(("create", "DataClass", qn))
-        return self.egeria.add("DataClass", qn)
+        return self.egeria.create("DataClass", qn)
 
     def link_data_class_definition(self, *args, **kwargs):
         a = _sig(_RealDD, "link_data_class_definition").bind(self, *args, **kwargs).arguments
-        self.egeria.writes.append(("link_definition", a["data_definition_guid"], a["data_class_guid"]))
+        self.egeria.link("DataValueDefinition", a["data_definition_guid"], a["data_class_guid"])
 
 
 class FakeRef(_Client):
@@ -98,13 +112,16 @@ class FakeRef(_Client):
     def create_valid_value_definition(self, *args, **kwargs):
         body = _sig(_RealRef, "create_valid_value_definition").bind(self, *args, **kwargs).arguments["body"]
         qn = body["properties"]["qualifiedName"]
-        self.egeria.writes.append(("create", VVD, qn))
-        return self.egeria.add(VVD, qn)
+        return self.egeria.create(VVD, qn)
 
     def link_valid_value_definition(self, *args, **kwargs):
         a = _sig(_RealRef, "link_valid_value_definition").bind(self, *args, **kwargs).arguments
         assert a["body"]["class"] == "NewRelationshipRequestBody"
-        self.egeria.writes.append(("link_member", a["vv_set_guid"], a["vv_member_guid"]))
+        self.egeria.member_bodies.append(a["body"])
+        if self.egeria.refuse_links:
+            self.egeria.refuse_links -= 1
+            raise RuntimeError("OMAG-COMMON-503-001 The link could not be made")
+        self.egeria.link("ValidValueMember", a["vv_set_guid"], a["vv_member_guid"])
 
     def find_valid_value_definitions(self, *args, **kwargs):
         b = _sig(_RealRef, "find_valid_value_definitions").bind(self, *args, **kwargs)
@@ -120,6 +137,22 @@ class FakeRef(_Client):
         return hits or NONE_FOUND
 
 
+class FakeExpert(_Client):
+    cls = _RealMX
+
+    def get_related_metadata_elements(self, *args, **kwargs):
+        a = _sig(_RealMX, "get_related_metadata_elements").bind(self, *args, **kwargs).arguments
+        if self.egeria.fail_lookups:
+            raise RuntimeError("Egeria is not answering")
+        guid, rel = a["guid"], a["relationship_type"]
+        others = [e2 if e1 == guid else e1 for (r, e1, e2) in self.egeria.relationships
+                  if r == rel and guid in (e1, e2)]
+        if not others:
+            return NONE_FOUND
+        return {"elementList": [{"relationshipGUID": f"rel-{o}", "element": {"elementGUID": o}}
+                                for o in others]}
+
+
 @pytest.fixture
 def egeria(monkeypatch):
     eg = FakeEgeria()
@@ -129,7 +162,8 @@ def egeria(monkeypatch):
     monkeypatch.delenv(bdc.EXTRA_SEED_ENV, raising=False)
     monkeypatch.setattr("pyegeria.omvs.data_designer.DataDesigner", type("DD", (FakeDesigner,), {"egeria": eg}))
     monkeypatch.setattr("pyegeria.omvs.reference_data.ReferenceDataManager", type("RD", (FakeRef,), {"egeria": eg}))
-    monkeypatch.setattr(bdc, "_last_line", "")
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", type("MX", (FakeExpert,), {"egeria": eg}))
+    monkeypatch.setattr(bdc, "_last_key", None)
     monkeypatch.setattr(bdc, "_last_outcome", None)
     return eg
 
@@ -148,6 +182,19 @@ def _start(registry):
     return bootstrap._data_class_pass(registry=registry)
 
 
+def _complete(egeria, drop_last_keyword=False, drop_member_link=None):
+    """What a complete earlier run leaves: every element and both kinds of link, no canary."""
+    for dc in bdc.STANDARD_DATA_CLASSES:
+        dg = egeria.add("DataClass", bdc.data_class_qn(dc["name"]))
+        sg = egeria.add(VVD, bdc.keyword_set_qn(dc["name"]))
+        egeria.relationships.add(("DataValueDefinition", sg, dg))
+        kws = dc["dataPatterns"][:-1] if drop_last_keyword else dc["dataPatterns"]
+        for kw in kws:
+            kg = egeria.add(VVD, bdc.keyword_qn(dc["name"], kw))
+            if bdc.keyword_qn(dc["name"], kw) != drop_member_link:
+                egeria.relationships.add(("ValidValueMember", sg, kg))
+
+
 N_KEYWORDS = sum(len(dc["dataPatterns"]) for dc in bdc.STANDARD_DATA_CLASSES)
 
 
@@ -155,16 +202,17 @@ def test_first_start_creates_everything_second_start_creates_nothing(egeria, reg
     first = _start(registry)
     creates = [w for w in egeria.writes if w[0] == "create"]
     assert first.status == bdc.CREATED and first.sets == 6
-    assert first.line == f"data classes: created, 6 sets ({6 + 6 + N_KEYWORDS} elements created)"
+    assert first.line == (f"data classes: created, 6 sets ({6 + 6 + N_KEYWORDS} elements created, "
+                          f"{N_KEYWORDS + 6} links made)")
     assert len(creates) == 6 + 6 + N_KEYWORDS + 1                     # + the canary, created last
     assert creates[-1][2] == bdc.canary_qualified_name(bdc.STANDARD_DATA_CLASSES)
-    assert len([w for w in egeria.writes if w[0] == "link_member"]) == N_KEYWORDS
-    assert len([w for w in egeria.writes if w[0] == "link_definition"]) == 6
+    assert len([w for w in egeria.writes if w[0] == "link" and w[1] == "ValidValueMember"]) == N_KEYWORDS
+    assert len([w for w in egeria.writes if w[0] == "link" and w[1] == "DataValueDefinition"]) == 6
     rows = _rows(registry)
     assert len(rows) == 1 and rows[0]["summary"] == first.line and rows[0]["status"] == "ok"
     assert all(i.get("guid") for i in rows[0]["items"] if i["kind"] != "link")
 
-    bdc._last_line = ""                                                 # a new process
+    bdc._last_key = None                                                 # a new process
     before = list(egeria.writes)
     second = _start(registry)
     assert egeria.writes == before, "a second start wrote to Egeria"
@@ -192,26 +240,19 @@ def test_a_failed_check_creates_nothing(egeria, registry):
 def test_elements_already_present_are_adopted_and_only_the_missing_keyword_is_created(egeria, registry):
     """The state a manual run on main's code leaves: everything there, no canary. Plus one keyword
     added to the seed since: only it (and the canary) is created, linked into the existing set."""
-    for dc in bdc.STANDARD_DATA_CLASSES:
-        egeria.add("DataClass", bdc.data_class_qn(dc["name"]))
-        egeria.add(VVD, bdc.keyword_set_qn(dc["name"]))
-        for kw in dc["dataPatterns"][:-1]:
-            egeria.add(VVD, bdc.keyword_qn(dc["name"], kw))
+    _complete(egeria, drop_last_keyword=True)
     out = _start(registry)
     created = [w[2] for w in egeria.writes if w[0] == "create"]
     last_kws = [bdc.keyword_qn(dc["name"], dc["dataPatterns"][-1]) for dc in bdc.STANDARD_DATA_CLASSES]
     assert sorted(created[:-1]) == sorted(last_kws)
     assert created[-1] == bdc.canary_qualified_name(bdc.STANDARD_DATA_CLASSES)
-    assert not [w for w in egeria.writes if w[0] == "link_definition"], "existing pairs are not re-linked"
+    assert not [w for w in egeria.writes if w[0] == "link" and w[1] == "DataValueDefinition"], "existing pairs are not re-linked"
+    assert len([w for w in egeria.writes if w[0] == "link" and w[1] == "ValidValueMember"]) == 6, "only the new keywords"
     assert out.status == bdc.CREATED and out.sets == 6
 
 
 def test_only_the_canary_missing_is_present_not_created(egeria, registry):
-    for dc in bdc.STANDARD_DATA_CLASSES:
-        egeria.add("DataClass", bdc.data_class_qn(dc["name"]))
-        egeria.add(VVD, bdc.keyword_set_qn(dc["name"]))
-        for kw in dc["dataPatterns"]:
-            egeria.add(VVD, bdc.keyword_qn(dc["name"], kw))
+    _complete(egeria)
     out = _start(registry)
     assert [w[2] for w in egeria.writes] == [bdc.canary_qualified_name(bdc.STANDARD_DATA_CLASSES)]
     assert out.status == bdc.PRESENT and out.line == "data classes: present, 6 sets"
@@ -334,3 +375,121 @@ def test_a_bad_seed_at_start_is_recorded_not_raised(egeria, registry, tmp_path, 
     out = _start(registry)
     assert out.status == bdc.FAILED and "entry 1: not a mapping" in out.line
     assert egeria.writes == []
+
+
+# ── review fixes (MED-1, MED-3, LOW-1, LOW-5, LOW-6, member body) ─────────────
+
+def test_a_refused_member_link_is_healed_next_pass_without_recreating_the_keyword(egeria, registry):
+    egeria.refuse_links = 1
+    first = _start(registry)
+    assert first.status == bdc.FAILED and "OMAG-COMMON-503-001" in first.line
+    kw_qn = bdc.keyword_qn("EmailAddress", "email")
+    assert kw_qn in egeria.elements and not any(r[0] == "ValidValueMember" for r in egeria.relationships)
+    before = list(egeria.writes)
+    second = _start(registry)
+    new = egeria.writes[len(before):]
+    assert ("create", VVD, kw_qn) not in new, "the keyword was created again"
+    set_guid, kw_guid = egeria.elements[bdc.keyword_set_qn("EmailAddress")][1], egeria.elements[kw_qn][1]
+    assert ("link", "ValidValueMember", set_guid, kw_guid) in new
+    assert second.status == bdc.CREATED
+    # Every member link exactly once, every class linked to its set.
+    members = [r for r in egeria.relationships if r[0] == "ValidValueMember"]
+    assert len(members) == N_KEYWORDS
+    assert len([r for r in egeria.relationships if r[0] == "DataValueDefinition"]) == 6
+
+
+def test_a_missing_definition_link_is_made_when_both_ends_exist(egeria, registry):
+    _complete(egeria)
+    sg = egeria.elements[bdc.keyword_set_qn("Password")][1]
+    dg = egeria.elements[bdc.data_class_qn("Password")][1]
+    egeria.relationships.discard(("DataValueDefinition", sg, dg))
+    out = _start(registry)
+    links = [w for w in egeria.writes if w[0] == "link"]
+    assert links == [("link", "DataValueDefinition", sg, dg)]
+    assert out.status == bdc.CREATED and out.line.endswith("(1 link made)")
+
+
+def test_a_failed_link_check_creates_and_links_nothing(egeria, registry, monkeypatch):
+    _complete(egeria, drop_member_link=bdc.keyword_qn("Password", "pwd"))
+
+    def boom(self, *a, **k):
+        raise RuntimeError("related-elements read failed")
+    monkeypatch.setattr(FakeExpert, "get_related_metadata_elements", boom)
+    out = _start(registry)
+    assert [w for w in egeria.writes if w[0] == "link"] == []
+    assert out.status == bdc.COULD_NOT_CHECK and "related-elements read failed" in out.line
+
+
+def test_the_member_link_body_carries_only_egerias_property_names(egeria, registry):
+    _start(registry)
+    assert egeria.member_bodies
+    for body in egeria.member_bodies:
+        props = dict(body["properties"])
+        assert props.pop("class") == "ValidValueMemberProperties"
+        assert set(props) <= set(bdc.MEMBER_PROPERTY_NAMES), props
+
+
+def test_the_same_refusal_every_pass_is_one_row(egeria, registry):
+    """Pass 1 creates EmailAddress's elements then is refused (one row, with those GUIDs). Every
+    later pass creates nothing and meets the same refusal: one more row, then none."""
+    egeria.refuse_creates = "DataClass::PhoneNumber"
+    for _ in range(5):
+        _start(registry)
+    assert len(_rows(registry)) == 2
+
+
+def test_canary_present_but_an_element_missing_heals_without_a_second_canary(egeria, registry):
+    _start(registry)
+    del egeria.elements[bdc.keyword_set_qn("DateOfBirth")]
+    egeria.relationships = {r for r in egeria.relationships}
+    before = len(egeria.writes)
+    out = _start(registry)
+    created = [w[2] for w in egeria.writes[before:] if w[0] == "create"]
+    assert bdc.keyword_set_qn("DateOfBirth") in created
+    assert bdc.canary_qualified_name(bdc.STANDARD_DATA_CLASSES) not in created
+    assert out.status == bdc.CREATED
+
+
+def test_an_unexpected_error_after_a_create_is_failed_not_could_not_check(egeria, registry):
+    egeria.fail_after_creates = 2
+    out = _start(registry)
+    assert out.status == bdc.FAILED
+
+
+def test_a_lost_leadership_writes_nothing(egeria, registry, monkeypatch):
+    monkeypatch.setattr(bdc, "_still_bootstrap_leader", lambda: False)
+    out = _start(registry)
+    assert egeria.writes == []
+    assert out.status == bdc.COULD_NOT_CHECK and "no longer holds the bootstrap lock" in out.line
+
+
+def test_still_leader_is_none_where_no_election_ran_and_false_after_a_lost_session():
+    from resource_explorer import leader_election as le
+
+    assert le.still_leader("never-won-here") is None
+    lock = le.LeaderLock("vvd-test-lock", database_url="postgresql://x/y")
+    lock._held, lock._conn = True, type("C", (), {"cursor": lambda self: (_ for _ in ()).throw(OSError("gone"))})()
+    le._held_locks["vvd-test-lock"] = lock
+    try:
+        assert le.still_leader("vvd-test-lock") is False
+    finally:
+        le._held_locks.pop("vvd-test-lock", None)
+        lock._held, lock._conn = False, None
+
+
+def test_the_keyword_find_rejects_an_unexpected_shape(egeria, registry, monkeypatch):
+    _complete(egeria)
+    monkeypatch.setattr(FakeRef, "find_valid_value_definitions", lambda self, *a, **k: {"weird": 1})
+    del egeria.elements[bdc.keyword_qn("Password", "pwd")]   # force a heal of an existing set
+    out = _start(registry)
+    assert out.status == bdc.COULD_NOT_CHECK and "unreadable answer" in out.line
+    assert [w for w in egeria.writes if w[0] == "create"] == []
+
+
+def test_the_seed_is_capped(tmp_path):
+    f = tmp_path / "big.yaml"
+    f.write_text("data_classes:\n" + "".join(
+        f"  - name: C{i}\n    displayName: c\n    description: d\n    dataPatterns: [k]\n"
+        for i in range(bdc.MAX_DATA_CLASSES + 1)))
+    with pytest.raises(bdc.SeedError, match="more than"):
+        bdc.load_data_class_seed(f, extra_path="")

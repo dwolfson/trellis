@@ -2204,10 +2204,6 @@ class DatabaseSurveyor:
             })
         return out, None
 
-    #: The survey's own built-in PII keyword list, used when Egeria gives none. A flat list, shorter
-    #: than `bootstrap_data_classes.STANDARD_DATA_CLASSES`' `dataPatterns`.
-    BUILT_IN_PII_KEYWORDS = ("email", "phone", "ssn", "socialsec", "creditcard", "password", "dob",
-                             "dateofbirth")
     def _load_pii_keywords(self):
         """The PII keywords for this run and their source, as one `KeywordLoad`.
 
@@ -2256,8 +2252,13 @@ class DatabaseSurveyor:
 
         if keywords is None:
             keywords = self._load_pii_keywords()
-        egeria_keywords = sorted({kw for kws in keywords.by_class.values() for kw in kws})
-        pii_keywords = egeria_keywords or list(self.BUILT_IN_PII_KEYWORDS)
+        # Class by class: Egeria's keywords where they were read, else the data-class seed's
+        # `dataPatterns` (configdata/data_classes.yaml, the one built-in list). A partial read
+        # never narrows detection to the classes that loaded.
+        from resource_explorer.surveyors.database.bootstrap_data_classes import current_seed
+
+        pii_keywords = sorted({kw for dc in current_seed()
+                               for kw in keywords.keywords_for(dc["name"], dc["dataPatterns"])})
 
         def is_pii_column(col_name: str) -> bool:
             name_clean = col_name.lower().replace("_", "").replace("-", "")

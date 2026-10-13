@@ -36,6 +36,7 @@ class TypedOnlyRef:
 
     keywords: dict[str, list[str]] = {}
     fail: bool = False
+    fail_names: tuple = ()
     refused: list[str] = []
     asked: list[str] = []
 
@@ -60,7 +61,7 @@ class TypedOnlyRef:
         if extra.get("metadata_element_type") != VVD:
             type(self).refused.append(search)
             raise UntypedFind(f"untyped find for {search!r}")
-        if type(self).fail:
+        if type(self).fail or any(search == f"ValidValueDefinition::{n}Keyword::" for n in type(self).fail_names):
             raise RuntimeError("platform not answering")
         if search == "*":
             return [{"elementHeader": {"guid": "g-set", "type": {"typeName": VVD}},
@@ -71,9 +72,9 @@ class TypedOnlyRef:
         return NONE_FOUND
 
 
-def _ref(keywords=None, fail=False):
+def _ref(keywords=None, fail=False, fail_names=()):
     return type("Ref", (TypedOnlyRef,), {"keywords": dict(keywords or {}), "fail": fail,
-                                          "refused": [], "asked": []})
+                                          "fail_names": tuple(fail_names), "refused": [], "asked": []})
 
 
 def test_the_fake_refuses_an_untyped_find_and_binds_the_real_signature():
@@ -278,3 +279,42 @@ def test_a_survey_with_nobody_to_act_as_says_could_not_read(daemon):
 
     load = DatabaseSurveyor(_db(), {}, None)._load_pii_keywords()
     assert load.label == "keywords: built-in list · could not read Egeria (not signed in)"
+
+
+# ── review MED-2: a partial read is named, and never narrows detection ────────
+
+def _view(*cols):
+    return {**_VIEW, "lineage": {c: {"name": c, "source": "people", "downstream": []} for c in cols}}
+
+
+def _flagged(anns):
+    dc = _dc_annotations(anns)
+    return {p["column"] for a in dc for p in a.json_properties["pii_propagations"]}
+
+
+def test_a_partial_read_is_labelled_and_the_unread_classes_use_the_seed(run_as_daemon):
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    Ref = _ref({"EmailAddress": ["mail"]}, fail_names=("SocialSecurityNumber", "Password"))
+    with patch("pyegeria.omvs.reference_data.ReferenceDataManager", Ref):
+        s = DatabaseSurveyor(_db(), {}, None)
+        load = s._load_pii_keywords()
+        anns = s._create_views_annotations([_view("contact_mail", "ssn_num", "pwd", "email_address")], keywords=load)
+    assert load.label == "keywords: Egeria, 1 of 6 sets · 2 could not be read"
+    # ssn_num / pwd: the seed answers for the two unread classes. contact_mail / email_address:
+    # Egeria's "mail" answers for EmailAddress.
+    assert {"contact_mail", "ssn_num", "pwd", "email_address"} == _flagged(anns)
+
+
+def test_the_whole_list_fallback_is_the_seed(run_as_daemon):
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    with patch("pyegeria.omvs.reference_data.ReferenceDataManager", _ref({})):
+        anns = DatabaseSurveyor(_db(), {}, None)._create_views_annotations([_view("mobile", "telephone", "amount")])
+    assert _flagged(anns) == {"mobile", "telephone"}, "the seed's dataPatterns, not the old 8-word list"
+
+
+def test_the_rules_route_labels_a_partial_read(daemon, monkeypatch):
+    rules = _rules(monkeypatch, _ref({"EmailAddress": ["mail"]}, fail_names=("Password",)))
+    assert {r["keyword_source"] for r in rules.values()} == {"keywords: Egeria, 1 of 6 sets · 1 could not be read"}
+    assert rules["Password"]["source"] == "Local Fallback" and "pwd" in rules["Password"]["keywords"]

@@ -372,6 +372,10 @@ class KeywordLoad:
     state: str
     by_class: dict[str, list[str]] = field(default_factory=dict)
     reason: str = ""
+    #: The data classes asked for, and those whose keywords could not be read (a reader falls back
+    #: to the built-in keywords for exactly these, class by class).
+    asked: int = 0
+    unread: list[str] = field(default_factory=list)
 
     @property
     def sets(self) -> int:
@@ -380,6 +384,9 @@ class KeywordLoad:
     @property
     def label(self) -> str:
         if self.state == KEYWORDS_FROM_EGERIA:
+            if self.unread:
+                return (f"keywords: Egeria, {self.sets} of {self.asked} sets · "
+                        f"{len(self.unread)} could not be read")
             return f"keywords: Egeria, {self.sets} set{'' if self.sets == 1 else 's'}"
         if self.state == KEYWORDS_EGERIA_NONE:
             return "keywords: built-in list · Egeria had none"
@@ -390,7 +397,13 @@ class KeywordLoad:
 
     def as_dict(self) -> dict[str, Any]:
         return {"source": "egeria" if self.state == KEYWORDS_FROM_EGERIA else "built_in",
-                "state": self.state, "sets": self.sets, "label": self.label, "reason": self.reason}
+                "state": self.state, "sets": self.sets, "asked": self.asked, "unread": self.unread,
+                "label": self.label, "reason": self.reason}
+
+    def keywords_for(self, name: str, built_in: list[str]) -> list[str]:
+        """One class's keywords: Egeria's when read, else `built_in` (also for a class Egeria was
+        read for and holds none, or could not be read for)."""
+        return list(self.by_class.get(name) or built_in)
 
 
 def _keyword_values(elements: list[dict]) -> list[str]:
@@ -416,10 +429,12 @@ def load_data_class_keywords(ref_manager, data_class_names: Sequence[str],
     """
     by_class: dict[str, list[str]] = {}
     failures: list[str] = []
+    unread: list[str] = []
     timed_out = False
     for name in data_class_names:
         if timed_out:
             failures.append(f"{name}: skipped after a timed-out lookup")
+            unread.append(name)
             continue
         try:
             if data_class_exists is not None and not data_class_exists(name):
@@ -431,9 +446,11 @@ def load_data_class_keywords(ref_manager, data_class_names: Sequence[str],
         except TimeoutError:
             timed_out = True
             failures.append(f"{name}: timed out")
+            unread.append(name)
             continue
         except Exception as exc:  # noqa: BLE001 - recorded as "could not read", never as "none"
             failures.append(f"{name}: {exc}")
+            unread.append(name)
             continue
         if isinstance(raw, (list, dict)):
             values = _keyword_values(_results(raw))
@@ -441,14 +458,16 @@ def load_data_class_keywords(ref_manager, data_class_names: Sequence[str],
                 by_class[name] = values
         elif not (isinstance(raw, str) and "no " in raw.lower() and "found" in raw.lower()):
             failures.append(f"{name}: unreadable answer {str(raw)[:80]!r}")
+            unread.append(name)
     if failures:
         log.warning("Data-class keywords: could not read %d of %d: %s",
                     len(failures), len(data_class_names), "; ".join(failures)[:500])
+    asked = len(data_class_names)
     if by_class:
-        return KeywordLoad(KEYWORDS_FROM_EGERIA, by_class, "; ".join(failures))
+        return KeywordLoad(KEYWORDS_FROM_EGERIA, by_class, "; ".join(failures), asked, unread)
     if failures:
-        return KeywordLoad(KEYWORDS_UNREADABLE, {}, "; ".join(failures))
-    return KeywordLoad(KEYWORDS_EGERIA_NONE)
+        return KeywordLoad(KEYWORDS_UNREADABLE, {}, "; ".join(failures), asked, unread)
+    return KeywordLoad(KEYWORDS_EGERIA_NONE, asked=asked)
 
 
 # ── Proposing: `contentStatus: DRAFT` element creation ────────────────────────

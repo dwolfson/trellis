@@ -116,14 +116,41 @@ def _egeria_env(monkeypatch):
     monkeypatch.setenv("EGERIA_USER_PASSWORD", "secret")
 
 
+_RELATED_SIG = inspect.signature(
+    __import__("pyegeria.omvs.metadata_expert", fromlist=["MetadataExpert"]).MetadataExpert.get_related_metadata_elements)
+
+
+class _FakeExpert:
+    """MetadataExpert stand-in: answers the links the two fakes above recorded."""
+
+    def __init__(self, designer, ref_manager):
+        self.designer, self.ref_manager = designer, ref_manager
+
+    def create_egeria_bearer_token(self, *_args, **_kwargs):
+        return "fake-token"
+
+    def set_bearer_token(self, *_args, **_kwargs):
+        pass
+
+    def get_related_metadata_elements(self, *args, **kwargs):
+        a = _RELATED_SIG.bind(self, *args, **kwargs).arguments
+        guid, rel = a["guid"], a["relationship_type"]
+        if rel == "ValidValueMember":
+            others = [m for s_, m in self.ref_manager.links if s_ == guid]
+        else:
+            others = [d for s_, d in self.designer.linked if s_ == guid]
+        return {"elementList": [{"element": {"elementGUID": o}} for o in others]} if others else NO_ELEMENTS_FOUND
+
+
 def _run_bootstrap(designer, ref_manager):
-    # bootstrap_data_classes.py imports DataDesigner/ReferenceDataManager
-    # locally, inside bootstrap_data_classes(), so patching them on their
-    # owning modules (rather than on bootstrap_data_classes itself) is what
-    # actually intercepts the call.
+    # bootstrap_data_classes.py imports its pyegeria clients locally, inside
+    # bootstrap_data_classes(), so patching them on their owning modules
+    # (rather than on bootstrap_data_classes itself) is what actually
+    # intercepts the call.
     with patch("pyegeria.omvs.data_designer.DataDesigner", return_value=designer), patch(
         "pyegeria.omvs.reference_data.ReferenceDataManager", return_value=ref_manager,
-    ):
+    ), patch("pyegeria.omvs.metadata_expert.MetadataExpert",
+             return_value=_FakeExpert(designer, ref_manager)):
         return bdc.bootstrap_data_classes()
 
 
