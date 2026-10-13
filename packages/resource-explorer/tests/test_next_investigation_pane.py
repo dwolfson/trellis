@@ -343,8 +343,11 @@ class TestVocabularyIsServedNotHardcoded:
     server-served valid-value-sets, not a second hardcoded RE vocabulary."""
 
     def test_purposes_and_classifications_come_from_the_api(self):
+        """Purposes load through the shared purposes.js (one fetch of
+        /api/investigations/purposes for every picker, Egeria's list behind it)."""
         src = _inv_src()
-        assert "getInvestigationPurposes" in src
+        purposes = (NEXT / "purposes.js").read_text(encoding="utf-8")
+        assert "loadPurposes" in src and "from '/static/next/purposes.js'" in src
+        assert "getInvestigationPurposes" in purposes
         assert "getInvestigationClassifications" in src
-        assert "_purposes = null;" in src
         assert "_classifications = null;" in src

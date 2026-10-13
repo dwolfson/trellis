@@ -4081,10 +4081,10 @@ class ProjectRegistry:
             # makes promotion to Egeria a fill-in rather than a migration.
             #
             # `purposes` is `ProjectCharter.purposes` (§2) — deliberately NOT
-            # a new RE vocabulary. Stored as a JSON array of the 8 values the
-            # question corpus is already tagged with (Assess, Certify, Deploy,
-            # Explore, Learn, Maintain, Select, Share) so it replays into a
-            # real ProjectCharter unchanged.
+            # a new RE vocabulary. Stored as a JSON array of purpose values, or
+            # (2026-10-13, owner ruling) `{"values": [...], "free_text": "..."}`
+            # when free text was given, so it stays apart from the values. The
+            # list itself is Egeria's (`investigation_purposes.py`), suggestive.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS investigations (
                     slug                           TEXT PRIMARY KEY,
@@ -9729,9 +9729,49 @@ class ProjectRegistry:
     # nullable egeria_project_guid so an investigation can exist before, or
     # without, any Egeria write — promotion is then a fill-in, not a migration.
 
-    VALID_PURPOSES = (
-        "Assess", "Certify", "Deploy", "Explore", "Learn", "Maintain", "Select", "Share",
-    )
+    # Purposes are NOT a vocabulary held here. Decision (project owner, 2026-10-13): "Egeria holds the set
+    # of record" — an Egeria valid-value list, read through `investigation_purposes.current_purposes` (a
+    # labelled, stale-aware cache when Egeria cannot be read). And "warn only - suggestive everywhere": a
+    # purpose outside the list is kept and warned about, never refused. The tuple that used to sit here was
+    # the authority; it is gone.
+
+    @staticmethod
+    def _purposes_from_json(raw) -> tuple[list[str], str]:
+        """(purposes, purpose_text) from `purposes_json`. A JSON array is the shape every row had before
+        2026-10-13; an object `{"values": [...], "free_text": "..."}` keeps free text apart from the
+        values (owner ruling: free text is stored as entered, separately, so it can be mined)."""
+        import json as _json
+        try:
+            data = _json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            return [], ""
+        if isinstance(data, list):
+            return [str(p) for p in data if p], ""
+        if isinstance(data, dict):
+            return ([str(p) for p in (data.get("values") or []) if p], str(data.get("free_text") or ""))
+        return [], ""
+
+    @staticmethod
+    def _purposes_to_json(purposes: list[str], purpose_text: str) -> str:
+        import json as _json
+        purposes = [p.strip() for p in purposes if p and p.strip()]
+        purpose_text = (purpose_text or "").strip()
+        if not purpose_text:
+            return _json.dumps(purposes)        # the old shape when there is no free text: nothing to migrate
+        return _json.dumps({"values": purposes, "free_text": purpose_text})
+
+    def _purpose_warnings(self, purposes: list[str]) -> list[str]:
+        """Words naming each purpose outside the list (cache or shipped seed — never an Egeria call from
+        here). Logged; returned on the investigation; never raised."""
+        from resource_explorer.investigation_purposes import (
+            known_purpose_names,
+            unknown_purpose_warnings,
+        )
+
+        warnings = unknown_purpose_warnings(purposes, known_purpose_names(self))
+        for w in warnings:
+            log.warning("investigation: %s", w)
+        return warnings
 
     #: §1 mode 2's classifications — Egeria's own, mirrored exactly, because
     #: they are sent as `initialClassifications` on the Project and a value
@@ -9824,6 +9864,7 @@ class ProjectRegistry:
 
     def create_investigation(self, display_name: str, *, description: str = "",
                              purposes: list[str] | None = None,
+                             purpose_text: str = "",
                              project_classification: str = "StudyProject",
                              egeria_binding: str = "egeria",
                              hypothesis: str = "",
@@ -9831,11 +9872,12 @@ class ProjectRegistry:
                              egeria_project_qualified_name: str = "") -> dict:
         """Create one investigation.
 
-        Every vocabulary here is validated rather than accepting free text.
-        `purposes` because an unrecognised purpose would silently fail to rank
-        anything later; `project_classification` because it is sent to Egeria
-        as a type name; `egeria_binding` because it decides whether anything is
-        sent at all.
+        `purposes` is SUGGESTIVE (owner ruling 2026-10-13, "warn only - suggestive
+        everywhere"): a value outside Egeria's purposes list is kept, and the
+        returned investigation carries `purpose_warnings` naming it. `purpose_text`
+        is free text as entered, stored apart from the values so it can be mined.
+        `project_classification` and `egeria_binding` stay validated: the first is
+        sent to Egeria as a type name, the second decides whether anything is sent.
 
         `hypothesis` is required for the classifications in
         `HYPOTHESIS_REQUIRED_FOR` and refused for the others — an `Experiment`
@@ -9843,14 +9885,9 @@ class ProjectRegistry:
         and a hypothesis on a `Task` would be silently discarded at publish
         time, which is worse than being told.
         """
-        import json as _json
         import re as _re
-        purposes = purposes or []
-        bad = [p for p in purposes if p not in self.VALID_PURPOSES]
-        if bad:
-            raise ValueError(
-                f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}"
-            )
+        purposes = [p.strip() for p in (purposes or []) if p and p.strip()]
+        warnings = self._purpose_warnings(purposes)
         if project_classification not in self.PROJECT_CLASSIFICATIONS:
             raise ValueError(
                 f"unknown classification {project_classification!r}; "
@@ -9896,7 +9933,7 @@ class ProjectRegistry:
                     created_by, egeria_project_guid,
                     egeria_project_qualified_name, status, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
-                (slug, display_name, description, _json.dumps(purposes),
+                (slug, display_name, description, self._purposes_to_json(purposes, purpose_text),
                  project_classification, egeria_binding, hypothesis,
                  # Resolved here, not taken from the caller — the same reason
                  # `current_user_id`'s docstring gives: a method that resolves
@@ -9905,7 +9942,10 @@ class ProjectRegistry:
                  owner, egeria_project_guid,
                  egeria_project_qualified_name, now, now),
             )
-        return self.get_investigation(slug)
+        inv = self.get_investigation(slug)
+        if inv is not None:
+            inv["purpose_warnings"] = warnings
+        return inv
 
     def get_investigation(self, slug: str, *,
                           user_id: str | None = None) -> dict | None:
@@ -9925,7 +9965,6 @@ class ProjectRegistry:
         new route is exactly the place a per-route check gets forgotten. Routes
         then 404 with no change of their own.
         """
-        import json as _json
         user_id = current_user_id() if user_id is None else user_id
         with self._conn() as conn:
             row = conn.execute(
@@ -9936,7 +9975,7 @@ class ProjectRegistry:
         d = dict(row)
         if not self._may_see_investigation(d, user_id):
             return None
-        d["purposes"] = _json.loads(d.pop("purposes_json") or "[]")
+        d["purposes"], d["purpose_text"] = self._purposes_from_json(d.pop("purposes_json"))
         # Say what the visibility actually IS, rather than leaving the caller
         # to re-derive it from classification + created_by. `private` here
         # means "RE does not show this to other people" — not that Egeria is
@@ -10257,6 +10296,7 @@ class ProjectRegistry:
     def update_investigation(self, slug: str, *, display_name: str | None = None,
                              description: str | None = None,
                              purposes: list[str] | None = None,
+                             purpose_text: str | None = None,
                              hypothesis: str | None = None) -> dict | None:
         """Rename, re-describe, or refine the hypothesis. The slug never
         changes — members, the Egeria binding and inherited context rows
@@ -10267,14 +10307,13 @@ class ProjectRegistry:
         not an UPDATE (design §5). Sharpening an Experiment's hypothesis is a
         different thing — it stays within one classification.
         """
-        import json as _json
         inv = self.get_investigation(slug)
         if not inv:
             return None
+        warnings: list[str] = []
         if purposes is not None:
-            bad = [p for p in purposes if p not in self.VALID_PURPOSES]
-            if bad:
-                raise ValueError(f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}")
+            purposes = [p.strip() for p in purposes if p and p.strip()]
+            warnings = self._purpose_warnings(purposes)
         if hypothesis is not None:
             hypothesis = hypothesis.strip()
             cls = inv.get("project_classification")
@@ -10295,15 +10334,84 @@ class ProjectRegistry:
             if description is not None:
                 conn.execute("UPDATE investigations SET description = ? WHERE slug = ?",
                              (description, slug))
-            if purposes is not None:
+            if purposes is not None or purpose_text is not None:
+                # Either half may be sent alone; the other keeps what is stored.
+                new_purposes = purposes if purposes is not None else inv.get("purposes") or []
+                new_text = purpose_text if purpose_text is not None else inv.get("purpose_text") or ""
                 conn.execute("UPDATE investigations SET purposes_json = ? WHERE slug = ?",
-                             (_json.dumps(purposes), slug))
+                             (self._purposes_to_json(new_purposes, new_text), slug))
             if hypothesis is not None:
                 conn.execute("UPDATE investigations SET hypothesis = ? WHERE slug = ?",
                              (hypothesis, slug))
             conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
                          (datetime.utcnow().isoformat(), slug))
-        return self.get_investigation(slug)
+        out = self.get_investigation(slug)
+        if out is not None:
+            out["purpose_warnings"] = warnings
+        return out
+
+    def purpose_free_text(self, *, user_id: str | None = None) -> dict:
+        """Purposes people wrote rather than picked, with counts — for mining.
+
+        Owner ruling 2026-10-13: "we will want to mine the text in real situations to see if we can
+        codify more purposes." Two sources, each grouped on the text with case and spacing folded (the
+        first spelling seen is shown), most frequent first:
+
+        * `investigation_purposes`: each investigation's free text (`purpose_text`) and any purpose value
+          outside the list;
+        * `intended_use`: Enrichment's Intended use free text, a picked value outside the list, and, for
+          rows written before the split (or by Classic's flat `purpose` field), a value outside the list.
+
+        "Outside the list" is judged against the cached list (or the shipped seed), never an Egeria call.
+        Nothing here adds to the list: a person adds a value to Egeria's list.
+        Investigations are filtered by what the caller may see (`get_investigation`'s rule).
+        """
+        import json as _json
+
+        from resource_explorer.investigation_purposes import _fold, is_listed, known_purpose_names
+
+        names = known_purpose_names(self)
+
+        def tally(bucket: dict, text: str, kind: str, where: str) -> None:
+            text = " ".join((text or "").split())
+            if not text:
+                return
+            row = bucket.setdefault((_fold(text), kind), {"text": text, "kind": kind, "count": 0, "where": []})
+            row["count"] += 1
+            if len(row["where"]) < 20:
+                row["where"].append(where)
+
+        inv_bucket: dict = {}
+        for inv in self.list_investigations(include_closed=True, user_id=user_id):
+            tally(inv_bucket, inv.get("purpose_text") or "", "free text", inv["slug"])
+            for p in inv.get("purposes") or []:
+                if not is_listed(p, names):
+                    tally(inv_bucket, p, "not in the list", inv["slug"])
+
+        use_bucket: dict = {}
+        with self._conn() as conn:
+            rows = conn.execute("SELECT entity_type, entity_slug, context_json FROM resource_context").fetchall()
+        for r in rows:
+            try:
+                ctx = _json.loads(r["context_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            where = f"{r['entity_type']}/{r['entity_slug']}"
+            field = ((ctx.get("enrichment") or {}).get("intended_use")) or None
+            if isinstance(field, dict) and ("free_text" in field or "picked" in field):
+                tally(use_bucket, field.get("free_text") or "", "free text", where)
+                picked = field.get("picked") or ""
+                if picked and not is_listed(picked, names):
+                    tally(use_bucket, picked, "not in the list", where)
+                continue
+            legacy = (field or {}).get("value") if isinstance(field, dict) else ctx.get("purpose")
+            if legacy and not is_listed(legacy, names):
+                tally(use_bucket, legacy, "free text", where)
+
+        def ranked(bucket: dict) -> list[dict]:
+            return sorted(bucket.values(), key=lambda x: (-x["count"], x["text"].casefold()))
+
+        return {"known": names, "investigation_purposes": ranked(inv_bucket), "intended_use": ranked(use_bucket)}
 
     def set_investigation_classification(self, slug: str, classification: str, *,
                                          hypothesis: str = "") -> dict | None:

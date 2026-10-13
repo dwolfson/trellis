@@ -485,8 +485,13 @@ export const getEntityDispositionHistory = (entityType, entitySlug) =>
  *  being enriched, so a database/filesystem Enrichment save silently landed
  *  in the repo context bucket under that slug instead of its own bucket —
  *  a real write to the wrong place, not just a wrong read. */
-export const saveEnrichmentField = (slug, key, { value = '', note = '', kind = 'judgement', source = '', evidence = {}, interim = false } = {}, entityType) =>
-  patch(`/api/context/${encodeURIComponent(requireKind('saveEnrichmentField', entityType))}/${encodeURIComponent(slug)}/field`, { key, value, note, kind, source, evidence, interim });
+// `picked`/`free_text`: Intended use only -- the list value and the typed text, sent apart (owner ruling
+// 2026-10-13). Left out for every other field, so the server reads `value` as before.
+export const saveEnrichmentField = (slug, key, { value = '', note = '', kind = 'judgement', source = '', evidence = {}, interim = false, picked, free_text } = {}, entityType) =>
+  patch(`/api/context/${encodeURIComponent(requireKind('saveEnrichmentField', entityType))}/${encodeURIComponent(slug)}/field`, {
+    key, value, note, kind, source, evidence, interim,
+    ...(picked !== undefined || free_text !== undefined ? { picked: picked ?? '', free_text: free_text ?? '' } : {}),
+  });
 
 /* ── Documentation sources (Enrichment) ──────────────────────────────────
  * BRIEF-DATABASE-DOCUMENTATION-SOURCES.md slice 1, "Declare and probe".
@@ -775,12 +780,12 @@ export const getInvestigationClassifications = () => get('/api/investigations/cl
 export const getInvestigation = (slug) => get(`/api/investigations/${encodeURIComponent(slug)}`);
 
 export const createInvestigation = ({
-  displayName, description = '', purposes = [],
+  displayName, description = '', purposes = [], purposeText = '',
   projectClassification = 'StudyProject', egeriaBinding = 'egeria', hypothesis = '',
   egeriaProjectGuid = '', egeriaProjectQualifiedName = '',
 } = {}) =>
   post('/api/investigations/', {
-    display_name: displayName, description, purposes,
+    display_name: displayName, description, purposes, purpose_text: purposeText,
     project_classification: projectClassification, egeria_binding: egeriaBinding, hypothesis,
     egeria_project_guid: egeriaProjectGuid, egeria_project_qualified_name: egeriaProjectQualifiedName,
   });

@@ -25,7 +25,7 @@
  */
 import { ago, readBackAt } from '/static/next/format.js';
 import {
-  listInvestigations, getInvestigationPurposes, getInvestigationClassifications,
+  listInvestigations, getInvestigationClassifications,
   getInvestigation, createInvestigation, updateInvestigation,
   listInvestigationMembers, addInvestigationMember, removeInvestigationMember,
   closeInvestigation, suspendInvestigation, reopenInvestigation,
@@ -38,6 +38,9 @@ import {
   state, esc, $, icon, setInvestigation, refreshInvestigationsAndSidebar,
   ensureResourceListLoaded,
 } from '/static/next/app.js';
+import {
+  loadPurposes, purposePickerHtml, readPurposePicker, wirePurposePicker, purposesSummaryHtml,
+} from '/static/next/purposes.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import { saveCsv } from '/static/next/download.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
@@ -67,10 +70,10 @@ let _detailSlug = null;
 let _detailSeq = 0;
 let _includeClosed = false;
 
-// Vocabularies are server-served (registry.py's PROJECT_CLASSIFICATIONS /
-// VALID_PURPOSES / dispositions) and cached here for the life of the page —
-// they change when someone edits Python, not per click.
-let _purposes = null;
+// Vocabularies are server-served and cached here for the life of the page. Classifications are
+// registry.py's PROJECT_CLASSIFICATIONS. Purposes are Egeria's list (owner ruling 2026-10-13), loaded once
+// through purposes.js, which every purpose picker shares; the answer carries where it came from (Egeria,
+// a labelled cache, or RE's shipped seed).
 let _classifications = null;
 
 const DISPOSITION_GLYPH = {
@@ -79,15 +82,13 @@ const DISPOSITION_GLYPH = {
 };
 
 export async function investigationVocab() {
-  if (!_purposes) {
-    try { _purposes = (await getInvestigationPurposes()).purposes || []; } catch { _purposes = []; }
-  }
+  const purposeVocab = await loadPurposes();
   if (!_classifications) {
     try { _classifications = await getInvestigationClassifications(); } catch {
       _classifications = { classifications: [], bindings: [], default_classification: 'StudyProject', default_binding: 'egeria' };
     }
   }
-  return { purposes: _purposes, classifications: _classifications };
+  return { purposes: purposeVocab.purposes, purposeVocab, classifications: _classifications };
 }
 
 export async function renderInvestigation() {
@@ -144,8 +145,10 @@ async function renderList() {
   bindListHeader();
 
   let rows;
+  let purposeNames = [];
   try {
     rows = await listInvestigations({ includeClosed: _includeClosed });
+    purposeNames = (await loadPurposes()).purposes;
   } catch (err) {
     el.innerHTML = listHeaderHtml()
       + `<p class="max-w-[70ch] text-answer text-state-warn">Could not load investigations: ${esc(err.message)}</p>`;
@@ -168,7 +171,7 @@ async function renderList() {
             ${esc(inv.display_name || inv.slug)}
             ${inv.visibility === 'private' ? `<span class="ml-[4px] text-caveat text-ink-muted" title="${esc(inv.visibility_note || 'visible only to its creator')}">🔒</span>` : ''}
           </td>
-          <td class="py-s2 pr-s3 text-caveat text-ink-muted">${(inv.purposes || []).map(esc).join(', ') || '—'}</td>
+          <td class="py-s2 pr-s3 text-caveat text-ink-muted">${purposesSummaryHtml(inv, purposeNames) || '—'}</td>
           <td class="py-s2 pr-s3 text-caveat">${statusGlyph(inv.status)}</td>
           <td class="py-s2 pr-s3 text-caveat tnum text-ink-muted">${inv.member_count ?? 0}</td>
           <td class="py-s2 text-caveat">${bindingGlyph(inv)}</td>
@@ -219,7 +222,7 @@ function bindListHeader() {
  *  picker.js) passes `onCreated(inv)` instead, so "start a new one" reuses this
  *  form and carries on with whatever the person was doing, not a page change. */
 export async function openCreateDialog({ onCreated = null } = {}) {
-  const { purposes, classifications } = await investigationVocab();
+  const { purposeVocab, classifications } = await investigationVocab();
   const d = openDialog('New investigation', '');
   const body = d.querySelector('#wl-detail-body');
   body.innerHTML = `
@@ -228,10 +231,7 @@ export async function openCreateDialog({ onCreated = null } = {}) {
     <label class="mb-[3px] block text-caveat text-ink-muted">Description</label>
     <textarea id="inv-new-desc" rows="2" class="mb-s2 w-full rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink"></textarea>
     <label class="mb-[3px] block text-caveat text-ink-muted">Purposes</label>
-    <div class="mb-s2 flex flex-wrap gap-s2">
-      ${purposes.map((p) => `<label class="inline-flex cursor-pointer items-center gap-[4px] text-caveat text-ink">
-        <input type="checkbox" class="inv-new-purpose" value="${esc(p)}"> ${esc(p)}</label>`).join('')}
-    </div>
+    <div class="mb-s2">${purposePickerHtml({ prefix: 'inv-new', vocab: purposeVocab })}</div>
     <label class="mb-[3px] block text-caveat text-ink-muted">Kind</label>
     <select id="inv-new-class" class="mb-s2 w-full rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink">
       ${classifications.classifications.map((c) => `<option value="${esc(c.name)}" ${
@@ -266,12 +266,13 @@ export async function openCreateDialog({ onCreated = null } = {}) {
   };
   classSel.addEventListener('change', syncHyp);
   syncHyp();
+  wirePurposePicker(body, 'inv-new');
 
   body.querySelector('#inv-new-submit').addEventListener('click', async () => {
     const name = body.querySelector('#inv-new-name').value.trim();
     const errEl = body.querySelector('#inv-new-error');
     if (!name) { errEl.textContent = 'Name is required.'; return; }
-    const selectedPurposes = [...body.querySelectorAll('.inv-new-purpose:checked')].map((c) => c.value);
+    const picked = readPurposePicker(body, 'inv-new');
     const projectClassification = classSel.value;
     const hypothesis = body.querySelector('#inv-new-hyp').value.trim();
     if (requiresHyp(projectClassification) && !hypothesis) {
@@ -285,7 +286,8 @@ export async function openCreateDialog({ onCreated = null } = {}) {
       const inv = await createInvestigation({
         displayName: name,
         description: body.querySelector('#inv-new-desc').value.trim(),
-        purposes: selectedPurposes,
+        purposes: picked.purposes,
+        purposeText: picked.purpose_text,
         projectClassification,
         egeriaBinding: body.querySelector('#inv-new-binding').value,
         hypothesis,
@@ -350,7 +352,7 @@ async function renderDetail(slug) {
     } catch { /* leaves null: shown as unavailable */ }
     if (stale()) return;
   }
-  const { classifications } = await investigationVocab();
+  const { classifications, purposes: purposeNames } = await investigationVocab();
   if (stale()) return;
   const classLabel = classifications.classifications.find((c) => c.name === inv.project_classification)?.label
     || inv.project_classification;
@@ -368,7 +370,7 @@ async function renderDetail(slug) {
         ? `<span title="${esc(inv.hypothesis)}">· hypothesis set</span>` : ''}
       <span>·</span>
       ${bindingGlyph(inv)}
-      ${(inv.purposes || []).length ? `<span>· ${inv.purposes.map(esc).join(', ')}</span>` : ''}
+      ${purposesSummaryHtml(inv, purposeNames) ? `<span data-inv-purposes>· ${purposesSummaryHtml(inv, purposeNames)}</span>` : ''}
       ${inv.visibility === 'private' ? `<span title="${esc(inv.visibility_note || '')}">· 🔒 private</span>` : ''}
     </div>
     <p class="max-w-[70ch] text-answer text-ink">${esc(inv.description || 'No description.')}</p>
@@ -612,7 +614,8 @@ function bindDetail(inv, members) {
     renderDetail(inv.slug);
   });
 
-  el.querySelector('[data-act="inv-edit"]')?.addEventListener('click', () => {
+  el.querySelector('[data-act="inv-edit"]')?.addEventListener('click', async () => {
+    const { purposeVocab } = await investigationVocab();
     const host = $('inv-edit-form');
     host.innerHTML = `<div class="mb-s3 rounded-sm border border-rule p-s2">
       <label class="mb-[3px] block text-caveat text-ink-muted">Name</label>
@@ -621,12 +624,16 @@ function bindDetail(inv, members) {
       <label class="mb-[3px] block text-caveat text-ink-muted">Description</label>
       <textarea id="inv-edit-desc" rows="2"
         class="mb-s2 w-full rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink">${esc(inv.description || '')}</textarea>
+      <label class="mb-[3px] block text-caveat text-ink-muted">Purposes</label>
+      <div class="mb-s2">${purposePickerHtml({
+        prefix: 'inv-edit', vocab: purposeVocab, selected: inv.purposes || [], text: inv.purpose_text || '' })}</div>
       <div class="flex gap-s2">
         <button id="inv-edit-save" class="${btnCls()}">Save</button>
         <button id="inv-edit-cancel" class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Cancel</button>
       </div>
       <span id="inv-edit-error" class="text-caveat text-state-warn"></span>
     </div>`;
+    wirePurposePicker(host, 'inv-edit');
     host.querySelector('#inv-edit-cancel').addEventListener('click', () => { host.innerHTML = ''; });
     host.querySelector('#inv-edit-save').addEventListener('click', async () => {
       const btn = host.querySelector('#inv-edit-save');
@@ -635,6 +642,7 @@ function bindDetail(inv, members) {
         await updateInvestigation(inv.slug, {
           display_name: host.querySelector('#inv-edit-name').value.trim(),
           description: host.querySelector('#inv-edit-desc').value.trim(),
+          ...readPurposePicker(host, 'inv-edit'),
         });
         await refreshInvestigationsAndSidebar();
         renderDetail(inv.slug);

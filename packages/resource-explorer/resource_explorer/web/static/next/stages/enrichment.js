@@ -23,6 +23,7 @@ import { personRowLineHtml } from '/static/next/row-anatomy.js';
 import { glyphSpan } from '/static/next/glyphs.js';
 import { observationState, sameFact } from '/static/next/observation-state.js';
 import { RETENTION_BASES, resolveRetention } from '/static/next/retention-basis.js';
+import { purposesNow, loadPurposes, isListed, notInListCueHtml, purposeSourceHtml } from '/static/next/purposes.js';
 
 /* ── Enrichment: testimony, not paperwork ──────────────────────────────────
  *
@@ -59,7 +60,9 @@ export const BACKUP_STATUSES = ['yes', 'no', 'partial', 'unknown'];
 export const JUDGEMENTS = [
   { key: 'sensitivity',  label: 'Sensitivity',  options: ['public', 'internal', 'confidential', 'restricted'] },
   { key: 'criticality',  label: 'Criticality',  options: ['low', 'important', 'critical'] },
-  { key: 'intended_use', label: 'Intended use', placeholder: 'what is this for, here?' },
+  // PI-098: replaces Classic's Purpose. Owner ruling 2026-10-13: offers the investigation-purposes list AND
+  // takes free text; the two are stored apart (`picked`, `free_text`) so the text can be mined.
+  { key: 'intended_use', label: 'Intended use', placeholder: 'or in your own words', purposes: true },
   { key: 'actual_use',   label: 'Actual use',   placeholder: 'how is it used today?' },
   { key: 'owner',        label: 'Owner',        placeholder: 'who answers for it?' },
   // PI-098: the rest of Classic's context form. Kept in RE and mirrored to the flat keys Classic reads
@@ -112,12 +115,43 @@ function retentionControlHtml(def, field, size) {
       class="min-w-0 flex-1 rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-provenance text-ink placeholder:text-ink-muted">`;
 }
 
+/** Intended use's (picked, free text), from the split fields, or -- a row written before the split -- from
+ *  its single value: a list value reads as picked, anything else as free text. */
+export function purposeFieldParts(field, names) {
+  if (!field) return { picked: '', free: '' };
+  if ('picked' in field || 'free_text' in field) return { picked: field.picked || '', free: field.free_text || '' };
+  const v = field.value || '';
+  return isListed(v, names) ? { picked: v, free: '' } : { picked: '', free: v };
+}
+
+/** The cue when either half is outside the list -- never when there is no list to compare against. */
+function purposeCueHtml(picked, free, names) {
+  const off = (t) => t && names.length && !isListed(t, names);
+  return off(picked) || off(free) ? notInListCueHtml() : '';
+}
+
+/** Pick from the purposes list, or type, or both. A picked value no longer in the list stays selected. */
+function purposeControlHtml(def, field, size) {
+  const vocab = purposesNow();
+  const names = vocab?.purposes || [];
+  const { picked, free } = purposeFieldParts(field, names);
+  const opts = (vocab?.values || []).map((p) => `<option value="${esc(p.name)}" title="${esc(p.description || '')}" ${
+    picked && isListed(picked, [p.name]) ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  const kept = picked && !isListed(picked, names) ? `<option value="${esc(picked)}" selected>${esc(picked)}</option>` : '';
+  return `<select data-purpose-pick="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink">
+      <option value="">—</option>${opts}${kept}</select>
+    <input data-field="${def.key}" type="text" value="${esc(free)}" placeholder="${esc(def.placeholder || '')}"
+      class="min-w-0 flex-1 rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">
+    <span data-purpose-cue-slot="${def.key}" class="shrink-0">${purposeCueHtml(picked, free, names)}</span>`;
+}
+
 function fieldControlHtml(def, field, kind = 'judgement') {
   const v = field?.value || '';
   // Judgements are the larger set on purpose; the recorded facts sit a
   // step down, at provenance size, so the split is visible, not narrated.
   const size = kind === 'judgement' ? 'text-answer' : 'text-provenance';
   if (def.basis) return retentionControlHtml(def, field, size);
+  if (def.purposes) return purposeControlHtml(def, field, size);
   if (def.options) {
     return `<select data-field="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink">
       <option value="">—</option>
@@ -270,6 +304,7 @@ export function fieldRowHtml(def, kind) {
         <button type="button" data-save="${def.key}" data-kind="${kind}"
           class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-provenance text-accent-ink">Save</button></div>
       <div class="text-provenance text-ink-muted">${who}</div>
+      ${def.purposes ? purposeSourceHtml(purposesNow()) : ''}
       ${st ? observationStateHtml(def, field, st) : noSurvey}
       ${def.key === 'owner' ? ownerMaterialHtml() + ownerNoteHtml(field) : ''}
     </div>
@@ -424,14 +459,30 @@ function renderEnrichmentForm(slug) {
  *  re-renders its own pane, not the other one's. */
 export function wireEnrichmentFieldControls(host, slug, rerender) {
   const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  // Intended use offers the purposes list: load it once, then redraw with it (a failed load is remembered
+  // with its words, so this never loops).
+  if (host.querySelector('[data-purpose-pick]') && !purposesNow()) loadPurposes().then(() => rerender());
+  host.querySelectorAll('[data-purpose-pick]').forEach((sel) => {
+    const key = sel.dataset.purposePick;
+    const input = host.querySelector(`[data-field="${key}"]`);
+    const slot = host.querySelector(`[data-purpose-cue-slot="${key}"]`);
+    const sync = () => { if (slot) slot.innerHTML = purposeCueHtml(sel.value.trim(), (input?.value || '').trim(), purposesNow()?.purposes || []); };
+    sel.addEventListener('change', sync);
+    input?.addEventListener('input', sync);
+  });
   host.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
     const key = b.dataset.save; const kind = b.dataset.kind;
     const ctl = host.querySelector(`[data-field="${key}"]`);
-    const value = (ctl?.value || '').trim();
+    let value = (ctl?.value || '').trim();
+    // A purpose field sends its two halves apart; `value` joins them for every reader of one string.
+    const pick = host.querySelector(`[data-purpose-pick="${key}"]`);
+    const split = pick ? { picked: pick.value.trim(), free_text: value } : {};
+    if (pick) value = [split.picked, split.free_text].filter(Boolean).join(' — ');
     const note = (host.querySelector(`[data-note="${key}"]`)?.value || '').trim();
     b.disabled = true; b.textContent = 'saving…';
     try {
       const out = await saveEnrichmentField(slug, key, {
+        ...split,
         value, note, kind, evidence: kind === 'judgement' ? evidenceSnapshot() : {},
         // Interim means "the investigator stands in", which is a person
         // naming themself -- not a blank. A blank owner is no owner.

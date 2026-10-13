@@ -125,15 +125,20 @@ def made(client, _isolated_registry):
 def test_purposes_are_served_not_hardcoded_in_the_spa(client):
     """The UI must not carry its own copy of this vocabulary.
 
-    Purpose is ProjectCharter.purposes (§2), and the same eight values all 41
-    catalog questions are tagged with. A second copy in the SPA is exactly the
+    Purpose is ProjectCharter.purposes (§2). Egeria holds the list (owner ruling
+    2026-10-13); with no signed-in caller here the route answers from RE's cache
+    or its shipped seed, and says which. A second copy in the SPA is exactly the
     frontend/backend mirror that has drifted twice in this codebase already.
     """
+    from resource_explorer import investigation_purposes as ip
+
+    ip.reset_memo()
     r = client.get("/api/investigations/purposes")
     assert r.status_code == 200
-    assert r.json()["purposes"] == [
-        "Assess", "Certify", "Deploy", "Explore", "Learn", "Maintain", "Select", "Share",
+    assert sorted(r.json()["purposes"]) == [
+        "Assess", "Certify", "Deploy", "Explore", "Find", "Integrate", "Learn", "Maintain", "Select", "Share",
     ]
+    assert r.json()["source"] in ("cache", "seed") and r.json()["words"]
 
 
 from contextlib import contextmanager
@@ -563,13 +568,12 @@ def test_an_investigation_starts_local_with_no_egeria_write(made):
     assert inv["purposes"] == ["Explore"]
 
 
-def test_an_unknown_purpose_is_rejected_rather_than_stored(client):
-    """A purpose outside the vocabulary would rank nothing and look like an
-    empty result — indistinguishable from 'nothing matched'."""
-    r = client.post("/api/investigations/",
-                    json={"display_name": "Bad", "purposes": ["Nonsense"]})
-    assert r.status_code == 400
-    assert "Nonsense" in r.json()["detail"]
+def test_an_unknown_purpose_is_kept_and_named_never_rejected(client, made):
+    """Owner ruling 2026-10-13, "warn only - suggestive everywhere": a purpose
+    outside the list is stored as given, and the answer names it."""
+    inv = made(display_name="Odd", purposes=["Nonsense"])
+    assert inv["purposes"] == ["Nonsense"]
+    assert any("'Nonsense'" in w for w in inv["purpose_warnings"])
 
 
 def test_membership_goes_through_a_working_set(client, made):

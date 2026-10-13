@@ -1,0 +1,443 @@
+"""Investigation purposes: Egeria's valid-value list, seeded by RE, read back through a labelled cache.
+
+Owner rulings 2026-10-13 (memory: project_re_purposes_valid_values_2026_10_13):
+1. Egeria holds the set of record; RE may cache it, labelled and stale-aware.
+2. Find and Integrate are NEW purposes (10 in all).
+3. Suggestive everywhere: an unknown purpose warns, naming it, and is never rejected.
+5. Free text is kept apart from the picked value, as entered, and is queryable with counts.
+
+End to end through the bootstrap monitor's own pass (`bootstrap._purposes_pass`) with RE's real client
+factory and a real temp-SQLite registry. Only the pyegeria clients are faked: `create_autospec(..., spec_set=True)`
+of the REAL classes, so every call binds pyegeria's real signature, and the fake refuses what Egeria 6.2 refuses
+(typeName `ValidValueSet`, OMAG-COMMON-400-018; a member property ValidValueMemberProperties does not have).
+"""
+from __future__ import annotations
+
+import json
+import logging
+from unittest.mock import create_autospec
+
+import pytest
+from pyegeria.omvs.metadata_expert import MetadataExpert as _RealMX
+from pyegeria.omvs.reference_data import ReferenceDataManager as _RealRef
+
+from resource_explorer import bootstrap
+from resource_explorer import investigation_purposes as ip
+from resource_explorer.registry import ProjectRegistry
+
+NONE_FOUND = "No elements found"
+VVD = "ValidValueDefinition"
+TEN = ["Assess", "Certify", "Deploy", "Explore", "Find", "Integrate", "Learn", "Maintain", "Select", "Share"]
+
+#: The properties Egeria 6.2 accepts on the bodies RE sends (ValidValueDefinitionProperties and
+#: ValidValueMemberProperties, as read live).
+VVD_PROPS = {"class", "qualifiedName", "displayName", "description", "dataType", "scope", "preferredValue",
+             "category", "isCaseSensitive", "isDeprecated", "usage"}
+MEMBER_PROPS = {"class", "isDefaultValue", "ordinal"}
+
+
+class EgeriaRefused(Exception):
+    """What pyegeria raises for an Egeria 400: the message carries Egeria's id."""
+
+
+class FakeEgeria:
+    """What the platform holds, and every write in order."""
+
+    def __init__(self):
+        self.elements: dict[str, dict] = {}            # qualifiedName -> {"guid", "type", "props"}
+        self.links: dict[tuple[str, str], dict] = {}   # (set guid, member guid) -> member properties
+        self.writes: list[tuple] = []
+        self.fail_lookups = False
+        self.lookup_answer = None                      # a non-miss, non-GUID answer to return instead
+
+    def guid_of(self, qn):
+        return self.elements[qn]["guid"]
+
+    def _check_vvd_body(self, body):
+        if body.get("class") != "NewElementRequestBody":
+            raise EgeriaRefused(f"OMAG-COMMON-400-001 body class {body.get('class')!r}")
+        props = body.get("properties") or {}
+        for where in (body, props):
+            if where.get("typeName") == "ValidValueSet":
+                raise EgeriaRefused("OMAG-COMMON-400-018 The type name ValidValueSet is not known")
+        if props.get("class") != "ValidValueDefinitionProperties":
+            raise EgeriaRefused(f"OMAG-COMMON-400-001 properties class {props.get('class')!r}")
+        unknown = set(props) - VVD_PROPS
+        if unknown:
+            raise EgeriaRefused(f"OMAG-COMMON-400-001 unknown properties {sorted(unknown)}")
+        if not props.get("qualifiedName"):
+            raise EgeriaRefused("OMAG-COMMON-400-001 qualifiedName is null")
+        return props
+
+    def create(self, body):
+        props = self._check_vvd_body(body)
+        qn = props["qualifiedName"]
+        if qn in self.elements:
+            raise AssertionError(f"created twice: {qn}")
+        guid = f"0000{len(self.elements) + 1:04d}-0000-4000-8000-000000000000"
+        self.elements[qn] = {"guid": guid, "type": VVD, "props": props}
+        self.writes.append(("create", qn))
+        return guid
+
+    def link(self, set_guid, member_guid, body):
+        if body is None or body.get("class") != "NewRelationshipRequestBody":
+            raise EgeriaRefused("OMAG-COMMON-400-001 relationship body")
+        props = body.get("properties") or {}
+        if props.get("class") != "ValidValueMemberProperties" or set(props) - MEMBER_PROPS:
+            raise EgeriaRefused(f"OMAG-COMMON-400-001 member properties {sorted(props)}")
+        if not isinstance(props.get("ordinal", 0), int):
+            raise EgeriaRefused("OMAG-COMMON-400-001 ordinal must be an int")
+        guids = {e["guid"] for e in self.elements.values()}
+        assert set_guid in guids and member_guid in guids, "a link to an element Egeria does not hold"
+        self.links[(set_guid, member_guid)] = props
+        self.writes.append(("link", set_guid, member_guid))
+
+    def lookup(self, name, property_name, type_name):
+        if self.fail_lookups:
+            raise RuntimeError("Egeria is not answering")
+        if self.lookup_answer is not None:
+            return self.lookup_answer
+        assert type_name == VVD, "an untyped look-up would miss a plain ValidValueDefinition"
+        assert property_name == ["qualifiedName"]
+        found = self.elements.get(name)
+        return found["guid"] if found else NONE_FOUND
+
+    def related(self, guid, relationship_type, body, *a, **k):
+        if self.fail_lookups:
+            raise RuntimeError("Egeria is not answering")
+        assert relationship_type == "ValidValueMember"
+        by_guid = {e["guid"]: e for e in self.elements.values()}
+        items = []
+        for (s, m), props in self.links.items():
+            if s == guid:
+                el = by_guid[m]
+                items.append({"elementAtEnd1": False,
+                              "relationshipProperties": {"propertiesAsStrings": {
+                                  k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in props.items()
+                                  if k != "class"}},
+                              "element": {"elementGUID": m, "elementProperties": {"propertiesAsStrings": {
+                                  k: str(v) for k, v in el["props"].items() if k != "class"}}}})
+        return {"elementList": items} if items else NONE_FOUND
+
+
+def _fake_classes(eg: FakeEgeria):
+    def ref_factory(*_a, **_k):
+        rm = create_autospec(_RealRef, spec_set=True, instance=True)
+        rm.create_egeria_bearer_token.return_value = "tok"
+        rm.get_guid_for_name.side_effect = lambda name, property_name=None, type_name=None: eg.lookup(
+            name, property_name, type_name)
+        rm.create_valid_value_definition.side_effect = lambda body: eg.create(body)
+        rm.link_valid_value_definition.side_effect = lambda vv_set_guid, vv_member_guid, body=None: eg.link(
+            vv_set_guid, vv_member_guid, body)
+        return rm
+
+    def mx_factory(*_a, **_k):
+        mx = create_autospec(_RealMX, spec_set=True, instance=True)
+        mx.create_egeria_bearer_token.return_value = "tok"
+        mx.get_related_metadata_elements.side_effect = eg.related
+        return mx
+
+    return ref_factory, mx_factory
+
+
+@pytest.fixture
+def egeria(monkeypatch):
+    eg = FakeEgeria()
+    ref_factory, mx_factory = _fake_classes(eg)
+    monkeypatch.setattr("resource_explorer.egeria_clients._daemon_credential", lambda: ("re-daemon", "pw"))
+    monkeypatch.setenv("EGERIA_PLATFORM_URL", "https://egeria-blocked.invalid:9443")
+    monkeypatch.setenv("EGERIA_VIEW_SERVER", "v")
+    monkeypatch.setattr("pyegeria.omvs.reference_data.ReferenceDataManager", ref_factory)
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", mx_factory)
+    monkeypatch.setattr(ip, "_last_key", None)
+    monkeypatch.setattr(ip, "_last_outcome", None)
+    monkeypatch.setattr(ip, "_still_bootstrap_leader", lambda: True)
+    ip.reset_memo()
+    yield eg
+    ip.reset_memo()
+
+
+@pytest.fixture
+def registry(tmp_path):
+    return ProjectRegistry(db_path=str(tmp_path / "purposes.db"))
+
+
+def _start(registry):
+    """What a worker start runs: the monitor's pass, after the data-class seed."""
+    return bootstrap._purposes_pass(registry=registry)
+
+
+def _rows(registry):
+    return registry.list_activity(entity_type="egeria", entity_slug="investigation-purposes")
+
+
+# ── the seed ──────────────────────────────────────────────────────────────────
+
+def test_the_seed_is_the_eight_plus_find_and_integrate_each_described():
+    seed = ip.load_seed()
+    assert sorted(v["name"] for v in seed["values"]) == TEN
+    assert all(v["description"] for v in seed["values"])
+    assert seed["default"] == "Explore"
+
+
+def test_the_registry_tuple_is_no_longer_the_authority():
+    assert not hasattr(ProjectRegistry, "VALID_PURPOSES")
+
+
+# ── the heal: one write path, end to end ──────────────────────────────────────
+
+def test_first_start_creates_the_set_values_links_and_canary(egeria, registry):
+    out = _start(registry)
+    seed = ip.load_seed()
+    creates = [w[1] for w in egeria.writes if w[0] == "create"]
+    assert out.status == ip.CREATED
+    assert creates == ([ip.SET_QN] + [ip.value_qn(n["name"]) for n in seed["values"]]
+                       + [ip.canary_qualified_name(seed)]), "the canary is created last"
+    assert out.line == "investigation purposes: created, 10 values (11 elements created, 10 links made)"
+    set_guid = egeria.guid_of(ip.SET_QN)
+    members = {m: p for (s, m), p in egeria.links.items() if s == set_guid}
+    assert len(members) == 10
+    explore = egeria.guid_of(ip.value_qn("Explore"))
+    assert members[explore]["isDefaultValue"] is True
+    assert sum(p["isDefaultValue"] for p in members.values()) == 1
+    assert sorted(p["ordinal"] for p in members.values()) == list(range(10))
+    find = egeria.elements[ip.value_qn("Find")]["props"]
+    assert find["preferredValue"] == "Find" and "before any choice" in find["description"]
+    # Proof: one activity row naming each element with its GUID.
+    rows = _rows(registry)
+    assert len(rows) == 1 and rows[0]["summary"] == out.line and rows[0]["status"] == "ok"
+    assert {i["qualified_name"] for i in rows[0]["items"] if i.get("guid")} == set(creates)
+    # The reader's cache now holds Egeria's list, read back from Egeria.
+    cache = json.loads(registry.get_setting(ip.CACHE_KEY))
+    assert [v["name"] for v in cache["values"]] == [v["name"] for v in seed["values"]]
+
+
+def test_the_heal_is_idempotent_a_second_start_creates_nothing(egeria, registry):
+    _start(registry)
+    ip._last_key = None                                     # a new process
+    before = list(egeria.writes)
+    out = _start(registry)
+    assert egeria.writes == before, "a second start wrote to Egeria"
+    assert out.status == ip.PRESENT and out.line == "investigation purposes: present, 10 values"
+
+
+def test_a_value_missing_after_the_canary_is_healed_alone(egeria, registry):
+    _start(registry)
+    gone = ip.value_qn("Integrate")
+    g = egeria.elements.pop(gone)["guid"]
+    egeria.links = {k: v for k, v in egeria.links.items() if k[1] != g}
+    ip._last_key = None
+    n = len(egeria.writes)
+    out = _start(registry)
+    assert [w[1] for w in egeria.writes[n:] if w[0] == "create"] == [gone]
+    assert len([w for w in egeria.writes[n:] if w[0] == "link"]) == 1
+    assert out.status == ip.CREATED
+
+
+def test_a_failed_look_up_creates_nothing(egeria, registry):
+    egeria.fail_lookups = True
+    out = _start(registry)
+    assert egeria.writes == []
+    assert out.status == ip.COULD_NOT_CHECK
+    assert "could not be made" in out.reason and "nothing was created" in out.reason
+    assert _rows(registry)[0]["status"] == "error"
+
+
+@pytest.mark.parametrize("answer", ["", "not a guid", [], {}, "No such server"])
+def test_only_pyegeria_s_miss_sentence_reads_as_absent(egeria, registry, answer):
+    """PR #637's rule: anything that is neither a GUID nor pyegeria's exact miss sentence is could-not-check."""
+    egeria.lookup_answer = answer
+    out = _start(registry)
+    assert egeria.writes == [] and out.status == ip.COULD_NOT_CHECK
+
+
+def test_a_process_that_lost_the_lock_writes_nothing(egeria, registry, monkeypatch):
+    monkeypatch.setattr(ip, "_still_bootstrap_leader", lambda: False)
+    out = _start(registry)
+    assert egeria.writes == [] and out.status == ip.COULD_NOT_CHECK
+    assert "no longer holds the bootstrap lock" in out.reason
+
+
+def test_the_fake_refuses_a_valid_value_set_type_as_egeria_does(egeria):
+    with pytest.raises(EgeriaRefused, match="OMAG-COMMON-400-018"):
+        egeria.create({"class": "NewElementRequestBody", "typeName": "ValidValueSet",
+                       "properties": {"class": "ValidValueDefinitionProperties", "qualifiedName": "x"}})
+    with pytest.raises(EgeriaRefused):
+        egeria.link("a", "b", {"class": "NewRelationshipRequestBody",
+                               "properties": {"class": "ValidValueMemberProperties", "label": "x"}})
+
+
+# ── the dry run: the same function, nothing sent ──────────────────────────────
+
+def test_the_dry_run_lists_what_the_write_would_create_and_sends_nothing(egeria):
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+    from pyegeria.omvs.reference_data import ReferenceDataManager
+
+    rm, mx = ReferenceDataManager(), MetadataExpert()
+    plan = ip.ensure_purposes(rm, mx, dry_run=True)
+    assert egeria.writes == [] and rm.create_valid_value_definition.call_count == 0
+    assert rm.link_valid_value_definition.call_count == 0
+    seed = ip.load_seed()
+    planned = [c["qualified_name"] for c in plan.would_create if c["kind"] != "link"]
+    assert planned == [ip.SET_QN] + [ip.value_qn(v["name"]) for v in seed["values"]] + [
+        ip.canary_qualified_name(seed)]
+    assert len([c for c in plan.would_create if c["kind"] == "link"]) == 10
+    assert plan.line == "investigation purposes: dry run · would create 12 elements and 10 links"
+    # The real write then makes exactly the planned elements.
+    done = ip.ensure_purposes(rm, mx, still_leader=lambda: True)
+    assert [c["qualified_name"] for c in done.created if c.get("guid")] == planned
+
+
+# ── the reader: Egeria, else the labelled cache, else the seed ────────────────
+
+def test_the_reader_reads_egeria_and_falls_back_to_the_cache_with_labelled_words(egeria, registry):
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+    from pyegeria.omvs.reference_data import ReferenceDataManager
+
+    rm, mx = ReferenceDataManager(), MetadataExpert()
+    ip.ensure_purposes(rm, mx, still_leader=lambda: True)
+    live = ip.current_purposes(registry, lambda: ip.read_purposes_from_egeria(rm, mx), use_memo=False)
+    assert live.source == "egeria" and live.names[:2] == ["Assess", "Certify"] and live.default == "Explore"
+
+    egeria.fail_lookups = True
+    cached = ip.current_purposes(registry, lambda: ip.read_purposes_from_egeria(rm, mx), use_memo=False)
+    assert cached.source == "cache" and cached.names == live.names
+    assert cached.words.startswith("cached copy · read from Egeria just now")
+    assert "Egeria could not be read now" in cached.words and not cached.stale
+
+
+def test_an_old_cache_is_labelled_stale(registry):
+    ip.write_cache(registry, [{"name": "Assess", "description": "", "is_default": False, "ordinal": 0}],
+                   read_at="2026-10-01T00:00:00+00:00")
+    pl = ip.current_purposes(registry, None, use_memo=False)
+    assert pl.source == "cache" and pl.stale and "· stale" in pl.words and "days ago" in pl.words
+
+
+def test_with_no_cache_the_seed_answers_and_says_so(registry):
+    pl = ip.current_purposes(registry, lambda: (_ for _ in ()).throw(RuntimeError("down")), use_memo=False)
+    assert pl.source == "seed" and sorted(pl.names) == TEN
+    assert pl.words.startswith("RE's shipped list, not Egeria's") and "down" in pl.words
+
+
+# ── suggestive everywhere: warn, never reject ─────────────────────────────────
+
+def test_an_unknown_purpose_warns_and_is_kept(registry, caplog):
+    with caplog.at_level(logging.WARNING):
+        inv = registry.create_investigation("Odd one", purposes=["Explore", "Nonsense"])
+    assert inv["purposes"] == ["Explore", "Nonsense"]
+    assert inv["purpose_warnings"] == [
+        "purpose 'Nonsense' is not in the investigation-purposes list; kept as written"]
+    assert "Nonsense" in caplog.text
+    upd = registry.update_investigation(inv["slug"], purposes=["Find", "Wander"])
+    assert upd["purposes"] == ["Find", "Wander"] and "'Wander'" in upd["purpose_warnings"][0]
+
+
+def test_find_and_integrate_are_purposes_now(registry):
+    inv = registry.create_investigation("New ones", purposes=["Find", "Integrate"])
+    assert inv["purpose_warnings"] == []
+
+
+# ── free text: kept apart, as entered, and queryable ──────────────────────────
+
+def test_free_text_is_stored_apart_and_queryable_with_counts(registry):
+    a = registry.create_investigation("A", purposes=["Select"], purpose_text="  feed the CRM nightly ")
+    registry.create_investigation("B", purpose_text="Feed the  CRM nightly")
+    registry.create_investigation("C", purposes=["Wander"])
+    assert a["purposes"] == ["Select"] and a["purpose_text"] == "feed the CRM nightly"
+    # A legacy row (a bare JSON array) still reads.
+    with registry._conn() as conn:
+        conn.execute("UPDATE investigations SET purposes_json = ? WHERE slug = ?", ('["Assess"]', a["slug"]))
+    assert registry.get_investigation(a["slug"])["purposes"] == ["Assess"]
+
+    registry.save_context("database", "crm", {"enrichment": {"intended_use": {
+        "value": "Find — reporting backfill", "picked": "Find", "free_text": "reporting backfill"}}})
+    registry.save_context("database", "erp", {"enrichment": {"intended_use": {
+        "value": "Reporting backfill", "picked": "", "free_text": "Reporting backfill"}}})
+    registry.save_context("repo", "old", {"enrichment": {"intended_use": {"value": "Learn"}}})   # legacy, listed
+    registry.save_context("repo", "older", {"purpose": "a demo for sales"})                     # Classic only
+
+    mined = registry.purpose_free_text()
+    inv = {(r["text"].casefold(), r["kind"]): r["count"] for r in mined["investigation_purposes"]}
+    assert inv[("feed the crm nightly", "free text")] == 1        # A's text was overwritten by the legacy row
+    assert inv[("wander", "not in the list")] == 1
+    use = {(r["text"].casefold(), r["kind"]): r["count"] for r in mined["intended_use"]}
+    assert use == {("reporting backfill", "free text"): 2, ("a demo for sales", "free text"): 1}
+    assert sorted(mined["intended_use"][0]["where"]) == ["database/crm", "database/erp"]
+
+
+# ── the purposes route ────────────────────────────────────────────────────────
+
+def test_the_route_serves_the_list_with_where_it_came_from(registry, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from resource_explorer.web.app import app
+    from resource_explorer.web.routes import investigations as routes
+
+    monkeypatch.setattr(routes, "_registry", lambda: registry)
+    ip.reset_memo()
+    body = TestClient(app).get("/api/investigations/purposes").json()
+    assert sorted(body["purposes"]) == TEN and body["source"] == "seed"   # no caller, no cache, in a test
+    assert all(v["description"] for v in body["values"])
+    assert body["words"].startswith("RE's shipped list")
+    ip.reset_memo()
+
+
+def test_the_free_text_route_returns_the_mining_read(registry, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from resource_explorer.web.app import app
+    from resource_explorer.web.routes import investigations as routes
+
+    monkeypatch.setattr(routes, "_registry", lambda: registry)
+    registry.create_investigation("X", purpose_text="vendor due diligence")
+    body = TestClient(app).get("/api/investigations/purposes/free-text").json()
+    assert body["investigation_purposes"][0]["text"] == "vendor due diligence"
+
+
+# ── Enrichment's Intended use: pick, or type, or both ─────────────────────────
+
+@pytest.fixture
+def context_client(registry, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        "resource_explorer.registry.ProjectRegistry.__init__",
+        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None,
+    )
+    monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+    monkeypatch.setattr("resource_explorer.web.routes.context.get_current_user",
+                        lambda request: {"user_id": "peterprofile"})
+    from resource_explorer.web.app import app
+    return TestClient(app)
+
+
+def test_intended_use_keeps_the_picked_value_and_the_text_apart(context_client, registry):
+    r = context_client.patch("/api/context/database/crm/field", json={
+        "key": "intended_use", "kind": "judgement", "value": "ignored", "picked": "Integrate",
+        "free_text": "  nightly CRM feed  "})
+    assert r.status_code == 200, r.text
+    f = r.json()["field"]
+    assert (f["picked"], f["free_text"], f["value"]) == ("Integrate", "nightly CRM feed",
+                                                        "Integrate — nightly CRM feed")
+    assert r.json()["warnings"] == []
+    ctx = registry.get_context("database", "crm")
+    assert ctx["purpose"] == "Integrate — nightly CRM feed"            # Classic's flat key still mirrors
+    assert registry.purpose_free_text()["intended_use"][0]["text"] == "nightly CRM feed"
+
+
+def test_intended_use_from_an_older_client_is_split_by_the_list(context_client):
+    listed = context_client.patch("/api/context/database/a/field", json={
+        "key": "intended_use", "kind": "judgement", "value": "Find"}).json()["field"]
+    free = context_client.patch("/api/context/database/b/field", json={
+        "key": "intended_use", "kind": "judgement", "value": "a reporting backfill"}).json()["field"]
+    assert (listed["picked"], listed["free_text"]) == ("Find", "")
+    assert (free["picked"], free["free_text"]) == ("", "a reporting backfill")
+
+
+def test_an_unknown_picked_intended_use_warns_and_is_kept(context_client):
+    r = context_client.patch("/api/context/database/c/field", json={
+        "key": "intended_use", "kind": "judgement", "picked": "Wander", "free_text": ""})
+    assert r.status_code == 200
+    assert r.json()["field"]["picked"] == "Wander"
+    assert r.json()["warnings"] == [
+        "intended use: purpose 'Wander' is not in the investigation-purposes list; kept as written"]
