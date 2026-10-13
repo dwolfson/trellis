@@ -31,22 +31,6 @@ ___
 >	**Alternative Labels**: Wire Label
 
 
-### Dependency Description
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of the dependency between two digital products.
-
-
-### Dependency Description
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of the dependency between two digital products.
-
-
 ### Journal Entry
 >	**Input Required**: False
 
@@ -153,6 +137,14 @@ ___
 >	**Description**: Is the element at end2 an anchor to end1?
 
 >	**Default Value**: false
+
+
+### ISC Qualified Name
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: Qualified name of the Information Supply Chain this lineage relationship belongs to, if any.
 
 
 ___

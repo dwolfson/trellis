@@ -1,46 +1,36 @@
 ___
 
-## Setup Valid Metadata Map Name
-> Create or update the valid value for a name that can be stored in a particular open metadata map-valued property.
+## Link Data Value Definition
+> Link an element, typically a data field, to the data value specification (such as a data class or data grain) that defines its values (DataValueDefinition relationship).
+>
+>	**Alternative Names**: Link Data Class Definition
 
-### Metadata Property Name
+### Element Id
 >	**Input Required**: True
 
->	**Attribute Type**: Simple
+>	**Attribute Type**: Reference Name
 
->	**Description**: The open metadata property name the valid value is set up for.
+>	**Description**: The unique identifier (qualified name or GUID) of the element being referenced.
+
+>	**Alternative Labels**: Element Name; Member Id
 
 
-### Preferred Value
+### Data Value Specification
 >	**Input Required**: True
 
->	**Attribute Type**: Simple
+>	**Attribute Type**: Reference Name
 
->	**Description**: The valid/preferred value being set up for the property (or map name/value).
+>	**Description**: The data value specification to use in a relationship. Preferable to use a qualified name.
 
 
-### Type Name
+### Label
 >	**Input Required**: False
 
 >	**Attribute Type**: Simple
 
->	**Description**: The open metadata type name the valid value applies to; leave unset to apply to all types.
+>	**Description**: A label used to identify or categorise a relationship link.
 
-
-### Metadata Display Name
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Display name for the valid metadata value.
-
-
-### Metadata Description
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of the valid metadata value.
+>	**Alternative Labels**: Wire Label
 
 
 ### Journal Entry
@@ -49,6 +39,14 @@ ___
 >	**Attribute Type**: Simple
 
 >	**Description**: A text entry into a journal.
+
+
+### Description
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: A description.
 
 
 ### Effective From
@@ -113,6 +111,24 @@ ___
 >	**Attribute Type**: Simple
 
 >	**Description**: A user provided or system generated request id for a conversation.
+
+
+### Anchor Scope IDs
+>	**Input Required**: False
+
+>	**Attribute Type**: Reference Name List
+
+>	**Description**: A list of IDs that are anchor scopes for this element.
+
+
+### Make Anchor
+>	**Input Required**: False
+
+>	**Attribute Type**: Bool
+
+>	**Description**: Is the element at end2 an anchor to end1?
+
+>	**Default Value**: false
 
 
 ___
