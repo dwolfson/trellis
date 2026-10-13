@@ -696,6 +696,10 @@ class WorkLists:
         # The person who pressed publish (Brief I), not the outbox daemon.
         who = current_principal()
         clients, _find_element_guid = _default_clients(who)
+        if not callable(_find_element_guid):
+            # Every add is looked up by name before it is created; a drain handed no look-up cannot tell "absent"
+            # from "could not check". Said before anything is written, never passed on as None.
+            raise RuntimeError("publish has no Egeria look-up to check what already exists, so nothing was sent")
         cm = clients.require("collection_manager")
 
         # The link back to RE's work-list page (the Portal's Resource Browser reads it). Written on create, and
@@ -794,8 +798,9 @@ class WorkLists:
         as the row's requester, the membership's confidence/rationale properties, `verify_membership_landed`,
         `OutboxNotKept`, retry with backoff for a failed add, and `mark_outbox_done(note=)` are all its own.
 
-        `find_element_guid` is passed as given, never replaced with a lookup that answers "" (a lookup that cannot
-        run must not read as "absent"); when it is None the drain builds its own clients and lookup.
+        `find_element_guid` is the publisher's real look-up, checked callable by `publish` before anything is
+        written, and passed as given: never None, never a stand-in that answers "" (a look-up that cannot run must
+        not read as "absent").
 
         Each member's words come from its row as it stands afterwards (the proof row), never from the branch
         taken here: "attached" (done; the read-back note, if any, follows), "not permitted · <why>" (refused at
@@ -905,7 +910,7 @@ class WorkLists:
             rows.append((self.registry.enqueue_outbox_element_once(
                 "work_list", slug, COLLECTION_MEMBERSHIP_DETACH, key, payload, run_id=run_id), m["entity_slug"]))
         for row_id, _ in rows[:INLINE_DETACH_LIMIT]:
-            drain_outbox(self.registry, clients, find_element_guid or (lambda qn: ""), element_id=row_id,
+            drain_outbox(self.registry, clients, find_element_guid, element_id=row_id,
                          identity=who)
         for n, (row_id, member) in enumerate(rows):
             row = self.registry.get_outbox_element(row_id) or {}

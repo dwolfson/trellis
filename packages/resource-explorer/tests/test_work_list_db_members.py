@@ -23,6 +23,7 @@ from test_work_list_publish_sync import BASE, SyncCollections, _detach_rows, _dr
 from test_zone_access_investigations_worklists import (  # noqa: E402,F401  (fixtures are shared)
     USER, _Clients, _install, registry, web,
 )
+from tests.zone_fakes import real_lookup  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
 
@@ -43,7 +44,7 @@ def _fs(registry, slug, guid=""):
 def _world(web, registry, monkeypatch, entity_type, members):
     fake = _install(monkeypatch)
     cm = SyncCollections()
-    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), None))
+    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), real_lookup()))
     monkeypatch.setenv("RE_PUBLIC_URL", BASE)
     # Every access decision publish asks for, with the entity type it named (Z3: a database member is checked as one).
     from resource_explorer.workflows import egeria_work_access as ewa

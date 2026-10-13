@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from test_zone_access_investigations_worklists import (  # noqa: E402,F401  (fixtures and helpers are shared)
     SECURED, USER, FakeCollections, _Clients, _install, _real, _zone, registry, web,
 )
+from tests.zone_fakes import real_lookup  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
 
@@ -91,7 +92,7 @@ def world(web, registry, monkeypatch):
     registry.set_egeria_asset_guid("r", "g-r")
     fake = _install(monkeypatch)
     cm = SyncCollections()
-    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), None))
+    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), real_lookup()))
     monkeypatch.setenv("RE_PUBLIC_URL", BASE)
     from resource_explorer.work_lists import WorkLists
 

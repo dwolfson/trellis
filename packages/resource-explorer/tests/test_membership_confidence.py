@@ -28,7 +28,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from tests.zone_fakes import permit_publish_routes, signed_in  # noqa: E402
+from tests.zone_fakes import permit_publish_routes, real_lookup, signed_in  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
 
@@ -348,7 +348,7 @@ def test_work_list_publish_lands_the_members_confidence_on_the_relationship(regi
 
     permit_publish_routes(monkeypatch, USER)
     cm = EgeriaCollections()
-    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), None))
+    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), real_lookup()))
     wls = WorkLists(registry)
     slug = wls.create("W", ["p", "q"], entity_type="repo", created_by=USER)["slug"]
     wls.set_member(slug, "q", rationale="the system of record", confidence=80)

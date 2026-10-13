@@ -237,3 +237,15 @@ def test_a_drain_that_raises_fails_no_publish_and_leaves_the_rows_pending(world,
 
 def test_a_publish_whose_inline_drains_all_ran_says_no_attach_error(world):
     assert _publish(world)["attach_error"] == ""
+
+
+def test_a_publish_with_no_look_up_fails_loudly_before_anything_is_written(world, monkeypatch):
+    """A drain handed no look-up cannot tell "absent" from "could not check": publish says so and writes nothing."""
+    from resource_explorer import egeria_outbox
+
+    real = egeria_outbox._default_clients
+    monkeypatch.setattr(egeria_outbox, "_default_clients", lambda who=None: (real(who)[0], None))
+    r = world["client"].post(f"/api/work-lists/{world['slug']}/publish")
+    assert r.status_code == 502, r.text
+    assert "no Egeria look-up to check what already exists" in r.json()["detail"]
+    assert world["eg"].collections == {} and _adds(world) == {} and world["drains"] == []

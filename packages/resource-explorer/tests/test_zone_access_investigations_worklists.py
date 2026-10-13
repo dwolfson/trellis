@@ -22,7 +22,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from tests.zone_fakes import FakeEgeria, install  # noqa: E402
+from tests.zone_fakes import FakeEgeria, install, real_lookup  # noqa: E402
 from tests.zone_fakes import element as _element  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
@@ -391,7 +391,7 @@ class TestWorkListPublish:
         fake = _install(monkeypatch)
         _zone(fake, "g-p", ["dbas"])
         cm = FakeCollections()
-        monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), None))
+        monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), real_lookup()))
         WorkLists(registry).create("W", ["p", "q"], entity_type="repo", created_by=USER)
         slug = WorkLists(registry).list_all()[0]["slug"]
         r = client.post(f"/api/work-lists/{slug}/publish")
