@@ -59,6 +59,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+
 log = logging.getLogger(__name__)
 
 #: The Egeria Collection subtype. See the module docstring for why this is not
@@ -147,7 +149,7 @@ def _additional_properties(element) -> dict:
 
 
 #: The resource types a work list's members can be, and so the ones `member_egeria_guid` knows how to read.
-MEMBER_ENTITY_TYPES = ("repo", "database", "filesystem")
+MEMBER_ENTITY_TYPES = SURVEYED_RESOURCE_TYPES
 
 
 class MemberUnresolved(Exception):
