@@ -80,6 +80,7 @@ import { openInvestigationPicker, scopeActWording } from '/static/next/investiga
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane, renderUnderstandingTabs } from '/static/next/stages/understanding.js';
 import { renderCurate, jumpToCurateSection } from '/static/next/stages/curate.js';
+import { coverageHtml } from '/static/next/stages/curate-coverage.js';
 // Stage-specific leading tabs (Brief S0, dormant): the gate and ids are a leaf module, the label counts and the
 // running-commit line need `state`.
 import { STAGE_TAB_ENTRIES, STAGE_TAB_IDS, isStageTabId, stageTabsOn } from '/static/next/stages/stage-tabs.js';
@@ -147,6 +148,7 @@ import {
   getAnalysesIndex,
   getSurveyDashboards,
   listSurveyResultBoards,
+  getCurationCoverage,
   runSurveyDefinition,
   getMe,
   getMemberChildren,
@@ -7817,10 +7819,19 @@ export function renderByAnalysisContents(slug, boards, boardState, settled, tota
 // See NEXT-RENDER-HARNESS-IMPLEMENTED.md for the pattern.
 export async function loadByAnalysisPane() {
   const el = $('content');
-  // Curate's By analysis is not built (project owner, 2026-10-08): one short line, no read, no error.
+  // Curate's By analysis is the Analytic Library's curation_coverage (extensibility brief 2b): one read, and the
+  // routine's own groups drawn as it returned them. A failed read is "could not read", never a table of zeros.
   if (state.stage === 'curate') {
-    el.innerHTML = `${subTabsHtml()}<p data-under-construction class="mt-s3 text-answer text-ink-muted">Under construction</p>`;
+    const slug = state.selectedSlug;
+    const entityType = apiEntityType(state.resourceType);
+    const token = ++dashToken;
+    const live = () => token === dashToken && state.subTab === 'by_analysis' && slug === state.selectedSlug;
+    el.innerHTML = `${subTabsHtml()}<div id="curate-coverage" data-curate-coverage class="text-caveat text-ink-muted">Reading…</div>`;
     bindSubTabs();
+    let result = null;
+    try { result = await getCurationCoverage(entityType, slug); } catch (err) { result = null; }
+    if (!live()) return;
+    $('curate-coverage').innerHTML = coverageHtml(result);
     return;
   }
   const blocked = paneNeedsRepo();
