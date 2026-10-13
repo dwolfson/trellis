@@ -159,6 +159,23 @@ Round 2 (review of 7a565568, plus two live read-only probes; tests in `tests/tes
 - Proposed reference sets are created as plain `ValidValueDefinition`. Egeria 6.2 does not recognise
   `ValidValueSet` (OMAG-COMMON-400-018), so the old `typeName: "ValidValueSet"` create failed on 6.2.
 
+Round 3 (re-review of 4917afe4; tests in `tests/test_lookup_failure_round3.py` and
+`frontend-build/test-harness/fs-publish-partial.test.mjs`):
+- One shared reader, `egeria_absence.guid_from_answer`, for a by-name answer before a create. It returns a
+  GUID, or "" for pyegeria's miss sentence. Anything else raises in the caller's vocabulary. Odd answers no
+  longer read as "", in the identity, file-system, publisher, database and reference-catalog look-ups.
+- `native_survey_run._is_not_found` uses `lookup_exception_is_absent`, so a view server that is down
+  (OMAG-MULTI-TENANT-404) makes a pointer "unreadable", not "gone".
+- A fresh report holding fewer annotations than were built is "failed", with "k of n annotations
+  published" and a failure row, not a success proof.
+- A file-system publish or hybrid survey that skipped files is `status: "partial"` and says "N file(s) not
+  checked, not created" on the toast. `lineage_not_checked` is in the database publish step-run metrics.
+- A sub-resource under a folder that could not be checked is itself "not checked", never "Egeria returned
+  no GUID".
+- The outbox reads an exception's cause for a refusal only when the cause is pyegeria's, or when the
+  exception is the outbox's own look-up failure.
+- `annotation_count` is RE's own count everywhere, and `annotations_in_egeria` is Egeria's.
+
 ## 2. ISSUE-129: relationship queries now send their arguments
 
 ### What 6.2.2 sends

@@ -220,7 +220,7 @@ def _publisher(registry_rows, existing=None):
     pub._discovery = MagicMock()
     pub._connect = MagicMock()
     existing = existing or {}
-    pub._automated_curation.get_guid_for_name.side_effect = lambda qn: existing.get(qn, [])
+    pub._automated_curation.get_guid_for_name.side_effect = lambda qn: existing.get(qn, "No elements found")
 
     async def _tmpl(name):
         return f"template-{name}"

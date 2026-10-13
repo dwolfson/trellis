@@ -61,7 +61,7 @@ def _classify_exception(exc: BaseException) -> str:
         return UNREADABLE
     if isinstance(exc, PyegeriaNotFoundException):
         return ABSENT
-    if isinstance(exc, PyegeriaAPIException) and getattr(exc, "related_http_code", None) == 404:
+    if isinstance(exc, PyegeriaAPIException) and str(getattr(exc, "related_http_code", "")).strip() == "404":
         return ABSENT
     return UNREADABLE
 
@@ -94,3 +94,41 @@ def lookup_could_not_be_made(name: str, cause) -> str:
 def lookup_exception_is_absent(exc: BaseException) -> bool:
     """True only when a RAISED look-up is Egeria's own 'no such element' (see `is_absent`)."""
     return is_absent(exc) == ABSENT
+
+
+_GUID_SHAPE = None
+
+
+def _is_guid(text) -> bool:
+    global _GUID_SHAPE
+    if _GUID_SHAPE is None:
+        import re
+        _GUID_SHAPE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+    return isinstance(text, str) and bool(_GUID_SHAPE.match(text.strip()))
+
+
+def _guid_in(item) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        return str(item.get("elementGUID") or item.get("guid")
+                   or (item.get("elementHeader") or {}).get("guid") or "").strip()
+    return ""
+
+
+def guid_from_answer(answer, name: str, error: type = RuntimeError) -> str:
+    """The ONE reader of a by-name look-up's answer, before a create: three outcomes.
+
+    * found   a GUID-shaped string, or a dict / first list item carrying one: that GUID;
+    * absent  pyegeria's own miss sentence (`is_absent` says ABSENT): "", the only answer that may create;
+    * anything else (None, "", {}, [], a non-GUID string or item, another type): could not check, raised as
+      `error(lookup_could_not_be_made(...))` in the caller's own vocabulary. It used to read as "" and create.
+    """
+    first = answer[0] if isinstance(answer, list) and answer else answer
+    candidate = _guid_in(first)
+    if _is_guid(candidate):
+        return candidate
+    if isinstance(answer, str) and is_absent(answer) == ABSENT:
+        return ""
+    cause = None if answer is None else ValueError(f"unexpected answer {answer!r:.80}")
+    raise error(lookup_could_not_be_made(name, cause))

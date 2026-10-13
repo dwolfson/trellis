@@ -45,12 +45,6 @@ def _published_count(made):
 class EgeriaFileSystemSurveyor:
     """Catalog filesystems and files in Egeria and publish survey reports."""
 
-    #: Was read by `_find_element_guid` but never defined, so a FOUND element raised AttributeError, which
-    #: the old blanket `except` turned into '' ("absent, create"): every found element was re-created and
-    #: only Egeria's duplicate refusal stopped it. Same pattern as EgeriaDatabaseSurveyor._UUID_RE.
-    _UUID_RE = __import__("re").compile(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", __import__("re").IGNORECASE)
-
     def __init__(
         self,
         platform_url: str | None = None,
@@ -276,9 +270,10 @@ class EgeriaFileSystemSurveyor:
             "report_guid": effective_report_guid,
             "file_guids": file_guids,
             "files_not_checked": files_not_checked,
-            # What Egeria returned a GUID for, not what was sent; None when RE cannot tell.
-            "annotation_count": _published_count(made),
-            "annotations_built": len(annotations),
+            # RE's own count (built and sent); Egeria's is `annotations_in_egeria` (GUIDs returned, None
+            # when RE cannot tell), the same two names every producer uses.
+            "annotation_count": len(annotations),
+            "annotations_in_egeria": _published_count(made),
         }
 
     def publish_step_annotations(
@@ -498,7 +493,7 @@ class EgeriaFileSystemSurveyor:
             )
 
         return {"filesystem_guid": fs_guid, "report_guid": report_guid,
-                "annotation_count": _published_count(made), "annotations_built": len(annotations)}
+                "annotation_count": len(annotations), "annotations_in_egeria": _published_count(made)}
 
     def get_survey_reports_by_guid(self, fs_guid: str) -> list[dict]:
         """All SurveyReports linked to this filesystem's asset GUID via the real
@@ -656,11 +651,6 @@ class EgeriaFileSystemSurveyor:
             if lookup_exception_is_absent(exc):
                 return ""
             raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
-        if result is None:
-            raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, None))
-        if isinstance(result, list) and result:
-            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-            return candidate if self._UUID_RE.match(candidate or "") else ""
-        if isinstance(result, str) and self._UUID_RE.match(result):
-            return result
-        return ""
+        from resource_explorer.egeria_absence import guid_from_answer
+
+        return guid_from_answer(result, name, EgeriaFileSystemSurveyorError)

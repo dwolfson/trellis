@@ -255,8 +255,8 @@ def test_report_step_words_say_the_count_egeria_returned():
     from resource_explorer.catalogue_commit import report_step_words
 
     state, words = report_step_words({"report_guid": "abcdef12-0", "report_element_guid": "abcdef12-0",
-                                      "annotation_count": 3, "annotations_in_egeria": 2}, "")
-    assert state == "done" and "2 annotations published" in words and "built locally: 3" in words
+                                      "annotation_count": 3, "annotations_in_egeria": 4}, "")
+    assert state == "done" and "4 annotations published" in words and "built locally: 3" in words
 
 
 def test_report_step_words_without_a_count_do_not_claim_one():
@@ -270,7 +270,8 @@ def test_filesystem_annotation_count_is_what_egeria_returned():
     s = _fs_surveyor(lambda *a, **k: MISS)
     s._discovery.create_annotation.side_effect = RuntimeError("500 refused")
     out = s.catalog_and_survey(_FS, {**dict(_FS_TWO), "inventory": []})
-    assert out["annotation_count"] == 0 and out["annotations_built"] == 1
+    # Round 3 naming: annotation_count is RE's count, annotations_in_egeria is what Egeria returned.
+    assert out["annotations_in_egeria"] == 0 and out["annotation_count"] == 1
 
 
 def _db_step_publish(monkeypatch, create_answers):
@@ -295,8 +296,8 @@ def _db_step_publish(monkeypatch, create_answers):
 
 def test_db_step_publish_annotation_count_is_what_egeria_returned(monkeypatch):
     out = _db_step_publish(monkeypatch, create_answers=[RuntimeError("500 refused")] * 50)
-    assert out["annotations_built"] >= 1
-    assert out["annotation_count"] == 0
+    assert out["annotation_count"] >= 1          # RE's count (round 3 naming)
+    assert out["annotations_in_egeria"] == 0
 
 
 # ── 7. a security refusal on the look-up goes dead at once, in its words ──

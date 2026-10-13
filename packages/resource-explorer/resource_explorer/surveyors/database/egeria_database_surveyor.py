@@ -833,9 +833,10 @@ class EgeriaDatabaseSurveyor:
         # registry.record_database_survey_published().
 
         return {"asset_guid": db_guid, "report_guid": report_guid,
-                # What Egeria returned a GUID for, not what was sent; None when RE cannot tell.
-                "annotation_count": sum(1 for g in made if g) if isinstance(made, list) else None,
-                "annotations_built": len(annotations),
+                # RE's own count (what it built and sent), as everywhere; Egeria's is `annotations_in_egeria`:
+                # what Egeria returned a GUID for, None when RE cannot tell.
+                "annotation_count": len(annotations),
+                "annotations_in_egeria": sum(1 for g in made if g) if isinstance(made, list) else None,
                 # Column names whose look-up could not be made, so their lineage was not linked.
                 "lineage_not_checked": list(self.lineage_not_checked)}
 
@@ -934,9 +935,7 @@ class EgeriaDatabaseSurveyor:
             if lookup_exception_is_absent(exc):
                 return ""
             raise EgeriaDatabaseSurveyorError(lookup_could_not_be_made(name, exc)) from exc
-        if result is None:
-            raise EgeriaDatabaseSurveyorError(lookup_could_not_be_made(name, None))
-        return self._guid_from_lookup(result)
+        return self._guid_from_lookup(result, name)
 
     def _not_catalogued_sentence(self, db_entity, expected_qn: str) -> str:
         """Why an exact-qualifiedName lookup missed, in words a person can act on. When RE holds a
@@ -968,17 +967,13 @@ class EgeriaDatabaseSurveyor:
                         "host (Egeria host) on the registration.")
         return base
 
-    def _guid_from_lookup(self, result) -> str:
-        if result is None:
-            # Not a miss (a miss is pyegeria's "No elements found" string): up to 6.2.1 a failure swallowed by
-            # `@dynamic_catch` came back as None (ISSUE-134). '' would mean "create it", so this raises.
-            raise RuntimeError("Egeria gave no answer to the by-name lookup (the client returned nothing)")
-        if isinstance(result, list) and result:
-            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-            return candidate if self._UUID_RE.match(candidate or "") else ""
-        if isinstance(result, str) and self._UUID_RE.match(result):
-            return result
-        return ""
+    def _guid_from_lookup(self, result, name: str = "") -> str:
+        """Found, a real miss (""), or could-not-check (raises `EgeriaDatabaseSurveyorError`, a RuntimeError):
+        the shared `egeria_absence.guid_from_answer`. None (up to 6.2.1 a swallowed failure, ISSUE-134) and any
+        odd answer used to read as "" and create."""
+        from resource_explorer.egeria_absence import guid_from_answer
+
+        return guid_from_answer(result, name or "(by-name look-up)", EgeriaDatabaseSurveyorError)
 
     def _find_by_qualified_name(self, qualified_name: str) -> str:
         """The GUID of the element whose qualifiedName is EXACTLY `qualified_name`, or '' (not found).
@@ -995,7 +990,7 @@ class EgeriaDatabaseSurveyor:
             raise EgeriaDatabaseSurveyorError(
                 f"Egeria qualifiedName lookup for {qualified_name!r} failed, so RE cannot tell whether "
                 f"it exists: {' '.join(str(exc).split())[:300] or type(exc).__name__}") from exc
-        return self._guid_from_lookup(result)
+        return self._guid_from_lookup(result, qualified_name)
 
     def check_survey_exists(self, db_slug: str) -> bool:
         """Check if any survey reports exist for this database in Egeria.

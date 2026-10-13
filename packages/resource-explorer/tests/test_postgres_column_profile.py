@@ -984,10 +984,10 @@ class TestDraftProposalPath:
             proposed_data_class_qualified_name,
         )
         qn = proposed_data_class_qualified_name(match)
-        designer = _FakeDesigner(existing_guids={qn: "guid-existing"})
+        designer = _FakeDesigner(existing_guids={qn: "eeeeeeee-0000-4000-8000-000000000001"})
         result = publish_proposed_data_class(designer, match)
         assert result.created is False
-        assert result.guid == "guid-existing"
+        assert result.guid == "eeeeeeee-0000-4000-8000-000000000001"
         assert designer.created == []
 
     def test_a_miss_reading_as_pyegerias_sentinel_string_still_creates(self):

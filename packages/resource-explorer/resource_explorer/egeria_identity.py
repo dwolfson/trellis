@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator, Optional
@@ -1081,13 +1080,6 @@ def ensure_draft_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dict:
         return {"status": "error", "zone": zone, "error": str(exc)}
 
 
-#: A GUID and nothing else. `get_metadata_element_by_unique_name` returns a
-#: *sentence* when it finds nothing, and there is no documented list of which
-#: sentence — so the only reliable test is whether what came back is shaped like
-#: an identifier.
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-)
 
 
 def _existing_guid(client: Any, qualified_name: str) -> str:
@@ -1118,20 +1110,10 @@ def _existing_guid(client: Any, qualified_name: str) -> str:
         if lookup_exception_is_absent(exc):
             return ""
         raise RuntimeError(lookup_could_not_be_made(qualified_name, exc)) from exc
-    if found is None:
-        raise RuntimeError(lookup_could_not_be_made(qualified_name, None))
-    if isinstance(found, dict):
-        candidate = (
-            found.get("elementGUID")
-            or (found.get("elementHeader") or {}).get("guid")
-            or found.get("guid")
-            or ""
-        )
-    elif isinstance(found, str):
-        candidate = found
-    else:
-        return ""
-    return candidate if _UUID_RE.match(candidate.strip()) else ""
+    from resource_explorer.egeria_absence import guid_from_answer
+
+    # Found, a real miss (""), or could-not-check (raised): one shared reader (an odd answer used to be "").
+    return guid_from_answer(found, qualified_name)
 
 
 def _string_property(value: str) -> dict:

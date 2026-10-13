@@ -120,6 +120,9 @@ def rename_sentence(counts: dict) -> str:
     return tail
 
 
+#: A sub-resource whose parent folder's look-up could not be made: it is not checked and not created either.
+PARENT_NOT_CHECKED = "not checked: its parent folder could not be checked"
+
 class EgeriaPublisherError(RuntimeError):
     """Raised when an Egeria-native operation triggered through EgeriaPublisher
     (e.g. trigger_survey_by_guid) fails — mirrors
@@ -1614,6 +1617,10 @@ class EgeriaPublisher:
                 relationship_type = "FolderHierarchy"
 
             if not parent_guid:
+                if parent_path in self.sub_resources_not_checked:
+                    # Its folder could not be checked, so neither can it be placed: not checked, not created
+                    # (never "Egeria returned no GUID", which would claim a create was tried).
+                    self.sub_resources_not_checked[path] = PARENT_NOT_CHECKED
                 log.warning(
                     "Skipping sub-resource %s — no parent GUID resolved for %r",
                     path or "(root)", parent_path,
@@ -1763,22 +1770,12 @@ class EgeriaPublisher:
     def _find_element_guid(self, qualified_name: str) -> str:
         """Return the GUID of an existing Egeria element by qualified name,
         or '' if not found — the D8 idempotency guard for sub-resources."""
-        import re as _re
+        from resource_explorer.egeria_absence import guid_from_answer
 
-        uuid_re = _re.compile(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", _re.IGNORECASE
-        )
         result = self._automated_curation.get_guid_for_name(qualified_name)
-        if result is None:
-            # Not a miss (a miss is pyegeria's "No elements found" string): up to 6.2.1 a failure swallowed by
-            # `@dynamic_catch` came back as None (ISSUE-134). '' would mean "create it", so this raises.
-            raise RuntimeError(f"Egeria gave no answer to the by-name lookup for {qualified_name!r}")
-        if isinstance(result, list) and result:
-            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-            return candidate if uuid_re.match(candidate or "") else ""
-        if isinstance(result, str) and uuid_re.match(result):
-            return result
-        return ""
+        # Found, a real miss (""), or could-not-check (raised; None included, which up to 6.2.1 was a failure
+        # swallowed by `@dynamic_catch`, ISSUE-134). An odd answer used to read as "" and create.
+        return guid_from_answer(result, qualified_name)
 
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:

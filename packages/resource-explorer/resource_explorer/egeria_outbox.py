@@ -310,10 +310,14 @@ def is_security_refusal(exc: Exception) -> bool:
 
 
 def _self_and_cause(exc: BaseException) -> list:
-    """`exc`, then the exception it was raised from (one level): an `OutboxLookupFailed` wraps the look-up's own
-    pyegeria exception, and the refusal's code and words live there."""
+    """`exc`, then the exception it was raised from (one level) when that cause is EGERIA's: a pyegeria exception,
+    or whatever an `OutboxLookupFailed` wraps (the look-up's own error). Any other cause (PlatformNotAllowed,
+    EgeriaRefused, an httpx 403 from GitHub) is not read, so it is never called "refused by Egeria's security"."""
     cause = getattr(exc, "__cause__", None)
-    return [exc, cause] if isinstance(cause, BaseException) else [exc]
+    if not isinstance(cause, BaseException):
+        return [exc]
+    from_egeria = type(cause).__module__.split(".")[0] == "pyegeria"
+    return [exc, cause] if (from_egeria or isinstance(exc, OutboxLookupFailed)) else [exc]
 
 
 def _refusal_sentence(exc: Exception) -> str:

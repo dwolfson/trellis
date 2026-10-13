@@ -976,7 +976,13 @@ class TestDraftZoneBootstrap:
         client = type("c", (), {
             "get_metadata_element_by_unique_name": lambda self, qn: miss,
         })()
-        assert _existing_guid(client, "GovernanceZone::x") == ""
+        if miss in ("No elements found", "No element found"):
+            assert _existing_guid(client, "GovernanceZone::x") == ""
+        else:
+            # Neither a GUID nor pyegeria's miss sentence: never a GUID, and never a miss either
+            # (re/lookup-failure-never-creates round 3): could not check, so no zone is created on it.
+            with pytest.raises(RuntimeError, match="could not be made"):
+                _existing_guid(client, "GovernanceZone::x")
 
     def test_a_real_guid_is_recognised_in_either_return_shape(self):
         guid = "502438ae-3503-4481-b370-cb9c9b75f030"

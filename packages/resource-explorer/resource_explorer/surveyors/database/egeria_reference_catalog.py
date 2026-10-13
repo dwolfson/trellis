@@ -45,7 +45,6 @@ from resource_explorer.surveyors.database.column_matching import (
     KnownDataClass,
     KnownValidValueSet,
 )
-from resource_explorer.surveyors.survey_definition_reader import _as_guid
 from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
@@ -721,12 +720,12 @@ def _find_existing(client, qualified_name: str, type_name: str) -> str:
     """The GUID of the `type_name` element whose name is `qualified_name`, or "" for a real miss.
 
     Typed: the look-up asks only for the type about to be created (`DataClass`, or `ValidValueDefinition`,
-    which a `ValidValueSet` specialises), so an element of another type sharing the name is not adopted.
+    which is what a set is on Egeria 6.2), so an element of another type sharing the name is not adopted.
 
-    Only a real miss returns "": pyegeria's "No elements found" (routed through `_as_guid`, which rejects
-    that sentinel because it contains whitespace, unlike a GUID) or a typed not-found. A look-up that raised
-    for any other reason (unreachable, 401/403, 500, timeout, several hits), or gave no answer, could not be
-    checked and raises `ProposalLookupError`. It used to return "" and the caller created, with Egeria's
+    Only a real miss returns "": pyegeria's miss sentence or a typed not-found. A look-up that raised for any
+    other reason (unreachable, 401/403, 500, timeout, several hits), or answered anything that is neither a
+    GUID nor that sentence (`egeria_absence.guid_from_answer`), could not be checked and raises
+    `ProposalLookupError`. It used to return "" and the caller created, with Egeria's
     duplicate-qualifiedName refusal the only backstop (AUDIT-PYEGERIA-6.2.2.md, "Not in scope").
     """
     from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
@@ -737,9 +736,11 @@ def _find_existing(client, qualified_name: str, type_name: str) -> str:
         if lookup_exception_is_absent(exc):
             return ""
         raise ProposalLookupError(lookup_could_not_be_made(qualified_name, exc)) from exc
-    if answer is None:
-        raise ProposalLookupError(lookup_could_not_be_made(qualified_name, None))
-    return _as_guid(answer) or ""
+    from resource_explorer.egeria_absence import guid_from_answer
+
+    # Found, a real miss (""), or could-not-check: the shared reader. `_as_guid` took any non-blank string
+    # for a GUID and read "Server busy" (whitespace) as a miss, so an odd answer could adopt or create.
+    return guid_from_answer(answer, qualified_name, ProposalLookupError)
 
 
 def publish_proposed_data_class(
