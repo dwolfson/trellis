@@ -31,6 +31,32 @@ def test_discovery_through_entry_point(entry_point_dist):
     assert found["curation_coverage"].function.endswith("curation_coverage")
 
 
+def test_manifest_purposes_are_checked_at_load_and_warn_never_reject(caplog):
+    """Owner ruling 2026-10-13, "warn only - suggestive everywhere": a manifest's `purpose` qualifier is checked
+    against the investigation-purposes list when manifests load; an unknown value is named in a warning and the
+    manifest still loads."""
+    import logging
+
+    from trellis_analytics.discovery import check_purposes
+
+    m = StepManifest(name="staleness", function="a.b", source="ods", version="1", purposes=["Maintain", "Wander"])
+    with caplog.at_level(logging.WARNING):
+        warnings = check_purposes({"staleness": m}, ["Maintain", "Find"])
+    assert warnings == ["manifest 'staleness': purpose 'Wander' is not in the investigation-purposes list; "
+                        "kept as written"]
+    assert "'Wander'" in caplog.text
+    assert m.purposes == ["Maintain", "Wander"]
+
+
+def test_manifest_purposes_default_to_resource_explorer_s_list():
+    """With RE installed, the list is RE's (its cache of Egeria's list, else its shipped seed): Find and
+    Integrate are on it (owner ruling 2026-10-13)."""
+    from trellis_analytics.discovery import check_purposes
+
+    m = StepManifest(name="s", function="a.b", source="ods", version="1", purposes=["Find", "Integrate"])
+    assert check_purposes({"s": m}) == []
+
+
 def test_register_adds_to_pyegeria_registry_once(entry_point_dist):
     from pyegeria.view.analytic_registry import clear_runtime_analytic_functions, get_analytic_registry
     clear_runtime_analytic_functions()

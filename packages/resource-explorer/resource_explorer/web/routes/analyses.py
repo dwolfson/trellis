@@ -215,7 +215,7 @@ def add_question_catalog_entry(body: QuestionCatalogAddRequest) -> dict:
         QuestionCatalogWriteError, add_question,
     )
     try:
-        add_question(
+        warnings = add_question(
             body.question,
             stage=body.stage,
             perspectives=body.perspectives,
@@ -226,7 +226,8 @@ def add_question_catalog_entry(body: QuestionCatalogAddRequest) -> dict:
         )
     except QuestionCatalogWriteError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"status": "success"}
+    # Purposes are suggestive (owner ruling 2026-10-13): an off-list one is added and named here.
+    return {"status": "success", "warnings": warnings}
 
 
 @router.post("/question-catalog/questions/retire")

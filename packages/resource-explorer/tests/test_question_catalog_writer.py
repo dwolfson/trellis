@@ -127,15 +127,19 @@ class TestAddQuestion:
             qcw.add_question("A new question?", perspectives=["NotAColumn"])
         assert _read_csv(csv_path) == [_EXISTING_ROW]
 
-    def test_add_rejects_unknown_purpose_before_writing_anything(self, isolated):
-        """generate() itself validates Purposes against KNOWN_PURPOSES —
-        add_question() must surface that as a refusal and leave both files
-        untouched, not partially write the CSV and then fail on the YAML."""
+    def test_add_keeps_an_off_list_purpose_and_warns(self, isolated):
+        """Purposes are suggestive (owner ruling 2026-10-13): an off-list value
+        is written as given and named in the warnings, never refused."""
         csv_path, yaml_path = isolated
-        with pytest.raises(qcw.QuestionCatalogWriteError):
-            qcw.add_question("A new question?", purposes=["NotARealPurpose"])
-        assert _read_csv(csv_path) == [_EXISTING_ROW]
-        assert not yaml_path.exists()
+        warnings = qcw.add_question("A new question?", purposes=["NotARealPurpose"])
+        assert warnings == ["purpose 'NotARealPurpose' is not in the investigation-purposes list; kept as written"]
+        assert _read_csv(csv_path)[-1]["Purposes"] == "NotARealPurpose"
+        entry = yaml.safe_load(yaml_path.read_text())["repo_questions"][-1]
+        assert entry["purposes"] == ["NotARealPurpose"]
+
+    def test_add_accepts_find_and_integrate(self, isolated):
+        csv_path, _ = isolated
+        assert qcw.add_question("Where is the customer data?", purposes=["Find", "Integrate"]) == []
 
     def test_add_requires_question_text(self, isolated):
         with pytest.raises(qcw.QuestionCatalogWriteError):

@@ -72,7 +72,7 @@ PURE_LITERAL_RE = re.compile(r"""^\s*(?:'([^']*)'|"([^"]*)")\s*$""")
 # ---------------------------------------------------------------------------
 
 # Classes used purely as DOM query-selector / event-delegation hooks --
-# `.closest('.fb-star')`, `querySelectorAll('.inv-new-purpose:checked')` --
+# `.closest('.fb-star')` --
 # never rendered as a CSS class anywhere (confirmed: absent from both
 # tailwind-next.css and index.html's inline <style> block). Not a staleness
 # bug: these were never meant to carry style, and adding one here is a
@@ -83,7 +83,6 @@ KNOWN_HOOK_ONLY_CLASSES = {
     "wl-band": "worklist.js -- divider row marker, no visual rule anywhere",
     "wl-bar": "worklist.js -- bar-chart cell wrapper, styled via sibling utilities only",
     "wl-countrow": "app.js -- row marker for the investigation count table",
-    "inv-new-purpose": "stages/investigation.js -- querySelectorAll('.inv-new-purpose:checked')",
 }
 
 # Genuinely uncompiled Tailwind class attempts this check found on its first

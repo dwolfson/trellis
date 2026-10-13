@@ -24,6 +24,16 @@ class _TrellisManifest(AnalyticFunctionSpec):
     resource_types: list[str] = Field(default_factory=list)
     family: str = ""
     tags: list[str] = Field(default_factory=list)
+    #: Which investigation purposes this serves (a qualifier). Checked at load against Egeria's purposes list
+    #: (`discovery.discover`); suggestive, so an unknown value warns, naming it, and is kept.
+    purposes: list[str] = Field(default_factory=list)
+
+
+def purpose_warnings(manifest: _TrellisManifest, known: list[str]) -> list[str]:
+    """One sentence per declared purpose outside `known`, naming the manifest and the value. Never raises."""
+    folded = {" ".join(k.split()).casefold() for k in known}
+    return [f"manifest '{manifest.name}': purpose '{p}' is not in the investigation-purposes list; kept as written"
+            for p in manifest.purposes if p and " ".join(p.split()).casefold() not in folded]
 
 
 class RoutineManifest(_TrellisManifest):

@@ -89,6 +89,11 @@ class EnrichmentField(BaseModel):
     # Free text beside a value. Retention: `value` is the basis enum name and the old
     # "how long, and under whose rule?" text lives here. Absent on older rows (reads as "").
     note: str = ""
+    # Intended use only (owner ruling 2026-10-13): the purpose picked from the list, and the text typed, kept
+    # APART so free text can be mined for new purposes. `value` is what reads them both (Classic's `purpose`,
+    # Curate). Absent on rows written before the split (reads as "").
+    picked: str = ""
+    free_text: str = ""
 
 
 class FieldWrite(BaseModel):
@@ -99,6 +104,28 @@ class FieldWrite(BaseModel):
     evidence: dict[str, str] = Field(default_factory=dict)
     interim: bool = False
     note: str = ""
+    # Intended use only: see EnrichmentField. None = the caller did not send the split (an older client).
+    picked: str | None = None
+    free_text: str | None = None
+
+
+#: The enrichment keys that offer the investigation-purposes list beside free text.
+PURPOSE_FIELDS = ("intended_use",)
+
+
+def split_purpose_field(write: FieldWrite, names: list[str]) -> tuple[str, str, str]:
+    """(value, picked, free_text) for a purpose field. A client that sends the split is taken at its word,
+    text as entered; an older client's single `value` is read as picked when it is in the list, else as free
+    text. `value` joins the two so every existing reader keeps one string."""
+    from resource_explorer.investigation_purposes import is_listed
+
+    if write.picked is None and write.free_text is None:
+        v = write.value.strip()
+        picked, free = (v, "") if v and is_listed(v, names) else ("", v)
+    else:
+        picked, free = (write.picked or "").strip(), (write.free_text or "").strip()
+    value = " — ".join(x for x in (picked, free) if x)
+    return value, picked, free
 
 
 class AnswerWrite(BaseModel):
@@ -360,6 +387,17 @@ def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request)
         raise HTTPException(status_code=422, detail="backup_status must be one of: " + ", ".join(BACKUP_STATUSES))
 
     registry = ProjectRegistry()
+    value, picked, free_text, warnings = write.value.strip(), "", "", []
+    if key in PURPOSE_FIELDS:
+        # Suggestive (owner ruling 2026-10-13): a picked value outside the list is kept and named, never refused.
+        from resource_explorer.investigation_purposes import (
+            known_purpose_names,
+            unknown_purpose_warnings,
+        )
+
+        names = known_purpose_names(registry)
+        value, picked, free_text = split_purpose_field(write, names)
+        warnings = unknown_purpose_warnings([picked], names, where="intended use: ")
     context = registry.get_context(entity_type, slug) or {}
     fields = dict(context.get("enrichment") or {})
     # Stamp what the survey measures NOW beside the person's value (only for
@@ -370,17 +408,17 @@ def save_field(entity_type: str, slug: str, write: FieldWrite, request: Request)
         measured_for(registry, entity_type, slug, key) if write.kind == "observation" else ("", "")
     )
     fields[key] = EnrichmentField(
-        value=write.value.strip(), kind=write.kind, author=author,
+        value=value, picked=picked, free_text=free_text, kind=write.kind, author=author,
         set_at=datetime.now(timezone.utc).isoformat(), source=write.source.strip(),
         evidence=dict(write.evidence), interim=bool(write.interim),
         measured_value=measured_value, measured_at=measured_at, note=write.note.strip(),
     ).model_dump()
     context["enrichment"] = fields
     if key in _MIRROR:
-        context[_MIRROR[key]] = write.value.strip()
+        context[_MIRROR[key]] = value
     context["updated_at"] = datetime.now(timezone.utc).isoformat()
     registry.save_context(entity_type, slug, context)
-    return {"key": key, "field": fields[key]}
+    return {"key": key, "field": fields[key], "warnings": warnings}
 
 
 @router.patch("/{entity_type}/{slug}/answer")

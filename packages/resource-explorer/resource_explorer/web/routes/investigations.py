@@ -24,7 +24,11 @@ router = APIRouter()  # prefix/tags applied in web/app.py, matching every other 
 class InvestigationCreate(BaseModel):
     display_name: str
     description: str = ""
+    #: Suggestive (owner ruling 2026-10-13): a value outside Egeria's purposes list is kept, and the answer's
+    #: `purpose_warnings` names it.
     purposes: list[str] = Field(default_factory=list)
+    #: Free text as entered, kept apart from `purposes` so it can be mined.
+    purpose_text: str = ""
     #: Egeria's own Project classification. Five values; see
     #: `ProjectRegistry.PROJECT_CLASSIFICATIONS`.
     project_classification: str = "StudyProject"
@@ -42,6 +46,7 @@ class InvestigationUpdate(BaseModel):
     display_name: str | None = None
     description: str | None = None
     purposes: list[str] | None = None
+    purpose_text: str | None = None
     #: Sharpening an Experiment's hypothesis stays within one classification.
     #: Changing the classification itself is not here — it can move an
     #: investigation between visibility regimes and needs a flow with a report
@@ -107,14 +112,34 @@ def _nothing_permitted(res) -> str:
 
 @router.get("/purposes")
 async def list_purposes() -> dict:
-    """The Purpose vocabulary, served rather than hardcoded in the SPA.
+    """The purposes list, served rather than hardcoded in the SPA.
 
-    These are `ProjectCharter.purposes` (design §2) — not a new RE vocabulary —
-    and the same eight values all 41 catalog questions are tagged with, so the
-    UI cannot drift from what ranking will actually key on.
+    Egeria holds it (owner ruling 2026-10-13): read as the signed-in person
+    through `investigation_purposes.current_purposes`, which falls back to RE's
+    cached copy, and then to the shipped seed, when Egeria cannot be read. The
+    answer says which (`source`, `as_of`, `stale`, `words`), so the screen can
+    say it is a cache and how old. `purposes` stays the plain list of names;
+    `values` carries each one's description. Suggestive, never a constraint.
     """
-    from resource_explorer.registry import ProjectRegistry
-    return {"purposes": list(ProjectRegistry.VALID_PURPOSES)}
+    import asyncio
+
+    from resource_explorer import investigation_purposes as ip
+
+    reg = _registry()
+    pl = await asyncio.to_thread(ip.current_purposes, reg, ip.fetch_as_caller)
+    return pl.as_dict()
+
+
+@router.get("/purposes/free-text")
+async def list_purpose_free_text() -> dict:
+    """Purposes people wrote rather than picked, with counts, for mining
+    (owner ruling 2026-10-13): investigations' free text and values outside the
+    list, and Enrichment's Intended use free text. Read-only; nothing here adds
+    to the list — a person adds a value to Egeria's list."""
+    import asyncio
+
+    reg = _registry()
+    return await asyncio.to_thread(reg.purpose_free_text)
 
 
 #: Egeria's own definitions, verbatim from `OpenMetadataType.java` (model
@@ -197,6 +222,7 @@ async def create_investigation(req: InvestigationCreate) -> dict:
         return _registry().create_investigation(
             req.display_name.strip(), description=req.description,
             purposes=req.purposes,
+            purpose_text=req.purpose_text,
             project_classification=req.project_classification,
             egeria_binding=req.egeria_binding,
             hypothesis=req.hypothesis,
@@ -204,13 +230,12 @@ async def create_investigation(req: InvestigationCreate) -> dict:
             egeria_project_qualified_name=req.egeria_project_qualified_name,
         )
     except ValueError as exc:
-        # Every vocabulary violation is a 400, not a silent drop. An
-        # unrecognised purpose would rank nothing and look like an empty
-        # result; an unrecognised classification would be rejected at the
-        # Egeria boundary much later, or dropped; an Experiment with no
-        # hypothesis would publish the classification with its point missing.
-        # All three are the same shape — accepting the write and losing the
-        # meaning — so all three refuse here, where the caller can still fix it.
+        # A classification or binding violation is a 400, not a silent drop: an
+        # unrecognised classification would be rejected at the Egeria boundary
+        # much later, and an Experiment with no hypothesis would publish the
+        # classification with its point missing. Purposes are NOT here: the list
+        # is suggestive (owner ruling 2026-10-13), so an unknown purpose is kept
+        # and named in `purpose_warnings` instead.
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -425,7 +450,7 @@ async def update_investigation(slug: str, req: InvestigationUpdate) -> dict:
     try:
         return reg.update_investigation(
             slug, display_name=req.display_name, description=req.description,
-            purposes=req.purposes, hypothesis=req.hypothesis,
+            purposes=req.purposes, purpose_text=req.purpose_text, hypothesis=req.hypothesis,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -620,7 +645,7 @@ async def next_steps(slug: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
 
     steps: list[dict] = []
-    if not inv.get("purposes"):
+    if not inv.get("purposes") and not inv.get("purpose_text"):
         steps.append({
             "id": "declare_purpose",
             "title": "No purpose declared",

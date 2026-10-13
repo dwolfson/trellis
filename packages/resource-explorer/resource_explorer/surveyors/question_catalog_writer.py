@@ -132,7 +132,7 @@ def _regenerate_yaml(rows: list[dict]) -> None:
 
     Called with the CANDIDATE row set before anything is written to disk —
     `generate()` raises ValueError on the same problems it always has
-    (unknown Purpose, unknown check ref), which this module surfaces as
+    (an unknown check ref; an unknown Purpose only warns since 2026-10-13), which this module surfaces as
     QuestionCatalogWriteError so a bad add/retire fails before either file
     is touched, not after the CSV already changed."""
     generator = _load_generator_module()
@@ -156,8 +156,9 @@ def add_question(
     why_important: str = "",
     rationale: str = "",
     answering_mechanism: str = "",
-) -> None:
-    """Append a new question. Refuses (does not upsert) if `question`
+) -> list[str]:
+    """Append a new question. Returns warnings: each purpose outside the investigation-purposes list,
+    kept as given (owner ruling 2026-10-13, suggestive everywhere — no longer a refusal). Refuses (does not upsert) if `question`
     already appears in the CSV — active or retired — because accepting a
     second call with the same text and different other fields IS an edit
     wearing an add's clothes, and append-only means that path does not
@@ -211,6 +212,11 @@ def add_question(
         _write_csv(fieldnames, candidate_rows)
 
     question_catalog_reader.clear_cache()
+    # The new question's own purposes only: rows already in the catalog (Remediate, Attest, pending the
+    # owner's ruling) are the generator's stderr, not this caller's business.
+    from resource_explorer.investigation_purposes import known_purpose_names, unknown_purpose_warnings
+
+    return unknown_purpose_warnings(purposes, known_purpose_names())
 
 
 def retire_question(question: str) -> None:
