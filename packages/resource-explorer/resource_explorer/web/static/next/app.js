@@ -4814,7 +4814,7 @@ function onePurpose(text) {
  *  and their message(s) — the tooltip (this function's own `title`) already
  *  named the bare status word, which stays as the fallback when there is
  *  nothing more specific to show. */
-function lastRunHtml(c) {
+export function lastRunHtml(c) {
   const when = c.last_run_at || '';
   if (!when) return '<span class="text-ink-muted">never run</span>';
   const days = (Date.now() - Date.parse(when)) / 86400000;
@@ -5566,7 +5566,7 @@ function analysesIndexSort() {
 /** State glyph from last_run_status/last_run_at -- the same vocabulary as
  *  factGlyph, not re-derived: `success` -> measured, an explicit failure ->
  *  error, nothing recorded -> unrun. */
-function analysisRowGlyph(row) {
+export function analysisRowGlyph(row) {
   if (!row.last_run_at) return factGlyph('unrun');
   const s = String(row.last_run_status || '').toLowerCase();
   if (s === 'success' || s === 'ok' || s === '') return factGlyph('measured');
