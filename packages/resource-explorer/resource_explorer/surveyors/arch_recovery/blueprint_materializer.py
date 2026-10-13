@@ -894,18 +894,28 @@ class BlueprintMaterializer:
         Content-pack elements carry a qualifiedName of the form `Egeria:ValidMetadataValue:...`. The by-name
         search may match loosely, so a hit counts only when its displayName equals the name (case and
         punctuation aside). More than one such element is ambiguous: nothing is adopted and the answer is
-        {"refused": "<sentence>"}. Never raises: no answer is no content-pack element."""
+        {"refused": "<sentence>"}. A search that could not be made (raised, other than a typed not-found, or
+        gave no answer) is {"could_not_check": "<sentence>"}: never None, because None lets the caller create
+        RE's own component under a DIFFERENT qualifiedName beside the pack's, which Egeria's duplicate refusal
+        cannot catch. Never raises."""
         import re as _re
 
         def norm(t: str) -> str:
             return _re.sub(r"[^a-z0-9]", "", (t or "").lower())
 
+        from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
         try:
             self._ensure_connected()
             found = self._solution_architect.get_solution_components_by_name(display_name)
         except Exception as exc:
-            log.warning("content-pack lookup for %r failed: %s", display_name, type(exc).__name__)
-            return None
+            if lookup_exception_is_absent(exc):
+                return None
+            words = lookup_could_not_be_made(display_name, exc)
+            log.warning("content-pack lookup: %s", words)
+            return {"could_not_check": words}
+        if found is None:
+            return {"could_not_check": lookup_could_not_be_made(display_name, None)}
         if not isinstance(found, list):
             return None
         hits = []

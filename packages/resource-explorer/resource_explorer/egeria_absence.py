@@ -49,3 +49,22 @@ def _classify_exception(exc: BaseException) -> str:
     if isinstance(exc, PyegeriaAPIException) and getattr(exc, "related_http_code", None) == 404:
         return ABSENT
     return UNREADABLE
+
+
+def lookup_could_not_be_made(name: str, cause) -> str:
+    """The words for a by-name look-up whose outcome is 'unreadable', for a caller that was about to create.
+
+    `cause` is the raised exception, or None for a call that gave no answer. A look-up that could not be made
+    is never "not there": the create is not attempted, and these words say so, in one form every create path
+    shares (surveyors, doc sources, the outbox, reference-data proposals)."""
+    if cause is None:
+        detail = "Egeria gave no answer"
+    else:
+        detail = f"{type(cause).__name__}: {' '.join(str(cause).split())[:200] or '(no message)'}"
+    return (f"the Egeria look-up for {name!r} could not be made ({detail}), so nothing was created: "
+            "RE cannot tell whether it already exists")
+
+
+def lookup_exception_is_absent(exc: BaseException) -> bool:
+    """True only when a RAISED look-up is Egeria's own 'no such element' (see `is_absent`)."""
+    return is_absent(exc) == ABSENT

@@ -163,8 +163,8 @@ class _FakeDesigner:
             raise RuntimeError("view server unreachable")
         return self.elements
 
-    def get_guid_for_name(self, name):
-        return self.existing_guids.get(name, "")
+    def get_guid_for_name(self, name, property_name=None, type_name=None):   # pyegeria's signature
+        return self.existing_guids.get(name, "No elements found")
 
     def create_data_class(self, body):
         self.created.append(body)
@@ -184,8 +184,8 @@ class _FakeRefManager:
             raise RuntimeError("view server unreachable")
         return self.elements
 
-    def get_guid_for_name(self, name):
-        return self.existing_guids.get(name, "")
+    def get_guid_for_name(self, name, property_name=None, type_name=None):   # pyegeria's signature
+        return self.existing_guids.get(name, "No elements found")
 
     def create_valid_value_definition(self, body):
         self.created.append(body)
@@ -1001,7 +1001,7 @@ class TestDraftProposalPath:
         match = _proposal_match()
 
         class _SentinelDesigner(_FakeDesigner):
-            def get_guid_for_name(self, name):
+            def get_guid_for_name(self, name, property_name=None, type_name=None):
                 return "No elements found"
 
         designer = _SentinelDesigner()

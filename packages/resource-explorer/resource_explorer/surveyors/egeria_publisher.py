@@ -1562,6 +1562,8 @@ class EgeriaPublisher:
         results: dict[str, str] = {}
 
         self.rename_counts = {"updated": 0, "unchanged": 0, "failed": 0}
+        #: path -> why its look-up could not be made, so nothing was created for it (this call only).
+        self.sub_resources_not_checked: dict[str, str] = {}
         project = self._registry.get(resource_slug)
         repository = getattr(project, "display_name", "")
         if not isinstance(repository, str) or not repository:
@@ -1573,7 +1575,16 @@ class EgeriaPublisher:
             try:
                 existing_guid = self._find_element_guid(qualified_name)
             except Exception as exc:
-                log.debug("Sub-resource lookup failed for %s (will attempt create): %s", path, exc)
+                from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
+                if not lookup_exception_is_absent(exc):
+                    # Could not check is not "not there": nothing is created for this path (it used to be,
+                    # "will attempt create"), and a file under a folder skipped here has no parent, so it is
+                    # skipped too. Recorded so a caller can tell "not catalogued" from "RE could not check".
+                    self.sub_resources_not_checked[path] = lookup_could_not_be_made(qualified_name, exc)
+                    log.warning("Sub-resource %s not catalogued: %s", path or "(root)",
+                                self.sub_resources_not_checked[path])
+                    continue
                 existing_guid = ""
             if existing_guid:
                 guids_by_path[path] = existing_guid

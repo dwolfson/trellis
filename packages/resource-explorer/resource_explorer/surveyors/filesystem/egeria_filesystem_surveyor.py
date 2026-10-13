@@ -40,6 +40,12 @@ class EgeriaFileSystemSurveyorError(RuntimeError):
 class EgeriaFileSystemSurveyor:
     """Catalog filesystems and files in Egeria and publish survey reports."""
 
+    #: Was read by `_find_element_guid` but never defined, so a FOUND element raised AttributeError, which
+    #: the old blanket `except` turned into '' ("absent, create"): every found element was re-created and
+    #: only Egeria's duplicate refusal stopped it. Same pattern as EgeriaDatabaseSurveyor._UUID_RE.
+    _UUID_RE = __import__("re").compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", __import__("re").IGNORECASE)
+
     def __init__(
         self,
         platform_url: str | None = None,
@@ -618,14 +624,25 @@ class EgeriaFileSystemSurveyor:
 
         return to_string_map(d)
     def _find_element_guid(self, name: str) -> str:
-        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found."""
+        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found.
+
+        '' is the callers' cue to create, so only a real miss returns it ("No elements found", or a typed
+        not-found: `egeria_absence.is_absent`). A look-up that raised for any other reason, or gave no
+        answer, could not be checked: `EgeriaFileSystemSurveyorError` says so and nothing is created. It
+        used to swallow every exception and return '' (AUDIT-PYEGERIA-6.2.2.md, "Not in scope")."""
+        from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
         try:
             result = self._automated_curation.get_guid_for_name(name)
-            if isinstance(result, list) and result:
-                candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-                return candidate if self._UUID_RE.match(candidate or "") else ""
-            if isinstance(result, str) and self._UUID_RE.match(result):
-                return result
-        except Exception:
-            pass
+        except Exception as exc:
+            if lookup_exception_is_absent(exc):
+                return ""
+            raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
+        if result is None:
+            raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, None))
+        if isinstance(result, list) and result:
+            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
+            return candidate if self._UUID_RE.match(candidate or "") else ""
+        if isinstance(result, str) and self._UUID_RE.match(result):
+            return result
         return ""

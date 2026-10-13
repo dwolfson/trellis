@@ -340,8 +340,9 @@ def publish_annotations(
     exactly this lookup for the identical purpose on sub-resources
     (`EgeriaPublisher.publish_sub_resources`, D8) and on ExternalReferences
     (`_publish_homepage_reference`) — reusing it means one fewer live call
-    path to test and maintain, and it already returns "" (never raises) when
-    nothing matches or the lookup itself fails.
+    path to test and maintain. It returns "" for a real miss and RAISES when
+    the look-up could not be made; that annotation is then skipped (None in
+    the result), never created blind.
     `DataDiscovery.find_annotations(search_string=qn, starts_with=False)`
     would also work, but it is a second, narrower search purely for
     Annotation-typed elements where the existing generic-name lookup is
@@ -366,9 +367,16 @@ def publish_annotations(
 
         try:
             existing_guid = find_element_guid(qualified_name)
-        except Exception as exc:  # defensive — real _find_element_guid never raises
-            log.debug("Annotation lookup failed for %s (will attempt create): %s",
-                      qualified_name, exc)
+        except Exception as exc:
+            # Could not check is not "not there": this annotation is NOT created (it used to be, with only
+            # Egeria's duplicate refusal as the backstop). Counted like a failed create, so the caller's
+            # count of what landed is what Egeria holds.
+            from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
+            if not lookup_exception_is_absent(exc):
+                log.warning("Annotation %d not published: %s", i, lookup_could_not_be_made(qualified_name, exc))
+                guids.append(None)
+                continue
             existing_guid = ""
         if existing_guid:
             log.debug("Annotation %s already exists (GUID %s) — not re-creating",

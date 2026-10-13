@@ -354,8 +354,15 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
     if kind not in _SELF_RESOLVING_KINDS:
         try:
             found = find_element_guid(qualified_name)
-        except Exception as exc:  # defensive — real _find_element_guid never raises
-            log.debug("Outbox lookup failed for %s (will attempt create): %s", qualified_name, exc)
+        except Exception as exc:
+            # Could not check is not "not there". The look-up raising (unreachable, 401/403, 500, timeout, several
+            # hits, or no answer at all, which the publisher's lookup raises for) used to be read as a miss and
+            # the create went ahead, with Egeria's duplicate refusal the only backstop. Now nothing is sent: an
+            # ordinary failed attempt, retried per policy. A typed not-found is still a real miss.
+            from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
+            if not lookup_exception_is_absent(exc):
+                raise OutboxApplyError(lookup_could_not_be_made(qualified_name, exc)) from exc
             found = ""
         if found:
             log.info("Outbox row %s: %s already exists (GUID %s) — adopting, not re-creating",
@@ -783,7 +790,13 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
     # to reuse -- rather than trusting our own just-returned result blindly.
     # Closes the live incident by construction: a stale/deleted ref guid can
     # no longer be written back as "done" from this path either.
-    if not ref_guid_exists(ref_guid, clients=clients):
+    try:
+        still_there = ref_guid_exists(ref_guid, clients=clients)
+    except Exception as exc:                 # could not check: not proof either way, so not done
+        raise OutboxApplyError(
+            f"publish_doc_source reported ref {ref_guid} and link {link_guid}, but {exc}; "
+            "not marking done on an unverified guid") from exc
+    if not still_there:
         raise OutboxApplyError(
             f"publish_doc_source reported ref {ref_guid} and link {link_guid}, but "
             f"{ref_guid} does not resolve in Egeria right now -- not marking done on "

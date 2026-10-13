@@ -111,15 +111,30 @@ under "Is a None from pyegeria ever a real answer?":
   - `feedback_egeria.create_rating:441`
   - `egeria_resync._scan_unlinked_members`
 
-Not in scope, but worth knowing. Several of the unchanged paths treat a raised lookup, not a None, as
-"absent, so create":
-- `egeria_database_surveyor._find_element_guid`, which logs it
-- `egeria_filesystem_surveyor._find_element_guid`
-- `doc_source_egeria.ref_guid_exists`
-- the outbox's pre-create lookup
+Not in scope here, and now fixed by `re/lookup-failure-never-creates`. Several paths treated a raised
+lookup, not a None, as "absent, so create". That is the absence-as-answer shape, and it is independent of
+ISSUE-134; Egeria's duplicate-qualifiedName refusal was the only thing stopping a duplicate. On that branch
+a lookup that raised (other than a typed not-found, per `egeria_absence.is_absent`) or gave no answer is
+"could not check", nothing is created, and the caller says so in its own words
+(`egeria_absence.lookup_could_not_be_made`). The paths:
+- `egeria_database_surveyor._find_element_guid`, which used to log "treating as absent". It now raises
+  `EgeriaDatabaseSurveyorError`. The report's 409-then-adopt path says the lookup failed. Column lineage
+  skips that one mapping and records it.
+- `egeria_filesystem_surveyor._find_element_guid`. It also read a `_UUID_RE` the class never defined, so a
+  FOUND element was re-created as well.
+- `doc_source_egeria.ref_guid_exists` and `_find_ref_guid`, which now raise `DocSourceLookupError`
+  (`publish_doc_source` returns `ok: False`).
+- the outbox's pre-create lookup, which now raises `OutboxApplyError`, an ordinary retried attempt. No
+  destructive kind reaches that lookup.
+- `egeria_reference_catalog._find_existing`. It is now typed (`DataClass` / `ValidValueDefinition`) and
+  raises `ProposalLookupError`. A member that could not be checked is listed in `members_not_checked`.
+- found in the same sweep: the shared annotation loop (`annotation_props.publish_annotations`), the repo
+  publisher's sub-resource loop (`sub_resources_not_checked`), and `BlueprintMaterializer.find_content_pack_component`.
+  A failed content-pack search there let RE create its own component beside the pack's under another
+  qualifiedName, which the duplicate refusal cannot catch.
 
-That is the absence-as-answer shape, and it is independent of ISSUE-134. Egeria's duplicate-qualifiedName
-refusal is what stops a duplicate today. A fix belongs in its own change.
+The tests are in `tests/test_lookup_failure_never_creates.py`. The arch-recovery `_find_element_guid`
+copies never caught a raised lookup, so they were not changed.
 
 ## 2. ISSUE-129: relationship queries now send their arguments
 

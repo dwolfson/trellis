@@ -89,7 +89,9 @@ class TestEnsureOwnSecretsStoreGuid:
 
     def test_creates_connection_endpoint_connector_type_asset_graph_when_absent(self):
         surveyor = self._surveyor()
-        surveyor._automated_curation.get_guid_for_name.side_effect = Exception("not found")
+        # A real miss is pyegeria's "No elements found" answer. A RAISED look-up is "could not check", which
+        # creates nothing (tests/test_lookup_failure_never_creates.py); this test used to fake the miss as one.
+        surveyor._automated_curation.get_guid_for_name.return_value = "No elements found"
         mock_maker = MagicMock()
         mock_maker.create_connector_type.return_value = "connector-type-guid"
         mock_maker.create_endpoint.return_value = "endpoint-guid"

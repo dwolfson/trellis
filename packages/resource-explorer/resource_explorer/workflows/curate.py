@@ -745,6 +745,10 @@ def materialize_component_if_accepted(registry: ProjectRegistry, entity_type: st
     if pack_name:
         from resource_explorer.surveyors.arch_recovery.blueprint_materializer import BlueprintMaterializer
         pack = BlueprintMaterializer(registry=registry).find_content_pack_component(pack_name)
+        if isinstance(pack, dict) and pack.get("could_not_check"):
+            # Could not tell whether the pack defines it: creating RE's own component would put a second one
+            # beside the pack's under another qualifiedName. Nothing is created.
+            return {"status": "error", "error": pack["could_not_check"]}
         refused = pack.get("refused") if isinstance(pack, dict) else ""
         if refused:
             pack = None
@@ -948,8 +952,9 @@ def materialize_blueprint_if_accepted(registry: ProjectRegistry, entity_type: st
     root = find_root(cluster.get("name", cluster_name), nodes, cluster.get("composed_into", ""))
     if root is not None and not root.guid and not root.structural:
         pack = materializer.find_content_pack_component(root.name)
-        if isinstance(pack, dict) and pack.get("refused"):
-            content_pack_refused.append(pack["refused"])
+        if isinstance(pack, dict) and (pack.get("refused") or pack.get("could_not_check")):
+            # Ambiguous, or the search could not be made: nothing adopted, and the words are shown.
+            content_pack_refused.append(pack.get("refused") or pack["could_not_check"])
             pack = None
         if pack:
             qn_override[root.slug] = pack["qualified_name"]

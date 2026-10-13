@@ -913,24 +913,24 @@ class EgeriaDatabaseSurveyor:
     def _find_element_guid(self, name: str) -> str:
         """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found.
 
-        '' is the callers' cue to *create* the element, so anything that is not a
-        clean "no such element" must at least be visible. pyegeria raises for an
-        ambiguous name ("Multiple elements found for supplied name!") exactly as
-        it does for a transport failure; swallowing both silently meant a name
-        that already had two elements got a third on the next catalog run, and a
-        dead view server looked like an empty catalog. Verified live 2026-09-04
-        against qs-view-server while diagnosing a stale linkage: the by-name
-        search itself was fine, the element had simply been deleted.
+        '' is the callers' cue to *create* the element, so only a real miss returns it: pyegeria's
+        "No elements found", or a typed not-found (`egeria_absence.is_absent`). Anything else that
+        raised (unreachable, 401/403, 500, timeout, or "Multiple elements found for supplied name!")
+        could not be checked, and raises `EgeriaDatabaseSurveyorError` saying so: nothing is created on
+        it. This used to log "treating as absent" and return '', with only Egeria's duplicate-
+        qualifiedName refusal between a failed look-up and a duplicate (AUDIT-PYEGERIA-6.2.2.md).
         """
+        from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
         try:
-            return self._guid_from_lookup(self._automated_curation.get_guid_for_name(name))
+            result = self._automated_curation.get_guid_for_name(name)
         except Exception as exc:
-            log.warning(
-                f"Egeria by-name lookup for {name!r} failed rather than returning "
-                f"'not found' — treating as absent, which may create a duplicate: "
-                f"{' '.join(str(exc).split())[:300] or type(exc).__name__}"
-            )
-        return ""
+            if lookup_exception_is_absent(exc):
+                return ""
+            raise EgeriaDatabaseSurveyorError(lookup_could_not_be_made(name, exc)) from exc
+        if result is None:
+            raise EgeriaDatabaseSurveyorError(lookup_could_not_be_made(name, None))
+        return self._guid_from_lookup(result)
 
     def _not_catalogued_sentence(self, db_entity, expected_qn: str) -> str:
         """Why an exact-qualifiedName lookup missed, in words a person can act on. When RE holds a
@@ -1319,15 +1319,23 @@ class EgeriaDatabaseSurveyor:
         try:
             out["report_guid"] = self._asset_maker.create_asset(body=body)
             log.info(f"Published SurveyReport in Egeria: {out['report_guid']}")
-            self._create_annotations(annotations, out["report_guid"], db_slug, surveyed_at)
-            out["annotations_in_egeria"] = len(annotations)
+            made = self._create_annotations(annotations, out["report_guid"], db_slug, surveyed_at)
+            # Counted from what Egeria returned a GUID for (a failed or un-checkable one is None), not from
+            # how many were sent; no list back means RE cannot tell, which is None, never a number.
+            out["annotations_in_egeria"] = sum(1 for g in made if g) if isinstance(made, list) else None
             return out
         except Exception as exc:
             if not (not out["report_guid"] and self._is_duplicate_qualified_name(exc)):
                 log.warning(f"Failed to publish SurveyReport to Egeria: {exc}")
                 out["report_error"] = f"{exc}"[:400]
                 return out
-        existing = self._find_element_guid(qualified_name)
+        try:
+            existing = self._find_element_guid(qualified_name)
+        except EgeriaDatabaseSurveyorError as exc:
+            # Could not look: not "no report with that name". Nothing adopted, nothing created.
+            out["report_error"] = (f"Egeria refused the report as a duplicate, and {exc}")[:400]
+            log.warning(out["report_error"])
+            return out
         if not existing:
             out["report_error"] = ("Egeria refused the report as a duplicate but no report with that name "
                                    f"could be read ({qualified_name})")
@@ -1356,6 +1364,11 @@ class EgeriaDatabaseSurveyor:
 
         db_name = db_entity.database_name
 
+        #: Column names whose look-up could not be made, so their mappings were skipped. Kept on the
+        #: surveyor so a caller can tell "no lineage published" from "lineage RE could not check".
+        self.lineage_not_checked = []
+        _column_guid = self._lineage_column_guid
+
         for view in views:
             schema_name = view["schema"]
             view_name = view["name"]
@@ -1367,9 +1380,7 @@ class EgeriaDatabaseSurveyor:
                     continue
 
                 target_qn = f"{db_name}.{schema_name}.{view_name}.{target_col}"
-                target_guid = self._find_element_guid(target_qn)
-                if not target_guid:
-                    target_guid = self._find_element_guid(f"{view_name}.{target_col}")
+                target_guid = _column_guid(target_qn, f"{view_name}.{target_col}")
 
                 if not target_guid:
                     log.debug(f"Could not find Egeria GUID for derived column '{target_qn}'")
@@ -1382,9 +1393,7 @@ class EgeriaDatabaseSurveyor:
                         s_name, t_name = schema_name, src_table
 
                     src_qn = f"{db_name}.{s_name}.{t_name}.{src_col}"
-                    src_guid = self._find_element_guid(src_qn)
-                    if not src_guid:
-                        src_guid = self._find_element_guid(f"{t_name}.{src_col}")
+                    src_guid = _column_guid(src_qn, f"{t_name}.{src_col}")
 
                     if not src_guid:
                         log.debug(f"Could not find Egeria GUID for source column '{src_qn}'")
@@ -1410,6 +1419,21 @@ class EgeriaDatabaseSurveyor:
                     except Exception as link_err:
                         log.warning(f"Failed to create LineageMapping link between {src_qn} and {target_qn}: {link_err}")
 
+    def _lineage_column_guid(self, *names: str) -> str:
+        """The first of `names` found in Egeria, or "". Lineage only LINKS two columns that already exist and
+        never creates one, so a look-up that could not be made skips this mapping (recorded in
+        `lineage_not_checked` and logged) rather than ending every other view's lineage."""
+        for name in names:
+            try:
+                guid = self._find_element_guid(name)
+            except EgeriaDatabaseSurveyorError as exc:
+                self.lineage_not_checked.append(name)
+                log.warning("column lineage: %s; this mapping is skipped", exc)
+                return ""
+            if guid:
+                return guid
+        return ""
+
     def _extract_leaf_sources(self, node: dict) -> list[tuple[str, str]]:
         """Traverse a serialized SQLGlot lineage node tree and return leaf sources as list of (table, column)."""
         res = []
@@ -1430,8 +1454,8 @@ class EgeriaDatabaseSurveyor:
         report_guid: str,
         db_slug: str,
         surveyed_at: str,
-    ) -> None:
-        """Push a list of Annotation objects to Egeria.
+    ) -> list:
+        """Push a list of Annotation objects to Egeria; returns one GUID or None per annotation.
 
         Delegates to the shared implementation — see annotation_props.py.
         Kept as a method because tests reach for it by name. `surveyed_at` is
@@ -1440,7 +1464,7 @@ class EgeriaDatabaseSurveyor:
         from resource_explorer.surveyors.annotation_props import publish_annotations
 
         qualified_name_prefix = f"Annotation::PostgreSQL::{db_slug}::{surveyed_at}"
-        publish_annotations(
+        return publish_annotations(
             self._discovery, self._find_element_guid,
             annotations, report_guid, qualified_name_prefix,
         )

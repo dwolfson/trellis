@@ -165,15 +165,20 @@ class TestApplyIsIdempotent:
 
         assert apply_element(row, OutboxClients(discovery=discovery), lambda qn: "") == "new"
 
-    def test_a_lookup_that_raises_falls_through_to_create(self, db, project):
-        discovery = type("D", (), {"create_annotation": lambda self, body: "new"})()
+    def test_a_lookup_that_raises_creates_nothing(self, db, project):
+        # Could not check is not "not there" (re/lookup-failure-never-creates; it used to fall through to
+        # create). An ordinary OutboxApplyError: the drain retries the row per policy.
+        made = []
+        discovery = type("D", (), {"create_annotation": lambda self, body: made.append(body) or "new"})()
         row = {"id": 1, "egeria_guid": "", "qualified_name": "Q",
                "element_kind": "annotation", "payload_json": "{}"}
 
         def boom(qn):
             raise RuntimeError("lookup down")
 
-        assert apply_element(row, OutboxClients(discovery=discovery), boom) == "new"
+        with pytest.raises(OutboxApplyError, match="look-up for 'Q' could not be made"):
+            apply_element(row, OutboxClients(discovery=discovery), boom)
+        assert made == []
 
     def test_an_unknown_element_kind_raises_rather_than_reporting_success(self, db, project):
         # A row that reports 'done' without writing anything is the exact
