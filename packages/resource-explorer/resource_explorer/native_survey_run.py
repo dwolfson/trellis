@@ -326,12 +326,15 @@ class PyegeriaSurveyPort:
     def _is_not_found(exc: Exception) -> bool:
         """Gone = a typed PyegeriaNotFoundException, or a PyegeriaAPIException whose related_http_code is
         exactly 404 (the code field, never the message text: a GUID containing "404" inside a timeout
-        sentence is NOT gone). Everything else -- unauthorized, transport, timeouts -- is unreadable."""
-        from pyegeria.core._exceptions import PyegeriaAPIException, PyegeriaNotFoundException
+        sentence is NOT gone). Everything else -- unauthorized, transport, timeouts -- is unreadable.
 
-        if isinstance(exc, PyegeriaNotFoundException):
-            return True
-        return isinstance(exc, PyegeriaAPIException) and str(getattr(exc, "related_http_code", "")) == "404"
+        The one shared classifier, `egeria_absence`: a typed 404 whose Egeria message id is
+        OMAG-MULTI-TENANT-404-* is a view server that is down or not known (live probe, 2026-10-13), NOT
+        a gone element. Read as gone, it labelled every pointer "gone", raised NativeSurveyStale and let
+        registration clear the server pointer while the server was merely down."""
+        from resource_explorer.egeria_absence import lookup_exception_is_absent
+
+        return lookup_exception_is_absent(exc)
 
     def asset_exists(self, guid: str) -> bool:
         from resource_explorer.catalogue_gateway import _guid_of

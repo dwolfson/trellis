@@ -163,8 +163,8 @@ class _FakeDesigner:
             raise RuntimeError("view server unreachable")
         return self.elements
 
-    def get_guid_for_name(self, name):
-        return self.existing_guids.get(name, "")
+    def get_guid_for_name(self, name, property_name=None, type_name=None):   # pyegeria's signature
+        return self.existing_guids.get(name, "No elements found")
 
     def create_data_class(self, body):
         self.created.append(body)
@@ -184,8 +184,8 @@ class _FakeRefManager:
             raise RuntimeError("view server unreachable")
         return self.elements
 
-    def get_guid_for_name(self, name):
-        return self.existing_guids.get(name, "")
+    def get_guid_for_name(self, name, property_name=None, type_name=None):   # pyegeria's signature
+        return self.existing_guids.get(name, "No elements found")
 
     def create_valid_value_definition(self, body):
         self.created.append(body)
@@ -950,7 +950,9 @@ class TestDraftProposalPath:
         # There is no `create_valid_value_set` and no `ValidValueSetProperties`
         # in pyegeria — a set is created through create_valid_value_definition.
         assert props["class"] == "ValidValueDefinitionProperties"
-        assert props["typeName"] == "ValidValueSet"
+        # No typeName: Egeria 6.2 knows no `ValidValueSet` type (OMAG-COMMON-400-018); a set is a plain
+        # ValidValueDefinition, as bootstrap_data_classes creates its sets.
+        assert "typeName" not in props
 
     def test_publishing_a_data_class_proposal_creates_and_links_it(self):
         designer, discovery = _FakeDesigner(), _FakeDiscovery()
@@ -982,10 +984,10 @@ class TestDraftProposalPath:
             proposed_data_class_qualified_name,
         )
         qn = proposed_data_class_qualified_name(match)
-        designer = _FakeDesigner(existing_guids={qn: "guid-existing"})
+        designer = _FakeDesigner(existing_guids={qn: "eeeeeeee-0000-4000-8000-000000000001"})
         result = publish_proposed_data_class(designer, match)
         assert result.created is False
-        assert result.guid == "guid-existing"
+        assert result.guid == "eeeeeeee-0000-4000-8000-000000000001"
         assert designer.created == []
 
     def test_a_miss_reading_as_pyegerias_sentinel_string_still_creates(self):
@@ -1001,7 +1003,7 @@ class TestDraftProposalPath:
         match = _proposal_match()
 
         class _SentinelDesigner(_FakeDesigner):
-            def get_guid_for_name(self, name):
+            def get_guid_for_name(self, name, property_name=None, type_name=None):
                 return "No elements found"
 
         designer = _SentinelDesigner()

@@ -265,6 +265,9 @@ def _surveyor_calls():
                          description="the shop's own description")
     s = EgeriaDatabaseSurveyor(platform_url="http://x")
     s._automated_curation = MagicMock()
+    # A real miss is pyegeria's "No elements found"; a bare MagicMock answer is not one (round 3: odd answers are
+    # could-not-check, never "create").
+    s._automated_curation.get_guid_for_name.return_value = "No elements found"
     s.connect = lambda: None
     s._find_element_guid = lambda name: ""
     s._save_database_secret = lambda *a, **k: ("coll", "/path")

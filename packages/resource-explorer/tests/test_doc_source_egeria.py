@@ -256,15 +256,14 @@ def test_ref_guid_exists_is_false_on_a_not_found_string_sentinel(monkeypatch):
     assert m.ref_guid_exists("gone-guid", **_EGERIA_KW) is False
 
 
-def test_ref_guid_exists_is_false_but_does_not_raise_on_a_connection_error(monkeypatch):
+def test_ref_guid_exists_raises_could_not_check_on_a_connection_error(monkeypatch):
     # An unrelated failure (Egeria unreachable) is not proof the element is
-    # gone, but this function has no way to distinguish "definitely gone"
-    # from "could not check" in its boolean return -- treated as
-    # not-safe-to-reuse per the module's documented "on our failure to
-    # establish something, run the step" rule, same as everywhere else in
-    # this codebase that follows it.
+    # gone. It used to return False, and the caller then created a fresh
+    # ExternalReference beside a perfectly good one. Now it says it could not
+    # check (re/lookup-failure-never-creates, AUDIT-PYEGERIA-6.2.2.md).
     _patched_metadata_expert(monkeypatch, {"unreachable-guid": Exception("Connection refused")})
-    assert m.ref_guid_exists("unreachable-guid", **_EGERIA_KW) is False
+    with pytest.raises(m.DocSourceLookupError, match="could not be made"):
+        m.ref_guid_exists("unreachable-guid", **_EGERIA_KW)
 
 
 def test_publish_with_a_dead_known_ref_guid_creates_a_new_reference_and_links_it(monkeypatch):

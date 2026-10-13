@@ -111,15 +111,70 @@ under "Is a None from pyegeria ever a real answer?":
   - `feedback_egeria.create_rating:441`
   - `egeria_resync._scan_unlinked_members`
 
-Not in scope, but worth knowing. Several of the unchanged paths treat a raised lookup, not a None, as
-"absent, so create":
-- `egeria_database_surveyor._find_element_guid`, which logs it
-- `egeria_filesystem_surveyor._find_element_guid`
-- `doc_source_egeria.ref_guid_exists`
-- the outbox's pre-create lookup
+Not in scope here, and now fixed by `re/lookup-failure-never-creates`. Several paths treated a raised
+lookup, not a None, as "absent, so create". That is the absence-as-answer shape, and it is independent of
+ISSUE-134; Egeria's duplicate-qualifiedName refusal was the only thing stopping a duplicate. On that branch
+a lookup that raised (other than a typed not-found, per `egeria_absence.is_absent`) or gave no answer is
+"could not check", nothing is created, and the caller says so in its own words
+(`egeria_absence.lookup_could_not_be_made`). The paths:
+- `egeria_database_surveyor._find_element_guid`, which used to log "treating as absent". It now raises
+  `EgeriaDatabaseSurveyorError`. The report's 409-then-adopt path says the lookup failed. Column lineage
+  skips that one mapping and records it.
+- `egeria_filesystem_surveyor._find_element_guid`. It also read a `_UUID_RE` the class never defined, so a
+  FOUND element was re-created as well.
+- `doc_source_egeria.ref_guid_exists` and `_find_ref_guid`, which now raise `DocSourceLookupError`
+  (`publish_doc_source` returns `ok: False`).
+- the outbox's pre-create lookup, which now raises `OutboxApplyError`, an ordinary retried attempt. No
+  destructive kind reaches that lookup.
+- `egeria_reference_catalog._find_existing`. It is now typed (`DataClass` / `ValidValueDefinition`) and
+  raises `ProposalLookupError`. A member that could not be checked is listed in `members_not_checked`.
+- found in the same sweep: the shared annotation loop (`annotation_props.publish_annotations`), the repo
+  publisher's sub-resource loop (`sub_resources_not_checked`), and `BlueprintMaterializer.find_content_pack_component`.
+  A failed content-pack search there let RE create its own component beside the pack's under another
+  qualifiedName, which the duplicate refusal cannot catch.
 
-That is the absence-as-answer shape, and it is independent of ISSUE-134. Egeria's duplicate-qualifiedName
-refusal is what stops a duplicate today. A fix belongs in its own change.
+The tests are in `tests/test_lookup_failure_never_creates.py`. The arch-recovery `_find_element_guid`
+copies never caught a raised lookup, so they were not changed.
+
+Round 2 (review of 7a565568, plus two live read-only probes; tests in `tests/test_lookup_failure_round2.py`):
+- `egeria_absence`: a typed 404 whose Egeria message id is `OMAG-MULTI-TENANT-404-*` is unreadable, never
+  absent. A view server that is not running or not known answers every look-up that way (probe,
+  2026-10-13). The message id is read from pyegeria's fields, not from text. "No element found" (singular)
+  is a miss too.
+- `catalogue_gateway.read_element` decided absence from exception text. A timeout naming "404" let an
+  attach create and a leave-out write a "gone" proof. It now goes through `is_absent`.
+- `egeria_identity._existing_guid` re-raises a look-up that could not be made, so `ensure_draft_zone_exists`
+  reports an error and creates no zone.
+- File-system catalog: one file that could not be checked is skipped and listed (`files_not_checked`).
+  The run is not ended.
+- Counts and not-checked lists now reach the result:
+  - sub-resource proofs say "could not check, not created";
+  - `lineage_not_checked` is in both database publish results;
+  - annotation counts are what Egeria returned a GUID for, on the file-system catalog, the database step
+    publish and the step words.
+- Outbox: a 403 on the look-up is dead at once with the security words, and a 401 keeps the
+  service-identity note. `is_security_refusal` and `_describe_refusal` read the look-up's cause
+  (`OutboxLookupFailed`).
+- Odd answers ({}, a non-list) are unreadable in `find_content_pack_component` and `ref_guid_exists`.
+- Proposed reference sets are created as plain `ValidValueDefinition`. Egeria 6.2 does not recognise
+  `ValidValueSet` (OMAG-COMMON-400-018), so the old `typeName: "ValidValueSet"` create failed on 6.2.
+
+Round 3 (re-review of 4917afe4; tests in `tests/test_lookup_failure_round3.py` and
+`frontend-build/test-harness/fs-publish-partial.test.mjs`):
+- One shared reader, `egeria_absence.guid_from_answer`, for a by-name answer before a create. It returns a
+  GUID, or "" for pyegeria's miss sentence. Anything else raises in the caller's vocabulary. Odd answers no
+  longer read as "", in the identity, file-system, publisher, database and reference-catalog look-ups.
+- `native_survey_run._is_not_found` uses `lookup_exception_is_absent`, so a view server that is down
+  (OMAG-MULTI-TENANT-404) makes a pointer "unreadable", not "gone".
+- A fresh report holding fewer annotations than were built is "failed", with "k of n annotations
+  published" and a failure row, not a success proof.
+- A file-system publish or hybrid survey that skipped files is `status: "partial"` and says "N file(s) not
+  checked, not created" on the toast. `lineage_not_checked` is in the database publish step-run metrics.
+- A sub-resource under a folder that could not be checked is itself "not checked", never "Egeria returned
+  no GUID".
+- The outbox reads an exception's cause for a refusal only when the cause is pyegeria's, or when the
+  exception is the outbox's own look-up failure.
+- `annotation_count` is RE's own count everywhere, and `annotations_in_egeria` is Egeria's.
 
 ## 2. ISSUE-129: relationship queries now send their arguments
 

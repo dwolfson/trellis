@@ -14699,6 +14699,16 @@ function hideSurveyFsModal() {
   _surveyingFsSlug = null;
 }
 
+// [toast type, words] for a file-system publish or hybrid survey answer. Data files whose look-up could not be
+// made were NOT created: that is partial, said with the count, never a plain success.
+function fsPublishOutcome(data, doneWords) {
+  const skipped = Object.keys((data && data.files_not_checked) || {}).length;
+  if (skipped || (data && data.status === 'partial')) {
+    return ['info', `Partial · ${doneWords.replace(/ successfully\.$/, '')} · ${skipped} file(s) not checked, not created`];
+  }
+  return ['success', doneWords];
+}
+
 async function submitSurveyFs() {
   if (!_surveyingFsSlug) return;
   const slug = _surveyingFsSlug;
@@ -14726,10 +14736,11 @@ async function submitSurveyFs() {
     });
     
     if (res.ok) {
+      const data = await res.json().catch(() => ({}));
       hideSurveyFsModal();
       await loadFilesystems();
       if (selectedFilesystem === slug) selectFilesystem(slug);
-      showToast('success', `Survey completed for ${slug}`);
+      showToast(...fsPublishOutcome(data, `Survey completed for ${slug}`));
     } else {
       const data = await res.json();
       err.textContent = data.detail || 'Survey failed';
@@ -14787,10 +14798,11 @@ async function submitPublishFs() {
     });
     
     if (res.ok) {
+      const data = await res.json().catch(() => ({}));
       hidePublishFsModal();
       await loadFilesystems();
       if (selectedFilesystem === slug) selectFilesystem(slug);
-      showToast('success', `FileSystem published to Egeria successfully.`);
+      showToast(...fsPublishOutcome(data, `FileSystem published to Egeria successfully.`));
     } else {
       const data = await res.json();
       err.textContent = data.detail || 'Publish failed';

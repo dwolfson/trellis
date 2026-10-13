@@ -460,7 +460,11 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
             entity.slug, "egeria_publish", surveyed_at, entity_type="database",
             source="egeria", executor="local",
             metrics={"report_guid": report_guid,
-                     "annotation_count": result.get("annotation_count", 0),
+                     "annotation_count": result.get("annotation_count"),
+                     "annotations_in_egeria": result.get("annotations_in_egeria"),
+                     # Columns whose look-up could not be made, so their lineage was not linked (proof, not
+                     # silence: an empty list means every lineage look-up was answered).
+                     "lineage_not_checked": result.get("lineage_not_checked", []),
                      "published_measured_at": (measured_row or {}).get("surveyed_at", "")},
         )
         # Outcome goes ON the measured row (never a new row). For an in-run

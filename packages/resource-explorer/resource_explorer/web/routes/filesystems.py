@@ -443,9 +443,11 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
             res = {**detail, **nested}
 
             publish_info = res.get("egeria_publish") or {}
+            not_checked = publish_info.get("files_not_checked") or {}
 
             return {
-                "status": "ok",
+                # Partial when a data file's look-up could not be made (nothing was created for it).
+                "status": "partial" if not_checked else "ok",
                 "mode": req.mode,
                 "source": res.get("source", "custom"),
                 "total_files": res["total_files"],
@@ -454,6 +456,8 @@ def survey_filesystem(slug: str, req: FileSystemSurveyRequest):
                 "egeria_asset_guid": publish_info.get("filesystem_guid", ""),
                 "egeria_report_guid": publish_info.get("report_guid", ""),
                 "annotation_count": publish_info.get("annotation_count", 0),
+                "annotations_in_egeria": publish_info.get("annotations_in_egeria"),
+                "files_not_checked": not_checked,
             }
             
         else:
@@ -593,11 +597,15 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
                 send_with_publish(registry, "filesystem", slug, fs_asset_guid, caller_user_id())
             except Exception:  # noqa: BLE001 - each item's outcome is on its row; never fails the publish
                 log.warning("Could not send the presser's feedback for %s", slug, exc_info=True)
+        not_checked = publish_res.get("files_not_checked") or {}
         return {
-            "status": "ok",
+            # Partial, never "ok", when a data file's look-up could not be made: nothing was created for it.
+            "status": "partial" if not_checked else "ok",
             "egeria_asset_guid": publish_res.get("filesystem_guid", ""),
             "egeria_report_guid": publish_res.get("report_guid", ""),
             "annotation_count": publish_res.get("annotation_count", 0),
+            "annotations_in_egeria": publish_res.get("annotations_in_egeria"),
+            "files_not_checked": not_checked,
         }
     except PermissionError:
         raise      # no caller / expired sign-in: the app's 401 handler, never a 500

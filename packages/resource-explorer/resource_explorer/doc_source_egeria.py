@@ -108,6 +108,11 @@ def entity_clients(entity, identity):
                          platform_url=getattr(entity, "egeria_url", "") or None)
 
 
+class DocSourceLookupError(RuntimeError):
+    """A look-up before a create could not be made: neither found nor a real miss. Nothing is created on it;
+    `publish_doc_source` reports it as its ordinary `ok: False` failure."""
+
+
 def _client(clients):
     from pyegeria import ExternalReferences
 
@@ -146,14 +151,14 @@ def ref_guid_exists(ref_guid: str, *, clients) -> bool:
     `ExternalReference` is not an Asset, so `AssetMaker` would be the wrong
     client here too).
 
-    On an UNRELATED failure (timeout, auth hiccup, transient network error —
-    not a confirmed "not known to the repository" answer), this returns
-    `False` rather than raising: "could not establish the guid is good" is
-    treated the same as "not found" here, consistent with this codebase's
-    established `credential_capability.py` rule ("on our failure to
-    establish something, run the step") — a caller that cannot confirm an
-    old reference is safe to reuse creates a fresh one rather than blocking
-    or crashing the whole publish attempt on it.
+    On an UNRELATED failure (timeout, auth refusal, transient network error,
+    or no answer at all — not a confirmed "not known to the repository"
+    answer), this RAISES `DocSourceLookupError`. It used to return False,
+    treating "could not establish the guid is good" as "gone", and every
+    caller then created a fresh ExternalReference: a duplicate whenever the
+    old one was fine and Egeria merely did not answer (AUDIT-PYEGERIA-6.2.2.md,
+    "Not in scope"). `publish_doc_source` turns the raise into its ordinary
+    `{"ok": False, "error": ...}`, which the outbox retries.
     """
     if not ref_guid:
         return False
@@ -161,24 +166,33 @@ def ref_guid_exists(ref_guid: str, *, clients) -> bool:
 
     from resource_explorer.egeria_linkage import is_unknown_guid_error
 
+    from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
     try:
         element = clients.of(MetadataExpert).get_metadata_element_by_guid(ref_guid)
     except Exception as exc:
-        if is_unknown_guid_error(exc):
+        if is_unknown_guid_error(exc) or lookup_exception_is_absent(exc):
             log.info("doc source: ref %r no longer resolves in Egeria (confirmed not found)",
                       ref_guid)
-        else:
-            log.debug("doc source: could not verify ref %r exists (treating as unresolved): %s",
-                       ref_guid, exc)
+            return False
+        raise DocSourceLookupError(lookup_could_not_be_made(ref_guid, exc)) from exc
+    from resource_explorer.egeria_absence import ABSENT, is_absent
+
+    if element is None:
+        raise DocSourceLookupError(lookup_could_not_be_made(ref_guid, None))
+    # MetadataExpert's own "not found" sentinel is a bare string rather than an exception for some call
+    # shapes. Only that exact string is absence; {} or any other odd shape is unreadable, never "gone".
+    if isinstance(element, str) and is_absent(element) == ABSENT:
+        log.info("doc source: ref %r no longer resolves in Egeria (Egeria's own no-element answer)", ref_guid)
         return False
-    # MetadataExpert's own "not found" sentinel is a bare string rather than
-    # an exception for some call shapes (mirrors recheck_all_linkages's own
-    # handling of the identical client).
-    if isinstance(element, str) or not element:
-        log.info("doc source: ref %r no longer resolves in Egeria (empty/string result)",
-                  ref_guid)
-        return False
+    if not isinstance(element, dict) or not element or not _guid_in(element):
+        raise DocSourceLookupError(lookup_could_not_be_made(
+            ref_guid, ValueError(f"unexpected answer {element!r:.80}")))
     return True
+
+
+def _guid_in(element: dict) -> str:
+    return str((element.get("elementHeader") or {}).get("guid") or element.get("guid") or "")
 
 
 def _find_ref_guid(clients, qualified_name: str) -> str:
@@ -214,11 +228,18 @@ def _find_ref_guid(clients, qualified_name: str) -> str:
     def _lookup():
         return clients.of(AutomatedCuration).get_guid_for_name(qualified_name)
 
+    from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
     try:
         result = run_sync(_lookup, timeout=15.0)
     except Exception as exc:
-        log.debug("doc source: could not look up %r: %s", qualified_name, exc)
-        return ""
+        # Only a real miss may lead to a create; a look-up that could not be made raises (it used to
+        # return '' and the caller created a second ExternalReference).
+        if lookup_exception_is_absent(exc):
+            return ""
+        raise DocSourceLookupError(lookup_could_not_be_made(qualified_name, exc)) from exc
+    if result is None:
+        raise DocSourceLookupError(lookup_could_not_be_made(qualified_name, None))
     if isinstance(result, list) and result:
         candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
         return candidate if uuid_re.match(candidate or "") else ""

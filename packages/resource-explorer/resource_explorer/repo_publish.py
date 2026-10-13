@@ -474,7 +474,7 @@ def match_found(read: list[dict], report_guid: str) -> bool:
 # ── the commit's sub-resources: a proof row per element, by GUID, after a read (brief section 2) ──
 
 def record_sub_resource_proofs(registry, slug: str, curation_id: str, author: str, wanted: dict,
-                               selected: list[str], guids: dict, reader) -> dict:
+                               selected: list[str], guids: dict, reader, not_checked: dict | None = None) -> dict:
     """One proof row for every sub-resource the commit sent (the chosen ones AND the ancestor folders a
     NestedFile needs), written ONLY by GUID and ONLY after a read of that GUID.
 
@@ -484,7 +484,10 @@ def record_sub_resource_proofs(registry, slug: str, curation_id: str, author: st
 
     * P_SUB_RESOURCE  the GUID was read back.
     * P_SENT          Egeria returned a GUID but the read did not show the element yet.
-    * P_READ_FAILED   no GUID came back, or the read failed; the full sentence is stored.
+    * P_READ_FAILED   no GUID came back, or the read failed; the full sentence is stored. A locator in
+                      `not_checked` (the publisher's `sub_resources_not_checked`: its look-up could not be
+                      made, so nothing was sent) says "could not check, not created" with the reason, never
+                      "Egeria returned no GUID", which would claim a create was tried.
 
     Returns the counts the table shows (`read_back`, `sent`, `failed`), which are these rows' counts,
     never the request's."""
@@ -494,6 +497,13 @@ def record_sub_resource_proofs(registry, slug: str, curation_id: str, author: st
         role = "chosen" if locator in selected else "container"
         base = {"kind": kind, "role": role, "curation_id": curation_id}
         guid = guids.get(locator, "")
+        if not guid and locator in (not_checked or {}):
+            _proof(registry, slug, P_READ_FAILED, node_kind=NODE_SUB_RESOURCE, table_name=locator,
+                   curation_id=curation_id, recorded_by=author,
+                   detail={**base, "could_not_check": True,
+                           "error": f"could not check, not created: {not_checked[locator]}"})
+            counts["failed"] += 1
+            continue
         if not guid:
             _proof(registry, slug, P_READ_FAILED, node_kind=NODE_SUB_RESOURCE, table_name=locator,
                    curation_id=curation_id, recorded_by=author,

@@ -1777,6 +1777,17 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
     cur.set_step(cid, step, "done" if len(done) == len(rows) else "failed", " · ".join(parts), more="\n".join(more))
 
 
+def fresh_report_shortfall(res: dict) -> str:
+    """"k of n annotations published" when a NEW report holds fewer annotations in Egeria than RE built, else "".
+    A reused report is worded by its own branch; no count from Egeria is "could not be counted", never a shortfall."""
+    if res.get("report_reused") or res.get("report_error"):
+        return ""
+    k, n = res.get("annotations_in_egeria"), res.get("annotation_count")
+    if isinstance(k, int) and isinstance(n, int) and k < n:
+        return f"{k} of {n} annotations published"
+    return ""
+
+
 def report_step_words(res: dict, surveyed_at: str) -> tuple[str, str]:
     """The state and words of the "RE's own survey report" step, from what the publish returned.
 
@@ -1803,7 +1814,18 @@ def report_step_words(res: dict, surveyed_at: str) -> tuple[str, str]:
             return "failed", f"already in Egeria · report {guid[:8]} ·{src} · {held}{local} · the missing annotations were not published: {first}"
         return "done", f"already in Egeria · report {guid[:8]} ·{src} · {held}{local}"
     if guid:
-        return "done", (f"report {guid[:8]} · {n} annotations published ·{src}" if n is not None else f"report {guid[:8]} ·{src}")
+        # A fresh report: the count is what Egeria returned a GUID for (`annotations_in_egeria`), never how many
+        # were sent, and RE's own number only when the two differ. No count back is said, not assumed.
+        k = res.get("annotations_in_egeria")
+        if k is None:
+            built = f" · {n} built" if n is not None else ""
+            return "done", f"report {guid[:8]} · annotations in Egeria could not be counted{built} ·{src}"
+        short = fresh_report_shortfall(res)
+        if short:
+            # Fewer landed than were built (0 of 76): not "done". The commit writes a failure row for it too.
+            return "failed", f"report {guid[:8]} was created, but {short} ·{src}"
+        local = f" · built locally: {n}" if (n is not None and n != k) else ""
+        return "done", f"report {guid[:8]} · {k} annotations published{local} ·{src}"
     if n is None and not res:
         return "done", "report not found · the publish returned nothing"
     return "done", f"{n} annotations{src} · Egeria returned no report element id, so the report itself is not confirmed"
@@ -2155,7 +2177,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         try:
             res = gateway.publish_local_report(db, db.db_user, db.db_password, measured, registry=registry, submitted_by=author)
             rep_guid = res.get("report_element_guid", res.get("report_guid", "")) or ""
-            failed_text = str(res.get("report_error") or res.get("annotation_error") or "")
+            failed_text = str(res.get("report_error") or res.get("annotation_error")
+                              or fresh_report_shortfall(res) or "")
             if rep_guid and not failed_text:
                 # A success row only for a report that has a GUID and no error: a created one, or a reuse
                 # whose annotation count Egeria itself gave (`annotations_in_egeria`).

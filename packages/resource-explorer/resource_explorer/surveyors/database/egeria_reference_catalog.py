@@ -45,7 +45,6 @@ from resource_explorer.surveyors.database.column_matching import (
     KnownDataClass,
     KnownValidValueSet,
 )
-from resource_explorer.surveyors.survey_definition_reader import _as_guid
 from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
@@ -60,11 +59,11 @@ CONTENT_STATUS_DRAFT = "DRAFT"
 #: and shares that endpoint, so the results must be filtered by type here.
 DATA_CLASS_TYPE_NAME = "DataClass"
 
-#: Egeria type names that count as a reference-data *set* rather than a single
-#: definition. `ValidValueSet` is the real set type; a plain
-#: `ValidValueDefinition` carrying members is treated as one too, because
-#: pyegeria has no `create_valid_value_set` and RE's own bootstrap creates sets
-#: through `create_valid_value_definition` (see `bootstrap_data_classes.py`).
+#: Egeria type names a READ accepts as a reference-data *set*. On Egeria 6.2 a set is a plain
+#: `ValidValueDefinition` carrying members: 6.2 knows no `ValidValueSet` / `ValidValuesSet` type
+#: (live probe, 2026-10-13: OMAG-COMMON-400-018 on findElements). Both spellings stay in this
+#: read-side list only because `valid_value_set_from_element` reads them from whatever an element
+#: says; nothing RE writes uses them.
 VALID_VALUE_SET_TYPE_NAMES = ("ValidValueSet", "ValidValuesSet", "ValidValueDefinition")
 
 #: The type every RE `find_valid_value_definitions` passes as `metadata_element_type`. Egeria's
@@ -558,11 +557,14 @@ def build_proposed_valid_value_set_body(match: ColumnMatch, qualified_name: str)
     `ValidValueSetProperties` — verified against the whole egeria-python
     checkout. A set is created through `create_valid_value_definition` with
     `properties.class = "ValidValueDefinitionProperties"`, which is also what
-    RE's own `bootstrap_data_classes.py` does. `typeName: "ValidValueSet"` is
-    passed so the element is a real set rather than a bare definition — that
-    path is exercised nowhere in either repo, so it is **unverified against a
-    live server** and recorded as such in the implementation write-up; the
-    create still succeeds without it, producing a definition rather than a set.
+    RE's own `bootstrap_data_classes.py` does, and with NO `typeName`, exactly as
+    bootstrap creates its sets: a set is a plain `ValidValueDefinition` whose members
+    hang off it by `ValidValueMember`. Egeria 6.2 does not know a `ValidValueSet` type
+    (live read-only probe, 2026-10-13: findElements answers OMAG-COMMON-400-018 "The type
+    name ValidValueSet ... is not recognized", and a typed look-up as `ValidValueSet` or
+    `ValidValuesSet` is a 500), so the `typeName: "ValidValueSet"` sent until then made
+    every proposed-set create fail on 6.2. The existing sets
+    (`ValidValuesSet::<Name>Keywords`) are stored as `ValidValueDefinition`.
 
     The member `ValidValueDefinition`s are created separately, by
     `publish_proposed_valid_value_set`, because each is its own element.
@@ -572,7 +574,6 @@ def build_proposed_valid_value_set_body(match: ColumnMatch, qualified_name: str)
         "isOwnAnchor": True,
         "properties": {
             "class": "ValidValueDefinitionProperties",
-            "typeName": "ValidValueSet",
             "qualifiedName": qualified_name,
             "displayName": f"Proposed reference set for {match.column_path}",
             "description": (
@@ -683,6 +684,10 @@ class ProposalResult:
     associated_annotation_linked: bool = False
     content_status: str = CONTENT_STATUS_DRAFT
     error: str = ""
+    #: Members whose look-up could not be made, so they were not created. The set itself still counts as
+    #: published (a partial set is a usable proposal, as for a member whose create failed); this says which
+    #: members are missing because RE could not check, rather than leaving the shortfall unexplained.
+    members_not_checked: list[str] = field(default_factory=list)
 
     @property
     def published(self) -> bool:
@@ -703,28 +708,39 @@ class ProposalResult:
             "content_status": self.content_status,
             "published": self.published,
             "error": self.error,
+            "members_not_checked": list(self.members_not_checked),
         }
 
 
-def _find_existing(client, qualified_name: str) -> str:
-    """`get_guid_for_name`, never raising — "" means "not found or could not
-    look up", and the caller attempts the create either way (Egeria rejects a
-    duplicate qualifiedName, so a failed lookup costs a rejected create rather
-    than a duplicate element).
+class ProposalLookupError(ReferenceCatalogError):
+    """The idempotency look-up before a proposal's create could not be made. Nothing is created on it."""
 
-    Routed through `_as_guid` rather than a bare `or ""`: pyegeria's
-    `get_guid_for_name` returns the literal string "No elements found" (not
-    None/""/an exception) on a miss, which `or ""` does not catch because
-    that string is truthy — the same sentinel bug found live in
-    `bootstrap_data_classes.py` (2026-09-22), here too before this fix. A
-    bare `or ""` would make every proposal's idempotency check read "already
-    exists" for a name that was never created, silently skipping it.
+
+def _find_existing(client, qualified_name: str, type_name: str) -> str:
+    """The GUID of the `type_name` element whose name is `qualified_name`, or "" for a real miss.
+
+    Typed: the look-up asks only for the type about to be created (`DataClass`, or `ValidValueDefinition`,
+    which is what a set is on Egeria 6.2), so an element of another type sharing the name is not adopted.
+
+    Only a real miss returns "": pyegeria's miss sentence or a typed not-found. A look-up that raised for any
+    other reason (unreachable, 401/403, 500, timeout, several hits), or answered anything that is neither a
+    GUID nor that sentence (`egeria_absence.guid_from_answer`), could not be checked and raises
+    `ProposalLookupError`. It used to return "" and the caller created, with Egeria's
+    duplicate-qualifiedName refusal the only backstop (AUDIT-PYEGERIA-6.2.2.md, "Not in scope").
     """
+    from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
     try:
-        return _as_guid(client.get_guid_for_name(qualified_name)) or ""
+        answer = client.get_guid_for_name(qualified_name, type_name=type_name)
     except Exception as exc:
-        log.debug("Proposal idempotency lookup failed for %s: %s", qualified_name, exc)
-        return ""
+        if lookup_exception_is_absent(exc):
+            return ""
+        raise ProposalLookupError(lookup_could_not_be_made(qualified_name, exc)) from exc
+    from resource_explorer.egeria_absence import guid_from_answer
+
+    # Found, a real miss (""), or could-not-check: the shared reader. `_as_guid` took any non-blank string
+    # for a GUID and read "Server busy" (whitespace) as a miss, so an odd answer could adopt or create.
+    return guid_from_answer(answer, qualified_name, ProposalLookupError)
 
 
 def publish_proposed_data_class(
@@ -756,7 +772,12 @@ def publish_proposed_data_class(
         kind="data_class", qualified_name=qualified_name,
     )
 
-    existing = _find_existing(designer, qualified_name)
+    try:
+        existing = _find_existing(designer, qualified_name, DATA_CLASS_TYPE_NAME)
+    except ProposalLookupError as exc:
+        result.error = str(exc)
+        log.warning("Proposed Data Class for %s not created: %s", match.column_path, exc)
+        return result
     if existing:
         result.guid = existing
         result.existing_guid = existing
@@ -808,7 +829,12 @@ def publish_proposed_valid_value_set(
         kind="valid_value_set", qualified_name=qualified_name,
     )
 
-    existing = _find_existing(ref_manager, qualified_name)
+    try:
+        existing = _find_existing(ref_manager, qualified_name, VALID_VALUE_DEFINITION_TYPE_NAME)
+    except ProposalLookupError as exc:
+        result.error = str(exc)
+        log.warning("Proposed Valid Value Set for %s not created: %s", match.column_path, exc)
+        return result
     if existing:
         result.guid = existing
         result.existing_guid = existing
@@ -827,10 +853,18 @@ def publish_proposed_valid_value_set(
         result.guid = str(guid)
         result.created = True
 
+    unchecked_members: list[str] = []
     for value in list(match.proposed_values)[:max_members]:
         member_body = build_proposed_valid_value_member_body(qualified_name, value)
         member_qn = member_body["properties"]["qualifiedName"]
-        member_guid = _find_existing(ref_manager, member_qn)
+        try:
+            member_guid = _find_existing(ref_manager, member_qn, VALID_VALUE_DEFINITION_TYPE_NAME)
+        except ProposalLookupError as exc:
+            # This member is not created; the set and the members that did land are still a usable proposal,
+            # but the result says one could not be checked (a partial set is never reported as whole).
+            log.warning("Proposed member %r of %s not created: %s", value, qualified_name, exc)
+            unchecked_members.append(value)
+            continue
         if not member_guid:
             try:
                 member_guid = str(ref_manager.create_valid_value_definition(body=member_body) or "")
@@ -857,6 +891,7 @@ def publish_proposed_valid_value_set(
             continue
         result.member_guids.append(member_guid)
 
+    result.members_not_checked = unchecked_members
     _link_evidence(result, discovery, annotation_guid, match)
     return result
 

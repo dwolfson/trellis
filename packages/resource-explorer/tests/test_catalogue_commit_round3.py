@@ -249,7 +249,8 @@ def test_failed_publish_step_reads_not_published_with_the_cause_and_records_the_
 
 
 def test_success_path_still_says_published(world, fake, monkeypatch):
-    rec = _commit_with(world, fake, monkeypatch, {"report_element_guid": "abcdef12-0000", "report_guid": "abcdef12-0000", "annotation_count": 76})
+    rec = _commit_with(world, fake, monkeypatch, {"report_element_guid": "abcdef12-0000", "report_guid": "abcdef12-0000", "annotation_count": 76,
+                                                  "annotations_in_egeria": 76})
     assert step(rec, "survey_report")["detail"] == "report abcdef12 · 76 annotations published · from the 10-03 survey"
 
 
@@ -293,3 +294,16 @@ def test_a_reused_report_whose_missing_annotations_fail_to_publish_fails_the_ste
                                                   "annotations_in_egeria": 40, "annotation_error": "500 broke"})
     st = step(rec, "survey_report")
     assert st["state"] == "failed" and "missing annotations were not published: 500 broke" in st["detail"]
+
+
+def test_a_fresh_report_short_of_its_annotations_is_failed_with_a_failure_row(world, fake, monkeypatch):
+    """re/lookup-failure-never-creates round 3: 0 of 76 landed is not "done", and no success row is written."""
+    g = "11111111-2222-3333-4444-555555555555"
+    rec = _commit_with(world, fake, monkeypatch, {"report_element_guid": g, "report_guid": g, "annotation_count": 76,
+                                                  "annotations_in_egeria": 0})
+    st = step(rec, "survey_report")
+    assert st["state"] == "failed" and "0 of 76 annotations published" in st["detail"]
+    proofs = world["registry"].list_catalogue_commit_proofs("db")
+    assert [p for p in proofs if p["proof"] == cc.P_REPORT] == []
+    failed = [p for p in proofs if p["proof"] == cc.P_READ_FAILED and p["detail"].get("what") == "RE's own survey report"]
+    assert len(failed) == 1 and "0 of 76 annotations published" in failed[0]["detail"]["error"]

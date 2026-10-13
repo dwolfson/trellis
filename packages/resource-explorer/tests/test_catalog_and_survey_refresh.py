@@ -48,6 +48,9 @@ def surveyor():
     )
     # Bypass connect() — inject mocks directly, as other tests in this suite do.
     s._automated_curation = MagicMock()
+    # A real miss is pyegeria's "No elements found"; a bare MagicMock answer is not one (round 3: odd answers are
+    # could-not-check, never "create").
+    s._automated_curation.get_guid_for_name.return_value = "No elements found"
     s._asset_maker = MagicMock()
     s._discovery = MagicMock()
     return s

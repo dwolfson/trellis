@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator, Optional
@@ -1081,13 +1080,6 @@ def ensure_draft_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dict:
         return {"status": "error", "zone": zone, "error": str(exc)}
 
 
-#: A GUID and nothing else. `get_metadata_element_by_unique_name` returns a
-#: *sentence* when it finds nothing, and there is no documented list of which
-#: sentence — so the only reliable test is whether what came back is shaped like
-#: an identifier.
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-)
 
 
 def _existing_guid(client: Any, qualified_name: str) -> str:
@@ -1107,23 +1099,21 @@ def _existing_guid(client: Any, qualified_name: str) -> str:
     cannot go stale when the message changes. Same reasoning, and the same
     regex, as `EgeriaPublisher._find_element_guid`.
     """
+    from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
     try:
         found = client.get_metadata_element_by_unique_name(qualified_name)
     except Exception as exc:
-        log.debug("egeria: lookup of %r failed — %s", qualified_name, exc)
-        return ""
-    if isinstance(found, dict):
-        candidate = (
-            found.get("elementGUID")
-            or (found.get("elementHeader") or {}).get("guid")
-            or found.get("guid")
-            or ""
-        )
-    elif isinstance(found, str):
-        candidate = found
-    else:
-        return ""
-    return candidate if _UUID_RE.match(candidate.strip()) else ""
+        # Only a real miss is "": a look-up that could not be made raises, so `ensure_draft_zone_exists`
+        # reports an error and creates nothing (it used to create a second GovernanceZone beside one it
+        # could not see).
+        if lookup_exception_is_absent(exc):
+            return ""
+        raise RuntimeError(lookup_could_not_be_made(qualified_name, exc)) from exc
+    from resource_explorer.egeria_absence import guid_from_answer
+
+    # Found, a real miss (""), or could-not-check (raised): one shared reader (an odd answer used to be "").
+    return guid_from_answer(found, qualified_name)
 
 
 def _string_property(value: str) -> dict:

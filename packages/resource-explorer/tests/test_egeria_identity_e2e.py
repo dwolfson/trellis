@@ -265,8 +265,12 @@ def test_the_scheduler_tick_runs_rfa_sync_as_the_daemon(boundary, monkeypatch):
 # ── the outbox: inline drains run as the person; only the background loop is the daemon ─
 
 def _drain_fakes(boundary, monkeypatch):
-    for cls in ("AssetMaker", "AutomatedCuration", "ExternalReferences"):
+    for cls in ("AssetMaker", "ExternalReferences"):
         monkeypatch.setattr(f"pyegeria.{cls}", boundary.fake(cls))
+    # The outbox's pre-create look-up: a real miss (pyegeria's own answer). A missing method used to be read
+    # as a miss too; a look-up that could not be made now creates nothing (re/lookup-failure-never-creates).
+    monkeypatch.setattr("pyegeria.AutomatedCuration", boundary.fake(
+        "AutomatedCuration", get_guid_for_name=lambda *a, **k: "No elements found"))
     monkeypatch.setattr("pyegeria.CollectionManager", boundary.fake(
         "CollectionManager", add_to_collection=lambda *a, **k: None))
     monkeypatch.setattr("pyegeria.omvs.data_discovery.DataDiscovery", boundary.fake("DataDiscovery"))

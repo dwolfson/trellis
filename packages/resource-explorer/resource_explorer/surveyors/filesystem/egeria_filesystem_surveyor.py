@@ -37,6 +37,11 @@ class EgeriaFileSystemSurveyorError(RuntimeError):
 # that's a different, unverified concern from the one this fix addresses.
 
 
+def _published_count(made):
+    """How many annotations Egeria returned a GUID for; None when no per-annotation answer came back."""
+    return sum(1 for g in made if g) if isinstance(made, list) else None
+
+
 class EgeriaFileSystemSurveyor:
     """Catalog filesystems and files in Egeria and publish survey reports."""
 
@@ -128,6 +133,9 @@ class EgeriaFileSystemSurveyor:
 
         # 2. Catalog data files
         file_guids = {}
+        #: rel_path -> why its look-up could not be made, so nothing was created for it. One file that
+        #: cannot be checked is skipped and listed; it does not end the run (as `publish_sub_resources`).
+        files_not_checked: dict[str, str] = {}
         inventory = survey_data.get("inventory", [])
         for file_info in inventory:
             if not file_info.get("is_data_file"):
@@ -137,7 +145,12 @@ class EgeriaFileSystemSurveyor:
             canonical_path = f"{canonical_mount}/{rel_path}"
             
             # Catalog/find the file asset
-            file_guid = self._find_element_guid(canonical_path)
+            try:
+                file_guid = self._find_element_guid(canonical_path)
+            except EgeriaFileSystemSurveyorError as exc:
+                files_not_checked[rel_path] = str(exc)
+                log.warning("Data file %s not cataloged: %s", rel_path, exc)
+                continue
             if not file_guid:
                 try:
                     file_guid = self._create_data_file_asset(file_info, canonical_path, fs_entity.slug)
@@ -230,12 +243,13 @@ class EgeriaFileSystemSurveyor:
         }
 
         report_guid = ""
+        made = []
         try:
             report_guid = self._asset_maker.create_asset(body=body)
             log.info(f"Published SurveyReport in Egeria: {report_guid}")
             
             # Push annotations under the SurveyReport
-            self._create_annotations(annotations, report_guid, fs_entity.slug, surveyed_at)
+            made = self._create_annotations(annotations, report_guid, fs_entity.slug, surveyed_at)
         except Exception as exc:
             log.warning(f"Failed to publish SurveyReport to Egeria: {exc}")
 
@@ -255,7 +269,11 @@ class EgeriaFileSystemSurveyor:
             "filesystem_guid": fs_guid,
             "report_guid": effective_report_guid,
             "file_guids": file_guids,
+            "files_not_checked": files_not_checked,
+            # RE's own count (built and sent); Egeria's is `annotations_in_egeria` (GUIDs returned, None
+            # when RE cannot tell), the same two names every producer uses.
             "annotation_count": len(annotations),
+            "annotations_in_egeria": _published_count(made),
         }
 
     def publish_step_annotations(
@@ -463,7 +481,7 @@ class EgeriaFileSystemSurveyor:
         }
         report_guid = self._asset_maker.create_asset(body=body)
         log.info(f"Published SurveyReport in Egeria: {report_guid}")
-        self._create_annotations(annotations, report_guid, fs_entity.slug, surveyed_at)
+        made = self._create_annotations(annotations, report_guid, fs_entity.slug, surveyed_at)
 
         if registry:
             registry.add_filesystem_survey(
@@ -474,7 +492,8 @@ class EgeriaFileSystemSurveyor:
                 source="egeria-published",
             )
 
-        return {"filesystem_guid": fs_guid, "report_guid": report_guid, "annotation_count": len(annotations)}
+        return {"filesystem_guid": fs_guid, "report_guid": report_guid,
+                "annotation_count": len(annotations), "annotations_in_egeria": _published_count(made)}
 
     def get_survey_reports_by_guid(self, fs_guid: str) -> list[dict]:
         """All SurveyReports linked to this filesystem's asset GUID via the real
@@ -599,7 +618,7 @@ class EgeriaFileSystemSurveyor:
         from resource_explorer.surveyors.annotation_props import publish_annotations
 
         qualified_name_prefix = f"Annotation::FileSystem::{fs_slug}::{surveyed_at}"
-        publish_annotations(
+        return publish_annotations(
             self._discovery, self._find_element_guid,
             annotations, report_guid, qualified_name_prefix,
         )
@@ -618,14 +637,20 @@ class EgeriaFileSystemSurveyor:
 
         return to_string_map(d)
     def _find_element_guid(self, name: str) -> str:
-        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found."""
+        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found.
+
+        '' is the callers' cue to create, so only a real miss returns it ("No elements found", or a typed
+        not-found: `egeria_absence.is_absent`). A look-up that raised for any other reason, or gave no
+        answer, could not be checked: `EgeriaFileSystemSurveyorError` says so and nothing is created. It
+        used to swallow every exception and return '' (AUDIT-PYEGERIA-6.2.2.md, "Not in scope")."""
+        from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
         try:
             result = self._automated_curation.get_guid_for_name(name)
-            if isinstance(result, list) and result:
-                candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-                return candidate if self._UUID_RE.match(candidate or "") else ""
-            if isinstance(result, str) and self._UUID_RE.match(result):
-                return result
-        except Exception:
-            pass
-        return ""
+        except Exception as exc:
+            if lookup_exception_is_absent(exc):
+                return ""
+            raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
+        from resource_explorer.egeria_absence import guid_from_answer
+
+        return guid_from_answer(result, name, EgeriaFileSystemSurveyorError)

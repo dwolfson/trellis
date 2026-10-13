@@ -100,6 +100,11 @@ class OutboxApplyError(RuntimeError):
     attempt or a dead letter."""
 
 
+class OutboxLookupFailed(OutboxApplyError):
+    """The pre-create look-up could not be made, so nothing was sent. Raised `from` the look-up's own
+    exception: the drain reads that cause for a security refusal (dead at once) or a 401 (who was refused)."""
+
+
 class OutboxNotKept(OutboxApplyError):
     """A write a resend cannot fix: the same row carries the same body, so the result would be the same.
 
@@ -298,14 +303,27 @@ def is_security_refusal(exc: Exception) -> bool:
     """True for an Egeria security-connector refusal: an OPEN-METADATA-SECURITY-403-* message, or an
     HTTP 403 on the exception. A bare 401 is NOT one (it can be a stale token and a retry can fix it);
     nor are 5xx, timeouts or network errors."""
-    if SECURITY_REFUSAL_MARKER in str(exc):
-        return True
-    return _http_code_of(exc) == 403
+    for e in _self_and_cause(exc):
+        if SECURITY_REFUSAL_MARKER in str(e) or _http_code_of(e) == 403:
+            return True
+    return False
+
+
+def _self_and_cause(exc: BaseException) -> list:
+    """`exc`, then the exception it was raised from (one level) when that cause is EGERIA's: a pyegeria exception,
+    or whatever an `OutboxLookupFailed` wraps (the look-up's own error). Any other cause (PlatformNotAllowed,
+    EgeriaRefused, an httpx 403 from GitHub) is not read, so it is never called "refused by Egeria's security"."""
+    cause = getattr(exc, "__cause__", None)
+    if not isinstance(cause, BaseException):
+        return [exc]
+    from_egeria = type(cause).__module__.split(".")[0] == "pyegeria"
+    return [exc, cause] if (from_egeria or isinstance(exc, OutboxLookupFailed)) else [exc]
 
 
 def _refusal_sentence(exc: Exception) -> str:
     """Egeria's own message cut to its first sentence (from the 403 error id when the text has one)."""
-    text = " ".join(str(exc).split())
+    marked = [e for e in _self_and_cause(exc) if SECURITY_REFUSAL_MARKER in str(e)]
+    text = " ".join(str(marked[-1] if marked else exc).split())
     at = text.find(SECURITY_REFUSAL_MARKER)
     if at >= 0:
         text = text[at:]
@@ -354,8 +372,15 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
     if kind not in _SELF_RESOLVING_KINDS:
         try:
             found = find_element_guid(qualified_name)
-        except Exception as exc:  # defensive — real _find_element_guid never raises
-            log.debug("Outbox lookup failed for %s (will attempt create): %s", qualified_name, exc)
+        except Exception as exc:
+            # Could not check is not "not there". The look-up raising (unreachable, 401/403, 500, timeout, several
+            # hits, or no answer at all, which the publisher's lookup raises for) used to be read as a miss and
+            # the create went ahead, with Egeria's duplicate refusal the only backstop. Now nothing is sent: an
+            # ordinary failed attempt, retried per policy. A typed not-found is still a real miss.
+            from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
+            if not lookup_exception_is_absent(exc):
+                raise OutboxLookupFailed(lookup_could_not_be_made(qualified_name, exc)) from exc
             found = ""
         if found:
             log.info("Outbox row %s: %s already exists (GUID %s) — adopting, not re-creating",
@@ -783,7 +808,13 @@ def _create_doc_source_publish(clients: "OutboxClients", payload: dict) -> str:
     # to reuse -- rather than trusting our own just-returned result blindly.
     # Closes the live incident by construction: a stale/deleted ref guid can
     # no longer be written back as "done" from this path either.
-    if not ref_guid_exists(ref_guid, clients=clients):
+    try:
+        still_there = ref_guid_exists(ref_guid, clients=clients)
+    except Exception as exc:                 # could not check: not proof either way, so not done
+        raise OutboxApplyError(
+            f"publish_doc_source reported ref {ref_guid} and link {link_guid}, but {exc}; "
+            "not marking done on an unverified guid") from exc
+    if not still_there:
         raise OutboxApplyError(
             f"publish_doc_source reported ref {ref_guid} and link {link_guid}, but "
             f"{ref_guid} does not resolve in Egeria right now -- not marking done on "
@@ -1369,7 +1400,9 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                 # (Brief F: a feedback row reads this as "not permitted" from the stored words.)
                 status = registry.mark_outbox_failed(
                     row["id"],
-                    f"{REFUSED_BY_SECURITY}: {_refusal_sentence(exc)} · {NEEDS_PERMISSION_CHANGE}",
+                    f"{REFUSED_BY_SECURITY}"
+                    f"{' (the look-up before the write; nothing was sent)' if isinstance(exc, OutboxLookupFailed) else ''}"
+                    f": {_refusal_sentence(exc)} · {NEEDS_PERMISSION_CHANGE}",
                     max_attempts=1)
                 summary["dead" if status == "dead" else "failed"] += 1
                 summary["security_refused"] = summary.get("security_refused", 0) + 1
@@ -1460,7 +1493,7 @@ def _describe_refusal(exc: Exception, clients: "OutboxClients") -> str:
     reads as "no user was sent" and sends the next reader after the wrong cause.
     """
     text = str(exc)
-    if type(exc).__name__ != "PyegeriaUnauthorizedException":
+    if not any(type(e).__name__ == "PyegeriaUnauthorizedException" for e in _self_and_cause(exc)):
         return text
     who = getattr(clients, "acting_as", "") or "(not recorded)"
     return (f"{text} [Egeria refused the write for service identity {who!r}; pyegeria shows an "
