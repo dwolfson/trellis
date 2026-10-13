@@ -292,6 +292,7 @@ function render() {
       a saved GitHub search, or a curated list of repos (for foundations that spread projects across many orgs,
       like Eclipse, or your own enterprise repos). Running a source only shows candidates for review here — it
       does not register anything until you pick which ones and confirm.</p>
+    <p data-github-env-note class="mt-s1 max-w-[65ch] text-caveat text-ink-muted">GitHub's base URL comes from <code class="font-mono">GITHUB_BASE_URL</code> in .env. It is not set here.</p>
     <div class="mt-s3 rounded-sm border border-rule">${sourcesTableHtml()}</div>
     ${addFormHtml()}
     ${runPanelHtml()}`;

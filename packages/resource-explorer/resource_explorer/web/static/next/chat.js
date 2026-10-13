@@ -562,6 +562,27 @@ function evidenceStateHtml() {
   return storedLine + gapBlock + ranLine;
 }
 
+/** One manifest entry as a row. A plain value prints as is; a list prints its length; an OBJECT (`lists`,
+ *  `coverage`, ...) prints a short summary (how many entries, and the first few names) and keeps the whole
+ *  thing on demand under "details". Never `String(object)`, which is "[object Object]". */
+export function manifestValueSummary(v) {
+  if (Array.isArray(v)) return `${v.length} item(s)`;
+  if (v && typeof v === 'object') {
+    const keys = Object.keys(v);
+    const names = keys.slice(0, 3).join(', ');
+    return `${keys.length} ${keys.length === 1 ? 'entry' : 'entries'}${keys.length ? `: ${names}${keys.length > 3 ? ', …' : ''}` : ''}`;
+  }
+  return String(v);
+}
+
+export function manifestRowHtml(k, v) {
+  const isObj = v && typeof v === 'object' && !Array.isArray(v);
+  return `<div data-manifest-row="${esc(k)}" class="mb-[3px]"><span class="font-mono text-accent-on-dark">${esc(k)}</span>
+        <span class="text-chrome-muted"> · </span>${esc(manifestValueSummary(v))}${isObj
+    ? ` <details data-manifest-detail class="ml-s2 inline-block align-top"><summary class="cursor-pointer text-chrome-muted">details</summary>
+        <pre class="mt-s1 max-h-[30vh] overflow-auto whitespace-pre-wrap text-chip text-chrome-ink">${esc(JSON.stringify(v, null, 2))}</pre></details>` : ''}</div>`;
+}
+
 function drawCompile() {
   const { turn, compiled, rechecked } = compileView;
   const forWhat = turn.slug || '—';
@@ -569,8 +590,7 @@ function drawCompile() {
   const manifestRows = Object.entries(manifest).filter(([k, v]) => k !== 'gaps' && k !== 'packed' && (
     Array.isArray(v) ? v.length : v != null && v !== ''));
   const manifestHtml = manifestRows.length
-    ? manifestRows.map(([k, v]) => `<div class="mb-[3px]"><span class="font-mono text-accent-on-dark">${esc(k)}</span>
-        <span class="text-chrome-muted"> · </span>${esc(Array.isArray(v) ? `${v.length} item(s)` : String(v))}</div>`).join('')
+    ? manifestRows.map(([k, v]) => manifestRowHtml(k, v)).join('')
     : `<div class="text-chip text-chrome-muted">The manifest carried no other populated keys.</div>`;
   const text = String(compiled.text || '');
   const derivation = compiled.derivation;

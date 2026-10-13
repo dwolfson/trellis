@@ -33,7 +33,9 @@ export function canRetry(row) {
 
 function stateCell(r, max) {
   const [glyph, tone, word] = CUE[r.status] || ['·', 'text-ink-muted', r.status || 'unknown'];
-  const tries = max ? `${r.attempts}/${max}` : `${r.attempts}`;
+  // A success with no retries is "first try": "done 0/8" reads as zero attempts on a write that went through.
+  const tries = r.status === 'done' && !(Number(r.attempts) > 0) ? 'first try'
+    : max ? `${r.attempts}/${max}` : `${r.attempts}`;
   return `<span class="${tone}">${glyph} ${esc(word)}</span> <span class="tnum text-provenance text-ink-muted">${esc(tries)}</span>`;
 }
 

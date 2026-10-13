@@ -66,6 +66,7 @@ import {
 // (still called from within it, via `context.js`'s shared pieces) even
 // though app.js itself no longer calls `renderEnrichment` directly.
 import { renderContext } from '/static/next/stages/context.js';
+import { inPageConfirm, inPageNotice } from '/static/next/confirm-dialog.js';
 import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
@@ -165,7 +166,7 @@ import {
   getSchedules,
   getScoutingOverview,
   getSurveySummary,
-  resolveEgeriaLink,
+  resolveEgeriaLink, listStaleLinkages,
   listActivity,
   listAnalyses,
   listDatabases,
@@ -3380,6 +3381,12 @@ export function resourceHeaderHtml(slug) {
       <div data-credential-scope-line class="mt-s1 text-provenance ${line.thin ? 'text-accent-ink' : 'text-ink-muted'}">${esc(line.text)}</div>`;
   }
 
+  // The stale-link banner (PI-052) for ANY resource type. It shows only when the stale-link read Admin → Egeria
+  // Links uses (`GET /api/egeria/linkage/stale`) lists this resource; a repository's own scouting-overview flag
+  // (which also carries the dead GUID) counts too. Neither read: no banner.
+  const staleRow = state.staleLink?.slug === slug ? state.staleLink.row : null;
+  const staleOv = ov?.egeria_link_stale ? ov
+    : staleRow ? { egeria_link_stale: true, egeria_link_stale_guid: staleRow.stale_guid || '', published_state: ov?.published_state } : null;
   return `
     <div class="flex flex-wrap items-baseline gap-s3">
       <h3 class="m-0 font-heading text-name font-normal">${esc(name)}</h3>
@@ -3399,7 +3406,7 @@ export function resourceHeaderHtml(slug) {
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
     ${credentialBanner}
-    ${state.resourceType === 'repo' ? staleLinkBannerHtml(ov) + scoutingTilesHtml(ov) + scoutingSignalHtml(state.scoutingSignal?.slug === slug ? state.scoutingSignal : null) : ''}
+    ${staleLinkBannerHtml(staleOv)}${state.resourceType === 'repo' ? scoutingTilesHtml(ov) + scoutingSignalHtml(state.scoutingSignal?.slug === slug ? state.scoutingSignal : null) : ''}
     ${state.resourceType === 'db' ? changeCredentialsLineHtml(p) : ''}
     ${isCredentialUnreadable(p) ? `<div class="mt-s1 text-provenance" data-credential-banner>${credentialMarkHtml(p)} — surveys and runs are disabled until the credential is re-entered.</div>` : ''}
     <div id="resource-action" class="mt-s2"></div>`;
@@ -3664,11 +3671,19 @@ export function bindResourceHeader() {
   // PI-052: the stale-link banner's three repairs. Each ends by re-reading the overview so the header
   // shows what the server now says, not what the click implied.
   bindStaleLinkBanner(el, {
-    resolve: (action) => resolveEgeriaLink('repo', state.selectedSlug, action),
-    confirmWrite: (choice) => window.confirm(`${choice.label}?\n\n${choice.sentence}`),
+    resolve: (action) => resolveEgeriaLink(apiEntityType(state.resourceType), state.selectedSlug, action),
+    confirmWrite: (choice) => inPageConfirm({ title: `${choice.label} ${state.selectedSlug}?`, message: choice.sentence, confirmLabel: choice.label }),
     onDone: async (_result, error) => {
       const slug = state.selectedSlug;
-      try { state.overview = await getScoutingOverview(slug); } catch { state.overview = null; }
+      if (state.resourceType === 'repo') {
+        try { state.overview = await getScoutingOverview(slug); } catch { state.overview = null; }
+      }
+      // Re-read the stale list too: a resolved link is gone from it, so the banner leaves.
+      try {
+        const rows = await listStaleLinkages();
+        const et = apiEntityType(state.resourceType);
+        state.staleLink = { slug, row: (rows || []).find((r) => r.entity_slug === slug && r.entity_type === et) || null };
+      } catch { state.staleLink = null; }
       const host = $('resource-header');
       if (host && state.selectedSlug === slug) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
       if (error && state.selectedSlug === slug && $('resource-action')) {
@@ -3676,6 +3691,7 @@ export function bindResourceHeader() {
         $('resource-action').innerHTML = `<div data-repair-failed class="text-caveat text-ink">${esc(error.message || 'The repair did not finish')}.
           The old link is already forgotten, so Publish to Egeria (Curate) can create a fresh one.</div>`;
       }
+      if (error) inPageNotice({ title: 'The repair did not finish', message: `${error.message || 'The server could not be reached'}. The old link is already forgotten, so Publish to Egeria (Curate) can create a fresh one.` });
     },
   });
 
@@ -4171,7 +4187,17 @@ function bindSchemaTreeFilter() {
 const _SCHEMA_SHORTFALL_LABELS = {
   no_access: 'no access', structure_only: 'structure only', staging: 'staging (by name)',
   empty: 'empty', no_tables: 'no tables', not_measured: 'rows not measured',
+  views_only: 'views only',
 };
+
+/** Any classification word the table above does not know: never the raw snake_case code on screen. */
+function schemaShortfallWord(c) { return _SCHEMA_SHORTFALL_LABELS[c] || String(c ?? '').replace(/_/g, ' '); }
+
+/** Size tail of a schema stamp, from the one field the size comes from (`bytes_total`). A size never read says
+ *  so; it is not left out. The index share keeps its own words. */
+function schemaSizeTail(s) {
+  return `${s.bytes_total != null ? ` · ${fmtBytes(s.bytes_total)}` : ' · size not read'}${'index_bytes_total' in s ? (s.index_bytes_total == null ? ' · index not read' : ` (index ${fmtBytes(s.index_bytes_total)})`) : ''}`;
+}
 
 //: Table-kind labels -- quiet, muted words distinguishing a base table from
 //: a view/materialized view (Dan's gate, 2026-09-27: he asked for a way to
@@ -4198,10 +4224,10 @@ export function schemaTreeHtml(schemas) {
     // `measured` is a schema the Egeria native survey listed: it carries no row total
     // of its own, so the stamp says tables and, when known, size -- never a made-up 0.
     const stamp = s.classification === 'data'
-      ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}`
+      ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}${schemaSizeTail(s)}`
       : s.classification === 'measured'
-        ? `${s.table_count ?? '?'} table(s)${s.row_total != null ? ` · ${Number(s.row_total).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}` : ''}${s.bytes_total != null ? ` · ${fmtBytes(s.bytes_total)}` : ''}${'index_bytes_total' in s ? (s.index_bytes_total == null ? ' · index not read' : ` (index ${fmtBytes(s.index_bytes_total)})`) : ''}`
-        : `${s.table_count} table(s) — ${_SCHEMA_SHORTFALL_LABELS[s.classification] || s.classification}`;
+        ? `${s.table_count ?? '?'} table(s)${s.row_total != null ? ` · ${Number(s.row_total).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}` : ''}${schemaSizeTail(s)}`
+        : `${s.table_count} table(s) — ${schemaShortfallWord(s.classification)}`;
     const schemaSrc = nodeSourceLine(s);
     // Found live, `laz_local_adventureworks`, 2026-09-27 (Dan's gate):
     // this used to be the schema name PLUS every table/column name
@@ -4932,8 +4958,11 @@ export function definitionRunsHtml(c) {
 export function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
   const produces = producesTypes(c);
-  return `<div class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
-    <div class="min-w-0 flex-1">
+  // The text column asks for a 24rem basis (flex: 1 1 24rem), not 0: with a zero basis it was never wrapped onto its
+  // own line, it was squeezed to a sliver at ~800 px (one word per line, the title over "6 steps"). Now the
+  // step count, last run and button drop to the next line once the pane is too narrow for the text beside them.
+  return `<div data-def-row class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
+    <div data-def-text class="min-w-0 flex-1" style="flex:1 1 24rem">
       <div class="text-answer text-ink">${esc(c.display_name || c.qualified_name)}</div>
       ${c.description ? `<div class="text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>` : ''}
       <div class="mt-[2px] font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}${
@@ -5036,6 +5065,20 @@ function primeRepoHeaderReads(slug) {
   // always gets a 404") -- same class of bug as the earlier 'db'/'database'
   // resourceType mismatch: gate the call so it is never issued for a
   // resource type it doesn't apply to.
+  // The stale-link read Admin → Egeria Links uses, for ANY resource type: the banner with the three repairs shows
+  // only when it lists this resource. Failing to read it shows no banner (never a guessed one).
+  if (state.staleLink?.slug !== slug) {
+    state.staleLink = null;
+    listStaleLinkages()
+      .then((rows) => {
+        if (state.selectedSlug !== slug) return;
+        const et = apiEntityType(state.resourceType);
+        state.staleLink = { slug, row: (rows || []).find((r) => r.entity_slug === slug && r.entity_type === et) || null };
+        const host = $('resource-header');
+        if (host && state.staleLink.row) { host.innerHTML = resourceHeaderHtml(slug); bindResourceHeader(); }
+      })
+      .catch(() => { /* no banner without the read */ });
+  }
   if (state.resourceType === 'repo' && state.overview?.slug !== slug) {
     state.overview = null;
     getScoutingOverview(slug)

@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { autoAnswerConfirm } from './confirm-kit.mjs';
 
 ensureLoaderRegistered();
 const tick = () => new Promise((r) => setTimeout(r, 15));
@@ -16,8 +17,10 @@ async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false,
   const calls = [];
   let rows = [...stale];
   const confirms = [];
-  window.confirm = (m) => { confirms.push(m); return confirmAnswer; };
+  // The app's in-page confirm (confirm-dialog.js), not a native window.confirm.
+  window.confirm = () => { throw new Error('native window.confirm must not be used'); };
   globalThis.confirm = window.confirm;
+  autoAnswerConfirm(document, { answer: confirmAnswer, asked: confirms });
   globalThis.fetch = async (url, opts = {}) => {
     const method = opts.method || 'GET';
     const body = opts.body ? JSON.parse(opts.body) : undefined;

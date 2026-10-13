@@ -144,6 +144,8 @@ export const STATES = {
   // glyph with `unrun`, told apart (in worklist.js's CELL) by colour alone,
   // which is exactly the thing the reply's palette rule forbids.
   'no-surveyor': { glyph: '◌', family: 'no-answer-here', word: 'no reader yet', tone: 'text-state-gap' },
+  // A count of things still awaiting a choice (Contents tab "33 undecided"): ✓ would say the opposite.
+  undecided_count: { glyph: '◌', family: 'no-answer-here', word: 'undecided', tone: 'text-ink-muted' },
   // RESERVED for G2/G3.
   no_reader:               { glyph: '◌', family: 'no-answer-here', word: 'no reader yet', tone: 'text-state-gap' },
   containment_undeclared:  { glyph: '◌', family: 'no-answer-here', word: "this engine's grouping isn't declared yet", tone: 'text-state-gap' },

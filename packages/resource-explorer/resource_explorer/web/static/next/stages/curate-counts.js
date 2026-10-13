@@ -72,9 +72,9 @@ export function structureAwaiting(kind, plan, failed = false) {
 
 /** A count as { cue, word }: the cue key is one of glyphs.js's state keys (the caller draws it with its own
  *  cue helper), the word is the short word. `noun` is "chosen", "undecided", "awaiting you". */
-export function countWords(c, noun) {
+export function countWords(c, noun, countCue = 'measured') {
   switch (c.state) {
-    case 'count': return { cue: c.n === 0 ? 'measured_zero' : 'measured', word: `${c.n} ${noun}` };
+    case 'count': return { cue: c.n === 0 ? 'measured_zero' : countCue, word: `${c.n} ${noun}` };
     case 'reading': return { cue: 'running', word: 'reading' };
     case 'unknown': return { cue: 'not_measured', word: 'not counted' };
     case 'failed': return { cue: 'error', word: 'not read' };
@@ -86,7 +86,7 @@ export function countWords(c, noun) {
 export const TAB_COUNTS = {
   curate_contents: [
     { fn: (ctx) => contentsChosen(ctx.kind, ctx.view, ctx.viewFailed), noun: 'chosen' },
-    { fn: (ctx) => contentsUndecided(ctx.kind, ctx.view, ctx.viewFailed), noun: 'undecided' },
+    { fn: (ctx) => contentsUndecided(ctx.kind, ctx.view, ctx.viewFailed), noun: 'undecided', cue: 'undecided_count' },
   ],
   curate_structure: [
     { fn: (ctx) => structureAwaiting(ctx.kind, ctx.plan, ctx.planFailed), noun: 'awaiting you' },
@@ -96,9 +96,9 @@ export const TAB_COUNTS = {
 /** The words a tab label appends, as [{ cue, word, state }]. `ctx` = { kind, view, plan }. Empty for a tab
  *  with no counts. */
 export function tabCounts(tabId, ctx) {
-  return (TAB_COUNTS[tabId] || []).map(({ fn, noun }) => {
+  return (TAB_COUNTS[tabId] || []).map(({ fn, noun, cue }) => {
     const c = fn(ctx || {});
-    return { ...countWords(c, noun), state: c.state };
+    return { ...countWords(c, noun, cue), state: c.state };
   });
 }
 

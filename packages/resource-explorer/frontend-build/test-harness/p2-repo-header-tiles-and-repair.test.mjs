@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { autoAnswerConfirm } from './confirm-kit.mjs';
 
 const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
@@ -30,6 +31,7 @@ function backend({ resolveFails = false } = {}) {
         ? { ok: false, status: 502, statusText: 'bad', json: async () => ({ detail: 'Link cleared, but republish failed' }) }
         : ok({ status: 'ok', next_step: 'Re-created in Egeria as SurveyReport g1.' });
     }
+    if (u === '/api/egeria/linkage/stale') return ok([]);
     if (u.includes('/scouting-overview')) return ok({ ...OV, egeria_link_stale: false });
     return ok({});
   };
@@ -45,7 +47,7 @@ async function setUp(opts = {}) {
   globalThis.history = window.history;
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
   const asked = [];
-  window.confirm = (m) => { asked.push(m); return opts.confirm !== false; };
+  autoAnswerConfirm(document, { answer: opts.confirm !== false, asked });
   const api = await import('/static/re-api.js');
   api.clearCache();
   const app = await import('/static/next/app.js');
@@ -162,11 +164,10 @@ test('every choice asks first, including Forget the link; declining sends nothin
   const t = await setUp({ confirm: false });
   t.app.state.overview = { ...OV, egeria_link_stale: true };
   t.render();
-  for (const a of ['republish', 'resurvey', 'discard']) t.host.querySelector(`[data-link-repair="${a}"]`).click();
-  await tick();
+  for (const a of ['republish', 'resurvey', 'discard']) { t.host.querySelector(`[data-link-repair="${a}"]`).click(); await tick(); }
   assert.equal(t.asked.length, 3);
-  assert.match(t.asked[2], /Forget the link/);
-  assert.match(t.asked[2], /Egeria is not contacted/);
+  assert.match(t.asked[2], /Discard link/);
+  assert.match(t.asked[2], /Writes nothing to Egeria/);
   assert.equal(t.calls.filter((c) => c.method === 'POST').length, 0);
 });
 
