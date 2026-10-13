@@ -106,7 +106,7 @@ class TestPlacementRailKeepsProvenanceOnly:
         because ASSESSMENT-CHAT.md §2 says "prose, chart, diagram, table --
         all four forms get the width they were built for.\""""
         chat = _chat()
-        submit = chat[chat.index("export async function submitAsk()"):]
+        submit = chat[chat.index("export async function submitAsk("):]
         # promoteChatTurn is called once to open the pane immediately, and
         # again after the answer (streamed or not) has fully landed.
         assert submit.count("promoteChatTurn(turn)") >= 2
@@ -154,20 +154,20 @@ class TestUseTheStream:
 
     def test_submitask_consumes_the_stream_by_default(self):
         chat = _chat()
-        submit = chat[chat.index("export async function submitAsk()"):]
+        submit = chat[chat.index("export async function submitAsk("):]
         assert "for await (const evt of askStream(q, opts))" in submit
         assert "evt.t === 'chunk'" in submit
         assert "evt.t === 'done'" in submit
 
     def test_a_stream_failure_before_any_chunk_falls_back_to_the_blocking_ask(self):
         chat = _chat()
-        submit = chat[chat.index("export async function submitAsk()"):]
+        submit = chat[chat.index("export async function submitAsk("):]
         assert "sawChunk" in submit
         assert "await ask(q, opts)" in submit
 
     def test_partial_text_is_kept_rather_than_discarded_on_a_late_failure(self):
         chat = _chat()
-        submit = chat[chat.index("export async function submitAsk()"):]
+        submit = chat[chat.index("export async function submitAsk("):]
         assert "stream ended early" in submit
 
     def test_streaming_text_updates_the_open_pane_without_a_full_rerender(self):

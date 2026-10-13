@@ -46,7 +46,7 @@ import {
 } from '/static/re-api.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
-  state, esc, icon, tnum, $,
+  state, esc, icon, tnum, $, selectResourceFromChat,
   ensureRailShowing, railFrame, railClaim, openMembers,
   promoteToPane, answerForm, copyAsEvidence, apiEntityType,
   feedbackVotesHtml,
@@ -128,7 +128,7 @@ export function renderRail() {
       <span class="text-caps text-chrome-muted">⌘/Ctrl + Enter</span>
     </div>`;
 
-  $('ask-submit').addEventListener('click', submitAsk);
+  $('ask-submit').addEventListener('click', () => submitAsk());
   $('ask-compile').addEventListener('click', previewCompile);
   $('ask-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitAsk();
@@ -725,7 +725,12 @@ function structuredTableHtml(turn) {
         </div>`).join('')}
       </div></div>`);
   }
+  if (turn.resourceQuestion) out.push(otherResourceHtml(turn));
   if (turn.aliasSuggestion) out.push(aliasHtml(turn));
+  if (turn.resourceCheckError) {
+    out.push(`<div class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caveat text-ink-muted">${cue('error', 'not checked', turn.resourceCheckError)}
+      <span>could not check whether the question names another resource</span></div>`);
+  }
   return out.join('');
 }
 
@@ -742,18 +747,21 @@ function aliasHtml(turn) {
     <span class="font-mono text-ink">${esc(a.candidate_name)}</span> (<span class="font-mono">${esc(a.candidate_slug)}</span>)?</span>`;
   let tail;
   if (st.state === 'saved') {
-    tail = `${cue('measured', 'remembered', 'Saved, and read back from the alias list.')} <span data-alias-saved>“${esc(a.term)}” will resolve to ${esc(a.candidate_slug)} in future questions.</span>`;
+    tail = `${cue('measured', 'remembered', 'Saved, and read back from the alias list.')} <span data-alias-saved>“${esc(a.term)}” will resolve to ${esc(a.candidate_slug)} in future questions.</span>${turn.held ? ` ${cue('running', 'asking', 'Asking the question again on the resource you chose.')}` : ''}`;
   } else if (st.state === 'conflict') {
     tail = `${cue('partial', `already used for ${st.other}`, 'This name already points at another resource. Moving it changes what it means in every future question.')}
       <button type="button" data-alias-move class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink">Move it here</button>
       <button type="button" data-alias-no class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Leave it</button>`;
   } else if (st.state === 'declined') {
-    tail = `${cue('optional', 'not remembered', 'You said no. Nothing was saved.')} <span>asked again next time</span>`;
+    tail = `${cue('optional', 'not remembered', 'You said no. Nothing was saved.')} <span>${turn.held ? 'asked on the current resource' : 'asked again next time'}</span>`;
   } else if (st.state === 'saving') {
     tail = cue('running', 'saving');
+  } else if (st.state === 'once') {
+    tail = cue('running', 'asking', `Asking the question again on ${a.candidate_name}. Nothing was saved.`);
   } else {
     tail = `${st.state === 'error' ? `${cue('error', 'not saved', st.msg)} <span class="text-state-warn">${esc(st.msg)}</span> ` : cue('human', 'asks you', 'Remember this name for this resource?')}
       <button type="button" data-alias-yes class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink">Yes, remember it</button>
+      <button type="button" data-alias-once class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[8px] py-[1px] text-caveat text-ink">Ask about ${esc(a.candidate_name)} once</button>
       <button type="button" data-alias-no class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">No</button>`;
   }
   return `<div data-alias-box class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caveat text-ink-muted">${head} ${tail}</div>`;
@@ -770,6 +778,7 @@ async function confirmAliasSuggestion(turn, { move = false } = {}) {
     const want = normaliseAlias(a.term);
     const found = (held.aliases || []).some((x) => x.alias === want && x.project_slug === a.candidate_slug);
     turn.aliasState = found ? { state: 'saved' } : { state: 'error', msg: 'The save went through but the alias is not in the list the server holds.' };
+    if (found && turn.held) { redrawAlias(turn); await askAgainOn(turn, a.candidate_slug, a.candidate_type); return; }
   } catch (err) {
     const held = err.status === 409 ? /already used for (.+)$/.exec(err.message) : null;
     if (held) { turn.aliasState = { state: 'conflict', other: held[1] }; redrawAlias(turn); return; }
@@ -789,7 +798,74 @@ function wireAlias(turn) {
   const box = document.querySelector('#chat-turn-footer [data-alias-box]');
   box?.querySelector('[data-alias-yes]')?.addEventListener('click', () => confirmAliasSuggestion(turn));
   box?.querySelector('[data-alias-move]')?.addEventListener('click', () => confirmAliasSuggestion(turn, { move: true }));
-  box?.querySelector('[data-alias-no]')?.addEventListener('click', () => { turn.aliasState = { state: 'declined' }; redrawAlias(turn); });
+  box?.querySelector('[data-alias-once]')?.addEventListener('click', async () => {
+    const a = turn.aliasSuggestion;
+    turn.aliasState = { state: 'once' }; redrawAlias(turn);
+    await askAgainOn(turn, a.candidate_slug, a.candidate_type);
+  });
+  box?.querySelector('[data-alias-no]')?.addEventListener('click', async () => {
+    turn.aliasState = { state: 'declined' }; redrawAlias(turn);
+    if (turn.held) await askAgainOn(turn, turn.slug, apiToUiType(turn.entityType), { keep: true });
+  });
+}
+
+/* ── a scoped question that names ANOTHER resource (owner ruling 2026-10-13) ──
+ * The server held the turn: no answer was composed for the wrong resource. Chat stays scoped, so the
+ * person chooses — ask about the named one (switch, then ask again), or keep this one (ask again as
+ * written, with the check skipped). The switch is read back from the app state before the question is
+ * re-asked, never assumed. */
+const apiToUiType = (t) => (t === 'database' ? 'db' : (t || 'repo'));
+
+/** Re-ask `turn.question` on `slug`. Switches the selection first (and says so if it did not take);
+ *  `keep` re-asks on the current scope with the name check skipped. */
+async function askAgainOn(turn, slug, type, { keep = false } = {}) {
+  if (!keep) {
+    const uiType = apiToUiType(type);
+    const switched = await selectResourceFromChat(uiType, slug);
+    if (!switched) {
+      turn.rqState = { state: 'error', msg: `Could not switch to ${slug}.` };
+      redrawResourceQuestion(turn);
+      return;
+    }
+  }
+  await submitAsk({ question: turn.question, skipResourceCheck: true });
+}
+
+function otherResourceHtml(turn) {
+  const r = turn.resourceQuestion;
+  const st = turn.rqState || { state: 'asking' };
+  const head = `<span data-rq-sentence>You asked about <span class="font-mono text-ink">${esc(r.named_name)}</span>; this chat is on <span class="font-mono">${esc(r.scoped_slug)}</span>.</span>`;
+  let tail;
+  if (st.state === 'switching') {
+    tail = cue('running', 'asking', `Asking the question again on ${r.named_name}.`);
+  } else if (st.state === 'kept') {
+    tail = cue('optional', `kept ${r.scoped_slug}`, 'Asked again on the resource this chat is on.');
+  } else {
+    tail = `${st.state === 'error' ? `${cue('error', 'not switched', st.msg)} ` : cue('human', 'asks you', 'Nothing was answered yet: the question names a different resource than this chat is on.')}
+      <button type="button" data-rq-switch class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink">Ask about ${esc(r.named_name)}</button>
+      <button type="button" data-rq-keep class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[8px] py-[1px] text-caveat text-ink">Keep ${esc(r.scoped_slug)}</button>`;
+  }
+  return `<div data-resource-question-box class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caveat text-ink-muted">${head} ${tail}</div>`;
+}
+
+function redrawResourceQuestion(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-resource-question-box]');
+  if (!box) return;
+  box.outerHTML = otherResourceHtml(turn);
+  wireResourceQuestion(turn);
+}
+
+function wireResourceQuestion(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-resource-question-box]');
+  box?.querySelector('[data-rq-switch]')?.addEventListener('click', async () => {
+    const r = turn.resourceQuestion;
+    turn.rqState = { state: 'switching' }; redrawResourceQuestion(turn);
+    await askAgainOn(turn, r.named_slug, r.named_type);
+  });
+  box?.querySelector('[data-rq-keep]')?.addEventListener('click', async () => {
+    turn.rqState = { state: 'kept' }; redrawResourceQuestion(turn);
+    await askAgainOn(turn, turn.slug, turn.entityType, { keep: true });
+  });
 }
 
 /* ── the analyses behind a chat answer: run one, or schedule it (PI-118) ──
@@ -989,6 +1065,7 @@ function renderPromotedFooter(turn, i) {
   }));
   footer.querySelector('[data-act="open-compile"]')?.addEventListener('click', () => openCompile(turn));
   wireAlias(turn);
+  wireResourceQuestion(turn);
   wireRunnable(turn);
   // Read the schedules once per turn (the footer redraws on a vote; the rows keep what they read).
   if ((turn.runnable || []).some((r) => (r.sched || {}).state === 'unread')) loadRunnableSchedules(turn);
@@ -1026,6 +1103,10 @@ function applyAnswer(turn, body) {
   turn.symbolTable = body.symbol_table || null;
   turn.compareSymbols = body.compare_symbols || null;
   turn.aliasSuggestion = body.alias_suggestion || null;
+  // A scoped question that named ANOTHER resource: held, not answered (see aliasHtml / otherResourceHtml).
+  turn.resourceQuestion = body.resource_question || null;
+  turn.held = Boolean(body.held);
+  turn.resourceCheckError = body.resource_check_error || '';
   turn.runnable = gapRunnable(turn.compiled);
 }
 
@@ -1036,11 +1117,11 @@ function applyAnswer(turn, body) {
  *  already built). Falls back to the blocking `ask()` only when the stream
  *  itself fails before any text arrived, so a proxy or browser that cannot
  *  do SSE still gets an answer rather than nothing. */
-export async function submitAsk() {
+export async function submitAsk({ question = '', skipResourceCheck = false } = {}) {
   const input = $('ask-input');
-  const q = input.value.trim();
+  const q = (question || input.value).trim();
   if (!q) return;
-  input.value = '';
+  if (!question) input.value = '';
 
   // `entityType` is pinned at the moment the turn is asked, same as `slug` —
   // `state.resourceType` can change before the vote handler below reads it
@@ -1064,6 +1145,7 @@ export async function submitAsk() {
     entityType: apiEntityType(state.resourceType),
     perspectives: state.activePerspectives,
     sessionId: sessionId(),
+    skipResourceCheck,
   };
   let sawChunk = false;
   try {
@@ -1077,6 +1159,7 @@ export async function submitAsk() {
           response: turn.answer, intent: evt.intent, query_hash: evt.hash, cached: evt.cached,
           chart: evt.chart, compiled: evt.compiled, symbol_table: evt.symbol_table,
           compare_symbols: evt.compare_symbols, alias_suggestion: evt.alias_suggestion,
+          resource_question: evt.resource_question, held: evt.held, resource_check_error: evt.resource_check_error,
         });
       }
     }
