@@ -12799,9 +12799,11 @@ class ProjectRegistry:
                         if t == ts and analysis_id in step_owner.get(k, [])}
             result[analysis_id] = {
                 "last_run_at": ts,
-                # step_runs rows are written when a step finishes; they do not
-                # carry a status, so none is claimed beyond "recorded".
-                "last_run_status": "ok",
+                # step_runs rows are also written for a step that RAISED
+                # (survey_orchestrator.py: record() sits outside the try, "a
+                # step that RAISED is still measured") and carry no outcome, so
+                # success is not claimed: the distinct word is "recorded".
+                "last_run_status": "recorded",
                 "last_run_via": "step_runs",
                 "last_run_partial": len(ran_keys) < owned_counts.get(analysis_id, 0),
             }

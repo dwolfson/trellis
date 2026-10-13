@@ -4821,7 +4821,9 @@ function lastRunHtml(c) {
   const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
   const ok = (c.last_run_status || '') === 'ok';
   const errors = c.last_run_errors || [];
-  const warn = !ok && c.last_run_status
+  // "recorded" = a step_runs row proves it ran, not that it succeeded: no
+  // success cue, but not a failure either, so no warning glyph.
+  const warn = !ok && c.last_run_status && c.last_run_status !== 'recorded'
     ? (errors.length
         ? `<button type="button" data-run-errors="${esc(c.qualified_name || '')}"
              class="cursor-pointer bg-transparent text-state-warn underline decoration-dotted"
@@ -5569,6 +5571,7 @@ function analysisRowGlyph(row) {
   const s = String(row.last_run_status || '').toLowerCase();
   if (s === 'success' || s === 'ok' || s === '') return factGlyph('measured');
   if (s === 'failure' || s === 'error' || s === 'failed') return factGlyph('error');
+  if (s === 'recorded') return factGlyph('unclassified');   // ran; outcome not on record
   return factGlyph('measured');
 }
 

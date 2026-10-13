@@ -60,6 +60,29 @@ def test_card_and_compile_agree_that_cve_scan_and_dependency_support_ran(registr
     assert not gap_keys & {"cve_scan", "dependency_support"}
 
 
+def test_a_step_runs_only_credit_claims_it_ran_not_that_it_succeeded(registry):
+    """step_runs rows exist for a step that raised too (survey_orchestrator
+    records outside the try), so the credit must not carry status 'ok'."""
+    runs = registry.get_analysis_last_run("repo", "marquez")
+    for aid in ("cve_scan", "dependency_support"):
+        assert runs[aid]["last_run_via"] == "step_runs"
+        assert runs[aid]["last_run_status"] == "recorded"
+
+
+def test_a_step_runs_credit_never_overrides_a_logged_error(registry):
+    """An activity_log row that names the steps and says error stays as is
+    when it is at least as new as the step_runs snapshot."""
+    import json
+    registry.write_activity(ActivityEntry(
+        id="s2", ts="2026-10-12T10:00:00+00:00", operation="survey",
+        intent="assessment", entity_type="repo", entity_slug="marquez",
+        detail=json.dumps({"surveyed_at": "2026-10-12T10:00:00", "steps": [
+            {"step": "repo_cve_scan", "re_analysis_step": "repo_cve_scan",
+             "status": "error"}]})))
+    run = registry.get_analysis_last_run("repo", "marquez")["cve_scan"]
+    assert run["last_run_status"] == "error" and run["last_run_via"] == "survey"
+
+
 def test_an_analysis_with_no_run_and_no_results_is_a_compile_gap_and_never_run(registry):
     # No step_runs row and no findings for repo_license_classification.
     f = FactLayer(registry).fact("marquez", "license_classification")
