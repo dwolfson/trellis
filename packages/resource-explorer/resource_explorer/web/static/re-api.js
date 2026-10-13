@@ -1204,6 +1204,10 @@ export const listSurveyResultBoards = (slug, stage = '', { entityType } = {}) =>
   return get(`${_surveyResultsPath(entityType, slug)}/boards${q ? `?${q}` : ''}`);
 };
 
+/** The Analytic Library's curation_coverage for one resource (read-only; never an error for "not installed"). */
+export const getCurationCoverage = (entityType, slug) =>
+  get(`/api/analytics/curation-coverage/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`);
+
 /** One-line headline per analysis that has results — the summary tiles. */
 export const getSurveySummary = (slug, stage = '') =>
   get(`/api/projects/${encodeURIComponent(slug)}/survey-results/summary${

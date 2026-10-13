@@ -40,6 +40,12 @@ dependencies = [
     # in a workspace-wide sync, it does not make it a requirement, so a
     # per-package install would fail on the import.
     "trellis-auth",
+    # The Analytic Library: Curate's By-analysis tab calls
+    # trellis_analytics.routines.curation_coverage (brief 2b). Declared here for the
+    # reason trellis-auth is: a root [tool.uv.sources] entry makes it available, not required.
+    # trellis-analytics' own `re` extra points back at this package; that is an optional
+    # edge, and the route degrades to not_applicable if the import ever fails.
+    "trellis-analytics",
     # Embeddings & LLM
     "sentence-transformers>=3.3.0",
     "ollama>=0.4.0",

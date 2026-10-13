@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.config import WebUIConfig
 from resource_explorer.web.routes import work_lists as work_lists_routes
-from resource_explorer.web.routes import activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
+from resource_explorer.web.routes import analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
 
 
 log = logging.getLogger(__name__)
@@ -287,6 +287,7 @@ app.include_router(webhook.router, prefix="/api", tags=["webhook"])
 app.include_router(activity.router, prefix="/api/activity", tags=["activity"])
 app.include_router(bootstrap_routes.router, prefix="/api/bootstrap", tags=["bootstrap"])
 app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
+app.include_router(analytics_routes.router, prefix="/api/analytics", tags=["analytics"])
 app.include_router(context.router, prefix="/api/context", tags=["context"])
 app.include_router(compile_context_routes.router, prefix="/api/context", tags=["context-compile"])
 app.include_router(project_context.router, prefix="/api/project-context", tags=["project-context"])
