@@ -708,13 +708,13 @@ def publish_proposed_valid_value_set(
         try:
             ref_manager.link_valid_value_definition(
                 result.guid, member_guid,
+                # ValidValueMemberProperties (Egeria 6.2) has isDefaultValue and ordinal only; it is
+                # ignoreUnknown, so the label/description sent here until 2026-10-13 were dropped.
                 body={
                     "class": "NewRelationshipRequestBody",
                     "properties": {
                         "class": "ValidValueMemberProperties",
                         "isDefaultValue": False,
-                        "label": value,
-                        "description": "Observed value, proposed as a member.",
                     },
                 },
             )

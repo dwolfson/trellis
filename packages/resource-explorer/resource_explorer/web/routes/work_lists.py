@@ -44,7 +44,8 @@ class WorkListCreate(BaseModel):
 class MemberUpdate(BaseModel):
     entity_slug: str
     rationale: str = ""
-    confidence: int | None = None
+    #: Published as CollectionMembership `confidence`, which Egeria documents as 0-100.
+    confidence: int | None = Field(default=None, ge=0, le=100)
 
 
 class LinkInvestigation(BaseModel):

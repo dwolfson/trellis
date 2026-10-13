@@ -204,13 +204,13 @@ def bootstrap_data_classes() -> int:
                 try:
                     ref_manager.link_valid_value_definition(
                         set_guid, kw_guid,
+                        # ValidValueMemberProperties (Egeria 6.2) has isDefaultValue and ordinal only; it is
+                        # ignoreUnknown, so the label/description sent here until 2026-10-13 were dropped.
                         body={
                             "class": "NewRelationshipRequestBody",
                             "properties": {
                                 "class": "ValidValueMemberProperties",
                                 "isDefaultValue": False,
-                                "label": kw,
-                                "description": "Standard keyword for this Data Class.",
                             },
                         },
                     )

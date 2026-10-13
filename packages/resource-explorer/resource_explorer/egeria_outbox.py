@@ -433,25 +433,103 @@ def _create_collection_membership(clients: "OutboxClients", payload: dict) -> st
     with no error anywhere. Re-measure if pyegeria changes these signatures.
     """
     cm = clients.require("collection_manager")
-    # `membershipRationale` is a real CollectionMembership property and
-    # `add_to_collection` takes an optional relationship body, so a member's
-    # REASON for being in the collection travels with it instead of staying
-    # local. Sent only when a caller supplied one: the investigation path
-    # does not, and adding an empty body to its writes would change what
-    # every already-queued row means.
-    props = {}
-    if payload.get("membership_rationale"):
-        props["membershipRationale"] = payload["membership_rationale"]
-    if payload.get("expected_confidence") is not None:
-        props["expectedConfidence"] = payload["expected_confidence"]
+    props = collection_membership_properties(payload)
     if props:
         cm.add_to_collection(payload["collection_guid"], payload["member_guid"], body={
             "class": "NewRelationshipRequestBody",
             "properties": dict(props, **{"class": "CollectionMembershipProperties"}),
         })
+        _check_membership_landed(cm, payload["collection_guid"], payload["member_guid"], props)
     else:
         cm.add_to_collection(payload["collection_guid"], payload["member_guid"])
     return ""
+
+
+#: `CollectionMembershipProperties.confidence` (Egeria 6.2): "the confidence level (0-100) that the matching
+#: is correct". An int, default 0.
+MEMBERSHIP_CONFIDENCE_MIN, MEMBERSHIP_CONFIDENCE_MAX = 0, 100
+
+
+def membership_confidence(value) -> int:
+    """A member's confidence as Egeria's `confidence` takes it: an int in 0-100.
+
+    A float or a numeric string is coerced (a stored "80" is 80; 79.6 rounds to 80). Refused with
+    ValueError: None, a bool, a non-number, and a value outside 0-100 (refused, never clamped: clamping
+    would publish a number nobody chose)."""
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"confidence {value!r} is not a number")
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            raise ValueError(f"confidence {value!r} is not a number") from None
+    if not isinstance(value, (int, float)) or value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(f"confidence {value!r} is not a number")
+    whole = int(round(value))
+    if not MEMBERSHIP_CONFIDENCE_MIN <= whole <= MEMBERSHIP_CONFIDENCE_MAX:
+        raise ValueError(f"confidence {value!r} is outside Egeria's "
+                         f"{MEMBERSHIP_CONFIDENCE_MIN}-{MEMBERSHIP_CONFIDENCE_MAX}")
+    return whole
+
+
+def collection_membership_properties(payload: dict) -> dict:
+    """The `CollectionMembershipProperties` fields one queued membership sends, by Egeria's own names.
+
+    Every name here is a field of Egeria 6.2's `CollectionMembershipProperties`. That class is
+    `@JsonIgnoreProperties(ignoreUnknown=true)`, so a wrong name is not refused: Egeria drops it and the
+    write still succeeds. That is how `expectedConfidence` (not an Egeria property) published every
+    work-list confidence as `confidence: 0` until 2026-10-13.
+
+    * `membershipRationale` — the member's REASON for being in the collection travels with it.
+    * `confidence` — sent only when RE recorded one. Egeria's `confidence` is an int defaulting to 0,
+      so on a read-back "not recorded" and "recorded as 0" look the same; RE's own row
+      (`work_list_members.confidence` NULL vs 0) is the only place they differ.
+
+    The payload key stays `expected_confidence` (what queued rows already carry); `confidence` is also
+    read. Sent only when a caller supplied a value: the investigation path supplies neither, and adding
+    an empty body to its writes would change what every already-queued row means.
+
+    Raises OutboxApplyError for a confidence that is not a number in 0-100: refused, not guessed at."""
+    props: dict = {}
+    if payload.get("membership_rationale"):
+        props["membershipRationale"] = payload["membership_rationale"]
+    raw = payload.get("expected_confidence", payload.get("confidence"))
+    if raw is not None:
+        try:
+            props["confidence"] = membership_confidence(raw)
+        except ValueError as exc:
+            raise OutboxApplyError(f"not sent: {exc}") from None
+    return props
+
+
+def _check_membership_landed(cm, collection_guid: str, member_guid: str, sent: dict) -> None:
+    """Read the membership back and refuse a 'done' for a property Egeria did not keep.
+
+    Egeria drops a property name it does not know and still answers success, so the write's own answer
+    cannot show the drop: only the relationship as it reads back can. A property that did not land
+    raises OutboxApplyError naming it, so the row's last_error says which one (a retry re-sends the same
+    body, which is safe: CollectionMembership is uni-link).
+
+    A read that fails, or that cannot find the member, cannot tell either way: logged, and the row is
+    done as it was before this check (the write itself succeeded)."""
+    try:
+        members = cm.get_collection_members(collection_guid=collection_guid, output_format="JSON")
+    except Exception as exc:
+        log.warning("Membership %s -> %s written; read-back failed (%s: %s), properties not confirmed",
+                    collection_guid, member_guid, type(exc).__name__, exc)
+        return
+    rel = None
+    for m in members if isinstance(members, list) else []:
+        if ((m or {}).get("elementHeader") or {}).get("guid") == member_guid:
+            rel = ((m.get("relatedBy") or {}).get("relationshipProperties")) or {}
+            break
+    if rel is None:
+        log.warning("Membership %s -> %s written; the member is not in the read-back, properties not "
+                    "confirmed", collection_guid, member_guid)
+        return
+    dropped = [f"{k} (sent {v!r}, read back {rel.get(k)!r})" for k, v in sent.items() if rel.get(k) != v]
+    if dropped:
+        raise OutboxApplyError("Egeria accepted the membership but did not keep: " + "; ".join(dropped))
 
 
 def _create_resource_list(clients: "OutboxClients", payload: dict) -> str:

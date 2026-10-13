@@ -40,7 +40,10 @@ qualifiedName: work lists are namespaced `WorkingSet::resource-explorer::<slug>`
 `CollectionMembership` genuinely does carry `membershipRationale` — it is a
 real `OpenMetadataProperty` — and pyegeria's `add_to_collection` takes an
 optional relationship body, so a member's reason travels with it rather than
-being local-only.
+being local-only. So does its confidence, as Egeria's `confidence` (an int,
+0-100). Until 2026-10-13 it was sent as `expectedConfidence`, which is not an
+Egeria property: Egeria dropped it and the membership read `confidence: 0`.
+The names are built in one place, `egeria_outbox.collection_membership_properties`.
 
 **Publishing is explicit, never automatic.** Creating a work list writes
 locally and nothing else. `publish_work_list()` is what enqueues the Egeria
@@ -512,6 +515,7 @@ def enqueue_work_list_members(registry, work_list_slug: str, collection_guid: st
         if m.get("rationale"):
             payload["membership_rationale"] = m["rationale"]
         if m.get("confidence") is not None:
+            # The payload key queued rows already carry; the creator sends it as Egeria's `confidence`.
             payload["expected_confidence"] = m["confidence"]
         payload.update(requester_fields())       # Brief Z3: the drain re-checks the person who pressed publish
         row_ids.append(registry.enqueue_outbox_element(
