@@ -176,16 +176,23 @@ def ref_guid_exists(ref_guid: str, *, clients) -> bool:
                       ref_guid)
             return False
         raise DocSourceLookupError(lookup_could_not_be_made(ref_guid, exc)) from exc
+    from resource_explorer.egeria_absence import ABSENT, is_absent
+
     if element is None:
         raise DocSourceLookupError(lookup_could_not_be_made(ref_guid, None))
-    # MetadataExpert's own "not found" sentinel is a bare string rather than
-    # an exception for some call shapes (mirrors recheck_all_linkages's own
-    # handling of the identical client).
-    if isinstance(element, str) or not element:
-        log.info("doc source: ref %r no longer resolves in Egeria (empty/string result)",
-                  ref_guid)
+    # MetadataExpert's own "not found" sentinel is a bare string rather than an exception for some call
+    # shapes. Only that exact string is absence; {} or any other odd shape is unreadable, never "gone".
+    if isinstance(element, str) and is_absent(element) == ABSENT:
+        log.info("doc source: ref %r no longer resolves in Egeria (Egeria's own no-element answer)", ref_guid)
         return False
+    if not isinstance(element, dict) or not element or not _guid_in(element):
+        raise DocSourceLookupError(lookup_could_not_be_made(
+            ref_guid, ValueError(f"unexpected answer {element!r:.80}")))
     return True
+
+
+def _guid_in(element: dict) -> str:
+    return str((element.get("elementHeader") or {}).get("guid") or element.get("guid") or "")
 
 
 def _find_ref_guid(clients, qualified_name: str) -> str:

@@ -598,6 +598,8 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             "egeria_asset_guid": publish_res.get("filesystem_guid", ""),
             "egeria_report_guid": publish_res.get("report_guid", ""),
             "annotation_count": publish_res.get("annotation_count", 0),
+            # Data files whose look-up could not be made, so nothing was created for them (path -> why).
+            "files_not_checked": publish_res.get("files_not_checked", {}),
         }
     except PermissionError:
         raise      # no caller / expired sign-in: the app's 401 handler, never a 500

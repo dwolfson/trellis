@@ -13,7 +13,6 @@ Each has a companion: a real miss still creates.
 """
 from __future__ import annotations
 
-import contextlib
 from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
 
@@ -511,7 +510,7 @@ def test_content_pack_real_miss_still_creates_the_component(tmp_path, monkeypatc
     from resource_explorer.workflows.curate import materialize_component_if_accepted
 
     reg, architect = _component_fixture(tmp_path, monkeypatch, lambda *a, **k: MISS)
-    # What follows the create (zones, ownership) is not this test's concern; only that the create happened.
-    with contextlib.suppress(Exception):
-        materialize_component_if_accepted(reg, "repo", "egeria_git", "src/x", "accepted")
+    out = materialize_component_if_accepted(reg, "repo", "egeria_git", "src/x", "accepted")
+    assert out["status"] in ("materialized", "already_materialized"), out
+    assert out["guid"] == GUID
     architect.create_solution_component.assert_called_once()

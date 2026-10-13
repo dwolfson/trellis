@@ -950,7 +950,9 @@ class TestDraftProposalPath:
         # There is no `create_valid_value_set` and no `ValidValueSetProperties`
         # in pyegeria — a set is created through create_valid_value_definition.
         assert props["class"] == "ValidValueDefinitionProperties"
-        assert props["typeName"] == "ValidValueSet"
+        # No typeName: Egeria 6.2 knows no `ValidValueSet` type (OMAG-COMMON-400-018); a set is a plain
+        # ValidValueDefinition, as bootstrap_data_classes creates its sets.
+        assert "typeName" not in props
 
     def test_publishing_a_data_class_proposal_creates_and_links_it(self):
         designer, discovery = _FakeDesigner(), _FakeDiscovery()

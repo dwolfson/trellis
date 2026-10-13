@@ -914,10 +914,14 @@ class BlueprintMaterializer:
             words = lookup_could_not_be_made(display_name, exc)
             log.warning("content-pack lookup: %s", words)
             return {"could_not_check": words}
-        if found is None:
-            return {"could_not_check": lookup_could_not_be_made(display_name, None)}
         if not isinstance(found, list):
-            return None
+            from resource_explorer.egeria_absence import ABSENT, is_absent
+
+            if is_absent(found) == ABSENT:          # pyegeria's own miss string, exactly
+                return None
+            # None, {}, an unrecognised string: not an answer RE can read, so not "no pack element".
+            return {"could_not_check": lookup_could_not_be_made(display_name, None if found is None else
+                                                                ValueError(f"unexpected answer {found!r:.80}"))}
         hits = []
         for el in found:
             if not isinstance(el, dict):

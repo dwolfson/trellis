@@ -158,7 +158,7 @@ class FakeEgeria:
     def publish_local_report(self, db_entity, db_user, db_pwd, measured, *, registry=None, submitted_by="") -> dict:
         self.calls.append(("publish_local_report", measured.get("surveyed_at")))
         self._boom("publish_local_report")
-        return {"report_guid": self._guid("r"), "annotation_count": 3}
+        return {"report_guid": self._guid("r"), "annotation_count": 3, "annotations_in_egeria": 3}
 
     def set_zone_membership(self, guid, zones) -> bool:
         self.calls.append(("set_zone_membership", guid, tuple(zones)))

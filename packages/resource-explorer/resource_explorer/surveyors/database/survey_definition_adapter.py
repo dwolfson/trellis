@@ -460,7 +460,8 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
             entity.slug, "egeria_publish", surveyed_at, entity_type="database",
             source="egeria", executor="local",
             metrics={"report_guid": report_guid,
-                     "annotation_count": result.get("annotation_count", 0),
+                     "annotation_count": result.get("annotation_count"),
+                     "annotations_built": result.get("annotations_built"),
                      "published_measured_at": (measured_row or {}).get("surveyed_at", "")},
         )
         # Outcome goes ON the measured row (never a new row). For an in-run

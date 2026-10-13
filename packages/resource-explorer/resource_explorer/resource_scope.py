@@ -174,6 +174,12 @@ def validate_events(registry, slug: str, events: list[dict]) -> list[dict]:
     return clean
 
 
+def _not_checked_of(publisher) -> dict:
+    """The publisher's `sub_resources_not_checked` for this call ({} when it has none to give)."""
+    found = getattr(publisher, "sub_resources_not_checked", None)
+    return dict(found) if isinstance(found, dict) else {}
+
+
 def publish_chosen(registry, slug: str, *, github_url: str, asset_guid: str, curation_id: str, author: str,
                    locators: list[str], publisher=None) -> dict:
     """Publish exactly `locators` (the chosen files and folders) plus the ancestor folders a file needs, once
@@ -220,7 +226,8 @@ def publish_chosen(registry, slug: str, *, github_url: str, asset_guid: str, cur
             asyncio.set_event_loop(prior)          # None when the thread had none; the old loop otherwise
     counts = repo_publish.record_sub_resource_proofs(
         registry, slug, curation_id, author, want, list(locators), guids,
-        reader=lambda g: publisher._asset_maker.get_asset_by_guid(g, output_format="JSON"))
+        reader=lambda g: publisher._asset_maker.get_asset_by_guid(g, output_format="JSON"),
+        not_checked=_not_checked_of(publisher))
     return {"want": want, "guids": guids, "counts": counts,
             "missing": [l for l in locators if l not in guids], "ancestors": len(want) - len(locators),
             "rename_counts": getattr(publisher, "rename_counts", None)}

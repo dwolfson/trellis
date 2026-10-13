@@ -1582,7 +1582,7 @@ class EgeriaPublisher:
                     # "will attempt create"), and a file under a folder skipped here has no parent, so it is
                     # skipped too. Recorded so a caller can tell "not catalogued" from "RE could not check".
                     self.sub_resources_not_checked[path] = lookup_could_not_be_made(qualified_name, exc)
-                    log.warning("Sub-resource %s not catalogued: %s", path or "(root)",
+                    log.warning("Sub-resource %s not cataloged: %s", path or "(root)",
                                 self.sub_resources_not_checked[path])
                     continue
                 existing_guid = ""

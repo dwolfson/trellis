@@ -1107,11 +1107,19 @@ def _existing_guid(client: Any, qualified_name: str) -> str:
     cannot go stale when the message changes. Same reasoning, and the same
     regex, as `EgeriaPublisher._find_element_guid`.
     """
+    from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+
     try:
         found = client.get_metadata_element_by_unique_name(qualified_name)
     except Exception as exc:
-        log.debug("egeria: lookup of %r failed — %s", qualified_name, exc)
-        return ""
+        # Only a real miss is "": a look-up that could not be made raises, so `ensure_draft_zone_exists`
+        # reports an error and creates nothing (it used to create a second GovernanceZone beside one it
+        # could not see).
+        if lookup_exception_is_absent(exc):
+            return ""
+        raise RuntimeError(lookup_could_not_be_made(qualified_name, exc)) from exc
+    if found is None:
+        raise RuntimeError(lookup_could_not_be_made(qualified_name, None))
     if isinstance(found, dict):
         candidate = (
             found.get("elementGUID")

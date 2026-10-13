@@ -249,7 +249,8 @@ def test_failed_publish_step_reads_not_published_with_the_cause_and_records_the_
 
 
 def test_success_path_still_says_published(world, fake, monkeypatch):
-    rec = _commit_with(world, fake, monkeypatch, {"report_element_guid": "abcdef12-0000", "report_guid": "abcdef12-0000", "annotation_count": 76})
+    rec = _commit_with(world, fake, monkeypatch, {"report_element_guid": "abcdef12-0000", "report_guid": "abcdef12-0000", "annotation_count": 76,
+                                                  "annotations_in_egeria": 76})
     assert step(rec, "survey_report")["detail"] == "report abcdef12 · 76 annotations published · from the 10-03 survey"
 
 

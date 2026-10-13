@@ -728,8 +728,11 @@ class PyegeriaCatalogueGateway:
             res = self._client("MetadataExpert").get_metadata_element_by_unique_name(
                 name=qualified_name, property_name="qualifiedName", body=body)
         except Exception as exc:
-            text = str(exc)
-            if "404" in text or "No element found" in text or "not found" in text.lower():
+            # Absence from the exception's TYPE and code (`egeria_absence.is_absent`), never its text: a
+            # timeout or a 401 whose message names "404" or "not found" used to read as absent, so an attach
+            # created the schema and a leave-out wrote a "gone" proof for an element nobody could read.
+            from resource_explorer.egeria_absence import lookup_exception_is_absent
+            if lookup_exception_is_absent(exc):
                 return None
             raise GatewayError(_short(exc)) from exc
         return parse_element_answer(res)

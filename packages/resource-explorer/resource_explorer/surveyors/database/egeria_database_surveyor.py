@@ -817,9 +817,10 @@ class EgeriaDatabaseSurveyor:
         }
         report_guid = self._asset_maker.create_asset(body=body)
         log.info(f"Published SurveyReport in Egeria: {report_guid}")
-        self._create_annotations(annotations, report_guid, db_entity.slug, surveyed_at)
+        made = self._create_annotations(annotations, report_guid, db_entity.slug, surveyed_at)
 
         # Publish column-level lineage mapping relationships to Egeria
+        self.lineage_not_checked = []
         if db_guid and views:
             try:
                 self._publish_column_lineage(db_entity, views)
@@ -831,7 +832,12 @@ class EgeriaDatabaseSurveyor:
         # on the measured row it published, via
         # registry.record_database_survey_published().
 
-        return {"asset_guid": db_guid, "report_guid": report_guid, "annotation_count": len(annotations)}
+        return {"asset_guid": db_guid, "report_guid": report_guid,
+                # What Egeria returned a GUID for, not what was sent; None when RE cannot tell.
+                "annotation_count": sum(1 for g in made if g) if isinstance(made, list) else None,
+                "annotations_built": len(annotations),
+                # Column names whose look-up could not be made, so their lineage was not linked.
+                "lineage_not_checked": list(self.lineage_not_checked)}
 
     def _initiate_survey(self, tech_type: str, target_guid: str, start_time: datetime | None = None) -> str:
         """Dynamically find a user-authored Survey Definition process for tech_type
@@ -1259,6 +1265,7 @@ class EgeriaDatabaseSurveyor:
         effective_report_guid = report_guid or survey_action_guid
 
         # Publish column-level lineage mapping relationships to Egeria
+        self.lineage_not_checked = []
         if db_guid and views:
             try:
                 self._publish_column_lineage(db_entity, views)
@@ -1284,6 +1291,7 @@ class EgeriaDatabaseSurveyor:
             "report_reused":      report_reused,
             "annotation_error":   pub.get("annotation_error", "") if db_guid else "",
             "annotations_in_egeria": annotations_in_egeria,
+            "lineage_not_checked": list(self.lineage_not_checked),
             "survey_submissions": result.get("survey_submissions", []),
         }
 

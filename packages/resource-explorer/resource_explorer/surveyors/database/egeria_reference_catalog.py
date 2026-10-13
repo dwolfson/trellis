@@ -60,11 +60,11 @@ CONTENT_STATUS_DRAFT = "DRAFT"
 #: and shares that endpoint, so the results must be filtered by type here.
 DATA_CLASS_TYPE_NAME = "DataClass"
 
-#: Egeria type names that count as a reference-data *set* rather than a single
-#: definition. `ValidValueSet` is the real set type; a plain
-#: `ValidValueDefinition` carrying members is treated as one too, because
-#: pyegeria has no `create_valid_value_set` and RE's own bootstrap creates sets
-#: through `create_valid_value_definition` (see `bootstrap_data_classes.py`).
+#: Egeria type names a READ accepts as a reference-data *set*. On Egeria 6.2 a set is a plain
+#: `ValidValueDefinition` carrying members: 6.2 knows no `ValidValueSet` / `ValidValuesSet` type
+#: (live probe, 2026-10-13: OMAG-COMMON-400-018 on findElements). Both spellings stay in this
+#: read-side list only because `valid_value_set_from_element` reads them from whatever an element
+#: says; nothing RE writes uses them.
 VALID_VALUE_SET_TYPE_NAMES = ("ValidValueSet", "ValidValuesSet", "ValidValueDefinition")
 
 #: The type every RE `find_valid_value_definitions` passes as `metadata_element_type`. Egeria's
@@ -558,11 +558,14 @@ def build_proposed_valid_value_set_body(match: ColumnMatch, qualified_name: str)
     `ValidValueSetProperties` — verified against the whole egeria-python
     checkout. A set is created through `create_valid_value_definition` with
     `properties.class = "ValidValueDefinitionProperties"`, which is also what
-    RE's own `bootstrap_data_classes.py` does. `typeName: "ValidValueSet"` is
-    passed so the element is a real set rather than a bare definition — that
-    path is exercised nowhere in either repo, so it is **unverified against a
-    live server** and recorded as such in the implementation write-up; the
-    create still succeeds without it, producing a definition rather than a set.
+    RE's own `bootstrap_data_classes.py` does, and with NO `typeName`, exactly as
+    bootstrap creates its sets: a set is a plain `ValidValueDefinition` whose members
+    hang off it by `ValidValueMember`. Egeria 6.2 does not know a `ValidValueSet` type
+    (live read-only probe, 2026-10-13: findElements answers OMAG-COMMON-400-018 "The type
+    name ValidValueSet ... is not recognized", and a typed look-up as `ValidValueSet` or
+    `ValidValuesSet` is a 500), so the `typeName: "ValidValueSet"` sent until then made
+    every proposed-set create fail on 6.2. The existing sets
+    (`ValidValuesSet::<Name>Keywords`) are stored as `ValidValueDefinition`.
 
     The member `ValidValueDefinition`s are created separately, by
     `publish_proposed_valid_value_set`, because each is its own element.
@@ -572,7 +575,6 @@ def build_proposed_valid_value_set_body(match: ColumnMatch, qualified_name: str)
         "isOwnAnchor": True,
         "properties": {
             "class": "ValidValueDefinitionProperties",
-            "typeName": "ValidValueSet",
             "qualifiedName": qualified_name,
             "displayName": f"Proposed reference set for {match.column_path}",
             "description": (
