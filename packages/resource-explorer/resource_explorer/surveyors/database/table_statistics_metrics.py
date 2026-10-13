@@ -242,3 +242,127 @@ def not_read_of(properties: dict) -> dict[str, str]:
         except ValueError:
             return {}
     return dict(value) if isinstance(value, dict) else {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Table structure flags (triggers, rules, row security) -- Egeria's own names
+# ═══════════════════════════════════════════════════════════════════════════
+#: Read from `pg_class` (`relhastriggers`, `relhasrules`, `relrowsecurity`),
+#: the columns behind Egeria's `pg_tables.hastriggers/hasrules/rowsecurity`.
+#: The names are Egeria's `RelationalTableMetric` ones, copied verbatim.
+HAS_TRIGGERS = TableMetric(
+    "hasTriggers", "boolean", "Has Triggers",
+    "Does this table have triggers attached?", "has_triggers", True)
+HAS_RULES = TableMetric(
+    "hasRules", "boolean", "Has Rules",
+    "Does this table have rules attached?", "has_rules", True)
+HAS_ROW_SECURITY = TableMetric(
+    "hasRowSecurity", "boolean", "Has Row Security",
+    "Is this table configured for row-based security?", "has_row_security", True)
+
+#: Kept apart from TABLE_STATISTICS_METRICS: these are structure, not currency.
+TABLE_STRUCTURE_FLAGS: tuple[TableMetric, ...] = (HAS_TRIGGERS, HAS_RULES, HAS_ROW_SECURITY)
+
+REASON_FLAG_NOT_READ = (
+    "the pg_class read that supplies this flag did not return it for this table"
+)
+
+
+def table_flag_properties(table: dict | None) -> tuple[dict, dict]:
+    """`(properties, not_read)` for one table's structure flags.
+
+    `table` is a `schema_info` table dict. A flag that is `True` or `False` is
+    a stated value (published as "true"/"false"); anything else -- the key
+    absent, `None` -- was NOT read, so it appears in `not_read` with a reason
+    and is never reported as false.
+    """
+    props: dict = {}
+    not_read: dict[str, str] = {}
+    for metric in TABLE_STRUCTURE_FLAGS:
+        value = (table or {}).get(metric.column)
+        if isinstance(value, bool):
+            props[metric.display_name] = "true" if value else "false"
+        else:
+            not_read[metric.display_name] = REASON_FLAG_NOT_READ
+    return props, not_read
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Database activity (pg_stat_database) -- Egeria's RelationalDatabaseMetric names
+# ═══════════════════════════════════════════════════════════════════════════
+ROWS_FETCHED = TableMetric(
+    "rowsFetched", _LONG, "Rows Fetched",
+    "Number of rows retrieved from any table in the database.", "tup_fetched", True)
+ROWS_INSERTED = TableMetric(
+    "rowsInserted", _LONG, "Rows Inserted",
+    "Number of rows inserted from any table in the database.", "tup_inserted", True)
+ROWS_UPDATED = TableMetric(
+    "rowsUpdated", _LONG, "Rows Updated",
+    "Number of rows updated from any table in the database.", "tup_updated", True)
+ROWS_DELETED = TableMetric(
+    "rowsDeleted", _LONG, "Rows Deleted",
+    "Number of rows deleted from any table in the database.", "tup_deleted", True)
+SESSION_TIME = TableMetric(
+    "totalSessionTime", "double", "Session Time",
+    "The length of time (milliseconds) that the database had at least one open session "
+    "from an external client.", "session_time", True)
+ACTIVE_TIME = TableMetric(
+    "totalActiveTime", "double", "Active Time",
+    "The length of time (milliseconds) that the database was being actively queried.",
+    "active_time", True)
+
+DATABASE_ACTIVITY_METRICS: tuple[TableMetric, ...] = (
+    ROWS_FETCHED, ROWS_INSERTED, ROWS_UPDATED, ROWS_DELETED, SESSION_TIME, ACTIVE_TIME,
+)
+
+REASON_ACTIVITY_NOT_READ = "pg_stat_database could not be read: {error}"
+REASON_ACTIVITY_NO_ROW = "pg_stat_database returned no row for this database"
+REASON_ACTIVITY_NO_COLUMN = (
+    "pg_stat_database reported NULL for this counter (session_time and active_time "
+    "exist only on PostgreSQL 14 and later)"
+)
+#: Said beside the figures: they are counters, not a rate or a period.
+CUMULATIVE_NOTE = (
+    "cumulative since the last statistics reset (see Last statistics reset); "
+    "a counter says nothing about the period before that reset"
+)
+
+
+def database_activity_properties(activity: dict | None, stats_reset: str | None) -> dict:
+    """The database-wide activity figures from `pg_stat_database`, as
+    `{display name: value}` plus `metricsNotRead` for what was not read.
+
+    `activity` is `PostgreSQLConnection.get_database_activity()`'s dict, or
+    `None` when the connection does not offer the read (not read, for every
+    figure). Each figure is its own number or its own `metricsNotRead` entry;
+    a real zero stays `0`. `stats_reset` is the reset EVIDENCE (timestamp /
+    `NEVER` / `None`), stated beside the counters it dates.
+    """
+    props: dict = {}
+    not_read: dict[str, str] = {}
+    activity = activity or {}
+    error = activity.get("error")
+    if activity.get("no_row"):
+        why = REASON_ACTIVITY_NO_ROW
+    elif error:
+        why = REASON_ACTIVITY_NOT_READ.format(error=error)
+    elif not activity:
+        why = "this connection does not read pg_stat_database activity"
+    else:
+        why = REASON_ACTIVITY_NO_COLUMN
+    for metric in DATABASE_ACTIVITY_METRICS:
+        value = activity.get(metric.column)
+        if value is None:
+            not_read[metric.display_name] = why
+        elif metric.data_type == "double":
+            props[metric.display_name] = float(value)
+        else:
+            props[metric.display_name] = int(value)
+    if stats_reset:
+        props[LAST_STATISTICS_RESET.display_name] = str(stats_reset)
+    else:
+        not_read[LAST_STATISTICS_RESET.display_name] = REASON_RESET_NOT_READ
+    props["activityBasis"] = CUMULATIVE_NOTE
+    if not_read:
+        props[NOT_READ_KEY] = not_read
+    return props

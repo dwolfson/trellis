@@ -9,6 +9,15 @@ from typing import Any
 from resource_explorer.registry import DatabaseEntity
 
 
+def _flag(value) -> bool | None:
+    """A catalog boolean as a bool; anything else (NULL, absent) is None --
+    "not read" -- and never False."""
+    return value if isinstance(value, bool) else None
+
+
+_FLAG_KEYS = ("has_triggers", "has_rules", "has_row_security")
+
+
 class TableActivityReadFailed(list):
     """An EMPTY list standing for a `pg_stat_user_tables` read that raised.
 
@@ -583,12 +592,25 @@ class PostgreSQLConnection(DatabaseConnection):
         for schema in schemas:
             schema_name = schema["schema_name"]
             seen_schema_names.add(schema_name)
-            tables = self._get_tables_for_schema(schema_name)
-            result["schemas"].append({
+            schema_entry = {
                 "name": schema_name,
                 "description": schema_descriptions.get(schema_name, ""),
-                "tables": tables,
-            })
+            }
+            try:
+                tables = self._get_tables_for_schema(schema_name)
+            except Exception as exc:  # noqa: BLE001
+                # One unreadable schema must not abort the survey (Egeria's own
+                # connector does; this one does not). Roll the failed
+                # transaction back so the next schema can be read, say plainly
+                # that THIS schema was not readable, and keep the structure the
+                # unprivileged catalog still shows.
+                self._rollback_quietly()
+                errors[f"schema:{schema_name}"] = str(exc)
+                schema_entry["access"] = "not_readable"
+                schema_entry["not_readable_reason"] = f"{type(exc).__name__}: {exc}"[:300]
+                tables = self._catalog_tables_list(schema_name, errors)
+            schema_entry["tables"] = tables
+            result["schemas"].append(schema_entry)
             result["total_tables"] += len(tables)
             result["total_columns"] += sum(len(t["columns"]) for t in tables)
 
@@ -618,6 +640,7 @@ class PostgreSQLConnection(DatabaseConnection):
                     "source": "catalog_fallback",
                     "row_count_estimate": info.get("reltuples"),
                     "row_count_basis": "estimated",
+                    **{k: info.get(k) for k in _FLAG_KEYS},
                 })
             result["schemas"].append({
                 "name": schema_name,
@@ -635,6 +658,45 @@ class PostgreSQLConnection(DatabaseConnection):
         if errors:
             result["_errors"] = errors
         return result
+
+    def _rollback_quietly(self) -> None:
+        """End an aborted transaction so the connection is usable again."""
+        try:
+            if self._conn is not None:
+                self._conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _catalog_tables_list(self, schema_name: str, errors: dict[str, str]) -> list[dict]:
+        """The tables `pg_class` shows for one schema, in `schema_info` shape,
+        for a schema the privileged read could not complete. A catalog read that
+        also fails returns [] and records why."""
+        try:
+            catalog_tables = self._catalog_table_summary(schema_name)
+        except Exception as exc:  # noqa: BLE001
+            self._rollback_quietly()
+            errors[f"schema_catalog:{schema_name}"] = str(exc)
+            return []
+        tables = []
+        for table_name, info in catalog_tables.items():
+            try:
+                columns = self._catalog_columns_for_table(schema_name, table_name)
+            except Exception as exc:  # noqa: BLE001
+                self._rollback_quietly()
+                errors[f"table:{schema_name}.{table_name}"] = str(exc)
+                columns = []
+            tables.append({
+                "name": table_name,
+                "type": info.get("table_type") or "",
+                "relkind": info.get("relkind"),
+                "description": "",
+                "columns": columns,
+                "source": "catalog_fallback",
+                "row_count_estimate": info.get("reltuples"),
+                "row_count_basis": "estimated",
+                **{k: info.get(k) for k in _FLAG_KEYS},
+            })
+        return tables
 
     def _enumerate_relations(self) -> tuple[list[dict], list[dict]]:
         """The unprivileged floor: every non-system schema and relation in
@@ -846,6 +908,7 @@ class PostgreSQLConnection(DatabaseConnection):
                 if info.get("relkind") == "p":
                     tables[table_name]["type"] = info["table_type"]
                     tables[table_name]["relkind"] = "p"
+                tables[table_name].update({k: info.get(k) for k in _FLAG_KEYS})
                 continue
             columns = self._catalog_columns_for_table(
                 schema_name, table_name, pk_lookup, fk_lookup)
@@ -862,6 +925,7 @@ class PostgreSQLConnection(DatabaseConnection):
                 # "row_count" that every other caller reads as exact.
                 "row_count_estimate": info.get("reltuples"),
                 "row_count_basis": "estimated",
+                **{k: info.get(k) for k in _FLAG_KEYS},
             }
 
     def _catalog_table_summary(self, schema_name: str) -> dict[str, dict]:
@@ -872,7 +936,8 @@ class PostgreSQLConnection(DatabaseConnection):
         estimate from the last `ANALYZE`, not a live count.
         """
         query = """
-            SELECT c.relname AS table_name, c.relkind, c.reltuples
+            SELECT c.relname AS table_name, c.relkind, c.reltuples,
+                   c.relhastriggers, c.relhasrules, c.relrowsecurity
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = %s
@@ -895,6 +960,15 @@ class PostgreSQLConnection(DatabaseConnection):
                 "reltuples": (
                     int(reltuples) if reltuples is not None and reltuples >= 0 else None
                 ),
+                #: Egeria's "Has Triggers" / "Has Rules" / "Has Row Security".
+                #: None = this row did not carry the column: NOT read, never False.
+                "has_triggers": _flag(r.get("relhastriggers")),
+                #: A view's own SELECT is implemented as a rule, so relhasrules
+                #: is true for EVERY view: that is not a rule someone attached.
+                #: For a view or materialized view it is not read (None).
+                "has_rules": (
+                    None if r.get("relkind") in ("v", "m") else _flag(r.get("relhasrules"))),
+                "has_row_security": _flag(r.get("relrowsecurity")),
             }
         return out
 
@@ -1275,6 +1349,36 @@ class PostgreSQLConnection(DatabaseConnection):
             return None
         value = rows[0].get("stats_reset")
         return str(value) if value else STATS_NEVER_RESET
+
+    def get_database_activity(self) -> dict:
+        """Database-wide counters from `pg_stat_database` for the current
+        database: `tup_fetched`, `tup_inserted`, `tup_updated`, `tup_deleted`,
+        `session_time` and `active_time` (the last two, in milliseconds, exist
+        from PostgreSQL 14).
+
+        All are CUMULATIVE since the last statistics reset (`get_stats_reset`).
+        Returns `{"error": text}` when the read raised and `{"no_row": True}`
+        when Postgres returned no row: neither is zero activity. A column the
+        server does not have, or reports NULL, is `None` in the dict (not
+        read), never 0.
+        """
+        wanted = ("tup_fetched", "tup_inserted", "tup_updated", "tup_deleted",
+                  "session_time", "active_time")
+        try:
+            rows = self.execute_query_isolated(
+                "SELECT * FROM pg_stat_database WHERE datname = current_database()"
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+        if not rows:
+            return {"no_row": True}
+        row = rows[0]
+        out: dict = {}
+        for name in wanted:
+            value = row.get(name)
+            out[name] = float(value) if name.endswith("_time") and value is not None else (
+                int(value) if value is not None else None)
+        return out
 
     def get_index_stats(self) -> list[dict]:
         """Per-index usage from `pg_stat_user_indexes`, joined to `pg_index`

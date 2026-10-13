@@ -242,6 +242,11 @@ def _as_float(value) -> float | None:
         return None
 
 
+def _blob_flag(value) -> int | None:
+    """A survey-blob boolean as 1/0; absent or None stays None (not read)."""
+    return None if not isinstance(value, bool) else (1 if value else 0)
+
+
 def _as_bool(value) -> int | None:
     """Parse Boolean.toString() output to 0/1, or None if absent."""
     if value is None or value == "":
@@ -792,6 +797,13 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
                 "size_bytes": _blob_int(table.get("size_bytes")),
                 "table_bytes": _blob_int(table.get("table_bytes")),
                 "index_bytes": _blob_int(table.get("index_bytes")),
+                #: Egeria's Has Triggers / Has Rules / Has Row Security and the
+                #: materialized-view Is Populated / Has Indexes: NULL = not read.
+                "is_populated": _blob_flag(table.get("is_populated")),
+                "has_indexes": _blob_flag(table.get("has_indexes")),
+                "has_rules": _blob_flag(table.get("has_rules")),
+                "has_triggers": _blob_flag(table.get("has_triggers")),
+                "has_row_security": _blob_flag(table.get("has_row_security")),
                 "state": STATE_CATALOG_ESTIMATE if is_catalog_fallback else STATE_MEASURED,
             })
 
@@ -851,7 +863,8 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
         sql_objects.append({
             "schema_name": view.get("schema") or view.get("schema_name") or "",
             "object_name": name,
-            "object_type": "view",
+            #: blobs written before materialized views were read have no kind
+            "object_type": "materialized_view" if view.get("kind") == "materialized_view" else "view",
             "definition": view.get("definition") or view.get("view_definition") or "",
             "depends_on_json": view.get("depends_on") or view.get("dependencies") or None,
             "column_lineage_json": view.get("column_lineage") or None,

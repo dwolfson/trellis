@@ -26,6 +26,7 @@ from resource_explorer.surveyors.survey_report import (
 )
 
 from .connection import EngineCapabilities, NO_CAPABILITIES, database_connection
+from .table_statistics_metrics import database_activity_properties
 from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 # analysis_catalog.yaml database entry id -> DatabaseSurveyor.survey() steps,
@@ -271,6 +272,14 @@ def _quoted_table_key(schema: str, table: str) -> str:
     return f"{q(schema)}.{q(table)}"
 
 
+
+def _reset_of(activity: dict):
+    """The stats-reset time as evidence (timestamp / 'never' / None)."""
+    if "stats_reset_evidence" in activity:
+        return activity["stats_reset_evidence"]
+    return activity.get("stats_reset") or None
+
+
 class DatabaseSurveyor:
     """Custom surveyor for databases when Egeria can't access them directly."""
 
@@ -288,6 +297,7 @@ class DatabaseSurveyor:
             registry: ProjectRegistry for storing results
         """
         self.db_entity = db_entity
+        self.last_views_not_read: dict = {}
         self.credentials = credentials
         self.registry = registry
 
@@ -518,6 +528,7 @@ class DatabaseSurveyor:
                     try:
                         views_info = self._survey_views(conn, schema_info)
                         results["views"] = views_info
+                        results["views_not_read"] = dict(self.last_views_not_read)
                         results["annotations"].extend(
                             self._create_views_annotations(views_info)
                         )
@@ -991,6 +1002,12 @@ class DatabaseSurveyor:
                 # out and the consumer falls back to `stats_reset`.
                 **({"stats_reset_evidence": conn.get_stats_reset_evidence()}
                    if hasattr(conn, "get_stats_reset_evidence") else {}),
+                #: pg_stat_database counters (fetched/inserted/updated/deleted,
+                #: session and active time), cumulative since the reset above.
+                #: Left out when the connection cannot read them: the consumer
+                #: then says "not read" for every figure.
+                **({"database_activity": conn.get_database_activity()}
+                   if hasattr(conn, "get_database_activity") else {}),
                 "table_count": schema_info.get("total_tables", 0),
             }
         else:
@@ -1035,7 +1052,7 @@ class DatabaseSurveyor:
         from resource_explorer.surveyors.database.db_derived import _is_base_table
         from resource_explorer.surveyors.database.table_statistics_metrics import (
             TABLE_NAME, TABLE_QNAME, NOT_READ_KEY, read_failed_reason,
-            table_statistics_properties,
+            table_flag_properties, table_statistics_properties,
         )
         from resource_explorer.surveyors.result_materializer import ANN_TABLE_MEASUREMENTS
 
@@ -1072,12 +1089,24 @@ class DatabaseSurveyor:
 
         database = getattr(self.db_entity, "database_name", "") or ""
         annotations: list = []
+        tables_by_key = {
+            (schema.get("name", ""), table.get("name", "")): table
+            for schema in (schema_info or {}).get("schemas", [])
+            for table in schema.get("tables", [])
+        }
         for schema_name, table_name in keys:
             if (schema_name, table_name) in skip:
                 continue
             kwargs = {"no_row_reason": no_row_reason} if no_row_reason else {}
             props = table_statistics_properties(by_key.get((schema_name, table_name)), reset, **kwargs)
             read = NOT_READ_KEY not in props
+            # Triggers / rules / row security (Egeria's names), from the
+            # catalog read that built schema_info. A flag not read is named
+            # in metricsNotRead, never published as false.
+            flag_props, flag_not_read = table_flag_properties(tables_by_key.get((schema_name, table_name)))
+            props.update(flag_props)
+            if flag_not_read:
+                props[NOT_READ_KEY] = {**(props.get(NOT_READ_KEY) or {}), **flag_not_read}
             annotations.append(ResourceMeasureAnnotation(
                 summary=f"Table {schema_name}.{table_name} statistics currency",
                 analysis_step="DatabaseOperations",
@@ -1233,7 +1262,11 @@ class DatabaseSurveyor:
                         ),
                         analysis_step="DatabaseOperations",
                         confidence=0,
-                        resource_properties={"table_count": table_count, "rows_found": 0},
+                        resource_properties={
+                            "table_count": table_count, "rows_found": 0,
+                            **database_activity_properties(
+                                activity.get("database_activity"), _reset_of(activity)),
+                        },
                         explanation=(
                             "The read itself failed, so nothing is known about "
                             "activity — absence of measurement, not zero activity."
@@ -1276,6 +1309,9 @@ class DatabaseSurveyor:
                             "tables_with_no_reads": never_read,
                             "tables_with_writes": len(tables_with_writes),
                             "stats_reset": activity.get("stats_reset") or "",
+                            #: pg_stat_database, Egeria's names; cumulative.
+                            **database_activity_properties(
+                                activity.get("database_activity"), _reset_of(activity)),
                         },
                         explanation=(
                             "Database-wide roll-up of pg_stat_user_tables tuple "
@@ -1958,6 +1994,10 @@ class DatabaseSurveyor:
                 #: than reporting "no views" for a database this run never
                 #: looked at.
                 "views": results.get("views") or prior_views,
+                #: What the views step could NOT read (e.g. pg_matviews), so an
+                #: empty list is never mistaken for "no materialized views".
+                #: Only this run's own answer; empty when the step did not run.
+                "views_not_read": results.get("views_not_read") or {},
                 #: postgres_operations (Phase 1 slice 8) — falls back to the
                 #: prior stored value when THIS run's own results have none,
                 #: same "don't manufacture an empty answer" rule row_count/
@@ -2027,6 +2067,16 @@ class DatabaseSurveyor:
             ORDER BY table_schema, table_name
         """
         rows = conn.execute_query(query)
+        for r in rows:
+            r["kind"] = "view"
+        # Materialized views are not in information_schema.views. A failed read
+        # is recorded in `last_views_not_read` (stored beside the list), never
+        # taken for "no materialized views", and never aborts the survey.
+        self.last_views_not_read = {}
+        matviews, matview_error = self._read_matviews(conn)
+        if matview_error:
+            self.last_views_not_read["materialized_views"] = matview_error
+        rows = list(rows) + matviews
         if not rows:
             return []
 
@@ -2049,6 +2099,10 @@ class DatabaseSurveyor:
             view_name = r["table_name"]
             view_def = r["view_definition"]
             if not view_def:
+                if r["kind"] == "materialized_view":
+                    # Not analysable, and said so rather than dropped silently.
+                    self.last_views_not_read.setdefault("materialized_view_definitions", []).append(
+                        f"{schema_name}.{view_name}")
                 continue
 
             qualified_view_name = f"{schema_name}.{view_name}"
@@ -2080,7 +2134,20 @@ class DatabaseSurveyor:
                 if lineage_res:
                     col_lineage[col] = lineage_res
 
+            matview_facts = {}
+            if r["kind"] == "materialized_view":
+                matview_facts = {
+                    "has_indexes": r.get("has_indexes"), "is_populated": r.get("is_populated"),
+                }
+                # The table row for this object carries the same two facts.
+                for schema in schema_info.get("schemas", []):
+                    if schema["name"] == schema_name:
+                        for table in schema["tables"]:
+                            if table["name"] == view_name:
+                                table.update(matview_facts)
             analyzed_views.append({
+                "kind": r["kind"],
+                **matview_facts,
                 "schema": schema_name,
                 "name": view_name,
                 "qualified_name": qualified_view_name,
@@ -2091,6 +2158,39 @@ class DatabaseSurveyor:
             })
 
         return analyzed_views
+
+    def _read_matviews(self, conn) -> tuple[list[dict], str | None]:
+        """Materialized views from `pg_matviews`: `(rows, error)`.
+
+        Rows are shaped like the `information_schema.views` rows beside them,
+        plus `kind='materialized_view'`, `has_indexes` and `is_populated`
+        (bools). `error` is the failure text when the read raised (then rows is
+        []): not read, which says nothing about whether any exist.
+        """
+        query = """
+            SELECT schemaname AS table_schema, matviewname AS table_name,
+                   definition AS view_definition, hasindexes, ispopulated
+            FROM pg_matviews
+            WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY schemaname, matviewname
+        """
+        try:
+            reader = getattr(conn, "execute_query_isolated", conn.execute_query)
+            found = reader(query)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not read pg_matviews for %s: %s", self.db_entity.slug, exc)
+            return [], f"{type(exc).__name__}: {exc}"[:300]
+        out = []
+        for r in found:
+            out.append({
+                "table_schema": r.get("table_schema"),
+                "table_name": r.get("table_name"),
+                "view_definition": r.get("view_definition"),
+                "kind": "materialized_view",
+                "has_indexes": r["hasindexes"] if isinstance(r.get("hasindexes"), bool) else None,
+                "is_populated": r["ispopulated"] if isinstance(r.get("ispopulated"), bool) else None,
+            })
+        return out, None
 
     def _create_views_annotations(self, views_info: list[dict]) -> list:
         """Create annotations for parsed view dependencies, complexity, and lineage."""

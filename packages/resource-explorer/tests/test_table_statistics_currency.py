@@ -277,7 +277,10 @@ class TestPublishedTableAnnotations:
         assert rp["Number Of Rows Inserted"] == "40" and rp["Number Of Rows Deleted"] == "1"
         assert rp["Last statistics reset"] == "2026-09-01 00:00:00+00:00"
         assert rp["Table Name"] == "orders" and rp["Table Qualified Name"] == "coco.public.orders"
-        assert "metricsNotRead" not in rp
+        # Every statistic was read; the only unread names are the structure
+        # flags, which this fixture's schema_info does not carry (not read).
+        assert set(json.loads(rp["metricsNotRead"])) == {
+            "Has Triggers", "Has Rules", "Has Row Security"}
         # A real zero is published as 0.
         assert out[K("public", "audit")]["resourceProperties"]["Number Of Dead Rows"] == "0"
 
