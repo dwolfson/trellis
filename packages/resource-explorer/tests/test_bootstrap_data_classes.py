@@ -298,7 +298,7 @@ class TestPlainValidValueDefinitionsAreLookedUpTyped:
 class TestALookupThatRaisesCreatesNothing:
     """6.2.2 audit: a lookup that RAISES is "could not check", never "absent, so create"."""
 
-    def test_a_raising_set_lookup_stops_and_creates_nothing(self, caplog):
+    def test_a_raising_set_lookup_stops_and_creates_nothing(self):
         class Raising(_FakeReferenceDataManager):
             def get_guid_for_name(self, name, property_name=_DEFAULT_PROPS, type_name=None):
                 if name.startswith("ValidValuesSet::"):
@@ -310,7 +310,12 @@ class TestALookupThatRaisesCreatesNothing:
 
         assert _run_bootstrap(designer, ref_manager) == 1
         assert ref_manager.created == [] and ref_manager.links == []
-        assert "could not check 'ValidValuesSet::EmailAddressKeywords'" in caplog.text
+        # The reason, from the outcome the log line and activity row are built from (not from log
+        # capture, which another test in the suite can disable).
+        outcome = bdc.ensure_data_classes(designer, ref_manager, _FakeExpert(designer, ref_manager))
+        assert outcome.status == bdc.COULD_NOT_CHECK
+        assert "could not check 'ValidValuesSet::EmailAddressKeywords'" in outcome.line
+        assert ref_manager.created == [] and ref_manager.links == []
 
     def test_a_raising_data_class_lookup_stops_and_creates_nothing(self):
         class Raising(_FakeDesigner):
