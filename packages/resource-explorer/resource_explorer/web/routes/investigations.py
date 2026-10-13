@@ -98,6 +98,22 @@ async def _require_writes(reg, slug: str, writes) -> None:
         raise HTTPException(status_code=403, detail=d.reason)
 
 
+async def _link_status_after(reg, slug: str) -> dict:
+    """`{"link_status": ...}` for a write's response: the members' link state in words, read after the write from
+    the link-status rows. A failed read never fails the write it follows: it answers `link_status_error` with the
+    reason instead, and the page then shows no words rather than wrong ones."""
+    import asyncio
+    import logging
+
+    from resource_explorer.surveyors.egeria_investigation_publisher import EgeriaInvestigationPublisher
+
+    try:
+        return {"link_status": await asyncio.to_thread(EgeriaInvestigationPublisher(reg).link_status, slug)}
+    except Exception as exc:  # noqa: BLE001 - the write is done; its words are the extra
+        logging.getLogger(__name__).warning("link-status after a write on %s could not be read: %s", slug, exc)
+        return {"link_status_error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
 def _nothing_permitted(res) -> str:
     """Brief Z3: the 403 words when a members pass permitted nothing: at least one member refused, none linked,
     and no other member even tried (a member with no asset is a fact, not a permitted write). "" otherwise."""
@@ -437,6 +453,9 @@ async def promote_to_egeria(slug: str) -> dict:
             "egeria_project_guid": result.project_guid,
             "egeria_project_qualified_name": result.project_qualified_name,
         })
+        # The Publish result says why members did not link, from the link-status rows (one source with Relink).
+        return {**result.as_dict(),
+                **(await _link_status_after(reg, slug))}
     return result.as_dict()
 
 
@@ -538,7 +557,73 @@ async def relink_members(slug: str) -> dict:
     refused = _nothing_permitted(res)
     if refused:
         raise HTTPException(status_code=403, detail=refused)
-    return res.as_dict()
+    # The result's words come from the link-status rows (one source): why the members that did not link did not.
+    return {**res.as_dict(),
+            **(await _link_status_after(reg, slug))}
+
+
+def _member_publish_investigation(reg, slug: str) -> dict:
+    """The investigation a members publish may act on, as the caller sees it: 404 when they cannot see it (a
+    private one is hidden from everyone but its owner), 403 with the words when it is private and ownerless, or
+    private and this is not its signed-in owner (`owner_absent_words`, #640's owner gate). Nothing is planned or
+    sent past a refusal."""
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        owner_absent_words, ownerless_private_words,
+    )
+
+    inv = reg.get_investigation(slug)
+    if not inv:
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    words = ownerless_private_words(inv) or owner_absent_words(inv)
+    if words:
+        raise HTTPException(status_code=403, detail=words)
+    return inv
+
+
+@router.get("/{slug}/publish-members")
+async def plan_member_publish(slug: str) -> dict:
+    """What [Publish the N unpublished members] would send, computed by the SAME function the press runs
+    (`investigation_member_publish.member_publish_plan`), plus the newest batch's progress. Sends nothing."""
+    from resource_explorer import investigation_member_publish as imp
+
+    reg = _registry()
+    _member_publish_investigation(reg, slug)
+    plan = imp.member_publish_plan(reg, slug)
+    batch = plan["running"] or imp.latest_batch_id(reg, slug)
+    return {**plan, "latest": imp.progress_of(reg, slug, batch)}
+
+
+@router.post("/{slug}/publish-members")
+async def publish_members(slug: str) -> dict:
+    """Publish the investigation's unpublished members to Egeria, each through RE's existing per-repository publish
+    (`repo_publish.publish_report`), as the signed-in caller, in the background. The list is re-planned here, never
+    taken from the page. Answers the batch id and its first progress; 409 while one is running."""
+    from resource_explorer import investigation_member_publish as imp
+    from resource_explorer.a2a_auth import caller
+
+    reg = _registry()
+    inv = _member_publish_investigation(reg, slug)
+    who = caller()
+    author = (getattr(who, "user_id", "") or "") if who else ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to publish to Egeria: the record needs an author.")
+    try:
+        return imp.start_member_publish(reg, inv, author)
+    except imp.BatchRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/{slug}/publish-members/{batch_id}")
+async def member_publish_progress(slug: str, batch_id: str) -> dict:
+    """Per-member results of one members publish, from its rows (published only from a proof row)."""
+    from resource_explorer import investigation_member_publish as imp
+
+    reg = _registry()
+    _member_publish_investigation(reg, slug)
+    out = imp.progress_of(reg, slug, batch_id)
+    if out.get("unknown"):
+        raise HTTPException(status_code=404, detail=f"no members publish {batch_id!r} for '{slug}'")
+    return out
 
 
 @router.get("/{slug}/link-status")

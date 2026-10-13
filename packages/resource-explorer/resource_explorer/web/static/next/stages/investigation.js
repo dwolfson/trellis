@@ -31,6 +31,7 @@ import {
   closeInvestigation, suspendInvestigation, reopenInvestigation,
   bindInvestigationEgeriaProject, promoteInvestigation, reclassifyInvestigation,
   relinkInvestigationMembers, syncInvestigationEgeria, getInvestigationLinkStatus,
+  planInvestigationMemberPublish, publishInvestigationMembers, getInvestigationMemberPublish,
   getInvestigationDispositions, setInvestigationDisposition, getInvestigationNextSteps,
   fetchScopeCsv,
 } from '/static/re-api.js';
@@ -44,6 +45,7 @@ import {
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import { saveCsv } from '/static/next/download.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
+import { inPageConfirm } from '/static/next/confirm-dialog.js';
 
 /** Brief Z3: a refusal by the zone check (403) is the no_access cue plus "not permitted", the reason on hover;
  *  any other failure keeps its own words. */
@@ -353,12 +355,15 @@ async function renderDetail(slug) {
   // Link status is a read of what relink recorded; a failed read is "unavailable", never a zero.
   _linkStatus[slug] = null;
   _linkMembers[slug] = null;
+  _notPublished[slug] = 0;
   if (inv.egeria_project_guid) {
     try {
       const ls = await getInvestigationLinkStatus(slug);
       if (ls && ls.counts) _linkStatus[slug] = ls.counts;
       // The per-member rows come from the SAME response: state (linked | not_linked | could_not_tell) and reason.
       if (ls && Array.isArray(ls.members)) _linkMembers[slug] = ls.members;
+      // Members with nothing in Egeria to link: what [Publish the N unpublished members] offers to send.
+      if (ls && typeof ls.not_published === 'number') _notPublished[slug] = ls.not_published;
     } catch { /* leaves null: shown as unavailable */ }
     if (stale()) return;
   }
@@ -447,6 +452,8 @@ const _linkStatus = {};
 const _unlinked = {};
 // Per-member link rows from the same /link-status response (null: not read).
 const _linkMembers = {};
+// How many members link-status says are not in Egeria yet (not published); 0 when not read.
+const _notPublished = {};
 
 /** One member's link cell: a cue and a short word, the reason on hover. Linked / not linked / could not tell; a
  *  status that was never read is "not read", never "not linked". Exported for the tests. */
@@ -456,6 +463,7 @@ export function memberLinkCellHtml(inv, m, rows) {
   if (!r) return `<span data-inv-member-link="unread">${cue('not_established', 'not read', 'The link status could not be read for this member.')}</span>`;
   const why = r.reason || '';
   if (r.state === 'linked') return `<span data-inv-member-link="linked">${cue('measured', 'linked', why || 'Attached to the working set in Egeria.')}</span>`;
+  if (r.not_published) return `<span data-inv-member-link="not_published">${cue('unrun', 'not published', why || 'Not in Egeria yet.')}</span>`;
   if (r.state === 'not_linked') return `<span data-inv-member-link="not_linked">${cue('unrun', 'not linked', why || 'Not attached yet.')}</span>`;
   return `<span data-inv-member-link="could_not_tell">${cue('not_established', 'could not tell', why || 'The link could not be established either way.')}</span>`;
 }
@@ -482,6 +490,49 @@ function linkStatusHtml(slug) {
   return { html: `<span data-inv-link-unknown class="ml-s2 text-ink-muted">link status unavailable</span>`, n };
 }
 
+/** [Publish the N unpublished members]: offered only when link-status counted members not in Egeria yet. N is
+ *  link-status's count; the press re-plans on the server with the function that sends, and the confirmation shows
+ *  that plan's own words and list. Exported for the tests. */
+export function publishMembersButtonHtml(slug) {
+  const n = _notPublished[slug] || 0;
+  if (n <= 0) return '';
+  return `<button data-act="inv-publish-members" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Publish the ${n} unpublished member${n === 1 ? '' : 's'}</button>`;
+}
+
+/** One member's line in a members-publish result: a cue and a short word, the reason on hover. From the rows the
+ *  server read (published only from a proof row). Exported for the tests. */
+export function memberPublishLineHtml(m) {
+  const name = esc(m.entity_slug || '?');
+  const why = m.words || '';
+  const c = {
+    published: () => cue('measured', 'published', 'Published to Egeria; the report was read back.'),
+    sent: () => cue('running', 'sent · waiting for Egeria', why || 'Sent; not read back yet.'),
+    not_permitted: () => cue('no_access', 'not permitted', why),
+    not_published: () => cue('error', 'not published', why),
+    failed: () => cue('error', 'failed', why),
+    skipped: () => cue('unrun', 'skipped', why),
+    could_not_tell: () => cue('not_established', 'could not tell', why),
+    publishing: () => cue('running', 'publishing…'),
+    waiting: () => cue('unrun', 'waiting'),
+    not_reached: () => cue('not_established', 'not reached', 'The batch stopped before this member.'),
+  }[m.state] || (() => cue('not_established', String(m.state || 'unknown')));
+  return `<li data-inv-member-publish="${esc(m.state || '')}" class="mb-s1">${c()} ${name}</li>`;
+}
+
+/** The members-publish result block: the counts in words, a line per member, the ones waiting for the next press,
+ *  and, once done with something published, [Relink members] next (never run for you: linking is its own write). */
+export function memberPublishResultHtml(p) {
+  const members = Array.isArray(p?.members) ? p.members : [];
+  const words = Array.isArray(p?.words) && p.words.length ? p.words.join(' · ') : 'nothing published';
+  const waiting = Array.isArray(p?.waiting_next_press) ? p.waiting_next_press : [];
+  return `<div data-inv-members-publish-result class="mt-s2 text-caveat">
+      <div data-inv-members-publish-words class="text-ink">${esc(words)}</div>
+      <ul class="mt-s1 list-none p-0">${members.map(memberPublishLineHtml).join('')}</ul>
+      ${waiting.length ? `<div data-inv-members-waiting class="text-ink-muted">${esc(`${waiting.length} more wait for the next press: ${waiting.map((w) => w.entity_slug).join(', ')}`)}</div>` : ''}
+      ${p?.relink_next ? `<button data-act="inv-relink-after-publish" class="mt-s1 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Relink members</button>` : ''}
+    </div>`;
+}
+
 function egeriaSectionHtml(inv) {
   if (inv.egeria_project_guid) {
     const { html: notLinked, n, counted } = linkStatusHtml(inv.slug);
@@ -492,8 +543,10 @@ function egeriaSectionHtml(inv) {
       <div class="flex flex-wrap gap-s2">
         <button data-act="inv-sync" class="${btnCls()}">Publish again</button>
         <button data-act="inv-relink" class="${btnCls()}">${n > 0 ? `Link members${counted ? ` (${n})` : ''}` : 'Relink members'}</button>
+        ${publishMembersButtonHtml(inv.slug)}
         <button data-act="inv-unbind" class="${btnCls()}">Unbind</button>
-      </div>`;
+      </div>
+      <div id="inv-members-publish"></div>`;
   }
   return `<p class="max-w-[70ch] text-caveat text-ink-muted">
       No Egeria Project yet — local only. Bind an existing one, or create the Egeria side
@@ -582,6 +635,69 @@ function membersTableHtml(inv, members, dispositions) {
       </tr>`;
     }).join('')}</tbody>
   </table>`;
+}
+
+// How often a running members publish is re-read. A setter, so the harness need not wait a second per read.
+let _memberPublishPollMs = 1000;
+export function setMemberPublishPollMs(ms) { _memberPublishPollMs = ms; }
+
+/** [Publish the N unpublished members]: plan (the server's, from the function the press runs) -> confirm (it is an
+ *  Egeria write of N assets) -> press -> per-member results read back until the batch stops -> offer Relink. */
+async function publishMembersFlow(inv, el) {
+  const btn = el.querySelector('[data-act="inv-publish-members"]');
+  const host = $('inv-members-publish');
+  if (!btn || !host) return;
+  const label = btn.textContent;
+  const reset = (html) => { btn.disabled = false; if (html) btn.innerHTML = html; else btn.textContent = label; };
+  btn.disabled = true;
+  btn.innerHTML = cue('running', 'planning…');
+  let plan;
+  try {
+    plan = await planInvestigationMemberPublish(inv.slug);
+  } catch (err) {
+    reset(err.status === 403 ? cue('no_access', 'not permitted', err.message) : `${esc(label)} ${cue('error', 'not planned', err.message)}`);
+    return;
+  }
+  host.innerHTML = `<div data-inv-members-plan class="mt-s2 text-caveat text-ink">${esc(plan.words || '')}</div>`;
+  const n = plan.count || 0;
+  if (n <= 0) { reset(); return; }
+  const ok = await inPageConfirm({
+    title: `Publish ${n} member${n === 1 ? '' : 's'} to Egeria?`,
+    message: `${plan.words}.\n\nEach is published as you, through its own Publish (the kept survey, read back). `
+      + 'A private investigation’s members are published private to its owner. Linking them is a separate step.',
+    confirmLabel: `Publish ${n} to Egeria`,
+  });
+  if (!ok) { host.innerHTML = ''; reset(); return; }
+  btn.innerHTML = cue('running', 'publishing…');
+  let p;
+  try {
+    p = await publishInvestigationMembers(inv.slug);
+  } catch (err) {
+    reset(err.status === 403 ? cue('no_access', 'not permitted', err.message) : `${esc(label)} ${cue('error', 'not published', err.message)}`);
+    if (err.status !== 403) failurePopup('Not published', err.message);
+    return;
+  }
+  const draw = (progress) => {
+    const target = $('inv-members-publish');
+    if (!target) return false;
+    target.innerHTML = memberPublishResultHtml(progress);
+    target.querySelector('[data-act="inv-relink-after-publish"]')?.addEventListener('click', () => {
+      document.querySelector('[data-act="inv-relink"]')?.click();
+    });
+    return true;
+  };
+  draw(p);
+  while (p && p.running && p.batch_id) {
+    await new Promise((r) => setTimeout(r, _memberPublishPollMs));
+    try {
+      p = await getInvestigationMemberPublish(inv.slug, p.batch_id);
+    } catch (err) {
+      reset(`${esc(label)} ${cue('not_established', 'could not read progress', err.message)}`);
+      return;
+    }
+    if (!draw(p)) return;
+  }
+  reset();          // the words above, from the rows, say what happened; the button says nothing of its own
 }
 
 function bindDetail(inv, members) {
@@ -818,6 +934,8 @@ function bindDetail(inv, members) {
         ${result.members_linked?.length ? ` Linked: ${result.members_linked.map(esc).join(', ')}.` : ''}
         ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(memberLine).join('; ')}.` : ''}
         ${result.errors?.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}
+        ${Array.isArray(result.link_status?.summary) && result.link_status.summary.length
+          ? `<div data-inv-promote-words>Members: ${esc(result.link_status.summary.join(' · '))}</div>` : ''}
         <div class="mt-s2"><button id="inv-promote-reload" class="${btnCls()}">Reload</button></div>
       </div>`;
       // The result stays on screen (a partial promote's members_unlinkable/errors matter more than a clean
@@ -868,7 +986,10 @@ function bindDetail(inv, members) {
       await renderDetail(inv.slug);
       const host0 = $('inv-egeria-form');
       if (host0) {
-        host0.innerHTML = `<div class="mt-s2 text-caveat" data-inv-relink-result>${cue('measured', `${linkedN} linked`)}</div>`;
+        // Why the rest did not link, in words from the link-status rows the response carries (one source).
+        const why = Array.isArray(res?.link_status?.summary) ? res.link_status.summary : [];
+        host0.innerHTML = `<div class="mt-s2 text-caveat" data-inv-relink-result>${cue('measured', `${linkedN} linked`)}${
+          why.length ? ` · <span data-inv-relink-words>${esc(why.join(' · '))}</span>` : ''}</div>`;
       }
       if (errs.length) failurePopup('Some members were not linked', errs.join('; '));
       // Brief Z3: members the check refused stay named under the button, each with the cue.
@@ -886,6 +1007,8 @@ function bindDetail(inv, members) {
       }
     }
   });
+
+  el.querySelector('[data-act="inv-publish-members"]')?.addEventListener('click', () => publishMembersFlow(inv, el));
 
   el.querySelector('#inv-add-type')?.addEventListener('change', async (e) => {
     const entityType = e.target.value;

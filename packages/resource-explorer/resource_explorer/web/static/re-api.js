@@ -834,6 +834,16 @@ export const relinkInvestigationMembers = (slug) =>
 export const getInvestigationLinkStatus = (slug) =>
   get(`/api/investigations/${encodeURIComponent(slug)}/link-status`);
 
+/** What [Publish the N unpublished members] would send: the server plans it with the function the press runs. */
+export const planInvestigationMemberPublish = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/publish-members`);
+
+export const publishInvestigationMembers = (slug) =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/publish-members`);
+
+export const getInvestigationMemberPublish = (slug, batchId) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/publish-members/${encodeURIComponent(batchId)}`);
+
 export const syncInvestigationEgeria = (slug) =>
   post(`/api/investigations/${encodeURIComponent(slug)}/sync-egeria`);
 

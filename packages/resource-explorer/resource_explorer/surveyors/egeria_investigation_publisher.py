@@ -345,6 +345,51 @@ def owner_absent_words(inv: dict) -> str:
     return owner_waiting_words(owner)
 
 
+#: The member kinds an investigation links to its working set (and publishes from its page). A database or file
+#: system member is never linked from here today, whether or not it is in Egeria, so it is not "not published".
+LINKABLE_MEMBER_TYPES = ("repo",)
+
+#: The short word on a member with nothing in Egeria to link, and the reason on hover (link-status, 2026-10-13).
+NOT_PUBLISHED_WORD = "not published"
+NOT_PUBLISHED_REASON = "not in Egeria yet — no asset GUID (not published)"
+KIND_NOT_LINKED_REASON = "only repositories are linked from an investigation today"
+
+
+def member_asset_guid(registry, entity_type: str, entity_slug: str) -> str:
+    """The member's own Egeria asset GUID as RE recorded it, "" when there is none. THE one question "is there
+    anything to link?" -- asked by relink (`_link_members`), by link-status, and by the plan and press of "Publish
+    the unpublished members" (`investigation_member_publish`), so the three cannot disagree."""
+    if entity_type == "repo":
+        return registry.get_egeria_asset_guid(entity_slug) or ""
+    return ""
+
+
+def link_status_words(status: dict) -> list[str]:
+    """The plain words for a link-status answer, from its own rows (one source for the Relink and Publish results):
+    "nothing to link" or "N to link", then "N members are not in Egeria yet (not published)", then the other states
+    ("N could not tell", "N not linked: ..."). Never a zero for a state that was not read."""
+    rows = status.get("members") or []
+    counts = status.get("counts") or {}
+
+    def n(k: int) -> str:
+        return f"{k} member{'' if k == 1 else 's'}"
+
+    out: list[str] = []
+    linkable = int(counts.get("linkable") or 0)
+    if rows and not any(r.get("state") == "could_not_tell" for r in rows) or linkable:
+        out.append(f"{linkable} to link" if linkable else "nothing to link")
+    unpublished = sum(1 for r in rows if r.get("not_published"))
+    if unpublished:
+        out.append(f"{n(unpublished)} {'is' if unpublished == 1 else 'are'} not in Egeria yet (not published)")
+    other_kind = sum(1 for r in rows if r.get("reason") == KIND_NOT_LINKED_REASON)
+    if other_kind:
+        out.append(f"{n(other_kind)} not linked: {KIND_NOT_LINKED_REASON}")
+    unknown = sum(1 for r in rows if r.get("state") == "could_not_tell")
+    if unknown:
+        out.append(f"{unknown} could not tell")
+    return out
+
+
 def resource_list_landed(cm, project_guid: str, collection_guid: str) -> "tuple[bool | None, str]":
     """Is `collection_guid` attached to `project_guid` (a ResourceList), read back on `cm` (the owner's client for
     a private investigation)? (True, "") / (False, "") from Egeria's answer; (None, why) when it could not be
@@ -980,10 +1025,15 @@ class EgeriaInvestigationPublisher:
                             "reason": ("no working set Collection yet" if ws
                                        else "no working set yet")})
                 continue
+            if m["entity_type"] not in LINKABLE_MEMBER_TYPES:
+                # Not "not published": RE does not link this kind from an investigation, in Egeria or not.
+                out.append({**base, "state": "not_linked", "reason": KIND_NOT_LINKED_REASON})
+                continue
             asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
             if not asset_guid:
-                out.append({**base, "state": "not_linked",
-                            "reason": "not in Egeria yet — no asset GUID"})
+                # The cue's word is "not published" (`not_published`); the reason is shown on hover.
+                out.append({**base, "state": "not_linked", "not_published": True,
+                            "reason": NOT_PUBLISHED_REASON})
                 continue
             row = rows_by_qn.get(collection_membership_qn(collection_guid, asset_guid))
             if row is None:
@@ -1002,7 +1052,12 @@ class EgeriaInvestigationPublisher:
         # Linkable: an asset GUID exists and no finished attach is recorded -- the members `_link_members`
         # (what relink runs) would enqueue and drain. A member with no asset GUID is not linkable.
         counts["linkable"] = sum(1 for o in out if o.get("linkable"))
-        return {"slug": investigation_slug, "bound": bound, "members": out, "counts": counts}
+        status = {"slug": investigation_slug, "bound": bound, "members": out, "counts": counts,
+                  # Members with nothing in Egeria to link: what "Publish the unpublished members" would send
+                  # (`investigation_member_publish.member_publish_plan` asks the same `member_asset_guid`).
+                  "not_published": sum(1 for o in out if o.get("not_published"))}
+        status["summary"] = link_status_words(status)
+        return status
 
     def ensure_working_set(self, investigation_slug: str) -> PromotionResult:
         """Give an already-bound investigation its Egeria working set.
@@ -1228,6 +1283,4 @@ class EgeriaInvestigationPublisher:
         return out
 
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:
-        if entity_type == "repo":
-            return self._registry.get_egeria_asset_guid(entity_slug) or ""
-        return ""
+        return member_asset_guid(self._registry, entity_type, entity_slug)
