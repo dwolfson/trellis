@@ -161,6 +161,10 @@ def list_rfas(
     return rfas
 
 
+def _dismissal_subject(registry, entry, ann, member) -> tuple[str, str, str, str]:
+    return registry.rfa_dismissal_subject(entry, ann, member)
+
+
 def _emit_rfa(rfas, entry, ann, idx, sub, member, n_members,
               overrides, dismissals, registry) -> None:
     """One RFA row. `member` is this request's own text when the group
@@ -170,16 +174,7 @@ def _emit_rfa(rfas, entry, ann, idx, sub, member, n_members,
     # Content key, not rfa_id: a dismissal has to keep matching
     # across future survey runs, which mint new entry ids (see
     # the rfa_dismissals DDL in registry.py).
-    dismissal_key = registry.rfa_dismissal_key(
-        entry.get("entity_type", ""),
-        entry.get("entity_slug", ""),
-        ann.get("analysis_name", ""),
-        # This request's OWN summary, not the group's first. Keying on the
-        # group would make one dismissal suppress every sibling: marking
-        # "No CI configuration detected" not-applicable would silently hide
-        # "No SECURITY.md found" too.
-        (member or ann).get("summary", "") or ann.get("summary", ""),
-    )
+    dismissal_key = registry.rfa_dismissal_key(*_dismissal_subject(registry, entry, ann, member))
     dismissal = dismissals.get(dismissal_key)
     rfas.append({
         "id": rfa_id,
@@ -273,11 +268,12 @@ def dismiss_rfa(rfa_id: str, body: RfaDismissRequest, request: Request) -> dict:
     member = members[sub] if sub is not None and sub < len(members) else None
 
     try:
+        d_type, d_slug, d_analysis, d_summary = _dismissal_subject(registry, entry, ann, member)
         row = registry.dismiss_rfa(
-            entity_type=entry.get("entity_type", ""),
-            entity_slug=entry.get("entity_slug", ""),
-            analysis_name=ann.get("analysis_name", ""),
-            summary_key=(member or ann).get("summary", "") or ann.get("summary", ""),
+            entity_type=d_type,
+            entity_slug=d_slug,
+            analysis_name=d_analysis,
+            summary_key=d_summary,
             reason=body.reason,
             note=body.note,
             created_by=_acting_user(request, body.dismissed_by),

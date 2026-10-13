@@ -13054,6 +13054,30 @@ class ProjectRegistry:
 
     RFA_DISMISSAL_REASONS = ("not_applicable", "wont_do")
 
+    # Subject of a dismissal for an RFA that belongs to no resource (a sweep
+    # summary, a publish-queue alert). It is an explicit marker, never an
+    # empty slug: the key still carries the RFA's producer (analysis_name) and
+    # its own summary, so it matches that one finding and nothing else.
+    RFA_SYSTEM_SCOPE = "__system__"
+
+    @classmethod
+    def rfa_dismissal_subject(cls, entry: dict, ann: dict, member: dict | None) -> tuple[str, str, str, str]:
+        """(entity_type, entity_slug, analysis_name, summary_key) for an RFA's dismissal.
+
+        The one place the listing, the dismiss route and the sweep derive it, so
+        they cannot drift. An RFA that belongs to a resource keys on that
+        resource. One that belongs to none (empty slug) is keyed under the
+        explicit system scope marker plus its producer (the entry's operation
+        and analysis name) and its own summary, so it matches only that finding:
+        never every resource-less RFA, and never any resource's RFA."""
+        slug = entry.get("entity_slug", "") or ""
+        analysis = ann.get("analysis_name", "") or ""
+        summary = (member or ann).get("summary", "") or ann.get("summary", "") or ""
+        if not slug.strip():
+            slug = cls.RFA_SYSTEM_SCOPE
+            analysis = f"{entry.get('operation', '') or 'rfa'}:{analysis}"
+        return entry.get("entity_type", ""), slug, analysis, summary
+
     @staticmethod
     def rfa_dismissal_key(
         entity_type: str, entity_slug: str, analysis_name: str, summary_key: str
@@ -13105,6 +13129,15 @@ class ProjectRegistry:
             )
         if not (entity_slug or "").strip():
             raise ValueError("entity_slug is required — a dismissal with no subject matches everything")
+        if entity_slug.strip() == self.RFA_SYSTEM_SCOPE and not (
+            (analysis_name or "").strip() and (summary_key or "").strip()
+        ):
+            # A system-scope dismissal is only specific because of its producer and summary;
+            # without both it would suppress every resource-less RFA.
+            raise ValueError(
+                "a system-scope dismissal needs both analysis_name and summary_key "
+                "— without them it matches every RFA that has no resource"
+            )
         did = self.rfa_dismissal_key(entity_type, entity_slug, analysis_name, summary_key)
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
