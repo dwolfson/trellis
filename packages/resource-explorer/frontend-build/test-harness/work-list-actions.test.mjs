@@ -96,6 +96,15 @@ function stubBackend() {
     if (m && method === 'POST' && PUBLISH_MODE === 'refused') {
       return { ok: false, status: 403, statusText: 'Forbidden', json: async () => ({ detail: 'zone sales-zone does not grant garygeeke attach in Egeria' }) };
     }
+    if (m && method === 'POST' && PUBLISH_MODE === 'removals') {
+      WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
+      return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 2,
+        members_without_an_egeria_asset: [], not_permitted: [],
+        removals: { detached: ['old-a', 'old-b'],
+          not_permitted: [{ entity_slug: 'old-c', words: 'not permitted · zone sales-zone does not grant garygeeke detach in Egeria' }],
+          failed: [{ entity_slug: 'old-d', words: 'not retried: destructive write · Egeria said no' }],
+          waiting: [], withdrawn_before_sent: [] } });
+    }
     if (m && method === 'POST' && PUBLISH_MODE === 'one-member') {
       WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
       return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 1,
@@ -437,4 +446,29 @@ test('a publish with one refused member names it with the cue; the rest are queu
   assert.equal(row.querySelector('[data-cue="no_access"]').getAttribute('title'),
     'zone sales-zone does not grant garygeeke attach in Egeria');
   assert.match(note(document), /1 membership\(s\) queued/);
+});
+
+/* ── A re-publish's removals (the Portal's ask, 2026-10-13) ──────────────── */
+
+test('a re-publish shows its removals on their own line: N detached, N not permitted, N could not be detached · why', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'removals';
+  act(document, 'publish').click();
+  await tick(200);
+  const line = document.querySelector('#wl-note [data-removals]');
+  assert.ok(line, 'its own line');
+  assert.ok(line.classList.contains('block'));
+  assert.match(text(line), /2 detached/);
+  assert.match(text(line), /1 removal\(s\) not permitted/);
+  assert.match(text(line), /1 could not be detached · not retried: destructive write · Egeria said no/);
+  assert.equal(line.querySelector('[data-cue="no_access"]').getAttribute('title'),
+    'old-c: zone sales-zone does not grant garygeeke detach in Egeria');
+  assert.ok(line.querySelector('[data-cue="measured"]') && line.querySelector('[data-cue="error"]'));
+});
+
+test('a publish with nothing removed draws no removals line', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  act(document, 'publish').click();
+  await tick(250);
+  assert.equal(document.querySelector('#wl-note [data-removals]'), null);
 });

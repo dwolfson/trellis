@@ -50,6 +50,7 @@ and is what keeps a half-finished publish from being invisible.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -84,6 +85,78 @@ ACTIVE_RUN_STATES = ("queued", "claimed", "running")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── Keeping the published WorkingSet in step (the Portal's ask, 2026-10-13) ──
+
+#: The additionalProperties key the Portal's Resource Browser reads to link a WorkingSet back to RE.
+RESOURCE_EXPLORER_URL_KEY = "resourceExplorerUrl"
+
+#: Outbox states of a row that may still be sent (cancellable: never applied), and of one being sent now.
+_UNSENT = ("pending", "failed")
+_SENDING = ("running",)
+
+
+def resource_explorer_url(slug: str, entity_type: str = "repo") -> str:
+    """The /next work-list page for `slug` on RE's configured public URL (`RE_PUBLIC_URL`), in the shape the page
+    writes itself (`next/app.js` `writeUrl`: `type=` only for a non-repo kind, then `worklist=`). "" when no public
+    URL is configured: the key is then left out, never a guessed localhost."""
+    from urllib.parse import urlencode
+
+    from resource_explorer.config import WebUIConfig
+
+    base = (WebUIConfig().public_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    query = {"type": entity_type} if entity_type and entity_type != "repo" else {}
+    query["worklist"] = slug
+    return f"{base}/next?{urlencode(query)}"
+
+
+def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str, dict]:
+    """What RE's OWN outbox says about each member it has written to this WorkingSet, by member GUID. The one
+    source both the publish's removals and their counts are taken from (never a fresh Egeria read).
+
+    Rows are replayed oldest first, for this collection only (an Egeria reset gives the list a new GUID):
+
+    * `attached`: the last settled write was a done add (a done removal clears it);
+    * `unsent_adds`: add rows never applied (pending, or failed and backing off): cancellable;
+    * `adding`: an add row is being sent right now;
+    * `unsent_removals`: removal rows never applied (pending, or failed): cancellable;
+    * `removing`: a removal row is unsettled (pending, failed or running).
+
+    A dead or cancelled row changes nothing: it was never applied."""
+    from resource_explorer.egeria_outbox import COLLECTION_MEMBERSHIP_DETACH
+
+    rows = registry.list_outbox_rows_for_kinds("work_list", slug,
+                                               ("collection_membership", COLLECTION_MEMBERSHIP_DETACH))
+    out: dict[str, dict] = {}
+    for row in sorted(rows, key=lambda r: int(r["id"])):
+        try:
+            payload = json.loads(row.get("payload_json") or "{}") or {}
+        except (TypeError, ValueError):
+            continue
+        if str(payload.get("collection_guid") or "") != collection_guid or not payload.get("member_guid"):
+            continue
+        rec = out.setdefault(str(payload["member_guid"]), {
+            "entity_slug": "", "attached": False, "unsent_adds": [], "adding": False,
+            "unsent_removals": [], "removing": False})
+        rec["entity_slug"] = str(payload.get("member_entity_slug") or rec["entity_slug"])
+        status, adding = row.get("status") or "", row.get("element_kind") == "collection_membership"
+        if adding:
+            if status == "done":
+                rec["attached"] = True
+            elif status in _UNSENT:
+                rec["unsent_adds"].append(int(row["id"]))
+            elif status in _SENDING:
+                rec["adding"] = True
+        elif status == "done":
+            rec["attached"] = False
+        elif status in _UNSENT + _SENDING:
+            rec["removing"] = True
+            if status in _UNSENT:
+                rec["unsent_removals"].append(int(row["id"]))
+    return out
 
 
 # The work-list tables are created by ProjectRegistry._init_schema (a migration), not here.
@@ -238,6 +311,13 @@ class WorkLists:
         is a catalog decision with its own consequences, and doing it as a
         side effect of tidying a local list is how a catalog loses history
         nobody meant to spend.
+
+        If an unpublish is ever added, it goes here, and in this order: Egeria
+        refuses to delete a WorkingSet that still has members
+        (OMAG-GENERIC-HANDLERS-403-005, which pyegeria misreports as an
+        AUTHORIZATION 401), so every membership is removed first (the
+        `collection_membership_detach` rows `publish` queues), and only then
+        the collection.
         """
         with self._conn() as conn:
             conn.execute("DELETE FROM work_list_members WHERE work_list_slug = ?", (slug,))
@@ -393,6 +473,19 @@ class WorkLists:
         attach and is REPORTED, not retried — that is a fact about the
         resource, not a failed write.
 
+        **A re-publish also removes** (the Portal reads this collection, and
+        membership is uni-link, so adds converge and removals happen only if RE
+        makes them): members RE recorded attaching and has since dropped are
+        detached, one `collection_membership_detach` row each, DETACH-checked
+        on both ends, applied before this returns (`_apply_removals`), and
+        reported in `removals` by each row's own outcome.
+
+        **The link back.** With `RE_PUBLIC_URL` configured, the WorkingSet
+        carries `additionalProperties.resourceExplorerUrl`, the /next
+        work-list page: on create, and merged in again on every re-publish
+        (UPDATE_PROPERTIES, checked; `link_back` says what happened). Without
+        it the key is left out.
+
         **Zone access (Brief Z3).** Every write is checked first, as the caller,
         with the one decision (`workflows.egeria_work_access` ->
         `curation_access`): the collection (CREATE for a new one, ATTACH) and
@@ -406,7 +499,8 @@ class WorkLists:
         """
         from resource_explorer.workflows.curate import CurationDenied
         from resource_explorer.workflows.egeria_work_access import (
-            access_words, member_write, per_member, work_list_collection_write,
+            access_words, collection_detach_write, member_detach_write, member_write, per_member,
+            work_list_collection_write, work_list_link_back_write,
         )
 
         wl = self.get(slug)
@@ -439,8 +533,21 @@ class WorkLists:
             self.registry, [member_write(m["member_guid"])], entity_type=m["entity_type"], slug=m["entity_slug"],
             reader=reader))
         not_permitted = [{"entity_slug": m["entity_slug"], "words": why} for m, why in refused]
-        if refused and not attachable and existing:
-            reasons = sorted({why.removeprefix("not permitted · ") for _, why in refused})
+
+        # Removals (re-publish only): what RE recorded attaching to this collection, minus the current members.
+        # Every current member's GUID counts, refused or not: a refused add is not a removal.
+        current_guids = {m["member_guid"] for m in attachable} | {m["member_guid"] for m, _ in refused}
+        recorded = recorded_memberships(self.registry, slug, existing) if existing else {}
+        removed = {g: r for g, r in recorded.items() if g not in current_guids}
+        detachable, detach_refused = per_member(
+            [{"member_guid": g, "entity_slug": r["entity_slug"] or g} for g, r in removed.items()
+             if r["attached"] or r["adding"]],
+            lambda m: access_words(
+                self.registry, [collection_detach_write(existing, "the collection"),
+                                member_detach_write(m["member_guid"])],
+                entity_type=wl["entity_type"], slug=m["entity_slug"], reader=reader))
+        if (refused or detach_refused) and not attachable and not detachable and existing:
+            reasons = sorted({why.removeprefix("not permitted · ") for _, why in refused + detach_refused})
             raise CurationDenied(reasons[0] if len(reasons) == 1 else "; ".join(reasons))
 
         from resource_explorer.egeria_outbox import _default_clients
@@ -456,15 +563,21 @@ class WorkLists:
         from resource_explorer.egeria_clients import current_principal
 
         # The person who pressed publish (Brief I), not the outbox daemon.
-        clients, _find_element_guid = _default_clients(current_principal())
+        who = current_principal()
+        clients, _find_element_guid = _default_clients(who)
         cm = clients.require("collection_manager")
 
+        # The link back to RE's work-list page (the Portal's Resource Browser reads it). Written on create, and
+        # again on every re-publish, so a list published before the URL was configured gains it.
+        url = resource_explorer_url(slug, wl["entity_type"])
+        link_back = {"url": url, "state": "set" if url else "not configured", "words": ""}
         guid = (wl.get("egeria_guid") or "").strip()
         if not guid:
             guid = _create_typed_collection(
                 cm, EGERIA_TYPE_NAME, wl["display_name"],
                 wl.get("description") or f"Work list {slug}",
                 qualified_name=f"{EGERIA_TYPE_NAME}::resource-explorer::{slug}",
+                additional_properties={RESOURCE_EXPLORER_URL_KEY: url} if url else None,
             )
             if not guid:
                 raise RuntimeError("Egeria returned no GUID for the collection")
@@ -472,9 +585,15 @@ class WorkLists:
                 conn.execute(
                     "UPDATE work_lists SET egeria_guid = ?, published_at = ?"
                     " WHERE slug = ?", (guid, _now(), slug))
+        elif url:
+            link_back.update(self._set_link_back(cm, guid, url, access_words(
+                self.registry, [work_list_link_back_write(guid)], entity_type="work_list", slug=slug,
+                reader=reader)))
 
         row_ids = enqueue_work_list_members(
             self.registry, slug, guid, attachable, run_id=run_id)
+        removals = self._apply_removals(slug, guid, wl["entity_type"], removed, detachable, detach_refused,
+                                        clients, _find_element_guid, who, run_id=run_id)
 
         return {
             "slug": slug,
@@ -487,7 +606,103 @@ class WorkLists:
             "members_without_an_egeria_asset": unpublished,
             # Brief Z3: each member the caller may not attach, with its words; the rest were queued.
             "not_permitted": not_permitted,
+            # Members removed in RE since the last publish, each by its outbox row's own outcome.
+            "removals": removals,
+            "link_back": link_back,
         }
+
+    @staticmethod
+    def _set_link_back(cm, guid: str, url: str, refused: str) -> dict:
+        """Merge `resourceExplorerUrl` into an existing WorkingSet's additionalProperties (UPDATE_PROPERTIES,
+        checked first). Its own outcome: a refusal or a failure here does not stop the memberships."""
+        if refused:
+            return {"state": "not permitted", "words": refused}
+        try:
+            cm.update_collection(guid, {
+                "class": "UpdateElementRequestBody",
+                "mergeUpdate": True,
+                "properties": {"class": "CollectionProperties",
+                               "additionalProperties": {RESOURCE_EXPLORER_URL_KEY: url}},
+            })
+        except Exception as exc:  # noqa: BLE001 - said on the result, the publish goes on
+            log.warning("work list link back not set on %s: %s", guid, exc)
+            return {"state": "failed", "words": f"could not be set · {type(exc).__name__}: {exc}"[:300]}
+        return {"state": "set", "words": ""}
+
+    def _apply_removals(self, slug: str, guid: str, entity_type: str, removed: dict, detachable: list,
+                        detach_refused: list, clients, find_element_guid, who, *, run_id: str = "") -> dict:
+        """Take members removed in RE out of the WorkingSet, from RE's own record (`recorded_memberships`).
+
+        * An add never sent is withdrawn (cancelled): it never reached Egeria, so there is nothing to detach.
+        * A member added (or being added) gets ONE `collection_membership_detach` row, as the person who pressed
+          publish, applied here and now so the result is the row's own outcome: "detached", "not permitted"
+          (re-checked at the drain), "could not be detached · <why>" (destructive: never re-sent; the next
+          publish queues a new row), or "waiting" (an earlier add of the member is still being sent).
+        * A member re-added in RE whose removal was never sent has that removal withdrawn.
+        * A member never published to Egeria is not "detached": it has no recorded add.
+
+        These rows are also what any future unpublish must send first (see `delete`)."""
+        from resource_explorer.egeria_outbox import (
+            COLLECTION_MEMBERSHIP_DETACH, collection_membership_qn, drain_outbox, requester_fields,
+        )
+
+        withdrawn_before_sent: list[str] = []
+        still_sending: list[dict] = []
+        for g, rec in removed.items():
+            cancelled = [self.registry.cancel_outbox_row(i, "member removed from the work list before it was sent")
+                         for i in rec["unsent_adds"]]
+            if rec["attached"] or rec["adding"] or not cancelled:
+                continue                               # detached below (or nothing was ever queued)
+            if all(cancelled):
+                withdrawn_before_sent.append(rec["entity_slug"] or g)
+            else:                                      # it started sending as we looked: not this press's to undo
+                still_sending.append({"entity_slug": rec["entity_slug"] or g,
+                                      "words": "its add is being sent now · publish again to remove it"})
+        for g, rec in recorded_memberships(self.registry, slug, guid).items():
+            if g not in removed:                       # a current member: a removal not yet sent is superseded
+                for i in rec["unsent_removals"]:
+                    self.registry.cancel_outbox_row(i, "member added back to the work list before it was sent")
+
+        # Re-read after the withdrawals: an add that started sending meanwhile could not be cancelled and needs
+        # the removal after all; one already being removed is not queued twice.
+        now = recorded_memberships(self.registry, slug, guid)
+        out = {"detached": [], "not_permitted": [{"entity_slug": m["entity_slug"], "words": why}
+                                                 for m, why in detach_refused],
+               "failed": [], "waiting": still_sending, "withdrawn_before_sent": withdrawn_before_sent}
+        rows: list[tuple[int, str]] = []
+        for m in detachable:
+            rec = now.get(m["member_guid"]) or {}
+            if rec.get("removing"):
+                out["waiting"].append({"entity_slug": m["entity_slug"], "words": "removal already queued"})
+                continue
+            if not (rec.get("attached") or rec.get("adding")):
+                continue                               # removed meanwhile by another press: nothing left to do
+            payload: dict[str, Any] = {
+                "collection_guid": guid, "member_guid": m["member_guid"], "member_entity_type": entity_type,
+                "member_entity_slug": m["entity_slug"],
+                # `curation_egeria._wait_for_earlier_opposite` reads the row's owner from its payload.
+                "entity_type": "work_list", "entity_slug": slug,
+            }
+            payload.update(requester_fields())
+            rows.append((self.registry.enqueue_outbox_element(
+                "work_list", slug, COLLECTION_MEMBERSHIP_DETACH, collection_membership_qn(guid, m["member_guid"]),
+                payload, run_id=run_id), m["entity_slug"]))
+        for row_id, _ in rows:
+            drain_outbox(self.registry, clients, find_element_guid or (lambda qn: ""), element_id=row_id,
+                         identity=who)
+        for row_id, member in rows:
+            row = self.registry.get_outbox_element(row_id) or {}
+            status, words = row.get("status") or "", (row.get("last_error") or "").strip()
+            if status == "done":
+                out["detached"].append(member)
+            elif status in ("dead", "failed") and words.startswith("not permitted"):
+                out["not_permitted"].append({"entity_slug": member, "words": words})
+            elif status in ("dead", "failed"):
+                out["failed"].append({"entity_slug": member, "words": words})
+            else:
+                out["waiting"].append({"entity_slug": member, "words": words})
+        out["outbox_row_ids"] = [i for i, _ in rows]
+        return out
 
 
 def enqueue_work_list_members(registry, work_list_slug: str, collection_guid: str,

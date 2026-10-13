@@ -203,6 +203,8 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
                          # Brief T: a synthetic relationship key; each creator finds its tag / Folio itself.
                          "informal_tag_link", "informal_tag_detach",
                          "group_folio_membership", "group_folio_membership_detach",
+                         # A work list's removal: no qualifiedName of its own to adopt; a hit would skip the detach.
+                         "collection_membership_detach",
                          # Brief F: a person's Rating (keyed by element and person) and a journal entry's Note
                          # (found by its own qualifiedName in the asset's NoteLog by its creator).
                          "feedback_rating", "feedback_note"}
@@ -220,6 +222,8 @@ DESTRUCTIVE_OUTBOX_KINDS = frozenset({
     # neither ever deletes the InformalTag or the Folio (curation_egeria's module docstring).
     "informal_tag_detach",
     "group_folio_membership_detach",
+    # A member removed from a work list: its CollectionMembership to the WorkingSet. Never the collection or the asset.
+    "collection_membership_detach",
 })
 NOT_RETRIED = "not retried: destructive write"
 
@@ -364,7 +368,7 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         # take the extra key: the annotation creators pass the payload on as a body.
         payload = dict(payload, _outbox_id=row.get("id"))
     elif kind in ("informal_tag_link", "informal_tag_detach", "group_folio_membership",
-                  "group_folio_membership_detach"):
+                  "group_folio_membership_detach", COLLECTION_MEMBERSHIP_DETACH):
         # Brief T round 2: a link and an unlink of one key apply in queue order (curation_egeria
         # `_wait_for_earlier_opposite`), which needs the row's id and key.
         payload = dict(payload, _outbox_id=row.get("id"), _key=row.get("qualified_name"))
@@ -777,7 +781,9 @@ def _curation_refusal(registry, row: dict) -> str:
 #: Brief Z3: the membership and ResourceList rows of an investigation's working set and a work list's WorkingSet,
 #: re-checked at drain time as the person they were queued for.
 COLLECTION_ENTITY_TYPES = ("investigation", "work_list")
-COLLECTION_KINDS = ("collection_membership", "resource_list")
+#: A work list's re-publish removing a member (`work_lists.WorkLists.publish`): DETACH on both ends.
+COLLECTION_MEMBERSHIP_DETACH = "collection_membership_detach"
+COLLECTION_KINDS = ("collection_membership", "resource_list", COLLECTION_MEMBERSHIP_DETACH)
 
 
 def _row_payload(row: dict) -> dict:
@@ -800,10 +806,15 @@ def _collection_refusal(registry, row: dict) -> str:
     if kind not in COLLECTION_KINDS or row.get("entity_type") not in COLLECTION_ENTITY_TYPES:
         return ""
     from resource_explorer.a2a_auth import CallerIdentity, current_caller
-    from resource_explorer.workflows.egeria_work_access import collection_write, member_write, writes_refusal
+    from resource_explorer.workflows.egeria_work_access import (
+        collection_detach_write, collection_write, member_detach_write, member_write, writes_refusal,
+    )
 
     payload = _row_payload(row)
-    if kind == "collection_membership":
+    if kind == COLLECTION_MEMBERSHIP_DETACH:
+        writes = [collection_detach_write(str(payload.get("collection_guid") or ""), "the collection"),
+                  member_detach_write(str(payload.get("member_guid") or ""))]
+    elif kind == "collection_membership":
         writes = [collection_write(str(payload.get("collection_guid") or ""), "the collection"),
                   member_write(str(payload.get("member_guid") or ""))]
     else:
@@ -935,6 +946,23 @@ def _create_group_folio_membership_detach(clients: "OutboxClients", payload: dic
     return create_group_membership_detach(clients, payload)
 
 
+def _create_collection_membership_detach(clients: "OutboxClients", payload: dict) -> str:
+    """Remove ONE member from a work list's WorkingSet (`remove_from_collection`, which detaches the
+    CollectionMembership only: the collection and the member's asset are untouched).
+
+    Destructive, so never re-sent (`DESTRUCTIVE_OUTBOX_KINDS`). Applied in queue order against the add of the same
+    member (`curation_egeria._wait_for_earlier_opposite`, keyed by the shared `collection_membership_qn`): while an
+    earlier add of this member is unsettled the removal waits, so an add that lands late cannot leave the member
+    in after RE removed it. Not the ISSUE-117 block's: that guards archive/delete of a database's elements, and
+    this deletes one relationship, never an element."""
+    from resource_explorer.curation_egeria import _wait_for_earlier_opposite
+
+    _wait_for_earlier_opposite(clients, payload, "collection_membership")
+    cm = clients.require("collection_manager")
+    cm.remove_from_collection(payload["collection_guid"], payload["member_guid"])
+    return ""
+
+
 def _guid_of(result) -> str:
     """pyegeria create_* calls variously return a GUID string, a dict, or
     nothing useful. An empty string is not an error here — the row is still
@@ -967,6 +995,7 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "informal_tag_detach": _create_informal_tag_detach,
     "group_folio_membership": _create_group_folio_membership,
     "group_folio_membership_detach": _create_group_folio_membership_detach,
+    COLLECTION_MEMBERSHIP_DETACH: _create_collection_membership_detach,
     "feedback_rating": _create_feedback_rating,
     "feedback_note": _create_feedback_note,
 }
