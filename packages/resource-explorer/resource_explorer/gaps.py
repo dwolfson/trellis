@@ -63,7 +63,7 @@ def question_check_name(question: str) -> str:
 
 def _not_measurable_gaps(registry, slug: str) -> list[dict]:
     """One gap per (analysis, check) whose latest finding row is labelled
-    `not_established` — "ran, but this analysis cannot be credited with the
+    `not_established` — "ran, but nothing shows this analysis produced the
     result" (result_status.py). Scoped to check_registry.yaml's `analyses`
     section (the per-check ones query_findings can resolve a check_name
     against); `whole_analysis_only` ids have no check-level rows to read this

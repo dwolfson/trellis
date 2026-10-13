@@ -4229,7 +4229,10 @@ export function schemaTreeHtml(schemas) {
       ? `${s.table_count} table(s) · ${Number(s.row_total || 0).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}${schemaSizeTail(s)}`
       : s.classification === 'measured'
         ? `${s.table_count ?? '?'} table(s)${s.row_total != null ? ` · ${Number(s.row_total).toLocaleString('en-US')} row(s)${s.is_estimate ? ' (est.)' : ''}` : ''}${schemaSizeTail(s)}`
-        : `${s.table_count} table(s) — ${schemaShortfallWord(s.classification)}`;
+        : s.classification === 'views_only'
+          // Views hold no storage, so there is no size to read: say so rather than leave the tail off.
+          ? `${s.table_count} view(s) · views only · no storage`
+          : `${s.table_count} table(s) — ${schemaShortfallWord(s.classification)}`;
     const schemaSrc = nodeSourceLine(s);
     // Found live, `laz_local_adventureworks`, 2026-09-27 (Dan's gate):
     // this used to be the schema name PLUS every table/column name

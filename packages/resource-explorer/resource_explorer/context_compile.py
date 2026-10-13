@@ -178,8 +178,14 @@ logger = logging.getLogger(__name__)
 _GAP_PHRASING = {
     "never_run": "has not run",
     "nothing_found": "ran and found nothing — a real zero, not a missing result",
-    "not_established": "ran, but cannot be credited with this result",
+    "not_established": "ran · result not attributable",
     "partial": "ran over only part of what it covers",
+}
+
+#: The sentence offered on hover beside a gap's short cue word. The cue stays short
+#: ("ran · result not attributable"); the explanation is on demand.
+_GAP_EXPLANATION = {
+    "not_established": "it ran, but nothing shows this analysis produced the result",
 }
 
 
@@ -764,6 +770,8 @@ def _judge_gap(fact_layer, slug: str, analysis_id: str) -> dict:
         return gap
     gap["state"] = fact.state
     gap["reason"] = phrasing
+    if fact.state in _GAP_EXPLANATION:
+        gap["explanation"] = _GAP_EXPLANATION[fact.state]
     if fact.last_run_at:
         gap["last_run_at"] = fact.last_run_at
     if fact.can_run:

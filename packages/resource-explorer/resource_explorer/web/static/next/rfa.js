@@ -144,8 +144,12 @@ function _visibleRows() {
 }
 
 function _rowHtml(rfa) {
-  const tone = STATUS_TONE[rfa.rfa_status] || 'text-chrome-muted';
-  const label = STATUS_LABEL[rfa.rfa_status] || rfa.rfa_status;
+  // The corner shows the request's real state: a dismissed one reads "dismissed" with its reason
+  // word, never the underlying status ("Open") it had before it was dismissed.
+  const tone = rfa.dismissed ? 'text-chrome-muted' : (STATUS_TONE[rfa.rfa_status] || 'text-chrome-muted');
+  const label = rfa.dismissed
+    ? `dismissed · ${reasonLabel((rfa.dismissal || {}).reason)}`
+    : (STATUS_LABEL[rfa.rfa_status] || rfa.rfa_status);
   const who = rfa.entity_name || rfa.entity_slug || 'unknown resource';
   const what = rfa.analysis_name || rfa.annotation_type || 'RFA';
   const d = rfa.dismissal || {};
@@ -190,7 +194,7 @@ function _rowHtml(rfa) {
           ${rfa.action_requested ? `<div class="mt-[2px] text-provenance text-chrome-muted">requested: ${esc(rfa.action_requested)}${
             rfa.action_target_name ? ` — ${esc(rfa.action_target_name)}` : ''}</div>` : ''}
         </div>
-        <span class="shrink-0 whitespace-nowrap text-provenance ${tone}">${esc(label)}</span>
+        <span data-rfa-corner class="shrink-0 whitespace-nowrap text-provenance ${tone}">${rfa.dismissed ? `<span class="font-glyph" aria-hidden="true">${stateEntry('unrun').glyph}</span> ` : ''}${esc(label)}</span>
       </div>
       <div class="mt-[2px] text-provenance text-chrome-muted">${assigneeNote}${deferNote}</div>
       ${dismissedNote}${noteLine}
