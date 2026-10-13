@@ -146,7 +146,17 @@ Proposal for v1, for the owner to decide:
   community and team the user belongs to. The relationship is
   `ResourceList` from the Community's or Team's actor profile to the
   WorkingSet (owner, 2026-10-12), the same one RE's investigation
-  publish writes, so the two apps agree.
+  publish writes, so the two apps agree. As built by the Portal session
+  (2026-10-13): a user's communities and teams are found by the chain
+  UserIdentity → ProfileIdentity → Person → PersonRoleAppointment → role
+  ← AssignmentScope ← Team or Community; a shared list is read-only to
+  members, who copy it to change it, and only its creator edits it. RE's
+  own "my lists" should read the same chain so the two apps agree on who
+  sees what.
+- **Deleting a list:** Egeria refuses to delete a collection that still
+  has members without cascade (OMAG-GENERIC-HANDLERS-403-005, which
+  pyegeria reports as 401), and cascade is never used; remove the
+  memberships first, then delete by GUID.
 - **The type is right.** RE's work lists are already Egeria's
   `WorkingSet` (the official type; RE's module says so in its first
   lines). Only the qualifiedName prefix is RE's own. Nothing to correct.
