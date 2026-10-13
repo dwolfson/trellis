@@ -581,6 +581,19 @@ class TestGapsAreJudgedNotListed:
         fl.fact.return_value = MagicMock(state="never_run", last_run_at="", can_run=["repo_x"])
         assert _judge_gap(fl, "x", "a")["reason"] == "has not run"
 
+    def test_not_established_is_a_short_cue_with_the_sentence_on_hover(self):
+        from unittest.mock import MagicMock
+
+        from resource_explorer.context_compile import _judge_gap
+
+        fl = MagicMock()
+        fl.fact.return_value = MagicMock(state="not_established", last_run_at="", can_run=[])
+        gap = _judge_gap(fl, "x", "a")
+        assert gap["state"] == "not_established", "the internal state name is unchanged"
+        assert gap["reason"] == "ran · result not attributable"
+        assert "cannot be credited" not in gap["reason"]
+        assert gap["explanation"] == "it ran, but nothing shows this analysis produced the result"
+
     def test_an_unjudgeable_gap_is_still_reported(self):
         """Fail-soft: a fact layer that cannot answer must not cost the compile,
         and an unjudged gap is still worth naming."""

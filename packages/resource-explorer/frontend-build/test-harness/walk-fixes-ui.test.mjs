@@ -43,7 +43,8 @@ test('item 2: views_only is "views only"; an unknown snake_case state is never s
     { schema: 'pr', classification: 'views_only', table_count: 25, tables: [] },
     { schema: 'zz', classification: 'some_new_state', table_count: 2, tables: [] },
   ]);
-  assert.match(html, /25 table\(s\) — views only/);
+  assert.match(html, /25 view\(s\) · views only · no storage/);
+  assert.doesNotMatch(html, /25 table\(s\)/);
   assert.match(html, /2 table\(s\) — some new state/);
   assert.doesNotMatch(html, /views_only|some_new_state/);
 });

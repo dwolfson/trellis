@@ -13,7 +13,7 @@ result_status's vocabulary, never a bare value:
     measured         ran, and there is something here
     nothing_found    ran, and there is genuinely nothing — a real zero
     never_run        never ran, so nothing is known either way
-    not_established  ran, but this analysis cannot be credited with the result
+    not_established  ran, but nothing shows this analysis produced the result
     partial          ran over part of what it covers
 
 The distinction that matters most is `nothing_found` vs `never_run`. They are

@@ -255,8 +255,8 @@ export async function openActivityPanel({ focusId = '' } = {}) {
         <div>
           <div class="font-heading text-name text-ink">Activity</div>
           <div class="mt-[2px] text-caveat text-ink-muted">Every scouting, survey,
-            publish and RFA operation this instance has recorded (rule 16) — read from the
-            same log the current UI's Activity tab shows, not a separate client-side copy.</div>
+            publish and RFA operation this instance has recorded, read from the
+            same log the current UI's Activity tab shows.</div>
         </div>
         <button type="button" data-act="close" class="text-ink-muted hover:text-ink" aria-label="Close">×</button>
       </div>
@@ -509,7 +509,7 @@ function renderList() {
   }
   if (!panel.entries.length) {
     host.innerHTML = `<p class="max-w-[60ch] text-answer text-ink">No operations recorded yet.
-      Scouting, running a survey, or publishing to Egeria all write here (rule 16) — this is
+      Scouting, running a survey, or publishing to Egeria all write here. It is
       empty because nothing has happened yet, not because logging is broken.</p>`;
     return;
   }

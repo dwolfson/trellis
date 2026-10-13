@@ -742,8 +742,7 @@ class Freshness:
         ago = _humanise_age(self.age_seconds or 0)
         source = "" if self.via == analysis_id else f" (via '{self.via}')"
         if self.fresh:
-            return (f"'{analysis_id}' already has data from {ago}{source}; "
-                    f"not running it again. Pass force=true to run anyway.")
+            return f"'{analysis_id}' has data from {ago}{source}."
         return f"'{analysis_id}' last produced data {ago}{source}."
 
 

@@ -550,7 +550,7 @@ function gapRowHtml(g, k) {
     : run.state === 'ran' ? cue('partial', 'ran, still no stored result', 'The run finished and the compile still finds no stored result for it.', 'chrome')
     : cue('unrun', 'not run', 'No stored result for this analysis.', 'chrome');
   return `<div data-gap="${esc(g.key)}" class="mb-[3px] flex flex-wrap items-baseline gap-s2">
-    <span class="font-mono text-chrome-ink">${esc(g.key)}</span>${g.reason ? `<span class="text-chrome-muted">· ${esc(g.reason)}</span>` : ''}
+    <span class="font-mono text-chrome-ink">${esc(g.key)}</span>${g.reason ? `<span class="text-chrome-muted"${g.explanation ? ` title="${esc(g.explanation)}"` : ''}>· ${esc(g.reason)}</span>` : ''}
     <span>${status}</span>
     <button data-gap-run="${k}" ${run.state === 'running' ? 'disabled' : ''}
       class="cursor-pointer rounded-sm border border-accent bg-transparent px-[6px] py-[1px] text-caps text-accent-on-dark disabled:cursor-default disabled:opacity-60"
