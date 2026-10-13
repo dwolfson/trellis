@@ -103,7 +103,8 @@ function stubBackend() {
         removals: { detached: ['old-a', 'old-b'],
           not_permitted: [{ entity_slug: 'old-c', words: 'not permitted · zone sales-zone does not grant garygeeke detach in Egeria' }],
           failed: [{ entity_slug: 'old-d', words: 'not retried: destructive write · Egeria said no' }],
-          waiting: [], withdrawn_before_sent: [] } });
+          waiting: [], withdrawn_before_sent: [] },
+        link_back: { url: 'https://re.example.org/next?worklist=x', state: 'failed', words: 'could not be set · RuntimeError: no' } });
     }
     if (m && method === 'POST' && PUBLISH_MODE === 'one-member') {
       WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
@@ -448,7 +449,7 @@ test('a publish with one refused member names it with the cue; the rest are queu
   assert.match(note(document), /1 membership\(s\) queued/);
 });
 
-/* ── A re-publish's removals (the Portal's ask, 2026-10-13) ──────────────── */
+/* ── A re-publish's removals (the Portal's ask, 2026-10-12) ──────────────── */
 
 test('a re-publish shows its removals on their own line: N detached, N not permitted, N could not be detached · why', async () => {
   const { document } = await setUp({ open: 'sales-databases' });
@@ -471,4 +472,15 @@ test('a publish with nothing removed draws no removals line', async () => {
   act(document, 'publish').click();
   await tick(250);
   assert.equal(document.querySelector('#wl-note [data-removals]'), null);
+});
+
+test('a link back that could not be set is said, with the error cue', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'removals';
+  act(document, 'publish').click();
+  await tick(200);
+  const lb = document.querySelector('#wl-note [data-link-back="failed"]');
+  assert.ok(lb);
+  assert.match(text(lb), /link back to RE not set · could not be set · RuntimeError: no/);
+  assert.ok(lb.querySelector('[data-cue="error"]'));
 });

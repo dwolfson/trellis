@@ -1,4 +1,4 @@
-"""A work list's re-publish keeps its Egeria WorkingSet in step with RE (the Portal's ask, 2026-10-13).
+"""A work list's re-publish keeps its Egeria WorkingSet in step with RE (the Portal's ask, 2026-10-12).
 
 The Portal's Resource Browser reads these collections and copies members out of them, so it asked for two things:
 
@@ -32,6 +32,9 @@ pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
 CM = "pyegeria.omvs.collection_manager.CollectionManager"
 REMOVE = _real(CM, "remove_from_collection")
 UPDATE = _real(CM, "update_collection")
+GET = _real(CM, "get_collection_by_guid")
+SECURITY_403 = ("OPEN-METADATA-SECURITY-403-007 User garygeeke is not authorized to issue operation Detach on "
+                "WorkingSet coll-1. More words.")
 BASE = "https://re.example.org:8810/"
 
 
@@ -43,11 +46,18 @@ class SyncCollections(FakeCollections):
         self.members: dict[str, set] = {}
         self.created: dict[str, dict] = {}
         self.updates: list[tuple[str, dict]] = []
+        self.props: dict[str, dict] = {}          # each collection's additionalProperties, as Egeria holds them
 
     def create_collection(self, *a, **kw):
         guid = super().create_collection(*a, **kw)
         self.created[guid] = kw["body"]
+        self.props[guid] = dict(kw["body"]["properties"].get("additionalProperties") or {})
         return guid
+
+    def get_collection_by_guid(self, *a, **kw):
+        GET.bind(self, *a, **kw)
+        guid = a[0] if a else kw["guid"]
+        return {"elementHeader": {"guid": guid}, "properties": {"additionalProperties": dict(self.props[guid])}}
 
     def add_to_collection(self, *a, **kw):
         super().add_to_collection(*a, **kw)
@@ -61,7 +71,9 @@ class SyncCollections(FakeCollections):
     def update_collection(self, *a, **kw):
         UPDATE.bind(self, *a, **kw)
         self.calls.append(("update_collection", a[0]))
-        self.updates.append((a[0], kw.get("body") or a[1]))
+        body = kw.get("body") or a[1]
+        self.updates.append((a[0], body))
+        self.props[a[0]] = dict(body["properties"]["additionalProperties"])
 
 
 def test_the_fake_binds_the_real_detach_and_update_signatures():
@@ -132,9 +144,7 @@ def test_a_re_publish_detaches_exactly_the_removed_member_and_carries_the_link_b
     rows = _detach_rows(world)
     assert len(rows) == 1 and rows[0]["status"] == "done"
     assert json.loads(rows[0]["payload_json"])["by"] == USER                  # as the person who pressed publish
-    assert cm.updates == [(guid, {"class": "UpdateElementRequestBody", "mergeUpdate": True,
-                                  "properties": {"class": "CollectionProperties",
-                                                 "additionalProperties": {"resourceExplorerUrl": want}}})]
+    assert out["link_back"]["state"] == "unchanged" and cm.updates == []      # read back, already right: not re-sent
     _drain(world)
     assert cm.members[guid] == {"g-p", "g-q"}
 
@@ -179,17 +189,145 @@ def test_a_member_added_back_before_its_removal_was_sent_has_the_removal_withdra
     assert out["removals"]["detached"] == [] and not any(c[0] == "remove_from_collection" for c in world["cm"].calls)
 
 
-def test_a_dead_add_is_not_a_published_membership(world):
-    """RE's record, not a guess: an add that died never reached Egeria, so its member is not detached."""
-    out = _publish(world)
+def _add_row(world, member_guid):
+    return [r for r in world["registry"].list_outbox_elements(entity_slug=world["slug"], limit=50)
+            if r["element_kind"] == "collection_membership" and r["qualified_name"].endswith(f"::{member_guid}")]
+
+
+def test_an_attempted_add_that_died_may_have_landed_so_its_member_is_detached(world):
+    """A timed-out add may have reached Egeria: attempts > 0 counts as possibly attached (detaching an unlinked
+    pair changes nothing in Egeria)."""
+    _publish(world)
     registry = world["registry"]
-    for row in registry.list_outbox_elements(entity_slug=world["slug"], limit=10):
-        if row["qualified_name"].endswith("::g-r"):
-            registry.mark_outbox_failed(row["id"], "boom", max_attempts=1)
+    [row] = _add_row(world, "g-r")
+    registry.mark_outbox_failed(row["id"], "ReadTimeout", max_attempts=1)    # dead after one attempt
     _drain(world)
     _remove(world, "r")
     out = _publish(world)
+    assert out["removals"]["detached"] == ["r"] and out["removals"]["withdrawn_before_sent"] == []
+    assert [c for c in world["cm"].calls if c[0] == "remove_from_collection"] == [
+        ("remove_from_collection", out["egeria_guid"], "g-r")]
+
+
+def test_an_attempted_add_backing_off_is_cancelled_and_its_member_detached(world):
+    _publish(world)
+    registry = world["registry"]
+    [row] = _add_row(world, "g-r")
+    registry.mark_outbox_failed(row["id"], "ReadTimeout", max_attempts=8)    # failed, will retry: attempted once
+    _drain(world)
+    _remove(world, "r")
+    out = _publish(world)
+    assert registry.get_outbox_element(row["id"])["status"] == "cancelled"
+    assert out["removals"]["detached"] == ["r"] and out["removals"]["withdrawn_before_sent"] == []
+
+
+def test_a_member_whose_links_were_forgotten_is_not_detached(world):
+    """MED-1: still in the list, its asset GUID cleared in RE only (repo_publish.forget_links): not a removal."""
+    from resource_explorer.repo_publish import forget_links
+
+    _publish(world)
+    _drain(world)
+    forget_links(world["registry"], "r", USER)
+    out = _publish(world)
+    assert out["members_without_an_egeria_asset"] == ["r"]
     assert out["removals"]["detached"] == [] and _detach_rows(world) == []
+    assert not any(c[0] == "remove_from_collection" for c in world["cm"].calls)
+
+
+def test_a_member_whose_asset_now_resolves_to_a_new_guid_has_the_old_one_detached(world):
+    _publish(world)
+    _drain(world)
+    world["registry"].set_egeria_asset_guid("r", "g-r2")
+    out = _publish(world)
+    assert out["removals"]["detached"] == ["r"]
+    assert [c for c in world["cm"].calls if c[0] == "remove_from_collection"] == [
+        ("remove_from_collection", out["egeria_guid"], "g-r")]
+
+
+def test_a_second_press_does_not_queue_a_second_removal(world, monkeypatch):
+    _publish(world)
+    _drain(world)
+    _remove(world, "r")
+    monkeypatch.setattr("resource_explorer.egeria_outbox.drain_outbox", lambda *a, **k: {})   # nothing applied inline
+    first = _publish(world)
+    assert first["removals"]["waiting"] == [{"entity_slug": "r", "words": "queued for the background drain"}]
+    second = _publish(world)
+    assert second["removals"]["waiting"] == [{"entity_slug": "r", "words": "removal already queued"}]
+    [row] = _detach_rows(world)
+    assert row["qualified_name"].endswith(f"::g-r::after-add-{_add_row(world, 'g-r')[0]['id']}")
+
+
+def test_removals_over_the_inline_limit_are_left_to_the_background_drain_and_said(world, monkeypatch):
+    _publish(world)
+    _drain(world)
+    _remove(world, "r")
+    monkeypatch.setattr("resource_explorer.work_lists.INLINE_DETACH_LIMIT", 0)
+    out = _publish(world)
+    assert out["removals"]["waiting"] == [
+        {"entity_slug": "r", "words": "left to the background drain (over 0 in one publish)"}]
+    assert not any(c[0] == "remove_from_collection" for c in world["cm"].calls)
+
+
+def test_a_detach_egeria_security_refuses_is_not_permitted_in_egerias_words(world, monkeypatch):
+    cm = world["cm"]
+    _publish(world)
+    _drain(world)
+    _remove(world, "r")
+
+    def refuse(*a, **kw):
+        REMOVE.bind(cm, *a, **kw)
+        raise RuntimeError(SECURITY_403)
+
+    monkeypatch.setattr(cm, "remove_from_collection", refuse)
+    out = _publish(world)
+    assert out["removals"]["failed"] == []
+    [np] = out["removals"]["not_permitted"]
+    assert np["entity_slug"] == "r"
+    assert np["words"].startswith("not permitted · refused by Egeria's security: OPEN-METADATA-SECURITY-403-007")
+    assert _detach_rows(world)[0]["status"] == "dead"
+
+
+def test_an_add_waits_for_an_earlier_removal_of_the_same_member(registry, monkeypatch):
+    from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
+
+    _install(monkeypatch)
+    rm = registry.enqueue_outbox_element(
+        "work_list", "w", "collection_membership_detach", "CollectionMembership::wg::g-q::after-add-1",
+        {"collection_guid": "wg", "member_guid": "g-q"})
+    registry.mark_outbox_failed(rm, "transient", max_attempts=8)             # unsettled
+    registry.enqueue_outbox_element("work_list", "w", "collection_membership", "CollectionMembership::wg::g-q",
+                                    {"collection_guid": "wg", "member_guid": "g-q"})
+    cm = SyncCollections()
+    drain_outbox(registry, OutboxClients(collection_manager=cm), lambda qn: "", limit=5)
+    assert not any(c[0] == "add_to_collection" for c in cm.calls)
+    add = [r for r in registry.list_outbox_elements(entity_slug="w", limit=5)
+           if r["element_kind"] == "collection_membership"][0]
+    assert add["status"] == "pending" and int(add["attempts"] or 0) == 0
+
+
+def test_an_existing_collection_gains_the_link_merged_with_keys_others_added(world, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("resource_explorer.config.WebUIConfig", lambda: SimpleNamespace(public_url=""))
+    cm = world["cm"]
+    out = _publish(world)                                                      # published before the URL existed
+    guid = out["egeria_guid"]
+    cm.props[guid] = {"portalNote": "kept"}                                    # someone else's key
+    monkeypatch.setattr("resource_explorer.config.WebUIConfig", lambda: SimpleNamespace(public_url=BASE))
+    out = _publish(world)
+    want = f"https://re.example.org:8810/next?worklist={world['slug']}"
+    assert out["link_back"] == {"url": want, "state": "set", "words": ""}
+    assert cm.updates[-1][1]["properties"]["additionalProperties"] == {"portalNote": "kept",
+                                                                       "resourceExplorerUrl": want}
+    assert cm.updates[-1][1]["mergeUpdate"] is True
+
+
+def test_a_malformed_public_url_is_treated_as_none(monkeypatch, caplog):
+    from resource_explorer.work_lists import resource_explorer_url
+
+    for bad in ("re.example.org:8810", "ftp://re.example.org", "http://", "javascript:alert(1)"):
+        monkeypatch.setenv("RE_PUBLIC_URL", bad)
+        assert resource_explorer_url("wl-1") == "", bad
 
 
 def test_a_detach_the_caller_may_not_make_is_refused_with_its_words_and_nothing_is_queued(world):

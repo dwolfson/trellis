@@ -87,30 +87,60 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ── Keeping the published WorkingSet in step (the Portal's ask, 2026-10-13) ──
+# ── Keeping the published WorkingSet in step (the Portal's ask, 2026-10-12) ──
 
 #: The additionalProperties key the Portal's Resource Browser reads to link a WorkingSet back to RE.
 RESOURCE_EXPLORER_URL_KEY = "resourceExplorerUrl"
 
-#: Outbox states of a row that may still be sent (cancellable: never applied), and of one being sent now.
+#: Outbox states of a row that may still be sent (cancellable), and of one being sent now.
 _UNSENT = ("pending", "failed")
 _SENDING = ("running",)
+
+#: At most this many removals are applied inside one publish request; the rest are left to the background drain.
+INLINE_DETACH_LIMIT = 50
+
+
+def public_base_url() -> str:
+    """`RE_PUBLIC_URL`, checked: an http(s) URL with a host, without a trailing slash. Anything else is treated as
+    not configured (with a warning), so a typo never becomes a link the Portal shows."""
+    from urllib.parse import urlsplit
+
+    from resource_explorer.config import WebUIConfig
+
+    raw = (WebUIConfig().public_url or "").strip()
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        log.warning("RE_PUBLIC_URL %r is not an http(s) URL with a host; no link back is written", raw)
+        return ""
+    return raw.rstrip("/")
 
 
 def resource_explorer_url(slug: str, entity_type: str = "repo") -> str:
     """The /next work-list page for `slug` on RE's configured public URL (`RE_PUBLIC_URL`), in the shape the page
-    writes itself (`next/app.js` `writeUrl`: `type=` only for a non-repo kind, then `worklist=`). "" when no public
-    URL is configured: the key is then left out, never a guessed localhost."""
+    writes itself (`next/app.js` `writeUrl`: `type=` only for a non-repo kind, then `worklist=`). "" when no valid
+    public URL is configured: the key is then left out, never a guessed localhost."""
     from urllib.parse import urlencode
 
-    from resource_explorer.config import WebUIConfig
-
-    base = (WebUIConfig().public_url or "").strip().rstrip("/")
+    base = public_base_url()
     if not base:
         return ""
     query = {"type": entity_type} if entity_type and entity_type != "repo" else {}
     query["worklist"] = slug
     return f"{base}/next?{urlencode(query)}"
+
+
+def _additional_properties(element) -> dict:
+    """The additionalProperties of a collection read back with `get_collection_by_guid(output_format="JSON")`:
+    {} when it has none. Raises when the answer is not an element (pyegeria answers a string for "not found")."""
+    if isinstance(element, list) and len(element) == 1:
+        element = element[0]
+    if not isinstance(element, dict):
+        raise ValueError(f"no collection element in the answer: {str(element)[:120]}")
+    props = element.get("properties") if isinstance(element.get("properties"), dict) else element
+    found = props.get("additionalProperties") or props.get("additional_properties") or {}
+    return dict(found) if isinstance(found, dict) else {}
 
 
 def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str, dict]:
@@ -120,12 +150,16 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
     Rows are replayed oldest first, for this collection only (an Egeria reset gives the list a new GUID):
 
     * `attached`: the last settled write was a done add (a done removal clears it);
-    * `unsent_adds`: add rows never applied (pending, or failed and backing off): cancellable;
+    * `maybe`: an add was ATTEMPTED and not confirmed (failed, dead or cancelled with attempts > 0): a timed-out add
+      may have landed, so it counts as possibly attached (a done removal clears it);
+    * `unsent_adds`: add rows not yet applied (pending, or failed and backing off): cancellable;
+    * `never_sent_adds`: those of them with no attempt at all;
     * `adding`: an add row is being sent right now;
-    * `unsent_removals`: removal rows never applied (pending, or failed): cancellable;
+    * `last_add_id`: the newest add row, which names the removal that follows it (one removal per add cycle);
+    * `unsent_removals`: removal rows not yet applied (pending, or failed): cancellable;
     * `removing`: a removal row is unsettled (pending, failed or running).
 
-    A dead or cancelled row changes nothing: it was never applied."""
+    A cancelled or dead row never attempted changes nothing: it was never sent."""
     from resource_explorer.egeria_outbox import COLLECTION_MEMBERSHIP_DETACH
 
     rows = registry.list_outbox_rows_for_kinds("work_list", slug,
@@ -139,23 +173,29 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
         if str(payload.get("collection_guid") or "") != collection_guid or not payload.get("member_guid"):
             continue
         rec = out.setdefault(str(payload["member_guid"]), {
-            "entity_slug": "", "attached": False, "unsent_adds": [], "adding": False,
-            "unsent_removals": [], "removing": False})
+            "entity_slug": "", "attached": False, "maybe": False, "unsent_adds": [], "never_sent_adds": [],
+            "adding": False, "last_add_id": 0, "unsent_removals": [], "removing": False})
         rec["entity_slug"] = str(payload.get("member_entity_slug") or rec["entity_slug"])
-        status, adding = row.get("status") or "", row.get("element_kind") == "collection_membership"
-        if adding:
+        status, row_id = row.get("status") or "", int(row["id"])
+        attempted = int(row.get("attempts") or 0) > 0
+        if row.get("element_kind") == "collection_membership":
+            rec["last_add_id"] = row_id
             if status == "done":
                 rec["attached"] = True
-            elif status in _UNSENT:
-                rec["unsent_adds"].append(int(row["id"]))
             elif status in _SENDING:
                 rec["adding"] = True
+            if status in _UNSENT:
+                rec["unsent_adds"].append(row_id)
+                if not attempted:
+                    rec["never_sent_adds"].append(row_id)
+            if status in ("failed", "dead", "cancelled") and attempted:   # tried at least once: may have landed
+                rec["maybe"] = True
         elif status == "done":
-            rec["attached"] = False
+            rec["attached"] = rec["maybe"] = False
         elif status in _UNSENT + _SENDING:
             rec["removing"] = True
             if status in _UNSENT:
-                rec["unsent_removals"].append(int(row["id"]))
+                rec["unsent_removals"].append(row_id)
     return out
 
 
@@ -536,12 +576,18 @@ class WorkLists:
 
         # Removals (re-publish only): what RE recorded attaching to this collection, minus the current members.
         # Every current member's GUID counts, refused or not: a refused add is not a removal.
+        # A member still in the list whose asset GUID does not resolve right now (links forgotten, stale assets
+        # cleared, a cache emptied) is NOT removed: only one that now resolves to a DIFFERENT GUID leaves its old
+        # GUID behind as a removal.
         current_guids = {m["member_guid"] for m in attachable} | {m["member_guid"] for m, _ in refused}
+        resolved = {**{s_: "" for s_ in unpublished},
+                    **{m["entity_slug"]: m["member_guid"] for m in attachable + [m for m, _ in refused]}}
         recorded = recorded_memberships(self.registry, slug, existing) if existing else {}
-        removed = {g: r for g, r in recorded.items() if g not in current_guids}
+        removed = {g: r for g, r in recorded.items()
+                   if g not in current_guids and not (r["entity_slug"] in resolved and not resolved[r["entity_slug"]])}
         detachable, detach_refused = per_member(
             [{"member_guid": g, "entity_slug": r["entity_slug"] or g} for g, r in removed.items()
-             if r["attached"] or r["adding"]],
+             if r["attached"] or r["adding"] or r["maybe"]],
             lambda m: access_words(
                 self.registry, [collection_detach_write(existing, "the collection"),
                                 member_detach_write(m["member_guid"])],
@@ -613,16 +659,25 @@ class WorkLists:
 
     @staticmethod
     def _set_link_back(cm, guid: str, url: str, refused: str) -> dict:
-        """Merge `resourceExplorerUrl` into an existing WorkingSet's additionalProperties (UPDATE_PROPERTIES,
-        checked first). Its own outcome: a refusal or a failure here does not stop the memberships."""
+        """Put `resourceExplorerUrl` on an existing WorkingSet (UPDATE_PROPERTIES, checked first). The current
+        additionalProperties are read and merged here, so keys someone else added survive and nothing is sent
+        when the link is already right. Its own outcome: a refusal or a failure does not stop the memberships."""
         if refused:
             return {"state": "not permitted", "words": refused}
+        try:
+            current = _additional_properties(cm.get_collection_by_guid(guid, output_format="JSON"))
+        except Exception as exc:  # noqa: BLE001 - said on the result, the publish goes on
+            log.warning("work list link back: could not read %s: %s", guid, exc)
+            return {"state": "failed",
+                    "words": f"could not read its current properties · {type(exc).__name__}: {exc}"[:300]}
+        if current.get(RESOURCE_EXPLORER_URL_KEY) == url:
+            return {"state": "unchanged", "words": ""}
         try:
             cm.update_collection(guid, {
                 "class": "UpdateElementRequestBody",
                 "mergeUpdate": True,
                 "properties": {"class": "CollectionProperties",
-                               "additionalProperties": {RESOURCE_EXPLORER_URL_KEY: url}},
+                               "additionalProperties": {**current, RESOURCE_EXPLORER_URL_KEY: url}},
             })
         except Exception as exc:  # noqa: BLE001 - said on the result, the publish goes on
             log.warning("work list link back not set on %s: %s", guid, exc)
@@ -633,7 +688,9 @@ class WorkLists:
                         detach_refused: list, clients, find_element_guid, who, *, run_id: str = "") -> dict:
         """Take members removed in RE out of the WorkingSet, from RE's own record (`recorded_memberships`).
 
-        * An add never sent is withdrawn (cancelled): it never reached Egeria, so there is nothing to detach.
+        * An add never attempted is withdrawn (cancelled): it never reached Egeria, so there is nothing to detach.
+        * An add attempted and not confirmed (failed or dead after a try) may have landed: it is cancelled if it
+          would retry, and the member gets a removal (Egeria's detach of an unlinked pair changes nothing).
         * A member added (or being added) gets ONE `collection_membership_detach` row, as the person who pressed
           publish, applied here and now so the result is the row's own outcome: "detached", "not permitted"
           (re-checked at the drain), "could not be detached · <why>" (destructive: never re-sent; the next
@@ -651,9 +708,9 @@ class WorkLists:
         for g, rec in removed.items():
             cancelled = [self.registry.cancel_outbox_row(i, "member removed from the work list before it was sent")
                          for i in rec["unsent_adds"]]
-            if rec["attached"] or rec["adding"] or not cancelled:
+            if rec["attached"] or rec["adding"] or rec["maybe"] or not cancelled:
                 continue                               # detached below (or nothing was ever queued)
-            if all(cancelled):
+            if all(cancelled):                         # never attempted: it cannot have reached Egeria
                 withdrawn_before_sent.append(rec["entity_slug"] or g)
             else:                                      # it started sending as we looked: not this press's to undo
                 still_sending.append({"entity_slug": rec["entity_slug"] or g,
@@ -675,22 +732,22 @@ class WorkLists:
             if rec.get("removing"):
                 out["waiting"].append({"entity_slug": m["entity_slug"], "words": "removal already queued"})
                 continue
-            if not (rec.get("attached") or rec.get("adding")):
+            if not (rec.get("attached") or rec.get("adding") or rec.get("maybe")):
                 continue                               # removed meanwhile by another press: nothing left to do
             payload: dict[str, Any] = {
                 "collection_guid": guid, "member_guid": m["member_guid"], "member_entity_type": entity_type,
                 "member_entity_slug": m["entity_slug"],
-                # `curation_egeria._wait_for_earlier_opposite` reads the row's owner from its payload.
-                "entity_type": "work_list", "entity_slug": slug,
             }
             payload.update(requester_fields())
-            rows.append((self.registry.enqueue_outbox_element(
-                "work_list", slug, COLLECTION_MEMBERSHIP_DETACH, collection_membership_qn(guid, m["member_guid"]),
-                payload, run_id=run_id), m["entity_slug"]))
-        for row_id, _ in rows:
+            # One removal per add cycle: the key names the newest add it follows, so two presses queue one row
+            # (`enqueue_outbox_element_once`), and a member added again and removed again gets a new one.
+            key = f"{collection_membership_qn(guid, m['member_guid'])}::after-add-{rec.get('last_add_id') or 0}"
+            rows.append((self.registry.enqueue_outbox_element_once(
+                "work_list", slug, COLLECTION_MEMBERSHIP_DETACH, key, payload, run_id=run_id), m["entity_slug"]))
+        for row_id, _ in rows[:INLINE_DETACH_LIMIT]:
             drain_outbox(self.registry, clients, find_element_guid or (lambda qn: ""), element_id=row_id,
                          identity=who)
-        for row_id, member in rows:
+        for n, (row_id, member) in enumerate(rows):
             row = self.registry.get_outbox_element(row_id) or {}
             status, words = row.get("status") or "", (row.get("last_error") or "").strip()
             if status == "done":
@@ -699,8 +756,13 @@ class WorkLists:
                 out["not_permitted"].append({"entity_slug": member, "words": words})
             elif status in ("dead", "failed"):
                 out["failed"].append({"entity_slug": member, "words": words})
+            elif status == "running":
+                out["waiting"].append({"entity_slug": member, "words": "being sent by the background drain"})
+            elif n >= INLINE_DETACH_LIMIT:
+                out["waiting"].append({"entity_slug": member, "words":
+                                       f"left to the background drain (over {INLINE_DETACH_LIMIT} in one publish)"})
             else:
-                out["waiting"].append({"entity_slug": member, "words": words})
+                out["waiting"].append({"entity_slug": member, "words": words or "queued for the background drain"})
         out["outbox_row_ids"] = [i for i, _ in rows]
         return out
 
