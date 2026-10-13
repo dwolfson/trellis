@@ -7285,7 +7285,7 @@ wheels = [
 
 [[package]]
 name = "pyegeria"
-version = "6.2.1"
+version = "6.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
@@ -7318,9 +7318,9 @@ dependencies = [
     { name = "validators" },
     { name = "wcwidth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8e/ee/07c2a29a112652a45e5d4f6ba2f4cbcfe436dc4950b9b21eab4b5fcf55cf/pyegeria-6.2.1.tar.gz", hash = "sha256:7f799ad88c0fff933cf99c4a29db6a28ed1cebc82e7b2c991a5cebd5927a865f", size = 2143000, upload-time = "2026-10-11T02:08:38.035Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/21/127e95705bcaa596c761144f5299579d1f951adbbe4df9205b30b1250979/pyegeria-6.2.2.tar.gz", hash = "sha256:b6cd915620b8cc47e171db05137881e5f2cfe8f035f7fa991420c13473805e2a", size = 2156194, upload-time = "2026-10-13T01:19:33.513Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/78/60dbf44cbef6d5bbf2707e7c8e99239384154cd986f495300fb152283076/pyegeria-6.2.1-py3-none-any.whl", hash = "sha256:fb543e8d1f19bbd872336c1a1956c69da70c908c605500282dbcb354689b06e6", size = 2063395, upload-time = "2026-10-11T02:08:36.017Z" },
+    { url = "https://files.pythonhosted.org/packages/22/30/80ea37be4b7f6894dab436bbfe1f3fbd02a423acf571d26929b19ca06431/pyegeria-6.2.2-py3-none-any.whl", hash = "sha256:d7b295771e4348c98639d35ba1da5c1193b340a7555ecc16afd1d615dee19fd0", size = 2072486, upload-time = "2026-10-13T01:19:31.339Z" },
 ]
 
 [[package]]
@@ -8381,7 +8381,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
-    { name = "pyegeria", specifier = ">=6.2.1" },
+    { name = "pyegeria", specifier = ">=6.2.2" },
     { name = "pygithub", specifier = ">=2.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
@@ -9883,7 +9883,7 @@ requires-dist = [
     { name = "nbformat", marker = "extra == 'dev'" },
     { name = "papermill", marker = "extra == 'dev'" },
     { name = "psycopg2-binary", marker = "extra == 'postgres'" },
-    { name = "pyegeria" },
+    { name = "pyegeria", specifier = ">=6.2.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "python-dotenv", marker = "extra == 'dotenv'" },
     { name = "resource-explorer", marker = "extra == 're'", editable = "packages/resource-explorer" },

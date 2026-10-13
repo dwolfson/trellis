@@ -726,11 +726,18 @@ def test_round3_waiters_on_a_stuck_lookup_are_still_bounded(egeria, monkeypatch)
 # ── round 4 ──────────────────────────────────────────────────────────────
 
 def test_round4_the_fake_rejects_what_real_pyegeria_rejects(egeria):
-    """Guard on the fake itself: installed pyegeria's get_actor_profiles_by_name has a REQUIRED
-    `name`; a body-only call is a TypeError there, so it must be one here."""
+    """Guard on the fake itself: a call installed pyegeria rejects must be rejected here too. Up to 6.2.1
+    get_actor_profiles_by_name REQUIRED `name`; from 6.2.2 (ISSUE-135) a body-only call is valid, and the
+    fake follows the real signature either way."""
     am = pyegeria.ActorManager("view-server", "https://platform", NPA)
-    with pytest.raises(TypeError, match="name"):
+    real_name = inspect.signature(_REAL["ActorManager"].get_actor_profiles_by_name).parameters["name"]
+    if real_name.default is inspect.Parameter.empty:
+        with pytest.raises(TypeError, match="name"):
+            am.get_actor_profiles_by_name(body={"filter": "x"}, output_format="JSON")
+    else:
         am.get_actor_profiles_by_name(body={"filter": "x"}, output_format="JSON")
+    with pytest.raises(TypeError):                       # a positional the real method has no room for
+        am.get_actor_profiles_by_name("x", "ActorProfile", None, None, None, 3, 0, 0, "JSON", None, {}, "extra")
     with pytest.raises(TypeError):                       # one positional too many
         am.create_actor_profile({"class": "NewElementRequestBody"}, "extra")
 

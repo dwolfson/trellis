@@ -57,6 +57,6 @@ def report_specs():
         family="Curation",
         target_type=None,
         formats=[Format(types=["DICT", "JSON", "BAR"], attributes=[])],
-        action=ActionParameter(function="", analytic_function=TILE_FUNCTION,
+        action=ActionParameter(analytic_function=TILE_FUNCTION,      # no action function (pyegeria 6.2.2, ISSUE-141)
                                analytic_spec_params={"resource_type": "database"}),
     )})
