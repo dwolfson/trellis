@@ -9872,6 +9872,16 @@ class ProjectRegistry:
                 f"hypothesis is only meaningful for "
                 f"{list(self.HYPOTHESIS_REQUIRED_FOR)}, not {project_classification!r}"
             )
+        owner = current_user_id()
+        if project_classification in self.PRIVATE_CLASSIFICATIONS and not owner:
+            # Design ruling 2026-10-13: a private kind is zoned `[PRIVATE_ZONE, owner]`, so with no signed-in
+            # caller (anonymous, or a bare thread that dropped the ContextVar) it would be born ownerless:
+            # visible to everyone in RE and refused by every publish. Refused here, where it can be fixed.
+            raise ValueError(
+                f"{project_classification} needs an owner, and there is no signed-in caller — this "
+                "investigation would have no owner, so it could not be made private. Sign in, or choose "
+                "a shared kind."
+            )
         base = _re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-") or "investigation"
         slug, n = base, 1
         while self.get_investigation(slug):
@@ -9892,7 +9902,7 @@ class ProjectRegistry:
                  # `current_user_id`'s docstring gives: a method that resolves
                  # it cannot be called without scoping; a route that has to
                  # remember can forget.
-                 current_user_id(), egeria_project_guid,
+                 owner, egeria_project_guid,
                  egeria_project_qualified_name, now, now),
             )
         return self.get_investigation(slug)

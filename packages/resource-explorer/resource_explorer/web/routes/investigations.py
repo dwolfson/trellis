@@ -385,9 +385,13 @@ async def promote_to_egeria(slug: str) -> dict:
     # anything is written; each member's end is checked one by one inside promote (a refused member is
     # reported with its words, the rest are linked). Not asked when promote would refuse anyway (already bound,
     # or ad-hoc): it says why itself.
+    from resource_explorer.surveyors.egeria_investigation_publisher import ownerless_private_words
     from resource_explorer.workflows.egeria_work_access import investigation_member_refusal, promote_writes
 
-    if not inv.get("egeria_project_guid") and (inv.get("egeria_binding") or "egeria") != "local":
+    # An ownerless private one is refused by promote itself, with its words and its proof row (ruling
+    # 2026-10-13); the access check would judge an unzoned create that will never be sent.
+    if (not inv.get("egeria_project_guid") and (inv.get("egeria_binding") or "egeria") != "local"
+            and not ownerless_private_words(inv)):
         await _require_writes(reg, slug, promote_writes(inv))
 
     # In a thread, not inline. pyegeria's synchronous methods drive their own

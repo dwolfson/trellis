@@ -232,6 +232,81 @@ def is_private_investigation(inv: dict) -> bool:
     )
 
 
+#: The proof-row kind of a refusal to publish a private investigation that has no owner (design ruling
+#: 2026-10-13). Carried in the activity row's `detail` and `items` so it is told apart from a failed write.
+OWNERLESS_PRIVATE_REFUSAL = "private_without_owner"
+
+_PRIVATE_KIND_WORDS = {"PersonalProject": "personal", "Experiment": "experiment"}
+
+
+def ownerless_private_words(inv: dict, verb: str = "published") -> str:
+    """The refusal words when `inv` is a privately-classified investigation with NO owner, else `""`.
+
+    Design ruling 2026-10-13. A private kind maps to `[PRIVATE_ZONE, owner]`; with no owner there is nobody to
+    make it private TO, and `is_private_investigation` (which requires an owner) used to answer "not private"
+    for exactly these rows, so they were published unzoned and readable by everyone (`egeria-understanding`,
+    found live 2026-10-13). Every write path refuses instead: never an unzoned element, never a fallback.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    kind = (inv.get("project_classification") or "").strip()
+    if kind not in ProjectRegistry.PRIVATE_CLASSIFICATIONS or (inv.get("created_by") or "").strip():
+        return ""
+    label = _PRIVATE_KIND_WORDS.get(kind, kind)
+    return f"not {verb} · this {label} investigation has no owner, so it cannot be made private"
+
+
+def _latest_ownerless_refusal(registry, slug: str, action: str) -> dict | None:
+    """The newest refusal row for this investigation and action, as its decoded `detail` plus `summary`."""
+    import json
+
+    for row in registry.list_activity(entity_type="investigation", entity_slug=slug, operation="publish",
+                                      limit=50):
+        try:
+            detail = json.loads(row.get("detail") or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(detail, dict) and detail.get("refused") == OWNERLESS_PRIVATE_REFUSAL \
+                and detail.get("action") == action:
+            return {**detail, "summary": row.get("summary") or ""}
+    return None
+
+
+def record_ownerless_refusal(registry, inv: dict, words: str, action: str) -> None:
+    """Record the refusal as its own proof row (activity_log, operation `publish`, status `error`, kind
+    `private_without_owner`), ONCE per state: when the newest refusal row for this investigation + action already
+    says the same words about the same Project, nothing is written (resync's relink walks every bound
+    investigation each pass, and a row per pass would grow forever). The caller's words are returned to it every
+    time regardless; only the record is shared. The warning is logged when a row is written, at debug otherwise.
+    A failure to record is logged, never raised: the refusal stands either way."""
+    import json
+    import uuid
+    from datetime import UTC, datetime
+
+    slug = inv.get("slug") or ""
+    guid = inv.get("egeria_project_guid") or ""
+    try:
+        latest = _latest_ownerless_refusal(registry, slug, action)
+        if latest and latest.get("summary") == words and (latest.get("egeria_project_guid") or "") == guid:
+            log.debug("investigation %s: %s [%s] (already recorded)", slug, words, action)
+            return
+        log.warning("investigation %s (%s, owner %r): %s [%s]", slug, inv.get("project_classification"),
+                    inv.get("created_by") or "", words, action)
+        from resource_explorer.registry import ActivityEntry
+
+        registry.write_activity(ActivityEntry(
+            id=str(uuid.uuid4()), ts=datetime.now(UTC).isoformat(), operation="publish",
+            intent="enrichment", entity_type="investigation", entity_slug=slug,
+            entity_name=inv.get("display_name") or "", status="error", summary=words,
+            detail=json.dumps({"refused": OWNERLESS_PRIVATE_REFUSAL, "action": action,
+                               "classification": inv.get("project_classification") or "",
+                               "egeria_project_guid": guid}),
+            items=[{"refused": OWNERLESS_PRIVATE_REFUSAL, "action": action}],
+        ))
+    except Exception:  # the refusal is the safety property; the row is its record
+        log.exception("could not record the ownerless-private refusal for %s (%s): %s", slug, action, words)
+
+
 def _unattached_reason(row: dict, unknown: str = "unknown error") -> str:
     """Why a membership row is not attached, decided by the row's STATUS (Brief Z3 round 3): a dead row is never
     retried (the access check's "not permitted · ...", Egeria's own security refusal, a destructive kind, or its
@@ -271,6 +346,9 @@ class PromotionResult:
     members_linked: list[str] = field(default_factory=list)
     members_unlinkable: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    #: The refusal words when nothing was sent because a private investigation has no owner
+    #: (`ownerless_private_words`); "" otherwise. Also in `errors`.
+    not_published: str = ""
 
     @property
     def ok(self) -> bool:
@@ -289,6 +367,7 @@ class PromotionResult:
             "members_linked": self.members_linked,
             "members_unlinkable": self.members_unlinkable,
             "errors": self.errors,
+            "not_published": self.not_published,
             "ok": self.ok,
         }
 
@@ -312,6 +391,17 @@ class EgeriaInvestigationPublisher:
         readable by nobody at all, including the person it belongs to.
         """
         return is_private_investigation(inv)
+
+    def _refuse_ownerless(self, inv: dict, res: PromotionResult, action: str) -> bool:
+        """True (and `res` carries the words, and the refusal is logged and recorded) when `inv` is a private
+        investigation with no owner. Asked before any Egeria client is built, so nothing is sent."""
+        words = ownerless_private_words(inv)
+        if not words:
+            return False
+        res.not_published = words
+        res.errors.append(words)
+        record_ownerless_refusal(self._registry, inv, words, action)
+        return True
 
     def _managers(self):
         if self._pm is not None and self._cm is not None:
@@ -352,6 +442,10 @@ class EgeriaInvestigationPublisher:
                 "Project on purpose. Change its binding to 'egeria' first if it "
                 "should have one."
             )
+            return res
+        # A private kind with no owner: refused before any client is built (ruling 2026-10-13). Zoning it to
+        # `[PRIVATE_ZONE]` alone locks everyone out; creating it unzoned publishes it to everyone.
+        if self._refuse_ownerless(inv, res, "promote"):
             return res
 
         try:
@@ -683,6 +777,8 @@ class EgeriaInvestigationPublisher:
         if not res.project_guid:
             res.errors.append("not bound to an Egeria Project — promote or bind it first")
             return res
+        if self._refuse_ownerless(inv, res, "relink_members"):
+            return res
 
         ws = self._registry.get_or_create_working_set(investigation_slug)
         res.collection_guid = (ws or {}).get("egeria_collection_guid") or ""
@@ -794,6 +890,8 @@ class EgeriaInvestigationPublisher:
             res.errors.append("not bound to an Egeria Project — nothing to attach a working set to")
             return res
         res.project_guid = project_guid
+        if self._refuse_ownerless(inv, res, "ensure_working_set"):
+            return res
 
         ws = self._registry.get_or_create_working_set(investigation_slug)
         if ws and ws.get("egeria_collection_guid"):
@@ -874,6 +972,8 @@ class EgeriaInvestigationPublisher:
             res.errors.append("not bound to an Egeria Project — nothing to sync")
             return res
         res.project_guid = guid
+        if self._refuse_ownerless(inv, res, "sync_project_properties"):
+            return res
         try:
             pm, _ = self._managers()
         except Exception as exc:
@@ -932,6 +1032,12 @@ class EgeriaInvestigationPublisher:
             out["errors"].append("not bound to an Egeria Project")
             return out
         project_guid = inv["egeria_project_guid"]
+        words = ownerless_private_words(inv)
+        if words:
+            out["errors"].append(words)
+            out["not_published"] = words
+            record_ownerless_refusal(self._registry, inv, words, "sync_disposition_sets")
+            return out
         try:
             _, cm = self._managers()
         except Exception as exc:

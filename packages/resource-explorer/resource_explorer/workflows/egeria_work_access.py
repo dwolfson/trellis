@@ -182,6 +182,8 @@ def project_creation_zones(inv: dict) -> tuple[str, ...]:
 
     if is_private_investigation(inv):
         return tuple(private_zones((inv.get("created_by") or "").strip()))
+    # An ownerless private one (`ownerless_private_words`) is never created at all: promote refuses it before
+    # any write, so its "no zones" here is never a create that happens (ruling 2026-10-13).
     return ()
 
 

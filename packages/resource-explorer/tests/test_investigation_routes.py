@@ -81,8 +81,18 @@ def client():
 def made(client, _isolated_registry):
     created = []
 
-    def _make(**kw):
+    def _make(*, as_user: str = "", **kw):
+        """`as_user`: create it as that signed-in caller, through the registry under `_as` (the identity
+        mechanism every other test here uses), for a private kind — the route's TestClient carries no caller,
+        and a Personal/Experiment investigation with no owner is refused at creation (ruling 2026-10-13)."""
         body = {"display_name": "Test Investigation", **kw}
+        if as_user:
+            from resource_explorer.registry import ProjectRegistry
+
+            with _as(as_user):
+                inv = ProjectRegistry().create_investigation(body.pop("display_name"), **body)
+            created.append(inv["slug"])
+            return inv
         r = client.post("/api/investigations/", json=body)
         assert r.status_code == 200, r.text
         created.append(r.json()["slug"])
@@ -433,7 +443,7 @@ def test_an_experiment_carries_its_hypothesis_all_the_way_into_egeria(made):
     )
 
     inv = made(display_name="Does caching help", project_classification="Experiment",
-               hypothesis="Warm source cache cuts survey wall-clock by >50%")
+               hypothesis="Warm source cache cuts survey wall-clock by >50%", as_user="alice")
     assert inv["hypothesis"] == "Warm source cache cuts survey wall-clock by >50%"
 
     pm = _StubPM()
@@ -781,14 +791,21 @@ def test_every_classification_in_the_vocabulary_maps_to_a_properties_class(made)
     for name in reg.PROJECT_CLASSIFICATIONS:
         assert _initial_classifications(name) == {name: {"class": f"{name}Properties"}}
 
-    inv = made(display_name="Personal One", project_classification="PersonalProject")
-    pm = _StubPM()
-    EgeriaInvestigationPublisher(
-        reg, project_manager=pm, collection_manager=_StubCM()
-    ).promote(inv["slug"])
-    assert pm.calls[0][3]["initialClassifications"] == {
-        "PersonalProject": {"class": "PersonalProjectProperties"}
-    }
+    # Every classification, private kinds included, actually SENT — each created with an owner, so a private
+    # kind is promoted (and zoned) rather than refused for having nobody to be private to.
+    for name in reg.PROJECT_CLASSIFICATIONS:
+        hypothesis = "h" if name in reg.HYPOTHESIS_REQUIRED_FOR else ""
+        inv = made(display_name=f"{name} One", project_classification=name, hypothesis=hypothesis,
+                   as_user="alice")
+        assert inv["created_by"] == "alice"
+        pm = _StubPM()
+        res = EgeriaInvestigationPublisher(
+            reg, project_manager=pm, collection_manager=_StubCM()
+        ).promote(inv["slug"])
+        assert res.not_published == "", res.errors
+        sent = pm.calls[0][3]["initialClassifications"]
+        expected = _initial_classifications(name, hypothesis)
+        assert sent == expected and sent[name]["class"] == f"{name}Properties", (name, sent)
 
 
 def test_a_classification_egeria_drops_is_reported_not_assumed(made):
