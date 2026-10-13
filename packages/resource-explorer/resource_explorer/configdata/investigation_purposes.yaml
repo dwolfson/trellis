@@ -32,6 +32,6 @@ investigation_purposes:
     - name: Maintain
       description: Track change and risk over time; version-change impact.
     - name: Select
-      description: Find and choose resources to adopt; subsumes comparing alternatives.
+      description: Choose among resources already found, and decide whether to adopt them; subsumes comparing alternatives.
     - name: Share
       description: Produce blueprints and docs so others can find and reuse.
