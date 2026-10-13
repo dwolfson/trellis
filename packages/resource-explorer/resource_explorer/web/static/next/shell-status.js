@@ -273,6 +273,6 @@ export async function openConnectionPopover(doc, anchor, { me, getInfo = getWhoa
       <dt class="text-ink-muted">${esc(k)}</dt>
       <dd data-conn="${esc(k)}" class="m-0 break-all font-mono text-provenance"${k === 'Build' && v ? ` title="${esc(v)}"` : ''}>${
         v ? esc(k === 'Build' ? String(v).slice(0, 10) : v) : NOT_READ}</dd>`).join('')}</dl>
-    <p class="mt-s2 text-provenance text-ink-muted">Your own actions run as you; surveys and scheduled work run as the service account, recorded as yours.</p>`;
+    <p class="mt-s2 text-provenance text-ink-muted">What you start runs as you in Egeria; scheduled and queued work runs as the service account, recorded as yours.</p>`;
   return pop;
 }
