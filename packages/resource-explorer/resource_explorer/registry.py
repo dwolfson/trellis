@@ -8672,6 +8672,18 @@ class ProjectRegistry:
                     conn.execute("UPDATE egeria_outbox SET payload_json=? WHERE id=?", (json.dumps(payload), row_id))
         return revived
 
+    def make_outbox_row_due(self, row_id: int) -> bool:
+        """Make one pending or backing-off row due now, attempts and words untouched. For a person's explicit
+        retry of their OWN row (a private investigation's owner pressing Relink: `OutboxAwaitsOwner` parked it for
+        an hour so the background drain would not keep re-taking it). Never a running, done, dead, cancelled or
+        superseded row. Returns whether it changed the row. No schema change."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET next_attempt_at=? WHERE id=? AND status IN ('pending', 'failed')",
+                (datetime.utcnow().isoformat(), int(row_id)),
+            )
+        return (cur.rowcount or 0) > 0
+
     def outbox_counts(self) -> dict[str, int]:
         """Row count per status — what a health endpoint or the drain's own
         log line reports. 'superseded' is its own key, never folded into done or dead."""

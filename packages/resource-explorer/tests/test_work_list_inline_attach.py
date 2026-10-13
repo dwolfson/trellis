@@ -182,9 +182,9 @@ def test_a_member_refused_at_the_drain_recheck_is_not_permitted_and_not_attached
 
     real = egeria_outbox._queued_write_refusal
 
-    def tightened(registry_, row):
+    def tightened(registry_, row, *a, **k):
         _zone(world["fake"], "g-aw", ["dbas"])               # SECURED, granting dbas only, not garygeeke
-        return real(registry_, row)
+        return real(registry_, row, *a, **k)
 
     monkeypatch.setattr(egeria_outbox, "_queued_write_refusal", tightened)
     out = _publish(world)

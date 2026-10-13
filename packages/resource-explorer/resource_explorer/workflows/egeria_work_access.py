@@ -62,6 +62,69 @@ class ElementWrite:
     foreign_after: tuple[str, ...] = ()
 
 
+#: The words a PRIVATE investigation's write carries while nobody who may make it is here: RE's service account
+#: cannot see the investigation's elements (Egeria refuses it them by design), so it neither checks nor writes
+#: them, and the row or the press waits for the owner (2026-10-13, the owner's privacy proof).
+def owner_waiting_words(owner: str) -> str:
+    return f"waiting for the owner, {owner}, to retry: the service account cannot see a private investigation"
+
+
+def investigation_unscoped(registry, slug: str) -> Optional[dict]:
+    """The investigation row whoever is asking (the shared identity's view): deciding whether to PROTECT must see
+    a private investigation the current caller (or the daemon) cannot, as `ProjectRegistry.private_owner_for_entity`
+    does. None only when there is no such row.
+
+    Fails CLOSED (review of 1841e4a8): a row RE cannot read raises `zone_access.AccessUnreadable`. Reading it as
+    "no investigation" would take a private one for shared and check it as the service account."""
+    from resource_explorer.registry import SHARED_USER_ID
+    from resource_explorer.zone_access import AccessUnreadable
+
+    try:
+        try:
+            return registry.get_investigation(slug, user_id=SHARED_USER_ID)
+        except TypeError:                 # a registry-shaped test double without the keyword
+            return registry.get_investigation(slug)
+    except Exception as exc:  # unreadable is never "shared"
+        raise AccessUnreadable(f"the investigation {slug}: {type(exc).__name__}: {exc}"[:300]) from exc
+
+
+def private_owner(inv: Optional[dict]) -> str:
+    """The owner a private investigation's Egeria elements are zoned to, or "" (shared, ownerless or unknown)."""
+    from resource_explorer.surveyors.egeria_investigation_publisher import is_private_investigation
+
+    if not inv or not is_private_investigation(inv):
+        return ""
+    return (inv.get("created_by") or "").strip()
+
+
+def owner_identity(inv: Optional[dict], identity=None):
+    """Who an access check reads a PRIVATE investigation's elements as: the signed-in owner, as a Caller
+    identity (`egeria_clients.Caller()`, or `identity` when the caller hands one in, as the outbox drain does),
+    or None: a shared investigation, or nobody who IS its owner is signed in (the daemon then reads as before).
+    Captured by the thread that holds the caller and passed on explicitly, never re-read on a pool thread."""
+    owner = private_owner(inv)
+    if not owner:
+        return None
+    if identity is None:
+        from resource_explorer.egeria_clients import Caller
+
+        try:
+            identity = Caller()
+        except PermissionError:           # no caller, or an expired sign-in
+            return None
+    if getattr(identity, "kind", "") != "caller" or (getattr(identity, "user_id", "") or "") != owner:
+        return None
+    return identity
+
+
+def investigation_reader(registry, slug: str, *, identity=None, **kw):
+    """An `EgeriaAccessReader` for one investigation's checks: element reads as its signed-in owner when it is
+    private (`owner_identity`), else as RE's daemon, as every other check reads."""
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    return EgeriaAccessReader(read_as=owner_identity(investigation_unscoped(registry, slug), identity), **kw)
+
+
 def _curate():
     from resource_explorer.workflows import curate
 
@@ -80,7 +143,17 @@ def writes_access(registry, writes: Iterable[ElementWrite], *, entity_type: str 
     last = wc.AccessDecision(True, "", wc.BASIS_NO_ZONES)
     if not writes:
         return last
-    reader = reader or EgeriaAccessReader()
+    if reader is None:
+        # An investigation's own elements (its Project, its Folio) are read as its owner when it is private.
+        if entity_type == "investigation" and slug:
+            from resource_explorer.zone_access import AccessUnreadable
+
+            try:
+                reader = investigation_reader(registry, slug)
+            except AccessUnreadable as exc:          # could not tell whether it is private: denied, its words
+                return wc.AccessDecision(False, f"could not check access in Egeria ({exc})", wc.BASIS_UNREADABLE)
+        else:
+            reader = EgeriaAccessReader()
     wanted = [g for w in writes for g in (w.guid, w.anchor_guid) if g] if wc._reads_zones() else []
     with reader.check(wanted):
         for w in writes:
@@ -358,10 +431,16 @@ def investigation_member_refusal(registry, slug: str, *, unattended: bool = Fals
     collection's end was checked by the route. `unattended` (resync, which may run with nobody signed in and has
     no route check in front of it) also checks the recorded Folio's end on every member, by `writes_refusal`'s
     rule (as the person who pressed Apply, or, with nobody, open only while no zone is in use)."""
-    from resource_explorer.zone_access import EgeriaAccessReader
+    from resource_explorer.zone_access import AccessUnreadable
 
     folio = _working_set_guid(registry, slug) if unattended else ""
-    reader = EgeriaAccessReader()      # one pass: controls and accounts read once, elements fresh per member
+    # One pass: controls and accounts read once, elements fresh per member; a private investigation's reads are
+    # made as its signed-in owner (the Folio is anchored to the private Project).
+    try:
+        reader = investigation_reader(registry, slug)
+    except AccessUnreadable as exc:                  # fails closed: every member refused with the reason
+        why = f"{NOT_PERMITTED} · could not check access in Egeria ({exc})"[:300]
+        return lambda member: why
 
     def refusal(member: dict) -> str:
         ws = [member_write(str(member.get("member_guid") or ""))]
